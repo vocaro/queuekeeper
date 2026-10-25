@@ -61,7 +61,12 @@ def parse(argv):
     parser.add_argument("--name", help="the start of each simulator's unique name (default: the directory's name)")
     parser.add_argument("--setting", action="append", default=[], metavar="NAME=VALUE",
                         help="a build setting for the build, after CODE_SIGNING_ALLOWED=NO")
-    args = parser.parse_args(argv[:split])
+    args, unknown = parser.parse_known_args(argv[:split])
+    if unknown:
+        # eng run LANE -- ARGUMENTS appends them to the lane's command, which reach the tests only
+        # when that command ends with --.
+        parser.error(f"unrecognized arguments: {' '.join(unknown)}. Test arguments such as -only-testing go after "
+                     "--, so a lane whose command runs simulator-tests ends with \"--\"")
     args.passed = argv[split + 1:]
     for name in ("jobs", "build_jobs", "workers", "boot_timeout", "test_timeout"):
         if getattr(args, name) is not None and getattr(args, name) < 1:

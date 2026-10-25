@@ -187,6 +187,27 @@ class SimulatorMatrixTests(unittest.TestCase):
         tests = [call for call in self.calls() if call[0] == "test-without-building"]
         self.assertTrue(all(call[call.index("-parallel-testing-worker-count") + 1] == "2" for call in tests))
 
+    def test_a_lane_that_ends_with_its_separator_takes_a_filter_from_eng_run(self):
+        matrix = [sys.executable, str(ENG), "simulator-tests", "--scheme", "Package-Tests", "--runtime", "iOS-27-0",
+                  "--device", "iPhone-17-Pro", "--device", "iPad-Air-13-inch-M4"]
+        (self.root / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Project", "lanes": {
+            "ios-tests": {"command": [*matrix, "--"], "minimumTests": 6}, "unseparated": {"command": matrix}}}))
+        run = lambda lane: subprocess.run([sys.executable, str(ENG), "--project", str(self.root), "run", lane, "--",
+                                           "-only-testing:T/C"], cwd=self.root, capture_output=True, text=True,
+                                          env=self.environment)
+        finished = run("ios-tests")
+        self.assertEqual(finished.returncode, 0, finished.stdout + finished.stderr)
+        tests = [call for call in self.calls() if call[0] == "test-without-building"]
+        self.assertEqual([call[-1] for call in tests], ["-only-testing:T/C"] * 2)
+        self.assert_every_device_deleted()
+        # Without the separator the filter would reach simulator-tests' own options, which refuse it.
+        (self.state / "simctl.log").unlink()
+        finished = run("unseparated")
+        self.assertEqual(finished.returncode, 2, finished.stdout + finished.stderr)
+        self.assertIn("a lane whose command runs simulator-tests ends with \"--\"",
+                      (self.root / ".build/engineering/unseparated/run.log").read_text())
+        self.assertFalse((self.state / "simctl.log").exists())
+
     def test_invalid_arguments_create_no_device(self):
         for arguments in (["--jobs", "0"], ["--device", "iPhone-17-Pro"], ["--build-jobs", "0"]):
             with self.subTest(arguments):
