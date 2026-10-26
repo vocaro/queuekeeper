@@ -152,15 +152,17 @@ class Run:
             return self.finish(kind, evidence.UNMEASURED, f"the tests exceeded {args.test_timeout}s", log)
         seconds = round(time.monotonic() - started)
         text = log.read_text(errors="replace")
-        executed = evidence.executed_tests(text) or 0
+        # Tests that skipped ran nothing, so they are reported beside the count, not in it.
+        executed, skipped = evidence.executed_tests(text) or 0, evidence.skipped_tests(text)
+        counted = f"Executed {executed} tests" + (f", {skipped} skipped" if skipped else "")
         if status != 0:
-            return self.finish(kind, 1, f"the tests failed with status {status}, Executed {executed} tests", log, seconds)
+            return self.finish(kind, 1, f"the tests failed with status {status}, {counted}", log, seconds)
         if executed == 0:
-            # A filter that selects nothing passes xcodebuild and establishes nothing.
-            return self.finish(kind, 1, "no tests ran", log, seconds)
+            # A filter that selects nothing, or only tests that skip, passes xcodebuild and establishes nothing.
+            return self.finish(kind, 1, f"no tests ran ({counted})", log, seconds)
         unmeasured = evidence.unmeasured_tests(text)
         # The wrapper's "Executed N tests" is what a lane counts: the device's own totals are in its log.
-        self.finish(kind, evidence.UNMEASURED if unmeasured else 0, f"Executed {executed} tests", log, seconds)
+        self.finish(kind, evidence.UNMEASURED if unmeasured else 0, counted, log, seconds)
         if unmeasured: self.say(*unmeasured)
 
     def device(self, kind, device, built):

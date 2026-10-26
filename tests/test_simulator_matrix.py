@@ -65,10 +65,11 @@ XCODEBUILD = textwrap.dedent("""\
         if time.monotonic() > deadline: sys.exit(f"{kind} never met the other devices")
         time.sleep(0.05)
     if kind in os.environ.get("FAKE_NO_TESTS", ""): sys.exit(0)
+    skipped = os.environ.get("FAKE_SKIPPED", "0") if kind in os.environ.get("FAKE_SKIPPED_ON", "") else "0"
     if kind in os.environ.get("FAKE_UNMEASURED", ""):
         print("/p/T.swift:5: -[P.T testA] : Test skipped - Unmeasured: the host was busy")
     print("Test Suite 'All tests' passed at 2026-10-24 01:00:00.000.")
-    print("\\t Executed 3 tests, with 0 failures (0 unexpected) in 0.1 (0.1) seconds")
+    print(f"\\t Executed 3 tests, with {skipped} tests skipped and 0 failures (0 unexpected) in 0.1 (0.1) seconds")
     sys.exit(65 if kind in os.environ.get("FAKE_TEST_FAIL", "") else 0)
 """)
 
@@ -180,6 +181,17 @@ class SimulatorMatrixTests(unittest.TestCase):
         output = process.communicate(timeout=60)[0]
         self.assertEqual(process.returncode, -signal.SIGTERM, output)
         self.assertIn("SIGTERM received; forwarding it", output)
+        self.assert_every_device_deleted()
+
+    def test_skipped_tests_ran_nothing_so_a_device_whose_tests_all_skipped_fails(self):
+        status, output = self.run_matrix(FAKE_SKIPPED="2", FAKE_SKIPPED_ON="iPad-Air-13-inch-M4")
+        self.assertEqual(status, 0, output)
+        self.assertIn("PASS iPad-Air-13-inch-M4: Executed 1 tests, 2 skipped", output)
+        self.assertEqual(evidence.executed_tests(output), 4, output)
+        for path in [*self.state.glob("testing-*"), self.state / "simctl.log"]: path.unlink()
+        status, output = self.run_matrix(FAKE_SKIPPED="3", FAKE_SKIPPED_ON="iPad-Air-13-inch-M4")
+        self.assertEqual(status, 1, output)
+        self.assertIn("FAIL iPad-Air-13-inch-M4: no tests ran (Executed 0 tests, 3 skipped)", output)
         self.assert_every_device_deleted()
 
     def test_parallel_workers_on_each_device_are_opt_in(self):

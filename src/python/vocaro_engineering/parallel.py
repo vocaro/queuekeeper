@@ -174,7 +174,8 @@ def unittest_main(argv):
             # A shard that ran other than the tests discovery found for it did not run what it was given.
             failed.append(f"{result['name']} (ran {result['ran']} of {expected[result['name']]} tests)")
     total = sum(result["ran"] for result in results)
+    skipped = sum(evidence.skipped_tests(result["output"]) for result in results)
     # Not "Ran N tests": the shards' own lines already count every test once.
-    print(f"eng unittest: {total} tests in {len(results)} processes, {args.jobs} at a time, "
+    print(f"eng unittest: {total} tests ({skipped} skipped) in {len(results)} processes, {args.jobs} at a time, "
           f"{time.monotonic() - began:.1f}s: " + (f"FAILED: {', '.join(failed)}" if failed else "OK"), flush=True)
     return 1 if failed else 0

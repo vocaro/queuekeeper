@@ -156,8 +156,9 @@ def judge(lane, result, log, extra=(), expect=None):
         try:
             evidence.require_tests(log, minimum, expected=expect)
         except ValueError as error:
-            # An unmeasured part may not have run at all, so the run stays unmeasured.
-            if result == 0: raise
+            # An unmeasured part may not have run at all, so the run stays unmeasured. A test the
+            # host left unmeasured ran nothing, so it can also be what leaves a run short.
+            if result == 0 and not evidence.unmeasured_tests(log): raise
             print(f"eng: {error}", file=sys.stderr)
     unmeasured = evidence.unmeasured_tests(log) if measured else []
     if unmeasured or result == evidence.UNMEASURED:

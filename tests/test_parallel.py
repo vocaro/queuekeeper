@@ -68,7 +68,7 @@ class UnittestRunnerTests(unittest.TestCase):
         status, output = self.run_suite(root, "-j", "2")
         self.assertEqual(status, 0, output)
         self.assertNotEqual((root / "left.pid").read_text(), (root / "right.pid").read_text())
-        self.assertIn("eng unittest: 2 tests in 2 processes, 2 at a time", output)
+        self.assertIn("eng unittest: 2 tests (0 skipped) in 2 processes, 2 at a time", output)
         # The negative control: one at a time, neither module can meet the other.
         for marker in ("left", "right", "left.pid", "right.pid"): (root / marker).unlink()
         status, output = self.run_suite(root, "-j", "1", limit=1)
@@ -106,7 +106,9 @@ class UnittestRunnerTests(unittest.TestCase):
         """))
         status, output = self.run_suite(root, "-v")
         self.assertEqual(status, 0, output)
-        self.assertEqual(evidence.executed_tests(output), 2)
+        # The skipped test ran nothing, so only the measured one counts.
+        self.assertEqual((evidence.executed_tests(output), evidence.skipped_tests(output)), (1, 1))
+        self.assertIn("eng unittest: 2 tests (1 skipped) in 1 processes", output)
         self.assertEqual(len(evidence.unmeasured_tests(output)), 1, output)
 
     def test_a_process_that_ends_before_its_tests_have_run_fails(self):
