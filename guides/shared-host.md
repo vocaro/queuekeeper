@@ -126,6 +126,7 @@ python3 scripts/eng run LANE [-- ARGUMENTS]            # a buildHost lane: the b
 python3 scripts/eng remote run LANE [-- ARGUMENTS]     # any lane, on the build host
 python3 scripts/eng remote admit [--exclusive] -- COMMAND
 python3 scripts/eng remote passed LANE [--commit REV]
+python3 scripts/eng remote setup [FORMULA ...] [--check]  # the gates' tools (Setting up a build host)
 ```
 
 ### Which Mac runs a lane
@@ -201,10 +202,21 @@ The owner prepares the build host once:
 
 3. Install the Xcode this Mac uses at the same path. Accept its license and run its first launch
    (`sudo xcodebuild -license accept`, then `xcodebuild -runFirstLaunch`).
-4. Install the tools the projects' gates use, as on this Mac (Homebrew, its Python, `uv`,
-   `shellcheck`, `xcodegen`), and put Homebrew on the login shell's PATH in `~/.zprofile`, as its
-   installer offers: `eng remote` runs in the build host's login shell. Without Homebrew, the
-   system's Python 3.9 runs the toolkit, and lanes that need a newer Python fail.
+4. Install Homebrew there (https://brew.sh); its installer asks for the build host's password.
+   Then, from this Mac, install the tools the projects' gates use:
+
+   ```sh
+   python3 scripts/eng remote setup [FORMULA ...] [--import MODULE ...]
+   ```
+
+   It puts Homebrew on the login shell's PATH in `~/.zprofile`, since `eng remote` runs in the
+   build host's login shell, and installs Homebrew's Python, `uv`, `shellcheck`, `xcodegen`,
+   `zstd` and each formula a project names. A new login shell then checks every one, each
+   `--import` module in that Python, and the Xcode at this Mac's developer directory, one line
+   each, and the command fails while anything is missing. A build host without Homebrew stops it
+   with nothing changed. `--check` only checks. A project's runbook names its own formulae.
+   Without Homebrew, the system's Python 3.9 runs the toolkit, and lanes that need a newer
+   Python fail.
 5. Keep it on power and awake. A sleeping build host leaves its run unmeasured.
 6. When a project's packages depend on private repositories, create a fine-grained GitHub token
    with read-only Contents permission on them (on all of the owner's repositories, if the owner

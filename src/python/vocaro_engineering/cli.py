@@ -228,7 +228,14 @@ def main(argv=None):
         help="run a configured lane at HEAD on the build host")
     remote_admit = operations.add_parser("admit", help="run a heavy command at HEAD on the build host, in its "
         "checkout's root")
-    for choice in (remote_run, remote_admit):
+    remote_setup = operations.add_parser("setup", help="install on the build host, with Homebrew, the tools "
+        f"every project's gates use ({', '.join(remote.SETUP_FORMULAE)}) and the formulae named, then check them as "
+        "eng remote sees the build host; Homebrew itself the owner installs")
+    remote_setup.add_argument("formulae", nargs="*", metavar="formula", help="a further Homebrew formula to install")
+    remote_setup.add_argument("--import", dest="imports", action="append", metavar="MODULE",
+                              help="check that the build host's python3 imports MODULE (repeatable)")
+    remote_setup.add_argument("--check", action="store_true", help="only check; install nothing")
+    for choice in (remote_run, remote_admit, remote_setup):
         choice.add_argument("--host", help="the build host's SSH destination (default: VOCARO_BUILD_HOST, else "
                              f"the ~/.ssh/config alias {remote.DEFAULT_HOST})")
     remote_run.add_argument("--expect", type=int, metavar="N", help="require exactly N executed tests")

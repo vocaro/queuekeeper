@@ -16,6 +16,7 @@ import json
 import os
 from pathlib import Path
 import queue
+import re
 import shlex
 import shutil
 import subprocess
@@ -42,6 +43,16 @@ STOP_WAIT = 120
 # What a Git hook exports for its own repository must not reach another.
 GIT_LOCATION = {"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
                 "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_PREFIX"}
+
+
+# What every project's gates use on the build host (guides/shared-host.md, Setting up a build host).
+SETUP_FORMULAE = ["python", "uv", "shellcheck", "xcodegen", "zstd"]
+# Where Homebrew's installer puts brew: Apple silicon, then Intel.
+BREW = ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"]
+# The exit status of the setup script when the build host has no Homebrew.
+NO_HOMEBREW = 4
+FORMULA = re.compile(r"^[A-Za-z0-9][A-Za-z0-9@._+/-]*$")
+MODULE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]*$")
 
 
 class Unavailable(RuntimeError):
@@ -280,6 +291,7 @@ def main(root, config, args):
         print(f"{args.lane} passed at {receipt['commit']} on {describe(receipt['result']['host'])}")
         return 0
     host = args.host or os.environ.get("VOCARO_BUILD_HOST") or DEFAULT_HOST
+    if args.operation == "setup": return setup(host, args.formulae, args.imports or [], args.check)
     if args.operation == "run":
         lane = config.get("lanes", {}).get(args.lane)
         if lane is None: raise ValueError(f"No configured lane: {args.lane}")
@@ -295,6 +307,104 @@ def main(root, config, args):
     if not command: raise ValueError("Name the command: eng remote admit [--exclusive] -- COMMAND")
     with processes.forwarding_signals():
         return execute(root, config, host, ["admit", *(["--exclusive"] if args.exclusive else []), "--", *command])
+
+
+def install_script(formulae):
+    """Find Homebrew, put it first on the login shell's PATH in ~/.zprofile, and install formulae.
+
+    Installing Homebrew itself needs the build host's password, which only the owner types, so a
+    build host without it ends the script with NO_HOMEBREW and nothing changed."""
+    candidates = " ".join(shlex.quote(candidate) for candidate in BREW)
+    return f"""set -u
+brew=$(command -v brew || true)
+for candidate in {candidates}; do
+    if [ -z "$brew" ] && [ -x "$candidate" ]; then brew=$candidate; fi
+done
+if [ -z "$brew" ]; then
+    echo "setup: Homebrew is not installed on this build host. Its installer asks for the build host's password, so install it there yourself (https://brew.sh), then run eng remote setup again." >&2
+    exit {NO_HOMEBREW}
+fi
+# Homebrew's bin must come before /usr/bin, or the system's python3 3.9 shadows Homebrew's, as it
+# did in the build host's login shell, which found brew after /usr/bin (2026-10-26).
+prefix=$("$brew" --prefix)
+first=no
+for entry in $(printf '%s' "$PATH" | tr ':' ' '); do
+    if [ "$entry" = "$prefix/bin" ]; then first=yes; break; fi
+    if [ "$entry" = /usr/bin ]; then break; fi
+done
+if [ "$first" = no ]; then
+    line='eval "$('"$brew"' shellenv)"'
+    grep -qxF "$line" "$HOME/.zprofile" 2>/dev/null || printf '\\n%s\\n' "$line" >> "$HOME/.zprofile"
+    eval "$("$brew" shellenv)"
+    echo "setup: put Homebrew first on the login shell's PATH in ~/.zprofile"
+fi
+echo "setup: brew install {' '.join(formulae)}"
+"$brew" install {' '.join(shlex.quote(formula) for formula in formulae)}
+"""
+
+
+def verify_script(formulae, modules, developer=None):
+    """One `ok` or `MISSING` line for each thing the gates need, read by a fresh login shell, as
+    `eng remote` reads the build host; exit 1 when anything is missing. The last line is the
+    version of the Xcode at developer, the path a run there uses, which the caller compares."""
+    lines = ["fail=0",
+             "prefix=$(brew --prefix 2>/dev/null) || { echo \"MISSING Homebrew on the login shell's PATH\"; exit 1; }",
+             'echo "ok      Homebrew at $prefix"',
+             "python=$(command -v python3 || true)",
+             'case "$python" in "$prefix"/*) echo "ok      python3 is $python, $(python3 --version 2>&1)" ;;',
+             "    *) echo \"MISSING Homebrew's python3 first on the login shell's PATH (found ${python:-none})\"; fail=1 ;;",
+             "esac"]
+    # `brew info` follows an alias such as python to its formula, where `brew list` refuses it. The
+    # system's Python reads its JSON, which Homebrew's may not yet be there to do.
+    installed = "/usr/bin/python3 -c 'import json, sys; sys.exit(not json.load(sys.stdin)[\"formulae\"][0][\"installed\"])'"
+    for formula in formulae:
+        lines.append(f'if brew info --json=v2 {formula} 2>/dev/null | {installed}; then echo "ok      {formula}"; '
+                     f'else echo "MISSING {formula}"; fail=1; fi')
+    for module in modules:
+        lines.append(f'if python3 -c "import {module}" >/dev/null 2>&1; then echo "ok      import {module}"; '
+                     f'else echo "MISSING import {module} in python3"; fail=1; fi')
+    selected = f"DEVELOPER_DIR={shlex.quote(developer)} " if developer else ""
+    lines += [f'echo "xcode   $({selected}xcrun xcodebuild -version 2>/dev/null | tr \'\\n\' \' \')"', 'exit $fail']
+    return "\n".join(lines) + "\n"
+
+
+def setup(host, formulae, modules, check):
+    """Install what the gates use on the build host, then check it as `eng remote` will see it.
+    With check, only check."""
+    for name in formulae:
+        if not FORMULA.match(name): raise ValueError(f"Not a Homebrew formula name: {name}")
+    for name in modules:
+        if not MODULE.match(name): raise ValueError(f"Not a Python module name: {name}")
+    wanted = list(dict.fromkeys([*SETUP_FORMULAE, *formulae]))
+    if not check:
+        # Line by line through this process, so a long brew install shows as it goes.
+        with subprocess.Popen([*SSH, host, login(install_script(wanted))], env=environment(), text=True,
+                              errors="replace", stdout=subprocess.PIPE, stderr=subprocess.STDOUT) as running:
+            for line in running.stdout: print(line, end="", flush=True)
+        installed = running.returncode
+        if installed == NO_HOMEBREW: return 1
+        if installed:
+            print(f"eng: brew install on {host} exited {installed}", file=sys.stderr)
+            return 1
+    # A new login shell, so a PATH line just written to ~/.zprofile is read as eng remote reads it.
+    # A run there uses the Xcode at this Mac's developer directory, and must find the same version.
+    developer = developer_directory()
+    here = " ".join((build_host.output(["xcrun", "xcodebuild", "-version"], {**os.environ, "DEVELOPER_DIR": developer})
+                     or "").split()) if developer else None
+    result = ssh(host, verify_script(wanted, modules, developer), capture_output=True, text=True)
+    status = 0 if result.returncode == 0 else 1
+    for line in result.stdout.splitlines():
+        if line.startswith("xcode   "):
+            there = " ".join(line[8:].split())
+            if here and there != here:
+                line, status = f"MISSING {here} at {developer}, as on this Mac (found {there or 'none'})", 1
+            else:
+                line = f"ok      {there or 'no Xcode'}" + (f" at {developer}" if developer else "")
+        print(line)
+    if result.returncode not in (0, 1):
+        print(f"eng: could not check {host} (ssh exited {result.returncode}): {result.stderr.strip()}", file=sys.stderr)
+    print(f"{host} is ready for eng remote" if status == 0 else f"{host} is not ready: install what is MISSING")
+    return status
 
 
 def first(root, config, lane, arguments, expect):

@@ -337,3 +337,144 @@ class RemoteTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# The build host's Homebrew, in a prefix of its own: it records what it installs, links a python3
+# when python is installed, and answers `brew info --json=v2` from those records.
+FAKE_BREW = """#!/bin/sh
+prefix=$(cd "$(dirname "$0")/.." && pwd)
+case "$1" in
+    shellenv) echo "export PATH=\\"$prefix/bin:\\$PATH\\"" ;;
+    --prefix) echo "$prefix" ;;
+    install)
+        shift
+        echo "$*" >> "$prefix/installs.log"
+        for formula in "$@"; do
+            touch "$prefix/installed-$formula"
+            if [ "$formula" = python ]; then ln -sf "$FAKE_PYTHON" "$prefix/bin/python3"; fi
+        done ;;
+    info)
+        if [ -e "$prefix/installed-$3" ]; then echo '{"formulae": [{"installed": [{"version": "1"}]}]}'
+        else echo '{"formulae": [{"installed": []}]}'; fi ;;
+    *) exit 1 ;;
+esac
+"""
+# ssh to a build host whose PATH holds only the system's tools, as a fresh Mac's does, so this
+# Mac's own Homebrew is never reached.
+SETUP_SSH = FAKE_SSH.replace('HOME="$FAKE_HOME"', 'PATH="$FAKE_PATH" HOME="$FAKE_HOME"')
+# A login shell that reads ~/.zprofile, as zsh's does.
+PROFILE_SHELL = """#!/bin/sh
+if [ "$1" = -l ]; then shift; if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile"; fi; fi
+exec /bin/sh "$@"
+"""
+
+
+class RemoteSetupTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        base = Path(self.temp.name)
+        self.home = base / "build-host-home"
+        self.home.mkdir()
+        tools = base / "bin"
+        tools.mkdir()
+        for name, text in [("ssh", SETUP_SSH), ("login-shell", PROFILE_SHELL)]:
+            (tools / name).write_text(text)
+            (tools / name).chmod(0o755)
+        self.prefix = base / "homebrew"
+        self.brew = self.prefix / "bin/brew"
+        self.project = base / "example"
+        self.project.mkdir()
+        (self.project / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example"}))
+        self.environment = patch.dict(os.environ, {
+            "PATH": f"{tools}{os.pathsep}{os.environ['PATH']}", "FAKE_HOME": str(self.home),
+            "FAKE_SHELL": str(tools / "login-shell"), "FAKE_PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+            "FAKE_PYTHON": sys.executable})
+        self.environment.start()
+        self.patches = [patch.object(remote, "BREW", [str(self.brew)]),
+                        patch.object(remote, "developer_directory", return_value=None)]
+        for item in self.patches: item.start()
+
+    def tearDown(self):
+        for item in self.patches: item.stop()
+        self.environment.stop()
+        self.temp.cleanup()
+
+    def install_homebrew(self):
+        self.brew.parent.mkdir(parents=True)
+        self.brew.write_text(FAKE_BREW)
+        self.brew.chmod(0o755)
+
+    def eng(self, *arguments):
+        with contextlib.redirect_stdout(StringIO()) as output, contextlib.redirect_stderr(StringIO()) as error:
+            status = cli.main(["--project", str(self.project), "remote", "setup", "--host", "fake", *arguments])
+        return status, output.getvalue(), error.getvalue()
+
+    def installs(self):
+        log = self.prefix / "installs.log"
+        return log.read_text().splitlines() if log.exists() else []
+
+    def test_a_build_host_without_homebrew_is_left_unchanged_and_the_owner_told_to_install_it(self):
+        status, output, error = self.eng("numpy")
+        self.assertEqual(status, 1)
+        self.assertIn("Homebrew is not installed on this build host", output)
+        self.assertIn("https://brew.sh", output)
+        self.assertFalse((self.home / ".zprofile").exists())
+        self.assertNotIn("ready", output)
+
+    def test_setup_puts_homebrew_on_the_login_path_installs_and_checks_from_a_new_login_shell(self):
+        self.install_homebrew()
+        status, output, error = self.eng("numpy", "epubcheck", "--import", "json")
+        self.assertEqual(status, 0, output + error)
+        self.assertEqual(self.installs(), [" ".join([*remote.SETUP_FORMULAE, "numpy", "epubcheck"])])
+        profile = (self.home / ".zprofile").read_text()
+        self.assertEqual(profile.count(f'eval "$({self.brew} shellenv)"'), 1)
+        for line in ["ok      Homebrew at", f"ok      python3 is {self.prefix}/bin/python3", "ok      numpy",
+                     "ok      epubcheck", "ok      import json", "fake is ready for eng remote"]:
+            self.assertIn(line, output)
+        # Again: the PATH line is not written twice, and what is installed stays installed.
+        status, output, error = self.eng("numpy", "epubcheck")
+        self.assertEqual(status, 0, output + error)
+        self.assertEqual((self.home / ".zprofile").read_text(), profile)
+
+    def test_homebrew_after_the_system_on_the_path_is_put_first(self):
+        # brew is found, but /usr/bin's python3 comes first.
+        self.install_homebrew()
+        with patch.dict(os.environ, {"FAKE_PATH": f"/usr/bin:/bin:/usr/sbin:/sbin:{self.prefix}/bin"}):
+            status, output, error = self.eng("--check")
+            self.assertEqual(status, 1)
+            self.assertIn("MISSING Homebrew's python3 first on the login shell's PATH (found /usr/bin/python3)", output)
+            status, output, error = self.eng()
+        self.assertEqual(status, 0, output + error)
+        self.assertIn("setup: put Homebrew first on the login shell's PATH in ~/.zprofile", output)
+        self.assertIn(f"ok      python3 is {self.prefix}/bin/python3", output)
+
+    def test_check_installs_nothing_and_names_what_is_missing(self):
+        self.install_homebrew()
+        status, output, _ = self.eng("--check", "numpy", "--import", "no_such_module")
+        self.assertEqual(status, 1)
+        self.assertEqual(self.installs(), [])
+        self.assertIn("MISSING Homebrew on the login shell's PATH", output)
+        self.assertIn("fake is not ready", output)
+        # On the PATH but with nothing installed, every formula and import is named.
+        (self.home / ".zprofile").write_text(f'eval "$({self.brew} shellenv)"\n')
+        status, output, _ = self.eng("--check", "numpy", "--import", "no_such_module")
+        self.assertEqual(status, 1)
+        for line in ["MISSING Homebrew's python3 first", "MISSING numpy", "MISSING import no_such_module"]:
+            self.assertIn(line, output)
+
+    def test_a_different_xcode_on_the_build_host_is_named(self):
+        self.install_homebrew()
+        # This Mac's Xcode is one version, the build host's at the same path another.
+        with patch.object(remote, "developer_directory", return_value="/Applications/Xcode.app/Contents/Developer"), \
+                patch.object(build_host, "output", return_value="Xcode 99.0\nBuild version 99A1"):
+            status, output, _ = self.eng()
+        self.assertEqual(status, 1)
+        self.assertIn("MISSING Xcode 99.0 Build version 99A1 at /Applications/Xcode.app/Contents/Developer, "
+                      "as on this Mac (found ", output)
+
+    def test_names_that_are_not_formulae_or_modules_are_refused_before_anything_runs(self):
+        self.install_homebrew()
+        for arguments in [["numpy; rm -rf ~"], ["--import", "os; import shutil"]]:
+            status, _, error = self.eng(*arguments)
+            self.assertEqual(status, 2, error)
+            self.assertEqual(self.installs(), [])
