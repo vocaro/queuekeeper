@@ -240,6 +240,10 @@ those under `doc`, `guides`, `knowledge`, `agents` and `policies`. It checks tha
 - a link's `#fragment` names an anchor of its Markdown target, or of the same document for a
   link that is only a fragment, so renaming or removing a section fails every link to it
   (`missing anchor`);
+- a `PATH:LINE` link, such as one to `../Shaders/Grid.hlsl:180`, names a file that PATH
+  resolves to as any link does and that has at least LINE lines (`no line 180 in a 150-line
+  file`, `line link to a directory`). A target that is a file's whole name is that file. A
+  range such as `Grid.hlsl:180-202` is no line link and fails as a missing link;
 - every `AGENTS.md` is under 32 KiB (it fails at 32,768 bytes).
 
 Anchors are GitHub's: each heading outside fenced code, ATX or setext, slugged by lowercasing
@@ -247,9 +251,10 @@ its rendered text, dropping everything but letters, marks, digits, `_`, `-` and 
 turning each space into a hyphen, with `-1`, `-2` added to a repeated heading; and every HTML
 `id` or `name` attribute, such as `<a id="stacks"></a>`. A fragment on a target that is not
 Markdown, such as a source line (`#L10`) or a link with a query, is not checked. It reads links
-outside code blocks fenced with three backticks and skips web URLs. It does not mask inline
-code or `~~~` fences when finding links, and it has no exemption list. Project checks add what
-a repository needs:
+outside code blocks fenced with three backticks and skips URLs, which include a `PATH:LINE`
+target with no `/` before its colon: `Grid.hlsl:180` is the scheme `grid.hlsl` to a browser
+too, so write `./Grid.hlsl:180`. It does not mask inline code or `~~~` fences when finding
+links, and it has no exemption list. Project checks add what a repository needs:
 
 - **Snippets from compiled examples.** A document's code sample lives between
   `<!-- snippet:NAME -->` and `<!-- /snippet -->` and is regenerated from a
