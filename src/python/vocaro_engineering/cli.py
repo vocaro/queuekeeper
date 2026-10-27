@@ -16,14 +16,20 @@ from .resources import BUSY, FREE_WAIT
 from .simulators import matrix, pool as simulator_pool
 
 
+def project_adapter(toolkit):
+    """The toolkit's project adapter, integrations/shared.py, which init installs as
+    scripts/_engineering.py and the launcher imports."""
+    spec = importlib.util.spec_from_file_location("_engineering", toolkit / "integrations/shared.py")
+    adapter = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(adapter)
+    return adapter
+
+
 def named_checkout(toolkit):
     """The toolkit checkout a new project names: the main checkout when toolkit is a linked
     worktree, such as a session's, which is removed with its session. The project adapter's
     main_checkout finds it, as the launcher does."""
-    spec = importlib.util.spec_from_file_location("_engineering", toolkit / "integrations/shared.py")
-    adapter = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(adapter)
-    main = adapter.main_checkout(toolkit)
+    main = project_adapter(toolkit).main_checkout(toolkit)
     return main if main and (main / "src/python/vocaro_engineering").is_dir() else toolkit
 
 
@@ -106,8 +112,11 @@ def initialize(root, args):
         name = args.name or root.name
         # A pool's members are named after it, as `NAME iPhone 17 Pro 1`.
         pool = {"simulatorPool": name} if "simulator-pool" in args.capability else {}
+        # The launcher tries toolkit.path beside the checkout it runs in, then beside the main
+        # checkout, so a path relative to the main checkout resolves from every worktree of it.
+        base = project_adapter(TOOLKIT_ROOT).main_checkout(root) or root
         config_path.write_text(json.dumps({"schemaVersion": 1, "name": name,
-            "toolkit": {"path": os.path.relpath(named_checkout(TOOLKIT_ROOT), root)}, "integration": "direct-main",
+            "toolkit": {"path": os.path.relpath(named_checkout(TOOLKIT_ROOT), base)}, "integration": "direct-main",
             "capabilities": args.capability, **pool, "lanes": {}, "exceptions": []}, indent=2) + "\n")
     ignored = root / ".gitignore"
     if not ignored.exists():
