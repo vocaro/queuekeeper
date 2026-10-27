@@ -363,7 +363,7 @@ def main(argv=None):
     knowledge.add_argument("query", nargs="?", default="")
     source = commands.add_parser("source")
     source.add_argument("name", choices=["voiceover-ax-observer.swift", "voiceover-link-verbosity.swift",
-                                        "probe-simulator-voiceover-activation.m"])
+                                        "probe-simulator-voiceover-activation.m", "duo-pose-helper.c"])
     disk.add_arguments(commands.add_parser("disk", help="inventory reclaimable disk space; changes nothing without --delete"))
     # Everything after the first -- belongs to the command. Python 3.9's argparse rejects options
     # before it and drops a later --, so argparse never sees it.
