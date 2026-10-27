@@ -23,7 +23,7 @@ host inventory and authorizations stay outside the generic rules.
 - Take no foreground input, Mac VoiceOver session or debugger on the shared Mac without the
   explicit authorization the policy requires. Do not open a live simulator view or any tool that
   takes control of a simulator's screen unless the owner asked to watch: such a tool asks the
-  owner to approve each device, and a disposable device is new on every run.
+  owner to approve each device, and a new pool member is new to it.
 - Before proposing a physical device, say what it would show that a simulator cannot. A check
   said to need a finger usually needs a timing or an input that a UI test can make.
 - Record what automation cannot reach as not verified, and leave it to the owner.

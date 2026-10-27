@@ -325,15 +325,19 @@ not measure.
   session's index. The command is `git worktree remove` without `--force`, which itself refuses
   a dirty tree and leaves the branch. A session left open in a removed worktree cannot run
   commands there again; its work is on main and its branch remains.
-- **Simulators**, from `simctl list -j`. Only a disposable device can be a candidate: its unique
-  name carries a UUID, as the [disposable lifecycle](simulator-testing.md#disposable-simulators)
-  names it, and a pool or default device's name never does. It must also be shut down, unused
-  for the idle time, absent from every process's arguments and files, and unnamed, by UDID or
-  name, in every device record: the one the devices module reads, the account's record when
-  `VOCARO_DEVICE_RECORD` names another, and any legacy `/private/tmp` handoff file. An
-  unreadable record keeps every device. Xcode's default devices and unavailable named devices
-  are owner items; any other named device is a pool member or one made by hand and is kept. A
-  runtime no device uses is an owner item: a lane may create its devices on it next.
+- **Simulators**, from `simctl list -j`. A member of a pool that a main checkout's
+  engineering.json names in `simulatorPool` is a candidate only under the
+  [pruning rule](simulator-testing.md#pruning), and its command is `eng simulator-pool prune`,
+  which reserves it, checks it again and records the deletion. A device left by the retired
+  [disposable lifecycle](simulator-testing.md#disposable-simulators), whose unique name carries a
+  UUID, is a candidate when it is shut down, unused for the idle time, absent from every
+  process's arguments and files, and unnamed, by UDID or name, in every device record: the one
+  the devices module reads, the account's record when `VOCARO_DEVICE_RECORD` names another, and
+  any legacy `/private/tmp` handoff file. Every device is shut down and unused by any process
+  before it can be a candidate, and an unreadable record keeps every device. Xcode's default
+  devices and unavailable named devices are owner items; any other named device was made by
+  hand and is kept. A runtime no device uses is an owner item: a pool may create its members on
+  it next.
 - **Build caches.** A DerivedData folder in `~/Library/Developer/Xcode` (named
   `NAME-<28 letters>`) is a candidate when its `info.plist` names a workspace that no longer
   exists; one without `info.plist` is an owner item, and the folders every build shares
@@ -370,7 +374,7 @@ scratchpads, and 76 GiB of owner items, 48 GiB of them Xcode's default simulator
 
 ## Device reservations
 
-Physical devices, and simulators of the reserved pool under the simulator-pool capability, are
+Physical devices, and the members of a project's simulator pool, are
 used only under a real reservation in the host's one device record, a human-readable JSON file
 outside every repository: `~/Library/Application Support/vocaro-engineering/device-handoff.json`
 of the account the sessions run as. `src/python/vocaro_engineering/devices.py` is its only
@@ -584,7 +588,8 @@ Supervise the process group you own. The toolkit's `processes.supervise`, which 
   asked again. A signal the caller ignores, as `nohup` ignores SIGHUP, stays ignored.
 - A lane's `timeout` that expires while the root runs is carried out the same way with SIGTERM:
   once to the root's group and to each observed descendant, SIGKILL to what remains 10 s later,
-  and `TimedOut` once all have ended. The run still fails, but admission is released; a process
+  and `TimedOut` once all have ended. The run is unmeasured (exit 3), never green, and admission
+  is released; a process
   still running 5 s after SIGKILL leaves the guard uncertain. Until 2026-10-23 the timeout sent
   SIGTERM again every 50 ms, never sent descendants SIGKILL, and left the guard uncertain even
   when everything had ended.

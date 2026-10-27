@@ -8,7 +8,7 @@ TOOLKIT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_TOOLKIT = "../vocaro-engineering"
 FORMER_TOOLKIT = "../apple-engineering"
 CAPABILITIES = {
-    "simulator-disposable", "simulator-pool", "voiceover", "background-mac",
+    "simulator-pool", "voiceover", "background-mac",
     "packaging", "measurement", "native-python", "external-validation",
     "background-processing", "app-extensions", "data-protection", "file-handoff",
     "storekit", "foundation-models", "background-assets",
@@ -21,7 +21,7 @@ def load(root):
     if not isinstance(value, dict) or value.get("schemaVersion") != 1:
         raise ValueError("engineering.json requires schemaVersion 1")
     allowed = {"schemaVersion", "name", "toolkit", "capabilities", "lanes", "exceptions",
-               "integration", "hostedRepositories", "voiceover", "repository", "spelling"}
+               "integration", "hostedRepositories", "voiceover", "repository", "spelling", "simulatorPool"}
     if set(value) - allowed:
         raise ValueError(f"Unknown configuration keys: {sorted(set(value) - allowed)}")
     if not isinstance(value.get("name"), str) or not value["name"]:
@@ -43,12 +43,18 @@ def load(root):
     capabilities = value.get("capabilities", [])
     if not isinstance(capabilities, list) or any(not isinstance(c, str) for c in capabilities):
         raise ValueError("capabilities must be a list of names")
+    if "simulator-disposable" in capabilities:
+        raise ValueError("simulator-disposable is retired: use simulator-pool and name the pool in simulatorPool "
+                         "(guides/simulator-testing.md, Reserved simulator pool)")
     if set(capabilities) - CAPABILITIES:
         raise ValueError(f"Unknown capabilities: {sorted(set(capabilities) - CAPABILITIES)}")
     if len(set(capabilities)) != len(capabilities):
         raise ValueError("Duplicate capability")
-    if {"simulator-disposable", "simulator-pool"} <= set(capabilities):
-        raise ValueError("Choose one simulator ownership policy")
+    pool = value.get("simulatorPool")
+    if ("simulator-pool" in capabilities) != (pool is not None):
+        raise ValueError("The simulator-pool capability and simulatorPool, the name its members start with, go together")
+    if pool is not None and (not isinstance(pool, str) or not pool.strip() or pool != pool.strip()):
+        raise ValueError("simulatorPool must be a nonempty name, such as the project's")
     if not isinstance(value.get("lanes", {}), dict):
         raise ValueError("lanes must be an object")
     lanes = value.get("lanes", {})

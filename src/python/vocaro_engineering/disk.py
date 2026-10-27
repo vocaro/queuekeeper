@@ -28,6 +28,8 @@ import sys
 import time
 
 from . import devices as device_record
+from .config import TOOLKIT_ROOT
+from .simulators import pool as simulator_pool
 
 CANDIDATE, OWNER, KEPT = "candidate", "owner", "kept"
 STATUS_ORDER = {CANDIDATE: 0, OWNER: 1, KEPT: 2}
@@ -197,6 +199,7 @@ class Host:
     temp_roots: list = field(default_factory=list)
     session_scratch: Path = None
     map_roots: list = field(default_factory=list)
+    pools: frozenset = frozenset()
     run: object = subprocess.run
 
     @classmethod
@@ -211,7 +214,7 @@ class Host:
                    runtimes=_json(run, "runtime", "list", "-j"), default_devices=default_devices(devices),
                    device_directory=devices, records=device_records(), temp_roots=temp,
                    session_scratch=Path(f"/private/tmp/claude-{os.getuid()}"),
-                   map_roots=expanded_roots(home, user_temp), run=run)
+                   map_roots=expanded_roots(home, user_temp), pools=pools(development or home / "Development"), run=run)
 
 
 def _json(run, *arguments):
@@ -223,6 +226,13 @@ def _json(run, *arguments):
         return json.loads(result.stdout) if result.returncode == 0 else None
     except ValueError:
         return None
+
+
+def pools(development):
+    """The simulator pools the projects' main checkouts name in engineering.json."""
+    if not Path(development).is_dir(): return frozenset()
+    return frozenset(filter(None, (simulator_pool.configured(path) for path in Path(development).iterdir()
+                                   if (path / ".git").is_dir())))
 
 
 def default_devices(directory):
@@ -460,10 +470,37 @@ def last_used(device, directory, now):
     return now - last_activity(directory) if directory and os.path.isdir(directory) else None
 
 
+def prune_command(pool, udid):
+    """Pruning reserves the member, checks it again and records the deletion (guides/simulator-testing.md)."""
+    return ["python3", str(TOOLKIT_ROOT / "bin/eng"), "simulator-pool", "--pool", pool, "--owner", "eng disk",
+            "prune", udid]
+
+
+def pool_members(host):
+    """Each pool member's UDID: its pool, the member and the pool's members."""
+    found = {}
+    for pool in host.pools:
+        every = simulator_pool.members(pool, host.simulators)
+        found.update({member.udid: (pool, member, every) for member in every})
+    return found
+
+
+def record_entries(host):
+    """Every readable record's entries, as one record for the pruning rule."""
+    entries = {}
+    for text in host.records.values():
+        try: value = json.loads(text) if text else {}
+        except ValueError: continue
+        if isinstance(value, dict) and isinstance(value.get("devices"), dict): entries.update(value["devices"])
+    return {"devices": entries}
+
+
 def simulators(host, usage, sizes):
     if host.simulators is None:
         return [Item("simulator", "simctl", KEPT, "`xcrun simctl list -j` failed, so no simulator can be shown unowned")]
     unreadable = [path for path, text in host.records.items() if text is None]
+    pooled, entries = pool_members(host), record_entries(host)
+    now = datetime.datetime.fromtimestamp(host.now, datetime.timezone.utc)
     items, listed = [], set()
     for runtime, devices in host.simulators.get("devices", {}).items():
         for device in devices:
@@ -485,9 +522,16 @@ def simulators(host, usage, sizes):
             process = usage.naming(udid)
             if device.get("state") != "Shutdown": items.append(item(KEPT, f"{device.get('state')}: a session is using it"))
             elif unreadable: items.append(item(KEPT, "a device record could not be read: " + ", ".join(unreadable)))
-            elif record: items.append(item(KEPT, f"named in the device record {record}"))
             elif use: items.append(item(KEPT, "in use: " + described(use)))
             elif process: items.append(item(KEPT, f"named in the arguments of PID {process.pid}"))
+            # The pruning rule reads the record's entries for a member itself.
+            elif udid in pooled:
+                pool, member, every = pooled[udid]
+                allowed, why = simulator_pool.prunable(member, every, simulator_pool.entries_for(member, entries), now)
+                items.append(item(CANDIDATE, f"a member of the {pool} pool eligible for pruning: {why}",
+                                  prune_command(pool, udid)) if allowed else
+                             item(KEPT, f"a member of the {pool} pool, kept: {why}"))
+            elif record: items.append(item(KEPT, f"named in the device record {record}"))
             elif disposable_name(name):
                 if idle is not None and idle >= host.min_idle:
                     gone = "" if device.get("isAvailable", True) else "; unavailable, its runtime is gone"
@@ -501,7 +545,7 @@ def simulators(host, usage, sizes):
             elif udid in host.default_devices:
                 items.append(item(OWNER, "Xcode's default device for its runtime; any session may use it", command))
             else:
-                items.append(item(KEPT, "a named device: a project's reserved pool member or one made by hand; "
+                items.append(item(KEPT, "a named device in no project's pool, perhaps made by hand; "
                                         "only its owner removes it"))
     if host.device_directory and host.device_directory.is_dir():
         for directory in host.device_directory.iterdir():

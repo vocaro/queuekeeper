@@ -168,6 +168,33 @@ class SimulatorTests(Fixture):
         self.assertEqual(items[unavailable_pool["udid"]].status, disk.OWNER)
         self.assertEqual(items[default["udid"]].status, disk.OWNER)
 
+    def test_a_pool_member_is_a_candidate_only_under_the_pruning_rule(self):
+        stamp = lambda days: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(LATER - days * 86400))
+        lowest, stale, recent, released, booted = (device("Project Duo 1", used=stamp(40)),
+            device("Project Duo 2", used=stamp(20)), device("Project Duo 3", used=stamp(3)),
+            device("Project Duo 4", used=stamp(20)), device("Project Duo 5", state="Booted", used=stamp(20)))
+        other = device("Other Duo 2", used=stamp(40))
+        record = json.dumps({"devices": {"Project Duo 4": {"device": released["udid"], "state": "released",
+                                                           "releasedAt": stamp(2)}}})
+        items = self.simulators([lowest, stale, recent, released, booted, other], pools=frozenset({"Project"}),
+                                records={"/record.json": record})
+        self.assertEqual(items[stale["udid"]].status, disk.CANDIDATE, items[stale["udid"]].reason)
+        self.assertEqual(items[stale["udid"]].command[-6:],
+                         ["simulator-pool", "--pool", "Project", "--owner", "eng disk", "prune", stale["udid"]][-6:])
+        self.assertIn("eligible for pruning", items[stale["udid"]].reason)
+        for member, reason in ((lowest, "lowest-numbered"), (recent, "within 14 days"), (released, "was released"),
+                               (booted, "Booted")):
+            self.assertEqual(items[member["udid"]].status, disk.KEPT, reason)
+            self.assertIn(reason, items[member["udid"]].reason)
+        # A device in no configured pool is the owner's, however old.
+        self.assertEqual(items[other["udid"]].status, disk.KEPT)
+        self.assertIn("in no project's pool", items[other["udid"]].reason)
+
+    def test_the_pools_are_those_the_main_checkouts_name(self):
+        (self.main / "engineering.json").write_text(json.dumps({"simulatorPool": "Project"}))
+        (self.development / "Unconfigured").mkdir()
+        self.assertEqual(disk.pools(self.development), frozenset({"Project"}))
+
     def test_booted_recent_reserved_or_referenced_disposable_devices_are_kept(self):
         booted = device(f"P-{uuid.uuid4()}", state="Booted")
         recent = device(f"P-{uuid.uuid4()}", used=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(LATER - 600)))

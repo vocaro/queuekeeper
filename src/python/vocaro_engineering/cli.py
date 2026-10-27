@@ -13,7 +13,7 @@ import sys
 from . import __version__, devices, disk, docs, evidence, parallel, processes, remote, resources, spelling
 from .config import TOOLKIT_ROOT, CAPABILITIES, DEFAULT_TOOLKIT, FORMER_TOOLKIT, load, source_identity
 from .resources import BUSY, FREE_WAIT
-from .simulators import matrix
+from .simulators import matrix, pool as simulator_pool
 
 
 def named_checkout(toolkit):
@@ -66,9 +66,12 @@ def initialize(root, args):
     config_path = root / "engineering.json"
     if config_path.exists(): load(root)
     if not config_path.exists():
-        config_path.write_text(json.dumps({"schemaVersion": 1, "name": args.name or root.name,
+        name = args.name or root.name
+        # A pool's members are named after it, as `NAME iPhone 17 Pro 1`.
+        pool = {"simulatorPool": name} if "simulator-pool" in args.capability else {}
+        config_path.write_text(json.dumps({"schemaVersion": 1, "name": name,
             "toolkit": {"path": os.path.relpath(named_checkout(TOOLKIT_ROOT), root)}, "integration": "direct-main",
-            "capabilities": args.capability, "lanes": {}, "exceptions": []}, indent=2) + "\n")
+            "capabilities": args.capability, **pool, "lanes": {}, "exceptions": []}, indent=2) + "\n")
     ignored = root / ".gitignore"
     if not ignored.exists():
         ignored.write_text(".build/\n__pycache__/\n*.pyc\n")
@@ -208,8 +211,11 @@ def main(argv=None):
         "Mac: the reference a failure seen only side by side is checked against")
     run.add_argument("lane")
     # Listed for help only: main passes everything after these to their own parsers.
-    commands.add_parser("simulator-tests", help="build a scheme's tests once and run them on several disposable "
-        "simulators side by side: eng simulator-tests --scheme S --runtime R --device T --device T; -h for the rest")
+    commands.add_parser("simulator-tests", help="build a scheme's tests once and run them on several members of the "
+        "project's simulator pool side by side: eng simulator-tests --scheme S --runtime R --device T --device T; "
+        "-h for the rest")
+    commands.add_parser("simulator-pool", help="list, take, release or prune members of the project's simulator "
+        "pool under device-record reservations: eng simulator-pool list|take|release|prune; -h for the rest")
     commands.add_parser("unittest", help="run a unittest suite's modules in processes of their own, side by side: "
         "eng unittest [-s START] [-p PATTERN] [-j JOBS] [-v]; eng unittest -h for the rest")
     admission =commands.add_parser("admit", help="run any other heavy command (a build, swift test, xcodebuild "
@@ -267,7 +273,9 @@ def main(argv=None):
     # unittest's options are its own runner's, which this parser would refuse. It reads no project.
     first = 2 if argv[:1] == ["--project"] else 1 if argv[:1] and argv[0].startswith("--project=") else 0
     if argv[first:first + 1] == ["unittest"]: return parallel.unittest_main(argv[first + 1:])
-    if argv[first:first + 1] == ["simulator-tests"]: return matrix.main(argv[first + 1:])
+    project = argv[1] if first == 2 else argv[0].split("=", 1)[1] if first == 1 else None
+    if argv[first:first + 1] == ["simulator-tests"]: return matrix.main(argv[first + 1:], project)
+    if argv[first:first + 1] == ["simulator-pool"]: return simulator_pool.main(argv[first + 1:], project)
     split = argv.index("--") if "--" in argv else len(argv)
     args = parser.parse_args(argv[:split])
     args.passed = argv[split + 1:] if split < len(argv) else None
@@ -289,7 +297,7 @@ def main(argv=None):
                 required |= {"xcrun", "xcodebuild"}
             missing = sorted(name for name in required if not shutil.which(name))
             warnings = []
-            heavy = sorted({"simulator-disposable", "simulator-pool", "measurement", "voiceover"}
+            heavy = sorted({"simulator-pool", "measurement", "voiceover"}
                            & set(config.get("capabilities", [])))
             if heavy and not any(lane.get("resource") in {"heavy", "exclusive"} for lane in config.get("lanes", {}).values()):
                 warnings.append(f"{', '.join(heavy)} work is heavy, but no lane is heavy or exclusive: add heavy lanes "

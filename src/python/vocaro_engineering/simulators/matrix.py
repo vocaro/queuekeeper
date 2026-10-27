@@ -1,10 +1,12 @@
-"""Build a scheme's tests once and run them on several disposable simulators side by side.
+"""Build a scheme's tests once and run them on several members of the project's simulator pool side by side.
 
     eng simulator-tests --scheme SCHEME --runtime iOS-27-0 --device iPhone-17-Pro \\
-        --device iPad-Air-13-inch-M4 [--build-jobs 4] [-- TEST-ARGUMENTS such as -only-testing:T/C]
+        --device iPad-Air-13-inch-M4 [--pool NAME] [--build-jobs 4] [-- TEST-ARGUMENTS such as -only-testing:T/C]
 
-Every device is created for this run, booted while the tests build, and shut down and deleted
-by its UDID however the run ends (guides/simulator-testing.md, Disposable simulators). The
+Each device is a member of the pool, `POOL LABEL N`: a free one of its kind is reserved in the
+host's device record and erased, or, when none is free, the next is created and kept in the pool,
+after members unused for 14 days are pruned (guides/simulator-testing.md, Reserved simulator pool).
+Every device boots while the tests build, and is shut down and released however the run ends. The
 build is one `xcodebuild build-for-testing` for the first device's destination; each device
 then runs `xcodebuild test-without-building` on the same .xctestrun, with its own log and
 result bundle. Each device's outcome stands apart: a boot that reached its limit leaves that
@@ -17,7 +19,6 @@ from concurrent.futures import ThreadPoolExecutor
 import os
 from pathlib import Path
 import shutil
-import subprocess
 import sys
 import threading
 import time
@@ -25,16 +26,11 @@ import uuid
 
 from .. import evidence, processes
 from ..parallel import TAIL, combined, outcome
-from . import lifecycle
+from . import pool as simulator_pool
+from .pool import DEVICE_TYPE, RUNTIME, qualified
 
-DEVICE_TYPE = "com.apple.CoreSimulator.SimDeviceType."
-RUNTIME = "com.apple.CoreSimulator.SimRuntime."
 # Seconds simctl boot itself may take; bootstatus has --boot-timeout.
 BOOT_COMMAND = 120
-
-
-def qualified(prefix, name):
-    return name if name.startswith("com.apple.") else prefix + name
 
 
 def parse(argv):
@@ -58,7 +54,8 @@ def parse(argv):
                         "and left unmeasured, a backstop for a hang")
     parser.add_argument("--derived-data", type=Path, default=Path(".build/simulator-tests/derived"))
     parser.add_argument("--logs", type=Path, default=Path(".build/simulator-tests/logs"))
-    parser.add_argument("--name", help="the start of each simulator's unique name (default: the directory's name)")
+    parser.add_argument("--pool", help="the simulator pool, the start of every member's name (default: the "
+                        "project's simulatorPool in engineering.json)")
     parser.add_argument("--setting", action="append", default=[], metavar="NAME=VALUE",
                         help="a build setting for the build, after CODE_SIGNING_ALLOWED=NO")
     args, unknown = parser.parse_known_args(argv[:split])
@@ -173,38 +170,49 @@ class Run:
         self.test(kind, device, xctestrun)
 
 
-def main(argv):
+@contextlib.contextmanager
+def taken(pool, run, kind, runtime, purpose):
+    """A member of the kind for this run, shut down and released however the run ends."""
+    lease = pool.take(qualified(DEVICE_TYPE, kind), qualified(RUNTIME, runtime), purpose=purpose)
+    try:
+        yield lease
+    finally:
+        status = run.results.get(kind)
+        pool.release(lease, outcome=f"eng simulator-tests: {outcome(status) if status is not None else 'stopped'}")
+
+
+def main(argv, project=None):
     args = parse(argv)
+    # The launcher names its project; a lane runs in its project's root, which may name the pool instead.
+    name = args.pool or simulator_pool.configured(project or Path.cwd()) or simulator_pool.configured(Path.cwd())
     if args.directory is not None: os.chdir(args.directory)
-    args.name = args.name or Path.cwd().name
+    if not name:
+        print("eng simulator-tests: name the simulator pool with --pool, or in engineering.json's simulatorPool",
+              file=sys.stderr)
+        return 2
     run = Run(args)
     run.logs.mkdir(parents=True, exist_ok=True)
     kinds = args.device
     started = time.monotonic()
-    tag = f"{args.name}-{uuid.uuid4().hex[:8]}"
+    pool = simulator_pool.Pool(name, owner=simulator_pool.default_owner() or f"simulator-tests-{uuid.uuid4()}",
+                               log=run.say)
     try:
         with processes.forwarding_signals(), contextlib.ExitStack() as stack:
             devices = []
             for kind in kinds:
-                device = stack.enter_context(lifecycle.disposable(qualified(DEVICE_TYPE, kind),
-                                                                  qualified(RUNTIME, args.runtime), prefix=f"{tag}-{kind}"))
-                run.say(f"CREATED {kind}: {device.udid}")
+                device = stack.enter_context(taken(pool, run, kind, args.runtime, f"eng simulator-tests {args.scheme}"))
                 devices.append((kind, device))
             # The build runs while every device boots; tests wait for both.
             with ThreadPoolExecutor(max_workers=1) as builder, \
-                    ThreadPoolExecutor(max_workers=args.jobs or len(kinds)) as pool:
+                    ThreadPoolExecutor(max_workers=args.jobs or len(kinds)) as testers:
                 built = builder.submit(run.build, f"platform=iOS Simulator,id={devices[0][1].udid}")
-                futures = [pool.submit(run.device, kind, device, built) for kind, device in devices]
+                futures = [testers.submit(run.device, kind, device, built) for kind, device in devices]
             errors = [future.exception() for future in [built, *futures] if future.exception() is not None]
             if errors:
                 uncertain = [error for error in errors if not isinstance(error, processes.Interrupted)]
                 raise uncertain[0] if uncertain else errors[0]
-    except processes.NotStarted as error:
+    except (OSError, ValueError, RuntimeError, TimeoutError) as error:
         print(f"eng simulator-tests: {error}", file=sys.stderr)
-        return 1
-    except subprocess.CalledProcessError as error:
-        print(f"eng simulator-tests: {' '.join(error.cmd)} failed with status {error.returncode}: "
-              f"{(error.output or '').strip()}", file=sys.stderr)
         return 1
     status = combined([run.results.get(kind, 1) for kind in kinds])
     print(f"Simulator tests (wall-clock {round(time.monotonic() - started)}s, "
