@@ -6,9 +6,10 @@ with uncommitted changes goes as a snapshot commit on HEAD, which no branch hold
 sent along and run there by the host's own Python, checks them out in a persistent checkout,
 so builds stay warm, and runs `eng run` or `eng admit` under the build host's own heavy-work
 admission: that host's queue, not a private pool beside this one. The log and the result come
-back to this checkout's .build/engineering/remote. A whole lane's result at a commit is also kept
-by commit in the repository's Git directory, where every worktree of the repository can find it;
-a snapshot's is not.
+back to this checkout's .build/engineering/remote, and a lane group's lanes' logs and receipts
+with them once the run there ends. A whole lane's result at a commit is also kept by commit in
+the repository's Git directory, where every worktree of the repository can find it; a
+snapshot's is not.
 
 `eng run` sends a lane marked buildHost here first: when the build host declines it before
 anything runs, because its queue or every checkout is busy, the lane runs on this Mac instead.
@@ -18,6 +19,8 @@ here. `eng doctor` compares the two Macs, and `eng remote setup --runtimes` give
 simulator runtimes. Before it sends work, and in `eng doctor`, it lists the processes there that
 earlier runs left running, which nothing stops.
 """
+import base64
+import binascii
 import contextlib
 import fcntl
 import json
@@ -269,14 +272,24 @@ def describe(identity):
             f"({identity.get('build')}), {', '.join(xcode)})")
 
 
+def group_files(config, lane):
+    """What comes back from a lane group's run beside its own output and receipt: each of its lanes'
+    log and receipt, as paths relative to the group's results, lanes/LANE.log and lanes/LANE.json.
+    None for a lane that is no group."""
+    members = config.get("lanes", {}).get(lane, {}).get("parallel") if lane is not None else None
+    return [f"lanes/{member}{suffix}" for member in members for suffix in (".log", ".json")] if members else None
+
+
 def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, decline=False):
     """Run eng's work on the build host and return its exit status, with the log and receipt kept here.
 
     work is the build host's eng arguments: run [--expect N] LANE [-- ARGUMENTS] or
     admit [--exclusive | --model] -- COMMAND. It runs at HEAD, or at a snapshot commit of the
-    working tree when that has uncommitted changes. With decline, the build host refuses work it
-    cannot start now rather than waiting for it, and Unavailable says why. Misconfigured says what
-    of the build host's configuration kept the work from running there, and what fixing it takes.
+    working tree when that has uncommitted changes. A lane group's lanes' logs and receipts come
+    back under the results' lanes/ once the run there ends, however it ended (group_files). With
+    decline, the build host refuses work it cannot start now rather than waiting for it, and
+    Unavailable says why. Misconfigured says what of the build host's configuration kept the work
+    from running there, and what fixing it takes.
     """
     toolkit = Path(TOOLKIT_ROOT).resolve()
     try:
@@ -298,12 +311,14 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     developer = developer_directory()
     local = build_host.identity(developer)
     name = lane if lane is not None else "admit"
+    returns = group_files(config, lane)
     plan = {"root": ROOT, "checkouts": CHECKOUTS, "project": project, "toolkit": kit, "work": work,
             "decline": decline, "busy": BUSY,
             "provision": "provision" in config.get("lanes", {}) and lane != "provision",
             "developerDir": developer, "xcode": local["xcode"],
             "log": f".build/engineering/{lane}/run.log" if lane is not None else None,
-            "receipt": f".build/engineering/{name}/source.json"}
+            "receipt": f".build/engineering/{name}/source.json",
+            "returns": {"directory": f".build/engineering/{lane}", "paths": returns} if returns else None}
 
     repositories = [f"{ROOT}/{part['repository']}" for part in (project, kit) if part is not None]
     prepare = " && ".join([f"mkdir -p {shlex.quote(ROOT + '/repositories')}", *(
@@ -339,6 +354,8 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     lines, result, stopping = queue.Queue(), None, None
     # Whether build_host.py started there, and the last line of anything else, such as the shell's.
     framed, stray = False, None
+    # The files asked back that have arrived, in order, and the one arriving now.
+    returned, receiving = [], None
     with (staging / "run.log").open("wb") as log, (staging / "output.log").open("wb") as output:
         channel = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                    env=environment())
@@ -363,17 +380,38 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
                 continue
             if line is None: break
             kind, data = line[:2], line[2:]
-            framed = framed or kind in (b"L ", b"R ", b"O ")
+            framed = framed or kind in (b"L ", b"R ", b"O ", b"F ", b"D ")
             if kind == b"L ":
                 log.write(data)
             elif kind == b"R ":
                 result = json.loads(data)
+            elif kind == b"F ":
+                if receiving is not None: receiving.close()
+                receiving = None
+                try: path = json.loads(data)["path"]
+                except (ValueError, TypeError, KeyError): path = None
+                # Only a file the plan asked back, by its exact path, and each once.
+                if isinstance(path, str) and path in (returns or []) and path not in returned:
+                    (staging / path).parent.mkdir(parents=True, exist_ok=True)
+                    receiving = (staging / path).open("wb")
+                    returned.append(path)
+            elif kind == b"D ":
+                if receiving is not None:
+                    try:
+                        receiving.write(base64.b64decode(data))
+                    except binascii.Error:
+                        receiving.close()
+                        receiving = None
+                        damaged = returned.pop()
+                        (staging / damaged).unlink()
+                        print(f"remote: {damaged} came back damaged and was not kept", file=sys.stderr, flush=True)
             else:
                 data = data if kind == b"O " else line
                 if kind != b"O ": stray = last_line(line.decode(errors="replace")) or stray
                 output.write(data)
                 write(sys.stdout, data)
         channel.wait()
+        if receiving is not None: receiving.close()
     if result is None and not framed and stopping is None:
         # build_host.py never started, so nothing ran there.
         shutil.rmtree(staging, ignore_errors=True)
@@ -392,7 +430,8 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     # commit is what ran there: HEAD, or a snapshot of the working tree on it.
     receipt = {"host": host, "commit": commit, "head": head, "snapshot": commit != head,
                "toolkit": kit["commit"] if kit else commit, "lane": lane, "arguments": list(arguments),
-               "expect": expect, "work": work, "local": local, "result": result, "dispatched": started}
+               "expect": expect, "work": work, "local": local, "result": result, "dispatched": started,
+               **({"returned": returned} if returns else {})}
     (results / "source.json").write_text(json.dumps(receipt, indent=2) + "\n")
     # A snapshot's result stays here: no branch holds it, so it is no commit's pass.
     if lane is not None and not arguments and expect is None and commit == head:
@@ -404,6 +443,15 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     remote = result["host"]
     print(f"remote: {name} at {at} on {describe(remote)} in {result.get('checkout')}: "
           f"{'stopped' if result['stopped'] else f'exit {status}'}; results in {results}", file=sys.stderr, flush=True)
+    if returns and result.get("stage") == "work":
+        members = config["lanes"][lane]["parallel"]
+        came = [member for member in members if f"lanes/{member}.log" in returned]
+        if came:
+            print(f"remote: the logs and receipts of {name}'s lanes are in {results / 'lanes'}: {', '.join(came)}",
+                  file=sys.stderr, flush=True)
+        if len(came) < len(members):
+            print(f"remote: no log came back for {', '.join(member for member in members if member not in came)}",
+                  file=sys.stderr, flush=True)
     if (remote.get("macOS"), remote.get("build")) != (local.get("macOS"), local.get("build")):
         print(f"remote: the build host runs macOS {remote.get('macOS')} ({remote.get('build')}) and this Mac "
               f"{local.get('macOS')} ({local.get('build')}): the result qualifies the build host's platform",

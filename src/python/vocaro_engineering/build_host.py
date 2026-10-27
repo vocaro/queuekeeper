@@ -4,7 +4,9 @@ It imports nothing from the toolkit, because it runs before the toolkit is check
 and Python 3.9, a Mac's system Python, runs it. It claims a persistent checkout of the project,
 places the dispatched commits, and runs `eng run` or `eng admit` there under the build host's
 own heavy-work admission. Standard output carries framed lines: `O` for output, `L` for the
-lane's log as it grows, and a closing `R` with the result as JSON. Standard input is the
+lane's log as it grows, then, once the work has ended, an `F` naming each file the plan asks back,
+such as a lane group's lanes' logs and receipts, followed by `D` lines of its bytes in base64, and
+a closing `R` with the result as JSON. Standard input is the
 dispatcher's lifeline: its end, which a stop, the dispatcher's death or a dropped connection
 sends, stops the run as a stop signal stops a local one. Given `{"toolchain": DEVELOPER_DIR}`
 instead of a plan, it prints the Mac's Xcodes and simulator runtimes for `eng doctor`; given
@@ -12,6 +14,7 @@ instead of a plan, it prints the Mac's Xcodes and simulator runtimes for `eng do
 standard input, for `eng remote setup --runtimes`; given `{"leftovers": ROOT}`, it lists the
 processes left over from runs there, which `eng remote` prints before it sends work.
 """
+import base64
 import ctypes
 from datetime import datetime
 import fcntl
@@ -34,6 +37,8 @@ REPORT_SECONDS, CLAIM_TIMEOUT = 300, 5400
 DRAIN_SECONDS = 5
 # Bytes of a runtime image read or written at once.
 CHUNK = 8 << 20
+# Bytes of a file sent back in one D line, before base64.
+FILE_CHUNK = 48 << 10
 # The platform a runtime image names when simctl gives no runtime bundle to name it by.
 PLATFORMS = {"com.apple.platform.iphonesimulator": "iOS", "com.apple.platform.appletvsimulator": "tvOS",
              "com.apple.platform.watchsimulator": "watchOS", "com.apple.platform.xrsimulator": "visionOS"}
@@ -567,6 +572,18 @@ def follow(path, done):
     if pending: emit(b"L", pending)
 
 
+def send_back(directory, paths):
+    """Send each of these files under directory that exists, whole: an `F` line naming it, then `D`
+    lines of its bytes in base64, so that a file's every byte arrives and each line stays one frame."""
+    for path in paths:
+        try: stream = (directory / path).open("rb")
+        except OSError: continue
+        with stream:
+            emit(b"F", json.dumps({"path": path}).encode())
+            for chunk in iter(lambda: stream.read(FILE_CHUNK), b""):
+                emit(b"D", base64.b64encode(chunk))
+
+
 def step(command, checkout, environment, lock, log):
     """Run one eng command; a stop sends it SIGTERM, which it carries out as a supervised stop."""
     if log is not None: log.unlink(missing_ok=True)
@@ -610,7 +627,7 @@ def main(plan):
               "host": identity(plan.get("developerDir"))}
     # Until the first command starts, a failure is a refusal: nothing ran. The dispatcher may run
     # the work on its own Mac instead only when the refusal is busy.
-    begun = False
+    begun, back = False, None
     try:
         expected, found = plan.get("xcode"), result["host"]["xcode"]
         if expected and found != expected:
@@ -641,6 +658,11 @@ def main(plan):
         steps = [("provision", [*eng, "run", "provision"], checkout / ".build/engineering/provision/run.log")] \
             if plan.get("provision") else []
         steps.append(("work", [*eng, *plan["work"]], checkout / plan["log"] if plan.get("log") else None))
+        returns = plan.get("returns")
+        if returns:
+            back = checkout / returns["directory"], returns["paths"]
+            # The work writes them afresh, so none that an earlier run left goes back as this run's.
+            for path in back[1]: (back[0] / path).unlink(missing_ok=True)
         for stage, command, log in steps:
             if _stop.is_set(): break
             begun = True
@@ -662,6 +684,10 @@ def main(plan):
         result["error" if begun else "refused"] = str(error)
     finally:
         result["finished"] = time.time()
+        # However the work ended, a stop or a failure included, what it wrote that the plan asks back.
+        if back is not None and begun:
+            try: send_back(*back)
+            except OSError as error: say(f"could not send back what the run wrote in {back[0]}: {error}")
         emit(b"R", json.dumps(result).encode())
     return result
 

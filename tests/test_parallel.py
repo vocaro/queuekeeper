@@ -177,6 +177,12 @@ class LaneGroupTests(unittest.TestCase):
         receipt = json.loads((self.root / ".build/engineering/both/source.json").read_text())
         self.assertEqual((receipt["exitStatus"], receipt["jobs"], sorted(receipt["lanes"])), (0, 2, ["left", "right"]))
         self.assertIn("Ran 1 test", (self.root / ".build/engineering/both/lanes/left.log").read_text())
+        # Each lane's receipt sits beside its log, with the tests its log counts.
+        own = json.loads((self.root / ".build/engineering/both/lanes/left.json").read_text())
+        self.assertEqual({key: own[key] for key in ("lane", "status", "outcome", "executedTests", "skippedTests", "log")},
+                         {"lane": "left", "status": 0, "outcome": "passed", "executedTests": 1, "skippedTests": 0,
+                          "log": "left.log"})
+        self.assertEqual(receipt["lanes"]["right"]["executedTests"], 1)
         # The negative control: in turn, the first lane cannot meet the second.
         self.configure({"left": self.meet("late", "never", 1), "right": self.meet("never", "late", 1),
                         "both": {"parallel": ["left", "right"]}})
@@ -203,8 +209,19 @@ class LaneGroupTests(unittest.TestCase):
                 # Every lane runs to its own end, whatever the others did.
                 self.assertEqual(sorted(receipt["lanes"]), sorted(members))
                 self.assertEqual(receipt["outcome"], {0: "passed", 1: "failed", 3: "unmeasured"}[expected])
+                for member in members:
+                    own = json.loads((self.root / f".build/engineering/group/lanes/{member}.json").read_text())
+                    self.assertEqual(own["outcome"], {"pass": "passed", "fail": "failed", "short": "failed",
+                                                      "unmeasured": "unmeasured", "slow": "unmeasured"}[member])
         self.assertIn("Expected at least 2 executed tests; observed 1", output)
         self.assertIn("FAIL short", output)
+        # A lane too short for its minimum, and one its timeout ended, say why beside their counts.
+        short = json.loads((self.root / ".build/engineering/group/lanes/short.json").read_text())
+        self.assertEqual((short["status"], short["executedTests"], short["error"]),
+                         (2, 1, "Expected at least 2 executed tests; observed 1"))
+        slow = json.loads((self.root / ".build/engineering/group/lanes/slow.json").read_text())
+        self.assertEqual((slow["status"], slow["executedTests"]), (3, None))
+        self.assertIn("timed out after 1s", slow["error"])
 
     def test_a_group_takes_no_arguments_and_serial_needs_a_group(self):
         self.configure({"one": {"command": [sys.executable, "-c", "pass"]}, "group": {"parallel": ["one"]}})

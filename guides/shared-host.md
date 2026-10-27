@@ -319,10 +319,13 @@ the build host only when `VOCARO_BUILD_HOST` names one or `~/.ssh/config` define
 `build-host` alias, which `ssh -G` reports; `VOCARO_BUILD_HOST=none` keeps every lane here. A
 lane's results come back to `.build/engineering/remote/LANE/` when it ran on the build host and
 stay in `.build/engineering/LANE/` when it ran here; the last lines `eng run` prints name them.
-A lane group's own output, with each lane's status and time, comes back with its receipt, but
-each lane's log stays in the build host's checkout, under `.build/engineering/GROUP/lanes/`,
-until a later run there replaces it: read a lane's counts there, or run the lane alone, whose
-log comes back.
+A lane group's results hold each of its lanes' log and receipt as well, under `lanes/` as on the
+Mac that ran it, so here `.build/engineering/remote/GROUP/lanes/LANE.log` and `LANE.json`. They
+come back once the run there ends, whether the lane passed or failed, its timeout ended it or a
+stop did. A lane's receipt gives its status, outcome, seconds and the executed and skipped tests
+its log counts, so its counts read here; a lane a stop ended has the outcome `stopped` and no
+status. A run whose connection is lost before it ends brings none back and is unmeasured; they
+stay in the build host's checkout until a later run there replaces them.
 
 The build host runs a lane in its own login shell's environment, not this Mac's, so a variable
 set for `eng run` here does not reach it. On 2026-10-27 a variable set for `eng remote admit`
@@ -382,10 +385,10 @@ a gate that takes its member with `vocaro_engineering.simulators.pool.member()`.
 `eng simulator-pool list` and `eng disk` show the pool of the Mac they run on; a run on the build
 host prunes that host's members of the kind it takes.
 
-Only the lane's log and receipt come back. `eng simulator-tests` leaves each device's log and
-result bundle in the build host's checkout, where the lane's log names them, and puts a failing
-device's last 40 lines in the lane's log. A session that needs a result bundle or a device log
-here runs the lane with `--here`.
+Only logs and receipts come back: the lane's, or a group's and each of its lanes'.
+`eng simulator-tests` leaves each device's log and result bundle in the build host's checkout,
+where the lane's log names them, and puts a failing device's last 40 lines in the lane's log. A
+session that needs a result bundle or a device log here runs the lane with `--here`.
 
 Measured on 2026-10-27 with `eng remote run` from clean checkouts, against the same lane at the
 same commit on this Mac
@@ -443,7 +446,10 @@ over. Once it is read, remove it with
 
 Output comes back as it is written. The lane's log, the command's output and a receipt land in
 `.build/engineering/remote/LANE/` (`remote/admit/` for a command), and the exit status is the
-build host's. The receipt names the build host's model, macOS and Xcode beside this Mac's. The
+build host's. A lane group's lanes' logs and receipts follow once the run there ends, a stopped
+run's included, into `lanes/` there, and the receipt's `returned` lists those that came. Before
+the run, the build host removes those its checkout holds from an earlier run, so none comes back
+as this run's. The receipt names the build host's model, macOS and Xcode beside this Mac's. The
 build host must have the same Xcode build at this Mac's developer directory, or the run is
 refused. A different macOS is reported but refuses nothing: a whole lane's pass there counts
 for a push from this Mac, while as a qualification claim it names the build host's platform. A

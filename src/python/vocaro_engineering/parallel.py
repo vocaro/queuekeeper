@@ -2,11 +2,12 @@
 of their own. guides/parallel-tests.md says when each is safe and how to bound it.
 
 A lane group runs inside the one admission its own lane took, as nested work does, so its lanes
-take no slot of their own. Each lane writes its own log and keeps its own outcome; the group
-fails when any lane failed, and is otherwise unmeasured when any lane was.
+take no slot of their own. Each lane writes its own log and receipt and keeps its own outcome; the
+group fails when any lane failed, and is otherwise unmeasured when any lane was.
 """
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+import json
 from pathlib import Path
 import re
 import subprocess
@@ -36,19 +37,35 @@ def combined(statuses):
 
 
 def lanes(root, members, directory, jobs, judge, receipt, on_stop=None):
-    """Run members, (name, lane) pairs, jobs at a time, each with its log at directory/NAME.log,
-    and return the combined status. judge(lane, status, log) is a lane's status from its command's
-    and its log, raising ValueError for a run that executed too few tests.
+    """Run members, (name, lane) pairs, jobs at a time, each with its log at directory/NAME.log and
+    its receipt at directory/NAME.json, and return the combined status. judge(lane, status, log) is
+    a lane's status from its command's and its log, raising ValueError for a run that executed too
+    few tests.
 
     Every lane runs to its own end, however the others end. A stop reaches every running lane and
     starts none of the rest; once all have ended the stop is raised, or the uncertainty of a lane
-    whose processes were not seen to end, which keeps the admission's guard.
+    whose processes were not seen to end, which keeps the admission's guard. A lane that a stop or
+    that uncertainty ended has its receipt too, with no status.
     """
     directory.mkdir(parents=True, exist_ok=True)
     results, lock, started = {}, threading.Lock(), time.monotonic()
 
     def say(*lines):
         with lock: print(*lines, sep="\n", flush=True)
+
+    def conclude(name, lane, log, began, status, verdict, detail):
+        """Record a lane's end in the group's receipt and in its own, beside its log, with the tests
+        its log counts, so that its counts read from its files wherever they are copied."""
+        seconds = round(time.monotonic() - began)
+        found = evidence.counted(log.read_text(errors="replace")) if log.exists() else None
+        result = {"status": status, "outcome": verdict, "seconds": seconds, "log": str(log),
+                  "executedTests": None if found is None else found[0] - found[1],
+                  "skippedTests": None if found is None else found[1], **({"error": detail} if detail else {})}
+        results[name] = result
+        # The log's name, not its path: the receipt is read beside it, on another Mac too.
+        (directory / f"{name}.json").write_text(json.dumps(
+            {"lane": name, "command": lane["command"], **result, "log": log.name}, indent=2) + "\n")
+        return seconds
 
     def one(name, lane):
         log = directory / f"{name}.log"
@@ -65,10 +82,17 @@ def lanes(root, members, directory, jobs, judge, receipt, on_stop=None):
             status, detail = 2, str(error)
         except ValueError as error:
             status, detail = 2, str(error)
+        except BaseException as error:
+            # A stop, or processes not seen to end, leaves the lane with no status of its own.
+            stopped = isinstance(error, processes.Interrupted)
+            seconds = conclude(name, lane, log, began, None, "stopped" if stopped else "failed-or-interrupted",
+                               str(error))
+            say(f"{'STOPPED' if stopped else 'UNCERTAIN'} {name} ({seconds}s): {log}", f"    {error}")
+            raise
         else:
             detail = None
-        seconds = round(time.monotonic() - began)
-        results[name] = {"status": status, "seconds": seconds, "log": str(log)}
+        verdict = "passed" if status == 0 else "unmeasured" if status == evidence.UNMEASURED else "failed"
+        seconds = conclude(name, lane, log, began, status, verdict, detail)
         lines = [f"{outcome(status)} {name} ({seconds}s, status {status}): {log}"]
         if detail: lines.append(f"    {detail}")
         if outcome(status) != "PASS":

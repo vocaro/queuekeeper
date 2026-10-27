@@ -16,7 +16,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
-from vocaro_engineering import build_host, cli, config, processes, remote, resources
+from vocaro_engineering import build_host, cli, config, evidence, processes, remote, resources
 
 # Stands in for ssh: the build host is a home directory on this Mac. Like sshd, it runs the
 # command in that home through a shell, and git's own ssh transport reaches it the same way.
@@ -45,6 +45,10 @@ FAKE_SHELL = """#!/bin/sh
 [ "$1" = -l ] && shift
 exec /bin/sh "$@"
 """
+# A lane that says it has started, then puts its PID in .build/NAME.pid, whole, and waits to be stopped.
+NAP = ("import os, pathlib, sys, time; name = sys.argv[1]; print(name, 'started', flush=True); "
+       "partial = pathlib.Path('.build', name + '.partial'); partial.write_text(str(os.getpid())); "
+       "partial.rename(pathlib.Path('.build', name + '.pid')); time.sleep(300)")
 
 
 def git(directory, *arguments):
@@ -95,6 +99,18 @@ class RemoteTests(unittest.TestCase):
             "failing": {"command": [python, "-c", "print('Ran 2 tests'); raise SystemExit(5)"],
                         "resource": "heavy", "minimumTests": 2, "buildHost": True},
             "build": {"command": [python, "-c", "print('Ran 1 tests')"], "resource": "heavy"},
+            # Lane groups and their lanes: right's count names a skip, overdue outlasts its timeout,
+            # and napper and dozer say they have started, then wait to be stopped.
+            "left": {"command": [python, "-c", "print('Ran 2 tests')"], "resource": "heavy", "minimumTests": 2},
+            "right": {"command": [python, "-c", "print('Ran 3 tests\\n\\nOK (skipped=1)')"], "resource": "heavy"},
+            "broken": {"command": [python, "-c", "print('Ran 1 tests'); raise SystemExit(5)"], "resource": "heavy"},
+            "overdue": {"command": [python, "-c", "import time; print('waiting', flush=True); time.sleep(300)"],
+                        "timeout": 1},
+            "napper": {"command": [python, "-c", NAP, "napper"]},
+            "dozer": {"command": [python, "-c", NAP, "dozer"]},
+            "pair": {"parallel": ["left", "right"], "resource": "heavy", "buildHost": True},
+            "mixed": {"parallel": ["left", "broken", "overdue"], "resource": "heavy", "buildHost": True},
+            "stalled": {"parallel": ["napper", "dozer"], "resource": "heavy", "buildHost": True},
             # Asks for a credential only through the store helper, never this Mac's keychain.
             "helpers": {"command": [python, "-c", "import os, subprocess; "
                 "env = {**os.environ, 'GIT_TERMINAL_PROMPT': '0'}; "
@@ -346,6 +362,137 @@ class RemoteTests(unittest.TestCase):
                       (self.project / ".build/engineering/remote/gate/run.log").read_text())
         self.assertFalse((self.project / ".build/engineering/gate").exists())
         self.assertEqual(self.eng("remote", "passed", "gate")[0], 0)
+
+    def lane_files(self, group, lane, place=None):
+        """A lane's log and receipt among its group's results: here, or in the directory place names."""
+        lanes = (place or self.project / ".build/engineering/remote" / group) / "lanes"
+        return (lanes / f"{lane}.log").read_text(), json.loads((lanes / f"{lane}.json").read_text())
+
+    def test_a_group_on_the_build_host_brings_each_lanes_log_and_receipt_back(self):
+        results = self.project / ".build/engineering/remote/pair"
+        for operation in (["run"], ["remote", "run"]):
+            with self.subTest(operation):
+                shutil.rmtree(results, ignore_errors=True)
+                status, output, error = self.eng(*operation, "pair")
+                self.assertEqual(status, 0, output + error)
+                # It ran there, and each lane's log and receipt came back beside the group's.
+                self.assertFalse((self.project / ".build/engineering/pair").exists())
+                log, receipt = self.lane_files("pair", "left")
+                self.assertIn("Ran 2 tests", log)
+                self.assertEqual({key: receipt[key] for key in ("lane", "status", "outcome", "executedTests",
+                                                                "skippedTests", "log")},
+                                 {"lane": "left", "status": 0, "outcome": "passed", "executedTests": 2,
+                                  "skippedTests": 0, "log": "left.log"})
+                # A lane's counts read here, from its log and from its receipt.
+                log, receipt = self.lane_files("pair", "right")
+                self.assertEqual((evidence.executed_tests(log), evidence.skipped_tests(log)), (2, 1))
+                self.assertEqual((receipt["executedTests"], receipt["skippedTests"], receipt["outcome"]),
+                                 (2, 1, "passed"))
+                kept = json.loads((results / "source.json").read_text())
+                self.assertEqual(kept["returned"], ["lanes/left.log", "lanes/left.json", "lanes/right.log",
+                                                    "lanes/right.json"])
+                self.assertEqual(kept["result"]["receipt"]["lanes"]["right"]["executedTests"], 2)
+                self.assertIn(f"remote: the logs and receipts of pair's lanes are in "
+                              f"{self.project.resolve()}/.build/engineering/remote/pair/lanes: left, right", error)
+        # The negative control: without the copy-back, the lanes' files stay in the build host's checkout.
+        there = self.checkout(0) / ".build/engineering/pair"
+        shutil.rmtree(results)
+        with patch.object(remote, "group_files", return_value=None):
+            status, output, error = self.eng("remote", "run", "pair")
+        self.assertEqual(status, 0, output + error)
+        self.assertTrue((results / "source.json").exists())
+        self.assertFalse((results / "lanes").exists())
+        self.assertEqual(self.lane_files("pair", "right", there)[1]["executedTests"], 2)
+        # A later run that never reaches its lanes sends back nothing an earlier run left there.
+        settings = json.loads((self.project / "engineering.json").read_text())
+        settings["lanes"]["provision"]["command"] = [sys.executable, "-c", "raise SystemExit(4)"]
+        (self.project / "engineering.json").write_text(json.dumps(settings, indent=2))
+        commit_all(self.project)
+        status, output, error = self.eng("remote", "run", "pair")
+        self.assertEqual(status, 2, output + error)
+        self.assertIn("could not provision its checkout", error)
+        self.assertTrue((results / "run.log").exists())
+        self.assertFalse((results / "lanes").exists())
+        self.assertFalse((there / "lanes/right.log").exists())
+
+    def test_a_failed_lane_and_one_its_timeout_ended_bring_their_logs_and_receipts_back(self):
+        results = self.project / ".build/engineering/remote/mixed"
+        status, output, error = self.eng("run", "mixed")
+        self.assertEqual(status, 1, output + error)
+        self.assertEqual(json.loads((results / "source.json").read_text())["result"]["exitStatus"], 1)
+        log, receipt = self.lane_files("mixed", "broken")
+        self.assertIn("Ran 1 tests", log)
+        self.assertEqual((receipt["status"], receipt["outcome"], receipt["executedTests"]), (5, "failed", 1))
+        log, receipt = self.lane_files("mixed", "overdue")
+        self.assertIn("waiting", log)
+        self.assertEqual((receipt["status"], receipt["outcome"], receipt["executedTests"]), (3, "unmeasured", None))
+        self.assertIn("timed out after 1s", receipt["error"])
+        self.assertEqual(self.lane_files("mixed", "left")[1]["outcome"], "passed")
+        # The negative control: without the copy-back, the lanes' files stay in the build host's checkout.
+        shutil.rmtree(results)
+        with patch.object(remote, "group_files", return_value=None):
+            status, output, error = self.eng("run", "mixed")
+        self.assertEqual(status, 1, output + error)
+        self.assertTrue((results / "source.json").exists())
+        self.assertFalse((results / "lanes").exists())
+        there = self.checkout(0) / ".build/engineering/mixed"
+        self.assertEqual(self.lane_files("mixed", "broken", there)[1]["outcome"], "failed")
+
+    def stop_group(self):
+        """Run `eng run stalled` from a dispatcher of its own, stop it once both of the group's lanes
+        run on the build host, and return its output once it has ended."""
+        markers = [self.checkout(0) / f".build/{lane}.pid" for lane in ("napper", "dozer")]
+        for marker in markers: marker.unlink(missing_ok=True)
+        command = [sys.executable, str(self.toolkit / "bin/eng"), "--project", str(self.project), "run", "stalled"]
+        dispatcher = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        try:
+            # A bound for a busy host, not a measure: the markers end the wait.
+            deadline = time.monotonic() + 300
+            while not all(marker.exists() for marker in markers) and dispatcher.poll() is None \
+                    and time.monotonic() < deadline:
+                time.sleep(0.1)
+            self.assertTrue(all(marker.exists() for marker in markers),
+                            dispatcher.stdout.read().decode() if dispatcher.poll() is not None else "")
+            lanes = [int(marker.read_text()) for marker in markers]
+            dispatcher.send_signal(signal.SIGTERM)
+            output = dispatcher.communicate(timeout=300)[0].decode()
+        finally:
+            if dispatcher.poll() is None:
+                dispatcher.kill()
+                dispatcher.communicate()
+        self.assertEqual(dispatcher.returncode, -signal.SIGTERM, output)
+        self.assertIn("asking fake to stop the run", output)
+        for lane in lanes:
+            with self.assertRaises(ProcessLookupError):
+                os.kill(lane, 0)
+        return output
+
+    def test_a_stopped_group_brings_its_lanes_logs_and_receipts_back(self):
+        results = self.project / ".build/engineering/remote/stalled"
+        output = self.stop_group()
+        self.assertIn("the logs and receipts of stalled's lanes are in", output)
+        for lane in ("napper", "dozer"):
+            log, receipt = self.lane_files("stalled", lane)
+            self.assertIn(f"{lane} started", log)
+            self.assertEqual((receipt["status"], receipt["outcome"]), (None, "stopped"))
+            self.assertIn("Stopped by SIGTERM", receipt["error"])
+        kept = json.loads((results / "source.json").read_text())
+        self.assertTrue(kept["result"]["stopped"])
+        self.assertEqual(len(kept["returned"]), 4)
+        # The negative control: a toolkit without the copy-back leaves the lanes' files in the build
+        # host's checkout. The dispatcher runs the toolkit's commit, so the change is committed.
+        source = self.toolkit / "src/python/vocaro_engineering/remote.py"
+        text = source.read_text()
+        source.write_text(text.replace("def group_files(config, lane):\n",
+                                       "def group_files(config, lane):\n    return None\n", 1))
+        self.assertNotEqual(source.read_text(), text)
+        commit_all(self.toolkit)
+        shutil.rmtree(results)
+        self.stop_group()
+        self.assertTrue(json.loads((results / "source.json").read_text())["result"]["stopped"])
+        self.assertFalse((results / "lanes").exists())
+        there = self.checkout(0) / ".build/engineering/stalled"
+        self.assertEqual(self.lane_files("stalled", "napper", there)[1]["outcome"], "stopped")
 
     @contextlib.contextmanager
     def busy_build_host(self):
