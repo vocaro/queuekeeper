@@ -196,12 +196,14 @@ branch. Tooling that a gate runs lives outside the records directory.
 
 **Records cite commits and paths in prose, and stay frozen.** A record names the commit, paths
 and identities it measured, as measured. The only later edit is a one-line pointer at the top
-when a file it names has moved or been removed. No manifest binds records to paths, no gate
-fails when a cited path moves, and historical paths and hashes are never rewritten. Documents
-that need the current truth state it themselves and link to the record for how it was
-established. A run's evaluation receipt is a local consistency check binding one run to its own
-outputs, not a signed attestation; a historical receipt that lacks required evidence is
-recaptured, not annotated.
+when a file it names has moved or been removed, or when a path or procedure it gives for
+reproducing it has moved or changed; the pointer names where the current one is. A JSON record,
+which cannot hold the line, gets the pointer at the top of its directory's record.md or README
+when the directory has one. No manifest binds records to paths, no gate fails when a cited path
+moves, and historical paths and hashes are never rewritten. Documents that need the current
+truth state it themselves and link to the record for how it was established. A run's evaluation
+receipt is a local consistency check binding one run to its own outputs, not a signed
+attestation; a historical receipt that lacks required evidence is recaptured, not annotated.
 
 **Decision records** state Context, Decision, Consequences and Evidence, take the next number,
 and are listed in an index. A decision that supersedes another says so in both; neither is
