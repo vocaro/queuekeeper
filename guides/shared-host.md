@@ -299,6 +299,16 @@ the build host only when `VOCARO_BUILD_HOST` names one or `~/.ssh/config` define
 `build-host` alias, which `ssh -G` reports; `VOCARO_BUILD_HOST=none` keeps every lane here. A
 lane's results come back to `.build/engineering/remote/LANE/` when it ran on the build host and
 stay in `.build/engineering/LANE/` when it ran here; the last lines `eng run` prints name them.
+A lane group's own output, with each lane's status and time, comes back with its receipt, but
+each lane's log stays in the build host's checkout, under `.build/engineering/GROUP/lanes/`,
+until a later run there replaces it: read a lane's counts there, or run the lane alone, whose
+log comes back.
+
+The build host runs a lane in its own login shell's environment, not this Mac's, so a variable
+set for `eng run` here does not reach it. On 2026-10-27 a variable set for `eng remote admit`
+read as unset there (toolkit `e137d7e`). A run that a variable selects, such as one that points a
+package at a binary built here into an ignored path, takes `--here`, or its lane names the
+setting in its command.
 
 `eng admit -- COMMAND` always runs here. Its command runs in the current directory, often a
 subdirectory of the checkout, and names paths relative to it, absolute paths in this checkout or
