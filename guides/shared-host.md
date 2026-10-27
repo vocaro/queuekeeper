@@ -266,9 +266,11 @@ python3 scripts/eng remote setup --runtimes [--check]     # both Macs' simulator
 ### Which Mac runs a lane
 
 A lane marked `"buildHost": true` in engineering.json goes to the build host first. Mark a heavy
-or exclusive lane that needs no simulator, device, screen or timing measurement, such as a
-SwiftPM gate suite: those stay on this Mac. Background Mac tests need the screen too: they need
-it unlocked and the display awake
+or exclusive lane that needs no device, screen or timing measurement, such as a SwiftPM gate
+suite: those stay on this Mac. A lane that boots simulators qualifies too, once a run there has
+passed with the test counts it has here
+([simulators on the build host](#simulators-on-the-build-host)). Background Mac tests need the
+screen too: they need it unlocked and the display awake
 ([lock screen and display sleep](background-mac-testing.md#lock-screen-and-display-sleep)), and
 the build host's screen is usually locked. A command started over SSH there can open an
 offscreen window, so a locked screen leaves such tests unmeasured as it does here, and it is
@@ -343,6 +345,55 @@ which brings both to the union of their runtimes and never deletes one
 reached, and the whole comparison when no build host is configured. `leftovers` lists the
 processes on the build host that runs left running, which are no error
 ([processes left over from runs](#processes-left-over-from-runs)).
+
+### Simulators on the build host
+
+A lane that boots simulators runs on the build host as it does here: headless, from a session
+started over SSH, with the screen locked, and from the build host's own pool. Mark it `buildHost`
+once a run there has passed with the test counts it has here; one that also needs the screen,
+a device or a timing measurement stays here for that.
+
+Each Mac keeps its own [pool](simulator-testing.md#reserved-simulator-pool) and its own
+[device record](#device-reservations). A lane on the build host takes or creates members in the
+build host's simulators and reserves them in the build host's record, so a member of the same
+name on each Mac is two simulators, and a reservation on one Mac says nothing about the other's.
+A project's first run there creates its first members and lets their first boot finish. A
+session's `VOCARO_DEVICE_OWNER` and agent session do not cross SSH, so a reservation there names
+an owner the run generates: `simulator-tests-UUID` for `eng simulator-tests`, and `POOL-UUID` for
+a gate that takes its member with `vocaro_engineering.simulators.pool.member()`.
+`eng simulator-pool list` and `eng disk` show the pool of the Mac they run on; a run on the build
+host prunes that host's members of the kind it takes.
+
+Only the lane's log and receipt come back. `eng simulator-tests` leaves each device's log and
+result bundle in the build host's checkout, where the lane's log names them, and puts a failing
+device's last 40 lines in the lane's log. A session that needs a result bundle or a device log
+here runs the lane with `--here`.
+
+Measured on 2026-10-27 with `eng remote run` from clean checkouts, against the same lane at the
+same commit on this Mac
+([vocaro-engineering#31](https://github.com/vocaro/vocaro-engineering/issues/31)). The build host
+was an M1 Max (10 cores, 64 GB, macOS 27.2 26B123) and this Mac an M5 Max (18 cores, 36 GB,
+macOS 27.0.1 26A434), both with Xcode 27.2 (27B48) and the same six iOS runtimes. Neither was
+otherwise quiet, so no time is a bound:
+
+- EPUBLib's `ios-tests`, an iPhone 17 Pro and an iPad Air 13-inch (M4) on iOS 27.0 side by side,
+  passed with 3,667 tests executed and 43 skipped on each device, every test case with the
+  outcome it had here, in 1,859 s against 1,428 s here.
+- StaticSVG's gate passed with 501 tests executed and the opt-in probe skipped in each of its
+  three suites, as here, in 192 s.
+- MathMLLayout's gate passed its three Swift suites with 806 tests each, the iOS suite on a new
+  pool member, as here, and left its validation tools and bundled corpus unmeasured: the build
+  host had no Node, pnpm or `gate.py --setup` environments.
+- EPUBLib's gate passed its Mac and iOS suites, the iOS one on the members `ios-tests` had
+  created, and was unmeasured: the build host's corpus cache lacked 10 of the 50 pinned Project
+  Gutenberg books, whose downloads no longer matched their pins, and it has no Standard Ebooks
+  copy, so 3 more tests skipped in the Mac suite and on each device than here.
+
+Creating two pool members and booting them for the first time beside a cold build ran the build
+host's one-minute load average from 6 to 983 within four minutes, with memory pressure normal;
+the 23 minutes of tests that followed averaged 40. No run needed the screen unlocked. The boots,
+the builds and every gate, EPUBLib's Mac suite included, ran with the screen locked and the
+display on; the screen was unlocked, not by the run, for the last 15 minutes of `ios-tests`.
 
 ### How a run reaches the build host
 
