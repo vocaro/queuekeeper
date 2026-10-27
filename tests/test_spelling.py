@@ -110,6 +110,49 @@ class DetectionTests(Project):
         self.assertEqual(self.check()[0], 1)
 
 
+class WordTests(unittest.TestCase):
+    """American words the patterns mistook in EPUBLib, PDFReflowLib and StudyWright (issue 40)."""
+
+    MISTAKEN = """geyser geysers counterpoise counterpoises equipoise chaise chaises valise troubadour
+        troubadours pompadour paramour marquise malaise urinalyses imprecise downpours disfranchise
+        dispraise highrise fundraise inadvisable darkturquoise mediumturquoise paleturquoise
+        uprising enfranchised disenfranchised unraised outpouring overpouring hatred thoroughbred
+        underbred mediumvioletred palevioletred""".split()
+
+    def test_american_words_the_patterns_mistook_are_not_british(self):
+        for word in self.MISTAKEN + ["Geyser", "valises", "counterpoised", "fundraising", "fundraisers"]:
+            with self.subTest(word):
+                self.assertIsNone(spelling.american_for(word))
+                self.assertEqual(spelling.Rules().british_in(f"The {word} here."), [])
+
+    def test_the_british_controls_still_fail(self):
+        for word in spelling.BRITISH_SAMPLES:
+            with self.subTest(word):
+                self.assertNotEqual(spelling.Rules().british_in(word), [])
+
+    def test_a_word_listed_whole_covers_only_itself(self):
+        for word, american in [("mitred", "mitered"), ("fibred", "fibered"), ("unrealised", "unrealized"),
+                               ("urinalysed", "urinalyzed"), ("analysed", "analyzed")]:
+            with self.subTest(word):
+                self.assertEqual(spelling.american_for(word), american)
+
+    def test_a_new_prefix_clears_only_an_american_remainder(self):
+        for word, prefix in [("imprecise", "im"), ("inadvisable", "in"), ("dispraise", "dis"),
+                             ("disfranchise", "dis")]:
+            with self.subTest(word):
+                self.assertIsNone(spelling.american_for(word))
+                # The prefix is what clears it: without it the word is a hit.
+                with patch.object(spelling, "PREFIXES", tuple(p for p in spelling.PREFIXES if p != prefix)):
+                    self.assertIsNotNone(spelling.american_for(word))
+        # British words that begin with the new prefixes, whose remainders are British.
+        for word, american in [("disorganised", "disorganized"), ("dishonoured", "dishonored"),
+                               ("disfavour", "disfavor"), ("immunised", "immunized"),
+                               ("immobilised", "immobilized"), ("initialised", "initialized"),
+                               ("incentivise", "incentivize")]:
+            with self.subTest(word):
+                self.assertEqual(spelling.american_for(word), american)
+
+
 class ExemptionTests(Project):
     def test_a_project_names_its_own_exemptions_with_reasons(self):
         self.write({"doc/papers/source.txt": "The colour of the sea.\n",

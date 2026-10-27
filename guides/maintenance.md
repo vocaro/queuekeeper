@@ -300,13 +300,18 @@ Unity's `MonoBehaviour`, URLs, a list item's first `<em>` (a cited title) and a 
 project lists the rest in engineering.json's `spelling`, each mapped to its reason: `skip` for
 paths of recorded observations or retained upstream text (a key ending in `/` is a directory),
 `exemptPhrases` for a standard's terms, `exemptRuns` for whole identifiers another project
-named, and `exemptTokens` for proper names; names are held to the same exemptions as text. A
+named, and `exemptTokens` for proper names and foreign words; file names are held to the same
+exemptions as text. A
 skipped path keeps its own name as well as its contents, since a recording or upstream text
 keeps the name it was given, and the skip key's text is exempt wherever it appears, so its entry
 and links to it spell the kept name; the directories above it are still judged. A bare case of
 another project's type cannot be
 told from a project's own name, so mark it: `case .cancelled:  // spelling: keep, URLError.Code`.
 Fix a hit by spelling the word the American way; never widen a pattern to make one go away.
+An American word that a pattern mistakes for British, such as geyser or valise, is no project's
+exemption: it joins the checker's American words, with a sample in its controls. Proper names
+and foreign words stay with each project, which knows why its fixtures and corpora hold them;
+the toolkit ships no shared list of them.
 
 ## Portable negative controls
 

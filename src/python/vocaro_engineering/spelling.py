@@ -22,7 +22,9 @@ which has no text, and caught `NeighbourAlignmentTests.swift` only because its c
 What is exempt, each learned by breaking it:
   * Someone else's name, verbatim: another project's API (Unity's `MonoBehaviour`, Apple's
     `isCancelled`), a file name searched for literally (`LICENCE`). A project adds its own in
-    engineering.json: proper names, a standard's terms, retained upstream text.
+    engineering.json: proper names (Louise, Seymour), foreign words (bonjour, chapitre), a
+    standard's terms, retained upstream text. They come from its own fixtures and corpora, so it
+    lists each with its reason; the toolkit keeps no shared list of names or foreign words.
   * A cited title. The first <em> of a list item is a bibliography entry's title slot, kept
     verbatim even when the source is British; annotations after it are checked like any prose.
   * URLs, which are addresses rather than prose.
@@ -34,8 +36,10 @@ What is exempt, each learned by breaking it:
   * A skipped path's own name, with its contents: recorded observations and retained upstream
     text keep the names they were given. The directories above it are still judged, and the
     skip entry's text is exempt wherever it appears, as a link to the kept name must spell it.
-A hit is fixed by spelling the word the American way. A name that trips the rule goes into the
-project's exemptions with its reason; a pattern is never widened to make a hit go away.
+A hit is fixed by spelling the word the American way. An American word that a pattern mistakes
+(geyser, valise, troubadour) joins AMERICAN_OK here, with a sample in the American controls. A
+name or foreign word that trips the rule goes into the project's exemptions with its reason; a
+pattern is never widened to make a hit go away.
 
 Positive controls run first, every time: a detector that has stopped detecting looks exactly like
 a clean tree. Exit 0 when clean, 1 when a British spelling is found or a control fails, and 2 when
@@ -106,23 +110,33 @@ IRREGULAR = {
 }
 
 # American words the patterns mistake for British ones, as UNINFLECTED bases (the base of
-# "revised" is "revise"). "analyses" is the American plural of "analysis", not the British
-# verb; "redisable" is re-disable.
+# "revised" is "revise"). A word that is no inflection of the base a pattern rebuilds is listed
+# whole: "analyses" and "urinalyses" are the American plurals of "analysis" and "urinalysis", not
+# British verbs, "geyser" is no -er of a verb "geyse", and "hatred" is no "hatre" + d. A compound
+# whose head PREFIXES does not list has its own entry (highrise, fundraise, downpour), as do the
+# CSS named colors (darkturquoise, palevioletred) and a prefixed word whose remainder is too
+# short for its pattern to judge (counterpoise, unraised, outpour, underbred). "redisable" is
+# re-disable.
 AMERICAN_OK = frozenset("""
 advertise advise arise chastise comprise compromise concise cruise demise despise devise
 disguise enterprise excise exercise expertise franchise guise improvise incise merchandise
 paradise poise praise precise premise promise raise reprise revise rise sunrise moonrise
 supervise surmise surprise televise treatise turquoise tortoise porpoise noise denoise bruise
-appraise apprise
-analyses
+appraise apprise chaise counterpoise equipoise valise marquise malaise highrise fundraise uprise
+enfranchise darkturquoise mediumturquoise paleturquoise unraised
+analyses urinalyses geyser geysers
 four hour our pour sour tour your flour scour devour contour detour dour amour glamour velour
+troubadour pompadour paramour downpour outpour overpour
 acre cadre genre macabre massacre mediocre ogre lucre padre nacre timbre libre
+hatred thoroughbred underbred mediumvioletred palevioletred
 redisable
 """.split())
 
-# A prefix that leaves an American word American: "unexercised" is un + exercised.
-PREFIXES = ("un", "re", "pre", "non", "over", "under", "mis", "counter", "out", "self", "super",
-            "sub", "semi", "multi", "inter")
+# A prefix that leaves an American word American: "unexercised" is un + exercised. It clears
+# only a word whose remainder's base is in AMERICAN_OK, so "disorganised" still fails on
+# "organised" while "imprecise" is im + precise.
+PREFIXES = ("un", "re", "pre", "non", "in", "im", "dis", "over", "under", "mis", "counter", "out",
+            "self", "super", "sub", "semi", "multi", "inter")
 
 # Whole identifier runs other projects named the British way: Unity's and Apple's APIs.
 EXEMPT_RUNS = frozenset({
@@ -221,7 +235,11 @@ AMERICAN_SAMPLES = r"""QuiescentRegionCount MonoBehaviour aria-labelledby toward
     unexercised advertised revised surprising unsurprising contour hours yours Fourier genre acres
     timbre controlled installer cancellation distilled fulfilled nodewise pairwise otherwise
     LICENCE disc redisable analyses center color behavior normalize harbor isCancelled
-    userCancelled LibreSSL Pagepour \nraise sunrise https://example.com/colour-grading""".split()
+    userCancelled LibreSSL Pagepour \nraise sunrise https://example.com/colour-grading geyser
+    geysers urinalyses chaises counterpoises equipoise valise marquise malaise troubadours
+    pompadour paramour imprecise inadvisable disfranchise dispraise highrise downpours fundraising
+    darkturquoise mediumturquoise paleturquoise uprising enfranchised disenfranchised unraised
+    outpouring overpouring hatred thoroughbred underbred mediumvioletred palevioletred""".split()
 # Tracked paths: a binary file's name, a directory's, and a file name split at camelCase.
 BRITISH_PATHS = ("Docs/colour-chart.png", "centre/README.md", "Tests/NeighbourAlignmentTests.swift",
                  "Fonts/grey_sans.ttf")
