@@ -8,10 +8,14 @@ boundaries, and each subword is judged whole, never as a substring, because
 `QuiescentRegionCount` contains "centRe" case-insensitively. A subword is British when it is
   * on the irregular list (licence, grey, whilst, catalogue, judgement, plough, misspelt, ...),
   * a doubled-l inflection of a known stem (travelled, labelling, modeller, counsellor, ...), or
-  * a pattern hit (-ise/-yse/-our/-tre/-bre and their inflections) whose uninflected base is not
-    an American word that merely looks British (AMERICAN_OK: exercise, contour, genre, ...).
+  * a pattern hit (-ise/-yse/-our/-tre/-bre and their inflections) whose stem ends in a letter
+    British words put before that ending, and whose uninflected base is not an American word that
+    merely looks British (AMERICAN_OK: exercise, valise, glamour, ...).
 Detection is by pattern rather than by word list, so a British form nobody anticipated is still
-caught; the irregular list covers only what no pattern describes.
+caught; the irregular list covers only what no pattern describes. The letters before an ending
+are what keep a name or a foreign word from passing for British: no British word has -ouise or
+-jour where American English has -ouize or -jor, so Louise and bonjour pass instead of drawing
+the fixes "louize" and "bonjor".
 
 File names are judged the same way, binary files and directories included, because tests, docs
 and scripts link to a file by its name and every reference must move when it is renamed. A name
@@ -22,7 +26,7 @@ which has no text, and caught `NeighbourAlignmentTests.swift` only because its c
 What is exempt, each learned by breaking it:
   * Someone else's name, verbatim: another project's API (Unity's `MonoBehaviour`, Apple's
     `isCancelled`), a file name searched for literally (`LICENCE`). A project adds its own in
-    engineering.json: proper names (Louise, Seymour), foreign words (bonjour, chapitre), a
+    engineering.json: proper names (Denise, Seymour), foreign words (entre, chapitre), a
     standard's terms, retained upstream text. They come from its own fixtures and corpora, so it
     lists each with its reason; the toolkit keeps no shared list of names or foreign words.
   * A cited title. The first <em> of a list item is a bibliography entry's title slot, kept
@@ -37,9 +41,10 @@ What is exempt, each learned by breaking it:
     text keep the names they were given. The directories above it are still judged, and the
     skip entry's text is exempt wherever it appears, as a link to the kept name must spell it.
 A hit is fixed by spelling the word the American way. An American word that a pattern mistakes
-(geyser, valise, troubadour) joins AMERICAN_OK here, with a sample in the American controls. A
-name or foreign word that trips the rule goes into the project's exemptions with its reason; a
-pattern is never widened to make a hit go away.
+(valise, troubadour, hatred) joins AMERICAN_OK here, with a sample in the American controls. A
+name or foreign word that still trips a pattern (Denise, Cavour, entre, chapitre) goes into the
+project's exemptions with its reason. A pattern never gains an exception for one hit: its
+letters change only for a British word that has the letter.
 
 Positive controls run first, every time: a detector that has stopped detecting looks exactly like
 a clean tree. Exit 0 when clean, 1 when a British spelling is found or a control fails, and 2 when
@@ -57,17 +62,32 @@ BINARY = {".pdf", ".png", ".jpg", ".jpeg", ".gif", ".heic", ".tif", ".tiff", ".i
 
 SUBWORD = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+")
 URL = re.compile(r"https?://\S+")
-# A string escape's letter would otherwise join the word after it: "\nraise" is not "nraise".
-ESCAPE = re.compile(r"\\[nrtfvb0]")
+# A string escape's letters would otherwise join the word after it: "\nraise" is not "nraise",
+# and JSON's "\u201cyour" (an opening quotation mark) is not "cyour".
+ESCAPE = re.compile(r"\\(?:[nrtfvb0]|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2})")
 KEEP = re.compile(r"spelling: keep\b\W*\w")
 
 # Pattern families, each matched against a whole lowercase subword. `stem` + the family's base
 # ending rebuilds the uninflected word that AMERICAN_OK is checked against.
-ISE = re.compile(r"(?P<stem>[a-z]{3,}?)is(?P<suf>e|es|ed|ing|ation|ations|ational|able|er|ers)")
-YSE = re.compile(r"(?P<stem>[a-z]{2,}?)ys(?P<suf>e|es|ed|ing|er|ers)")
-OUR = re.compile(r"(?P<stem>[a-z]{2,}?)our(?P<suf>s|ed|ing|al|able|ably|ite|ites|ful|fully|less"
-                 r"|hood|hoods|er|ers|ist|ists|ism|ly|ish)?")
-TRE = re.compile(r"(?P<stem>[a-z]{2,}?)(?P<end>tre|bre)(?P<suf>s|d)?")   # me-tre, fi-bre
+#
+# A stem must end in a letter that British words put before that ending, so that the American
+# form a hit suggests is a word: -ise follows anything but w or ou (no American word ends in -wize
+# or -ouize: otherwise, Louise; heroise and soliloquise are British); -yse follows only l (analyse);
+# -our follows b, c, d, g, i, l, m, n, p or v (harbour, rancour, odour, rigour, behaviour, colour,
+# humour, honour, vapour, favour); -tre follows a, c, e, i, l, n, p, s or u (theatre, spectre,
+# metre, litre, philtre, centre, sceptre, lustre, accoutre); -bre follows a, i or om (sabre,
+# fibre, sombre). The other letters were names, foreign words and text that lost its spaces, and
+# each fix suggested was not a word: Louise -> louize, Apryse, Keyser, Hanjour, Wintour, Balfour,
+# bonjour, votre, lettres, Chartres, sobre, septiembre, Readwise's, milesperhour, sinceour. A
+# letter joins a set only with a British word that has it there; no ending gains an exception for
+# one word.
+ISE = re.compile(r"(?P<stem>[a-z]{3,}?)(?<!w)(?<!ou)is(?P<suf>e|es|ed|ing|ation|ations|ational|able"
+                 r"|er|ers)")
+YSE = re.compile(r"(?P<stem>[a-z]+?l)ys(?P<suf>e|es|ed|ing|er|ers)")
+OUR = re.compile(r"(?P<stem>[a-z]+?[bcdgilmnpv])our(?P<suf>s|ed|ing|al|able|ably|ite|ites|ful|fully"
+                 r"|less|hood|hoods|er|ers|ist|ists|ism|ly|ish)?")
+TRE = re.compile(r"(?P<stem>[a-z]+?[aceilnpsu])tre(?P<suf>s|d)?")        # me-tre
+BRE = re.compile(r"(?P<stem>[a-z]+?(?:[ai]|om))bre(?P<suf>s|d)?")      # fi-bre, som-bre
 # The doubled-l inflections, by stem, with the prefixes that keep the doubling.
 DOUBLE_L = re.compile(
     r"(?P<stem>(?:re|un|mis|pre)?(?:travel|cancel|model|label|marshal|signal|level|total|tunnel"
@@ -112,11 +132,11 @@ IRREGULAR = {
 # American words the patterns mistake for British ones, as UNINFLECTED bases (the base of
 # "revised" is "revise"). A word that is no inflection of the base a pattern rebuilds is listed
 # whole: "analyses" and "urinalyses" are the American plurals of "analysis" and "urinalysis", not
-# British verbs, "geyser" is no -er of a verb "geyse", and "hatred" is no "hatre" + d. A compound
-# whose head PREFIXES does not list has its own entry (highrise, fundraise, downpour), as do the
-# CSS named colors (darkturquoise, palevioletred) and a prefixed word whose remainder is too
-# short for its pattern to judge (counterpoise, unraised, outpour, underbred). "redisable" is
-# re-disable.
+# British verbs, and "hatred" is no "hatre" + d. A compound whose head PREFIXES does not list has
+# its own entry (highrise, fundraise, downpour), as do the CSS named colors (mediumvioletred,
+# palevioletred) and a prefixed word whose remainder is too short for its pattern to judge
+# (unraised, outpour). "redisable" is re-disable. A word whose stem ends where no British word's
+# does (geyser, contour, timbre, thoroughbred) needs no entry.
 AMERICAN_OK = frozenset("""
 advertise advise arise chastise comprise compromise concise cruise demise despise devise
 disguise enterprise excise exercise expertise franchise guise improvise incise merchandise
@@ -124,11 +144,11 @@ paradise poise praise precise premise promise raise reprise revise rise sunrise 
 supervise surmise surprise televise treatise turquoise tortoise porpoise noise denoise bruise
 appraise apprise chaise counterpoise equipoise valise marquise malaise highrise fundraise uprise
 enfranchise darkturquoise mediumturquoise paleturquoise unraised microenterprise
-analyses urinalyses geyser geysers
-four hour our pour sour tour your flour scour devour contour detour dour amour glamour velour
+analyses urinalyses
+our pour flour scour devour dour amour glamour velour
 troubadour pompadour paramour downpour outpour overpour
-acre cadre genre macabre massacre mediocre ogre lucre padre nacre timbre libre
-hatred thoroughbred underbred mediumvioletred palevioletred
+acre cadre genre macabre massacre mediocre ogre lucre padre nacre libre hombre
+hatred mediumvioletred palevioletred
 redisable
 """.split())
 
@@ -154,8 +174,6 @@ EXEMPT_TOKENS = frozenset({"LICENCE", "Pagepour", "pagepour", "PAGEPOUR",
 
 def _family(word):
     """(suggestion, base) when `word` matches a pattern family; None otherwise."""
-    if word.endswith("wise"):                 # otherwise, pairwise, nodewise: never -ize
-        return None
     m = ISE.fullmatch(word)
     if m:
         return m.group("stem") + "iz" + m.group("suf"), m.group("stem") + "ise"
@@ -165,11 +183,11 @@ def _family(word):
     m = OUR.fullmatch(word)
     if m:
         return m.group("stem") + "or" + (m.group("suf") or ""), m.group("stem") + "our"
-    m = TRE.fullmatch(word)
-    if m:
-        end = "ter" if m.group("end") == "tre" else "ber"
-        suf = {"s": "s", "d": "ed"}.get(m.group("suf") or "", "")
-        return m.group("stem") + end + suf, m.group("stem") + m.group("end")
+    for pattern, british, american in ((TRE, "tre", "ter"), (BRE, "bre", "ber")):
+        m = pattern.fullmatch(word)
+        if m:
+            suf = {"s": "s", "d": "ed"}.get(m.group("suf") or "", "")
+            return m.group("stem") + american + suf, m.group("stem") + british
     return None
 
 
@@ -232,7 +250,9 @@ BRITISH_SAMPLES = r"""colour Colour COLOUR colourRamp NEIGHBOUR_OFFSETS HarbourB
     normalised Normalisation renormalised unnormalised analyse centre centres Centred fibre licence
     defence grey whilst catalogue analogue travelled labelling relabelled modeller counsellor
     bevelled unfavourable unrecognised behaviour misspelt practise kilometres
-    BehaviourBoundError licence_display wasCancelled \ncolour""".split()
+    BehaviourBoundError licence_display wasCancelled \ncolour \u201ccolour organise
+    theatre paralyse odour rigour rancour vapour sceptre spectre lustre philtre accoutre sabre
+    sombre""".split()
 AMERICAN_SAMPLES = r"""QuiescentRegionCount MonoBehaviour aria-labelledby towards afterwards exercise
     unexercised advertised revised surprising unsurprising contour hours yours Fourier genre acres
     timbre controlled installer cancellation distilled fulfilled nodewise pairwise otherwise
@@ -243,7 +263,9 @@ AMERICAN_SAMPLES = r"""QuiescentRegionCount MonoBehaviour aria-labelledby toward
     pompadour paramour imprecise inadvisable disfranchise dispraise highrise downpours fundraising
     darkturquoise mediumturquoise paleturquoise uprising enfranchised disenfranchised unraised
     outpouring overpouring hatred thoroughbred underbred mediumvioletred palevioletred
-    microenterprise microenterprises eaa-microenterprise Microenterprise""".split()
+    microenterprise microenterprises eaa-microenterprise Microenterprise hombres Apryse Keyser
+    Louise Readwises bonjour Hanjour Balfour Wintour votre lettres Chartres sobre septiembre
+    milesperhour sinceour \u201cyour""".split()
 # Tracked paths: a binary file's name, a directory's, and a file name split at camelCase.
 BRITISH_PATHS = ("Docs/colour-chart.png", "centre/README.md", "Tests/NeighbourAlignmentTests.swift",
                  "Fonts/grey_sans.ttf")

@@ -300,7 +300,10 @@ the words arrive one at a time and are invisible in review.
 
 It splits each run of letters at camelCase, snake_case and SCREAMING_CASE boundaries and judges
 each subword whole, by pattern (-ise, -yse, -our, -tre, -bre and doubled-l inflections) and by
-an irregular list, with a list of American words that only look British. Every file name is
+an irregular list, with a list of American words that only look British. A pattern counts only
+the letters British words put before its ending, so a name, a foreign word or a run of text that
+lost its spaces whose fix would not be a word passes: Louise, Apryse, bonjour, notre, septiembre,
+milesperhour. A string escape such as `\n` or JSON's `\u201c` ends a word. Every file name is
 judged the same way, binary files included, split also at `/`, `.`, `-` and `_`, because tests,
 docs and scripts refer to a file by name and each reference must move when it is renamed. A hit
 reads `PATH: British spelling in file name 'WORD' -> AMERICAN`, and a directory is judged once,
@@ -323,10 +326,11 @@ and links to it spell the kept name; the directories above it are still judged. 
 another project's type cannot be
 told from a project's own name, so mark it: `case .cancelled:  // spelling: keep, URLError.Code`.
 Fix a hit by spelling the word the American way; never widen a pattern to make one go away.
-An American word that a pattern mistakes for British, such as geyser or valise, is no project's
+An American word that a pattern mistakes for British, such as valise or hatred, is no project's
 exemption: it joins the checker's American words, with a sample in its controls. Proper names
-and foreign words stay with each project, which knows why its fixtures and corpora hold them;
-the toolkit ships no shared list of them.
+and foreign words whose endings British words share stay with each project, in `exemptTokens`,
+because the project knows why its fixtures and corpora hold them; the toolkit ships no shared
+list of them.
 
 ## Portable negative controls
 

@@ -161,6 +161,82 @@ class WordTests(unittest.TestCase):
                 self.assertEqual(spelling.american_for(word), american)
 
 
+class LetterTests(unittest.TestCase):
+    """The letter before an ending tells a British word from a name or a foreign word (issue 40)."""
+
+    # What a rescan of every project at origin/main flagged with a fix that was not a word, by the
+    # letter before its ending that no British word has there.
+    NOT_BRITISH = {
+        "ise after w or ou": "Louise LOUISE Readwises otherwise likewise".split(),
+        "yse after anything but l": "Apryse APRYSE Keyser geyser cqyse".split(),
+        "our after a letter British words never put there":
+            "bonjour Hanjour Balfour Wintour Mansour Vtour allfour threefour milesperhour "
+            "dateandhour sinceour soour ntlycheckour itwillinterpretthetextinyour resour".split(),
+        "tre after a letter British words never put there": "votre notre lettres Chartres theaytre "
+                                                            "extre bytre oftre powtred".split(),
+        "bre after anything but a, i or om": "sobre pobre septiembre septembre settembre setembre "
+                                             "noviembre umbre abbre Mimbres timbre".split(),
+    }
+
+    # A British word for every letter each family allows, with the fix it must still suggest.
+    BRITISH = {
+        "colour": "color", "organise": "organize", "analyse": "analyze", "theatre": "theater",
+        "realise": "realize", "authorise": "authorize", "prioritise": "prioritize",
+        "apologise": "apologize", "emphasise": "emphasize", "criticise": "criticize",
+        "subsidise": "subsidize", "archaise": "archaize", "heroise": "heroize",
+        "ghettoised": "ghettoized", "soliloquise": "soliloquize", "paralysed": "paralyzed",
+        "catalyse": "catalyze", "electrolysers": "electrolyzers", "arbour": "arbor",
+        "rancour": "rancor", "odour": "odor", "rigour": "rigor", "behaviour": "behavior",
+        "humour": "humor", "honourable": "honorable", "vapours": "vapors", "favourite": "favorite",
+        "spectre": "specter", "metres": "meters", "litre": "liter", "philtre": "philter",
+        "centred": "centered", "sceptre": "scepter", "lustre": "luster", "accoutre": "accouter",
+        "sabre": "saber", "fibres": "fibers", "sombre": "somber", "calibre": "caliber",
+    }
+
+    def test_a_name_or_foreign_word_whose_ending_no_british_word_has_passes(self):
+        for kind, words in self.NOT_BRITISH.items():
+            for word in words:
+                with self.subTest(kind=kind, word=word):
+                    self.assertIsNone(spelling.american_for(word))
+                    self.assertEqual(spelling.Rules().british_in(f"The {word} here."), [])
+
+    def test_every_letter_a_british_word_puts_before_its_ending_still_fails(self):
+        for word, american in self.BRITISH.items():
+            with self.subTest(word):
+                self.assertEqual(spelling.american_for(word), american)
+                self.assertEqual(spelling.Rules().british_in(f"The {word.title()} here."),
+                                 [(word.title(), american)])
+
+    def test_a_name_whose_ending_british_words_share_still_needs_its_project(self):
+        # No letter rule can tell these from British words, so each project lists its own.
+        for word, suggestion in [("Denise", "denize"), ("Cavour", "cavor"), ("Seymour", "seymor"),
+                                 ("Silvestre", "silvester"), ("entre", "enter"), ("titre", "titer")]:
+            with self.subTest(word):
+                self.assertEqual(spelling.american_for(word), suggestion)
+
+    def test_hombre_is_an_american_word(self):
+        for word in ["hombre", "hombres", "Hombre"]:
+            with self.subTest(word):
+                self.assertIsNone(spelling.american_for(word))
+        self.assertEqual(spelling.american_for("sombre"), "somber")
+
+    def test_an_escapes_hex_digits_do_not_join_the_word_after_it(self):
+        backslash = chr(92)
+        quote, close = f"{backslash}u201c", f"{backslash}u201d"      # JSON's curly quotes
+        # Each joined would be read as British: "csurprise", "cpraised" and "eatre", the end of
+        # Bicetre with its e-circumflex escaped in four, eight and two hex digits.
+        for line in [f'"{quote}surprise.{close}"', f'"{quote}praised{close}"',
+                     f'"Bic{backslash}u00eatre"', f'"Bic{backslash}U000000eatre"',
+                     f'"Bic{backslash}xeatre"']:
+            with self.subTest(line):
+                self.assertEqual(spelling.Rules().british_in(line), [])
+        self.assertEqual(spelling.Rules().british_in(f'"{quote}colour{close}"'),
+                         [("colour", "color")])
+        # Four hex digits make the escape; a word after "\u" that is not one is still read.
+        self.assertEqual(spelling.Rules().british_in(f'C:{backslash}users{backslash}colour'),
+                         [("colour", "color")])
+
+
 class ExemptionTests(Project):
     def test_a_project_names_its_own_exemptions_with_reasons(self):
         self.write({"doc/papers/source.txt": "The colour of the sea.\n",
