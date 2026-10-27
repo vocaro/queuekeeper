@@ -337,7 +337,8 @@ def main(argv=None):
     for choice in (remote_run, remote_admit):
         choice.add_argument("--device", action="append", metavar="KEY", help="a physical device the run uses, "
                             "reserved in this Mac's device record and held, with no run active, by the session "
-                            "(repeatable); the dispatch records the run in its entry")
+                            "within the owner's approval (repeatable); the dispatch records the run in its entry and "
+                            "stops it before the reservation ends")
         choice.add_argument("--device-owner", metavar="SESSION", help="the session holding --device (default: "
                             f"{devices.OWNER}, else the agent session)")
     remote_run.add_argument("--expect", type=int, metavar="N", help="require exactly N executed tests")

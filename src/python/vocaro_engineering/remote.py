@@ -323,49 +323,25 @@ def lost(host, status, said, dispatched, slept, output):
             f"Its output is in {output}")
 
 
-class Lease:
+class Lease(devices.BoundedRun):
     """Physical devices a build-host run uses, each reserved in this Mac's record by the session that
-    sends the run (guides/shared-host.md, Physical devices and the build host).
+    sends the run (guides/shared-host.md, Physical devices and the build host): a bounded run
+    whose command runs there.
 
     The dispatch marks each entry's run active with its own process, whose end, by a stop, its death
     or a dropped connection, ends the run there: a run whose dispatcher vanished is an orphan here.
     The connection's ssh is recorded as the entry's own process, which release and recovery wait
-    for. The dispatch records the run's outcome when it ends; releasing the device stays the session's."""
-
-    def __init__(self, owner, held, record):
-        # held: {KEY: {"device": UDID, "revision": the revision the dispatch's next change names}}
-        self.owner, self.held, self.record = owner, held, record
+    for. Once the bound passes, the dispatch stops the run there as a stop does. It records the
+    run's outcome when it ends; releasing the device stays the session's."""
 
     def plan(self, mac):
-        return {"record": mac, "devices": {key: item["device"] for key, item in self.held.items()}}
-
-    def _update(self, key, **changes):
-        self.held[key]["revision"] = self.record.update(key, owner=self.owner, revision=self.held[key]["revision"],
-                                                        **changes)["revision"]
-
-    def begin(self, run):
-        marked = []
-        try:
-            for key in self.held:
-                self._update(key, activeRun=True, hostProcessIdentifier=os.getpid(), run=run)
-                marked.append(key)
-        except BaseException:
-            for key in marked: self._update(key, activeRun=False, run={**run, "outcome": "not sent"})
-            raise
+        return {"record": mac, "devices": dict(self.devices), "until": self.deadline.isoformat()}
 
     def connected(self, pid):
-        for key in self.held:
-            try: self._update(key, own=[pid])
-            except (devices.Refused, OSError, TimeoutError) as error:
-                print(f"remote: {key}'s entry did not record the connection's process {pid}: {error}",
-                      file=sys.stderr, flush=True)
-
-    def end(self, run):
-        for key in self.held:
-            try: self._update(key, activeRun=False, run=run)
-            except (devices.Refused, OSError, TimeoutError) as error:
-                print(f"remote: {key}'s entry did not record the run's end, so it shows the run orphaned until its "
-                      f"owner releases or recovers it: {error}", file=sys.stderr, flush=True)
+        try: self.own(pid)
+        except (devices.Refused, OSError, TimeoutError) as error:
+            print(f"remote: the device entries did not record the connection's process {pid}: {error}",
+                  file=sys.stderr, flush=True)
 
 
 def named_devices(words, record=None):
@@ -380,43 +356,28 @@ def named_devices(words, record=None):
 def lease(keys, owner, words, record=None):
     """The reservations held here that a build-host run carries, or None when it uses no physical device.
 
-    Each key must name a physical device that this Mac's record shows owner holding with no run
-    active, within the window the owner agreed. The build host reaches the paired devices too, and its own record refuses them, so a
-    command that names a physical device of this record that no key covers is refused."""
+    The keys are a bounded run's (devices.BoundedRun): owner holds each one's physical device here
+    with no run active, within the window the owner agreed, and every device the command names is one of
+    them. The build host reaches the paired devices too, and its own record refuses them, so
+    without a key a command that names a physical device of this record is refused."""
     record = record or devices.Record()
-    named = named_devices(words, record)
-    if not keys and not named: return None
-    if keys and not owner:
-        raise ValueError(f"name the session whose reservations --device carries: --device-owner, or {devices.OWNER}")
-    entries = record.load()["devices"]
-    held = {}
-    for key in dict.fromkeys(keys):
-        entry = entries.get(key)
-        state = devices.condition(entry) if entry is not None else "absent"
-        if state != "held" or entry.get("ownerChatID") != owner:
-            holder = f" by {entry.get('ownerChatID')}" if state not in ("absent", "released") else ""
-            raise devices.Refused(f"--device {key}: this Mac's record shows it {state}{holder}, not held by {owner} "
-                                  "with no run active; reserve it here first. Nothing was sent")
-        if not devices.physical(entry.get("device")):
-            raise devices.Refused(f"--device {key} holds {entry.get('device') or 'no device'}, not a physical device; "
-                                  "the build host takes simulators from its own pool. Nothing was sent")
-        try: devices.require_window(key, entry)
-        except devices.Refused as error: raise devices.Refused(f"--device {key}: {error}. Nothing was sent") from None
-        held[key] = {"device": entry["device"].upper(), "revision": entry.get("revision", 0)}
-    covered = {item["device"] for item in held.values()}
-    for key, udid in named.items():
-        if udid not in covered:
+    if not keys:
+        named = named_devices(words, record)
+        if named:
+            key, udid = next(iter(named.items()))
             raise devices.Refused(f"the command names {key}'s device {udid}, which no --device covers: reserve {key} "
                                   f"here and add --device {key}. Nothing was sent")
-    return Lease(owner, held, record) if held else None
+        return None
+    if not owner:
+        raise ValueError(f"name the session whose reservations --device carries: --device-owner, or {devices.OWNER}")
+    return Lease(keys, owner, words, record=record)
 
 
 def carrying(lease, root, host, work, name, send):
     """send()'s status, with the run it makes recorded in each leased device's entry here."""
     if lease is None: return send()
-    run = {"host": host, "work": work, "results": str(Path(root) / ".build/engineering/remote" / name),
-           "startedAt": devices.now()}
-    lease.begin(run)
+    lease.begin({"host": host, "work": work, "results": str(Path(root) / ".build/engineering/remote" / name),
+                 "startedAt": devices.now()})
     outcome = None
     try:
         status = send()
@@ -426,7 +387,8 @@ def carrying(lease, root, host, work, name, send):
         outcome = f"{type(error).__name__}: {error}"
         raise
     finally:
-        lease.end({**run, "endedAt": devices.now(), "outcome": outcome})
+        if lease.timed_out: outcome = f"stopped at its {lease.run['boundSeconds']}s bound, then {outcome}"
+        lease.finish(outcome)
 
 
 def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, decline=False, lease=None):
@@ -516,9 +478,15 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
             lines.put(None)
         threading.Thread(target=relay, daemon=True).start()
         while True:
-            if processes.requested() is not None and stopping is None:
+            bounded = lease is not None and lease.expired()
+            if (processes.requested() is not None or bounded) and stopping is None:
                 stopping = time.monotonic()
-                print(f"remote: stop requested; asking {host} to stop the run", file=sys.stderr, flush=True)
+                if bounded:
+                    lease.timed_out = True
+                    print(f"remote: the run reached its {lease.run['boundSeconds']}s bound, which its device "
+                          f"reservations set; asking {host} to stop it", file=sys.stderr, flush=True)
+                else:
+                    print(f"remote: stop requested; asking {host} to stop the run", file=sys.stderr, flush=True)
                 # The end of the build host's standard input is its stop.
                 try: channel.stdin.close()
                 except OSError: pass

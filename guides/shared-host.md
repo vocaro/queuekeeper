@@ -893,22 +893,51 @@ calls `devices.require_window(KEY, entry)` before each run, `eng remote --device
 `status` reports the device's work as refused. An ended window releases nothing; the session
 restores the device and releases it, and a new window from the owner is a new reservation.
 
-A launcher for one bounded session in a granted interval:
+### Bounded device runs
 
-- requires the exclusive reservation to exist already, and never acquires or extends
-  availability;
-- runs the test under an explicit limit (the current adapter accepts 30 to 600 seconds) that
-  never exceeds the reservation's remaining time less a reserve for termination and restoration
-  queries;
-- counts `xcodebuild` start-up in that limit: on a busy Mac it took nearly five minutes to begin
-  a session whose steps then took one;
-- never changes VoiceOver, uninstalls apps or deletes data;
-- updates only its own entry through the device record's helper, naming the revision its
-  previous change returned, so an ownership change or a concurrent change is refused;
-- keeps ownership and records `restoration-unverified` when restoration fails; an unconfirmed
-  termination does not release the device.
+Run a command on a physical device through the toolkit's one launcher for a bounded run:
 
-Read the launcher's terminal output and verify its receipt before reporting a release.
+```sh
+python3 -m vocaro_engineering.devices run iPhone --owner SESSION --revision N --limit 180 \
+  --restoration 60 -- xcodebuild test-without-building … -destination "platform=iOS,id=UDID"
+```
+
+A project's launcher calls it from Python, `devices.BoundedRun([KEY], owner, command, revision=N,
+limit=…, restoration=…).execute(command, stdout=log)`, and adds its own restoration queries and
+release around it, as Pagepour's mobile UI session does. `eng remote --device` runs the same
+checks and bound for a run on the build host ([below](#physical-devices-and-the-build-host)).
+The launcher:
+
+- requires the session, `--owner` or else `VOCARO_DEVICE_OWNER` or the agent session, to hold
+  KEY with no run active, at `--revision` when given, and KEY to name a physical device. It never
+  acquires, extends or changes a reservation;
+- requires the window the entry records, as above, and refuses once it has ended
+  (`devices.require_window`);
+- refuses, running nothing, a command that names any device but the entry's: a hardware UDID in
+  any case, though not a longer run of hex digits such as a SHA-256, or any device the record
+  holds under another key, a simulator among them. It cannot recognize a device's name or its
+  CoreDevice identifier, so name the device by its UDID;
+- runs the command, supervised, under a bound: the reservation's remaining time, to the earlier
+  of its expected release and the approval's end, less 105 seconds for the run's own end
+  (supervision's wait for descendants that outlive the command, then its SIGTERM, settling and
+  SIGKILL waits) and `--restoration` seconds, 60 by default, for the session's restoration
+  queries, and at most `--limit`. It refuses a bound under 30 seconds. The bound counts
+  `xcodebuild` start-up: on a busy Mac it took nearly five minutes to begin a session whose steps
+  then took one. It counts this Mac's waking time, as supervision's timeouts do, so a Mac that
+  sleeps through a run lengthens the run by the sleep;
+- marks the run active in the entry with its own PID as the run's process, records the command's
+  process as the entry's own, which `release` and `recover` wait for, and records the terminal
+  outcome in the entry's `run` once the command and its observed descendants have ended: `exit N`,
+  which is also its status, a timeout (status 124), a stop (the launcher then ends by the same
+  signal) or a command that did not start;
+- leaves a run whose end is unconfirmed active and the entry uncertain, for attended recovery;
+- updates only its own entry, naming the revision its previous change returned, so an ownership
+  change or a concurrent change is refused;
+- never releases the device, changes VoiceOver, uninstalls apps or deletes data. The session's
+  next change names the revision the launcher's last change returned (`devices show KEY`).
+
+A project's launcher keeps ownership and records `restoration-unverified` when restoration
+fails. Read the launcher's terminal output and verify its receipt before reporting a release.
 
 An interrupted test bypasses its own restoration code. After a transport failure or a forced
 termination, query the settings independently before releasing; if connectivity prevents
@@ -946,8 +975,10 @@ python3 scripts/eng remote admit --device iPhone -- COMMAND
 python3 scripts/eng remote run --device iPhone LANE -- ARGUMENTS
 ```
 
-- `--device KEY`, repeatable, requires the session to hold KEY here with no run active, and KEY
-  to be a physical device within the owner's window; otherwise nothing is sent. `--device-owner` names the session, else
+- `--device KEY`, repeatable, makes the dispatch a [bounded run](#bounded-device-runs) of the
+  reservations held here: the session holds each KEY here with no run active, within the owner's
+  window, KEY names a physical device, and every device the command or the lane's arguments
+  name is one of them; otherwise nothing is sent. `--device-owner` names the session, else
   `VOCARO_DEVICE_OWNER`, else the agent session.
 - The dispatch marks each entry's run active with the `eng remote` process as the run's process,
   records the connection's `ssh` as the entry's own process, and records the run's outcome when
@@ -963,7 +994,14 @@ python3 scripts/eng remote run --device iPhone LANE -- ARGUMENTS
   so a process that reaches the device without naming it is not seen. A build host that cannot be
   reached keeps the device until it can be, or until the owner recovers it with
   `--build-host-unchecked REASON`, which the recovery records.
-- The run reads its reservations from `VOCARO_DEVICE_LEASE`: `{"record": MAC, "devices": {KEY: UDID}}`.
+- The bound starts when the dispatch does, so it counts sending the commits and waiting for
+  admission there. Once it passes, by this Mac's clock, the dispatch stops the run there as a stop
+  does, and the outcome begins `stopped at its Ns bound`.
+- The run reads its reservations from `VOCARO_DEVICE_LEASE`:
+  `{"record": MAC, "devices": {KEY: UDID}, "until": END}`, where END is the reservations' end.
+  There `devices run KEY -- COMMAND` takes KEY from the lease, since the build host's record
+  defers physical devices: it checks the devices the command names against the lease, bounds the
+  command by END as here, and leaves the recording to the dispatch.
 - The device stays reserved after the run. Preflight, restoration and the release are the
   session's, from this Mac, which reaches the device too.
 - A command, or a lane's arguments, that names a physical device of this record that no

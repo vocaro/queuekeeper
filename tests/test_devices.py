@@ -7,19 +7,26 @@ import os
 from pathlib import Path
 import pwd
 import re
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
 SOURCE = Path(__file__).resolve().parents[1] / "src/python"
 sys.path.insert(0, str(SOURCE))
 from vocaro_engineering import cli, devices
+from vocaro_engineering.resources import process_start
 
-# Well-formed, invented identifiers: a hardware UDID and a simulator UUID.
+# Well-formed, invented identifiers: hardware UDIDs and a simulator UUID.
 PHONE = "00008130-001A2C3E0C38001C"
+TABLET = "00008103-000E4C1A3E90801E"
 DUO = "5B0E6C51-2D3A-4F7B-9C1E-0A4B8D2F6E13"
+# Writes the entry it is given, as the record shows it during the run, to a file.
+PROBE = ("import json, sys; entry = json.load(open(sys.argv[1]))['devices'][sys.argv[2]]; "
+         "open(sys.argv[3], 'w').write(json.dumps(entry))")
 
 WRITER = r"""
 import contextlib, sys, time
@@ -593,6 +600,248 @@ class DeviceRecordTests(unittest.TestCase):
         self.assertIn("iPhone: released; last owner session-a", self.cli("status")[1])
         self.assertEqual(json.loads(self.cli("show", "iPad")[1])["revision"], 0)
         self.assertEqual(self.cli("path")[1].strip(), str(self.path))
+
+
+class BoundedRunTests(unittest.TestCase):
+    def setUp(self):
+        temp = scratch()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+        self.path = self.root / "device-handoff.json"
+        self.record = devices.Record(self.path)
+        self.marker = self.root / "ran"
+        patcher = patch.dict(os.environ, {devices.OVERRIDE: str(self.path)})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        for name in (devices.OWNER, devices.LEASE, "CODEX_THREAD_ID", "CLAUDE_CODE_SESSION_ID"):
+            os.environ.pop(name, None)
+
+    def hold(self, key="iPad", device=TABLET, owner="session-a", release_by=None, **options):
+        """A reservation within the owner's approval of a window until it ends."""
+        entry = self.record.entry(key)
+        release_by = release_by or later()
+        options.setdefault("approval", approval(until=release_by))
+        return self.record.reserve(key, owner=owner, revision=(entry or {}).get("revision", 0), purpose="bounded run",
+                                   release_by=release_by, device=device, **options)
+
+    def mark(self, *words):
+        """A command that records that it ran, naming words."""
+        return [sys.executable, "-c", "import sys; open(sys.argv[1], 'a').write('ran')", str(self.marker), *words]
+
+    def cli(self, *arguments):
+        with contextlib.redirect_stdout(StringIO()) as output, contextlib.redirect_stderr(StringIO()) as error:
+            code = devices.main(list(arguments))
+        return code, output.getvalue(), error.getvalue()
+
+    def test_a_run_on_the_held_device_is_recorded_in_its_entry_which_stays_reserved(self):
+        held = self.hold()
+        during = self.root / "during.json"
+        # The command may name its own device in any case.
+        code, _output, error = self.cli("run", "iPad", "--owner", "session-a", "--", sys.executable, "-c", PROBE,
+                                        str(self.path), "iPad", str(during), f"id={TABLET.lower()}")
+        self.assertEqual(code, 0, error)
+        self.assertIn("exited with status 0; iPad stays reserved", error)
+        running = json.loads(during.read_text())
+        self.assertTrue(running["activeRun"])
+        self.assertEqual(running["hostProcessIdentifier"], os.getpid())
+        [command] = running["ownedProcesses"]
+        self.assertNotEqual(command["pid"], os.getpid())
+        entry = self.record.entry("iPad")
+        self.assertEqual(devices.condition(entry), "held")
+        self.assertEqual((entry["ownerChatID"], entry["state"], entry["run"]["outcome"]), ("session-a", "reserved", "exit 0"))
+        self.assertEqual(entry["run"]["command"][:2], [sys.executable, "-c"])
+        left = (devices.moment(held["expectedReleaseBy"]) - datetime.now(timezone.utc)).total_seconds()
+        self.assertLessEqual(entry["run"]["boundSeconds"], left - devices.TERMINATION - devices.RESTORATION + 1)
+        self.assertEqual(entry["revision"], held["revision"] + 3)
+        self.assertFalse(devices.running(entry))
+        # The command's status is the run's, and the device stays reserved after a failure too.
+        code, _output, _error = self.cli("run", "iPad", "--owner", "session-a", "--", sys.executable, "-c",
+                                         "raise SystemExit(3)")
+        self.assertEqual(code, 3)
+        entry = self.record.entry("iPad")
+        self.assertEqual((devices.condition(entry), entry["run"]["outcome"]), ("held", "exit 3"))
+
+    def test_a_command_that_names_another_device_is_refused_and_runs_nothing(self):
+        self.hold()
+        self.hold("iPhone", device=PHONE, owner="session-b")
+        self.hold("Example Duo 1", device=DUO, owner="session-b")
+        # Another entry's device, by destination or option, a hardware UDID no entry holds, and another
+        # entry's simulator are each a device the run does not hold.
+        for word, holder in [(f"platform=iOS,id={PHONE}", "iPhone"), (PHONE.lower(), "iPhone"),
+                             ("00008020-0011223344556677", None), ("0123456789abcdef0123456789abcdef01234567", None),
+                             (DUO, "Example Duo 1")]:
+            with self.subTest(word):
+                before = self.path.read_bytes()
+                code, _output, error = self.cli("run", "iPad", "--owner", "session-a", "--", *self.mark(word))
+                self.assertEqual(code, 2)
+                udid = word.upper().rpartition("=")[2]
+                self.assertIn(f"the command names {udid}" + (f", {holder}'s device," if holder else " but"), error)
+                self.assertIn(f"holds only iPad ({TABLET})", error)
+                self.assertFalse(self.marker.exists())
+                self.assertEqual(self.path.read_bytes(), before)
+        # Positive controls: a UUID no entry holds, such as a store's, and a SHA-256 are not devices.
+        code, _output, error = self.cli("run", "iPad", "--owner", "session-a", "--",
+                                        *self.mark("C6E2A1F4-1D2B-4E5F-8A9B-0C1D2E3F4A5B", "ab" * 32, TABLET))
+        self.assertEqual(code, 0, error)
+        self.assertEqual(self.marker.read_text(), "ran")
+
+    def test_only_the_holder_with_no_run_active_within_the_owners_approval_may_run(self):
+        command = ["--", *self.mark()]
+        def refused(message, *arguments, key="iPad", owner="session-a"):
+            code, _output, error = self.cli("run", key, *(["--owner", owner] if owner else []), *arguments, *command)
+            self.assertEqual(code, 2)
+            self.assertRegex(error, message)
+            self.assertFalse(self.marker.exists())
+        refused("iPad: the device record shows it absent, not held by session-a")
+        held = self.hold(owner="session-b")
+        refused("shows it held by session-b, not held by session-a")
+        refused("name the session that holds iPad", owner=None)
+        self.record.release("iPad", owner="session-b", revision=held["revision"], outcome="o", restoration="r")
+        refused("shows it released")
+        held = self.hold()
+        refused("at revision .*, not 1: it changed after the session verified it", "--revision", "1")
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        self.addCleanup(child.wait)
+        self.addCleanup(child.kill)
+        active = self.record.update("iPad", owner="session-a", revision=held["revision"], activeRun=True,
+                                    hostProcessIdentifier=child.pid)
+        refused("shows it active by session-a")
+        child.kill()
+        child.wait()
+        refused("shows it orphan by session-a")
+        self.record.recover("iPad", by="session-a", revision=active["revision"], verified="the run ended")
+        self.hold("Example Duo 1", device=DUO)
+        refused(f"holds {DUO}, not a physical device", key="Example Duo 1")
+        self.hold()
+        with patch.object(devices, "datetime", Later):
+            refused("the owner's approval of iPad ended at")
+        # An entry from before reservations recorded the window has none to run in.
+        value = json.loads(self.path.read_text())
+        del value["devices"]["iPad"]["approval"]
+        self.path.write_text(json.dumps(value))
+        refused("the owner's approval of iPad was never recorded")
+        value["devices"]["iPad"]["approval"] = approval(until=value["devices"]["iPad"]["expectedReleaseBy"])
+        self.path.write_text(json.dumps(value))
+        # Positive control: the same reservation, within its approval.
+        code, _output, error = self.cli("run", "iPad", "--owner", "session-a", *command)
+        self.assertEqual(code, 0, error)
+        self.assertTrue(self.marker.exists())
+        # The session's own name comes from the environment too.
+        with patch.dict(os.environ, {devices.OWNER: "session-a"}):
+            self.assertEqual(self.cli("run", "iPad", *command)[0], 0)
+
+    def test_the_bound_is_the_reservations_remaining_time_less_the_reserve_and_ends_the_command(self):
+        keep = devices.TERMINATION + devices.RESTORATION
+        self.hold(release_by=later((keep + 300) / 60))
+        bounded = devices.BoundedRun(["iPad"], "session-a", [], record=self.record)
+        self.assertAlmostEqual(bounded.seconds(), 300, delta=5)
+        self.assertEqual(devices.BoundedRun(["iPad"], "session-a", [], record=self.record, limit=40).seconds(), 40)
+        self.assertAlmostEqual(devices.BoundedRun(["iPad"], "session-a", [], record=self.record,
+                                                  restoration=0).seconds(), 300 + devices.RESTORATION, delta=5)
+        with self.assertRaisesRegex(ValueError, "at least 30s"):
+            devices.BoundedRun(["iPad"], "session-a", [], record=self.record, limit=10)
+        # A later expected release leaves the run within the owner's approval, which ends first.
+        entry = self.record.entry("iPad")
+        self.record.update("iPad", owner="session-a", revision=entry["revision"], expectedReleaseBy=later(600))
+        self.assertAlmostEqual(devices.BoundedRun(["iPad"], "session-a", [], record=self.record).seconds(), 300, delta=5)
+        # Too little time left refuses the run, and nothing runs.
+        entry = self.record.entry("iPad")
+        self.record.update("iPad", owner="session-a", revision=entry["revision"], expectedReleaseBy=later((keep + 10) / 60))
+        code, _output, error = self.cli("run", "iPad", "--owner", "session-a", "--", *self.mark())
+        self.assertEqual(code, 2)
+        self.assertRegex(error, r"leaving (9|10)s for a run after the \d+s kept for its termination and restoration; "
+                                r"a run needs 30s")
+        self.assertFalse(self.marker.exists())
+        # A command that outlasts its bound is stopped, and its outcome recorded; the device stays reserved.
+        entry = self.record.update("iPad", owner="session-a", revision=self.record.entry("iPad")["revision"],
+                                   expectedReleaseBy=later(30))
+        with patch.object(devices, "MINIMUM", 1):
+            started = datetime.now(timezone.utc)
+            code, _output, error = self.cli("run", "iPad", "--owner", "session-a", "--limit", "1", "--",
+                                            sys.executable, "-c", "import time; time.sleep(60)")
+        self.assertEqual(code, devices.TIMED_OUT, error)
+        self.assertLess((datetime.now(timezone.utc) - started).total_seconds(), 30)
+        entry = self.record.entry("iPad")
+        self.assertEqual(devices.condition(entry), "held")
+        self.assertIn("timed out after 1s", entry["run"]["outcome"])
+        self.assertEqual(entry["run"]["boundSeconds"], 1)
+
+    def test_a_command_that_cannot_start_leaves_no_active_run(self):
+        self.hold()
+        code, _output, error = self.cli("run", "iPad", "--owner", "session-a", "--", str(self.root / "missing-tool"))
+        self.assertEqual(code, 2)
+        self.assertIn("did not start", error)
+        entry = self.record.entry("iPad")
+        self.assertEqual(devices.condition(entry), "held")
+        self.assertIn("did not start", entry["run"]["outcome"])
+
+    def test_an_unconfirmed_end_keeps_the_run_active_and_its_entry_uncertain(self):
+        self.hold()
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        self.addCleanup(child.wait)
+        self.addCleanup(child.kill)
+        def stuck(command, *, cwd, stdout, timeout, on_start):
+            on_start(child.pid)
+            raise RuntimeError("Timed out, but owned descendants have no confirmed terminal result; reservation retained")
+        bounded = devices.BoundedRun(["iPad"], "session-a", [], record=self.record)
+        with patch.object(devices.processes, "supervise", side_effect=stuck), \
+                self.assertRaisesRegex(RuntimeError, "no confirmed terminal result"):
+            bounded.execute(["xcodebuild"])
+        entry = self.record.entry("iPad")
+        self.assertEqual((entry["ownerChatID"], entry["activeRun"], entry["uncertain"]), ("session-a", True, True))
+        self.assertEqual(devices.condition(entry), "uncertain")
+        self.assertIn("the run stays active for attended recovery", entry["run"]["outcome"])
+        self.assertEqual([item["pid"] for item in devices.running(entry)], [child.pid])
+        with self.assertRaisesRegex(devices.Refused, "active run"):
+            self.record.release("iPad", owner="session-a", revision=entry["revision"], outcome="o", restoration="r")
+        self.assertEqual(bounded.revisions["iPad"], entry["revision"])
+
+    def test_a_stop_ends_the_command_and_is_recorded_as_the_runs_outcome(self):
+        self.hold()
+        started = self.root / "started"
+        launcher = subprocess.Popen(
+            [sys.executable, "-m", "vocaro_engineering.devices", "run", "iPad", "--owner", "session-a", "--",
+             sys.executable, "-c", "import sys, time; open(sys.argv[1], 'w').close(); time.sleep(60)", str(started)],
+            env={**os.environ, "PYTHONPATH": str(SOURCE)}, stderr=subprocess.PIPE, text=True)
+        self.addCleanup(launcher.kill)
+        # The command can start before the launcher's record names it, so both are awaited.
+        recorded = lambda: started.exists() and "ownedProcesses" in self.record.entry("iPad")
+        for _ in range(600):
+            if recorded() or launcher.poll() is not None: break
+            time.sleep(0.05)
+        self.assertTrue(recorded(), launcher.stderr.read() if launcher.poll() is not None else "not started")
+        [command] = self.record.entry("iPad")["ownedProcesses"]
+        launcher.send_signal(signal.SIGTERM)
+        _output, error = launcher.communicate(timeout=60)
+        self.assertEqual(launcher.returncode, -signal.SIGTERM, error)
+        entry = self.record.entry("iPad")
+        self.assertEqual(devices.condition(entry), "held")
+        self.assertIn("Stopped by SIGTERM", entry["run"]["outcome"])
+        # The stop ended the command before the launcher recorded the outcome.
+        self.assertNotEqual(process_start(command["pid"]), command["start"])
+
+    def test_on_the_build_host_a_run_takes_its_reservation_from_the_lease_and_changes_no_record(self):
+        self.record.defer("workstation")
+        lease = {"record": "workstation", "devices": {"iPad": TABLET}, "until": later()}
+        def run(*words, key="iPad", carried=lease):
+            environment = {devices.LEASE: json.dumps(carried)} if carried is not None else {}
+            with patch.dict(os.environ, environment):
+                return self.cli("run", key, "--", *self.mark(*words))
+        before = self.path.read_bytes()
+        refusals = [(run(key="iPhone"), "the run's lease carries iPad, not iPhone"),
+                    (run(PHONE), f"the command names {PHONE} but the run holds only iPad"),
+                    (run(carried={**lease, "record": "another-mac"}), "lease is from another-mac's record"),
+                    (run(carried={**lease, "until": later(2)}), "leaving 0s for a run"),
+                    (run(carried=None), "physical devices are reserved in workstation's device record")]
+        for (code, _output, error), message in refusals:
+            with self.subTest(message):
+                self.assertEqual(code, 2)
+                self.assertIn(message, error)
+        self.assertFalse(self.marker.exists())
+        code, _output, error = run(TABLET)
+        self.assertEqual(code, 0, error)
+        self.assertTrue(self.marker.exists())
+        self.assertEqual(self.path.read_bytes(), before)
 
 
 if __name__ == "__main__":

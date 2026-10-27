@@ -23,10 +23,16 @@ build host's record defers physical devices to that Mac and refuses to reserve o
 uses one under a reservation held in the sending Mac's record, which `eng remote --device` carries.
 A physical device's reservation records the window the owner agreed, as mac-foreground's does,
 and require_window refuses work on it once that window has ended.
+
+A bounded run (`devices run KEY -- COMMAND`, BoundedRun) runs one command on physical devices the
+session holds within the owner's approval, refusing a command that names any other device, and
+stops it before the reservation ends, keeping time for its termination and the session's
+restoration. It records the run in the entry and never releases the device. `eng remote --device`
+bounds a build-host run the same way, and there a bounded run takes its reservation from the lease.
 """
 import argparse
 import contextlib
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import fcntl
 import glob
 import hashlib
@@ -39,6 +45,7 @@ import sys
 import tempfile
 import time
 
+from . import processes
 from .resources import process_start
 
 SCHEMA = 1
@@ -52,9 +59,21 @@ UDID = re.compile(r"[0-9A-F]{8}(?:-[0-9A-F]{4,16}){1,4}|[0-9A-F]{40}")
 PHYSICAL = re.compile(r"[0-9A-F]{8}-[0-9A-F]{16}|[0-9A-F]{40}")
 # The Mac whose record holds physical devices, in a record that defers them to it: the build host's.
 DEFERRED = "physicalDevicesRecordedOn"
+# A hardware UDID as a word of uppercased text, not part of a longer run of hex digits such as a SHA-256.
+NAMED_PHYSICAL = re.compile(rf"(?<![0-9A-F])(?:{PHYSICAL.pattern})(?![0-9A-F])")
 # The reservations a build-host run may use, held in the sending Mac's record, as JSON:
-# {"record": MAC, "devices": {KEY: UDID}}. build_host.py sets it for the run.
+# {"record": MAC, "devices": {KEY: UDID}, "until": the reservations' end}. build_host.py sets it for the run.
 LEASE = "VOCARO_DEVICE_LEASE"
+# Seconds a bounded run keeps before its reservation ends for its own end once its bound expires:
+# supervision's wait for descendants that outlive the command, then its SIGTERM, settling and
+# SIGKILL waits (processes.py).
+TERMINATION = processes.LINGER + processes.KILL_AFTER + processes.SETTLE_WAIT + processes.KILL_WAIT
+# Seconds it keeps after that, unless the caller names its own, for the session's restoration queries.
+RESTORATION = 60
+# Seconds below which a bounded run is refused as too short to start.
+MINIMUM = 30
+# A bounded run's exit status when its bound expired and the command then ended, as timeout(1)'s.
+TIMED_OUT = 124
 # Written only by the record's own operations, which say who changed ownership and why.
 MANAGED = {"revision", "ownerChatID", "lastOwnerChatID", "previousLease", "recovery", "importedFrom",
            "importedVersions", "uncertainReason", "hostProcessStart", "approval", "ownedProcesses", "frontmost"}
@@ -579,6 +598,179 @@ def require_foreground(owner, record=None):
     return require_window(FOREGROUND, entry)
 
 
+def named(words, known=()):
+    """The device identifiers words name, uppercased: every hardware UDID, and each of known that appears."""
+    text = " ".join(map(str, words)).upper()
+    found = set(NAMED_PHYSICAL.findall(text))
+    found.update(udid.upper() for udid in known if isinstance(udid, str) and udid and udid.upper() in text)
+    return found
+
+
+class BoundedRun:
+    """One command on physical devices the session holds, stopped before their reservations end and
+    never releasing them (guides/shared-host.md, Bounded device runs).
+
+    Here the reservations come from this Mac's record: the session holds each with no run active,
+    at revision when one is given, within the owner's approval. Each entry records the run: active,
+    with this process as the run's and the command as the entry's own process, then its outcome.
+    On the build host, whose record defers physical devices, they come from the lease the dispatch
+    carries (LEASE), and the dispatch records the run in the sending Mac's record. Every device
+    identifier the command names, a hardware UDID or any device the record knows, is one it holds.
+    The bound is the reservations' remaining time, less what the run keeps for its termination
+    and the session's restoration, and at most limit."""
+
+    def __init__(self, keys, owner, words, *, record=None, revision=None, limit=None, restoration=None):
+        keys = list(dict.fromkeys(keys))
+        if not keys:
+            raise ValueError("a bounded run names the device entries it uses")
+        if revision is not None and len(keys) != 1:
+            raise ValueError("a revision is one entry's")
+        if limit is not None and limit < MINIMUM:
+            raise ValueError(f"a bounded run's limit is at least {MINIMUM}s")
+        self.record, self.owner, self.limit = record or Record(), owner, limit
+        self.keep = TERMINATION + (RESTORATION if restoration is None else restoration)
+        # The run as its entries record it, when its bound ends, and whether the bound ended it.
+        self.run, self.until, self.timed_out = None, None, False
+        value = self.record.load()
+        entries = value["devices"]
+        if value.get(DEFERRED):
+            # The dispatch records the run in the sending Mac's record, so nothing here is changed.
+            self.revisions = None
+            self.devices, self.deadline = self._leased(keys, value[DEFERRED])
+        else:
+            if not owner:
+                raise ValueError(f"name the session that holds {', '.join(keys)}: --owner, or {OWNER}")
+            self.revisions = {}
+            self.devices, self.deadline = self._held(keys, entries, revision)
+        held = set(self.devices.values())
+        for udid in sorted(named(words, [entry.get("device") for entry in entries.values()]) - held):
+            holders = [key for key, entry in entries.items() if str(entry.get("device") or "").upper() == udid]
+            whose = f", {' and '.join(holders)}'s device," if holders else ""
+            raise Refused(f"the command names {udid}{whose} but the run holds only "
+                          f"{', '.join(f'{key} ({device})' for key, device in self.devices.items())}: every device "
+                          "it names is one it holds. Nothing ran")
+        self.seconds()
+
+    def _held(self, keys, entries, revision):
+        devices, ends = {}, []
+        for key in keys:
+            entry = entries.get(key)
+            state = condition(entry) if entry is not None else "absent"
+            if state != "held" or entry.get("ownerChatID") != self.owner:
+                holder = f" by {entry.get('ownerChatID')}" if state not in ("absent", "released") else ""
+                raise Refused(f"{key}: the device record shows it {state}{holder}, not held by {self.owner} with no "
+                              "run active; reserve it first. Nothing ran")
+            if revision is not None and entry.get("revision", 0) != revision:
+                raise Stale(f"{key} is at revision {entry.get('revision', 0)}, not {revision}: it changed after the "
+                            "session verified it. Read it again. Nothing ran")
+            if not physical(entry.get("device")):
+                raise Refused(f"{key} holds {entry.get('device') or 'no device'}, not a physical device; simulators "
+                              "come from a project's pool. Nothing ran")
+            try: require_window(key, entry)
+            except Refused as error: raise Refused(f"{error}. Nothing ran") from None
+            approval = entry["approval"]
+            release = moment(entry.get("expectedReleaseBy"))
+            if release is None:
+                raise Refused(f"{key} records no expected release to bound the run by. Nothing ran")
+            ends += [release] + ([] if approval["until"] == "released" else [moment(approval["until"])])
+            devices[key] = entry["device"].upper()
+            self.revisions[key] = entry.get("revision", 0)
+        return devices, min(ends)
+
+    def _leased(self, keys, mac):
+        """The reservations held in mac's record that this build-host run carries."""
+        if not os.environ.get(LEASE):
+            raise deferred_refusal(mac, keys[0])
+        try:
+            lease = json.loads(os.environ[LEASE])
+            carried = {key: udid.upper() for key, udid in lease["devices"].items()}
+            deadline = moment(lease["until"])
+        except (ValueError, TypeError, KeyError, AttributeError) as error:
+            raise Refused(f"{LEASE} is not a lease of devices and their end ({error!r}). Nothing ran") from error
+        if lease.get("record") != mac:
+            raise Refused(f"the run's lease is from {lease.get('record')}'s record, not {mac}'s, which this record "
+                          "defers physical devices to. Nothing ran")
+        missing = [key for key in keys if key not in carried]
+        if missing:
+            raise Refused(f"the run's lease carries {', '.join(carried) or 'no device'}, not {', '.join(missing)}: "
+                          f"send the run from {mac} with `eng remote run|admit --device {missing[0]}`. Nothing ran")
+        if deadline is None:
+            raise Refused("the run's lease names no end for its reservations. Nothing ran")
+        return {key: carried[key] for key in keys}, deadline
+
+    def seconds(self):
+        """The seconds the command may run from now, refused when too few."""
+        left = (self.deadline - datetime.now(timezone.utc)).total_seconds() - self.keep
+        if self.limit is not None: left = min(left, self.limit)
+        if left < MINIMUM:
+            raise Refused(f"{' and '.join(self.devices)}'s reservation ends at {self.deadline.isoformat()}, leaving "
+                          f"{max(left, 0):.0f}s for a run after the {self.keep:.0f}s kept for its termination and "
+                          f"restoration; a run needs {MINIMUM}s. Nothing ran")
+        return left
+
+    def _update(self, key, **changes):
+        self.revisions[key] = self.record.update(key, owner=self.owner, revision=self.revisions[key],
+                                                 **changes)["revision"]
+
+    def begin(self, run):
+        """Start the bound and mark each entry's run active, with this process as the run's; the bound's seconds."""
+        bound = int(self.seconds())
+        self.until = datetime.now(timezone.utc) + timedelta(seconds=bound)
+        self.run = {**run, "boundSeconds": bound, "stopsAt": self.until.isoformat()}
+        marked = []
+        try:
+            for key in self.revisions or ():
+                self._update(key, activeRun=True, hostProcessIdentifier=os.getpid(), run=self.run)
+                marked.append(key)
+        except BaseException:
+            for key in marked: self._update(key, activeRun=False, run={**self.run, "outcome": "not run"})
+            raise
+        return bound
+
+    def own(self, pid):
+        """Record pid, which the run started, as each entry's own process: release and recovery wait for it."""
+        for key in self.revisions or ():
+            self._update(key, own=[pid])
+
+    def expired(self):
+        """Whether the bound begin started has passed, by the wall clock, which counts a sleep."""
+        return self.until is not None and datetime.now(timezone.utc) >= self.until
+
+    def finish(self, outcome, *, uncertain=False):
+        """Record the run's outcome in each entry: inactive, or still active and uncertain when its end is
+        unconfirmed, for attended recovery. The devices stay reserved."""
+        self.run = {**self.run, "endedAt": now(), "outcome": outcome}
+        for key in self.revisions or ():
+            try:
+                self._update(key, run=self.run, **({"uncertain": True} if uncertain else {"activeRun": False}))
+            except (Refused, OSError, TimeoutError) as error:
+                print(f"devices: {key}'s entry did not record the run's end, so it shows the run orphaned until its "
+                      f"owner releases or recovers it: {error}", file=sys.stderr, flush=True)
+
+    def execute(self, command, *, cwd=None, stdout=None, run=None):
+        """Run command under the bound, recorded in each entry, and return its exit status.
+
+        A timeout, a stop, or a command that did not start is recorded and raised once the command
+        and its observed descendants have ended. A run whose end is unconfirmed stays active."""
+        command = list(command)
+        timeout = self.begin({**(run or {}), "command": command, "startedAt": now()})
+        try:
+            status = processes.supervise(command, cwd=cwd, stdout=stdout, timeout=timeout, on_start=self.own)
+        except processes.TimedOut as error:
+            self.timed_out = True
+            self.finish(str(error))
+            raise
+        except (processes.Interrupted, processes.NotStarted) as error:
+            self.finish(str(error))
+            raise
+        except BaseException as error:
+            self.finish(f"{error}; its end is unconfirmed, so the run stays active for attended recovery",
+                        uncertain=True)
+            raise
+        self.finish(f"exit {status}")
+        return status
+
+
 def _describe(key, entry):
     state = condition(entry)
     parts = [f"{key}: {state}"]
@@ -652,7 +844,8 @@ def _report(key, entry):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="python3 -m vocaro_engineering.devices",
-                                     description="Read or change the shared device handoff record.")
+                                     description="Read or change the shared device handoff record, or run a "
+                                     "bounded command on a physical device it reserves.")
     commands = parser.add_subparsers(dest="action", required=True)
     commands.add_parser("path", help="print the record's location")
     commands.add_parser("status", help="every entry's condition, and legacy records not yet imported")
@@ -704,6 +897,25 @@ def main(argv=None):
     target.add_argument("mac", nargs="?", help="the Mac whose record holds physical devices")
     target.add_argument("--end", action="store_true", help="hold physical devices in this record again")
     defer.add_argument("--replace", action="store_true", help="defer to MAC when the record defers to another Mac")
+    bounded = commands.add_parser("run", usage="%(prog)s [-h] [--owner SESSION] [--revision N] [--limit SECONDS] "
+                                  "[--restoration SECONDS] key -- COMMAND ...", help="run COMMAND on KEY's physical "
+                                  "device, held by the session within the owner's approval, and stop it before the "
+                                  "reservation ends; it records the run in the entry and never releases the device")
+    bounded.add_argument("key")
+    bounded.add_argument("--owner", default=default_owner(), help=f"the session holding KEY (default: {OWNER}, "
+                         "else the agent session)")
+    bounded.add_argument("--revision", type=int, help="refuse unless the entry is still at the revision the session "
+                         "verified")
+    bounded.add_argument("--limit", type=float, metavar="SECONDS", help="stop COMMAND after at most this long")
+    bounded.add_argument("--restoration", type=float, metavar="SECONDS", default=RESTORATION,
+                         help=f"time kept before the reservation ends for the session's restoration, after "
+                         f"{TERMINATION}s for the run's termination (default {RESTORATION})")
+    argv = sys.argv[1:] if argv is None else list(argv)
+    # What follows run's -- is the command, whatever its options.
+    command = None
+    if argv[:1] == ["run"] and "--" in argv:
+        split = argv.index("--")
+        argv, command = argv[:split], argv[split + 1:]
     args = parser.parse_args(argv)
     try:
         record = Record()
@@ -743,6 +955,20 @@ def main(argv=None):
             if record.defer(None if args.end else args.mac, replace=args.replace):
                 print(f"{record.path}: physical devices are reserved here again" if args.end else
                       f"{record.path}: physical devices are reserved in {args.mac}'s device record from now on")
+        elif args.action == "run":
+            if not command:
+                raise ValueError("name the command after --: devices run KEY -- COMMAND")
+            run = BoundedRun([args.key], args.owner, command, record=record, revision=args.revision,
+                             limit=args.limit, restoration=args.restoration)
+            with processes.forwarding_signals():
+                try:
+                    code = run.execute(command)
+                except processes.TimedOut as error:
+                    print(f"devices: {error}; {args.key} stays reserved", file=sys.stderr)
+                    return TIMED_OUT
+            print(f"devices: {command[0]} exited with status {code}; {args.key} stays reserved", file=sys.stderr)
+            # A command a signal ended has a negative status; a shell reports it as 128 plus the signal.
+            return 128 - code if code < 0 else code
         return 0
     except (OSError, ValueError, RuntimeError) as error:
         print(f"devices: {error}", file=sys.stderr)

@@ -135,8 +135,10 @@ def forwarding_signals():
             raise SystemExit(128 + number)
 
 
-def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None):
+def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None, on_start=None):
     """Wait for the owned root and observed descendants, including separate process groups.
+
+    on_start(pid) runs once the root has started; if it raises, the root is stopped.
 
     PID start identities prevent signaling a reused PID. An uncertain run raises so admission
     retains its orphan guard. A confirmed terminal exit keeps its status. A run that fails, is
@@ -210,6 +212,7 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
         return bool(found)
 
     try:
+        if on_start is not None: on_start(child.pid)
         while True:
             current = snapshot()
             row = current.get(child.pid)

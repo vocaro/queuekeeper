@@ -351,12 +351,12 @@ class RemoteTests(unittest.TestCase):
         # During the run the entry here is active, with the dispatcher's process as the run's.
         probe = ("import json, os, sys; lease = json.loads(os.environ['VOCARO_DEVICE_LEASE']); "
                  "entry = json.load(open(sys.argv[1]))['devices']['iPhone']; "
-                 "print('lease', lease['record'], lease['devices']); "
+                 "print('lease', lease['record'], lease['devices'], lease['until']); "
                  "print('entry', entry['activeRun'], entry['hostProcessIdentifier'], len(entry['ownedProcesses']))")
         status, output, error = self.eng("remote", "admit", "--device", "iPhone", "--device-owner", "session-a",
                                          "--", sys.executable, "-c", probe, str(self.record_here))
         self.assertEqual(status, 0, error)
-        self.assertIn(f"lease {build_host.mac_name()} {{'iPhone': '{PHONE}'}}", output)
+        self.assertIn(f"lease {build_host.mac_name()} {{'iPhone': '{PHONE}'}} {held['expectedReleaseBy']}", output)
         self.assertIn(f"entry True {os.getpid()} 1", output)
         entry = devices.Record(self.record_here).entry("iPhone")
         self.assertEqual(devices.condition(entry), "held")
@@ -397,7 +397,7 @@ class RemoteTests(unittest.TestCase):
             status, _output, error = self.eng("remote", "admit", "--device", "iPad", "--device-owner", "session-a",
                                               "--", sys.executable, "-c", "pass")
         self.assertEqual(status, 2)
-        self.assertIn("--device iPad: the owner's approval of iPad ended at", error)
+        self.assertIn("the owner's approval of iPad ended at", error)
         self.assertTrue(self.nothing_sent())
         self.assertEqual(record.entry("iPhone")["ownerChatID"], "session-b")
         self.assertEqual(devices.condition(record.entry("iPad")), "held")
@@ -453,6 +453,56 @@ class RemoteTests(unittest.TestCase):
         left.wait()
         recovered = record.recover("iPhone", by="owner", revision=entry["revision"], verified="nothing on the device")
         self.assertEqual((recovered["state"], recovered["recovery"]["buildHost"]["host"]), ("released", "fake"))
+
+    def test_a_device_run_names_only_its_devices_and_is_bounded(self):
+        held = self.hold()
+        # A hardware UDID the record holds under no key is a device the run does not hold, as is another
+        # entry's simulator; the record's own device, in any case, a UUID it does not know and a SHA-256 are not.
+        self.hold("Example Duo 1", device=DUO, owner="session-b")
+        device = ["--device", "iPhone", "--device-owner", "session-a", "--", sys.executable, "-c", "pass"]
+        for other in ["00008020-0011223344556677", DUO]:
+            with self.subTest(other):
+                status, _output, error = self.eng("remote", "admit", *device, f"id={other}")
+                self.assertEqual(status, 2)
+                self.assertIn(f"the command names {other}", error)
+                self.assertTrue(self.nothing_sent())
+        status, _output, error = self.eng("remote", "admit", *device, f"id={PHONE.lower()}",
+                                          "C6E2A1F4-1D2B-4E5F-8A9B-0C1D2E3F4A5B", "ab" * 32)
+        self.assertEqual(status, 0, error)
+        self.assertEqual(devices.condition(devices.Record(self.record_here).entry("iPhone")), "held")
+        # The dispatch stops the run there once the reservation leaves no more than its reserve.
+        entry = devices.Record(self.record_here).entry("iPhone")
+        remaining = (devices.moment(entry["expectedReleaseBy"]) - datetime.now(timezone.utc)).total_seconds()
+        sleeper = ["--device", "iPhone", "--device-owner", "session-a", "--", sys.executable, "-c",
+                   "import time; print('sleeping', flush=True); time.sleep(120)"]
+        with patch.object(devices, "MINIMUM", 1), \
+                patch.object(devices, "TERMINATION", remaining - devices.RESTORATION - 6):
+            started = time.monotonic()
+            status, _output, error = self.eng("remote", "admit", *sleeper)
+        self.assertLess(time.monotonic() - started, 60, error)
+        self.assertNotEqual(status, 0)
+        self.assertIn("bound, which its device reservations set; asking fake to stop it", error)
+        entry = devices.Record(self.record_here).entry("iPhone")
+        self.assertEqual(devices.condition(entry), "held")
+        self.assertRegex(entry["run"]["outcome"], r"^stopped at its [1-6]s bound, then exit ")
+        self.assertGreater(entry["revision"], held["revision"])
+
+    def test_a_bounded_run_on_the_build_host_takes_its_reservation_from_the_lease(self):
+        self.hold()
+        helper = ("import os, runpy, sys; sys.path.insert(0, os.path.join(os.environ['VOCARO_ENGINEERING_ROOT'], "
+                  "'src/python')); runpy.run_module('vocaro_engineering.devices', run_name='__main__')")
+        launch = [sys.executable, "-c", helper, "run"]
+        ran = [sys.executable, "-c", "print('ran there')"]
+        status, output, error = self.eng("remote", "admit", "--device", "iPhone", "--device-owner", "session-a", "--",
+                                         *launch, "iPhone", "--", *ran)
+        self.assertEqual(status, 0, output + error)
+        self.assertIn("ran there", output)
+        self.assertIn("exited with status 0; iPhone stays reserved", output)
+        # Without the reservation it carries, the build host's record refuses the device.
+        status, output, _error = self.eng("remote", "admit", "--", *launch, "iPhone", "--", *ran)
+        self.assertNotEqual(status, 0)
+        self.assertIn(f"physical devices are reserved in {build_host.mac_name()}'s device record", output)
+        self.assertNotIn("ran there", output)
 
     def test_admit_passes_the_model_or_exclusive_admission_on_to_the_build_host(self):
         probe = (f"import json, os; token = json.loads(os.environ[{resources.TOKEN!r}]); "
