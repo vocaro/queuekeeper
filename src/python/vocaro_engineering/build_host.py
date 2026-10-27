@@ -60,6 +60,12 @@ DEVICE = re.compile(r"[0-9A-F]{8}-(?:[0-9A-F]{4}-){3}[0-9A-F]{12}", re.IGNORECAS
 DEVICE_RECORD = "Library/Application Support/vocaro-engineering/device-handoff.json"
 DEFERRED = "physicalDevicesRecordedOn"
 PHYSICAL = re.compile(r"[0-9A-F]{8}-[0-9A-F]{16}|[0-9A-F]{40}")
+# The process that holds a simulator pool member's reservation, {"pid", "start"}, as
+# simulators/pool.py records it when it reserves the member.
+HOLDER = "holderProcess"
+# A program inside an Xcode, such as the DTServiceHub that xcodebuild starts for a test run,
+# which launchd adopts once xcodebuild has ended.
+XCODE = re.compile(r"[^\s'\"]*/Xcode[^/\s'\"]*\.app/Contents/")
 # Characters of a leftover's command line that the census reports.
 COMMAND_LIMIT = 1000
 # How ps prints a process's start (lstart), with its spacing collapsed.
@@ -121,11 +127,15 @@ def identity(developer_dir):
             "build": output(["sw_vers", "-buildVersion"]), "developerDir": developer_dir, "xcode": xcode(developer_dir)}
 
 
+def record_path():
+    return Path(os.environ.get("VOCARO_DEVICE_RECORD") or Path(pwd.getpwuid(os.getuid()).pw_dir) / DEVICE_RECORD)
+
+
 def device_record():
     """The Mac its device record defers physical devices to, and the entries that hold a physical
     device, which `eng doctor` compares. It reads without the record's lock: every change replaces
     the record whole."""
-    path = Path(os.environ.get("VOCARO_DEVICE_RECORD") or Path(pwd.getpwuid(os.getuid()).pw_dir) / DEVICE_RECORD)
+    path = record_path()
     try:
         record = json.loads(path.read_text())
     except FileNotFoundError:
@@ -362,6 +372,34 @@ def dispatchers(checkouts):
     return identities(records)
 
 
+def reservations():
+    """(UDID, PID, start with its spacing collapsed) of each process that the device record names as
+    holding a simulator it has not released: the process that reserved a pool member, as
+    simulators/pool.py records it, and an active run's process. With them, why the record could not
+    be read, or None. It reads without the record's lock: every change replaces the record whole."""
+    path = record_path()
+    try:
+        record = json.loads(path.read_text())
+    except FileNotFoundError:
+        return [], None
+    except (OSError, ValueError) as error:
+        return [], (f"the device record {path}, which could not be read ({error}), so no reservation accounts "
+                    "for a simulator")
+    entries = record.get("devices") if isinstance(record, dict) else None
+    if not isinstance(entries, dict):
+        return [], f"the device record {path}, which is no device record, so no reservation accounts for a simulator"
+    found = []
+    for entry in entries.values():
+        if not isinstance(entry, dict) or entry.get("state") == "released": continue
+        udid = str(entry.get("device") or "").upper()
+        if not DEVICE.fullmatch(udid): continue
+        holders = [entry.get(HOLDER)]
+        if entry.get("activeRun"):
+            holders.append({"pid": entry.get("hostProcessIdentifier"), "start": entry.get("hostProcessStart")})
+        found += [(udid, pid, start) for pid, start in identities(holders) if start is not None]
+    return found, None
+
+
 def live_runs(table, recorded, admitted):
     """The PIDs of live runs: each recorded (PID, start) whose process still has that start (a record
     without one counts while its PID runs), and each admission the log has not ended whose process
@@ -404,9 +442,13 @@ def leftovers(root, listed=listing, written=disk_writes):
     path in it; a program under /System is macOS's own. It is a live run's when it or an ancestor
     is a live admission owner, as the guard or the admission log records it, or a live run of this
     file, as its checkout's slot lock records it: a light lane and a provision lane take no
-    admission. A simulator's processes descend from launchd_sim, never from a run, so a device is a
-    live run's while one of that run's processes names it. Each leftover whose parent is no
-    leftover is listed, with its PID, start, command, how much it has written, and each of its
+    admission. Some of a run's processes launchd starts or adopts, and those a live run holds are
+    its own, with everything below them. A simulator's processes descend from launchd_sim, never
+    from a run, so a device is a live run's while the device record holds it for one of that run's
+    processes, as the pool records the process that reserved a member, or while one of them names
+    it. An Xcode program, such as the DTServiceHub that xcodebuild leaves behind, is a live run's
+    when it started in a checkout after a live admission there began. Each leftover whose parent is
+    no leftover is listed, with its PID, start, command, how much it has written, and each of its
     descendants with what that one has written."""
     home, uid = Path.home(), os.getuid()
     table = process_table(listed(["ps", "-axww", "-o", "pid=,ppid=,uid=,lstart=,args="]))
@@ -424,6 +466,15 @@ def leftovers(root, listed=listing, written=disk_writes):
               [("checkout", checkouts), ("temporary directory", temporary), ("simulator", home / DEVICES)] if path]
 
     ancestry = lambda pid: lineage(table, pid)
+    slots = forms(checkouts)
+
+    def slot(path):
+        """The checkout slot a path lies in, as (project, slot), or None."""
+        for prefix in slots:
+            if path and (path + "/").startswith(prefix):
+                parts = path[len(prefix):].split("/")
+                if len(parts) > 1 and parts[0] and parts[1]: return parts[0], parts[1]
+        return None
 
     def place(pid):
         """Where the process runs from: (kind, the path that places it there, device or None), or None."""
@@ -440,18 +491,45 @@ def leftovers(root, listed=listing, written=disk_writes):
                 return kind, path, device and device.group(0).upper()
         return None
 
-    roots = live_runs(table, guard_owners() + dispatchers(checkouts), unended())
+    owners, logged = guard_owners(), unended()
+    roots = live_runs(table, owners + dispatchers(checkouts), logged)
     own = set(ancestry(os.getpid()))
     runs = {pid for pid in table if roots.intersection(ancestry(pid))}
-    # The devices a live run names, by UDID.
+    # The devices the device record holds for one of a live run's processes, by UDID, and those a
+    # live run names: a run can name a device by its kind alone, as eng simulator-tests does.
+    reserved, problem = reservations()
+    if problem: unchecked.append(problem)
+    held = {udid for udid, pid, start in reserved if pid in runs and table[pid]["start"] == start}
     named = " ".join(table[pid]["args"] for pid in runs).upper()
-    candidates = {}
+    # When each live admission began, by the checkout slot its owner works in: as the log records
+    # it, or else from the start of the owner the guard records.
+    begun = {pid: started(start) for pid, start in owners if pid in table and table[pid]["start"] == start}
+    begun.update((pid, moment) for pid, moment in logged
+                 if moment is not None and live_runs(table, [], [(pid, moment)]))
+    windows = {}
+    for pid, moment in begun.items():
+        where = slot(directories.get(pid))
+        if where is not None and moment is not None: windows[where] = min(moment, windows.get(where, moment))
+
+    def holds(pid, kind, path, device):
+        """Whether a live run holds the process: its simulator, or, for an Xcode program, the
+        checkout it started in after that run's admission there began."""
+        if device: return device in held or device in named
+        if kind != "checkout" or not XCODE.match(table[pid]["args"]): return False
+        since, began = windows.get(slot(path)), started(table[pid]["start"])
+        return since is not None and began is not None and began >= since - 1
+
+    placed = {}
     for pid, process in table.items():
         # macOS's own agents, which launchd starts, can work in the temporary directory, as
         # IMTransferAgent did on both Macs (macOS 27, October 2026).
         if process["uid"] != uid or pid in own or pid in runs or process["args"].startswith("/System/"): continue
         where = place(pid)
-        if where is not None and not (where[2] and where[2] in named): candidates[pid] = where
+        if where is not None: placed[pid] = where
+    # What a live run holds is its own with everything below it, as a simulator's processes are.
+    holding = {pid for pid, where in placed.items() if holds(pid, *where)}
+    if holding: runs |= {pid for pid in table if holding.intersection(ancestry(pid))}
+    candidates = {pid: where for pid, where in placed.items() if pid not in runs}
     children = {}
     for pid, process in table.items(): children.setdefault(process["parent"], []).append(pid)
     # This file stays ASCII: it reaches the build host as a command-line argument.

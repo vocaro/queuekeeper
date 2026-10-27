@@ -15,6 +15,7 @@ import contextlib
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import json
+import os
 from pathlib import Path
 import re
 import signal
@@ -23,6 +24,7 @@ import sys
 import uuid
 
 from .. import devices as device_record, evidence
+from ..resources import process_start
 from . import lifecycle
 
 PRUNE_AFTER = timedelta(days=14)
@@ -166,12 +168,15 @@ class Pool:
         return (datetime.now(timezone.utc) + HOLD).isoformat()
 
     def _reserve(self, key, purpose, device=None, revision=None, **details):
-        """Reserve a key at the revision read, by default its current one; the new revision."""
+        """Reserve a key at the revision read, by default its current one; the new revision. The
+        entry names this process as its holder, by its PID and start, so that a census of leftover
+        processes counts the booted member as a live run's while this process is one of that run's."""
         if not self.owner:
             raise ValueError(f"name the owner whose reservation takes {key}")
         if revision is None:
             current = self.record.entry(key)
             revision = current.get("revision", 0) if current else 0
+        details[device_record.HOLDER] = {"pid": os.getpid(), "start": process_start(os.getpid())}
         entry = self.record.reserve(key, owner=self.owner, revision=revision, device=device, purpose=purpose,
                                     release_by=self._release_by(), details=details)
         return entry["revision"]

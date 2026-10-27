@@ -1717,6 +1717,9 @@ class ConnectionTests(unittest.TestCase):
 # Starts as a fake ps listing prints them: the day of the month is padded, which a guard's record
 # and a slot lock's are not.
 EARLY, LATER, PADDED = "Mon Oct 26 03:12:45 2026", "Tue Oct 27 10:40:01 2026", "Wed Oct  7 09:05:03 2026"
+# When a run admitted at LATER booted its simulator, and when its test run's xcodebuild started DTServiceHub.
+BOOTED, TESTING = "Tue Oct 27 10:40:03 2026", "Tue Oct 27 10:43:12 2026"
+DTSERVICEHUB = "/Applications/Xcode.app/Contents/SharedFrameworks/DVTInstrumentsFoundation.framework/Resources/DTServiceHub"
 DEVICE = "0A1B2C3D-4E5F-4A6B-8C7D-9E0F1A2B3C4D"
 
 
@@ -1734,8 +1737,10 @@ class LeftoverCensusTests(unittest.TestCase):
         self.slots.mkdir()
         # As the build host's TMPDIR names it; lsof names the same directory under /private.
         self.temporary = "/var/folders/zz/fake/T/"
+        self.record = base / "device-handoff.json"
         self.environment = patch.dict(os.environ, {"HOME": str(self.home), "TMPDIR": self.temporary,
-                                                   "HEAVY_SLOT_DIR": str(self.slots), "SW_GATE_LOCK_FILE": str(base / "gate")})
+                                                   "HEAVY_SLOT_DIR": str(self.slots), "SW_GATE_LOCK_FILE": str(base / "gate"),
+                                                   "VOCARO_DEVICE_RECORD": str(self.record)})
         self.environment.start()
         self.guard = Path(os.environ["SW_GATE_LOCK_FILE"] + ".warm-push-guard")
         self.log = self.slots / "admissions.jsonl"
@@ -1769,6 +1774,40 @@ class LeftoverCensusTests(unittest.TestCase):
     def owner(self, pid, start):
         self.guard.write_text(json.dumps({"vocaroEngineering": 1, "owners": {"a" * 32: {
             "pid": pid, "start": start, "label": "swift build", "exclusive": False, "model": False}}}))
+
+    def admission(self, pid, start, *events):
+        """The admission log's lines for pid's admission, each event that many seconds after start."""
+        lines = [{"time": datetime.fromtimestamp(build_host.started(start) + after, timezone.utc).isoformat(timespec="seconds"),
+                  "event": event, "identity": "c" * 32, "pid": pid, "kind": "heavy", "label": "Example ios-tests",
+                  **({"slots": [0], "waited": 0.01} if event == "admitted" else
+                     {"outcome": "released", "slots": [0], "held": 400.0})} for event, after in events]
+        self.log.write_text("".join(json.dumps(line) + "\n" for line in lines))
+
+    def reserve(self, udid, **entry):
+        """A device record whose pool member udid is reserved, as simulators/pool.py reserves it."""
+        self.record.write_text(json.dumps({"vocaroDeviceHandoff": 1, "revision": 1, "devices": {"Example iPhone 17 Pro 1": {
+            "revision": 1, "device": udid, "ownerChatID": "simulator-tests-1", "state": "reserved", "activeRun": False,
+            "purpose": "eng simulator-tests Example", **entry}}}))
+
+    def ios_tests(self):
+        """An ios-tests lane's run in the checkout, admitted at LATER, as the build host runs one: eng
+        simulator-tests names its devices by their kind, and CoreSimulator starts the reserved member's
+        launchd_sim under launchd, with the simulator's processes below it."""
+        self.process(5000, 900, f"/usr/bin/python3 {self.checkout.parent}/vocaro-engineering/bin/eng --project "
+                     f"{self.checkout} run ios-tests", cwd=str(self.checkout), start=LATER)
+        self.process(5010, 5000, "/usr/bin/python3 scripts/eng simulator-tests --scheme Example --runtime "
+                     "com.apple.CoreSimulator.SimRuntime.iOS-27-0 --device iPhone-17-Pro", cwd=str(self.checkout), start=LATER)
+        devices = self.home / build_host.DEVICES
+        self.process(7000, 1, f"launchd_sim {devices}/{DEVICE}/data/var/run/launchd_bootstrap.plist", start=BOOTED)
+        self.process(7001, 7000, "/Library/Developer/CoreSimulator/Volumes/iOS_24B5070a/Library/Developer/"
+                     "CoreSimulator/Profiles/Runtimes/iOS 27.0.simruntime/Contents/Resources/RuntimeRoot/System/Library/"
+                     "CoreServices/SpringBoard.app/SpringBoard", start=BOOTED)
+        self.process(7002, 7000, f"{devices}/{DEVICE}/data/Containers/Bundle/Application/X/Example.app/Example",
+                     start=BOOTED, written=1 << 20)
+        # The test runner in the simulator names the bundle the run built in its checkout.
+        self.process(7003, 7000, f"xctest {self.checkout}/.build/ios-validation/Build/Products/Debug-iphonesimulator/"
+                     "ExampleTests.xctest", start=BOOTED)
+        self.admission(5000, LATER, ("admitted", 1))
 
     def test_an_orphan_is_listed_with_its_start_command_and_writes_unless_a_live_run_holds_it(self):
         self.process(4242, 1, "python3 -m unittest discover -s tests", cwd=str(self.checkout), written=1_700_000_000_000)
@@ -1858,6 +1897,67 @@ class LeftoverCensusTests(unittest.TestCase):
         self.owner(5000, LATER)
         self.assertEqual(self.census(), {})
 
+    def test_a_simulator_the_device_record_holds_for_a_live_run_is_not_listed_until_its_admission_ends(self):
+        self.ios_tests()
+        # The pool records the process that reserved the member, however its start is spaced.
+        self.reserve(DEVICE, **{devices.HOLDER: {"pid": 5010, "start": "Tue Oct 27  10:40:01  2026"}})
+        self.assertEqual(self.census(), {})
+        with self.subTest("an active run's process"):
+            self.reserve(DEVICE, activeRun=True, hostProcessIdentifier=5010, hostProcessStart=LATER)
+            self.assertEqual(self.census(), {})
+            # Negative control: an entry that records no active run names no process.
+            self.reserve(DEVICE, activeRun=False, hostProcessIdentifier=5010, hostProcessStart=LATER)
+            self.assertEqual(list(self.census()), [7000])
+        self.reserve(DEVICE, **{devices.HOLDER: {"pid": 5010, "start": LATER}})
+        # Negative controls. The device's launchd_sim is listed, with every process below it, once
+        # the admission has ended and its processes are gone, though the record still holds the member.
+        self.admission(5000, LATER, ("admitted", 1), ("ended", 455))
+        del self.table[5000], self.table[5010]
+        rows = self.census()
+        self.assertEqual(list(rows), [7000])
+        self.assertEqual((rows[7000]["parent"], rows[7000]["place"], rows[7000]["simulator"]), (1, "simulator", DEVICE))
+        self.assertEqual(sorted(descendant["pid"] for descendant in rows[7000]["descendants"]), [7001, 7002, 7003])
+        # So it is while the holder runs after its admission ended: no live run is left to hold the device.
+        self.ios_tests()
+        self.admission(5000, LATER, ("admitted", 1), ("ended", 455))
+        rows = self.census()
+        self.assertIn(7000, rows)
+        self.assertNotIn(7003, rows)
+        # And while the admission is live, for a holder whose PID another process took over, and for a released entry.
+        self.admission(5000, LATER, ("admitted", 1))
+        self.reserve(DEVICE, **{devices.HOLDER: {"pid": 5010, "start": EARLY}})
+        self.assertEqual(list(self.census()), [7000])
+        self.reserve(DEVICE, **{devices.HOLDER: {"pid": 5010, "start": LATER}, "state": "released"})
+        self.assertEqual(list(self.census()), [7000])
+
+    def test_an_xcode_service_that_started_in_a_checkout_during_a_live_admission_there_is_not_listed_until_it_ends(self):
+        self.ios_tests()
+        del self.table[7000], self.table[7001], self.table[7002], self.table[7003]
+        # xcodebuild has ended, and launchd has adopted the DTServiceHub it started in the checkout.
+        self.process(8000, 1, DTSERVICEHUB, cwd=str(self.checkout), start=TESTING, written=4 << 10)
+        self.assertEqual(self.census(), {})
+        with self.subTest("the guard's owner, without the log"):
+            self.log.unlink()
+            self.owner(5000, LATER)
+            self.assertEqual(self.census(), {})
+            self.guard.unlink()
+            self.admission(5000, LATER, ("admitted", 1))
+        # Negative controls, while the admission is live: one that started before the admission, from
+        # an earlier run; one in another checkout; and a program of the run's that is not Xcode's.
+        self.process(8001, 1, DTSERVICEHUB, cwd=str(self.checkout), start=EARLY)
+        other = self.checkout.parents[1] / "1/Example"
+        self.process(8002, 1, DTSERVICEHUB, cwd=str(other), start=TESTING)
+        self.process(8003, 1, "/usr/bin/python3 writer.py", cwd=str(self.checkout), start=TESTING)
+        self.assertEqual(sorted(self.census()), [8001, 8002, 8003])
+        # Once the admission has ended, the run's own DTServiceHub is listed too.
+        for pid in (8001, 8002, 8003): del self.table[pid]
+        self.admission(5000, LATER, ("admitted", 1), ("ended", 455))
+        del self.table[5000], self.table[5010]
+        rows = self.census()
+        self.assertEqual(list(rows), [8000])
+        self.assertEqual((rows[8000]["place"], rows[8000]["cwd"], rows[8000]["written"]),
+                         ("checkout", str(self.checkout), 4 << 10))
+
     def test_a_census_that_cannot_read_says_so_and_one_that_fails_says_why(self):
         self.assertEqual(build_host.leftovers(remote.ROOT, listed=lambda command: None), {"error": "ps listed no processes"})
         # Without lsof's working directories, only command lines place a process.
@@ -1867,6 +1967,16 @@ class LeftoverCensusTests(unittest.TestCase):
         self.assertEqual(found["leftovers"], [])
         self.assertEqual(len(found["unchecked"]), 1, found)
         self.assertIn("working directories, which lsof did not list", found["unchecked"][0])
+        # A device record that cannot be read holds no simulator for a run, and says so.
+        del self.table[4242]
+        self.ios_tests()
+        self.reserve(DEVICE, **{devices.HOLDER: {"pid": 5010, "start": LATER}})
+        self.assertEqual(self.census(), {})
+        self.record.write_text("{")
+        found = build_host.leftovers(remote.ROOT, listed=self.listed, written=self.writes.get)
+        self.assertEqual([row["pid"] for row in found["leftovers"]], [7000])
+        self.assertEqual(len(found["unchecked"]), 1, found)
+        self.assertIn(f"the device record {self.record}, which could not be read", found["unchecked"][0])
         with patch.object(build_host, "leftovers", side_effect=OSError("broken")):
             self.assertEqual(build_host.answer({"leftovers": remote.ROOT}), {"error": "OSError: broken"})
 

@@ -785,9 +785,24 @@ it:
   takes the slot: a light lane, and a project's `provision` lane, take no admission. A recorded
   PID counts only while its process has the recorded start, and an admission that the log has
   not ended counts only for a process that started before it.
-- A simulator's processes descend from `launchd_sim`, never from a run, so a device is a live
-  run's while one of that run's processes names its UDID. The search cannot tell a device the
-  owner booted by hand from one a run left booted, and lists both.
+- Some of a run's processes launchd starts or adopts, and what a live run holds is its own with
+  everything below it. A simulator's processes descend from `launchd_sim`, never from a run, so
+  a device is a live run's while the build host's [device record](#device-reservations) holds
+  it, unreleased, for one of that run's processes with its recorded start, or while one of them
+  names its UDID. The reservation is the exact signal: `eng simulator-tests` names its devices
+  by their kind, so the run names a device only while an `xcodebuild` of its names it. A pool
+  member's reservation records the process that took it (`holderProcess`), and an active run's
+  records its process.
+- An Xcode program, such as the `DTServiceHub` that `xcodebuild` starts and leaves to launchd
+  once it ends, is a live run's when it runs from a checkout slot in which a live admission's
+  owner works, and started no earlier than that admission, by the log's time or else the owner's
+  start. That window is the only signal it leaves, so other programs from the checkout are
+  still listed.
+- Once the admission ends, or the reservation's process is gone or another process has its
+  PID, they are listed. On 2026-10-27 a dispatch listed a live EPUBLib `ios-tests` run's three
+  `launchd_sim` processes, each with about 230 descendants, and two `DTServiceHub` processes from
+  its checkout. The run ended at 22:43 UTC; by 23:27 all were gone. The search cannot tell a
+  device the owner booted by hand from one a run left booted, and lists both.
 
 Each leftover whose parent is not itself a leftover is listed with its PID, its parent (1 once
 launchd has adopted it), its start, its command line, where it runs from, and the bytes it has
@@ -816,7 +831,7 @@ session details. An entry records:
 
 - the device and the owning session, with the revision the helper assigns;
 - reserved, testing or released state, whether a run is active, and the process whose end ends
-  the run;
+  the run; for a simulator pool member, the process that took it;
 - the purpose, the expected release time and the bounded run being attempted;
 - the original accessibility settings, and the apps, outputs and owner data to preserve;
 - at handoff, the terminal outcome, the restoration checks and the explicit release time.

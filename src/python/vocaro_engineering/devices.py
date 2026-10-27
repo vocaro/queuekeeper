@@ -81,6 +81,10 @@ MANAGED = {"revision", "ownerChatID", "lastOwnerChatID", "previousLease", "recov
 FOREGROUND = "mac-foreground"
 # The session a foreground driver acts for, as its reservation names it.
 OWNER = "VOCARO_DEVICE_OWNER"
+# The process that reserved a simulator pool member and holds it, {"pid", "start"}: while it runs
+# as one of a live run's processes, the build host's census of leftover processes counts the
+# member's simulator as that run's (build_host.leftovers).
+HOLDER = "holderProcess"
 # How a foreground release left the frontmost app: restored, or no longer the session's to restore.
 FRONTMOST = ("restored", "not-ours")
 TIMES = ("leaseRevision", "releasedAt", "reservedAt", "leasedAt", "updatedAt")

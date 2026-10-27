@@ -11,7 +11,7 @@ import unittest
 from unittest import mock
 import uuid
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
-from vocaro_engineering import devices, evidence
+from vocaro_engineering import build_host, devices, evidence, resources
 from vocaro_engineering.simulators import pool as simulator_pool
 
 IPHONE = "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro"
@@ -156,6 +156,13 @@ class PoolTests(unittest.TestCase):
         self.assertNotIn(("erase", created.udid), self.simctl.calls)
         entry = devices.Record(self.path).entry("Project Duo 3")
         self.assertEqual((entry["device"], entry["ownerChatID"], entry["created"]), (created.udid, "me", True))
+        # Each names the process that holds it, by which the build host's census of leftover
+        # processes counts a booted member as a live run's.
+        holder = {"pid": os.getpid(), "start": resources.process_start(os.getpid())}
+        self.assertIsNotNone(holder["start"])
+        self.assertEqual([devices.Record(self.path).entry(key).get(devices.HOLDER) for key in ("Project Duo 5", "Project Duo 3")],
+                         [holder, holder])
+        self.assertEqual(devices.HOLDER, build_host.HOLDER)
         self.assertTrue(self.pool.release(created, outcome="done"))
         self.assertTrue(self.pool.release(lease, outcome="done"))
         self.assertEqual(self.simctl.deleted(), [])
