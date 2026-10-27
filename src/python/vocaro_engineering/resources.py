@@ -18,13 +18,19 @@ A generative-model run takes one heavy slot and the host's model lock, an flock 
 the slot directory, both or neither: two model runs exclude each other while builds and tests
 run beside them. One model workload per machine is a limit of the hardware: two processes
 driving one Mac's on-device model both stalled. Exclusive work holds the model with the host.
+
+Each admission appends a line to the host's admission log, and its end another, so that an audit
+can count admissions, waits and holds instead of guessing (#46); `eng admissions` summarizes it.
 """
 import argparse
+from collections import Counter
 import contextlib
+from datetime import datetime, timezone
 import fcntl
 import json
 import os
 from pathlib import Path
+import pwd
 import subprocess
 import sys
 import tempfile
@@ -35,6 +41,9 @@ TOKEN = "VOCARO_RESOURCE_TOKEN"
 # `eng run --if-free` waits this many seconds for admission, then exits with BUSY (EX_TEMPFAIL)
 # without running: how the build host says it cannot take a lane now.
 FREE_WAIT, BUSY = 5, 75
+# The admission log and its previous generation. A line that would take the log past LOG_LIMIT
+# bytes first makes the log the previous generation, so the two together stay within twice it.
+LOG, PREVIOUS_LOG, LOG_LIMIT = "admissions.jsonl", "admissions.1.jsonl", 8 << 20
 
 
 def process_start(pid):
@@ -64,6 +73,53 @@ def slot_directory():
             raise RuntimeError("Cannot establish the host resource directory")
         return Path(base) / "pdfreflow-heavy-slots"
     return Path("/tmp/pdfreflow-heavy-slots")
+
+
+def log_path():
+    """The host's admission log. An isolated HEAVY_SLOT_DIR namespace keeps its own beside its slots.
+    The default namespace's is in the account's durable state, which a reboot and the temporary-file
+    cleaner leave alone, unlike the slot directory; a HOME private to one session must not start another."""
+    if os.environ.get("HEAVY_SLOT_DIR"):
+        return Path(os.environ["HEAVY_SLOT_DIR"]) / LOG
+    state = "Library/Application Support" if sys.platform == "darwin" else ".local/state"
+    return Path(pwd.getpwuid(os.getuid()).pw_dir) / state / "vocaro-engineering" / LOG
+
+
+def append_log(entry):
+    """Append an entry to the admission log. The caller holds the coordination lock, which orders the
+    lines as admission happened and lets one writer at a time make the log the previous generation.
+
+    A failure is reported and never fails or holds up admission or release: O_NONBLOCK makes opening
+    a FIFO that no process reads fail at once rather than wait for a reader.
+    """
+    try:
+        path = log_path()
+        line = (json.dumps({"time": datetime.now(timezone.utc).isoformat(timespec="seconds"), **entry}) + "\n").encode()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with contextlib.suppress(FileNotFoundError):
+            size = path.stat().st_size
+            if size and size + len(line) > LOG_LIMIT:
+                path.replace(path.with_name(PREVIOUS_LOG))
+        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NONBLOCK, 0o644)
+        try:
+            os.write(fd, line)
+        finally:
+            os.close(fd)
+    except Exception as error:
+        with contextlib.suppress(Exception):
+            print(f"heavy: the admission log was not written: {error}", file=sys.stderr, flush=True)
+
+
+def ending(kind):
+    """How an admission ended, from the type of the exception that ended it, if any. Every end but an
+    uncertain one releases the owner's guard entry."""
+    from vocaro_engineering.processes import Interrupted, NotStarted, TimedOut
+    if kind is None:
+        return "released"
+    for failure, outcome in [(NotStarted, "not-started"), (Interrupted, "stopped"), (TimedOut, "timed-out")]:
+        if issubclass(kind, failure):
+            return outcome
+    return "uncertain"
 
 
 def take_slot(directory, slots, start=0):
@@ -157,6 +213,9 @@ class Admission:
         self.label, self.exclusive, self.timeout = label, exclusive, timeout
         # Exclusive work holds the host, the model with it.
         self.model = model or exclusive
+        self.kind = "exclusive" if exclusive else "model" if model else "heavy"
+        # When the request began to wait, and when it was admitted, by the monotonic clock.
+        self.started, self.admitted = time.monotonic(), None
         self.directory = slot_directory()
         cores = os.cpu_count() or 1
         self.slots = int(os.environ.get("HEAVY_SLOTS", "3"))
@@ -225,11 +284,21 @@ class Admission:
         if waiters: publish_guard(self.queue, {"vocaroEngineering": 1, "waiters": waiters})
         else: self.queue.unlink(missing_ok=True)
 
-    def _withdraw(self):
-        """Take this request out of the queue when it stops waiting without admission."""
+    def _log(self, event, **fields):
+        """Append this request's line to the admission log. The caller holds the coordination lock."""
+        append_log({"event": event, "identity": self.identity, "pid": os.getpid(), "kind": self.kind,
+                    "label": self.label[:160], **fields})
+
+    def _withdraw(self, error):
+        """Log that this request stopped waiting without admission, and take it out of the queue if it is there."""
+        from vocaro_engineering.processes import Interrupted
+        outcome = ("stopped" if isinstance(error, (Interrupted, KeyboardInterrupt))
+                   else "timed-out" if isinstance(error, TimeoutError) else "failed")
         with (self.directory / "coordination.lock").open("a+") as bridge:
             fcntl.flock(bridge, fcntl.LOCK_EX)
-            self._record([waiter for waiter in self._waiters() if waiter["identity"] != self.identity])
+            if self.queued:
+                self._record([waiter for waiter in self._waiters() if waiter["identity"] != self.identity])
+            self._log("withdrawn", outcome=outcome, waited=round(time.monotonic() - self.started, 3))
         self.queued = False
 
     def _legacy_lock(self):
@@ -354,6 +423,9 @@ class Admission:
                 self.previous = os.environ.get(TOKEN)
                 os.environ[TOKEN] = json.dumps({"schemaVersion": 1, "exclusive": self.exclusive, "model": self.model,
                                                 "guard": str(self.guard), "locks": locks})
+                self.admitted = time.monotonic()
+                self._log("admitted", slots=[slot for slot, _fd in self.descriptors],
+                          waited=round(self.admitted - self.started, 3))
                 return True
             finally:
                 self._unlock_legacy()
@@ -363,7 +435,7 @@ class Admission:
             self.reused = True
             return self
         from vocaro_engineering.processes import Interrupted, requested
-        started = time.monotonic()
+        started = self.started = time.monotonic()
         reported = None
         try:
             while not self._attempt():
@@ -378,8 +450,13 @@ class Admission:
                 if time.monotonic() - started >= self.timeout:
                     raise TimeoutError(f"Resource queue busy or an orphan requires inspection ({self.waiting}); no lock was reclaimed")
                 time.sleep(self.poll)
-        except BaseException:
-            if self.queued: self._withdraw()
+        except BaseException as error:
+            try:
+                self._withdraw(error)
+            except Exception:
+                # A queued request that cannot leave the queue says so. The log alone never changes
+                # how a request fails: `eng run --if-free` tells a busy host by its TimeoutError.
+                if self.queued: raise
             raise
         print(f"heavy: slot {','.join(str(slot) for slot, _fd in self.descriptors)}"
               f"{' and the model' if self.held_model is not None else ''} after {int(time.monotonic() - started)}s: "
@@ -419,12 +496,14 @@ class Admission:
         else: os.environ[TOKEN] = self.previous
         with (self.directory / "coordination.lock").open("a+") as bridge:
             fcntl.flock(bridge, fcntl.LOCK_EX)
+            slots = [slot for slot, _fd in self.descriptors]
             self._release()
             # An exception may leave unobserved children. Retain the guard for inspection, unless
             # nothing is left to inspect: the command could not start (a mistyped name must not
             # stop the host), or a stop or a timeout saw the command and every observed descendant end.
-            from vocaro_engineering.processes import Interrupted, NotStarted, TimedOut
-            self._settle(release=kind is None or issubclass(kind, (NotStarted, Interrupted, TimedOut)))
+            outcome = ending(kind)
+            self._settle(release=outcome != "uncertain")
+            self._log("ended", outcome=outcome, slots=slots, held=round(time.monotonic() - self.admitted, 3))
         return False
 
 
@@ -432,6 +511,128 @@ class Admission:
 def heavy_slot(label, *, exclusive=False, timeout=5400, model=False):
     with Admission(label, exclusive, timeout, model):
         yield
+
+
+def read_entry(line):
+    """A log line with its time parsed, or None when it is not a whole entry."""
+    try:
+        entry = json.loads(line)
+        entry["time"] = datetime.fromisoformat(entry["time"])
+        seconds = entry[{"admitted": "waited", "withdrawn": "waited", "ended": "held"}[entry["event"]]]
+    except (ValueError, KeyError, TypeError):
+        return None
+    if (entry["time"].tzinfo is None or not isinstance(seconds, (int, float))
+            or not all(isinstance(entry.get(key), str) for key in ["identity", "kind", "label"])
+            or (entry["event"] != "admitted" and not isinstance(entry.get("outcome"), str))):
+        return None
+    return entry
+
+
+def read_log(paths=None):
+    """The entries of the logs named, or of this host's, oldest first, and how many lines could not be
+    read. This host's two generations are opened under the coordination lock, so that the log cannot
+    become the previous generation between the two."""
+    entries, unreadable = [], 0
+    with contextlib.ExitStack() as stack:
+        if paths is None:
+            directory, path, streams = slot_directory(), log_path(), []
+            directory.mkdir(parents=True, exist_ok=True)
+            with (directory / "coordination.lock").open("a+") as bridge:
+                fcntl.flock(bridge, fcntl.LOCK_EX)
+                for name in [PREVIOUS_LOG, LOG]:
+                    with contextlib.suppress(FileNotFoundError):
+                        streams.append(stack.enter_context(path.with_name(name).open("rb")))
+        else:
+            streams = [stack.enter_context(Path(name).open("rb")) for name in paths]
+        for stream in streams:
+            for line in stream:
+                entry = read_entry(line)
+                if entry is None: unreadable += 1
+                else: entries.append(entry)
+    return entries, unreadable
+
+
+def duration(seconds):
+    seconds = round(seconds)
+    if seconds < 60: return f"{seconds}s"
+    if seconds < 3600: return f"{seconds // 60}m{seconds % 60:02d}s"
+    return f"{seconds // 3600}h{seconds % 3600 // 60:02d}m"
+
+
+def summarize(entries, since=None, until=None):
+    """Lines that summarize the requests made in the period, for each kind and each label within it.
+
+    A request counts in the period when its admitted or withdrawn line falls in it; its end may come
+    later. One admitted before the log's first line, whose end alone the log keeps, counts in none.
+    """
+    requests = {}
+    for entry in entries:
+        requests.setdefault(entry["identity"], {})[entry["event"]] = entry
+    groups = {}
+    for lines in requests.values():
+        first, end = lines.get("admitted") or lines.get("withdrawn"), lines.get("ended")
+        if first is None or (since and first["time"] < since) or (until and first["time"] >= until):
+            continue
+        # Keyed by kind and label, and by kind and None for the kind as a whole.
+        for key in [(first["kind"], None), (first["kind"], first["label"])]:
+            group = groups.setdefault(key, {"admitted": 0, "withdrawn": Counter(), "ends": Counter(),
+                                            "waited": [], "held": []})
+            group["waited"].append(first["waited"])
+            if first["event"] == "withdrawn":
+                group["withdrawn"][first["outcome"]] += 1
+                continue
+            group["admitted"] += 1
+            # An admission with no end logged is still held, or its process was killed.
+            group["ends"][end["outcome"] if end else "unlogged"] += 1
+            if end: group["held"].append(end["held"])
+
+    def counts(counter):
+        return ", ".join(f"{name} {number}" for name, number in counter.most_common())
+
+    def describe(group):
+        withdrawn, waited, held = sum(group["withdrawn"].values()), group["waited"], group["held"]
+        text = f"{group['admitted']} admitted"
+        if withdrawn: text += f", {withdrawn} withdrawn ({counts(group['withdrawn'])})"
+        text += f"; waited mean {duration(sum(waited) / len(waited))}, max {duration(max(waited))}"
+        if held: text += f"; held mean {duration(sum(held) / len(held))}, max {duration(max(held))}, total {duration(sum(held))}"
+        if group["ends"]: text += f"; ends {counts(group['ends'])}"
+        return text
+
+    order = {"exclusive": 0, "model": 1, "heavy": 2}
+    summary = []
+    for kind in sorted({kind for kind, _label in groups}, key=lambda kind: (order.get(kind, 3), kind)):
+        summary.append(f"{kind}: {describe(groups[kind, None])}")
+        labels = sorted((label for each, label in groups if each == kind and label is not None),
+                        key=lambda label: (-len(groups[kind, label]["waited"]), label))
+        summary += [f"  {label}: {describe(groups[kind, label])}" for label in labels]
+    return summary
+
+
+def local_time(text):
+    """An ISO 8601 date or time, taken as local unless it names a zone."""
+    moment = datetime.fromisoformat(text)
+    return moment if moment.tzinfo else moment.astimezone()
+
+
+def report(paths=None, since=None, until=None, out=print):
+    """Print a summary of the admission log, this host's or the copies named, and return 0."""
+    entries, unreadable = read_log(paths)
+    source = ", ".join(map(str, paths)) if paths else str(log_path())
+    shown = lambda moment: moment.astimezone().strftime("%Y-%m-%d %H:%M %Z")
+    if not entries:
+        out(f"No admissions are logged in {source}.")
+    else:
+        oldest = min(entry["time"] for entry in entries)
+        out(f"Admission log {source}, from {shown(oldest)} to {shown(max(entry['time'] for entry in entries))}.")
+        if since and since < oldest:
+            out(f"The period begins before the log does: requests made before {shown(oldest)} are no longer in it.")
+        period = " ".join(([f"from {shown(since)}"] if since else []) + ([f"until {shown(until)}"] if until else []))
+        summary = summarize(entries, since, until)
+        out(f"Requests made {period or 'at any time the log covers'}:" if summary else
+            f"No requests were made {period or 'at any time the log covers'}.")
+        for line in summary: out(line)
+    if unreadable: out(f"{unreadable} line(s) could not be read.")
+    return 0
 
 
 def main(argv=None):

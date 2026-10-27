@@ -172,6 +172,66 @@ whether heavy work beside on-device generation slows it or changes its output. D
 generation `TGOnDeviceInferenceProviderService` and `modelmanagerd` burn CPU, and builds beside
 them compete for the same cores.
 
+### Admission log
+
+Each host logs its heavy-work admissions, so that an audit counts how often each kind of admission
+is taken, how long requests wait and how long each holds. An October 2026 audit of exclusive work
+could not say, because nothing recorded past admissions. Admission appends one JSON line when it
+admits a request and another when that admission ends, and a request that stops waiting without
+admission appends one. A refused attempt writes nothing, nor does nested work that reuses its
+inherited admission. Each line is written under the coordination lock that admission and release
+hold, so the lines are in the order slots were taken and given back.
+
+The log is `~/Library/Application Support/vocaro-engineering/admissions.jsonl`, in the account's
+durable state, because an audit looks back weeks and files in the slot directory are the
+temporary-file cleaner's after three idle days
+([scratch and result directories](#scratch-and-result-directories)). A HEAVY_SLOT_DIR namespace
+keeps its own log beside its slots. A line that would take the log past 8 MiB first makes it
+`admissions.1.jsonl`, replacing the previous generation, so the two together stay within 16 MiB;
+at two lines of 200 to 400 bytes, each holds 10,000 to 20,000 admissions. Each Mac keeps its own
+log: the build host logs what is admitted there.
+
+A line holds:
+
+- `time`: when it was written, in UTC (ISO 8601).
+- `event`: `admitted`, `ended` or `withdrawn`.
+- `identity`: the request's nonce, which pairs an admission with its end and keys its guard entry;
+  `pid`: the admitting process.
+- `kind`: `heavy`, `model` or `exclusive`; `label`: the lane or command, as waiting messages name
+  it, up to 160 characters.
+- `slots`: the slot numbers held, on `admitted` and `ended` lines.
+- `waited`: seconds from the request to its admission or withdrawal, on `admitted` and `withdrawn`
+  lines; `held`: seconds from admission to its end, on `ended` lines.
+- `outcome`, on an `ended` line: `released` when the command finished, whatever its exit status;
+  `not-started`; `stopped` or `timed-out` when a stop or the command's timeout saw it and every
+  observed descendant end; or `uncertain` when the guard entry was kept for inspection
+  ([lock reclamation](#lock-reclamation)). On a `withdrawn` line: `timed-out`, which includes
+  `eng run --if-free` declining; `stopped`; or `failed`.
+
+An `admitted` line with no `ended` line is still held, or SIGKILL ended its admitting process,
+which leaves its guard entry for recovery as well. A log that cannot be written never fails or
+holds up admission or release: admission prints `heavy: the admission log was not written: ERROR`
+and goes on.
+
+`eng admissions` summarizes the log over a period:
+
+```sh
+python3 scripts/eng admissions --since 2026-10-20 --until 2026-10-27
+```
+
+It prints the times of the log's first and last lines, then, for each kind and each label within
+it, the requests admitted and withdrawn, their mean and longest waits, the mean, longest and total
+holds, and how the admissions ended, `unlogged` for one with no `ended` line. A request counts in
+the period in which it was admitted or withdrawn. A date or time without a zone is local. A period
+that begins before the log's first line is reported as such: older requests have rotated out and
+count nowhere. Lines that cannot be read, such as one a full volume cut short, are counted and
+skipped. To summarize the build host's log, pass a copy, the previous generation first:
+
+```sh
+python3 scripts/eng admissions <(ssh build-host \
+  'cd "Library/Application Support/vocaro-engineering" && cat admissions.1.jsonl admissions.jsonl 2>/dev/null')
+```
+
 ### Load the queue cannot see
 
 Admission reads the load before it admits and cannot account for work that never asks:

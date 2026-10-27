@@ -293,6 +293,13 @@ def main(argv=None):
     admission.add_argument("--timeout", type=float, default=5400, help="seconds to wait for admission (default 5400)")
     admission.add_argument("command", nargs=argparse.REMAINDER, help="the command and its arguments, after --; "
         "it runs in the current directory")
+    logged = commands.add_parser("admissions", help="summarize this host's heavy-work admission log: for each kind "
+        "and label, the requests admitted and withdrawn, how long they waited and held, and how admissions ended")
+    logged.add_argument("--since", type=resources.local_time, metavar="WHEN", help="count requests made from WHEN, "
+                        "an ISO 8601 date or time, local unless it names a zone")
+    logged.add_argument("--until", type=resources.local_time, metavar="WHEN", help="count requests made before WHEN")
+    logged.add_argument("logs", nargs="*", type=Path, metavar="log", help="a copy of a log, such as the build host's, "
+                        "to read instead of this host's; name the previous generation first")
     distant = commands.add_parser("remote", help="run a lane or other heavy command on the build host, the owner's "
         "second Mac, over SSH: eng remote run LANE [-- ARGUMENTS] or eng remote admit -- COMMAND; eng remote passed "
         "LANE says whether the whole lane passed there at a commit")
@@ -366,8 +373,9 @@ def main(argv=None):
         if args.action == "init":
             initialize(root, args)
             return 0
-        # The inventory covers the whole host, so it needs no project configuration.
+        # The inventory and the admission log cover the whole host, so they need no project configuration.
         if args.action == "disk": return disk.execute(args)
+        if args.action == "admissions": return resources.report(args.logs or None, args.since, args.until)
         config = load(root)
         if args.action == "instructions": instructions(config)
         elif args.action == "doctor":
