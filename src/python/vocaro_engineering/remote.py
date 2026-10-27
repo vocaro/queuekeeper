@@ -8,9 +8,11 @@ admission: that host's queue, not a private pool beside this one. The log and th
 back to this checkout's .build/engineering/remote. A whole lane's result is also kept by commit
 in the repository's Git directory, where every worktree of the repository can find it.
 
-`eng run` sends a lane marked buildHost here first: when the build host refuses it before
-anything runs, because its queue or every checkout is busy or it cannot be reached, the lane
-runs on this Mac instead.
+`eng run` sends a lane marked buildHost here first: when the build host declines it before
+anything runs, because its queue or every checkout is busy, the lane runs on this Mac instead.
+A configuration problem, such as a build host that cannot be reached or has another Xcode, stops
+the lane for the owner's decision (agents/core.md, Shared resources); only `--here` then runs it
+here. `eng doctor` compares the two Macs.
 """
 import json
 import os
@@ -43,6 +45,10 @@ STOP_WAIT = 120
 # What a Git hook exports for its own repository must not reach another.
 GIT_LOCATION = {"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
                 "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_PREFIX"}
+# `eng run`'s status when the build host's configuration stopped a lane: sysexits' EX_CONFIG.
+MISCONFIGURED = 78
+# Seconds `eng doctor` waits for the build host to report its Xcodes and runtimes.
+SURVEY_TIMEOUT = 180
 
 
 # What every project's gates use on the build host (guides/shared-host.md, Setting up a build host).
@@ -57,6 +63,35 @@ MODULE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]*$")
 
 class Unavailable(RuntimeError):
     """The build host did not take the work, and nothing of it ran there."""
+
+
+class Misconfigured(Unavailable):
+    """The build host's configuration kept the work from running there: the owner's to fix, and
+    no reason to run it on this Mac without the owner's decision (agents/core.md, Shared resources).
+    problem says what is wrong, and fix what fixing it takes."""
+
+    def __init__(self, problem, fix):
+        super().__init__(f"{problem}; to fix it, {fix}")
+        self.problem, self.fix = problem, fix
+
+
+def last_line(text):
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    return lines[-1] if lines else None
+
+
+def unreachable(host, detail):
+    return Misconfigured(f"{host} cannot be reached: {detail or 'ssh exited 255'}",
+                         f"wake {host} and connect it to the network, or correct its entry in ~/.ssh/config or "
+                         f"its authorized_keys, until `ssh {host} true` succeeds without a prompt "
+                         "(guides/shared-host.md, Setting up a build host)")
+
+
+def no_toolkit(host, status, detail):
+    return Misconfigured(f"{host} could not run the toolkit (exit {status}): {detail or 'no output'}",
+                         f"give {host}'s login shell a python3 that runs it: Homebrew's, which `eng remote setup` "
+                         "installs, or the system's, which Xcode's command line tools provide "
+                         "(guides/shared-host.md, Setting up a build host)")
 
 
 def configured():
@@ -132,9 +167,12 @@ def send(root, host, repository, commit):
     this is no publication, and a pre-push hook would run the gates this offloads."""
     variables = {**environment(), "GIT_SSH_COMMAND": shlex.join(SSH)}
     result = subprocess.run(["git", "-C", str(root), "push", "--no-verify", "--quiet", "--receive-pack=git receive-pack",
-                             f"{host}:{repository}", f"{commit}:{REF}{commit}"], env=variables)
+                             f"{host}:{repository}", f"{commit}:{REF}{commit}"], env=variables,
+                            capture_output=True, text=True)
     if result.returncode:
-        raise Unavailable(f"Could not send {commit} to {host}:{repository} (git push exited {result.returncode})")
+        raise Misconfigured(f"{host} did not receive {commit[:12]} into ~/{repository} (git push exited "
+                            f"{result.returncode}): {last_line(result.stderr) or 'no output'}",
+                            f"repair ~/{repository} on {host}, or free space there, until the push succeeds")
 
 
 def store(root):
@@ -170,7 +208,8 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
 
     work is the build host's eng arguments: run [--expect N] LANE [-- ARGUMENTS] or
     admit [--exclusive] -- COMMAND. With decline, the build host refuses work it cannot start now
-    rather than waiting for it, and Unavailable says why.
+    rather than waiting for it, and Unavailable says why. Misconfigured says what of the build
+    host's configuration kept the work from running there, and what fixing it takes.
     """
     toolkit = Path(TOOLKIT_ROOT).resolve()
     try:
@@ -203,8 +242,14 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     prepare = " && ".join([f"mkdir -p {shlex.quote(ROOT + '/repositories')}", *(
         f"{{ [ -d {shlex.quote(path)} ] || git init --bare --quiet {shlex.quote(path)}; }}" for path in repositories)])
     print(f"remote: sending {commit[:12]} to {host}", file=sys.stderr, flush=True)
-    if ssh(host, prepare, stdin=subprocess.DEVNULL).returncode:
-        raise Unavailable(f"Could not reach {host} or prepare {ROOT} there; check `ssh {host} true`")
+    prepared = ssh(host, prepare, stdin=subprocess.DEVNULL, capture_output=True, text=True)
+    # ssh's own failures, a name that does not resolve among them, exit 255.
+    if prepared.returncode == 255: raise unreachable(host, last_line(prepared.stderr))
+    if prepared.returncode:
+        raise Misconfigured(f"{host} could not prepare ~/{ROOT} (exit {prepared.returncode}): "
+                            f"{last_line(prepared.stderr) or 'no output'}",
+                            f"make ~/{ROOT} writable there and install the Xcode this Mac uses, with its license "
+                            "accepted and its first launch run (guides/shared-host.md, Setting up a build host)")
     send(root, host, repositories[0], commit)
     if kit is not None: send(toolkit, host, repositories[1], kit["commit"])
     if processes.requested() is not None:
@@ -219,6 +264,8 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     source = Path(build_host.__file__).read_text()
     command = [*SSH, host, login(shlex.join(["python3", "-c", source, json.dumps(plan)]))]
     lines, result, stopping = queue.Queue(), None, None
+    # Whether build_host.py started there, and the last line of anything else, such as the shell's.
+    framed, stray = False, None
     with (staging / "run.log").open("wb") as log, (staging / "output.log").open("wb") as output:
         channel = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                    env=environment())
@@ -243,18 +290,27 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
                 continue
             if line is None: break
             kind, data = line[:2], line[2:]
+            framed = framed or kind in (b"L ", b"R ", b"O ")
             if kind == b"L ":
                 log.write(data)
             elif kind == b"R ":
                 result = json.loads(data)
             else:
                 data = data if kind == b"O " else line
+                if kind != b"O ": stray = last_line(line.decode(errors="replace")) or stray
                 output.write(data)
                 write(sys.stdout, data)
         channel.wait()
+    if result is None and not framed and stopping is None:
+        # build_host.py never started, so nothing ran there.
+        shutil.rmtree(staging, ignore_errors=True)
+        if channel.returncode == 255: raise unreachable(host, stray)
+        raise no_toolkit(host, channel.returncode, stray)
     if result is not None and result.get("refused"):
         shutil.rmtree(staging, ignore_errors=True)
-        raise Unavailable(f"{host} did not take it: {result['refused']}")
+        if result.get("busy"): raise Unavailable(f"{host} did not take it: {result['refused']}")
+        raise Misconfigured(f"{host} refused it: {result['refused']}",
+                            result.get("fix") or f"repair on {host} what that names")
     shutil.rmtree(results, ignore_errors=True)
     staging.rename(results)
     if result is None:
@@ -277,6 +333,12 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
         print(f"remote: the build host runs macOS {remote.get('macOS')} ({remote.get('build')}) and this Mac "
               f"{local.get('macOS')} ({local.get('build')}): the result qualifies the build host's platform",
               file=sys.stderr, flush=True)
+    if result.get("stage") == "provision" and status and not result["stopped"]:
+        raise Misconfigured(f"{host} could not provision its checkout: the provision lane exited {status} in "
+                            f"{result.get('checkout')}, so {name} did not run there; its log is {results / 'run.log'}",
+                            f"give {host} what provisioning needs, which that log names, such as a tool "
+                            "`eng remote setup` installs or the git-credentials token for private dependencies "
+                            "(guides/shared-host.md, Setting up a build host)")
     if status is None: return 1
     # A command a signal ended has a negative status; a shell reports it as 128 plus the signal.
     return 128 - status if status < 0 else status
@@ -407,16 +469,102 @@ def setup(host, formulae, modules, check):
     return status
 
 
-def first(root, config, lane, arguments, expect):
-    """Run a buildHost lane on the build host if it takes it now and return its status, or None
-    after saying why it runs on this Mac instead."""
+def first(root, config, lane, arguments, expect, fallback=True):
+    """Run a buildHost lane on the build host if it takes it now and return its status.
+
+    The build host declines a lane when none is configured, the tree has uncommitted changes, or its
+    queue or every checkout is busy. After saying why, return None, for the caller to run the lane on
+    this Mac, or without fallback BUSY. A configuration problem of the build host's stops the lane
+    instead: return MISCONFIGURED after saying what is wrong and what fixing it takes.
+    """
     host = configured()
-    if host is None: return None
+    if host is None:
+        if fallback: return None
+        print(f"eng: {lane} not run: no build host is configured (VOCARO_BUILD_HOST, or the ssh alias "
+              f"{DEFAULT_HOST} in ~/.ssh/config)", file=sys.stderr, flush=True)
+        return BUSY
     work = ["run", "--here", "--if-free", *(["--expect", str(expect)] if expect else []), lane,
             *(["--", *arguments] if arguments else [])]
     try:
         with processes.forwarding_signals():
             return execute(root, config, host, work, lane=lane, arguments=arguments, expect=expect, decline=True)
+    except Misconfigured as stop:
+        print(f"eng: {lane} not run: {stop.problem}\neng: to fix it, {stop.fix}\neng: a misconfigured shared host "
+              f"stops the work that depends on it (agents/core.md, Shared resources). Running {lane} on this Mac "
+              f"instead takes the owner's decision, then `eng run --here {lane}`.", file=sys.stderr, flush=True)
+        return MISCONFIGURED
     except Unavailable as reason:
-        print(f"eng: running {lane} on this Mac: {reason}", file=sys.stderr, flush=True)
-        return None
+        print(f"eng: {f'running {lane} on this Mac' if fallback else f'{lane} not run'}: {reason}",
+              file=sys.stderr, flush=True)
+        return None if fallback else BUSY
+
+
+def survey(host, developer):
+    """The build host's build_host.toolchain, read in its login shell as a run there reads it."""
+    request = shlex.join(["python3", "-c", Path(build_host.__file__).read_text(), json.dumps({"toolchain": developer})])
+    try:
+        found = ssh(host, request, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=SURVEY_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        raise unreachable(host, f"it did not answer in {SURVEY_TIMEOUT}s") from None
+    except OSError as error:
+        raise unreachable(host, str(error)) from None
+    if found.returncode == 255: raise unreachable(host, last_line(found.stderr))
+    try:
+        return json.loads(last_line(found.stdout))
+    except (TypeError, ValueError):
+        raise no_toolkit(host, found.returncode, last_line(found.stderr)) from None
+
+
+def compare_hosts():
+    """What `eng doctor` reports of the build host: this Mac's and the build host's default Xcodes
+    (`xcode-select -p`), the Xcode at this Mac's developer directory, which every run there uses,
+    and the simulator runtimes it lists. A difference, or a build host that cannot be reached, is
+    an error; what could not be compared is named in unchecked."""
+    host = configured()
+    report = {"host": host, "errors": [], "unchecked": []}
+    if host is None:
+        report["unchecked"].append(f"no build host is configured (VOCARO_BUILD_HOST, or the ssh alias {DEFAULT_HOST} "
+                                   "in ~/.ssh/config), so this Mac was compared with none")
+        return report
+    developer = developer_directory()
+    here = report["local"] = build_host.toolchain(developer)
+    try:
+        there = report["remote"] = survey(host, developer)
+    except Misconfigured as problem:
+        report["errors"].append(str(problem))
+        report["unchecked"].append(f"{host}'s default Xcode, its Xcode at this Mac's developer directory and its "
+                                   "simulator runtimes, which it did not report")
+        return report
+    version = lambda text: ", ".join((text or "no Xcode").splitlines())
+    default = lambda side: (side.get("defaultDeveloperDir"), side.get("defaultXcode"))
+    # When both Macs' default is this Mac's developer directory, the next check covers its version.
+    shared = here.get("defaultDeveloperDir") == there.get("defaultDeveloperDir") == developer
+    if default(here) != default(there) and not shared:
+        report["errors"].append(
+            f"the default Xcodes differ: `xcode-select -p` is {here.get('defaultDeveloperDir')} "
+            f"({version(here.get('defaultXcode'))}) on this Mac and {there.get('defaultDeveloperDir')} "
+            f"({version(there.get('defaultXcode'))}) on {host}, so whatever reads {host}'s default, such as "
+            f"`ssh {host} xcodebuild -version` or a script without DEVELOPER_DIR, sees another Xcode than this Mac's; "
+            "to fix it, the owner chooses the Xcode both Macs use and selects it with `sudo xcode-select -s PATH` "
+            "on the Mac that differs")
+    if developer is None or not here.get("xcode"):
+        report["unchecked"].append("the Xcode at this Mac's developer directory and its simulator runtimes, since "
+                                   "this Mac has no Xcode selected")
+        return report
+    if here["xcode"] != there.get("xcode"):
+        report["errors"].append(
+            f"the Xcode at this Mac's developer directory, {developer}, is {version(here['xcode'])} on this Mac and "
+            f"{version(there.get('xcode')) if there.get('xcode') else 'missing'} on {host}, so eng remote refuses "
+            f"every run there; to fix it, install this Mac's Xcode at that path on {host} (guides/shared-host.md, "
+            "Setting up a build host), or select with DEVELOPER_DIR an Xcode both Macs have at the same path")
+    if None in (here.get("runtimes"), there.get("runtimes")):
+        report["unchecked"].append(f"the simulator runtimes, which simctl did not list on "
+                                   f"{'this Mac' if here.get('runtimes') is None else host}")
+    elif here["runtimes"] != there["runtimes"]:
+        only = lambda side, other: [runtime for runtime in side["runtimes"] if runtime not in other["runtimes"]]
+        differences = [f"only {name} has {', '.join(runtimes)}" for name, runtimes in
+                       [("this Mac", only(here, there)), (host, only(there, here))] if runtimes]
+        report["errors"].append(f"the simulator runtimes of the Xcode at {developer} differ: {'; '.join(differences)}; "
+                                "to fix it, install the same runtimes on both Macs "
+                                "(`xcodebuild -downloadPlatform PLATFORM` with that Xcode)")
+    return report

@@ -6,7 +6,8 @@ places the dispatched commits, and runs `eng run` or `eng admit` there under the
 own heavy-work admission. Standard output carries framed lines: `O` for output, `L` for the
 lane's log as it grows, and a closing `R` with the result as JSON. Standard input is the
 dispatcher's lifeline: its end, which a stop, the dispatcher's death or a dropped connection
-sends, stops the run as a stop signal stops a local one.
+sends, stops the run as a stop signal stops a local one. Given `{"toolchain": DEVELOPER_DIR}`
+instead of a plan, it prints the Mac's Xcodes and simulator runtimes for `eng doctor`.
 """
 import fcntl
 import json
@@ -26,6 +27,15 @@ DRAIN_SECONDS = 5
 
 _output = threading.Lock()
 _stop = threading.Event()
+
+
+class Refusal(RuntimeError):
+    """The build host will not start the work, and nothing of it ran. A busy build host cannot start
+    it now; any other refusal is its configuration's, and fix says what fixing that takes."""
+
+    def __init__(self, reason, fix=None, busy=False):
+        super().__init__(reason)
+        self.fix, self.busy = fix, busy
 
 
 def emit(kind, data):
@@ -51,16 +61,36 @@ def output(command, environment=None):
     return result.stdout.strip() if result.returncode == 0 else None
 
 
+def xcode(developer_dir):
+    """`xcodebuild -version` of the Xcode at developer_dir, or None."""
+    if developer_dir and Path(developer_dir).is_dir():
+        return output(["xcrun", "xcodebuild", "-version"], {**os.environ, "DEVELOPER_DIR": developer_dir})
+    return None
+
+
 def identity(developer_dir):
     """The Mac a result was measured on, its macOS and the Xcode at developer_dir."""
-    xcode = None
-    if developer_dir and Path(developer_dir).is_dir():
-        xcode = output(["xcrun", "xcodebuild", "-version"], {**os.environ, "DEVELOPER_DIR": developer_dir})
     number = lambda name: int(output(["sysctl", "-n", name]) or 0) or None
     return {"name": output(["scutil", "--get", "LocalHostName"]) or os.uname().nodename,
             "model": output(["sysctl", "-n", "hw.model"]), "cpus": number("hw.ncpu"),
             "memoryBytes": number("hw.memsize"), "macOS": output(["sw_vers", "-productVersion"]),
-            "build": output(["sw_vers", "-buildVersion"]), "developerDir": developer_dir, "xcode": xcode}
+            "build": output(["sw_vers", "-buildVersion"]), "developerDir": developer_dir, "xcode": xcode(developer_dir)}
+
+
+def toolchain(developer_dir):
+    """The Mac's identity with the Xcode at developer_dir, its default Xcode (`xcode-select -p`) and
+    the simulator runtimes the Xcode at developer_dir lists, which `eng doctor` compares."""
+    found = identity(developer_dir)
+    default = output(["xcode-select", "-p"])
+    runtimes = None
+    if found["xcode"]:
+        listed = output(["xcrun", "simctl", "list", "runtimes", "-j"], {**os.environ, "DEVELOPER_DIR": developer_dir})
+        try:
+            runtimes = sorted(f"{runtime['name']} ({runtime['buildversion']})"
+                              for runtime in json.loads(listed)["runtimes"] if runtime.get("isAvailable"))
+        except (TypeError, ValueError, KeyError):
+            pass
+    return {**found, "defaultDeveloperDir": default, "defaultXcode": xcode(default), "runtimes": runtimes}
 
 
 def git(*arguments, cwd=None):
@@ -102,12 +132,14 @@ def claim(base, count, directory, wait=True):
                 say(f"passing over {checkout}, which a run left with changes:\n{left}")
                 named.add(index)
         if changed == count:
-            raise RuntimeError(f"every checkout under {base} has changes a run left; inspect and remove them")
+            repository = base.parents[1] / "repositories" / f"{directory}.git"
+            raise Refusal(f"every checkout under {base} has changes a run left",
+                          f"inspect and remove them, each with `git --git-dir {repository} worktree remove --force PATH`")
         if not wait:
-            raise RuntimeError(f"every checkout of {directory} is in use")
+            raise Refusal(f"every checkout of {directory} is in use", busy=True)
         waited = int(time.monotonic() - started)
         if waited >= CLAIM_TIMEOUT:
-            raise RuntimeError(f"no checkout of {directory} came free in {CLAIM_TIMEOUT}s")
+            raise Refusal(f"no checkout of {directory} came free in {CLAIM_TIMEOUT}s", busy=True)
         if reported is None or waited - reported >= REPORT_SECONDS:
             say(f"waiting ({waited}s): every checkout of {directory} is in use")
             reported = waited
@@ -210,14 +242,17 @@ def main(plan):
     threading.Thread(target=watch, daemon=True).start()
     result = {"started": time.time(), "exitStatus": None, "stopped": False,
               "host": identity(plan.get("developerDir"))}
-    # Until the first command starts, a failure is a refusal: nothing ran, so the dispatcher may
-    # run the work on its own Mac instead.
+    # Until the first command starts, a failure is a refusal: nothing ran. The dispatcher may run
+    # the work on its own Mac instead only when the refusal is busy.
     begun = False
     try:
         expected, found = plan.get("xcode"), result["host"]["xcode"]
         if expected and found != expected:
-            raise RuntimeError(f"the Xcode at {plan['developerDir']} is {found or 'missing'}, not the dispatcher's "
-                               f"{expected}; install the same Xcode there or select it with DEVELOPER_DIR")
+            version = lambda text: " ".join(text.split())
+            raise Refusal(f"the Xcode at {plan['developerDir']} is {version(found or 'missing')}, not the dispatcher's "
+                          f"{version(expected)}", "install this Mac's Xcode at that path on the build host "
+                          "(guides/shared-host.md, Setting up a build host), or select with DEVELOPER_DIR an Xcode "
+                          "both Macs have at the same path")
         root, project, toolkit = Path.home() / plan["root"], plan["project"], plan.get("toolkit")
         base = root / "checkouts" / project["directory"]
         claimed = claim(base, plan["checkouts"], project["directory"], wait=not plan.get("decline"))
@@ -254,7 +289,9 @@ def main(plan):
         # `eng run --if-free` declined the lane before running it, and wrote no receipt.
         if plan.get("decline") and result.get("stage") == "work" and result["exitStatus"] == plan["busy"] \
                 and not fresh:
-            result["refused"] = "its heavy-work queue cannot take the lane now"
+            result.update(refused="its heavy-work queue cannot take the lane now", busy=True)
+    except Refusal as refusal:
+        result.update(refused=str(refusal), busy=refusal.busy, fix=refusal.fix)
     except (OSError, RuntimeError, ValueError) as error:
         result["error" if begun else "refused"] = str(error)
     finally:
@@ -264,4 +301,6 @@ def main(plan):
 
 
 if __name__ == "__main__":
-    main(json.loads(sys.argv[1]))
+    request = json.loads(sys.argv[1])
+    if "toolchain" in request: print(json.dumps(toolchain(request["toolchain"])))
+    else: main(request)

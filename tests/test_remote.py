@@ -15,10 +15,11 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
-from vocaro_engineering import build_host, cli, config, remote
+from vocaro_engineering import build_host, cli, config, remote, resources
 
 # Stands in for ssh: the build host is a home directory on this Mac. Like sshd, it runs the
 # command in that home through a shell, and git's own ssh transport reaches it the same way.
+# FAKE_UNREACHABLE makes it fail as ssh does when the build host's name does not resolve.
 FAKE_SSH = """#!/bin/sh
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -27,6 +28,10 @@ while [ $# -gt 0 ]; do
         *) break ;;
     esac
 done
+if [ -n "$FAKE_UNREACHABLE" ]; then
+    echo "ssh: Could not resolve hostname $1: nodename nor servname provided, or not known" >&2
+    exit 255
+fi
 shift
 cd "$FAKE_HOME" || exit 255
 # The build host has its own heavy-work queue.
@@ -56,7 +61,7 @@ class RemoteTests(unittest.TestCase):
         base = Path(self.temp.name)
         self.home = base / "build-host-home"
         self.home.mkdir()
-        tools = base / "bin"
+        self.tools = tools = base / "bin"
         tools.mkdir()
         for name, text in [("ssh", FAKE_SSH), ("login-shell", FAKE_SHELL)]:
             (tools / name).write_text(text)
@@ -82,6 +87,8 @@ class RemoteTests(unittest.TestCase):
             "screen": {"command": [python, "-c", "pass"], "foreground": True},
             "gate": {"command": [python, "-c", "import os; print('Ran 2 tests in', os.getcwd())"],
                      "resource": "heavy", "minimumTests": 2, "buildHost": True},
+            "failing": {"command": [python, "-c", "print('Ran 2 tests'); raise SystemExit(5)"],
+                        "resource": "heavy", "minimumTests": 2, "buildHost": True},
             "build": {"command": [python, "-c", "print('Ran 1 tests')"], "resource": "heavy"},
             # Asks for a credential only through the store helper, never this Mac's keychain.
             "helpers": {"command": [python, "-c", "import os, subprocess; "
@@ -263,8 +270,9 @@ class RemoteTests(unittest.TestCase):
         self.assertFalse((self.project / ".build/engineering/gate").exists())
         self.assertEqual(self.eng("remote", "passed", "gate")[0], 0)
 
-    def test_a_busy_build_host_sends_the_lane_back_here(self):
-        # Exclusive work holds every slot of the build host's queue.
+    @contextlib.contextmanager
+    def busy_build_host(self):
+        """Exclusive work that holds every slot of the build host's queue while the block runs."""
         holder = subprocess.Popen([sys.executable, "-m", "vocaro_engineering.resources", "--exclusive", "--",
                                    sys.executable, "-c", "print('held', flush=True); import time; time.sleep(120)"],
                                   stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, env={
@@ -273,10 +281,15 @@ class RemoteTests(unittest.TestCase):
                                       "SW_GATE_LOCK_FILE": os.environ["FAKE_GATE"]})
         try:
             self.assertEqual(holder.stdout.readline().strip(), "held")
-            status, output, error = self.run_here("gate")
+            yield
         finally:
             holder.send_signal(signal.SIGTERM)
             holder.wait(timeout=60)
+            holder.stdout.close()
+
+    def test_a_busy_build_host_sends_the_lane_back_here(self):
+        with self.busy_build_host():
+            status, output, error = self.run_here("gate")
         self.assertEqual(status, 0, output + error)
         self.assertIn("running gate on this Mac: fake did not take it: its heavy-work queue cannot take the lane now",
                       error)
@@ -285,6 +298,113 @@ class RemoteTests(unittest.TestCase):
         # Nothing ran there, so no result of the build host's is recorded.
         self.assertFalse((self.project / ".build/engineering/remote/gate").exists())
         self.assertEqual(self.eng("remote", "passed", "gate")[0], 1)
+
+    @patch.object(remote, "CHECKOUTS", 1)
+    def test_a_build_host_with_every_checkout_in_use_sends_the_lane_back_here(self):
+        base = self.home / remote.ROOT / "checkouts/example"
+        base.mkdir(parents=True)
+        lock = os.open(base / "0.lock", os.O_RDWR | os.O_CREAT, 0o644)
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            status, output, error = self.run_here("gate")
+        finally:
+            os.close(lock)
+        self.assertEqual(status, 0, output + error)
+        self.assertIn("running gate on this Mac: fake did not take it: every checkout of example is in use", error)
+        self.assertIn(f"Ran 2 tests in {self.project.resolve()}",
+                      (self.project / ".build/engineering/gate/run.log").read_text())
+
+    def misconfigurations(self):
+        """Each configuration problem of the build host's that stops a lane, as a function that
+        brings it about in an ExitStack, with what eng says of it."""
+        def unreachable(stack):
+            stack.enter_context(patch.dict(os.environ, {"FAKE_UNREACHABLE": "1"}))
+
+        def xcode(stack):
+            # The build host has nothing at this Mac's developer directory.
+            local = {**build_host.identity(None), "xcode": "Xcode 99.0\nBuild version 99A1"}
+            stack.enter_context(patch.object(remote, "developer_directory", return_value=self.temp.name))
+            stack.enter_context(patch.object(remote.build_host, "identity", return_value=local))
+
+        def toolkit(stack):
+            # The build host's login shell has no python3 to run the toolkit.
+            python = self.tools / "python3"
+            target = os.readlink(python)
+            python.unlink()
+            python.write_text('#!/bin/sh\necho "zsh:1: command not found: python3" >&2\nexit 127\n')
+            python.chmod(0o755)
+            stack.callback(lambda: (python.unlink(), python.symlink_to(target)))
+
+        def provisioning(stack):
+            settings = json.loads((self.project / "engineering.json").read_text())
+            settings["lanes"]["provision"]["command"] = [sys.executable, "-c", "raise SystemExit(4)"]
+            (self.project / "engineering.json").write_text(json.dumps(settings, indent=2))
+            commit_all(self.project)
+
+        return [("unreachable", unreachable, ["fake cannot be reached: ssh: Could not resolve hostname fake",
+                                              "until `ssh fake true` succeeds"]),
+                ("xcode", xcode, ["fake refused it: the Xcode at", "not the dispatcher's Xcode 99.0 Build version 99A1",
+                                  "install this Mac's Xcode at that path on the build host"]),
+                ("toolkit", toolkit, ["fake could not run the toolkit", "command not found: python3",
+                                      "eng remote setup"]),
+                ("provisioning", provisioning, ["fake could not provision its checkout: the provision lane exited 4",
+                                                "what provisioning needs"])]
+
+    def test_a_misconfigured_build_host_stops_the_lane_until_here_runs_it_on_this_mac(self):
+        local = self.project / ".build/engineering/gate"
+        for name, misconfigure, said in self.misconfigurations():
+            with self.subTest(name), contextlib.ExitStack() as stack:
+                shutil.rmtree(local, ignore_errors=True)
+                misconfigure(stack)
+                status, output, error = self.run_here("gate")
+                # A configuration problem waits for the owner's decision: nothing runs here.
+                self.assertFalse(local.exists(), f"{name} ran the lane here:\n{error}")
+                self.assertEqual(status, remote.MISCONFIGURED, output + error)
+                for text in ["eng: gate not run: ", *said, "eng: to fix it, ", "the owner's decision",
+                             "`eng run --here gate`"]:
+                    self.assertIn(text, error)
+                self.assertNotIn("running gate on this Mac", error)
+                status, output, error = self.run_here("--here", "gate")
+                self.assertEqual(status, 0, output + error)
+                self.assertIn(f"Ran 2 tests in {self.project.resolve()}", (local / "run.log").read_text())
+
+    def test_build_host_only_passes_the_build_hosts_status_through_and_never_runs_the_lane_here(self):
+        status, output, error = self.run_here("--build-host-only", "gate")
+        self.assertEqual(status, 0, output + error)
+        self.assertIn(f"Ran 2 tests in {self.checkout(0).resolve()}",
+                      (self.project / ".build/engineering/remote/gate/run.log").read_text())
+        self.assertEqual(self.eng("remote", "passed", "gate")[0], 0)
+        self.assertEqual(self.run_here("--build-host-only", "failing")[0], 5)
+        self.assertIn("Ran 2 tests", (self.project / ".build/engineering/remote/failing/run.log").read_text())
+        for lane in ["gate", "failing"]:
+            self.assertFalse((self.project / ".build/engineering" / lane).exists())
+
+    def test_build_host_only_exits_busy_when_the_build_host_declines_and_stops_when_it_is_misconfigured(self):
+        with self.busy_build_host():
+            status, output, error = self.run_here("--build-host-only", "gate")
+        self.assertEqual(status, resources.BUSY, output + error)
+        self.assertIn("eng: gate not run: fake did not take it: its heavy-work queue cannot take the lane now", error)
+        with patch.dict(os.environ, {"VOCARO_BUILD_HOST": "none"}):
+            status, output, error = self.run_here("--build-host-only", "gate")
+        self.assertEqual(status, resources.BUSY, output + error)
+        self.assertIn("eng: gate not run: no build host is configured", error)
+        with patch.dict(os.environ, {"FAKE_UNREACHABLE": "1"}):
+            status, output, error = self.run_here("--build-host-only", "gate")
+        self.assertEqual(status, remote.MISCONFIGURED, output + error)
+        self.assertIn("fake cannot be reached", error)
+        (self.project / "notes.txt").write_text("uncommitted\n")
+        status, output, error = self.run_here("--build-host-only", "gate")
+        self.assertEqual(status, resources.BUSY, output + error)
+        self.assertIn("commit them first", error)
+        # Never here, and no result of the build host's either.
+        self.assertFalse((self.project / ".build/engineering/gate").exists())
+        self.assertFalse((self.project / ".build/engineering/remote/gate").exists())
+        # A lane the build host never takes, and --here, contradict the mode.
+        status, _output, error = self.run_here("--build-host-only", "build")
+        self.assertEqual(status, 2)
+        self.assertIn("build is not marked buildHost", error)
+        with self.assertRaises(SystemExit):
+            self.run_here("--build-host-only", "--here", "gate")
 
     def test_a_lane_stays_here_when_asked_unmarked_uncommitted_or_without_a_build_host(self):
         for arguments in [["--here", "gate"], ["build"]]:
@@ -478,3 +598,136 @@ class RemoteSetupTests(unittest.TestCase):
             status, _, error = self.eng(*arguments)
             self.assertEqual(status, 2, error)
             self.assertEqual(self.installs(), [])
+
+
+# Two Macs on one file system, for eng doctor: FAKE_MAC names the Mac a command runs on. An Xcode is
+# a directory whose version.MAC and runtimes.MAC.json say what that Mac has at its path, and
+# FAKE_XCODES/default.MAC is that Mac's `xcode-select -p`.
+FAKE_XCODE_SELECT = """#!/bin/sh
+[ "$1" = -p ] && exec cat "$FAKE_XCODES/default.$FAKE_MAC"
+exit 1
+"""
+FAKE_XCRUN = """#!/bin/sh
+developer=${DEVELOPER_DIR:-$(xcode-select -p)}
+case "$1" in
+    xcodebuild) exec cat "$developer/version.$FAKE_MAC" ;;
+    simctl) exec cat "$developer/runtimes.$FAKE_MAC.json" ;;
+esac
+exit 1
+"""
+# The build host is the other Mac.
+DOCTOR_SSH = FAKE_SSH.replace('HOME="$FAKE_HOME"', 'FAKE_MAC=there HOME="$FAKE_HOME"')
+RELEASE = "Xcode 27.1\nBuild version 27A9275"
+BETA = "Xcode 27.2\nBuild version 27B5028f"
+RUNTIMES = [("iOS 27.1", "24B5070a"), ("macOS 27.1", "26B5091g")]
+
+
+class BuildHostDoctorTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        base = Path(self.temp.name)
+        home = base / "build-host-home"
+        home.mkdir()
+        tools = base / "bin"
+        tools.mkdir()
+        for name, text in [("ssh", DOCTOR_SSH), ("login-shell", FAKE_SHELL), ("xcode-select", FAKE_XCODE_SELECT),
+                           ("xcrun", FAKE_XCRUN)]:
+            (tools / name).write_text(text)
+            (tools / name).chmod(0o755)
+        system = Path("/usr/bin/python3")
+        (tools / "python3").symlink_to(system if sys.platform == "darwin" and system.exists() else sys.executable)
+        self.xcodes = base / "xcodes"
+        self.xcodes.mkdir()
+        self.project = base / "example"
+        self.project.mkdir()
+        (self.project / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
+                                                                   "integration": "direct-main"}))
+        self.environment = patch.dict(os.environ, {
+            "PATH": f"{tools}{os.pathsep}{os.environ['PATH']}", "FAKE_HOME": str(home),
+            "FAKE_SHELL": str(tools / "login-shell"), "FAKE_XCODES": str(self.xcodes), "FAKE_MAC": "here",
+            "VOCARO_BUILD_HOST": "fake"})
+        self.environment.start()
+        os.environ.pop("DEVELOPER_DIR", None)
+        # Both Macs select the same Xcode 27.1, with the same runtimes.
+        self.release = self.xcode("Xcode.app", here=(RELEASE, RUNTIMES), there=(RELEASE, RUNTIMES))
+        self.select(here=self.release, there=self.release)
+
+    def tearDown(self):
+        self.environment.stop()
+        self.temp.cleanup()
+
+    def xcode(self, name, **macs):
+        """An Xcode at name, with the version and runtimes each Mac named has at that path."""
+        developer = Path(self.temp.name).resolve() / name / "Contents/Developer"
+        developer.mkdir(parents=True, exist_ok=True)
+        for mac, (version, runtimes) in macs.items():
+            (developer / f"version.{mac}").write_text(version + "\n")
+            (developer / f"runtimes.{mac}.json").write_text(json.dumps({"runtimes": [
+                {"name": runtime, "buildversion": build, "isAvailable": True} for runtime, build in runtimes]}))
+        return developer
+
+    def select(self, **macs):
+        for mac, developer in macs.items():
+            (self.xcodes / f"default.{mac}").write_text(f"{developer}\n")
+
+    def doctor(self):
+        with contextlib.redirect_stdout(StringIO()) as output, contextlib.redirect_stderr(StringIO()):
+            status = cli.main(["--project", str(self.project), "doctor"])
+        report = json.loads(output.getvalue())
+        self.assertEqual(report["project"], "Example")
+        return status, report["buildHost"]
+
+    def test_matching_macs_pass(self):
+        status, found = self.doctor()
+        self.assertEqual((status, found["errors"], found["unchecked"]), (0, [], []), found)
+        self.assertEqual(found["host"], "fake")
+        for side in ["local", "remote"]:
+            self.assertEqual(found[side]["defaultDeveloperDir"], str(self.release))
+            self.assertEqual(found[side]["xcode"], RELEASE)
+            self.assertEqual(found[side]["runtimes"], ["iOS 27.1 (24B5070a)", "macOS 27.1 (26B5091g)"])
+
+    def test_a_differing_default_or_selected_xcode_or_runtime_is_an_error(self):
+        with self.subTest("default"):
+            # As on 2026-10-26: the build host has this Mac's Xcode, but selects a beta by default.
+            beta = self.xcode("Xcode-beta.app", there=(BETA, RUNTIMES))
+            self.select(there=beta)
+            status, found = self.doctor()
+            self.assertEqual(status, 1)
+            self.assertEqual(len(found["errors"]), 1, found)
+            self.assertIn(f"`xcode-select -p` is {self.release} (Xcode 27.1, Build version 27A9275) on this Mac and "
+                          f"{beta} (Xcode 27.2, Build version 27B5028f) on fake", found["errors"][0])
+            self.assertIn("sudo xcode-select -s", found["errors"][0])
+            self.select(there=self.release)
+        with self.subTest("selected"):
+            # The Xcode a run there uses differs: one error says so, not a second for the default.
+            self.xcode("Xcode.app", there=(BETA, RUNTIMES))
+            status, found = self.doctor()
+            self.assertEqual(status, 1)
+            self.assertEqual(len(found["errors"]), 1, found)
+            self.assertIn(f"the Xcode at this Mac's developer directory, {self.release}, is Xcode 27.1, Build version "
+                          "27A9275 on this Mac and Xcode 27.2, Build version 27B5028f on fake", found["errors"][0])
+            self.assertIn("eng remote refuses", found["errors"][0])
+            self.xcode("Xcode.app", there=(RELEASE, RUNTIMES))
+        with self.subTest("runtimes"):
+            self.xcode("Xcode.app", here=(RELEASE, [*RUNTIMES, ("iOS 27.2", "24C5028f")]))
+            status, found = self.doctor()
+            self.assertEqual(status, 1)
+            self.assertEqual(len(found["errors"]), 1, found)
+            self.assertIn("only this Mac has iOS 27.2 (24C5028f)", found["errors"][0])
+
+    def test_an_unreachable_or_unconfigured_build_host_is_named_with_what_was_not_checked(self):
+        with patch.dict(os.environ, {"FAKE_UNREACHABLE": "1"}):
+            status, found = self.doctor()
+        self.assertEqual(status, 1)
+        self.assertEqual(len(found["errors"]), 1, found)
+        self.assertIn("fake cannot be reached: ssh: Could not resolve hostname fake", found["errors"][0])
+        self.assertIn("`ssh fake true`", found["errors"][0])
+        self.assertEqual(len(found["unchecked"]), 1, found)
+        self.assertIn("fake's default Xcode, its Xcode at this Mac's developer directory and its simulator runtimes",
+                      found["unchecked"][0])
+        # This Mac's side is still reported.
+        self.assertEqual(found["local"]["xcode"], RELEASE)
+        with patch.dict(os.environ, {"VOCARO_BUILD_HOST": "none"}):
+            status, found = self.doctor()
+        self.assertEqual((status, found["host"], found["errors"]), (0, None, []), found)
+        self.assertIn("no build host is configured", found["unchecked"][0])

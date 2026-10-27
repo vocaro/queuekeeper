@@ -156,6 +156,7 @@ slot pool. `eng remote` reaches it by the SSH alias `build-host`; `--host` or
 
 ```sh
 python3 scripts/eng run LANE [-- ARGUMENTS]            # a buildHost lane: the build host first
+python3 scripts/eng run --build-host-only LANE         # a buildHost lane: the build host, never here
 python3 scripts/eng remote run LANE [-- ARGUMENTS]     # any lane, on the build host
 python3 scripts/eng remote admit [--exclusive] -- COMMAND
 python3 scripts/eng remote passed LANE [--commit REV]
@@ -174,18 +175,42 @@ offscreen window, so a locked screen leaves such tests unmeasured as it does her
 not trusted for accessibility (observed on macOS 27.2 beta 26B5091g, October 2026). `eng run` sends a marked lane to the build host,
 which runs it only if it can start now. Its queue must admit the lane within five seconds
 (`eng run --if-free` there, which exits 75 without running otherwise), and one of the project's
-four checkouts there must be free. Otherwise, and when the tree has uncommitted changes, the
-build host cannot be reached, or its Xcode differs, the build host refuses before anything runs,
-and `eng run` says why and runs the lane here, under this Mac's admission as before. A run that
-starts there finishes there: a connection lost during it leaves the run unmeasured rather than
-running the lane a second time here.
+four checkouts there must be free. When the build host is only busy, or the tree has uncommitted
+changes, it declines before anything runs, and `eng run` says why and runs the lane here, under
+this Mac's admission as before. A configuration problem stops the lane instead, for the owner's
+decision ([shared resources](../agents/core.md#shared-resources)): when the build host cannot be
+reached or its name does not resolve, cannot receive the commit or run the toolkit, refuses the
+lane for any reason but being busy, as when its Xcode at this Mac's developer directory differs or
+every checkout holds changes a run left, or fails the project's `provision` lane, `eng run` runs
+nothing here. It says what is wrong and what fixing it takes, and exits 78 (`EX_CONFIG`). A run
+that starts there finishes there: a connection lost during it leaves the run unmeasured rather
+than running the lane a second time here.
 
 `eng run --here` keeps a marked lane on this Mac, for instance when a session needs the lane's
-build products here. Nested work runs inside the admission it inherits, here. `eng run` looks for
+build products here, or, once the owner has decided so, while the build host is misconfigured.
+Nested work runs inside the admission it inherits, here. `eng run` looks for
 the build host only when `VOCARO_BUILD_HOST` names one or `~/.ssh/config` defines the
 `build-host` alias, which `ssh -G` reports; `VOCARO_BUILD_HOST=none` keeps every lane here. A
 lane's results come back to `.build/engineering/remote/LANE/` when it ran on the build host and
 stay in `.build/engineering/LANE/` when it ran here; the last lines `eng run` prints name them.
+
+A caller that holds or will take its own admission here, such as a push keeper that runs a gate
+under the push's one admission, offers the lane with `eng run --build-host-only LANE` instead:
+`eng run` would run a declined lane under an admission of its own, and the caller would then run
+it a second time. The build host takes it on the same terms, but it never runs here. The command
+exits 75 (`BUSY`) when the build host declines the lane because none is configured, the tree has
+uncommitted changes or the build host is busy, and the caller then runs the lane itself. It exits
+78 when the build host is misconfigured, which stops the caller too, and otherwise with the
+lane's status there.
+
+`eng doctor` compares the two Macs and reports a difference as an error: their default Xcodes
+(`xcode-select -p` and its version), the Xcode at this Mac's developer directory, which every run
+there uses, and the simulator runtimes that Xcode lists on each, as well as a build host it cannot
+reach. A build host whose default Xcode differs still runs lanes, since a run selects this Mac's
+developer directory, but whatever reads its default, such as `ssh build-host xcodebuild -version`
+or a script without `DEVELOPER_DIR`, sees another Xcode. Under `buildHost` in the report,
+`unchecked` names what was not compared: a build host's Xcodes and runtimes when it cannot be
+reached, and the whole comparison when no build host is configured.
 
 ### How a run reaches the build host
 

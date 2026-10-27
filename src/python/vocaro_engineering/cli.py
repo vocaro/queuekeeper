@@ -249,8 +249,14 @@ def main(argv=None):
         "LANE [-- ARGUMENTS], which appends the arguments, such as a test filter, to the lane's command")
     run.add_argument("--expect", type=int, metavar="N", help="require exactly N executed tests; without it, a "
         "run with arguments needs at least one in place of the lane's minimumTests")
-    run.add_argument("--here", action="store_true", help="run a buildHost lane on this Mac rather than on the "
-        "build host first")
+    where = run.add_mutually_exclusive_group()
+    where.add_argument("--here", action="store_true", help="run a buildHost lane on this Mac rather than on the "
+        f"build host first; when the build host is misconfigured (exit {remote.MISCONFIGURED}), only with the owner's "
+        "decision")
+    where.add_argument("--build-host-only", action="store_true", help="offer a buildHost lane to the build host, "
+        f"which runs it only if it can start it now, and never run it here: exit {BUSY} when the build host declines "
+        f"it, {remote.MISCONFIGURED} when it is misconfigured, else the lane's status there; for a caller that holds "
+        "or will take its own admission here")
     run.add_argument("--if-free", action="store_true", help=f"run only if heavy-work admission admits the lane within "
         f"{FREE_WAIT}s; otherwise exit {BUSY} without running it")
     run.add_argument("--serial", action="store_true", help="run a lane group's lanes one after another, on this "
@@ -353,10 +359,12 @@ def main(argv=None):
                                 "or \"pull-request\" for a project that takes changes only by pull request (agents/core.md)")
             warnings += temporary_model_storage(root, config)
             warnings += unlinked_packages(root, config)
+            # A difference between the two Macs, or a build host that cannot be reached, is an error.
+            hosts = remote.compare_hosts()
             print(json.dumps({"project": config["name"], "toolkit": str(TOOLKIT_ROOT),
                 "source": source_identity(TOOLKIT_ROOT), "capabilities": config.get("capabilities", []),
-                "missingCommands": missing, "warnings": warnings}, indent=2))
-            return int(bool(missing))
+                "missingCommands": missing, "warnings": warnings, "buildHost": hosts}, indent=2))
+            return int(bool(missing or hosts["errors"]))
         elif args.action == "policy": refresh_policy(root)
         elif args.action == "admit": return admit(root, args)
         elif args.action == "remote": return remote.main(root, config, args)
@@ -386,6 +394,13 @@ def main(argv=None):
                 raise ValueError(f"{args.lane} runs a group of lanes, which takes no arguments or --expect; "
                                  "pass them to one of its lanes")
             if group is None and args.serial: raise ValueError(f"--serial runs a lane group, and {args.lane} is not one")
+            if args.build_host_only:
+                if not lane.get("buildHost"):
+                    raise ValueError(f"{args.lane} is not marked buildHost, so --build-host-only cannot offer it to "
+                                     "the build host")
+                if args.serial: raise ValueError("--serial runs a lane group here, and --build-host-only never does")
+                # The caller runs the lane under its own admission when the build host declines it.
+                return remote.first(root, config, args.lane, extra, args.expect, fallback=False)
             # Nested work runs inside the admission it inherits, here. The serial reference runs here too.
             if lane.get("buildHost") and not args.here and not args.serial and not os.environ.get(resources.TOKEN):
                 status = remote.first(root, config, args.lane, extra, args.expect)
