@@ -611,13 +611,38 @@ Supervise the process group you own. The toolkit's `processes.supervise`, which 
 - A refused signal never ends supervision. Darwin answers `killpg` with EPERM when the group's
   only member is the exited root that has not been reaped yet, and an unsignalable descendant is
   still awaited.
-- A command waits for its observed descendants before its status counts. The periodic census
+- A command waits for its observed descendants before its status counts. Periodic sampling
   cannot prove that a fast child did not orphan itself between samples, so an uncertain run
   raises and admission keeps its guard for inspection; a confirmed terminal exit keeps its
   status and releases normally. A stop or a timeout whose command and observed descendants all
   end releases too, since its proof is the same as a confirmed exit's (decided 2026-10-22 for a
-  stop, 2026-10-23 for a timeout). A push keeper is stricter: any failure leaves its guards in
-  place even after the observed children drain.
+  stop, 2026-10-23 for a timeout).
+- A nonzero exit, a stop or a timeout is confirmed only by a final census. At each sample the
+  supervisor records the process group (from `ps`) and the session (from `os.getsid`, since
+  `ps -o sess` prints 0 on macOS) of every live observed process, beside the root's own, which
+  are its PID. Once the root and every observed descendant have ended, any live process in one
+  of those groups or sessions leaves the run uncertain, and the error names each by PID, group
+  and session. An ID that is now a live process's PID is skipped: the kernel never gives a new
+  process a PID that still names a group or session, so that ID was taken over after the
+  command's group or session ended. The candidates are the groups and sessions seen, never
+  every observed PID: one push recorded 11,027 process identities, and PIDs advanced about 87 a
+  second on the 18-core host, wrapping the PID space about every 19 minutes (2026-10-23, macOS
+  27.0). The census adds one `ps`, as each sample takes, and a `getsid` sweep: 0.17 ms for 892
+  processes on that M5 Max (2026-10-26, macOS 27.0.1). It cannot see a child that moved to a
+  session of its own and was orphaned between two samples. An unrelated process that takes over
+  a recorded ID and leaves its own children in that group or session reads as a survivor, which
+  errs toward inspection. A zero exit has no census, so that a daemon a passing command starts on
+  purpose does not stop the host's heavy work. Until 2026-10-26 no run had a census, and a
+  failed command's unobserved orphan ran on after its admission was released.
+- A push keeper ([checkout provisioning and publication](#checkout-provisioning-and-publication))
+  supervises its own commands and applies the same census to a command that fails on its own,
+  with a positive status and no stop. When the census finds nothing, the keeper releases its
+  heavy-work admission but keeps the checkout's transaction lock, its owner record showing
+  `"failed": true` and `"childrenUncertain": false`, so the next push from that checkout is
+  refused until someone has read why this one failed and removed the lock. A stop, a command
+  ended by a signal, a killed keeper or a process the census finds leaves both in place, the
+  admission entry marked uncertain, even after the observed children drain. A command that
+  passes has no census there either.
 - Once the root exits, its observed descendants have 60 s to end. The supervisor lists any still
   running on stderr, as `ps -o pid,ppid,pgid,lstart,args` rows with the parent and group each
   had when first seen, and stops them: SIGTERM, then SIGKILL 10 s later. The root's status counts
@@ -633,17 +658,18 @@ Supervise the process group you own. The toolkit's `processes.supervise`, which 
 - `eng admit`, `eng run` and the resource CLI carry out SIGTERM, SIGINT and SIGHUP as a stop
   ([lock reclamation](#lock-reclamation)). The supervisor forwards the signal to the root's group
   and to each observed descendant, sends SIGKILL to what remains 10 s later, and raises
-  `Interrupted` once the root and every observed descendant have ended. A later signal does not
-  hasten SIGKILL, because a task stop can deliver its SIGTERM twice, to the process group and to
-  the process. A stop sent to the whole process tree can end the census's own `ps`, which is then
-  asked again. A signal the caller ignores, as `nohup` ignores SIGHUP, stays ignored.
+  `Interrupted` once the root and every observed descendant have ended and the census finds
+  nothing. A later signal does not hasten SIGKILL, because a task stop can deliver its SIGTERM
+  twice, to the process group and to the process. A stop sent to the whole process tree can end
+  a sample's own `ps`, which is then asked again. A signal the caller ignores, as `nohup` ignores
+  SIGHUP, stays ignored.
 - A lane's `timeout` that expires while the root runs is carried out the same way with SIGTERM:
   once to the root's group and to each observed descendant, SIGKILL to what remains 10 s later,
-  and `TimedOut` once all have ended. The run is unmeasured (exit 3), never green, and admission
-  is released; a process
-  still running 5 s after SIGKILL leaves the guard uncertain. Until 2026-10-23 the timeout sent
-  SIGTERM again every 50 ms, never sent descendants SIGKILL, and left the guard uncertain even
-  when everything had ended.
+  and `TimedOut` once all have ended and the census finds nothing. The run is unmeasured
+  (exit 3), never green, and admission is released; a process still running 5 s after SIGKILL,
+  or one the census finds, leaves the guard uncertain. Until 2026-10-23 the timeout sent SIGTERM
+  again every 50 ms, never sent descendants SIGKILL, and left the guard uncertain even when
+  everything had ended.
 
 Terminate only an observed launch PID whose current executable still matches; an unknown or
 reused PID never authorizes termination, and a cleanup error keeps the first failure.
@@ -867,12 +893,13 @@ until the guard was recovered by hand.
 stop while queued leaves nothing to release. Once admitted, the job first marks its entry
 uncertain, in case SIGKILL follows, then stops its command
 ([process supervision](#process-supervision)). When the command and every observed descendant
-have ended, admission removes the entry and the process ends by the signal it received; if any is
-still running 5 s after SIGKILL, the entry stays uncertain for attended recovery. SIGKILL itself
-cannot be caught: a killed job's entry stays, dead, for attended recovery. Until 2026-10-22 none
-of these signals was handled. SIGTERM and SIGHUP ended the admitting process at once, leaving its
-entry dead and its command, in its own session, running unsupervised; SIGINT stopped only the
-command's process group and left the entry uncertain.
+have ended, and the final census finds nothing left in their process groups and sessions,
+admission removes the entry and the process ends by the signal it received; if any is still
+running 5 s after SIGKILL, or the census finds one, the entry stays uncertain for attended
+recovery. SIGKILL itself cannot be caught: a killed job's entry stays, dead, for attended
+recovery. Until 2026-10-22 none of these signals was handled. SIGTERM and SIGHUP ended the
+admitting process at once, leaving its entry dead and its command, in its own session, running
+unsupervised; SIGINT stopped only the command's process group and left the entry uncertain.
 
 An agent's task stop is such a signal: Claude Code's TaskStop sends SIGTERM to every process
 descended from the task's shell, the command in its own session included, and SIGKILL 1.5 s

@@ -35,6 +35,28 @@ def snapshot():
     return result
 
 
+def session(pid):
+    """A live process's session, or None once it has ended. ps -o sess prints 0 on macOS."""
+    try: return os.getsid(pid)
+    except OSError: return None
+
+
+def survivors(spaces):
+    """Every live process in these process groups and sessions, as (pid, group, session).
+
+    The command and every process it was seen with have ended, and the kernel never gives a new
+    process a PID that still names a group or session. An ID that is a live process's PID was
+    therefore taken over after the command's group or session ended, and is skipped.
+    """
+    current = snapshot()
+    spaces = spaces - current.keys()
+    found = []
+    for pid, (_parent, group, _birth) in current.items():
+        sid = session(pid)
+        if group in spaces or sid in spaces: found.append((pid, group, sid))
+    return found
+
+
 def describe(pids, known, root):
     """The processes still running after the root, with the parent and group each was first seen with."""
     pids = sorted(pids)
@@ -105,7 +127,9 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
     """Wait for the owned root and observed descendants, including separate process groups.
 
     PID start identities prevent signaling a reused PID. An uncertain run raises so admission
-    retains its orphan guard. A confirmed terminal exit keeps its status.
+    retains its orphan guard. A confirmed terminal exit keeps its status. A run that fails, is
+    stopped or times out is confirmed only once a census of the process groups and sessions it was
+    seen using finds nothing left in them.
     Descendants still running LINGER seconds after the root exits are reported on stderr and
     stopped; the root's status stands once they are gone, and one that survives SIGKILL is
     still awaited. A timeout bounds only the root: one that exits in time keeps its status
@@ -132,6 +156,9 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
         raise NotStarted(f"Command did not start: {error}") from error
     # Each observed descendant's (parent, group, start) when first seen, for its identity and report.
     known, born, exited, stopping = {}, None, None, set()
+    # The process groups and sessions the command was seen using, for the census at its end. The
+    # root's own are its PID. Never every observed PID: the PID space can wrap during a long run.
+    spaces = {child.pid}
     started = time.monotonic()
     # When the timeout expired and when a stop was first seen, whether the signal reached the
     # root's group, and who else had it.
@@ -157,6 +184,7 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
                 parents.update(added)
                 known.update({pid: current[pid] for pid in added})
             live = {pid for pid, seen in known.items() if pid in current and current[pid][2] == seen[2]}
+            for pid in live: spaces.update(space for space in (current[pid][1], session(pid)) if space is not None)
             if timeout is not None and exited is None and expired is None and time.monotonic() - started >= timeout:
                 expired = time.monotonic()
                 print(f"supervise: timed out after {timeout:g}s; sending SIGTERM to the command (PID {child.pid}) "
@@ -185,15 +213,25 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
                     except (ProcessLookupError, PermissionError): pass
                 forwarded.update((pid, known[pid][2]) for pid in live)
             result = child.poll()
+            cause = (f"Stopped by {signal.Signals(signum).name}" if signum is not None
+                     else f"Timed out after {timeout:g}s" if expired is not None
+                     else f"{command[0]} exited with status {result}")
             if result is not None and not live:
+                # Sampling cannot prove that a failed, stopped or timed-out command orphaned nothing
+                # between two samples, so its groups and sessions must hold nothing. A passing
+                # command has no census: a daemon it starts on purpose must not stop the host.
+                left = survivors(spaces) if result or ending is not None else []
+                if left:
+                    raise RuntimeError(f"{cause}, but {len(left)} process(es) remain in process groups or "
+                                       "sessions it was seen using: " + ", ".join(
+                                           f"PID {pid} (group {group}, session {sid})" for pid, group, sid in left)
+                                       + "; reservation retained")
                 if signum is not None: raise Interrupted(signum, "after its command and observed descendants ended")
                 if expired is not None:
                     raise TimedOut(f"Owned command timed out after {timeout:g}s: {command[0]}; it and its observed "
                                    "descendants ended")
                 return result
             if ending is not None and time.monotonic() - ending > KILL_AFTER + KILL_WAIT:
-                cause = (f"Stopped by {signal.Signals(signum).name}" if signum is not None
-                         else f"Timed out after {timeout:g}s")
                 raise RuntimeError(f"{cause}, but owned descendants have no confirmed terminal result; "
                                    "reservation retained")
             if result is not None and expired is None and stopped is None:

@@ -36,6 +36,32 @@ COUNTS_TERM = READY + ("stopping = []\n"
                        "def stop(*_):\n    (here / 'terms').open('a').write('TERM\\n')\n    stopping.append(time.monotonic())\n"
                        "signal.signal(signal.SIGTERM, stop)\n"
                        "while not stopping or time.monotonic() - stopping[0] < 0.5: time.sleep(0.01)")
+# Double forks a grandchild that leaves the root's process group but stays in its session, as a
+# daemon can, and once its parent is reaped exits 5, or with "stays" waits for a stop. The
+# grandchild runs until the test's directory goes, or with "ends" exits at once, which the root awaits.
+ORPHANS = """
+import os, sys, time
+from pathlib import Path
+here, how = Path(sys.argv[1]), sys.argv[2]
+if os.fork() == 0:
+    if os.fork() == 0:
+        os.setpgid(0, 0)
+        (here / "pid").write_text(str(os.getpid()))
+        (here / "pid").replace(here / "orphan")
+        began = time.monotonic()
+        while how != "ends" and here.exists() and time.monotonic() - began < 60: time.sleep(0.05)
+    os._exit(0)
+os.wait()
+while not (here / "orphan").exists(): time.sleep(0.01)
+orphan = int((here / "orphan").read_text())
+while how == "ends":
+    try: os.getsid(orphan)
+    except ProcessLookupError: break
+    time.sleep(0.01)
+(here / "orphaned").touch()
+if how == "stays": time.sleep(120)
+raise SystemExit(5)
+"""
 
 
 class ProcessTests(unittest.TestCase):
@@ -166,6 +192,42 @@ class ProcessTests(unittest.TestCase):
                 current = real()
                 self.assertEqual({pid for pid, birth in births.items() if current.get(pid, (0, 0, None))[2] == birth}, set())
                 self.assertIn("SIGTERM received; forwarding it to the command", error.getvalue())
+
+    def orphaning(self, directory, how):
+        """Supervise ORPHANS, sampling only once it has orphaned its grandchild, as if that all
+        happened between two samples, so that only the census can find the grandchild."""
+        here, real, begun = Path(directory), processes.snapshot, time.monotonic()
+        def unobserved():
+            while not (here / "orphaned").exists():
+                if time.monotonic() - begun > 30: self.fail("the command orphaned nothing within 30 s")
+                time.sleep(0.01)
+            if how == "stays" and processes.requested() is None: processes.request_stop(signal.SIGTERM)
+            return real()
+        with patch.object(processes, "snapshot", unobserved), contextlib.redirect_stderr(StringIO()):
+            return processes.supervise([sys.executable, "-c", ORPHANS, directory, how], cwd=directory)
+
+    def test_a_process_left_unobserved_in_the_command_session_keeps_a_failure_or_stop_uncertain(self):
+        self.addCleanup(processes._stops.clear)
+        for how, cause in [("exits", "exited with status 5"), ("stays", "Stopped by SIGTERM")]:
+            with self.subTest(how=how), tempfile.TemporaryDirectory() as directory:
+                processes._stops.clear()
+                with self.assertRaisesRegex(RuntimeError, cause) as raised:
+                    self.orphaning(directory, how)
+                orphan = int((Path(directory) / "orphan").read_text())
+                self.assertIn(f"PID {orphan} (group {orphan}, session ", str(raised.exception))
+                self.assertIn("reservation retained", str(raised.exception))
+
+    def test_a_failed_command_whose_orphan_has_ended_keeps_its_status(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertEqual(self.orphaning(directory, "ends"), 5)
+
+    def test_the_census_skips_an_id_that_is_now_a_live_process_pid(self):
+        # The command used session 100 and group 200. Once group 200 ended, a newcomer took PID 200
+        # and its child joined its group; 300 is still in the command's session.
+        listing = {200: (1, 200, "newcomer"), 201: (200, 200, "its child"), 300: (1, 300, "left behind")}
+        sessions = {200: 200, 201: 200, 300: 100}
+        with patch.object(processes, "snapshot", lambda: listing), patch.object(processes, "session", sessions.get):
+            self.assertEqual(processes.survivors({100, 200}), [(300, 300, 100)])
 
     def test_a_stop_before_the_command_starts_runs_nothing(self):
         self.addCleanup(processes._stops.clear)
