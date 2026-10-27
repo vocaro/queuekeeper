@@ -233,7 +233,7 @@ class PoolTests(unittest.TestCase):
     def test_a_member_block_whose_release_fails_fails(self):
         self.simctl.add("Project Duo 1")
         with mock.patch.object(simulator_pool, "simctl", self.simctl):
-            with self.assertRaisesRegex(RuntimeError, "could not be confirmed shut down"):
+            with self.assertRaisesRegex(simulator_pool.ReleaseUnconfirmed, "could not be confirmed shut down"):
                 with simulator_pool.member("Project", "iPhone-Duo", "iOS-27-1", purpose="Gate", owner="me",
                                            log=self.log.append):
                     self.simctl.fail["shutdown"] = lambda rest: (1, "", "busy")

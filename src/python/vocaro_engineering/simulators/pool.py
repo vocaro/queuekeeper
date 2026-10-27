@@ -346,11 +346,16 @@ class BootTimedOut(TimeoutError):
     """A member's boot reached its limit, which leaves the work unmeasured; the member was released."""
 
 
+class ReleaseUnconfirmed(RuntimeError):
+    """A member's shutdown could not be confirmed, so its reservation is kept for recovery."""
+
+
 @contextlib.contextmanager
 def member(name, device_type, runtime, *, purpose, owner=None, boot_timeout=600, log=None):
     """A booted member of the pool for the block, then shut down and released however it ends.
 
-    It raises BootTimedOut when the boot reaches its limit and RuntimeError when it fails."""
+    It raises BootTimedOut when the boot reaches its limit, RuntimeError when it fails, and
+    ReleaseUnconfirmed after a block that ended normally when the release cannot confirm shutdown."""
     pool = Pool(name, owner=owner or default_owner() or f"{name}-{uuid.uuid4()}", log=log)
     lease = pool.take(device_type, runtime, purpose=purpose)
     status = "stopped"
@@ -367,7 +372,7 @@ def member(name, device_type, runtime, *, purpose, owner=None, boot_timeout=600,
     finally:
         released = pool.release(lease, outcome=f"{purpose}: {status}")
     if not released:
-        raise RuntimeError(f"{lease.key} could not be confirmed shut down; its reservation is kept for recovery")
+        raise ReleaseUnconfirmed(f"{lease.key} could not be confirmed shut down; its reservation is kept for recovery")
 
 
 def boot(pool, lease, timeout):
