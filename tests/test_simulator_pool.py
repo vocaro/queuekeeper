@@ -215,6 +215,43 @@ class PoolTests(unittest.TestCase):
         self.assertEqual(self.simctl.devices[udid]["state"], "Shutdown")
         self.assertEqual(self.simctl.deleted(), [])
 
+    def test_a_stop_before_a_lease_is_handed_back_releases_it(self):
+        udid = self.simctl.add("Project Duo 1")
+        def stop(rest): raise KeyboardInterrupt
+        self.simctl.fail["erase"] = stop
+        with self.assertRaises(KeyboardInterrupt):
+            self.pool.take(DUO, RUNTIME, purpose="Tests")
+        self.assertEqual(devices.Record(self.path).entry("Project Duo 1")["run"], "Stopped before Tests")
+        # A stop during a create that stored nothing releases the reserved name.
+        self.simctl.devices[udid]["state"] = "Booted"
+        self.simctl.fail["create"] = stop
+        with self.assertRaises(KeyboardInterrupt):
+            self.pool.take(DUO, RUNTIME, purpose="Tests")
+        self.assertEqual(devices.Record(self.path).entry("Project Duo 2")["state"], "released")
+        self.assertEqual(self.simctl.deleted(), [])
+
+    def test_a_member_block_whose_release_fails_fails(self):
+        self.simctl.add("Project Duo 1")
+        with mock.patch.object(simulator_pool, "simctl", self.simctl):
+            with self.assertRaisesRegex(RuntimeError, "could not be confirmed shut down"):
+                with simulator_pool.member("Project", "iPhone-Duo", "iOS-27-1", purpose="Gate", owner="me",
+                                           log=self.log.append):
+                    self.simctl.fail["shutdown"] = lambda rest: (1, "", "busy")
+        self.assertEqual(devices.Record(self.path).entry("Project Duo 1")["state"], "reserved")
+
+    def test_a_signal_while_the_command_boots_releases_the_member(self):
+        udid = self.simctl.add("Project Duo 1")
+        def signaled(rest):
+            simulator_pool.stopped(15, None)
+        self.simctl.fail["bootstatus"] = signaled
+        with mock.patch.object(simulator_pool, "simctl", self.simctl), mock.patch.object(simulator_pool.signal, "signal"), \
+                redirect_stdout(StringIO()), redirect_stderr(StringIO()) as error:
+            status = simulator_pool.main(["--pool", "Project", "--owner", "me", "take", "--device", "iPhone-Duo",
+                                          "--runtime", "iOS-27-1"])
+        self.assertEqual(status, 143, error.getvalue())
+        self.assertEqual(devices.Record(self.path).entry("Project Duo 1")["state"], "released")
+        self.assertEqual(self.simctl.devices[udid]["state"], "Shutdown")
+
     def test_the_command_takes_releases_lists_and_prunes(self):
         self.simctl.add("Project Duo 1", days=30)
         stale = self.simctl.add("Project Duo 2", days=30)

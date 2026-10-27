@@ -18,6 +18,7 @@ import json
 import os
 from pathlib import Path
 import re
+import signal
 import subprocess
 import sys
 import uuid
@@ -194,11 +195,16 @@ class Pool:
             except device_record.Refused:
                 continue  # Another session reserved it first, perhaps under another key.
             lease = Lease(member.name, member.udid, revision)
-            # The listing predates the reservation. Never erase a device booted since then.
-            if self.state(member.udid) != "Shutdown":
-                self.log(f"{member.name} is no longer shut down; its reservation is kept for recovery")
-                continue
-            erased = self.run("erase", member.udid)
+            try:
+                # The listing predates the reservation. Never erase a device booted since then.
+                if self.state(member.udid) != "Shutdown":
+                    self.log(f"{member.name} is no longer shut down; its reservation is kept for recovery")
+                    continue
+                erased = self.run("erase", member.udid)
+            except BaseException:
+                # A stop before the lease is handed back releases it once the member is shut down.
+                self.release(lease, outcome=f"Stopped before {purpose}", shutdown=False)
+                raise
             if erased.returncode != 0:
                 self.release(lease, outcome=f"Erase failed before {purpose}: {erased.stderr.strip()}", shutdown=False)
                 continue
@@ -226,6 +232,22 @@ class Pool:
             except device_record.Refused:
                 continue
             break
+        try:
+            return self._create(key, revision, device_type, runtime, purpose=purpose, label=label,
+                                preservation=preservation)
+        except BaseException as error:
+            # A stop or failure after the reservation and before a UDID was recorded: release the
+            # name unless a device of that name now exists, which keeps it for recovery.
+            current = self.record.entry(key) or {}
+            if current.get("ownerChatID") == self.owner and not current.get("device") and \
+                    not any(entry.get("name") == key for entries in self.listing().get("devices", {}).values()
+                            for entry in entries):
+                self.record.release(key, owner=self.owner, revision=current["revision"],
+                                    outcome=f"Not created: {error or type(error).__name__}",
+                                    restoration="Nothing was created")
+            raise
+
+    def _create(self, key, revision, device_type, runtime, *, purpose, label, preservation):
         # Another session may have created the name between the listing and the reservation.
         if any(entry.get("name") == key for entries in self.listing().get("devices", {}).values() for entry in entries):
             self.record.release(key, owner=self.owner, revision=revision, outcome="Not created: the name appeared",
@@ -240,9 +262,6 @@ class Pool:
             if len(found) > 1:
                 raise RuntimeError(f"{len(found)} simulators are named {key}; its reservation is kept for recovery")
             if not found:
-                self.record.release(key, owner=self.owner, revision=revision,
-                                    outcome=f"simctl create failed: {created.stderr.strip()}",
-                                    restoration="simctl lists no device of this name")
                 raise RuntimeError(f"simctl create {key} failed with status {created.returncode}: "
                                    f"{created.stderr.strip()}")
             udid = found[0]
@@ -346,7 +365,9 @@ def member(name, device_type, runtime, *, purpose, owner=None, boot_timeout=600,
         yield lifecycle.Simulator(lease.udid)
         status = "finished"
     finally:
-        pool.release(lease, outcome=f"{purpose}: {status}")
+        released = pool.release(lease, outcome=f"{purpose}: {status}")
+    if not released:
+        raise RuntimeError(f"{lease.key} could not be confirmed shut down; its reservation is kept for recovery")
 
 
 def boot(pool, lease, timeout):
@@ -356,6 +377,17 @@ def boot(pool, lease, timeout):
         return started.returncode
     finished = pool.run("bootstatus", lease.udid, "-b", timeout=timeout)
     return None if finished.returncode == 0 else evidence.UNMEASURED if finished.returncode == 124 else finished.returncode
+
+
+class Stopped(BaseException):
+    """SIGTERM or SIGHUP during a take, raised so that its cleanup releases what it holds."""
+    def __init__(self, number):
+        super().__init__(number)
+        self.number = number
+
+
+def stopped(number, _frame):
+    raise Stopped(number)
 
 
 def main(argv, project=None):
@@ -393,8 +425,15 @@ def main(argv, project=None):
                 print(f"{member.name}  {member.udid}  {member.runtime.rsplit('.', 1)[-1]}  {member.state}  "
                       f"{'prunable' if allowed else 'kept'}: {reason}")
         elif args.action == "take":
+            # A stop runs the cleanup below rather than leaving a held, booted member.
+            for number in (signal.SIGTERM, signal.SIGHUP):
+                signal.signal(number, stopped)
             lease = pool.take(args.device, args.runtime, purpose=args.purpose, label=args.label)
-            status = boot(pool, lease, args.boot_timeout)
+            try:
+                status = boot(pool, lease, args.boot_timeout)
+            except BaseException:
+                pool.release(lease, outcome=f"Stopped while booting before {args.purpose}")
+                raise
             if status is not None:
                 pool.release(lease, outcome=f"The boot ended with status {status} before {args.purpose}")
                 print(f"eng simulator-pool: {lease.key} did not finish booting (status {status})", file=sys.stderr)
@@ -408,6 +447,9 @@ def main(argv, project=None):
             print("\n".join(pruned) if pruned else "Nothing was pruned")
             return 1 if wanted and len(pruned) != len(wanted) else 0
         return 0
+    except Stopped as stop:
+        print(f"eng simulator-pool: stopped by signal {stop.number}", file=sys.stderr)
+        return 128 + stop.number
     except (OSError, ValueError, RuntimeError, TimeoutError) as error:
         print(f"eng simulator-pool: {error}", file=sys.stderr)
         return 1
