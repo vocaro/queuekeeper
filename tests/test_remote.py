@@ -1,4 +1,5 @@
 import contextlib
+from datetime import datetime, timezone
 import fcntl
 from io import StringIO
 import json
@@ -19,7 +20,8 @@ from vocaro_engineering import build_host, cli, config, processes, remote, resou
 
 # Stands in for ssh: the build host is a home directory on this Mac. Like sshd, it runs the
 # command in that home through a shell, and git's own ssh transport reaches it the same way.
-# FAKE_UNREACHABLE makes it fail as ssh does when the build host's name does not resolve.
+# FAKE_UNREACHABLE makes it fail as ssh does when the build host's name does not resolve, and
+# FAKE_TMPDIR gives the build host a temporary directory of its own.
 FAKE_SSH = """#!/bin/sh
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -35,7 +37,8 @@ fi
 shift
 cd "$FAKE_HOME" || exit 255
 # The build host has its own heavy-work queue.
-HOME="$FAKE_HOME" SHELL="$FAKE_SHELL" HEAVY_SLOT_DIR="$FAKE_SLOTS" SW_GATE_LOCK_FILE="$FAKE_GATE" exec /bin/sh -c "$*"
+HOME="$FAKE_HOME" SHELL="$FAKE_SHELL" HEAVY_SLOT_DIR="$FAKE_SLOTS" SW_GATE_LOCK_FILE="$FAKE_GATE" \
+    TMPDIR="${FAKE_TMPDIR:-$TMPDIR}" exec /bin/sh -c "$*"
 """
 # A login shell that reads no profile, so the test's PATH reaches the build host.
 FAKE_SHELL = """#!/bin/sh
@@ -85,6 +88,8 @@ class RemoteTests(unittest.TestCase):
                                  "pathlib.Path('.build/slow.pid').write_text(str(os.getpid())); time.sleep(60)"],
                      "resource": "heavy"},
             "screen": {"command": [python, "-c", "pass"], "foreground": True},
+            "linger": {"command": [python, "-c", "import os, pathlib, time; "
+                                   "pathlib.Path('.build/linger.pid').write_text(str(os.getpid())); time.sleep(60)"]},
             "gate": {"command": [python, "-c", "import os; print('Ran 2 tests in', os.getcwd())"],
                      "resource": "heavy", "minimumTests": 2, "buildHost": True},
             "failing": {"command": [python, "-c", "print('Ran 2 tests'); raise SystemExit(5)"],
@@ -108,7 +113,9 @@ class RemoteTests(unittest.TestCase):
             "PATH": f"{tools}{os.pathsep}{os.environ['PATH']}", "FAKE_HOME": str(self.home),
             "FAKE_SHELL": str(tools / "login-shell"), "HEAVY_SLOT_DIR": str(base / "slots"),
             "SW_GATE_LOCK_FILE": str(base / "gate"), "HEAVY_POLL_SECONDS": "0.01", "VOCARO_BUILD_HOST": "fake",
-            "FAKE_SLOTS": str(base / "build-host-slots"), "FAKE_GATE": str(base / "build-host-gate")})
+            "FAKE_SLOTS": str(base / "build-host-slots"), "FAKE_GATE": str(base / "build-host-gate"),
+            "FAKE_TMPDIR": str(base / "build-host-tmp")})
+        (base / "build-host-tmp").mkdir()
         self.environment.start()
         os.environ.pop("VOCARO_RESOURCE_TOKEN", None)
         os.environ.pop("DEVELOPER_DIR", None)
@@ -258,6 +265,62 @@ class RemoteTests(unittest.TestCase):
         finally:
             os.close(lock)
         self.assertFalse(Path(os.environ["FAKE_GATE"] + ".warm-push-guard").exists())
+
+    def test_a_run_that_lost_its_dispatcher_is_listed_before_the_next_is_sent_and_left_running(self):
+        command = [sys.executable, str(self.toolkit / "bin/eng"), "--project", str(self.project), "remote", "run",
+                   "linger"]
+        dispatcher = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        marker = self.checkout(0) / ".build/linger.pid"
+        deadline = time.monotonic() + 60
+        while not marker.exists() and dispatcher.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.1)
+        self.assertTrue(marker.exists(), dispatcher.stdout.read().decode() if dispatcher.poll() is not None else "")
+        time.sleep(0.2)
+        lane, left = int(marker.read_text()), []
+        try:
+            # A light lane takes no admission: its live run, which the checkout's slot lock records, accounts for it.
+            census, missing = remote.leftover_census("fake")
+            self.assertIsNone(missing)
+            self.assertEqual(census["leftovers"], [])
+            record = json.loads((self.home / remote.ROOT / "checkouts/example/0.lock").read_text())
+            self.assertEqual(record["start"], resources.process_start(record["pid"]))
+            # The run there loses its dispatcher, as SIGKILL takes it, and leaves its lane running.
+            os.kill(record["pid"], signal.SIGKILL)
+            dispatcher.communicate(timeout=60)
+            census, missing = remote.leftover_census("fake")
+            self.assertIsNone(missing)
+            left = [row["pid"] for row in census["leftovers"]]
+            self.assertEqual(len(left), 1, census)
+            row = census["leftovers"][0]
+            self.assertIn("run --here linger", row["command"])
+            self.assertEqual((row["place"], row["path"]), ("checkout", str(self.checkout(0).resolve())))
+            # Beside the lane, the orphaned eng still samples it with ps from time to time.
+            self.assertIn(lane, [descendant["pid"] for descendant in row["descendants"]])
+            # The next run is told before its work is sent, and runs; nothing is stopped.
+            status, output, error = self.eng("remote", "run", "check")
+            self.assertEqual(status, 0, output + error)
+            self.assertIn("remote: fake runs 1 process left over from runs, which no live run or admission there "
+                          "accounts for. Nothing was stopped; tell the owner", error)
+            self.assertIn(f"remote:   PID {left[0]}, parent 1, started {row['start']}, has written", error)
+            self.assertLess(error.index("left over from runs"), error.index("check at"))
+            self.assertEqual(git(self.checkout(1), "rev-parse", "HEAD"), self.commit)
+            os.kill(lane, 0)
+        finally:
+            for pid in [lane, *left]:
+                with contextlib.suppress(ProcessLookupError): os.kill(pid, signal.SIGKILL)
+            if dispatcher.poll() is None: dispatcher.kill()
+            dispatcher.communicate()
+
+    def test_a_census_that_fails_is_reported_and_stops_no_run(self):
+        with patch.object(remote, "census_command", return_value="sh -c 'echo census broke >&2; exit 3'"):
+            status, output, error = self.eng("remote", "run", "check")
+        self.assertEqual(status, 0, output + error)
+        self.assertIn("remote: could not list the processes left over from runs on fake: exit 0: census broke", error)
+        self.assertIn(f"check at {self.commit[:12]}", error)
+        # A census that runs and finds nothing says nothing.
+        status, output, error = self.eng("remote", "run", "check")
+        self.assertEqual(status, 0, output + error)
+        self.assertNotIn("left over", error)
 
     def test_the_build_hosts_credential_file_is_the_runs_only_git_credential_helper(self):
         log = self.project / ".build/engineering/remote/helpers/run.log"
@@ -845,10 +908,13 @@ class BuildHostDoctorTests(unittest.TestCase):
         self.project.mkdir()
         (self.project / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
                                                                    "integration": "direct-main"}))
+        self.home = home
+        (base / "build-host-tmp").mkdir()
         self.environment = patch.dict(os.environ, {
             "PATH": f"{tools}{os.pathsep}{os.environ['PATH']}", "FAKE_HOME": str(home),
             "FAKE_SHELL": str(tools / "login-shell"), "FAKE_XCODES": str(self.xcodes), "FAKE_MAC": "here",
-            "VOCARO_BUILD_HOST": "fake"})
+            "VOCARO_BUILD_HOST": "fake", "FAKE_SLOTS": str(base / "build-host-slots"),
+            "FAKE_GATE": str(base / "build-host-gate"), "FAKE_TMPDIR": str(base / "build-host-tmp")})
         self.environment.start()
         os.environ.pop("DEVELOPER_DIR", None)
         # Both Macs select the same Xcode 27.1, with the same runtimes.
@@ -882,7 +948,7 @@ class BuildHostDoctorTests(unittest.TestCase):
 
     def test_matching_macs_pass(self):
         status, found = self.doctor()
-        self.assertEqual((status, found["errors"], found["unchecked"]), (0, [], []), found)
+        self.assertEqual((status, found["errors"], found["unchecked"], found["leftovers"]), (0, [], [], []), found)
         self.assertEqual(found["host"], "fake")
         for side in ["local", "remote"]:
             self.assertEqual(found[side]["defaultDeveloperDir"], str(self.release))
@@ -921,6 +987,23 @@ class BuildHostDoctorTests(unittest.TestCase):
             self.assertIn("to fix it, run `python3 scripts/eng remote setup --runtimes`, which copies each runtime to "
                           "the Mac that lacks it and deletes none", found["errors"][0])
 
+    def test_a_process_left_in_a_checkout_is_listed_and_is_no_error(self):
+        checkout = self.home / remote.ROOT / "checkouts/Example/0/Example"
+        checkout.mkdir(parents=True)
+        left = subprocess.Popen(["sleep", "60"], cwd=checkout)
+        # The owner's own process elsewhere is not the toolkit's.
+        other = subprocess.Popen(["sleep", "61"], cwd=self.home)
+        try:
+            status, found = self.doctor()
+            start = " ".join(resources.process_start(left.pid).split())
+        finally:
+            for process in [left, other]:
+                process.kill()
+                process.wait()
+        self.assertEqual((status, found["errors"], found["unchecked"]), (0, [], []), found)
+        self.assertEqual([(row["pid"], row["start"], row["command"], row["place"], row["path"])
+                          for row in found["leftovers"]], [(left.pid, start, "sleep 60", "checkout", str(checkout.resolve()))])
+
     def test_an_unreachable_or_unconfigured_build_host_is_named_with_what_was_not_checked(self):
         with patch.dict(os.environ, {"FAKE_UNREACHABLE": "1"}):
             status, found = self.doctor()
@@ -937,6 +1020,183 @@ class BuildHostDoctorTests(unittest.TestCase):
             status, found = self.doctor()
         self.assertEqual((status, found["host"], found["errors"]), (0, None, []), found)
         self.assertIn("no build host is configured", found["unchecked"][0])
+
+
+# Starts as a fake ps listing prints them: the day of the month is padded, which a guard's record
+# and a slot lock's are not.
+EARLY, LATER, PADDED = "Mon Oct 26 03:12:45 2026", "Tue Oct 27 10:40:01 2026", "Wed Oct  7 09:05:03 2026"
+DEVICE = "0A1B2C3D-4E5F-4A6B-8C7D-9E0F1A2B3C4D"
+
+
+class LeftoverCensusTests(unittest.TestCase):
+    """build_host.leftovers over fake ps and lsof listings of a build host whose home is a temporary
+    directory, with its own admission guard and log."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        base = Path(self.temp.name).resolve()
+        self.home = base / "home"
+        self.checkout = self.home / remote.ROOT / "checkouts/Example/0/Example"
+        self.checkout.mkdir(parents=True)
+        self.slots = base / "slots"
+        self.slots.mkdir()
+        # As the build host's TMPDIR names it; lsof names the same directory under /private.
+        self.temporary = "/var/folders/zz/fake/T/"
+        self.environment = patch.dict(os.environ, {"HOME": str(self.home), "TMPDIR": self.temporary,
+                                                   "HEAVY_SLOT_DIR": str(self.slots), "SW_GATE_LOCK_FILE": str(base / "gate")})
+        self.environment.start()
+        self.guard = Path(os.environ["SW_GATE_LOCK_FILE"] + ".warm-push-guard")
+        self.log = self.slots / "admissions.jsonl"
+        self.uid = os.getuid()
+        self.table, self.directories, self.writes = {}, {}, {}
+
+    def tearDown(self):
+        self.environment.stop()
+        self.temp.cleanup()
+
+    def process(self, pid, parent, args, cwd=None, start=EARLY, uid=None, written=0):
+        self.table[pid] = (parent, self.uid if uid is None else uid, start, args)
+        if cwd is None: self.directories.pop(pid, None)
+        else: self.directories[pid] = cwd
+        self.writes[pid] = written
+
+    def listed(self, command):
+        if command[0] == "ps":
+            return "".join(f"{pid:>6} {parent:>6} {uid:>5} {start} {args}\n"
+                           for pid, (parent, uid, start, args) in self.table.items())
+        if command[0] == "lsof":
+            # lsof lists the census's own process too.
+            return "".join(f"p{pid}\nfcwd\nn{cwd}\n" for pid, cwd in [(os.getpid(), self.home), *self.directories.items()])
+        return None
+
+    def census(self):
+        found = build_host.leftovers(remote.ROOT, listed=self.listed, written=self.writes.get)
+        self.assertEqual(found["unchecked"], [])
+        return {row["pid"]: row for row in found["leftovers"]}
+
+    def owner(self, pid, start):
+        self.guard.write_text(json.dumps({"vocaroEngineering": 1, "owners": {"a" * 32: {
+            "pid": pid, "start": start, "label": "swift build", "exclusive": False, "model": False}}}))
+
+    def test_an_orphan_is_listed_with_its_start_command_and_writes_unless_a_live_run_holds_it(self):
+        self.process(4242, 1, "python3 -m unittest discover -s tests", cwd=str(self.checkout), written=1_700_000_000_000)
+        self.process(4250, 4242, "/usr/bin/python3 writer.py", cwd="/private/tmp", written=3 << 30)
+        # Named by its command line alone, as a compiler names its sources.
+        self.process(4300, 1, f"/usr/bin/swift-frontend -frontend -c {self.checkout}/Sources/A.swift -o A.o")
+        rows = self.census()
+        self.assertEqual(list(rows), [4242, 4300])
+        row = rows[4242]
+        self.assertEqual((row["parent"], row["start"], row["command"], row["place"], row["path"], row["written"]),
+                         (1, EARLY, "python3 -m unittest discover -s tests", "checkout", str(self.checkout),
+                          1_700_000_000_000))
+        self.assertEqual(row["descendants"], [{"pid": 4250, "command": "/usr/bin/python3 writer.py", "written": 3 << 30}])
+        self.assertEqual((rows[4300]["path"], rows[4300]["cwd"]), (f"{self.checkout}/Sources/A.swift", None))
+        # Negative control: under a live run of build_host.py, which its checkout's slot lock records.
+        self.process(900, 1, "python3 -c SOURCE PLAN", cwd=str(self.home))
+        self.process(4242, 900, "python3 -m unittest discover -s tests", cwd=str(self.checkout))
+        self.process(4300, 4242, f"/usr/bin/swift-frontend -frontend -c {self.checkout}/Sources/A.swift -o A.o")
+        record = self.checkout.parents[1] / "0.lock"
+        record.write_text(json.dumps({"pid": 900, "start": EARLY}) + "\n")
+        self.assertEqual(self.census(), {})
+        # A record whose PID another process now has is no live run's.
+        record.write_text(json.dumps({"pid": 900, "start": LATER}) + "\n")
+        self.assertEqual(list(self.census()), [4242])
+
+    def test_an_admitted_runs_processes_are_not_listed_until_its_admission_ends(self):
+        self.process(5000, 1, f"/usr/bin/python3 {self.checkout.parent}/vocaro-engineering/bin/eng admit -- swift build",
+                     cwd=str(self.checkout), start=PADDED)
+        self.process(5001, 5000, f"swift-build --package-path {self.checkout}", start=PADDED, written=5 << 30)
+        with self.subTest("guard"):
+            self.owner(5000, "Wed Oct 7 09:05:03 2026")
+            self.assertEqual(self.census(), {})
+            # Negative control: an owner whose PID another process took over accounts for nothing.
+            self.owner(5000, "Wed Oct 7 09:05:04 2026")
+            rows = self.census()
+            self.assertEqual(list(rows), [5000])
+            self.assertEqual([descendant["pid"] for descendant in rows[5000]["descendants"]], [5001])
+            self.guard.unlink()
+        with self.subTest("log"):
+            began = build_host.started("Wed Oct 7 09:05:03 2026")
+            def line(event, after, **fields):
+                moment = datetime.fromtimestamp(began + after, timezone.utc).isoformat(timespec="seconds")
+                return json.dumps({"time": moment, "event": event, "identity": "b" * 32, "pid": 5000, "kind": "heavy",
+                                   "label": "swift build", **fields}) + "\n"
+            self.log.write_text(line("admitted", 2, slots=[0], waited=0.5))
+            self.assertEqual(self.census(), {})
+            # Negative control: its end, logged in the newer generation, leaves nothing accounting for it.
+            self.log.rename(self.slots / "admissions.1.jsonl")
+            self.log.write_text(line("ended", 90, outcome="uncertain", slots=[0], held=88.0))
+            self.assertEqual(list(self.census()), [5000])
+            # And an admission older than the process is another process's, whose PID it took over.
+            (self.slots / "admissions.1.jsonl").unlink()
+            self.log.write_text(line("admitted", -3600, slots=[0], waited=0.5))
+            self.assertEqual(list(self.census()), [5000])
+
+    def test_the_owners_other_processes_are_not_listed_unless_they_run_from_a_runs_places(self):
+        self.process(6000, 1, "/Applications/Safari.app/Contents/MacOS/Safari", cwd=str(self.home))
+        # macOS's own agent in the temporary directory, as IMTransferAgent works on both Macs.
+        self.process(6001, 1, "/System/Library/PrivateFrameworks/IMTransferServices.framework/IMTransferAgent.app/"
+                     "Contents/MacOS/IMTransferAgent", cwd="/private" + self.temporary + "com.apple.imtransferservices")
+        # Another account's shell in a checkout.
+        self.process(6002, 1, "-zsh", cwd=str(self.checkout), uid=self.uid + 1)
+        self.assertEqual(self.census(), {})
+        # Negative controls: the same program working in a checkout, and the owner's own in the temporary directory.
+        self.process(6000, 1, "/Applications/Safari.app/Contents/MacOS/Safari", cwd=str(self.checkout))
+        self.process(6003, 1, "/usr/bin/python3 helper.py", cwd="/private" + self.temporary + "tmpabc")
+        rows = self.census()
+        self.assertEqual(sorted(rows), [6000, 6003])
+        self.assertEqual((rows[6003]["place"], rows[6003]["path"]),
+                         ("temporary directory", "/private" + self.temporary + "tmpabc"))
+
+    def test_a_simulator_no_live_run_names_is_listed_with_its_processes(self):
+        devices = self.home / build_host.DEVICES
+        self.process(7000, 1, f"launchd_sim {devices}/{DEVICE}/data/var/run/launchd_bootstrap.plist", written=10 << 20)
+        self.process(7001, 7000, "/Library/Developer/CoreSimulator/Volumes/iOS_24B5070a/Library/Developer/"
+                     "CoreSimulator/Profiles/Runtimes/iOS 27.1.simruntime/Contents/Resources/RuntimeRoot/System/Library/"
+                     "CoreServices/SpringBoard.app/SpringBoard", written=1 << 20)
+        self.process(7002, 7000, f"{devices}/{DEVICE}/data/Containers/Bundle/Application/X/Example.app/Example",
+                     written=200 << 30)
+        rows = self.census()
+        self.assertEqual(list(rows), [7000])
+        self.assertEqual((rows[7000]["place"], rows[7000]["simulator"]), ("simulator", DEVICE))
+        self.assertEqual([descendant["pid"] for descendant in rows[7000]["descendants"]], [7002, 7001])
+        # Negative control: a live admitted run that names the device by its identifier accounts for it.
+        self.process(5000, 1, "/usr/bin/python3 eng admit -- xcodebuild test", start=LATER)
+        self.process(5001, 5000, f"xcodebuild test -destination id={DEVICE.lower()}", start=LATER)
+        self.owner(5000, LATER)
+        self.assertEqual(self.census(), {})
+
+    def test_a_census_that_cannot_read_says_so_and_one_that_fails_says_why(self):
+        self.assertEqual(build_host.leftovers(remote.ROOT, listed=lambda command: None), {"error": "ps listed no processes"})
+        # Without lsof's working directories, only command lines place a process.
+        self.process(4242, 1, "python3 -m unittest", cwd=str(self.checkout))
+        found = build_host.leftovers(remote.ROOT, listed=lambda command: self.listed(command) if command[0] == "ps" else None,
+                                     written=self.writes.get)
+        self.assertEqual(found["leftovers"], [])
+        self.assertEqual(len(found["unchecked"]), 1, found)
+        self.assertIn("working directories, which lsof did not list", found["unchecked"][0])
+        with patch.object(build_host, "leftovers", side_effect=OSError("broken")):
+            self.assertEqual(build_host.answer({"leftovers": remote.ROOT}), {"error": "OSError: broken"})
+
+    @unittest.skipUnless(sys.platform == "darwin", "proc_pid_rusage is macOS's")
+    def test_disk_writes_count_what_a_process_has_written(self):
+        script = ("import os, sys, time; stream = open(sys.argv[1], 'wb'); stream.write(os.urandom(int(sys.argv[2]))); "
+                  "stream.flush(); print('written', flush=True); time.sleep(30)")
+        found = {}
+        for size in [4 << 20, 0]:
+            child = subprocess.Popen([sys.executable, "-c", script, str(Path(self.temp.name) / f"{size}.bin"), str(size)],
+                                     stdout=subprocess.PIPE, text=True)
+            try:
+                self.assertEqual(child.stdout.readline(), "written\n")
+                found[size] = build_host.disk_writes(child.pid)
+            finally:
+                child.kill()
+                child.communicate()
+        self.assertGreaterEqual(found[4 << 20], 4 << 20)
+        # Negative control: a process that wrote nothing has written less than that.
+        self.assertLess(found[0], 4 << 20)
+        # Another account's process, here launchd's, cannot be read without sudo.
+        self.assertIsNone(build_host.disk_writes(1))
 
 
 # Two Macs' simulator runtimes on one file system, for eng remote setup --runtimes. FAKE_MAC names

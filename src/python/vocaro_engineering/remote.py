@@ -15,7 +15,8 @@ anything runs, because its queue or every checkout is busy, the lane runs on thi
 A configuration problem, such as a build host that cannot be reached or has another Xcode, stops
 the lane for the owner's decision (agents/core.md, Shared resources); only `--here` then runs it
 here. `eng doctor` compares the two Macs, and `eng remote setup --runtimes` gives both the same
-simulator runtimes.
+simulator runtimes. Before it sends work, and in `eng doctor`, it lists the processes there that
+earlier runs left running, which nothing stops.
 """
 import contextlib
 import fcntl
@@ -32,7 +33,7 @@ import tempfile
 import threading
 import time
 
-from . import build_host, processes
+from . import build_host, disk, processes
 from .config import TOOLKIT_ROOT
 from .resources import BUSY
 
@@ -55,6 +56,10 @@ GIT_LOCATION = {"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECT
 MISCONFIGURED = 78
 # Seconds `eng doctor` waits for the build host to report its Xcodes and runtimes.
 SURVEY_TIMEOUT = 180
+# Seconds `eng doctor` waits for the census of the build host's leftover processes.
+CENSUS_TIMEOUT = 60
+# Where a leftover process is explained.
+LEFTOVER_GUIDE = "guides/shared-host.md, Processes left over from runs"
 # The author and committer of a snapshot commit, which records a working tree rather than anyone's
 # work, and needs no identity configured in the session's git.
 SNAPSHOT_IDENTITY = {"GIT_AUTHOR_NAME": "eng snapshot", "GIT_AUTHOR_EMAIL": "snapshot@vocaro-engineering.invalid",
@@ -305,7 +310,10 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
         f"{{ [ -d {shlex.quote(path)} ] || git init --bare --quiet {shlex.quote(path)}; }}" for path in repositories)])
     at = commit[:12] if commit == head else f"{commit[:12]}, a snapshot of the working tree on {head[:12]},"
     print(f"remote: sending {at} to {host}", file=sys.stderr, flush=True)
-    prepared = ssh(host, prepare, stdin=subprocess.DEVNULL, capture_output=True, text=True)
+    # The connection that prepares the repositories also lists what earlier runs left running there,
+    # before any work is sent: a connection to the build host can take seconds of its own.
+    prepared = ssh(host, f"{prepare} || exit $?\n{census_command()} || true", stdin=subprocess.DEVNULL,
+                   capture_output=True, text=True)
     # ssh's own failures, a name that does not resolve among them, exit 255.
     if prepared.returncode == 255: raise unreachable(host, last_line(prepared.stderr))
     if prepared.returncode:
@@ -313,6 +321,8 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
                             f"{last_line(prepared.stderr) or 'no output'}",
                             f"make ~/{ROOT} writable there and install the Xcode this Mac uses, with its license "
                             "accepted and its first launch run (guides/shared-host.md, Setting up a build host)")
+    for line in leftover_lines(host, *read_census(prepared)):
+        print(f"remote: {line}", file=sys.stderr, flush=True)
     send(root, host, repositories[0], commit)
     if kit is not None: send(toolkit, host, repositories[1], kit["commit"])
     if processes.requested() is not None:
@@ -877,11 +887,70 @@ def survey(host, developer):
     return ask(host, {"toolchain": developer})
 
 
+def census_command():
+    """The build host's command that prints build_host.leftovers, the census of what runs left
+    running there, as its last line."""
+    return shlex.join(["python3", "-c", Path(build_host.__file__).read_text(), json.dumps({"leftovers": ROOT})])
+
+
+def read_census(found):
+    """The census that a finished command's output ends with, and None; or None and why it is missing."""
+    try:
+        census = json.loads(last_line(found.stdout))
+    except (TypeError, ValueError):
+        return None, f"exit {found.returncode}: {last_line(found.stderr) or 'no output'}"
+    if not isinstance(census, dict) or not isinstance(census.get("leftovers"), list):
+        return None, census.get("error") if isinstance(census, dict) else f"it answered {census!r}"
+    return census, None
+
+
+def leftover_census(host):
+    """The build host's census of leftover processes, read in its login shell as a run there reads
+    it, and None; or None and why it is missing. A build host that cannot be reached raises; any
+    other failure of the census is only reported, since it stops nothing."""
+    try:
+        found = ssh(host, census_command(), stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                    timeout=CENSUS_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return None, f"it did not answer in {CENSUS_TIMEOUT}s"
+    except OSError as error:
+        raise unreachable(host, str(error)) from None
+    if found.returncode == 255: raise unreachable(host, last_line(found.stderr))
+    return read_census(found)
+
+
+def leftover_lines(host, census, missing):
+    """What `eng remote` prints of the census before it sends work: nothing when no process is left over."""
+    if census is None: return [f"could not list the processes left over from runs on {host}: {missing}"]
+    lines = [f"on {host}, {item}" for item in census.get("unchecked", [])]
+    rows = census["leftovers"]
+    if rows:
+        lines.append(f"{host} runs {len(rows)} process{'es' if len(rows) > 1 else ''} left over from runs, which no "
+                     f"live run or admission there accounts for. Nothing was stopped; tell the owner ({LEFTOVER_GUIDE}):")
+    for row in rows:
+        written = row.get("written")
+        rate = f", {disk.human(written / row['seconds'])}/s since it started" if written and row.get("seconds") else ""
+        where = {"checkout": "a checkout", "temporary directory": "the temporary directory"}.get(
+            row["place"], f"simulator {row.get('simulator') or 'with no device named'}")
+        lines += [f"  PID {row['pid']}, parent {row['parent']}, started {row['start']}, has written "
+                  f"{'an unknown amount' if written is None else disk.human(written)}{rate}, from {where}: {row['path']}",
+                  f"    {row['command']}"]
+        descendants = row.get("descendants") or []
+        if descendants:
+            most = descendants[0]
+            total = sum(descendant["written"] or 0 for descendant in descendants)
+            amount = "" if most["written"] is None else f" ({disk.human(most['written'])})"
+            lines.append(f"    and {len(descendants)} descendant{'s' if len(descendants) > 1 else ''}, which have written "
+                         f"{disk.human(total)}, the most PID {most['pid']}{amount}: {most['command']}")
+    return lines
+
+
 def compare_hosts():
     """What `eng doctor` reports of the build host: this Mac's and the build host's default Xcodes
     (`xcode-select -p`), the Xcode at this Mac's developer directory, which every run there uses,
     and the simulator runtimes it lists. A difference, or a build host that cannot be reached, is
-    an error; what could not be compared is named in unchecked."""
+    an error; what could not be compared is named in unchecked. The processes there that runs left
+    running are listed in leftovers, which are no error: they say what to tell the owner."""
     host = configured()
     report = {"host": host, "errors": [], "unchecked": []}
     if host is None:
@@ -897,6 +966,15 @@ def compare_hosts():
         report["unchecked"].append(f"{host}'s default Xcode, its Xcode at this Mac's developer directory and its "
                                    "simulator runtimes, which it did not report")
         return report
+    try:
+        census, missing = leftover_census(host)
+    except Misconfigured as problem:
+        census, missing = None, problem.problem
+    if census is None:
+        report["unchecked"].append(f"the processes left over from runs on {host}, which it did not list: {missing}")
+    else:
+        report["leftovers"] = census["leftovers"]
+        report["unchecked"] += [f"on {host}, {item}" for item in census.get("unchecked", [])]
     version = lambda text: ", ".join((text or "no Xcode").splitlines())
     default = lambda side: (side.get("defaultDeveloperDir"), side.get("defaultXcode"))
     # When both Macs' default is this Mac's developer directory, the next check covers its version.

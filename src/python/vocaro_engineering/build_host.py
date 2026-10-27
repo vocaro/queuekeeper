@@ -9,12 +9,17 @@ dispatcher's lifeline: its end, which a stop, the dispatcher's death or a droppe
 sends, stops the run as a stop signal stops a local one. Given `{"toolchain": DEVELOPER_DIR}`
 instead of a plan, it prints the Mac's Xcodes and simulator runtimes for `eng doctor`; given
 `{"images": ...}` or `{"receive": ...}`, it lists the Mac's runtime images or adds one read from
-standard input, for `eng remote setup --runtimes`.
+standard input, for `eng remote setup --runtimes`; given `{"leftovers": ROOT}`, it lists the
+processes left over from runs there, which `eng remote` prints before it sends work.
 """
+import ctypes
+from datetime import datetime
 import fcntl
 import json
 import os
 from pathlib import Path
+import pwd
+import re
 import shlex
 import shutil
 import signal
@@ -32,6 +37,19 @@ CHUNK = 8 << 20
 # The platform a runtime image names when simctl gives no runtime bundle to name it by.
 PLATFORMS = {"com.apple.platform.iphonesimulator": "iOS", "com.apple.platform.appletvsimulator": "tvOS",
              "com.apple.platform.watchsimulator": "watchOS", "com.apple.platform.xrsimulator": "visionOS"}
+# Where heavy-work admission keeps its guard and its log, as resources.py names them, which this
+# file cannot import: the guard beside the legacy gate lock, and the log's two generations, older
+# first, in the account's durable state unless HEAVY_SLOT_DIR names a namespace of its own.
+GATE_LOCK = "/tmp/studywright-gate-suite.lock"
+ADMISSION_STATE = "Library/Application Support/vocaro-engineering"
+ADMISSION_LOGS = ("admissions.1.jsonl", "admissions.jsonl")
+# The simulators' devices, relative to the home: a booted device's processes name its directory.
+DEVICES = "Library/Developer/CoreSimulator/Devices"
+DEVICE = re.compile(r"[0-9A-F]{8}-(?:[0-9A-F]{4}-){3}[0-9A-F]{12}", re.IGNORECASE)
+# Characters of a leftover's command line that the census reports.
+COMMAND_LIMIT = 1000
+# How ps prints a process's start (lstart), with its spacing collapsed.
+STARTED = "%a %b %d %H:%M:%S %Y"
 
 _output = threading.Lock()
 _stop = threading.Event()
@@ -191,9 +209,240 @@ def receive(stream, directory, build, size, developer_dir, progress=None):
         for path in (partial, staged): path.unlink(missing_ok=True)
 
 
+class Usage(ctypes.Structure):
+    """<sys/resource.h>'s struct rusage_info_v4, which proc_pid_rusage fills for RUSAGE_INFO_V4."""
+    _fields_ = [("uuid", ctypes.c_uint8 * 16), ("counters", ctypes.c_uint64 * 16), ("bytesRead", ctypes.c_uint64),
+                ("bytesWritten", ctypes.c_uint64), ("times", ctypes.c_uint64 * 9), ("logicalWrites", ctypes.c_uint64),
+                ("rest", ctypes.c_uint64 * 7)]
+
+
+_libproc = []
+
+
+def disk_writes(pid):
+    """The bytes a process has written to files since it started, or None where they cannot be read.
+    proc_pid_rusage reads the account's own processes without sudo. Its logical writes count a write
+    when it is made, flushed or not, and to a file deleted since, but no write to a pipe or /dev/null;
+    its disk I/O counted a buffered 4 MiB not at all, only what the process flushed itself (macOS
+    27.0, October 2026)."""
+    if not _libproc:
+        try: _libproc.append(ctypes.CDLL("/usr/lib/libproc.dylib"))
+        except OSError: _libproc.append(None)
+    usage = Usage()
+    if _libproc[0] is None or _libproc[0].proc_pid_rusage(pid, 4, ctypes.byref(usage)) != 0:
+        return None
+    return usage.logicalWrites
+
+
+def listing(command):
+    """A command's standard output whatever its status, or None when it cannot run: lsof exits 1
+    when it finds nothing, or when a process it looked at has ended."""
+    try:
+        return subprocess.run(command, capture_output=True, text=True, timeout=60).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def process_table(text):
+    """The processes a `ps -axww -o pid=,ppid=,uid=,lstart=,args=` listing names, by PID: each
+    one's parent, user ID, start with its spacing collapsed, and command line."""
+    table = {}
+    for line in (text or "").splitlines():
+        parts = line.split(None, 8)
+        if len(parts) < 8 or not all(part.isdigit() for part in parts[:3]): continue
+        table[int(parts[0])] = {"parent": int(parts[1]), "uid": int(parts[2]), "start": " ".join(parts[3:8]),
+                                "args": parts[8] if len(parts) > 8 else ""}
+    return table
+
+
+def working_directories(text):
+    """Each process's working directory, from an `lsof -Fpn -d cwd` listing."""
+    found, pid = {}, None
+    for line in (text or "").splitlines():
+        if line[:1] == "p" and line[1:].isdigit(): pid = int(line[1:])
+        elif line[:1] == "n" and pid is not None: found[pid] = line[1:]
+    return found
+
+
+def started(start):
+    """A start as ps prints it, in seconds since the epoch, or None."""
+    try: return time.mktime(time.strptime(start, STARTED))
+    except (TypeError, ValueError, OverflowError): return None
+
+
+def identities(records):
+    """(PID, start with its spacing collapsed) of each record that names an integer PID, the start
+    None where a record has none."""
+    return [(record["pid"], " ".join(record["start"].split()) if isinstance(record.get("start"), str) else None)
+            for record in records if isinstance(record, dict) and isinstance(record.get("pid"), int)]
+
+
+def guard_owners():
+    """The owners heavy-work admission's guard records, as resources.guard_owners reads them."""
+    try:
+        state = json.loads(Path(os.environ.get("SW_GATE_LOCK_FILE", GATE_LOCK) + ".warm-push-guard").read_text())
+    except (OSError, ValueError):
+        return []
+    owners = state.get("owners") if isinstance(state, dict) and state.get("vocaroEngineering") == 1 else None
+    if not isinstance(owners, dict): return []
+    return identities([owner for owner in owners.values()
+                       if isinstance(owner, dict) and isinstance(owner.get("start"), str)])
+
+
+def unended():
+    """(PID, when it was admitted, in seconds since the epoch) of each admission the admission log
+    records without an end: one still held, or one SIGKILL ended."""
+    directory = Path(os.environ["HEAVY_SLOT_DIR"]) if os.environ.get("HEAVY_SLOT_DIR") else \
+        Path(pwd.getpwuid(os.getuid()).pw_dir) / ADMISSION_STATE
+    admitted, ended = {}, set()
+    for name in ADMISSION_LOGS:
+        try: lines = (directory / name).read_bytes().splitlines()
+        except OSError: continue
+        for line in lines:
+            try: entry = json.loads(line)
+            except ValueError: continue
+            if not isinstance(entry, dict): continue
+            if entry.get("event") == "admitted" and isinstance(entry.get("pid"), int):
+                admitted[entry.get("identity")] = entry
+            elif entry.get("event") == "ended": ended.add(entry.get("identity"))
+    found = []
+    for identity, entry in admitted.items():
+        if identity in ended: continue
+        try: moment = datetime.fromisoformat(entry["time"]).timestamp()
+        except (TypeError, ValueError, KeyError): moment = None
+        found.append((entry["pid"], moment))
+    return found
+
+
+def dispatchers(checkouts):
+    """The runs that each project's checkout slot locks record, as claim writes them: (PID, start)."""
+    records = []
+    for path in sorted(Path(checkouts).glob("*/*.lock")):
+        try: records.append(json.loads(path.read_text()))
+        except (OSError, ValueError): continue
+    return identities(records)
+
+
+def live_runs(table, recorded, admitted):
+    """The PIDs of live runs: each recorded (PID, start) whose process still has that start (a record
+    without one counts while its PID runs), and each admission the log has not ended whose process
+    started no later than it was admitted, since a process that took its PID over started later."""
+    roots = {pid for pid, start in recorded if pid in table and start in (None, table[pid]["start"])}
+    for pid, moment in admitted:
+        began = started(table[pid]["start"]) if pid in table else None
+        if pid in table and (moment is None or began is None or began <= moment + 1): roots.add(pid)
+    return roots
+
+
+def forms(path):
+    """The forms a directory takes in a command line or in lsof's report, each with a closing slash:
+    as given, resolved, and with and without the /private that /tmp and /var resolve to."""
+    found = set()
+    for form in {str(path), os.path.realpath(path)}:
+        form = form.rstrip("/")
+        if not form: continue
+        found.add(form + "/")
+        if form.startswith("/private/"): found.add(form[len("/private"):] + "/")
+        if form.startswith(("/tmp/", "/var/")): found.add("/private" + form + "/")
+    return sorted(found)
+
+
+def leftovers(root, listed=listing, written=disk_writes):
+    """The account's processes that run from a checkout under root, the temporary directory or a
+    simulator's device, and that no live run accounts for: what `eng remote` prints before it sends
+    work, and `eng doctor` reports. It reads and reports, and stops nothing.
+
+    A process runs from a place when its working directory lies in it or its command line names a
+    path in it; a program under /System is macOS's own. It is a live run's when it or an ancestor
+    is a live admission owner, as the guard or the admission log records it, or a live run of this
+    file, as its checkout's slot lock records it: a light lane and a provision lane take no
+    admission. A simulator's processes descend from launchd_sim, never from a run, so a device is a
+    live run's while one of that run's processes names it. Each leftover whose parent is no
+    leftover is listed, with its PID, start, command, how much it has written, and each of its
+    descendants with what that one has written."""
+    home, uid = Path.home(), os.getuid()
+    table = process_table(listed(["ps", "-axww", "-o", "pid=,ppid=,uid=,lstart=,args="]))
+    if not table: return {"error": "ps listed no processes"}
+    unchecked = []
+    found = listed(["lsof", "-nPw", "-a", "-u", str(uid), "-d", "cwd", "-Fpn"])
+    if not found:
+        unchecked.append("the processes' working directories, which lsof did not list, so only their command lines "
+                         "were read")
+    directories = working_directories(found)
+    temporary = os.environ.get("TMPDIR") or (listed(["getconf", "DARWIN_USER_TEMP_DIR"]) or "").strip()
+    if not temporary: unchecked.append("the temporary directory, which neither TMPDIR nor getconf named")
+    checkouts = home / root / "checkouts"
+    places = [(kind, forms(path)) for kind, path in
+              [("checkout", checkouts), ("temporary directory", temporary), ("simulator", home / DEVICES)] if path]
+
+    def ancestry(pid):
+        line = []
+        while pid in table and pid not in line:
+            line.append(pid)
+            pid = table[pid]["parent"]
+        return line
+
+    def place(pid):
+        """Where the process runs from: (kind, the path that places it there, device or None), or None."""
+        cwd = directories.get(pid)
+        for kind, prefixes in places:
+            for prefix in prefixes:
+                if cwd and (cwd + "/").startswith(prefix):
+                    path = cwd
+                else:
+                    mention = re.search(re.escape(prefix) + r"[^\s'\"]*", table[pid]["args"])
+                    if mention is None: continue
+                    path = mention.group(0)
+                device = DEVICE.match(path[len(prefix):]) if kind == "simulator" else None
+                return kind, path, device and device.group(0).upper()
+        return None
+
+    roots = live_runs(table, guard_owners() + dispatchers(checkouts), unended())
+    own = set(ancestry(os.getpid()))
+    runs = {pid for pid in table if roots.intersection(ancestry(pid))}
+    # The devices a live run names, by UDID.
+    named = " ".join(table[pid]["args"] for pid in runs).upper()
+    candidates = {}
+    for pid, process in table.items():
+        # macOS's own agents, which launchd starts, can work in the temporary directory, as
+        # IMTransferAgent did on both Macs (macOS 27, October 2026).
+        if process["uid"] != uid or pid in own or pid in runs or process["args"].startswith("/System/"): continue
+        where = place(pid)
+        if where is not None and not (where[2] and where[2] in named): candidates[pid] = where
+    children = {}
+    for pid, process in table.items(): children.setdefault(process["parent"], []).append(pid)
+    # This file stays ASCII: it reaches the build host as a command-line argument.
+    command = lambda pid: table[pid]["args"][:COMMAND_LIMIT] + ("..." if len(table[pid]["args"]) > COMMAND_LIMIT else "")
+    now, rows = time.time(), []
+    for pid, (kind, path, device) in candidates.items():
+        # A leftover below another is listed among that one's descendants.
+        if any(above in candidates for above in ancestry(pid)[1:]): continue
+        descendants, pending, seen = [], list(children.get(pid, [])), {pid}
+        while pending:
+            child = pending.pop()
+            if child in seen or child in own or child in runs: continue
+            seen.add(child)
+            descendants.append({"pid": child, "command": command(child), "written": written(child)})
+            pending.extend(children.get(child, []))
+        began = started(table[pid]["start"])
+        rows.append({"pid": pid, "parent": table[pid]["parent"], "start": table[pid]["start"],
+                     "seconds": round(now - began) if began is not None else None, "command": command(pid),
+                     "place": kind, "path": path, **({"simulator": device} if device else {}),
+                     "cwd": directories.get(pid), "written": written(pid),
+                     "descendants": sorted(descendants, key=lambda descendant: -(descendant["written"] or 0))})
+    total = lambda row: (row["written"] or 0) + sum(descendant["written"] or 0 for descendant in row["descendants"])
+    return {"leftovers": sorted(rows, key=lambda row: (-total(row), row["pid"])), "unchecked": unchecked,
+            "processes": sum(1 for process in table.values() if process["uid"] == uid)}
+
+
 def answer(request):
-    """build_host.py's answer to a request other than a plan, for `eng doctor` and `eng remote setup`."""
+    """build_host.py's answer to a request other than a plan, for `eng doctor`, `eng remote` and
+    `eng remote setup`."""
     if "toolchain" in request: return toolchain(request["toolchain"])
+    if "leftovers" in request:
+        # A census that fails says why: it must never stop the work it is printed before.
+        try: return leftovers(request["leftovers"])
+        except Exception as error: return {"error": f"{type(error).__name__}: {error}"}
     if "images" in request:
         return {"images": images(request["images"]), **stage(Path.home() / request["staging"], request.get("clear"))}
     # A stop or a dropped connection ends the copy, and the staged file is removed.
@@ -220,10 +469,13 @@ def claim(base, count, directory, wait=True):
     """Lock a free checkout slot without changes, waiting while every one is in use, if wait.
 
     The lock is an flock the run's command inherits, so it holds while that command lives. A
-    checkout with changes is left as it is, for inspection, and passed over.
+    checkout with changes is left as it is, for inspection, and passed over. The lock's holder
+    writes its PID and start into it, so that a census of leftover processes knows a live run's
+    processes from those a lost run left (leftovers).
     """
     base.mkdir(parents=True, exist_ok=True)
     started, reported, named = time.monotonic(), None, set()
+    record = json.dumps({"pid": os.getpid(), "start": output(["ps", "-p", str(os.getpid()), "-o", "lstart="])})
     while not _stop.is_set():
         changed = 0
         for index in range(count):
@@ -233,6 +485,9 @@ def claim(base, count, directory, wait=True):
             except BlockingIOError:
                 os.close(descriptor)
                 continue
+            # Before git status, whose process is this run's too.
+            os.ftruncate(descriptor, 0)
+            os.pwrite(descriptor, (record + "\n").encode(), 0)
             checkout = base / str(index) / directory
             left = changes(checkout)
             if not left:
@@ -413,5 +668,5 @@ def main(plan):
 
 if __name__ == "__main__":
     request = json.loads(sys.argv[1])
-    if {"toolchain", "images", "receive"} & request.keys(): print(json.dumps(answer(request)))
+    if {"toolchain", "images", "receive", "leftovers"} & request.keys(): print(json.dumps(answer(request)))
     else: main(request)

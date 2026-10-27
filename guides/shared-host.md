@@ -340,7 +340,9 @@ when one has a runtime the other lacks, the error names the fix, `eng remote set
 which brings both to the union of their runtimes and never deletes one
 ([setting up a build host](#setting-up-a-build-host)). Under `buildHost` in the report,
 `unchecked` names what was not compared: a build host's Xcodes and runtimes when it cannot be
-reached, and the whole comparison when no build host is configured.
+reached, and the whole comparison when no build host is configured. `leftovers` lists the
+processes on the build host that runs left running, which are no error
+([processes left over from runs](#processes-left-over-from-runs)).
 
 ### How a run reaches the build host
 
@@ -358,7 +360,9 @@ as a commit: a toolkit checkout with changes to tracked files is refused.
 
 `eng remote` takes no slot here. It pushes the commit, and the toolkit commit that runs it, by git
 over SSH and without hooks to bare repositories under
-`~/Development/build-host` on the build host, so nothing reaches GitHub. There `build_host.py`,
+`~/Development/build-host` on the build host, so nothing reaches GitHub. The connection that
+prepares them first lists the processes earlier runs left running there
+([processes left over from runs](#processes-left-over-from-runs)). There `build_host.py`,
 sent along and run by the host's own Python, takes one of four persistent checkouts of the
 project, checks the commit out detached with the toolkit beside it, and runs `eng run` or
 `eng admit` in the checkout's root. A checkout keeps its ignored inputs and build products, so
@@ -641,6 +645,49 @@ While the volume is falling, symptomsd's log names each process that has dirtied
 (`log show --last 1h --predicate 'eventMessage CONTAINS "local storage writes trigger"'`), and
 `lsof +L1` lists files deleted while still open, whose space `du` cannot see.
 
+### Processes left over from runs
+
+Those fills began the evening `eng remote` work started on the build host, came every six to
+seven hours, and ended at the restart that installed the 2026-10-26 macOS update (19:05 local
+time), which also ended whatever was writing; nothing left could say what that was. The same work
+had not filled the volume again 16 hours later. The likely writer is a process that a run left
+running, which lived from that run to the restart, and supervision cannot see a child that moved
+to a session of its own and was orphaned between two samples
+([process supervision](#process-supervision)). So the build host is searched for such processes
+before work is sent there: `eng remote`, and `eng run` for a `buildHost` lane, print what the
+search finds in the connection that prepares the build host's repositories, before anything is
+pushed, and `eng doctor` lists it under `buildHost`, `leftovers`. A process is listed when it is
+the account's, runs from a build-host checkout (`~/Development/build-host/checkouts`), the
+temporary directory (`$TMPDIR`) or a simulator's device directory, and no live run accounts for
+it:
+
+- A process runs from a place when its working directory, as `lsof` reports it, lies in it, or
+  its command line names a path in it. A program under `/System` is macOS's own:
+  IMTransferAgent works in the temporary directory on both Macs.
+- A live run accounts for the process when the process or an ancestor is a live admission
+  owner, as the guard or the [admission log](#admission-log) records it, or a live
+  `build_host.py`, which writes its PID and start into the checkout slot's lock file when it
+  takes the slot: a light lane, and a project's `provision` lane, take no admission. A recorded
+  PID counts only while its process has the recorded start, and an admission that the log has
+  not ended counts only for a process that started before it.
+- A simulator's processes descend from `launchd_sim`, never from a run, so a device is a live
+  run's while one of that run's processes names its UDID. The search cannot tell a device the
+  owner booted by hand from one a run left booted, and lists both.
+
+Each leftover whose parent is not itself a leftover is listed with its PID, its parent (1 once
+launchd has adopted it), its start, its command line, where it runs from, and the bytes it has
+written to files since it started, with each of its descendants and what that one has written.
+The bytes are `proc_pid_rusage`'s logical writes, which read the account's own processes without
+sudo or `fs_usage`; `top -stats` has no per-process writes. They count a write when it is made,
+flushed or not, and one to a file deleted since, but none to a pipe or `/dev/null`. The same
+call's disk I/O count left out a buffered 4 MiB that the process never flushed itself (macOS
+27.0, October 2026). The search took 0.3 s for 1,174 processes on the build host (2026-10-27).
+
+The search only reports. A search that fails says why, and the work is sent all the same. Tell
+the owner what it lists, with its PIDs and their writes: whether to stop a process is the
+owner's decision, as is any other change to a shared host
+([shared resources](../agents/core.md#shared-resources)).
+
 ## Device reservations
 
 Physical devices, and the members of a project's simulator pool, are
@@ -847,11 +894,13 @@ Supervise the process group you own. The toolkit's `processes.supervise`, which 
   second on the 18-core host, wrapping the PID space about every 19 minutes (2026-10-23, macOS
   27.0). The census adds one `ps`, as each sample takes, and a `getsid` sweep: 0.17 ms for 892
   processes on that M5 Max (2026-10-26, macOS 27.0.1). It cannot see a child that moved to a
-  session of its own and was orphaned between two samples. An unrelated process that takes over
-  a recorded ID and leaves its own children in that group or session reads as a survivor, which
-  errs toward inspection. A zero exit has no census, so that a daemon a passing command starts on
-  purpose does not stop the host's heavy work. Until 2026-10-26 no run had a census, and a
-  failed command's unobserved orphan ran on after its admission was released.
+  session of its own and was orphaned between two samples; on the build host, the next run there
+  lists one that runs from a checkout, the temporary directory or a simulator
+  ([processes left over from runs](#processes-left-over-from-runs)). An unrelated process that
+  takes over a recorded ID and leaves its own children in that group or session reads as a
+  survivor, which errs toward inspection. A zero exit has no census, so that a daemon a passing
+  command starts on purpose does not stop the host's heavy work. Until 2026-10-26 no run had a
+  census, and a failed command's unobserved orphan ran on after its admission was released.
 - A push keeper ([checkout provisioning and publication](#checkout-provisioning-and-publication))
   supervises its own commands and applies the same census to a command that fails on its own,
   with a positive status and no stop. When the census finds nothing, the keeper releases its
