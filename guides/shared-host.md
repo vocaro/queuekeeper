@@ -830,6 +830,7 @@ python3 -m vocaro_engineering.devices status
 python3 -m vocaro_engineering.devices show iPhone    # the entry and its revision; 0 if new
 python3 -m vocaro_engineering.devices reserve iPhone --owner SESSION --revision N \
   --device UDID --purpose "…" --release-by 2026-10-21T18:00:00Z \
+  --approved-by OWNER --approved-at 2026-10-21T15:02:00Z --approved-until 2026-10-21T18:00:00Z \
   --set 'originalSettings={"voiceoverEnabled": false}' --set 'preservation=…'
 python3 -m vocaro_engineering.devices update iPhone --owner SESSION --revision N --set 'run=…'
 python3 -m vocaro_engineering.devices release iPhone --owner SESSION --revision N \
@@ -870,7 +871,9 @@ has another start time, is an orphan; an entry marked `uncertain` or `restoratio
 uncertain. Neither is reserved again until its owner releases it or
 `devices recover KEY --by SESSION --revision N --verified "…"` records an attended recovery: by
 the owner or a session they agreed, once the run's processes have stopped and the device's
-settings and apps are verified. Recovery refuses while the recorded process still runs.
+settings and apps are verified. Recovery refuses while the recorded process still runs, and for
+a run sent to the build host, while anything there may still use the device
+([physical devices and the build host](#physical-devices-and-the-build-host)).
 
 Give every command the device's explicit identifier: the canonical uppercase UDID of a device
 you own or have reserved, never a name or `booted`. [Simulator testing](simulator-testing.md)
@@ -880,6 +883,15 @@ Agree a window with the owner before any session on a paired iPhone or iPad. A r
 and handoff are still required inside that window, and approval of a run covers installing and
 launching there, not operating the device by hand. [Device testing](device-testing.md) has the
 window, preflight, UI-automation authorization and restoration steps for physical devices.
+
+The reservation records that window as `mac-foreground`'s records the owner's: who approved it,
+when, and until a time or `released` (`--approved-by`, `--approved-at`, `--approved-until`, and
+`--approval-words` for the owner's words), never past the expected release. The record refuses
+to reserve a physical device, a hardware UDID of 8 and 16 hex digits or 40, without one, or to
+give an entry one later. Work on the device stops when the window ends: a launcher or a script
+calls `devices.require_window(KEY, entry)` before each run, `eng remote --device` refuses, and
+`status` reports the device's work as refused. An ended window releases nothing; the session
+restores the device and releases it, and a new window from the owner is a new reservation.
 
 A launcher for one bounded session in a granted interval:
 
@@ -935,20 +947,32 @@ python3 scripts/eng remote run --device iPhone LANE -- ARGUMENTS
 ```
 
 - `--device KEY`, repeatable, requires the session to hold KEY here with no run active, and KEY
-  to be a physical device; otherwise nothing is sent. `--device-owner` names the session, else
+  to be a physical device within the owner's window; otherwise nothing is sent. `--device-owner` names the session, else
   `VOCARO_DEVICE_OWNER`, else the agent session.
 - The dispatch marks each entry's run active with the `eng remote` process as the run's process,
   records the connection's `ssh` as the entry's own process, and records the run's outcome when
   it ends, with the host, the work and the results directory, in the entry's `run`. Its end, by a
   stop, its death or a dropped connection, stops the run there, so a run whose dispatcher vanished
-  is an orphan here. Recover it only once `eng doctor`'s census of the build host's leftover
-  processes ([processes left over from runs](#processes-left-over-from-runs)) shows nothing of it.
+  is an orphan here.
+- `devices recover` of an entry whose run went to the build host asks that host first, and
+  refuses while it lists any process whose command line names the device's UDID, live or left
+  over, or any process left over in a checkout or the temporary directory since the run started
+  ([processes left over from runs](#processes-left-over-from-runs)). The run's own `build_host.py`
+  names the UDID while the run lasts, since its plan carries the lease, and `xcodebuild` and
+  `devicectl` name the device they are given. macOS does not show another process's environment,
+  so a process that reaches the device without naming it is not seen. A build host that cannot be
+  reached keeps the device until it can be, or until the owner recovers it with
+  `--build-host-unchecked REASON`, which the recovery records.
 - The run reads its reservations from `VOCARO_DEVICE_LEASE`: `{"record": MAC, "devices": {KEY: UDID}}`.
 - The device stays reserved after the run. Preflight, restoration and the release are the
   session's, from this Mac, which reaches the device too.
 - A command, or a lane's arguments, that names a physical device of this record that no
   `--device` covers is refused, and `eng run` keeps a `buildHost` lane whose arguments name one
   on this Mac.
+
+`eng doctor` reports both Macs' records under `deviceRecord`. It is an error for this Mac's record
+to defer physical devices, or for the build host's to hold one or to defer them to another Mac;
+a build host record that defers them to no Mac yet is listed as unchecked until the next run.
 
 The records constrain only work that goes through the toolkit: `xcodebuild` or `devicectl` run
 by hand on the build host, or Xcode there, reaches the devices without them. A lane that needs a

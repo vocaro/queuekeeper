@@ -93,6 +93,14 @@ sys.exit(child.returncode)
 """
 
 
+class Later(datetime):
+    """Two hours from now, for an owner's window that has ended."""
+
+    @classmethod
+    def now(cls, tz=None):
+        return datetime.now(tz) + timedelta(hours=2)
+
+
 def durable_scratch():
     """A test directory outside /private/tmp, which the device record refuses, even when TMPDIR is there."""
     base = Path(tempfile.gettempdir())
@@ -294,9 +302,11 @@ class RemoteTests(unittest.TestCase):
     def hold(self, key="iPhone", device=PHONE, owner="session-a"):
         record = devices.Record(self.record_here)
         revision = (record.entry(key) or {}).get("revision", 0)
-        release_by = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
-        return record.reserve(key, owner=owner, revision=revision, purpose="device run", release_by=release_by,
-                              device=device)
+        moment = lambda minutes: (datetime.now(timezone.utc) + timedelta(minutes=minutes)).isoformat()
+        # A physical device's reservation records the window the owner agreed.
+        window = {"by": "owner", "at": moment(-1), "until": moment(90)} if devices.physical(device) else None
+        return record.reserve(key, owner=owner, revision=revision, purpose="device run", release_by=moment(60),
+                              device=device, approval=window)
 
     def nothing_sent(self):
         return not (self.home / remote.ROOT / "repositories").exists()
@@ -328,8 +338,9 @@ class RemoteTests(unittest.TestCase):
         self.assertIn("defers physical devices to another-mac", error)
         self.assertFalse((self.checkout(0) / ".build/provisioned").exists())
         there.defer(None)
+        approved = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
         there.reserve("iPhone", owner="there", revision=0, purpose="p", release_by="2099-01-01T00:00:00Z",
-                      device=PHONE)
+                      device=PHONE, approval={"by": "owner", "at": approved, "until": "released"})
         status, _output, error = self.eng("remote", "run", "check")
         self.assertEqual(status, 2)
         self.assertIn("iPhone holds a physical device", error)
@@ -380,8 +391,16 @@ class RemoteTests(unittest.TestCase):
         self.assertIn("not a physical device", error)
         status, _output, error = self.eng("remote", "admit", "--device", "Example Duo 1", "--", sys.executable, "-c", "pass")
         self.assertIn("name the session whose reservations --device carries", error)
+        # Once the owner's window has ended, the session's own reservation sends nothing.
+        self.hold("iPad", device=PHONE.replace("C", "D"))
+        with patch.object(devices, "datetime", Later):
+            status, _output, error = self.eng("remote", "admit", "--device", "iPad", "--device-owner", "session-a",
+                                              "--", sys.executable, "-c", "pass")
+        self.assertEqual(status, 2)
+        self.assertIn("--device iPad: the owner's approval of iPad ended at", error)
         self.assertTrue(self.nothing_sent())
         self.assertEqual(record.entry("iPhone")["ownerChatID"], "session-b")
+        self.assertEqual(devices.condition(record.entry("iPad")), "held")
 
     def test_a_command_that_names_a_physical_device_no_reservation_covers_is_refused(self):
         self.hold()
@@ -400,6 +419,40 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual(status, 0, error)
         self.assertIn("the build host uses only under a reservation", error)
         self.assertIn(f"Ran 2 tests in {self.project.resolve()}", (self.project / ".build/engineering/gate/run.log").read_text())
+
+    def test_recovering_a_run_sent_here_waits_for_what_on_the_build_host_names_its_device(self):
+        # Its own device, which no other test's processes name.
+        udid = PHONE.replace("1", "7")
+        held = self.hold(device=udid)
+        record = devices.Record(self.record_here)
+        dispatcher = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        self.addCleanup(dispatcher.wait)
+        self.addCleanup(dispatcher.kill)
+        entry = record.update("iPhone", owner="session-a", revision=held["revision"], activeRun=True,
+                              hostProcessIdentifier=dispatcher.pid, run={"host": "fake", "startedAt": devices.now()})
+        dispatcher.kill()
+        dispatcher.wait()
+        # The fake build host is this Mac: a process there that names the device keeps it.
+        user = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)", f"platform=iOS,id={udid}"])
+        self.addCleanup(user.wait)
+        self.addCleanup(user.kill)
+        with self.assertRaisesRegex(devices.Refused, f"(?s)went to fake, where these may still use its device.*PID {user.pid}, "):
+            record.recover("iPhone", by="owner", revision=entry["revision"], verified="nothing on the device")
+        self.assertEqual(devices.condition(record.entry("iPhone")), "orphan")
+        user.kill()
+        user.wait()
+        # So does a process left over in a checkout there since the run started, which names nothing.
+        checkout = self.checkout(0)
+        checkout.mkdir(parents=True)
+        left = subprocess.Popen(["sleep", "60"], cwd=checkout)
+        self.addCleanup(left.wait)
+        self.addCleanup(left.kill)
+        with self.assertRaisesRegex(devices.Refused, f"PID {left.pid}, started .* since the run did, left over from a run"):
+            record.recover("iPhone", by="owner", revision=entry["revision"], verified="nothing on the device")
+        left.kill()
+        left.wait()
+        recovered = record.recover("iPhone", by="owner", revision=entry["revision"], verified="nothing on the device")
+        self.assertEqual((recovered["state"], recovered["recovery"]["buildHost"]["host"]), ("released", "fake"))
 
     def test_admit_passes_the_model_or_exclusive_admission_on_to_the_build_host(self):
         probe = (f"import json, os; token = json.loads(os.environ[{resources.TOKEN!r}]); "
@@ -1289,11 +1342,18 @@ class BuildHostDoctorTests(unittest.TestCase):
                                                                    "integration": "direct-main"}))
         self.home = home
         (base / "build-host-tmp").mkdir()
+        # Each Mac's device record; the build host's defers physical devices to this Mac, as a run makes it.
+        records = durable_scratch()
+        self.addCleanup(records.cleanup)
+        self.record_here = devices.Record(Path(records.name) / "here" / "device-handoff.json")
+        self.record_there = devices.Record(Path(records.name) / "there" / "device-handoff.json")
+        self.record_there.defer(build_host.mac_name())
         self.environment = patch.dict(os.environ, {
             "PATH": f"{tools}{os.pathsep}{os.environ['PATH']}", "FAKE_HOME": str(home),
             "FAKE_SHELL": str(tools / "login-shell"), "FAKE_XCODES": str(self.xcodes), "FAKE_MAC": "here",
             "VOCARO_BUILD_HOST": "fake", "FAKE_SLOTS": str(base / "build-host-slots"),
-            "FAKE_GATE": str(base / "build-host-gate"), "FAKE_TMPDIR": str(base / "build-host-tmp")})
+            "FAKE_GATE": str(base / "build-host-gate"), "FAKE_TMPDIR": str(base / "build-host-tmp"),
+            devices.OVERRIDE: str(self.record_here.path), "FAKE_DEVICE_RECORD": str(self.record_there.path)})
         self.environment.start()
         os.environ.pop("DEVELOPER_DIR", None)
         # Both Macs select the same Xcode 27.1, with the same runtimes.
@@ -1371,6 +1431,41 @@ class BuildHostDoctorTests(unittest.TestCase):
             # The fix is the command that brings both Macs to the union, which deletes none.
             self.assertIn("to fix it, run `python3 scripts/eng remote setup --runtimes`, which copies each runtime to "
                           "the Mac that lacks it and deletes none", found["errors"][0])
+
+    def test_device_records_that_do_not_keep_physical_devices_here_alone_are_errors(self):
+        name = build_host.mac_name()
+        self.assertEqual(self.doctor()[1]["remote"]["deviceRecord"]["deferredTo"], name)
+        release_by = (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat()
+        window = {"by": "owner", "at": (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat(), "until": release_by}
+        with self.subTest("not yet deferred"):
+            self.record_there.defer(None)
+            status, found = self.doctor()
+            self.assertEqual((status, found["errors"]), (0, []), found)
+            self.assertEqual(found["unchecked"], ["whether fake's device record refuses physical devices: it defers "
+                                                  "them to no Mac until the next eng remote run there"])
+        with self.subTest("held there"):
+            self.record_there.reserve("iPhone", owner="there", revision=0, purpose="p", release_by=release_by,
+                                      device=PHONE, approval=window)
+            status, found = self.doctor()
+            self.assertEqual(status, 1)
+            self.assertIn("fake's device record holds the physical device of iPhone", found["errors"][0])
+            self.record_there.release("iPhone", owner="there", revision=1, outcome="o", restoration="r")
+        with self.subTest("deferred elsewhere"):
+            self.record_there.defer("another-mac")
+            status, found = self.doctor()
+            self.assertEqual(status, 1)
+            self.assertEqual(len(found["errors"]), 1, found)
+            self.assertIn(f"defers physical devices to another-mac, not this Mac ({name})", found["errors"][0])
+            self.assertIn(f"`devices defer {name} --replace` there", found["errors"][0])
+            self.record_there.defer(name, replace=True)
+        with self.subTest("this Mac deferring"):
+            self.record_here.defer("another-mac")
+            status, found = self.doctor()
+            self.assertEqual(status, 1)
+            self.assertEqual(len(found["errors"]), 1, found)
+            self.assertIn("this Mac's device record defers physical devices to another-mac", found["errors"][0])
+            self.record_here.defer(None)
+        self.assertEqual(self.doctor()[0], 0)
 
     def test_a_process_left_in_a_checkout_is_listed_and_is_no_error(self):
         checkout = self.home / remote.ROOT / "checkouts/Example/0/Example"

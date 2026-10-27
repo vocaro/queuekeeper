@@ -381,7 +381,7 @@ def lease(keys, owner, words, record=None):
     """The reservations held here that a build-host run carries, or None when it uses no physical device.
 
     Each key must name a physical device that this Mac's record shows owner holding with no run
-    active. The build host reaches the paired devices too, and its own record refuses them, so a
+    active, within the window the owner agreed. The build host reaches the paired devices too, and its own record refuses them, so a
     command that names a physical device of this record that no key covers is refused."""
     record = record or devices.Record()
     named = named_devices(words, record)
@@ -400,6 +400,8 @@ def lease(keys, owner, words, record=None):
         if not devices.physical(entry.get("device")):
             raise devices.Refused(f"--device {key} holds {entry.get('device') or 'no device'}, not a physical device; "
                                   "the build host takes simulators from its own pool. Nothing was sent")
+        try: devices.require_window(key, entry)
+        except devices.Refused as error: raise devices.Refused(f"--device {key}: {error}. Nothing was sent") from None
         held[key] = {"device": entry["device"].upper(), "revision": entry.get("revision", 0)}
     covered = {item["device"] for item in held.values()}
     for key, udid in named.items():
@@ -1125,6 +1127,26 @@ def leftover_census(host):
     return read_census(found)
 
 
+def device_users(host, udid, since):
+    """What on the build host may still use the physical device a run there was given, since the
+    epoch time since, as lines to show; none when nothing does (build_host.device_users). A build
+    host that cannot be reached or does not answer raises, and a recovery waits for it."""
+    request = json.dumps({"device": {"udid": udid, "root": ROOT, "since": since}})
+    try:
+        found = ssh(host, shlex.join(["python3", "-c", Path(build_host.__file__).read_text(), request]),
+                    stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=CENSUS_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        raise Unavailable(f"{host} did not list its processes in {CENSUS_TIMEOUT}s") from None
+    except OSError as error:
+        raise unreachable(host, str(error)) from None
+    if found.returncode == 255: raise unreachable(host, last_line(found.stderr))
+    census, missing = read_census(found)
+    if census is None: raise Unavailable(f"{host} did not list its processes: {missing}")
+    return ([f"PID {row['pid']}, started {row['start']}, names {udid}: {row['command']}" for row in census["naming"]]
+            + [f"PID {row['pid']}, started {row['start']} since the run did, left over from a run: {row['command']}"
+               for row in census["leftovers"]])
+
+
 def leftover_lines(host, census, missing):
     """What `eng remote` prints of the census before it sends work: nothing when no process is left over."""
     if census is None: return [f"could not list the processes left over from runs on {host}: {missing}"]
@@ -1242,6 +1264,32 @@ def slow_connection(host, found, timeout=CONNECT_TIMEOUT):
             f"the system's TCP connection timeout; to fix it, {fix} (guides/shared-host.md, Setting up a build host)")
 
 
+def compare_device_records(report, host, here, there):
+    """Add to `eng doctor`'s report what the two Macs' device records say of physical devices, which
+    only this Mac's record holds (guides/shared-host.md, Physical devices and the build host): this
+    Mac's must defer them to no Mac, and the build host's must defer them to this Mac and hold none."""
+    fix = "which Mac's record holds physical devices is the owner's decision"
+    ours, theirs = here.get("deviceRecord") or {}, there.get("deviceRecord") or {}
+    for side, found in [("this Mac", ours), (host, theirs)]:
+        if found.get("error"): report["unchecked"].append(f"{side}'s device record {found.get('path')}: {found['error']}")
+    if ours.get("deferredTo"):
+        report["errors"].append(
+            f"this Mac's device record defers physical devices to {ours['deferredTo']}, so it refuses the paired "
+            f"devices that only it should hold; {fix}, and `devices defer --end` here restores it")
+    if theirs.get("physical"):
+        report["errors"].append(
+            f"{host}'s device record holds the physical device of {', '.join(theirs['physical'])}, which only this "
+            f"Mac's record may hold, so eng remote refuses every run there; release or recover it there")
+    if theirs.get("deferredTo") not in (None, here.get("name")):
+        report["errors"].append(
+            f"{host}'s device record defers physical devices to {theirs['deferredTo']}, not this Mac "
+            f"({here.get('name')}), so eng remote refuses every run there; {fix}, and `devices defer "
+            f"{here.get('name')} --replace` there makes it this Mac")
+    if not theirs.get("error") and theirs.get("deferredTo") is None:
+        report["unchecked"].append(f"whether {host}'s device record refuses physical devices: it defers them to no "
+                                   "Mac until the next eng remote run there")
+
+
 def compare_hosts():
     """What `eng doctor` reports of the build host: this Mac's and the build host's default Xcodes
     (`xcode-select -p`), the Xcode at this Mac's developer directory, which every run there uses,
@@ -1249,7 +1297,7 @@ def compare_hosts():
     an error; what could not be compared is named in unchecked. The processes there that runs left
     running are listed in leftovers, which are no error: they say what to tell the owner. How ssh
     connects to it is in connection, and first addresses that keep each connection waiting are an
-    error too."""
+    error too, as are device records that do not keep physical devices in this Mac's alone."""
     host = configured()
     report = {"host": host, "errors": [], "unchecked": []}
     if host is None:
@@ -1279,6 +1327,7 @@ def compare_hosts():
     else:
         report["leftovers"] = census["leftovers"]
         report["unchecked"] += [f"on {host}, {item}" for item in census.get("unchecked", [])]
+    compare_device_records(report, host, here, there)
     version = lambda text: ", ".join((text or "no Xcode").splitlines())
     default = lambda side: (side.get("defaultDeveloperDir"), side.get("defaultXcode"))
     # When both Macs' default is this Mac's developer directory, the next check covers its version.

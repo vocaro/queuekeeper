@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import pwd
+import re
 import subprocess
 import sys
 import tempfile
@@ -87,6 +88,9 @@ class DeviceRecordTests(unittest.TestCase):
             os.environ.pop(name, None)
 
     def reserve(self, key="iPhone", owner="session-a", revision=0, **options):
+        # A physical device's reservation records the window the owner agreed.
+        if devices.physical(options.get("device")):
+            options.setdefault("approval", approval())
         return self.record.reserve(key, owner=owner, revision=revision, purpose="bounded UI test",
                                    release_by=options.pop("release_by", later()), **options)
 
@@ -206,7 +210,59 @@ class DeviceRecordTests(unittest.TestCase):
                                        verified="no owned processes on the device; VoiceOver as recorded")
         self.assertEqual((released["state"], released["lastOwnerChatID"]), ("released", "session-a"))
         self.assertEqual(released["recovery"]["condition"], "orphan")
-        self.reserve(owner="session-b", revision=released["revision"])
+        self.reserve(owner="session-b", revision=released["revision"], approval=approval())
+
+    def test_recovering_a_run_sent_to_the_build_host_waits_until_nothing_there_may_use_the_device(self):
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        self.addCleanup(child.wait)
+        self.addCleanup(child.kill)
+        entry = self.reserve(device=PHONE)
+        started = devices.now()
+        entry = self.record.update("iPhone", owner="session-a", revision=entry["revision"], activeRun=True,
+                                   hostProcessIdentifier=child.pid, run={"host": "build-host", "startedAt": started})
+        child.kill()
+        child.wait()
+        self.assertEqual(devices.condition(entry), "orphan")
+        asked = []
+
+        def users(found):
+            def census(host, udid, since):
+                asked.append((host, udid, since))
+                if isinstance(found, Exception): raise found
+                return found
+            return census
+
+        recover = lambda census, **options: self.record.recover(
+            "iPhone", by="owner", revision=entry["revision"], verified="nothing on the device", users=census, **options)
+        before = self.path.read_bytes()
+        with self.assertRaisesRegex(devices.Refused, "where these may still use its device.*\n  PID 7, names it"):
+            recover(users(["PID 7, names it"]))
+        with self.assertRaisesRegex(devices.Refused, "could not be checked: build-host cannot be reached"):
+            recover(users(RuntimeError("build-host cannot be reached")))
+        self.assertEqual(self.path.read_bytes(), before)
+        self.assertEqual(asked[0], ("build-host", PHONE, devices.moment(started).timestamp()))
+        recovered = recover(users([]))
+        self.assertEqual(recovered["recovery"]["buildHost"]["host"], "build-host")
+        self.assertIn("checkedAt", recovered["recovery"]["buildHost"])
+        # The owner can recover without the build host, recording why.
+        entry = self.reserve(owner="session-b", revision=recovered["revision"], approval=approval())
+        entry = self.record.update("iPhone", owner="session-b", revision=entry["revision"], state="uncertain-run",
+                                   uncertain=True, run={"host": "build-host", "startedAt": started})
+        asked.clear()
+        code, output, _error = self.cli("recover", "iPhone", "--by", "owner", "--revision", str(entry["revision"]),
+                                        "--verified", "checked by hand", "--build-host-unchecked", "it is gone")
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(output)["entry"]["recovery"]["buildHost"], {"host": "build-host",
+                                                                                "unchecked": "it is gone"})
+        self.assertEqual(asked, [])
+        # A run that stayed on this Mac asks no build host.
+        entry = self.reserve(owner="session-c", revision=self.record.entry("iPhone")["revision"], approval=approval())
+        entry = self.record.update("iPhone", owner="session-c", revision=entry["revision"], uncertain=True,
+                                   run="a local result bundle")
+        recovered = self.record.recover("iPhone", by="owner", revision=entry["revision"], verified="v",
+                                        users=users(RuntimeError("never asked")))
+        self.assertNotIn("buildHost", recovered["recovery"])
+        self.assertEqual(asked, [])
 
     def test_unverified_restoration_keeps_the_device_until_its_owner_releases_it(self):
         entry = self.reserve()
@@ -242,6 +298,26 @@ class DeviceRecordTests(unittest.TestCase):
         for udid in [DUO, None, "", "booted", "00008130-001A2C3E"]:
             self.assertFalse(devices.physical(udid), udid)
 
+    def test_a_physical_device_is_reserved_and_worked_on_only_within_the_owners_window(self):
+        with self.assertRaisesRegex(devices.Refused, "iPhone is a physical device: its reservation records the window"):
+            self.reserve(device=PHONE, approval=None)
+        self.assertFalse(self.path.exists())
+        # A simulator needs no window, and an entry without one is not given a physical device.
+        duo = self.reserve("Example Duo 1", device=DUO)
+        with self.assertRaisesRegex(devices.Refused, "Example Duo 1 is a physical device"):
+            self.record.update("Example Duo 1", owner="session-a", revision=duo["revision"], device=PHONE)
+        with self.assertRaisesRegex(devices.Refused, "approval of Example Duo 1 was never recorded"):
+            devices.require_window("Example Duo 1", duo)
+        entry = self.reserve(device=PHONE)
+        self.assertIs(devices.require_window("iPhone", entry), entry)
+        self.assertNotIn("work on the device is refused", self.cli("status")[1])
+        with patch.object(devices, "datetime", Later):
+            with self.assertRaisesRegex(devices.Refused, re.escape(f"approval of iPhone ended at {entry['approval']['until']}")):
+                devices.require_window("iPhone", self.record.entry("iPhone"))
+            output = self.cli("status")[1]
+        self.assertIn("iPhone: held", output)
+        self.assertIn("approval ended or never recorded; work on the device is refused", output)
+
     def test_a_record_that_defers_physical_devices_refuses_them_and_keeps_its_simulators(self):
         # Before the deferral, the record holds a physical device like any other.
         self.reserve(device=PHONE)
@@ -259,7 +335,7 @@ class DeviceRecordTests(unittest.TestCase):
         self.assertIsNone(self.record.entry("iPad"))
         self.assertIn("Physical devices are reserved in workstation's device record", self.cli("status")[1])
         self.record.defer(None)
-        self.reserve(revision=self.record.entry("iPhone")["revision"])
+        self.reserve(revision=self.record.entry("iPhone")["revision"], approval=approval())
         self.assertNotIn("Physical devices are reserved", self.cli("status")[1])
 
     def test_which_mac_holds_physical_devices_changes_only_by_the_owners_decision(self):
@@ -499,7 +575,8 @@ class DeviceRecordTests(unittest.TestCase):
 
     def test_command_line_reports_revisions_and_refusals(self):
         code, output, _error = self.cli("reserve", "iPhone", "--owner", "session-a", "--revision", "0",
-            "--purpose", "smoke", "--release-by", later(), "--device", PHONE,
+            "--purpose", "smoke", "--release-by", later(), "--device", PHONE, "--approved-by", "owner",
+            "--approved-at", later(-1), "--approved-until", later(60),
             "--set", 'originalSettings={"voiceoverEnabled": false}', "--set", "preservation=owner apps and data")
         self.assertEqual(code, 0)
         shown = json.loads(output)

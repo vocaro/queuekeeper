@@ -21,6 +21,8 @@ Each Mac's simulators are its own, but a paired iPhone or iPad is reachable from
 physical device is reserved in one record only: the Mac that sends runs to the build host. The
 build host's record defers physical devices to that Mac and refuses to reserve one. A run there
 uses one under a reservation held in the sending Mac's record, which `eng remote --device` carries.
+A physical device's reservation records the window the owner agreed, as mac-foreground's does,
+and require_window refuses work on it once that window has ended.
 """
 import argparse
 import contextlib
@@ -111,6 +113,12 @@ def deferred_refusal(mac, key):
                    f"send the run here with `eng remote run|admit --device {key}`. Nothing was changed")
 
 
+def window_refusal(key):
+    return Refused(f"{key} is a physical device: its reservation records the window the owner agreed, who "
+                   "approved it, when, and until when (--approved-by, --approved-at, --approved-until). "
+                   "Nothing was changed")
+
+
 def now():
     return datetime.now(timezone.utc).isoformat()
 
@@ -162,6 +170,17 @@ def approval_ended(entry):
         return False
     deadline = moment(until)
     return deadline is None or deadline <= datetime.now(timezone.utc)
+
+
+def require_window(key, entry):
+    """Refuse work on key, the owner's screen or a paired device, outside the window the owner agreed.
+
+    An ended window releases nothing: the session stops, restores and releases."""
+    if approval_ended(entry):
+        until = (entry.get("approval") or {}).get("until")
+        raise Refused(f"the owner's approval of {key} " + (f"ended at {until}" if until else "was never recorded")
+                      + "; stop, restore the owner's settings and release")
+    return entry
 
 
 def running(entry):
@@ -319,6 +338,8 @@ class Record:
             identifier = device or (current or {}).get("device")
             if record.get(DEFERRED) and physical(identifier):
                 raise deferred_refusal(record[DEFERRED], key)
+            if physical(identifier) and approval is None:
+                raise window_refusal(key)
             for other, entry in record["devices"].items():
                 same = isinstance(entry.get("device"), str) and identifier and entry["device"].upper() == identifier.upper()
                 if other != key and same and condition(entry) != "released":
@@ -359,6 +380,8 @@ class Record:
             _owned(key, current, owner)
             if record.get(DEFERRED) and physical(changes.get("device")):
                 raise deferred_refusal(record[DEFERRED], key)
+            if physical(changes.get("device")) and not current.get("approval"):
+                raise window_refusal(key)
             entry = {**current, **changes}
             if owned:
                 entry["ownedProcesses"] = [*current.get("ownedProcesses", []), *owned]
@@ -396,10 +419,15 @@ class Record:
             return entry
         return self._change(key, revision, change)
 
-    def recover(self, key, *, by, revision, verified):
-        """Attended recovery of an entry whose owner cannot release it, once its work has stopped."""
+    def recover(self, key, *, by, revision, verified, unchecked=None, users=None):
+        """Attended recovery of an entry whose owner cannot release it, once its work has stopped.
+
+        An entry whose run went to the build host also waits until nothing there may still use its
+        device, as users (remote.device_users) lists it, unless unchecked records why that host
+        cannot be checked, which is the owner's decision."""
         if not by or not verified:
             raise ValueError("recovery records who verified the device and what they verified")
+        checked = self._checked_build_host(key, revision, unchecked, users)
 
         def change(current, _record):
             state = condition(current) if current is not None else "absent"
@@ -417,9 +445,35 @@ class Record:
                           "lastOwnerChatID": current.get("ownerChatID"), "releasedAt": now(),
                           "recovery": {"by": by, "at": now(), "verified": verified, "condition": state,
                                        "state": current.get("state"),
-                                       "uncertainReason": current.get("uncertainReason")}})
+                                       "uncertainReason": current.get("uncertainReason"),
+                                       **({"buildHost": checked} if checked else {})}})
             return entry
         return self._change(key, revision, change)
+
+    def _checked_build_host(self, key, revision, unchecked, users):
+        """For a recovery of a physical device whose run went to the build host: that host's check,
+        or a refusal while something there may still use the device. None for any other entry, and
+        for one that recovery refuses anyway, which it then does under the lock."""
+        current = self.entry(key)
+        run = (current or {}).get("run")
+        host = run.get("host") if isinstance(run, dict) else None
+        if not host or not physical(current.get("device")) or current.get("revision") != revision or \
+                condition(current) in ("released", "active") or running(current):
+            return None
+        if unchecked:
+            return {"host": host, "unchecked": unchecked}
+        if users is None:
+            from .remote import device_users as users
+        since = moment(run.get("startedAt"))
+        try:
+            still = users(host, current["device"].upper(), since.timestamp() if since else None)
+        except RuntimeError as error:
+            raise Refused(f"{key}'s run went to {host}, which could not be checked: {error}. Recovery waits for it, "
+                          "or records why it cannot be checked (--build-host-unchecked). Nothing was changed") from None
+        if still:
+            raise Refused(f"{key}'s run went to {host}, where these may still use its device; recovery waits for "
+                          "them. Nothing was changed:\n  " + "\n  ".join(still))
+        return {"host": host, "checkedAt": now()}
 
     def defer(self, mac, *, replace=False):
         """Defer physical devices to mac's record, after which this record refuses to reserve one.
@@ -522,10 +576,7 @@ def require_foreground(owner, record=None):
                       f"release {entry.get('expectedReleaseBy')}; wait for its release")
     if state in ("orphan", "uncertain"):
         raise Refused(f"{FOREGROUND} is {state}; it needs attended recovery before foreground work")
-    if approval_ended(entry):
-        raise Refused(f"the owner's approval of {FOREGROUND} ended at {(entry.get('approval') or {}).get('until')}; "
-                      "stop, restore the owner's settings and release")
-    return entry
+    return require_window(FOREGROUND, entry)
 
 
 def _describe(key, entry):
@@ -545,6 +596,8 @@ def _describe(key, entry):
             parts.append(f"approved by {approval.get('by')} at {approval.get('at')} until {approval.get('until')}")
         if key == FOREGROUND and approval_ended(entry):
             parts.append("approval ended; foreground actions are refused")
+        elif physical(entry.get("device")) and approval_ended(entry):
+            parts.append("approval ended or never recorded; work on the device is refused")
         alive = running(entry)
         if alive:
             parts.append(f"own processes running: {', '.join(str(item['pid']) for item in alive)}")
@@ -640,6 +693,8 @@ def main(argv=None):
     recover.add_argument("--by", required=True)
     recover.add_argument("--revision", type=int, required=True)
     recover.add_argument("--verified", required=True)
+    recover.add_argument("--build-host-unchecked", metavar="REASON", help="the owner's reason to recover without "
+                         "checking the build host the entry's run went to, such as that it is gone")
     importer = commands.add_parser("import", help="merge earlier ad hoc records, preserving every entry")
     importer.add_argument("paths", nargs="+")
     importer.add_argument("--by", required=True)
@@ -680,7 +735,8 @@ def main(argv=None):
                   f"{FOREGROUND}: held by {args.owner} for {entry.get('purpose')}, approved until "
                   f"{entry['approval']['until']}")
         elif args.action == "recover":
-            _report(args.key, record.recover(args.key, by=args.by, revision=args.revision, verified=args.verified))
+            _report(args.key, record.recover(args.key, by=args.by, revision=args.revision, verified=args.verified,
+                                             unchecked=args.build_host_unchecked))
         elif args.action == "import":
             print("\n".join(record.import_legacy(args.paths, by=args.by)))
         elif args.action == "defer":

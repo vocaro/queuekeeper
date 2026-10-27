@@ -10,10 +10,12 @@ such as a lane group's lanes' logs and receipts, followed by `D` lines of its by
 a closing `R` with the result as JSON. Standard input is the
 dispatcher's lifeline: its end, which a stop, the dispatcher's death or a dropped connection
 sends, stops the run as a stop signal stops a local one. Given `{"toolchain": DEVELOPER_DIR}`
-instead of a plan, it prints the Mac's Xcodes and simulator runtimes for `eng doctor`; given
-`{"images": ...}` or `{"receive": ...}`, it lists the Mac's runtime images or adds one read from
-standard input, for `eng remote setup --runtimes`; given `{"leftovers": ROOT}`, it lists the
-processes left over from runs there, which `eng remote` prints before it sends work.
+instead of a plan, it prints the Mac's Xcodes, simulator runtimes and device record for
+`eng doctor`; given `{"images": ...}` or `{"receive": ...}`, it lists the Mac's runtime images or
+adds one read from standard input, for `eng remote setup --runtimes`; given `{"leftovers": ROOT}`,
+it lists the processes left over from runs there, which `eng remote` prints before it sends work;
+given `{"device": ...}`, what there may still use a physical device a run was given, for
+`devices recover`.
 """
 import base64
 import ctypes
@@ -52,6 +54,12 @@ ADMISSION_LOGS = ("admissions.1.jsonl", "admissions.jsonl")
 # The simulators' devices, relative to the home: a booted device's processes name its directory.
 DEVICES = "Library/Developer/CoreSimulator/Devices"
 DEVICE = re.compile(r"[0-9A-F]{8}-(?:[0-9A-F]{4}-){3}[0-9A-F]{12}", re.IGNORECASE)
+# The device record, relative to the home, as devices.py finds it, which VOCARO_DEVICE_RECORD
+# overrides for a test's; its key for the Mac it defers physical devices to; and a physical
+# device's hardware UDID, as devices.PHYSICAL matches it.
+DEVICE_RECORD = "Library/Application Support/vocaro-engineering/device-handoff.json"
+DEFERRED = "physicalDevicesRecordedOn"
+PHYSICAL = re.compile(r"[0-9A-F]{8}-[0-9A-F]{16}|[0-9A-F]{40}")
 # Characters of a leftover's command line that the census reports.
 COMMAND_LIMIT = 1000
 # How ps prints a process's start (lstart), with its spacing collapsed.
@@ -113,9 +121,29 @@ def identity(developer_dir):
             "build": output(["sw_vers", "-buildVersion"]), "developerDir": developer_dir, "xcode": xcode(developer_dir)}
 
 
+def device_record():
+    """The Mac its device record defers physical devices to, and the entries that hold a physical
+    device, which `eng doctor` compares. It reads without the record's lock: every change replaces
+    the record whole."""
+    path = Path(os.environ.get("VOCARO_DEVICE_RECORD") or Path(pwd.getpwuid(os.getuid()).pw_dir) / DEVICE_RECORD)
+    try:
+        record = json.loads(path.read_text())
+    except FileNotFoundError:
+        return {"path": str(path), "deferredTo": None, "physical": []}
+    except (OSError, ValueError) as error:
+        return {"path": str(path), "error": f"it cannot be read: {error}"}
+    entries = record.get("devices") if isinstance(record, dict) else None
+    if not isinstance(entries, dict):
+        return {"path": str(path), "error": "it is no device record"}
+    held = sorted(key for key, entry in entries.items() if isinstance(entry, dict) and entry.get("state") != "released"
+                  and PHYSICAL.fullmatch(str(entry.get("device") or "").upper()))
+    return {"path": str(path), "deferredTo": record.get(DEFERRED), "physical": held}
+
+
 def toolchain(developer_dir):
-    """The Mac's identity with the Xcode at developer_dir, its default Xcode (`xcode-select -p`) and
-    the simulator runtimes the Xcode at developer_dir lists, which `eng doctor` compares."""
+    """The Mac's identity with the Xcode at developer_dir, its default Xcode (`xcode-select -p`), the
+    simulator runtimes the Xcode at developer_dir lists and its device record, which `eng doctor`
+    compares."""
     found = identity(developer_dir)
     default = output(["xcode-select", "-p"])
     runtimes = None
@@ -126,7 +154,8 @@ def toolchain(developer_dir):
                               for runtime in json.loads(listed)["runtimes"] if runtime.get("isAvailable"))
         except (TypeError, ValueError, KeyError):
             pass
-    return {**found, "defaultDeveloperDir": default, "defaultXcode": xcode(default), "runtimes": runtimes}
+    return {**found, "defaultDeveloperDir": default, "defaultXcode": xcode(default), "runtimes": runtimes,
+            "deviceRecord": device_record()}
 
 
 def image_file(record):
@@ -357,6 +386,15 @@ def forms(path):
     return sorted(found)
 
 
+def lineage(table, pid):
+    """pid and its ancestors in table, nearest first."""
+    line = []
+    while pid in table and pid not in line:
+        line.append(pid)
+        pid = table[pid]["parent"]
+    return line
+
+
 def leftovers(root, listed=listing, written=disk_writes):
     """The account's processes that run from a checkout under root, the temporary directory or a
     simulator's device, and that no live run accounts for: what `eng remote` prints before it sends
@@ -385,12 +423,7 @@ def leftovers(root, listed=listing, written=disk_writes):
     places = [(kind, forms(path)) for kind, path in
               [("checkout", checkouts), ("temporary directory", temporary), ("simulator", home / DEVICES)] if path]
 
-    def ancestry(pid):
-        line = []
-        while pid in table and pid not in line:
-            line.append(pid)
-            pid = table[pid]["parent"]
-        return line
+    ancestry = lambda pid: lineage(table, pid)
 
     def place(pid):
         """Where the process runs from: (kind, the path that places it there, device or None), or None."""
@@ -445,13 +478,32 @@ def leftovers(root, listed=listing, written=disk_writes):
             "processes": sum(1 for process in table.values() if process["uid"] == uid)}
 
 
+def device_users(request, listed=listing, written=disk_writes):
+    """What here may still use the physical device a run was given, for `devices recover`: each of
+    the account's processes whose command line names its UDID, live or left over, among them the
+    run's own build_host.py, whose plan names it while the run lasts; and each leftover that started
+    since the run did. It reads and reports, and stops nothing."""
+    udid = request["udid"].upper()
+    table = process_table(listed(["ps", "-axww", "-o", "pid=,ppid=,uid=,lstart=,args="]))
+    if not table: return {"error": "ps listed no processes"}
+    own, uid = set(lineage(table, os.getpid())), os.getuid()
+    naming = [{"pid": pid, "start": process["start"], "command": process["args"][:COMMAND_LIMIT]}
+              for pid, process in table.items()
+              if process["uid"] == uid and pid not in own and udid in process["args"].upper()]
+    census = leftovers(request["root"], listed, written)
+    if "error" in census: return census
+    since = request.get("since")
+    later = [row for row in census["leftovers"] if since is None or (started(row["start"]) or since) >= since - 1]
+    return {**census, "leftovers": later, "naming": naming}
+
+
 def answer(request):
-    """build_host.py's answer to a request other than a plan, for `eng doctor`, `eng remote` and
-    `eng remote setup`."""
+    """build_host.py's answer to a request other than a plan, for `eng doctor`, `eng remote`,
+    `eng remote setup` and `devices recover`."""
     if "toolchain" in request: return toolchain(request["toolchain"])
-    if "leftovers" in request:
+    if "leftovers" in request or "device" in request:
         # A census that fails says why: it must never stop the work it is printed before.
-        try: return leftovers(request["leftovers"])
+        try: return leftovers(request["leftovers"]) if "leftovers" in request else device_users(request["device"])
         except Exception as error: return {"error": f"{type(error).__name__}: {error}"}
     if "images" in request:
         return {"images": images(request["images"]), **stage(Path.home() / request["staging"], request.get("clear"))}
@@ -721,5 +773,5 @@ def main(plan):
 
 if __name__ == "__main__":
     request = json.loads(sys.argv[1])
-    if {"toolchain", "images", "receive", "leftovers"} & request.keys(): print(json.dumps(answer(request)))
+    if {"toolchain", "images", "receive", "leftovers", "device"} & request.keys(): print(json.dumps(answer(request)))
     else: main(request)
