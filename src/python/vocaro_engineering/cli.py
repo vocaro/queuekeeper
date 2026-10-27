@@ -27,6 +27,46 @@ def named_checkout(toolkit):
     return main if main and (main / "src/python/vocaro_engineering").is_dir() else toolkit
 
 
+# Where pinned model weights and other verified downloads live, outside every checkout and outside
+# /private/tmp, which a reboot empties (guides/shared-host.md, Scratch and result directories).
+MODEL_STORAGE = "~/Development/models"
+# A path under /tmp or /private/tmp, and the variable it is assigned to when that variable names a model.
+TEMPORARY_PATH = re.compile(r"(\b[A-Z][A-Z0-9_]*MODEL[A-Z0-9_]*=)?(?<![\w.~/-])((?:/private)?/tmp/[^\s`'\"<>()\[\]{},;|]+)")
+MODEL_WORDS = re.compile(r"(?<![a-z])(?:models|weights)(?![a-z])", re.IGNORECASE)
+
+
+def temporary_model_storage(root, config):
+    """A warning when the project's tracked Markdown keeps model storage under /tmp or /private/tmp:
+    a path there that names models or weights, or that a MODEL variable is set to. A reboot empties
+    /private/tmp, and every model kept there with it. Records under a measurements or evidence
+    folder keep the paths their runs used, so they are not read."""
+    try:
+        listed = subprocess.run(["git", "-C", str(root), "ls-files", "-z", "--", *(f"*{s}" for s in sorted(docs.MARKDOWN))],
+                                capture_output=True, text=True, timeout=60, check=True).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    places = []
+    for relative in sorted(filter(None, listed.split("\0"))):
+        if disk.EVIDENCE_NAMES & set(Path(relative).parts[:-1]): continue
+        try: text = (root / relative).read_text(errors="replace")
+        except OSError: continue
+        paths, lines = {}, []
+        for number, line in enumerate(text.splitlines(), 1):
+            for match in TEMPORARY_PATH.finditer(line):
+                path = match.group(2).rstrip(".:")
+                if match.group(1) or MODEL_WORDS.search(path):
+                    paths[path] = None
+                    if number not in lines: lines.append(number)
+        if paths:
+            places.append(f"{relative} (line{'s' if len(lines) > 1 else ''} {', '.join(map(str, lines))}: "
+                          f"{', '.join(paths)})")
+    if not places: return []
+    return [f"{'; '.join(places)} name{'s' if len(places) == 1 else ''} model storage under /tmp, which a reboot "
+            "empties: every model there is gone after a restart and must be downloaded and verified again. Keep "
+            f"pinned models and other verified downloads in {MODEL_STORAGE}/{config['name']}/ "
+            "(guides/shared-host.md, Scratch and result directories)"]
+
+
 # The Swift manifests that can name a toolkit package by a path relative to themselves.
 MANIFESTS = ("Package.swift", "project.yml", "project.pbxproj")
 
@@ -302,6 +342,7 @@ def main(argv=None):
             if "integration" not in config:
                 warnings.append("engineering.json declares no integration: add \"integration\": \"direct-main\", "
                                 "or \"pull-request\" for a project that takes changes only by pull request (agents/core.md)")
+            warnings += temporary_model_storage(root, config)
             warnings += unlinked_packages(root, config)
             print(json.dumps({"project": config["name"], "toolkit": str(TOOLKIT_ROOT),
                 "source": source_identity(TOOLKIT_ROOT), "capabilities": config.get("capabilities", []),

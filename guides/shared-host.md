@@ -320,6 +320,24 @@ worktrees survived. Keep notes, counting scripts and proposed commit messages th
 a reboot in the worktree's ignored `.build/`. The device record now lives outside `/private/tmp`
 ([device reservations](#device-reservations)).
 
+Durable inputs live outside `/private/tmp` too. Keep pinned model weights and other verified
+downloads, which are too large for a worktree and shared by every checkout, in
+`~/Development/models/PROJECT/`, one folder for each pinned snapshot, and make a project's
+download script and backend documentation default there. That folder survives reboots and the
+temporary-file cleaner, has the same path on the build host, and is never an `eng disk`
+candidate. `~/Library/Caches` is no substitute: macOS treats caches as regenerable and may delete
+them when the volume runs short, which on this host happens when sessions are busiest.
+`eng doctor` warns when the project's tracked Markdown names model storage under `/tmp` or
+`/private/tmp`: a path there that names models or weights, or that a variable whose name holds
+`MODEL` is set to. It skips files under a `measurements` or `evidence` folder, whose records keep
+the paths their runs used.
+
+Claude Code keeps each session's scratchpad under `/private/tmp`
+([reclaiming disk space](#reclaiming-disk-space)), so a session whose work may span a reboot
+copies its deliverables (scripts, probe sources, results) into the project's evidence folder as
+it makes them. Before reasoning about what survived, read `last reboot`, not only `uptime`, and
+compare the reboot times with when the files were last used.
+
 ## Reclaiming disk space
 
 The rules above slow growth; they do not recover what crashed or finished sessions left behind.
