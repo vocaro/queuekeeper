@@ -194,6 +194,15 @@ class SimulatorTests(Fixture):
         (self.main / "engineering.json").write_text(json.dumps({"simulatorPool": "Project"}))
         (self.development / "Unconfigured").mkdir()
         self.assertEqual(disk.pools(self.development), frozenset({"Project"}))
+        # A main checkout that lags origin/main still names the pool origin/main names.
+        lagging = self.development / "Lagging"
+        lagging.mkdir()
+        git(lagging, "init", "-q", "-b", "main")
+        commit(lagging, "engineering.json", json.dumps({"simulatorPool": "Lagging"}))
+        git(lagging, "update-ref", "refs/remotes/origin/main", "HEAD")
+        git(lagging, "rm", "-q", "engineering.json")
+        git(lagging, "commit", "-q", "-m", "older")
+        self.assertEqual(disk.pools(self.development), frozenset({"Project", "Lagging"}))
 
     def test_booted_recent_reserved_or_referenced_disposable_devices_are_kept(self):
         booted = device(f"P-{uuid.uuid4()}", state="Booted")

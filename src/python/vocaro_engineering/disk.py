@@ -214,7 +214,7 @@ class Host:
                    runtimes=_json(run, "runtime", "list", "-j"), default_devices=default_devices(devices),
                    device_directory=devices, records=device_records(), temp_roots=temp,
                    session_scratch=Path(f"/private/tmp/claude-{os.getuid()}"),
-                   map_roots=expanded_roots(home, user_temp), pools=pools(development or home / "Development"), run=run)
+                   map_roots=expanded_roots(home, user_temp), pools=pools(development or home / "Development", run), run=run)
 
 
 def _json(run, *arguments):
@@ -228,11 +228,20 @@ def _json(run, *arguments):
         return None
 
 
-def pools(development):
-    """The simulator pools the projects' main checkouts name in engineering.json."""
+def pools(development, run=subprocess.run):
+    """The simulator pools the projects' main checkouts name in engineering.json, in the working
+    tree or at origin/main, since a main checkout can lag the project's main."""
     if not Path(development).is_dir(): return frozenset()
-    return frozenset(filter(None, (simulator_pool.configured(path) for path in Path(development).iterdir()
-                                   if (path / ".git").is_dir())))
+    found = set()
+    for path in Path(development).iterdir():
+        if not (path / ".git").is_dir(): continue
+        found.add(simulator_pool.configured(path))
+        try:
+            text = git(run, path, "show", "origin/main:engineering.json", timeout=30).stdout
+            found.add(json.loads(text).get("simulatorPool"))
+        except (OSError, subprocess.SubprocessError, ValueError, AttributeError):
+            pass
+    return frozenset(filter(None, found))
 
 
 def default_devices(directory):
