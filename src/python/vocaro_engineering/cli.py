@@ -10,7 +10,7 @@ import shutil
 import subprocess
 import sys
 
-from . import __version__, devices, disk, docs, evidence, parallel, processes, remote, resources, spelling
+from . import __version__, devices, disk, docs, evidence, parallel, processes, release, remote, resources, spelling
 from .config import TOOLKIT_ROOT, CAPABILITIES, DEFAULT_TOOLKIT, load, source_identity
 from .resources import BUSY, FREE_WAIT
 from .simulators import matrix, pool as simulator_pool
@@ -195,6 +195,14 @@ def record(directory, receipt, work):
     return result
 
 
+def conclude(directory, receipt, status, **fields):
+    """Record a completed run's verdict, the status eng run returns, beside its command's exit
+    status: passed only for 0, so a zero exit that ran too few tests is failed."""
+    receipt.update(outcome="passed" if status == 0 else "unmeasured" if status == evidence.UNMEASURED else "failed",
+                   **fields)
+    (directory / "source.json").write_text(json.dumps(receipt, indent=2) + "\n")
+
+
 def judge(lane, result, log, extra=(), expect=None):
     """A lane's status and unmeasured tests from its command's status and its log. A completed run
     that executed too few tests raises ValueError."""
@@ -316,6 +324,13 @@ def main(argv=None):
         "exactly this commit; a snapshot's run never counts")
     remote_passed.add_argument("lane")
     remote_passed.add_argument("--commit", default="HEAD")
+    publication = commands.add_parser("release", help="tag a library's release and publish it on GitHub once its "
+        "gate passed at the commit and origin/main holds it: eng release X.Y.Z COMMIT --notes NOTES.md; each step "
+        "stops the rest when it fails, and a run that stopped part way can run again (guides/releasing.md)")
+    publication.add_argument("version", metavar="X.Y.Z")
+    publication.add_argument("commit", metavar="COMMIT")
+    publication.add_argument("--notes", required=True, type=Path, help="the release notes, in a file in the checkout "
+                             "that Git does not ignore, which eng spelling must pass")
     evid = commands.add_parser("evidence")
     evid.add_argument("operation", choices=["verify"])
     evid.add_argument("directory", type=Path)
@@ -380,6 +395,7 @@ def main(argv=None):
         elif args.action == "policy": refresh_policy(root)
         elif args.action == "admit": return admit(root, args)
         elif args.action == "remote": return remote.main(root, config, args)
+        elif args.action == "release": return release.main(root, config, args)
         elif args.action == "source":
             from .support import source_path
             print(source_path(args.name))
@@ -457,17 +473,17 @@ def main(argv=None):
                 return evidence.UNMEASURED
             # A group's lanes were each judged by their own logs.
             if "parallel" in lane:
-                if result == evidence.UNMEASURED:
-                    receipt.update(outcome="unmeasured")
-                    (directory / "source.json").write_text(json.dumps(receipt, indent=2) + "\n")
+                conclude(directory, receipt, result)
                 return result
             # The command has a confirmed terminal result. Coverage validation cannot turn
             # that completed process into an orphan reservation.
             log = (directory / "run.log").read_text(errors="replace")
-            status, unmeasured = judge(lane, result, log, extra, args.expect)
-            if status == evidence.UNMEASURED:
-                receipt.update(outcome="unmeasured", unmeasured=unmeasured)
-                (directory / "source.json").write_text(json.dumps(receipt, indent=2) + "\n")
+            try:
+                status, unmeasured = judge(lane, result, log, extra, args.expect)
+            except ValueError as error:
+                conclude(directory, receipt, 2, error=str(error))
+                raise
+            conclude(directory, receipt, status, **({"unmeasured": unmeasured} if status == evidence.UNMEASURED else {}))
             return status
         return 0
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:

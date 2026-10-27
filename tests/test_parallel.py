@@ -199,9 +199,10 @@ class LaneGroupTests(unittest.TestCase):
                 self.configure({**lanes, "group": {"parallel": list(members)}})
                 status, output = self.run_lane("group")
                 self.assertEqual(status, expected, output)
+                receipt = json.loads((self.root / ".build/engineering/group/source.json").read_text())
                 # Every lane runs to its own end, whatever the others did.
-                self.assertEqual(sorted(json.loads((self.root / ".build/engineering/group/source.json").read_text())["lanes"]),
-                                 sorted(members))
+                self.assertEqual(sorted(receipt["lanes"]), sorted(members))
+                self.assertEqual(receipt["outcome"], {0: "passed", 1: "failed", 3: "unmeasured"}[expected])
         self.assertIn("Expected at least 2 executed tests; observed 1", output)
         self.assertIn("FAIL short", output)
 

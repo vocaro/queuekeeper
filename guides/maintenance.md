@@ -89,6 +89,11 @@ git fetch origin
 git merge-base --is-ancestor origin/main HEAD && git push origin HEAD:main
 ```
 
+Never pipe the push, or any step whose failure must stop what follows, through a filter such as
+`tail` or `grep` in an `&&` chain without `set -o pipefail`. A pipeline's status is its last
+command's: a failed push piped through `tail` reads as success, its error is cut, and the chain
+goes on to what needed the push, such as a release of a commit `main` does not have.
+
 If `origin/main` is not an ancestor, rebase onto it. A tool that brings `main` in by merging,
 such as the Claude app's sync with the base branch, leaves a merge commit that the push would
 put on `main`; rebase the branch's own commits instead. When `main`'s new commits change only
