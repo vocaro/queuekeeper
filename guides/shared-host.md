@@ -24,7 +24,13 @@ ML whose compute units include the GPU takes it too ([model admission](#model-ad
 lane says so with `"model": true` beside
 `"resource": "heavy"`. Add `--exclusive` only for work that needs the host to itself: a
 whole-machine or wall-clock measurement, a model run that is timed or compared with a baseline
-among them ([long-running measurements](#long-running-measurements)). A gate suite is heavy work.
+among them ([long-running measurements](#long-running-measurements)). Only the timed part of a
+run is exclusive: build, install and set up first under `eng admit`, beside other sessions'
+work, then admit the timed run alone with `--exclusive`, as a separate command, such as
+`xcodebuild build-for-testing` and then `test-without-building`. Setup, recovery and a functional
+run whose seconds are not meant as figures are heavy work. An exclusive request inside heavy
+admission is refused, so a lane whose run needs both is `light`, and its script admits each part.
+A gate suite is heavy work.
 `--timeout` bounds the wait for admission. The command runs in the current directory with
 its output on the terminal. Like a heavy lane, `eng admit` first refreshes the operating policy,
 printing it to standard error, and records the command's receipt in

@@ -296,8 +296,9 @@ def main(argv=None):
         "test, a simulator run, a gate suite) through the host's heavy-work admission: eng admit -- COMMAND; add "
         "--model for a generative-model run, and --exclusive only for work that needs the host to itself")
     kind = admission.add_mutually_exclusive_group()
-    kind.add_argument("--exclusive", action="store_true", help="hold every slot, and the model with them: a "
-                      "whole-machine or timing measurement, or a model run that is timed or compared with a baseline")
+    kind.add_argument("--exclusive", action="store_true", help="hold every slot, and the model with them, for the "
+                      "timed run alone, built and set up beforehand as heavy work: a whole-machine or timing "
+                      "measurement, or a model run that is timed or compared with a baseline")
     kind.add_argument("--model", action="store_true", help="hold one slot and the host's model lock, which one "
                       "model run holds at a time: on-device generation, on this Mac or in a simulator, another local "
                       "generative model on the GPU, or Core ML whose compute units include the GPU")
