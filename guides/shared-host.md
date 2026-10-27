@@ -388,6 +388,8 @@ Each Mac keeps its own [pool](simulator-testing.md#reserved-simulator-pool) and 
 [device record](#device-reservations). A lane on the build host takes or creates members in the
 build host's simulators and reserves them in the build host's record, so a member of the same
 name on each Mac is two simulators, and a reservation on one Mac says nothing about the other's.
+Physical devices, which both Macs reach, are reserved only in this Mac's record
+([physical devices and the build host](#physical-devices-and-the-build-host)).
 A project's first run there creates its first members and lets their first boot finish. A
 session's `VOCARO_DEVICE_OWNER` and agent session do not cross SSH, so a reservation there names
 an owner the run generates: `simulator-tests-UUID` for `eng simulator-tests`, and `POOL-UUID` for
@@ -906,6 +908,52 @@ To release, verify the original accessibility and keyboard settings, the absence
 processes and the measured build identities. Remove only the exact owned app and runner bundles,
 verify their absence, release the entry, and tell the other session that the device is released,
 including any unresolved restoration state.
+
+### Physical devices and the build host
+
+Each Mac's simulators are its own, but the paired iPhone and iPad are reachable from both Macs:
+on 2026-10-27 the build host's `devicectl list devices` listed both as `available (paired)`. A
+record on each Mac would let a run on each use one device, under reservations neither record
+shows the other. So a physical device is reserved only in this Mac's record, the Mac that sends
+runs to the build host, and the build host's record holds only the build host's simulators.
+
+Every `eng remote` run first makes the build host's record defer physical devices to the sending
+Mac's (`devices defer MAC`, kept as the record's `physicalDevicesRecordedOn`, which `status`
+reports). A record that defers them refuses to reserve a physical device or to give an entry one,
+and names the record that holds them. A hardware UDID, 8 and 16 hex digits or 40, is physical; a
+simulator's is a UUID. A build host record that already defers them to another Mac, or holds a
+physical device, stops the run as a configuration problem for the owner's decision: which Mac's
+record holds them changes only by `devices defer MAC --replace` (`--end` ends a deferral), and a
+held device is released or recovered first.
+
+A run on the build host uses a physical device only under a reservation held here, which it
+carries:
+
+```sh
+python3 scripts/eng remote admit --device iPhone -- COMMAND
+python3 scripts/eng remote run --device iPhone LANE -- ARGUMENTS
+```
+
+- `--device KEY`, repeatable, requires the session to hold KEY here with no run active, and KEY
+  to be a physical device; otherwise nothing is sent. `--device-owner` names the session, else
+  `VOCARO_DEVICE_OWNER`, else the agent session.
+- The dispatch marks each entry's run active with the `eng remote` process as the run's process,
+  records the connection's `ssh` as the entry's own process, and records the run's outcome when
+  it ends, with the host, the work and the results directory, in the entry's `run`. Its end, by a
+  stop, its death or a dropped connection, stops the run there, so a run whose dispatcher vanished
+  is an orphan here. Recover it only once `eng doctor`'s census of the build host's leftover
+  processes ([processes left over from runs](#processes-left-over-from-runs)) shows nothing of it.
+- The run reads its reservations from `VOCARO_DEVICE_LEASE`: `{"record": MAC, "devices": {KEY: UDID}}`.
+- The device stays reserved after the run. Preflight, restoration and the release are the
+  session's, from this Mac, which reaches the device too.
+- A command, or a lane's arguments, that names a physical device of this record that no
+  `--device` covers is refused, and `eng run` keeps a `buildHost` lane whose arguments name one
+  on this Mac.
+
+The records constrain only work that goes through the toolkit: `xcodebuild` or `devicectl` run
+by hand on the build host, or Xcode there, reaches the devices without them. A lane that needs a
+device is not marked `buildHost`, so sending one to the build host is always an explicit
+`eng remote --device`.
 
 ## Attended Mac sessions
 

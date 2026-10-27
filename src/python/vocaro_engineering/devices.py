@@ -16,6 +16,11 @@ The mac-foreground entry reserves the owner's screen, keyboard, pointer, focus a
 names no device and records the owner's approval window, which no update changes. Foreground
 drivers call require_foreground before acting; release waits for the processes the session
 recorded as its own, and says whether the previous frontmost app was restored.
+
+Each Mac's simulators are its own, but a paired iPhone or iPad is reachable from both Macs, so a
+physical device is reserved in one record only: the Mac that sends runs to the build host. The
+build host's record defers physical devices to that Mac and refuses to reserve one. A run there
+uses one under a reservation held in the sending Mac's record, which `eng remote --device` carries.
 """
 import argparse
 import contextlib
@@ -41,6 +46,13 @@ ABOUT = ("Device reservations on this Mac. Change entries only through "
 # Earlier ad hoc records. Status names one whose current bytes were never imported.
 LEGACY = "/private/tmp/*device-handoff*.json"
 UDID = re.compile(r"[0-9A-F]{8}(?:-[0-9A-F]{4,16}){1,4}|[0-9A-F]{40}")
+# A physical device's hardware UDID: 8 and 16 hex digits, or 40 on older devices. A simulator's is a UUID.
+PHYSICAL = re.compile(r"[0-9A-F]{8}-[0-9A-F]{16}|[0-9A-F]{40}")
+# The Mac whose record holds physical devices, in a record that defers them to it: the build host's.
+DEFERRED = "physicalDevicesRecordedOn"
+# The reservations a build-host run may use, held in the sending Mac's record, as JSON:
+# {"record": MAC, "devices": {KEY: UDID}}. build_host.py sets it for the run.
+LEASE = "VOCARO_DEVICE_LEASE"
 # Written only by the record's own operations, which say who changed ownership and why.
 MANAGED = {"revision", "ownerChatID", "lastOwnerChatID", "previousLease", "recovery", "importedFrom",
            "importedVersions", "uncertainReason", "hostProcessStart", "approval", "ownedProcesses", "frontmost"}
@@ -82,6 +94,21 @@ def restart_emptied(path):
             if candidate == root or root in candidate.parents:
                 return True
     return False
+
+
+def default_owner():
+    """The session a reservation names: its device-record owner, else its agent session."""
+    return os.environ.get(OWNER) or os.environ.get("CODEX_THREAD_ID") or os.environ.get("CLAUDE_CODE_SESSION_ID")
+
+
+def physical(udid):
+    """Whether udid is a physical device's hardware UDID rather than a simulator's."""
+    return isinstance(udid, str) and PHYSICAL.fullmatch(udid.upper()) is not None
+
+
+def deferred_refusal(mac, key):
+    return Refused(f"physical devices are reserved in {mac}'s device record, not this one: reserve {key} there and "
+                   f"send the run here with `eng remote run|admit --device {key}`. Nothing was changed")
 
 
 def now():
@@ -290,6 +317,8 @@ class Record:
                 raise Refused(f"{key} is {condition(current)} by {current.get('ownerChatID')}; obtain its "
                               "release or attended recovery first. Nothing was changed")
             identifier = device or (current or {}).get("device")
+            if record.get(DEFERRED) and physical(identifier):
+                raise deferred_refusal(record[DEFERRED], key)
             for other, entry in record["devices"].items():
                 same = isinstance(entry.get("device"), str) and identifier and entry["device"].upper() == identifier.upper()
                 if other != key and same and condition(entry) != "released":
@@ -326,8 +355,10 @@ class Record:
             owned.append({"pid": pid, "start": start})
         json.dumps(changes)
 
-        def change(current, _record):
+        def change(current, record):
             _owned(key, current, owner)
+            if record.get(DEFERRED) and physical(changes.get("device")):
+                raise deferred_refusal(record[DEFERRED], key)
             entry = {**current, **changes}
             if owned:
                 entry["ownedProcesses"] = [*current.get("ownedProcesses", []), *owned]
@@ -389,6 +420,32 @@ class Record:
                                        "uncertainReason": current.get("uncertainReason")}})
             return entry
         return self._change(key, revision, change)
+
+    def defer(self, mac, *, replace=False):
+        """Defer physical devices to mac's record, after which this record refuses to reserve one.
+
+        The build host's record defers them to the Mac that sends it runs; None ends a deferral.
+        Changing which Mac holds them is the owner's decision, so another Mac needs replace. It
+        returns whether the record changed."""
+        with self._exclusive():
+            record = self.load()
+            current = record.get(DEFERRED)
+            if current == mac:
+                return False
+            if current is not None and mac is not None and not replace:
+                raise Refused(f"this record defers physical devices to {current}, not {mac}; which Mac's record holds "
+                              "them is the owner's decision (`devices defer MAC --replace`). Nothing was changed")
+            held = [key for key, entry in record["devices"].items()
+                    if physical(entry.get("device")) and condition(entry) != "released"]
+            if mac is not None and held:
+                raise Refused(f"{', '.join(held)} holds a physical device in this record; release or recover it "
+                              f"before deferring physical devices to {mac}. Nothing was changed")
+            if mac is None:
+                record.pop(DEFERRED)
+            else:
+                record[DEFERRED] = mac
+            self._replace(record)
+            return True
 
     def import_legacy(self, paths, *, by):
         """Merge earlier ad hoc records once each, preserving every entry; the files stay untouched."""
@@ -504,6 +561,8 @@ def status(record):
     value = record.load()
     source = f" (from {OVERRIDE})" if os.environ.get(OVERRIDE) else ""
     print(f"Device record {record.path}{source}: revision {value.get('revision', 0)}, updated {value.get('updatedAt', 'never')}")
+    if value.get(DEFERRED):
+        print(f"Physical devices are reserved in {value[DEFERRED]}'s device record; this one refuses them")
     # The owner's screen first, held or free, so a session about to take it sees who has it.
     foreground = value["devices"].get(FOREGROUND)
     print(_describe(FOREGROUND, foreground) if foreground is not None else
@@ -584,6 +643,12 @@ def main(argv=None):
     importer = commands.add_parser("import", help="merge earlier ad hoc records, preserving every entry")
     importer.add_argument("paths", nargs="+")
     importer.add_argument("--by", required=True)
+    defer = commands.add_parser("defer", help="reserve physical devices only in MAC's record, as the build host's "
+                                "record does; prints what it changed")
+    target = defer.add_mutually_exclusive_group(required=True)
+    target.add_argument("mac", nargs="?", help="the Mac whose record holds physical devices")
+    target.add_argument("--end", action="store_true", help="hold physical devices in this record again")
+    defer.add_argument("--replace", action="store_true", help="defer to MAC when the record defers to another Mac")
     args = parser.parse_args(argv)
     try:
         record = Record()
@@ -618,6 +683,10 @@ def main(argv=None):
             _report(args.key, record.recover(args.key, by=args.by, revision=args.revision, verified=args.verified))
         elif args.action == "import":
             print("\n".join(record.import_legacy(args.paths, by=args.by)))
+        elif args.action == "defer":
+            if record.defer(None if args.end else args.mac, replace=args.replace):
+                print(f"{record.path}: physical devices are reserved here again" if args.end else
+                      f"{record.path}: physical devices are reserved in {args.mac}'s device record from now on")
         return 0
     except (OSError, ValueError, RuntimeError) as error:
         print(f"devices: {error}", file=sys.stderr)

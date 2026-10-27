@@ -3,8 +3,9 @@
 It imports nothing from the toolkit, because it runs before the toolkit is checked out there,
 and Python 3.9, a Mac's system Python, runs it. It claims a persistent checkout of the project,
 places the dispatched commits, and runs `eng run` or `eng admit` there under the build host's
-own heavy-work admission. Standard output carries framed lines: `O` for output, `L` for the
-lane's log as it grows, then, once the work has ended, an `F` naming each file the plan asks back,
+own heavy-work admission, with its device record deferring physical devices to the sending Mac's
+and the run given the reservations it carries. Standard output carries framed lines: `O` for
+output, `L` for the lane's log as it grows, then, once the work has ended, an `F` naming each file the plan asks back,
 such as a lane group's lanes' logs and receipts, followed by `D` lines of its bytes in base64, and
 a closing `R` with the result as JSON. Standard input is the
 dispatcher's lifeline: its end, which a stop, the dispatcher's death or a dropped connection
@@ -99,10 +100,14 @@ def xcode(developer_dir):
     return None
 
 
+def mac_name():
+    return output(["scutil", "--get", "LocalHostName"]) or os.uname().nodename
+
+
 def identity(developer_dir):
     """The Mac a result was measured on, its macOS and the Xcode at developer_dir."""
     number = lambda name: int(output(["sysctl", "-n", name]) or 0) or None
-    return {"name": output(["scutil", "--get", "LocalHostName"]) or os.uname().nodename,
+    return {"name": mac_name(),
             "model": output(["sysctl", "-n", "hw.model"]), "cpus": number("hw.ncpu"),
             "memoryBytes": number("hw.memsize"), "macOS": output(["sw_vers", "-productVersion"]),
             "build": output(["sw_vers", "-buildVersion"]), "developerDir": developer_dir, "xcode": xcode(developer_dir)}
@@ -548,6 +553,25 @@ def credentials(environment, path):
     environment["GIT_CONFIG_COUNT"] = str(count + 2)
 
 
+def defer_devices(kit, mac):
+    """Make this Mac's device record defer physical devices to mac's, the sending Mac's.
+
+    A paired iPhone or iPad is reachable from both Macs, so it is reserved in one record only;
+    this one then refuses to reserve it. A record that defers them to another Mac, or holds one,
+    is a configuration problem for the owner, so the work does not start."""
+    try:
+        deferred = subprocess.run([sys.executable, "-m", "vocaro_engineering.devices", "defer", mac], capture_output=True,
+                                  text=True, env={**os.environ, "PYTHONPATH": str(kit / "src/python")}, timeout=60)
+    except subprocess.TimeoutExpired:
+        deferred = subprocess.CompletedProcess([], 1, "", "it did not finish in 60s")
+    if deferred.returncode:
+        problem = deferred.stderr.strip().splitlines()[-1:] or [f"exit {deferred.returncode}"]
+        raise Refusal(f"its device record cannot defer physical devices to {mac}: {problem[0]}",
+                      "decide which Mac's record holds physical devices and resolve that in the build host's record "
+                      "(guides/shared-host.md, Physical devices and the build host)")
+    if deferred.stdout.strip(): say(deferred.stdout.strip())
+
+
 def relay(stream):
     for line in iter(stream.readline, b""):
         emit(b"O", line)
@@ -652,6 +676,9 @@ def main(plan):
         result.update(checkout=str(checkout), slot=index)
         say(f"{checkout} at {project['commit'][:12]}")
         environment = {**os.environ, "VOCARO_ENGINEERING_ROOT": str(kit)}
+        if plan.get("deviceRecord"): defer_devices(kit, plan["deviceRecord"])
+        # The reservations, held in the sending Mac's record, that this run may use (devices.LEASE).
+        if plan.get("lease"): environment["VOCARO_DEVICE_LEASE"] = json.dumps(plan["lease"])
         if plan.get("developerDir"): environment["DEVELOPER_DIR"] = plan["developerDir"]
         if (root / "git-credentials").is_file(): credentials(environment, root / "git-credentials")
         eng = [sys.executable, str(kit / "bin/eng"), "--project", str(checkout)]

@@ -236,6 +236,57 @@ class DeviceRecordTests(unittest.TestCase):
         self.record.release("iPhone", owner="session-a", revision=entry["revision"], outcome="o", restoration="r")
         self.reserve("Phone alias", owner="session-b", device=PHONE)
 
+    def test_a_hardware_udid_is_physical_and_a_simulators_is_not(self):
+        for udid in [PHONE, PHONE.lower(), "A" * 40]:
+            self.assertTrue(devices.physical(udid), udid)
+        for udid in [DUO, None, "", "booted", "00008130-001A2C3E"]:
+            self.assertFalse(devices.physical(udid), udid)
+
+    def test_a_record_that_defers_physical_devices_refuses_them_and_keeps_its_simulators(self):
+        # Before the deferral, the record holds a physical device like any other.
+        self.reserve(device=PHONE)
+        entry = self.record.entry("iPhone")
+        self.record.release("iPhone", owner="session-a", revision=entry["revision"], outcome="o", restoration="r")
+        self.assertTrue(self.record.defer("workstation"))
+        with self.assertRaisesRegex(devices.Refused, "reserved in workstation's device record.*--device iPhone"):
+            self.reserve(revision=self.record.entry("iPhone")["revision"])
+        with self.assertRaisesRegex(devices.Refused, "workstation's device record"):
+            self.reserve("iPad", device=PHONE.replace("C", "D"))
+        duo = self.reserve("Example Duo 1", device=DUO)
+        with self.assertRaisesRegex(devices.Refused, "workstation's device record"):
+            self.record.update("Example Duo 1", owner="session-a", revision=duo["revision"], device=PHONE)
+        self.assertEqual(self.record.entry("Example Duo 1")["revision"], duo["revision"])
+        self.assertIsNone(self.record.entry("iPad"))
+        self.assertIn("Physical devices are reserved in workstation's device record", self.cli("status")[1])
+        self.record.defer(None)
+        self.reserve(revision=self.record.entry("iPhone")["revision"])
+        self.assertNotIn("Physical devices are reserved", self.cli("status")[1])
+
+    def test_which_mac_holds_physical_devices_changes_only_by_the_owners_decision(self):
+        code, output, _error = self.cli("defer", "workstation")
+        self.assertEqual((code, output.strip()), (0, f"{self.path}: physical devices are reserved in workstation's "
+                                                     "device record from now on"))
+        revision = self.record.load()["revision"]
+        # Deferring to the same Mac again writes nothing and says nothing.
+        self.assertEqual(self.cli("defer", "workstation")[:2], (0, ""))
+        self.assertEqual(self.record.load()["revision"], revision)
+        code, _output, error = self.cli("defer", "laptop")
+        self.assertEqual(code, 2)
+        self.assertIn("defers physical devices to workstation, not laptop", error)
+        self.assertEqual(self.record.load()[devices.DEFERRED], "workstation")
+        self.assertEqual(self.cli("defer", "laptop", "--replace")[0], 0)
+        self.assertEqual(self.record.load()[devices.DEFERRED], "laptop")
+        self.assertIn("reserved here again", self.cli("defer", "--end")[1])
+        self.assertNotIn(devices.DEFERRED, self.record.load())
+        # A physical device held here is released or recovered before the record defers it.
+        self.reserve(device=PHONE)
+        with self.assertRaisesRegex(devices.Refused, "iPhone holds a physical device"):
+            self.record.defer("workstation")
+        self.assertNotIn(devices.DEFERRED, self.record.load())
+        entry = self.record.entry("iPhone")
+        self.record.release("iPhone", owner="session-a", revision=entry["revision"], outcome="o", restoration="r")
+        self.assertTrue(self.record.defer("workstation"))
+
     def test_a_held_lock_refuses_after_its_timeout_without_writing(self):
         self.reserve()
         before = self.path.read_bytes()

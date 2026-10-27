@@ -15,7 +15,6 @@ import contextlib
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import json
-import os
 from pathlib import Path
 import re
 import signal
@@ -47,10 +46,7 @@ def simctl(*arguments, timeout=600):
         return subprocess.CompletedProcess(arguments, 124, "", f"timed out after {timeout} s")
 
 
-def default_owner():
-    """The session a reservation names: its device-record owner, else its agent session."""
-    return (os.environ.get(device_record.OWNER) or os.environ.get("CODEX_THREAD_ID")
-            or os.environ.get("CLAUDE_CODE_SESSION_ID"))
+default_owner = device_record.default_owner
 
 
 def configured(root):

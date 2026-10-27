@@ -316,7 +316,8 @@ def main(argv=None):
         "second Mac, over SSH: eng remote run LANE [-- ARGUMENTS] or eng remote admit -- COMMAND; eng remote passed "
         "LANE says whether the whole lane passed there at a commit")
     operations = distant.add_subparsers(dest="operation", required=True)
-    remote_run = operations.add_parser("run", usage="%(prog)s [-h] [--host HOST] [--expect N] lane [-- ARGUMENTS ...]",
+    remote_run = operations.add_parser("run", usage="%(prog)s [-h] [--host HOST] [--expect N] [--device KEY] "
+        "[--device-owner SESSION] lane [-- ARGUMENTS ...]",
         help="run a configured lane on the build host at HEAD, or at a snapshot commit of uncommitted work")
     remote_admit = operations.add_parser("admit", help="run a heavy command on the build host, in its checkout's "
         "root, at HEAD or at a snapshot commit of uncommitted work")
@@ -333,6 +334,12 @@ def main(argv=None):
     for choice in (remote_run, remote_admit, remote_setup):
         choice.add_argument("--host", help="the build host's SSH destination (default: VOCARO_BUILD_HOST, else "
                              f"the ~/.ssh/config alias {remote.DEFAULT_HOST})")
+    for choice in (remote_run, remote_admit):
+        choice.add_argument("--device", action="append", metavar="KEY", help="a physical device the run uses, "
+                            "reserved in this Mac's device record and held, with no run active, by the session "
+                            "(repeatable); the dispatch records the run in its entry")
+        choice.add_argument("--device-owner", metavar="SESSION", help="the session holding --device (default: "
+                            f"{devices.OWNER}, else the agent session)")
     remote_run.add_argument("--expect", type=int, metavar="N", help="require exactly N executed tests")
     remote_run.add_argument("lane")
     kind = remote_admit.add_mutually_exclusive_group()

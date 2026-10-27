@@ -1,5 +1,5 @@
 import contextlib
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import fcntl
 from io import StringIO
 import json
@@ -17,12 +17,13 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
-from vocaro_engineering import build_host, cli, config, evidence, processes, remote, resources
+from vocaro_engineering import build_host, cli, config, devices, evidence, processes, remote, resources
 
 # Stands in for ssh: the build host is a home directory on this Mac. Like sshd, it runs the
 # command in that home through a shell, and git's own ssh transport reaches it the same way.
-# FAKE_UNREACHABLE makes it fail as ssh does when the build host's name does not resolve, and
-# FAKE_TMPDIR gives the build host a temporary directory of its own.
+# FAKE_UNREACHABLE makes it fail as ssh does when the build host's name does not resolve,
+# FAKE_TMPDIR gives the build host a temporary directory of its own, and FAKE_DEVICE_RECORD its
+# device record, which is never this Mac's.
 FAKE_SSH = """#!/bin/sh
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -39,13 +40,17 @@ shift
 cd "$FAKE_HOME" || exit 255
 # The build host has its own heavy-work queue.
 HOME="$FAKE_HOME" SHELL="$FAKE_SHELL" HEAVY_SLOT_DIR="$FAKE_SLOTS" SW_GATE_LOCK_FILE="$FAKE_GATE" \
-    TMPDIR="${FAKE_TMPDIR:-$TMPDIR}" exec /bin/sh -c "$*"
+    TMPDIR="${FAKE_TMPDIR:-$TMPDIR}" VOCARO_DEVICE_RECORD="${FAKE_DEVICE_RECORD:-$FAKE_HOME/device-handoff.json}" \
+    exec /bin/sh -c "$*"
 """
 # A login shell that reads no profile, so the test's PATH reaches the build host.
 FAKE_SHELL = """#!/bin/sh
 [ "$1" = -l ] && shift
 exec /bin/sh "$@"
 """
+# Well-formed, invented identifiers: a hardware UDID and a simulator UUID.
+PHONE = "00008130-001A2C3E0C38001C"
+DUO = "5B0E6C51-2D3A-4F7B-9C1E-0A4B8D2F6E13"
 # A lane that says it has started, then puts its PID in .build/NAME.pid, whole, and waits to be stopped.
 NAP = ("import os, pathlib, sys, time; name = sys.argv[1]; print(name, 'started', flush=True); "
        "partial = pathlib.Path('.build', name + '.partial'); partial.write_text(str(os.getpid())); "
@@ -86,6 +91,16 @@ if child.poll() is None:
 relay.join()
 sys.exit(child.returncode)
 """
+
+
+def durable_scratch():
+    """A test directory outside /private/tmp, which the device record refuses, even when TMPDIR is there."""
+    base = Path(tempfile.gettempdir())
+    if devices.restart_emptied(base):
+        base = Path(subprocess.check_output(["/usr/bin/getconf", "DARWIN_USER_TEMP_DIR"], text=True).strip()) \
+            if sys.platform == "darwin" else Path(__file__).resolve().parents[1] / ".build"
+        base.mkdir(exist_ok=True)
+    return tempfile.TemporaryDirectory(dir=base)
 
 
 def git(directory, *arguments):
@@ -162,14 +177,23 @@ class RemoteTests(unittest.TestCase):
         (self.project / ".gitignore").write_text(".build/\n")
         git(base, "init", "-q", str(self.project))
         self.commit = commit_all(self.project)
+        # Each Mac's device record, where a restart does not empty it, which the record requires.
+        records = durable_scratch()
+        self.addCleanup(records.cleanup)
+        self.record_here = Path(records.name) / "here" / "device-handoff.json"
+        self.record_there = Path(records.name) / "there" / "device-handoff.json"
         self.environment = patch.dict(os.environ, {
             "PATH": f"{tools}{os.pathsep}{os.environ['PATH']}", "FAKE_HOME": str(self.home),
             "FAKE_SHELL": str(tools / "login-shell"), "HEAVY_SLOT_DIR": str(base / "slots"),
             "SW_GATE_LOCK_FILE": str(base / "gate"), "HEAVY_POLL_SECONDS": "0.01", "VOCARO_BUILD_HOST": "fake",
             "FAKE_SLOTS": str(base / "build-host-slots"), "FAKE_GATE": str(base / "build-host-gate"),
-            "FAKE_TMPDIR": str(base / "build-host-tmp")})
+            "FAKE_TMPDIR": str(base / "build-host-tmp"), devices.OVERRIDE: str(self.record_here),
+            "FAKE_DEVICE_RECORD": str(self.record_there)})
         (base / "build-host-tmp").mkdir()
         self.environment.start()
+        # No session holds a device unless a test names one.
+        for name in (devices.OWNER, "CODEX_THREAD_ID", "CLAUDE_CODE_SESSION_ID"):
+            os.environ.pop(name, None)
         os.environ.pop("VOCARO_RESOURCE_TOKEN", None)
         os.environ.pop("DEVELOPER_DIR", None)
         # A run on the real build host hands its git the credential file through these.
@@ -266,6 +290,116 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual(status, 0)
         self.assertIn(f"ran in {self.checkout(0).resolve()}", output)
         self.assertIn("ran in", (self.project / ".build/engineering/remote/admit/output.log").read_text())
+
+    def hold(self, key="iPhone", device=PHONE, owner="session-a"):
+        record = devices.Record(self.record_here)
+        revision = (record.entry(key) or {}).get("revision", 0)
+        release_by = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        return record.reserve(key, owner=owner, revision=revision, purpose="device run", release_by=release_by,
+                              device=device)
+
+    def nothing_sent(self):
+        return not (self.home / remote.ROOT / "repositories").exists()
+
+    def test_every_run_makes_the_build_hosts_record_defer_physical_devices_to_this_mac(self):
+        self.assertEqual(self.eng("remote", "run", "check")[0], 0)
+        there = devices.Record(self.record_there)
+        self.assertEqual(there.load()[devices.DEFERRED], build_host.mac_name())
+        revision = there.load()["revision"]
+        self.assertEqual(self.eng("remote", "admit", "--", sys.executable, "-c", "pass")[0], 0)
+        self.assertEqual(there.load()["revision"], revision)
+        self.assertNotIn(devices.DEFERRED, devices.Record(self.record_here).load())
+        # A run there cannot reserve a physical device in the build host's own record.
+        helper = ("import os, runpy, sys; sys.path.insert(0, os.path.join(os.environ['VOCARO_ENGINEERING_ROOT'], "
+                  "'src/python')); runpy.run_module('vocaro_engineering.devices', run_name='__main__')")
+        status, output, _error = self.eng("remote", "admit", "--", sys.executable, "-c", helper,
+            "reserve", "iPhone", "--owner", "there", "--revision", "0", "--purpose", "p",
+            "--release-by", "2099-01-01T00:00:00Z", "--device", PHONE.replace("C", "D"))
+        self.assertNotEqual(status, 0)
+        self.assertIn(f"reserved in {build_host.mac_name()}'s device record", output)
+        self.assertIsNone(there.entry("iPhone"))
+
+    def test_a_build_host_record_that_defers_elsewhere_or_holds_a_physical_device_stops_the_run(self):
+        there = devices.Record(self.record_there)
+        there.defer("another-mac")
+        status, _output, error = self.eng("remote", "run", "check")
+        self.assertEqual(status, 2)
+        self.assertIn("cannot defer physical devices", error)
+        self.assertIn("defers physical devices to another-mac", error)
+        self.assertFalse((self.checkout(0) / ".build/provisioned").exists())
+        there.defer(None)
+        there.reserve("iPhone", owner="there", revision=0, purpose="p", release_by="2099-01-01T00:00:00Z",
+                      device=PHONE)
+        status, _output, error = self.eng("remote", "run", "check")
+        self.assertEqual(status, 2)
+        self.assertIn("iPhone holds a physical device", error)
+        self.assertNotIn(devices.DEFERRED, there.load())
+
+    def test_a_run_carries_a_reservation_held_here_and_records_its_run_in_the_entry(self):
+        held = self.hold()
+        # During the run the entry here is active, with the dispatcher's process as the run's.
+        probe = ("import json, os, sys; lease = json.loads(os.environ['VOCARO_DEVICE_LEASE']); "
+                 "entry = json.load(open(sys.argv[1]))['devices']['iPhone']; "
+                 "print('lease', lease['record'], lease['devices']); "
+                 "print('entry', entry['activeRun'], entry['hostProcessIdentifier'], len(entry['ownedProcesses']))")
+        status, output, error = self.eng("remote", "admit", "--device", "iPhone", "--device-owner", "session-a",
+                                         "--", sys.executable, "-c", probe, str(self.record_here))
+        self.assertEqual(status, 0, error)
+        self.assertIn(f"lease {build_host.mac_name()} {{'iPhone': '{PHONE}'}}", output)
+        self.assertIn(f"entry True {os.getpid()} 1", output)
+        entry = devices.Record(self.record_here).entry("iPhone")
+        self.assertEqual(devices.condition(entry), "held")
+        self.assertEqual((entry["ownerChatID"], entry["state"]), ("session-a", "reserved"))
+        self.assertEqual((entry["run"]["host"], entry["run"]["outcome"]), ("fake", "exit 0"))
+        self.assertEqual(entry["run"]["work"][:2], ["admit", "--"])
+        self.assertFalse(devices.running(entry))
+        self.assertEqual(entry["revision"], held["revision"] + 3)
+        # A failing run's status is its outcome, and the device stays held for the session to release.
+        os.environ[devices.OWNER] = "session-a"
+        self.assertEqual(self.eng("remote", "run", "fail", "--device", "iPhone")[0], 3)
+        entry = devices.Record(self.record_here).entry("iPhone")
+        self.assertEqual((devices.condition(entry), entry["run"]["outcome"]), ("held", "exit 3"))
+
+    def test_a_device_the_session_does_not_hold_idle_is_refused_before_anything_is_sent(self):
+        record = devices.Record(self.record_here)
+        arguments = ["remote", "admit", "--device", "iPhone", "--device-owner", "session-a", "--",
+                     sys.executable, "-c", "pass"]
+        status, _output, error = self.eng(*arguments)
+        self.assertEqual(status, 2)
+        self.assertIn("shows it absent", error)
+        self.hold(owner="session-b")
+        self.assertIn("shows it held by session-b", self.eng(*arguments)[2])
+        entry = record.entry("iPhone")
+        record.update("iPhone", owner="session-b", revision=entry["revision"], activeRun=True,
+                      hostProcessIdentifier=os.getpid())
+        self.assertIn("shows it active by session-b", self.eng(*arguments)[2])
+        self.hold("Example Duo 1", device=DUO)
+        status, _output, error = self.eng("remote", "admit", "--device", "Example Duo 1", "--device-owner",
+                                          "session-a", "--", sys.executable, "-c", "pass")
+        self.assertEqual(status, 2)
+        self.assertIn("not a physical device", error)
+        status, _output, error = self.eng("remote", "admit", "--device", "Example Duo 1", "--", sys.executable, "-c", "pass")
+        self.assertIn("name the session whose reservations --device carries", error)
+        self.assertTrue(self.nothing_sent())
+        self.assertEqual(record.entry("iPhone")["ownerChatID"], "session-b")
+
+    def test_a_command_that_names_a_physical_device_no_reservation_covers_is_refused(self):
+        self.hold()
+        name = ["--", sys.executable, "-c", "import sys; print('named', sys.argv[1])", f"id={PHONE.lower()}"]
+        status, _output, error = self.eng("remote", "admit", *name)
+        self.assertEqual(status, 2)
+        self.assertIn(f"names iPhone's device {PHONE}, which no --device covers", error)
+        self.assertTrue(self.nothing_sent())
+        # A simulator's UDID needs no reservation here, and a covered device runs.
+        self.assertEqual(self.eng("remote", "admit", "--", sys.executable, "-c", "pass", DUO)[0], 0)
+        status, output, _error = self.eng("remote", "admit", "--device", "iPhone", "--device-owner", "session-a", *name)
+        self.assertEqual(status, 0)
+        self.assertIn(f"named id={PHONE.lower()}", output)
+        # eng run keeps a build-host lane that names a physical device on this Mac.
+        status, output, error = self.eng("run", "gate", "--", PHONE)
+        self.assertEqual(status, 0, error)
+        self.assertIn("the build host uses only under a reservation", error)
+        self.assertIn(f"Ran 2 tests in {self.project.resolve()}", (self.project / ".build/engineering/gate/run.log").read_text())
 
     def test_admit_passes_the_model_or_exclusive_admission_on_to_the_build_host(self):
         probe = (f"import json, os; token = json.loads(os.environ[{resources.TOKEN!r}]); "

@@ -37,7 +37,7 @@ import tempfile
 import threading
 import time
 
-from . import build_host, disk, processes
+from . import build_host, devices, disk, processes
 from .config import TOOLKIT_ROOT
 from .resources import BUSY
 
@@ -323,7 +323,111 @@ def lost(host, status, said, dispatched, slept, output):
             f"Its output is in {output}")
 
 
-def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, decline=False):
+class Lease:
+    """Physical devices a build-host run uses, each reserved in this Mac's record by the session that
+    sends the run (guides/shared-host.md, Physical devices and the build host).
+
+    The dispatch marks each entry's run active with its own process, whose end, by a stop, its death
+    or a dropped connection, ends the run there: a run whose dispatcher vanished is an orphan here.
+    The connection's ssh is recorded as the entry's own process, which release and recovery wait
+    for. The dispatch records the run's outcome when it ends; releasing the device stays the session's."""
+
+    def __init__(self, owner, held, record):
+        # held: {KEY: {"device": UDID, "revision": the revision the dispatch's next change names}}
+        self.owner, self.held, self.record = owner, held, record
+
+    def plan(self, mac):
+        return {"record": mac, "devices": {key: item["device"] for key, item in self.held.items()}}
+
+    def _update(self, key, **changes):
+        self.held[key]["revision"] = self.record.update(key, owner=self.owner, revision=self.held[key]["revision"],
+                                                        **changes)["revision"]
+
+    def begin(self, run):
+        marked = []
+        try:
+            for key in self.held:
+                self._update(key, activeRun=True, hostProcessIdentifier=os.getpid(), run=run)
+                marked.append(key)
+        except BaseException:
+            for key in marked: self._update(key, activeRun=False, run={**run, "outcome": "not sent"})
+            raise
+
+    def connected(self, pid):
+        for key in self.held:
+            try: self._update(key, own=[pid])
+            except (devices.Refused, OSError, TimeoutError) as error:
+                print(f"remote: {key}'s entry did not record the connection's process {pid}: {error}",
+                      file=sys.stderr, flush=True)
+
+    def end(self, run):
+        for key in self.held:
+            try: self._update(key, activeRun=False, run=run)
+            except (devices.Refused, OSError, TimeoutError) as error:
+                print(f"remote: {key}'s entry did not record the run's end, so it shows the run orphaned until its "
+                      f"owner releases or recovers it: {error}", file=sys.stderr, flush=True)
+
+
+def named_devices(words, record=None):
+    """{KEY: UDID} of the physical devices in this Mac's record that words name."""
+    named = " ".join(words).upper()
+    if not devices.PHYSICAL.search(named): return {}
+    entries = (record or devices.Record()).load()["devices"]
+    return {key: udid for key, entry in entries.items() for udid in [str(entry.get("device") or "").upper()]
+            if devices.physical(udid) and udid in named}
+
+
+def lease(keys, owner, words, record=None):
+    """The reservations held here that a build-host run carries, or None when it uses no physical device.
+
+    Each key must name a physical device that this Mac's record shows owner holding with no run
+    active. The build host reaches the paired devices too, and its own record refuses them, so a
+    command that names a physical device of this record that no key covers is refused."""
+    record = record or devices.Record()
+    named = named_devices(words, record)
+    if not keys and not named: return None
+    if keys and not owner:
+        raise ValueError(f"name the session whose reservations --device carries: --device-owner, or {devices.OWNER}")
+    entries = record.load()["devices"]
+    held = {}
+    for key in dict.fromkeys(keys):
+        entry = entries.get(key)
+        state = devices.condition(entry) if entry is not None else "absent"
+        if state != "held" or entry.get("ownerChatID") != owner:
+            holder = f" by {entry.get('ownerChatID')}" if state not in ("absent", "released") else ""
+            raise devices.Refused(f"--device {key}: this Mac's record shows it {state}{holder}, not held by {owner} "
+                                  "with no run active; reserve it here first. Nothing was sent")
+        if not devices.physical(entry.get("device")):
+            raise devices.Refused(f"--device {key} holds {entry.get('device') or 'no device'}, not a physical device; "
+                                  "the build host takes simulators from its own pool. Nothing was sent")
+        held[key] = {"device": entry["device"].upper(), "revision": entry.get("revision", 0)}
+    covered = {item["device"] for item in held.values()}
+    for key, udid in named.items():
+        if udid not in covered:
+            raise devices.Refused(f"the command names {key}'s device {udid}, which no --device covers: reserve {key} "
+                                  f"here and add --device {key}. Nothing was sent")
+    return Lease(owner, held, record) if held else None
+
+
+def carrying(lease, root, host, work, name, send):
+    """send()'s status, with the run it makes recorded in each leased device's entry here."""
+    if lease is None: return send()
+    run = {"host": host, "work": work, "results": str(Path(root) / ".build/engineering/remote" / name),
+           "startedAt": devices.now()}
+    lease.begin(run)
+    outcome = None
+    try:
+        status = send()
+        outcome = f"exit {status}"
+        return status
+    except BaseException as error:
+        outcome = f"{type(error).__name__}: {error}"
+        raise
+    finally:
+        lease.end({**run, "endedAt": devices.now(), "outcome": outcome})
+
+
+def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, decline=False, lease=None):
     """Run eng's work on the build host and return its exit status, with the log and receipt kept here.
 
     work is the build host's eng arguments: run [--expect N] LANE [-- ARGUMENTS] or
@@ -332,7 +436,8 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     back under the results' lanes/ once the run there ends, however it ended (group_files). With
     decline, the build host refuses work it cannot start now rather than waiting for it, and
     Unavailable says why. Misconfigured says what of the build host's configuration kept the work
-    from running there, and what fixing it takes.
+    from running there, and what fixing it takes. The build host's device record defers physical
+    devices to this Mac's, and lease gives the run the reservations it carries from here.
     """
     toolkit = Path(TOOLKIT_ROOT).resolve()
     try:
@@ -361,7 +466,8 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
             "developerDir": developer, "xcode": local["xcode"],
             "log": f".build/engineering/{lane}/run.log" if lane is not None else None,
             "receipt": f".build/engineering/{name}/source.json",
-            "returns": {"directory": f".build/engineering/{lane}", "paths": returns} if returns else None}
+            "returns": {"directory": f".build/engineering/{lane}", "paths": returns} if returns else None,
+            "deviceRecord": local["name"], "lease": lease.plan(local["name"]) if lease is not None else None}
 
     repositories = [f"{ROOT}/{part['repository']}" for part in (project, kit) if part is not None]
     prepare = " && ".join([f"mkdir -p {shlex.quote(ROOT + '/repositories')}", *(
@@ -402,6 +508,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     with (staging / "run.log").open("wb") as log, (staging / "output.log").open("wb") as output:
         channel = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                    env=environment())
+        if lease is not None: lease.connected(channel.pid)
         def relay():
             for line in iter(channel.stdout.readline, b""): lines.put(line)
             lines.put(None)
@@ -527,14 +634,18 @@ def main(root, config, args):
         extra = args.passed or []
         work = ["run", "--here", *(["--expect", str(args.expect)] if args.expect else []), args.lane,
                 *(["--", *extra] if extra else [])]
+        held = lease(args.device or [], args.device_owner or devices.default_owner(), extra)
         with processes.forwarding_signals():
-            return execute(root, config, host, work, lane=args.lane, arguments=extra, expect=args.expect)
+            return carrying(held, root, host, work, args.lane, lambda: execute(
+                root, config, host, work, lane=args.lane, arguments=extra, expect=args.expect, lease=held))
     # Without a leading --, argparse collected the command, and a later -- belongs to it.
     command = args.command + ([] if args.passed is None else ["--", *args.passed]) if args.command else args.passed
     if not command: raise ValueError("Name the command: eng remote admit [--exclusive | --model] -- COMMAND")
     kind = ["--exclusive"] if args.exclusive else ["--model"] if args.model else []
+    held = lease(args.device or [], args.device_owner or devices.default_owner(), command)
+    work = ["admit", *kind, "--", *command]
     with processes.forwarding_signals():
-        return execute(root, config, host, ["admit", *kind, "--", *command])
+        return carrying(held, root, host, work, "admit", lambda: execute(root, config, host, work, lease=held))
 
 
 def install_script(formulae):
@@ -943,6 +1054,11 @@ def first(root, config, lane, arguments, expect, fallback=True):
     work = ["run", "--here", "--if-free", *(["--expect", str(expect)] if expect else []), lane,
             *(["--", *arguments] if arguments else [])]
     try:
+        # A run that names a physical device uses it here, or there only by `eng remote run --device`.
+        named = named_devices(arguments)
+        if named:
+            raise Unavailable(f"its arguments name the physical device of {', '.join(named)}, which the build host "
+                              "uses only under a reservation `eng remote run --device` carries from here")
         with processes.forwarding_signals():
             return execute(root, config, host, work, lane=lane, arguments=arguments, expect=expect, decline=True)
     except Misconfigured as stop:
