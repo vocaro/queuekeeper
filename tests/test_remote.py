@@ -207,6 +207,19 @@ class RemoteTests(unittest.TestCase):
         self.assertIn(f"ran in {self.checkout(0).resolve()}", output)
         self.assertIn("ran in", (self.project / ".build/engineering/remote/admit/output.log").read_text())
 
+    def test_admit_passes_the_model_or_exclusive_admission_on_to_the_build_host(self):
+        probe = (f"import json, os; token = json.loads(os.environ[{resources.TOKEN!r}]); "
+                 "print('held', token.get('exclusive'), token.get('model'))")
+        for options, held in [([], "False False"), (["--model"], "False True"), (["--exclusive"], "True True")]:
+            with self.subTest(options):
+                status, output, error = self.eng("remote", "admit", *options, "--", sys.executable, "-c", probe)
+                self.assertEqual(status, 0, error)
+                self.assertIn(f"held {held}", output)
+        # Exclusive admission holds the model already.
+        with self.assertRaises(SystemExit) as refused:
+            self.eng("remote", "admit", "--model", "--exclusive", "--", "true")
+        self.assertEqual(refused.exception.code, 2)
+
     @patch.object(remote, "CHECKOUTS", 2)
     def test_a_checkout_a_run_left_changed_is_kept_and_passed_over(self):
         self.assertEqual(self.eng("remote", "run", "check")[0], 0)

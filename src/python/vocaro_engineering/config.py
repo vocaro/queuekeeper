@@ -62,13 +62,14 @@ def load(root):
             group(name, lane, lanes)
             continue
         if not isinstance(lane, dict) or set(lane) - {"command", "resource", "minimumTests", "timeout", "foreground",
-                                                       "buildHost"}:
+                                                       "buildHost", "model"}:
             raise ValueError(f"Invalid lane {name}")
-        for key in ["foreground", "buildHost"]:
+        for key in ["foreground", "buildHost", "model"]:
             if key in lane and type(lane[key]) is not bool:
                 raise ValueError(f"{name}.{key} must be true or false")
         if lane.get("buildHost") and (lane.get("foreground") or lane.get("resource", "light") == "light"):
             raise ValueError(f"{name}.buildHost needs a heavy or exclusive lane that does not take the screen")
+        model(name, lane)
         command = lane.get("command")
         if not isinstance(command, list) or not command or any(not isinstance(x, str) or not x for x in command):
             raise ValueError(f"Lane {name} needs an argv list, never shell source")
@@ -93,11 +94,20 @@ def load(root):
 RESOURCES = ["light", "heavy", "exclusive"]
 
 
+def model(name, lane):
+    """A generative-model lane takes one heavy slot and the host's model lock. A light lane is not
+    admitted, and exclusive admission holds the model already (guides/shared-host.md)."""
+    if lane.get("model") and lane.get("resource", "light") != "heavy":
+        raise ValueError(f"{name}.model needs a heavy lane: a light lane is not admitted, and exclusive "
+                         "admission holds the model already")
+
+
 def group(name, lane, lanes):
     """A lane group names other lanes to run side by side under its one admission, so it needs
-    the heaviest resource among them (guides/parallel-tests.md)."""
-    if set(lane) - {"parallel", "jobs", "resource", "buildHost"}:
-        raise ValueError(f"Lane group {name} takes only parallel, jobs, resource and buildHost")
+    the heaviest resource among them, and the model when one of them runs a model
+    (guides/parallel-tests.md)."""
+    if set(lane) - {"parallel", "jobs", "resource", "buildHost", "model"}:
+        raise ValueError(f"Lane group {name} takes only parallel, jobs, resource, buildHost and model")
     members = lane["parallel"]
     if not isinstance(members, list) or not members or len(set(members)) != len(members) \
             or any(not isinstance(member, str) for member in members):
@@ -114,12 +124,17 @@ def group(name, lane, lanes):
         if RESOURCES.index(other.get("resource", "light")) > RESOURCES.index(resource):
             raise ValueError(f"{name} runs {member} under its own admission, so it needs a resource of at least "
                              f"{other.get('resource')}")
+        if other.get("model") and not lane.get("model") and resource != "exclusive":
+            raise ValueError(f"{name} runs {member} under its own admission, so it needs \"model\": true or an "
+                             "exclusive resource")
     if "jobs" in lane and (type(lane["jobs"]) is not int or not 1 <= lane["jobs"] <= len(members)):
         raise ValueError(f"{name}.jobs must be from 1 to the number of its lanes")
-    if "buildHost" in lane and type(lane["buildHost"]) is not bool:
-        raise ValueError(f"{name}.buildHost must be true or false")
+    for key in ["buildHost", "model"]:
+        if key in lane and type(lane[key]) is not bool:
+            raise ValueError(f"{name}.{key} must be true or false")
     if lane.get("buildHost") and resource == "light":
         raise ValueError(f"{name}.buildHost needs a heavy or exclusive lane that does not take the screen")
+    model(name, lane)
 
 
 def source_identity(root):

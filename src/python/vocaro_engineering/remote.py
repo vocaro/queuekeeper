@@ -409,9 +409,10 @@ def main(root, config, args):
             return execute(root, config, host, work, lane=args.lane, arguments=extra, expect=args.expect)
     # Without a leading --, argparse collected the command, and a later -- belongs to it.
     command = args.command + ([] if args.passed is None else ["--", *args.passed]) if args.command else args.passed
-    if not command: raise ValueError("Name the command: eng remote admit [--exclusive] -- COMMAND")
+    if not command: raise ValueError("Name the command: eng remote admit [--exclusive | --model] -- COMMAND")
+    kind = ["--exclusive"] if args.exclusive else ["--model"] if args.model else []
     with processes.forwarding_signals():
-        return execute(root, config, host, ["admit", *(["--exclusive"] if args.exclusive else []), "--", *command])
+        return execute(root, config, host, ["admit", *kind, "--", *command])
 
 
 def install_script(formulae):

@@ -18,9 +18,12 @@ python3 scripts/eng admit -- \
   xcodebuild test -scheme SCHEME -destination "platform=iOS Simulator,id=UDID"
 ```
 
-Add `--exclusive` only for work that needs the host to itself: a whole-machine or wall-clock
-measurement, or a generative-model workload
-([long-running measurements](#long-running-measurements)). A gate suite is heavy work.
+Add `--model` for a generative-model run: on-device generation on this Mac or in a simulator,
+which uses the host Mac's model, and other local generative models such as MLX on the GPU
+([model admission](#model-admission)). A lane says so with `"model": true` beside
+`"resource": "heavy"`. Add `--exclusive` only for work that needs the host to itself: a
+whole-machine or wall-clock measurement, a model run that is timed or compared with a baseline
+among them ([long-running measurements](#long-running-measurements)). A gate suite is heavy work.
 `--timeout` bounds the wait for admission. The command runs in the current directory with
 its output on the terminal. Like a heavy lane, `eng admit` first refreshes the operating policy,
 printing it to standard error, and records the command's receipt in
@@ -106,7 +109,8 @@ validates the inherited descriptors against their lock files, the owner's nonce,
 entry and its process start time, then runs inside the outer admission without taking a slot,
 and without waiting behind a queued exclusive request, which waits for the outer job to end.
 Nesting the queue therefore never obtains a second slot, and an exclusive request inside shared
-admission is refused. Work that needs the whole machine asks for exclusive admission.
+admission is refused, as is a model request inside admission that does not hold the model. Work
+that needs the whole machine asks for exclusive admission.
 
 The default macOS pool lives in the system's canonical user temporary directory, as reported by
 `getconf DARWIN_USER_TEMP_DIR`, under the legacy `pdfreflow-heavy-slots` name, independently of
@@ -117,10 +121,11 @@ directory must not multiply the host's build budget.
 A wait is expected. Admission prints `heavy: waiting (Ns): REASON` when it starts waiting and
 every five minutes after, naming the reason: the guaranteed slots are busy and the load, memory
 pressure or settling time refuses another; it waits behind exclusive work, named by its label;
-exclusive work needs every slot free; a legacy gate holds its lock; or a foreign, dead or
-uncertain guard owner requires inspection. After its timeout (5,400 s by default) admission
-fails without reclaiming any lock, and an exclusive request leaves the queue. A script that runs
-several jobs at once leaves at least one of the guaranteed HEAVY_SLOTS for other sessions.
+exclusive work needs every slot free; the on-device model is held by another run, named by its
+label; a legacy gate holds its lock; or a foreign, dead or uncertain guard owner requires
+inspection. After its timeout (5,400 s by default) admission fails without reclaiming any lock,
+and an exclusive request leaves the queue. A script that runs several jobs at once leaves at
+least one of the guaranteed HEAVY_SLOTS for other sessions.
 
 Before a full gate, look for other sessions' runs across the host, not only under the usual
 worktree directory: sessions also test from checkouts elsewhere, such as a share under
@@ -132,6 +137,36 @@ ps -Ao pid,args | grep -E '[x]ctest|[x]codebuild|[c]heck-all\.sh|[t]est-ios\.sh'
 
 Several projects have a `check-all.sh`; its path says whose run it is. Never stop a process
 merely because it is busy.
+
+### Model admission
+
+A generative-model run takes one heavy slot and the host's model lock, an `flock` on `model` in
+the slot directory: both at once under the coordination lock, or neither. Two model runs exclude
+each other while builds and tests take the other slots: one model workload per machine is a
+limit of the hardware ([long-running measurements](#long-running-measurements)), and exclusive
+admission of the whole host would hold every build and test back for the length of a run that
+only the model needs to wait for. A model request waits behind a queued exclusive request, as a
+heavy one does; while another run holds the model, it waits with the reason that the on-device
+model is held, naming that run's label. Exclusive work holds the model with every slot, so no
+model run starts beside it, even from a caller whose HEAVY_SLOTS_MAX is higher. The owner's
+guard entry and the inherited token record `"model": true`. Nested work inside model or
+exclusive admission reuses the model; a model request inside heavy admission that lacks it is
+refused. The kernel releases the lock when the last process holding its descriptor ends, as it
+does a slot.
+
+A lane takes the model with `"model": true` and `"resource": "heavy"`; since exclusive admission
+holds the model already, a lane is one or the other. A lane group runs its lanes under its own
+admission, so a group that runs a model lane needs `"model": true` or an exclusive resource
+itself.
+
+Core ML pinned off the GPU (`.cpuAndNeuralEngine`) does not need the lock. A Core ML embedder on
+all compute units shared the GPU path with on-device generation and returned silently wrong
+vectors beside it; pinned off the GPU it returned correct ones
+([embedding correctness](../knowledge/ml/embedding-correctness.md)). A model run that is timed or
+compared with a baseline stays exclusive, because it measures the CPU as well. Not measured:
+whether heavy work beside on-device generation slows it or changes its output. During
+generation `TGOnDeviceInferenceProviderService` and `modelmanagerd` burn CPU, and builds beside
+them compete for the same cores.
 
 ### Load the queue cannot see
 
@@ -158,7 +193,7 @@ slot pool. `eng remote` reaches it by the SSH alias `build-host`; `--host` or
 python3 scripts/eng run LANE [-- ARGUMENTS]            # a buildHost lane: the build host first
 python3 scripts/eng run --build-host-only LANE         # a buildHost lane: the build host, never here
 python3 scripts/eng remote run LANE [-- ARGUMENTS]     # any lane, on the build host
-python3 scripts/eng remote admit [--exclusive] -- COMMAND
+python3 scripts/eng remote admit [--exclusive | --model] -- COMMAND
 python3 scripts/eng remote passed LANE [--commit REV]
 python3 scripts/eng remote setup [FORMULA ...] [--check]  # the gates' tools (Setting up a build host)
 ```
@@ -778,9 +813,13 @@ Background a long run with its output redirected to a log.
 - Run one generative-model workload per machine. Two processes driving one Mac's on-device model
   both sat at about 0% CPU with no output for many minutes, and concurrent Core ML and
   FoundationModels work made an embedder return silently wrong vectors
-  ([embedding correctness](../knowledge/ml/embedding-correctness.md)). Before starting, look for
-  other `swiftpm-testing-helper` and `xctest` processes, including another worktree's suite, and
-  take a process listing during any wall-clock measurement. Use exclusive admission.
+  ([embedding correctness](../knowledge/ml/embedding-correctness.md)). Admit the run with
+  `--model`, which holds the host's model lock while builds and tests run beside it
+  ([model admission](#model-admission)), and a run that is timed or compared with a baseline with
+  `--exclusive`. Before starting, look for other `swiftpm-testing-helper` and `xctest` processes,
+  including another worktree's suite, and take a process listing during any wall-clock
+  measurement. Whether heavy work beside on-device generation slows it or changes its output is
+  not measured.
 
 [Measurement](measurement.md) covers what to record.
 

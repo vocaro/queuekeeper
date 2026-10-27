@@ -13,6 +13,11 @@ preempt a job that becomes heavy later.
 Exclusive requests queue in arrival order, and every other request waits behind a live one, so
 an exclusive request waits only for the work running when it asked. While heavy jobs kept
 taking freed slots, exclusive gates waited for hours (October 2026).
+
+A generative-model run takes one heavy slot and the host's model lock, an flock on `model` in
+the slot directory, both or neither: two model runs exclude each other while builds and tests
+run beside them. One model workload per machine is a limit of the hardware: two processes
+driving one Mac's on-device model both stalled. Exclusive work holds the model with the host.
 """
 import argparse
 import contextlib
@@ -96,7 +101,7 @@ def memory_normal():
     return result.returncode == 0 and result.stdout.strip() == "1"
 
 
-def inherited(exclusive=False):
+def inherited(exclusive=False, model=False):
     raw = os.environ.get(TOKEN)
     if not raw:
         return False
@@ -121,10 +126,13 @@ def inherited(exclusive=False):
             raise ValueError("Admission owner has no active guard")
         if process_start(owner["pid"]) != owner.get("start"):
             raise ValueError("Admission owner identity changed")
-        if bool(token.get("exclusive")) != bool(owner.get("exclusive")):
+        if any(bool(token.get(kind)) != bool(owner.get(kind)) for kind in ["exclusive", "model"]):
             raise ValueError("Admission capability differs from its owner")
         if exclusive and not owner.get("exclusive"):
             raise ValueError("Cannot acquire exclusive admission inside shared admission")
+        # An exclusive owner holds the host, and with it the model.
+        if model and not (owner.get("model") or owner.get("exclusive")):
+            raise ValueError("Cannot acquire the on-device model inside admission that does not hold it")
         return True
     except (KeyError, TypeError, OSError, ValueError) as error:
         raise RuntimeError(f"Invalid inherited resource admission: {error}") from error
@@ -145,8 +153,10 @@ def publish_guard(path, state):
 
 
 class Admission:
-    def __init__(self, label, exclusive=False, timeout=5400):
+    def __init__(self, label, exclusive=False, timeout=5400, model=False):
         self.label, self.exclusive, self.timeout = label, exclusive, timeout
+        # Exclusive work holds the host, the model with it.
+        self.model = model or exclusive
         self.directory = slot_directory()
         cores = os.cpu_count() or 1
         self.slots = int(os.environ.get("HEAVY_SLOTS", "3"))
@@ -164,6 +174,8 @@ class Admission:
         self.queue = self.directory / "exclusive-queue.json"
         self.identity = uuid.uuid4().hex
         self.descriptors = []
+        # The model lock's descriptor while admission holds it.
+        self.held_model = None
         self.previous = None
         self.reused = False
         self.queued = False
@@ -246,6 +258,26 @@ class Admission:
             return "memory pressure is not normal"
         return None
 
+    def _take_model(self):
+        """The model lock's descriptor, or None with its holder named. The caller holds the coordination lock,
+        under which every holder writes its identity, so the lock's holder is the one its file names."""
+        fd = os.open(self.directory / "model", os.O_RDWR | os.O_CREAT, 0o644)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            holder = os.pread(fd, 4096, 0).decode(errors="replace").strip().split(" ", 2)
+            os.close(fd)
+            self.waiting = f"the on-device model is held by {holder[2] if len(holder) == 3 else 'an unnamed holder'}"
+            return None
+        return fd
+
+    def _release(self):
+        for _slot, fd in self.descriptors:
+            os.close(fd)
+        if self.held_model is not None:
+            os.close(self.held_model)
+        self.descriptors, self.held_model = [], None
+
     def _extra_slot(self):
         """A slot beyond the guaranteed ones while the host shows spare capacity, or None."""
         refusal = self._extra_refusal()
@@ -283,6 +315,11 @@ class Admission:
                 self.waiting = "a legacy gate holds its lock"
                 return False
             try:
+                # The model first, so that a request it refuses names the model's holder.
+                if self.model:
+                    self.held_model = self._take_model()
+                    if self.held_model is None:
+                        return False
                 for _ in range(self.maximum if self.exclusive else 1):
                     taken = take_slot(self.directory, self.maximum if self.exclusive else self.slots)
                     if taken is None and not self.exclusive:
@@ -290,38 +327,39 @@ class Admission:
                     if taken is None:
                         if self.exclusive:
                             self.waiting = f"exclusive work needs all {self.maximum} slots free"
-                        for _slot, fd in self.descriptors:
-                            os.close(fd)
-                        self.descriptors = []
+                        self._release()
                         return False
                     self.descriptors.append(taken)
                 born = process_start(os.getpid())
                 if born is None:
-                    for _slot, fd in self.descriptors: os.close(fd)
-                    self.descriptors = []
+                    self._release()
                     raise RuntimeError("Cannot establish the admission owner's process identity")
                 state["owners"][self.identity] = {"pid": os.getpid(), "start": born, "label": self.label,
-                                                    "exclusive": self.exclusive}
+                                                    "exclusive": self.exclusive, "model": self.model}
                 # A legacy keeper cannot obtain shlock until this publication finishes.
                 publish_guard(self.guard, state)
                 if self.exclusive:
                     # The next exclusive request waits for these slots, and every other behind it.
                     self._record(waiters[1:])
                     self.queued = False
+                held = [(f"slot{slot}", fd) for slot, fd in self.descriptors]
+                if self.held_model is not None:
+                    held.append(("model", self.held_model))
                 locks = []
-                for slot, fd in self.descriptors:
+                for name, fd in held:
                     os.ftruncate(fd, 0)
                     os.write(fd, f"{os.getpid()} {self.identity} {self.label[:160]}\n".encode())
                     os.set_inheritable(fd, True)
-                    locks.append({"fd": fd, "path": str(self.directory / f"slot{slot}"), "nonce": self.identity})
+                    locks.append({"fd": fd, "path": str(self.directory / name), "nonce": self.identity})
                 self.previous = os.environ.get(TOKEN)
-                os.environ[TOKEN] = json.dumps({"schemaVersion": 1, "exclusive": self.exclusive, "guard": str(self.guard), "locks": locks})
+                os.environ[TOKEN] = json.dumps({"schemaVersion": 1, "exclusive": self.exclusive, "model": self.model,
+                                                "guard": str(self.guard), "locks": locks})
                 return True
             finally:
                 self._unlock_legacy()
 
     def __enter__(self):
-        if inherited(self.exclusive):
+        if inherited(self.exclusive, self.model):
             self.reused = True
             return self
         from vocaro_engineering.processes import Interrupted, requested
@@ -343,7 +381,9 @@ class Admission:
         except BaseException:
             if self.queued: self._withdraw()
             raise
-        print(f"heavy: slot {','.join(str(slot) for slot, _fd in self.descriptors)} after {int(time.monotonic() - started)}s: {self.label[:160]}", file=sys.stderr, flush=True)
+        print(f"heavy: slot {','.join(str(slot) for slot, _fd in self.descriptors)}"
+              f"{' and the model' if self.held_model is not None else ''} after {int(time.monotonic() - started)}s: "
+              f"{self.label[:160]}", file=sys.stderr, flush=True)
         return self
 
     def _settle(self, release):
@@ -379,8 +419,7 @@ class Admission:
         else: os.environ[TOKEN] = self.previous
         with (self.directory / "coordination.lock").open("a+") as bridge:
             fcntl.flock(bridge, fcntl.LOCK_EX)
-            for _slot, fd in self.descriptors:
-                os.close(fd)
+            self._release()
             # An exception may leave unobserved children. Retain the guard for inspection, unless
             # nothing is left to inspect: the command could not start (a mistyped name must not
             # stop the host), or a stop or a timeout saw the command and every observed descendant end.
@@ -390,21 +429,23 @@ class Admission:
 
 
 @contextlib.contextmanager
-def heavy_slot(label, *, exclusive=False, timeout=5400):
-    with Admission(label, exclusive, timeout):
+def heavy_slot(label, *, exclusive=False, timeout=5400, model=False):
+    with Admission(label, exclusive, timeout, model):
         yield
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--exclusive", action="store_true")
+    kind = parser.add_mutually_exclusive_group()
+    kind.add_argument("--exclusive", action="store_true")
+    kind.add_argument("--model", action="store_true")
     parser.add_argument("--timeout", type=float, default=5400)
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
     if not command: parser.error("a command is required")
     from vocaro_engineering.processes import forwarding_signals, supervise
-    with forwarding_signals(), Admission(" ".join(command), args.exclusive, args.timeout) as admission:
+    with forwarding_signals(), Admission(" ".join(command), args.exclusive, args.timeout, args.model) as admission:
         environment = dict(os.environ)
         return supervise(command, cwd=Path.cwd(), env=environment, on_stop=admission.interrupted)
 

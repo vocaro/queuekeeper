@@ -224,12 +224,13 @@ def admit(root, args):
     # Mac's (guides/shared-host.md, Which Mac runs a lane). eng remote admit sends one on purpose.
     # Without a leading --, argparse collected the command, and a later -- belongs to it.
     command = args.command + ([] if args.passed is None else ["--", *args.passed]) if args.command else args.passed
-    if not command: raise ValueError("Name the command: eng admit [--exclusive] -- COMMAND")
+    if not command: raise ValueError("Name the command: eng admit [--exclusive | --model] -- COMMAND")
     # The policy goes to stderr so that stdout carries only the command's own output.
     receipt = {"project": source_identity(root), "toolkit": source_identity(TOOLKIT_ROOT),
                "policy": refresh_policy(root, sys.stderr), "command": command,
-               "directory": str(Path.cwd()), "exclusive": args.exclusive}
-    with processes.forwarding_signals(), resources.Admission(" ".join(command), args.exclusive, args.timeout) as admission:
+               "directory": str(Path.cwd()), "exclusive": args.exclusive, "model": args.model}
+    with processes.forwarding_signals(), \
+            resources.Admission(" ".join(command), args.exclusive, args.timeout, args.model) as admission:
         return record(root / ".build/engineering/admit", receipt,
                       lambda: processes.supervise(command, cwd=Path.cwd(), on_stop=admission.interrupted))
 
@@ -274,9 +275,13 @@ def main(argv=None):
         "eng unittest [-s START] [-p PATTERN] [-j JOBS] [-v]; eng unittest -h for the rest")
     admission =commands.add_parser("admit", help="run any other heavy command (a build, swift test, xcodebuild "
         "test, a simulator run, a gate suite) through the host's heavy-work admission: eng admit -- COMMAND; add "
-        "--exclusive only for work that needs the host to itself")
-    admission.add_argument("--exclusive", action="store_true",
-                           help="hold every slot: a whole-machine or timing measurement, or a generative-model run")
+        "--model for a generative-model run, and --exclusive only for work that needs the host to itself")
+    kind = admission.add_mutually_exclusive_group()
+    kind.add_argument("--exclusive", action="store_true", help="hold every slot, and the model with them: a "
+                      "whole-machine or timing measurement, or a model run that is timed or compared with a baseline")
+    kind.add_argument("--model", action="store_true", help="hold one slot and the host's model lock, which one "
+                      "generative-model run holds at a time: on-device generation, on this Mac or in a simulator, or "
+                      "another local generative model on the GPU")
     admission.add_argument("--timeout", type=float, default=5400, help="seconds to wait for admission (default 5400)")
     admission.add_argument("command", nargs=argparse.REMAINDER, help="the command and its arguments, after --; "
         "it runs in the current directory")
@@ -300,7 +305,9 @@ def main(argv=None):
                              f"the ~/.ssh/config alias {remote.DEFAULT_HOST})")
     remote_run.add_argument("--expect", type=int, metavar="N", help="require exactly N executed tests")
     remote_run.add_argument("lane")
-    remote_admit.add_argument("--exclusive", action="store_true", help="hold every slot of the build host")
+    kind = remote_admit.add_mutually_exclusive_group()
+    kind.add_argument("--exclusive", action="store_true", help="hold every slot of the build host")
+    kind.add_argument("--model", action="store_true", help="hold one slot and the model lock of the build host")
     remote_admit.add_argument("command", nargs=argparse.REMAINDER, help="the command and its arguments, after --")
     remote_passed = operations.add_parser("passed", help="exit 0 when the whole lane passed on the build host at "
         "exactly this commit; a snapshot's run never counts")
@@ -432,7 +439,8 @@ def main(argv=None):
                         with contextlib.ExitStack() as stack:
                             try:
                                 admission = stack.enter_context(resources.Admission(args.lane,
-                                    exclusive=resource == "exclusive", timeout=FREE_WAIT if args.if_free else 5400))
+                                    exclusive=resource == "exclusive", timeout=FREE_WAIT if args.if_free else 5400,
+                                    model=lane.get("model", False)))
                             except TimeoutError as error:
                                 # Admission published nothing, so declining leaves nothing to release.
                                 if not args.if_free: raise
