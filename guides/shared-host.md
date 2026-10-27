@@ -505,7 +505,9 @@ once, say so, and build again from nothing. Report a failure only after the clea
 
 A reboot empties `/private/tmp`. The reboot after the 2026-10-14 panic removed a coordinator's
 scratch, a shared baseline, every agent's notes and the handoff records kept there; the
-worktrees survived. Keep notes, counting scripts and proposed commit messages that must outlive
+worktrees survived. The restarts that installed the 2026-10-26 macOS updates also emptied both
+Macs' user temporary directories (`$TMPDIR`), and a failed gate's lane logs went with the build
+host's. Keep notes, counting scripts and proposed commit messages that must outlive
 a reboot in the worktree's ignored `.build/`. The device record now lives outside `/private/tmp`
 ([device reservations](#device-reservations)).
 
@@ -611,6 +613,23 @@ shell cannot read, which macOS privacy protection hides (`~/.Trash`, Mail, Messa
 containers), and in system data; `--map` reports that remainder rather than guessing at
 it. The inventory found 37 GiB of candidates, almost all derived data in finished sessions'
 scratchpads, and 76 GiB of owner items, 48 GiB of them Xcode's default simulators.
+
+A free-space reading taken after a write failed with `ENOSPC` says nothing about the moment it
+failed. From 2026-10-24 to 2026-10-26 the build host's data volume filled completely ten times,
+for 3 to 11 minutes each, while something used its free space at 25 to 90 MB/s. Each time about
+1.7 TB came back at once, and readings a few minutes later found about 1.6 TB free. CacheDelete's
+purge requests marked every fill and nothing else in two weeks of the unified log, which kept
+them long after most other messages, the kernel's included, were gone (about nine hours). To
+date a fill, search them in the host's local time:
+
+```sh
+log show --start '2026-10-26 11:00:00' --end '2026-10-26 12:00:00' \
+    --predicate 'process == "appstoreagent" AND eventMessage CONTAINS "Purge request with desired bytes"'
+```
+
+While the volume is falling, symptomsd's log names each process that has dirtied 2 GB
+(`log show --last 1h --predicate 'eventMessage CONTAINS "local storage writes trigger"'`), and
+`lsof +L1` lists files deleted while still open, whose space `du` cannot see.
 
 ## Device reservations
 
