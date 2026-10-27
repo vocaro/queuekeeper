@@ -146,8 +146,10 @@ EXEMPT_RUNS = frozenset({
     "matchmakerViewControllerWasCancelled", "turnBasedMatchmakerViewControllerWasCancelled",
     "reindexAllSearchableItemsWithAcknowledgementHandler", "acknowledgementHandler"})
 # Case-sensitive subwords: a file name some projects use and audits search for literally, and
-# Vocaro's Pagepour, a product name that ends in "pour".
-EXEMPT_TOKENS = frozenset({"LICENCE", "Pagepour", "pagepour", "PAGEPOUR"})
+# Vocaro's Pagepour, a product name that ends in "pour", with its plural, which is also its
+# possessive once an anchor (#reproduce-from-pagepours-tools) or identifier drops the apostrophe.
+EXEMPT_TOKENS = frozenset({"LICENCE", "Pagepour", "pagepour", "PAGEPOUR",
+                           "Pagepours", "pagepours", "PAGEPOURS"})
 
 
 def _family(word):
@@ -235,7 +237,8 @@ AMERICAN_SAMPLES = r"""QuiescentRegionCount MonoBehaviour aria-labelledby toward
     unexercised advertised revised surprising unsurprising contour hours yours Fourier genre acres
     timbre controlled installer cancellation distilled fulfilled nodewise pairwise otherwise
     LICENCE disc redisable analyses center color behavior normalize harbor isCancelled
-    userCancelled LibreSSL Pagepour \nraise sunrise https://example.com/colour-grading geyser
+    userCancelled LibreSSL Pagepour Pagepour's pagepours Pagepours \nraise sunrise
+    https://example.com/colour-grading geyser
     geysers urinalyses chaises counterpoises equipoise valise marquise malaise troubadours
     pompadour paramour imprecise inadvisable disfranchise dispraise highrise downpours fundraising
     darkturquoise mediumturquoise paleturquoise uprising enfranchised disenfranchised unraised
