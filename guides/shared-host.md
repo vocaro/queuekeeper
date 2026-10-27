@@ -19,8 +19,9 @@ python3 scripts/eng admit -- \
 ```
 
 Add `--model` for a generative-model run: on-device generation on this Mac or in a simulator,
-which uses the host Mac's model, and other local generative models such as MLX on the GPU
-([model admission](#model-admission)). A lane says so with `"model": true` beside
+which uses the host Mac's model, and other local generative models such as MLX on the GPU. Core
+ML whose compute units include the GPU takes it too ([model admission](#model-admission)). A
+lane says so with `"model": true` beside
 `"resource": "heavy"`. Add `--exclusive` only for work that needs the host to itself: a
 whole-machine or wall-clock measurement, a model run that is timed or compared with a baseline
 among them ([long-running measurements](#long-running-measurements)). A gate suite is heavy work.
@@ -157,11 +158,14 @@ does a slot.
 A lane takes the model with `"model": true` and `"resource": "heavy"`; since exclusive admission
 holds the model already, a lane is one or the other. A lane group runs its lanes under its own
 admission, so a group that runs a model lane needs `"model": true` or an exclusive resource
-itself.
+itself, and a group that runs two or more needs `"jobs": 1`: its one model lock cannot keep its
+own lanes from driving the model at once
+([lane groups](parallel-tests.md#suites-side-by-side)).
 
-Core ML pinned off the GPU (`.cpuAndNeuralEngine`) does not need the lock. A Core ML embedder on
-all compute units shared the GPU path with on-device generation and returned silently wrong
-vectors beside it; pinned off the GPU it returned correct ones
+Core ML whose compute units include the GPU (`.all`, `.cpuAndGPU`) takes the model lock too; only
+Core ML pinned off the GPU (`.cpuAndNeuralEngine`, `.cpuOnly`) does not need it. A Core ML
+embedder on all compute units shared the GPU path with on-device generation and returned
+silently wrong vectors beside it; pinned off the GPU it returned correct ones
 ([embedding correctness](../knowledge/ml/embedding-correctness.md)). A model run that is timed or
 compared with a baseline stays exclusive, because it measures the CPU as well. Not measured:
 whether heavy work beside on-device generation slows it or changes its output. During

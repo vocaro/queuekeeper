@@ -246,10 +246,10 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     """Run eng's work on the build host and return its exit status, with the log and receipt kept here.
 
     work is the build host's eng arguments: run [--expect N] LANE [-- ARGUMENTS] or
-    admit [--exclusive] -- COMMAND. It runs at HEAD, or at a snapshot commit of the working tree
-    when that has uncommitted changes. With decline, the build host refuses work it cannot start
-    now rather than waiting for it, and Unavailable says why. Misconfigured says what of the build
-    host's configuration kept the work from running there, and what fixing it takes.
+    admit [--exclusive | --model] -- COMMAND. It runs at HEAD, or at a snapshot commit of the
+    working tree when that has uncommitted changes. With decline, the build host refuses work it
+    cannot start now rather than waiting for it, and Unavailable says why. Misconfigured says what
+    of the build host's configuration kept the work from running there, and what fixing it takes.
     """
     toolkit = Path(TOOLKIT_ROOT).resolve()
     try:

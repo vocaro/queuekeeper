@@ -280,8 +280,8 @@ def main(argv=None):
     kind.add_argument("--exclusive", action="store_true", help="hold every slot, and the model with them: a "
                       "whole-machine or timing measurement, or a model run that is timed or compared with a baseline")
     kind.add_argument("--model", action="store_true", help="hold one slot and the host's model lock, which one "
-                      "generative-model run holds at a time: on-device generation, on this Mac or in a simulator, or "
-                      "another local generative model on the GPU")
+                      "model run holds at a time: on-device generation, on this Mac or in a simulator, another local "
+                      "generative model on the GPU, or Core ML whose compute units include the GPU")
     admission.add_argument("--timeout", type=float, default=5400, help="seconds to wait for admission (default 5400)")
     admission.add_argument("command", nargs=argparse.REMAINDER, help="the command and its arguments, after --; "
         "it runs in the current directory")

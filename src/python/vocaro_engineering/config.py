@@ -104,8 +104,8 @@ def model(name, lane):
 
 def group(name, lane, lanes):
     """A lane group names other lanes to run side by side under its one admission, so it needs
-    the heaviest resource among them, and the model when one of them runs a model
-    (guides/parallel-tests.md)."""
+    the heaviest resource among them, the model when one of them runs a model, and one lane at a
+    time when several do (guides/parallel-tests.md)."""
     if set(lane) - {"parallel", "jobs", "resource", "buildHost", "model"}:
         raise ValueError(f"Lane group {name} takes only parallel, jobs, resource, buildHost and model")
     members = lane["parallel"]
@@ -129,6 +129,11 @@ def group(name, lane, lanes):
                              "exclusive resource")
     if "jobs" in lane and (type(lane["jobs"]) is not int or not 1 <= lane["jobs"] <= len(members)):
         raise ValueError(f"{name}.jobs must be from 1 to the number of its lanes")
+    # One model workload per machine: the group's one model lock cannot keep its own lanes apart.
+    models = [member for member in members if lanes[member].get("model")]
+    if len(models) > 1 and lane.get("jobs", len(members)) != 1:
+        raise ValueError(f"{name} runs the model lanes {', '.join(models)}, which would drive the model at once, "
+                         "so it needs \"jobs\": 1")
     for key in ["buildHost", "model"]:
         if key in lane and type(lane[key]) is not bool:
             raise ValueError(f"{name}.{key} must be true or false")
