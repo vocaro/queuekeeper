@@ -100,13 +100,16 @@ class ProcessTests(unittest.TestCase):
             root = int((Path(directory) / "children").read_text().split()[0])
             self.assertIn("stopping 2 process(es)", error)
             for pid in births:
-                self.assertIn(f"{pid} with parent {root}, group {pid}", error)
+                # Each descendant calls setsid just after fork, so a sample in between first sees it
+                # in the root's group: on a busy host it can.
+                self.assertTrue(any(f"{pid} with parent {root}, group {group}" in error for group in (pid, root)), error)
             self.assertIn("PPID", error)
 
     def test_a_root_that_exits_in_time_keeps_its_status_when_its_timeout_expires_during_the_grace(self):
         with tempfile.TemporaryDirectory() as directory:
-            # The root exits at once; its timeout expires before the grace stops the descendant.
-            result, error, _births = self.outlive_the_root(directory, IGNORES_TERM, timeout=2, LINGER=4, KILL_AFTER=0.5)
+            # The root exits at once; its timeout expires before the grace stops the descendant. The
+            # root starts two interpreters first, which on a busy host took more than 2 s.
+            result, error, _births = self.outlive_the_root(directory, IGNORES_TERM, timeout=8, LINGER=10, KILL_AFTER=0.5)
             self.assertEqual(result, 3)
             self.assertIn("stopping 1 process(es)", error)
 
