@@ -49,6 +49,14 @@ class DetectionTests(Project):
     def test_the_built_in_controls_hold(self):
         self.assertEqual(spelling.controls(), [])
 
+    def test_microenterprise_passes_in_text_and_file_names(self):
+        self.write({"docs/eaa-microenterprise.md":
+                    "A microenterprise qualifies; multiple microenterprises qualify.\n"
+                    "The eaa-microenterprise term keeps the same spelling.\n",
+                    "Sources/Microenterprise.swift": "struct Microenterprise {}\n"})
+        status, lines = self.check()
+        self.assertEqual(status, 0, lines)
+
     def test_identifiers_comments_and_documents_each_fail(self):
         self.write({"Sources/Ramp.swift": "struct Ramp {\n    let colourRamp: [Int]\n}\n",
                     "tool.py": "def f():\n    # centre the label\n    return KIND_LABELLED_RASTER\n",
@@ -117,7 +125,7 @@ class WordTests(unittest.TestCase):
         troubadours pompadour paramour marquise malaise urinalyses imprecise downpours disfranchise
         dispraise highrise fundraise inadvisable darkturquoise mediumturquoise paleturquoise
         uprising enfranchised disenfranchised unraised outpouring overpouring hatred thoroughbred
-        underbred mediumvioletred palevioletred""".split()
+        underbred mediumvioletred palevioletred microenterprise microenterprises""".split()
 
     def test_american_words_the_patterns_mistook_are_not_british(self):
         for word in self.MISTAKEN + ["Geyser", "valises", "counterpoised", "fundraising", "fundraisers"]:

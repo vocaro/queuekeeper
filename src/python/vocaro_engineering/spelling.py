@@ -123,7 +123,7 @@ disguise enterprise excise exercise expertise franchise guise improvise incise m
 paradise poise praise precise premise promise raise reprise revise rise sunrise moonrise
 supervise surmise surprise televise treatise turquoise tortoise porpoise noise denoise bruise
 appraise apprise chaise counterpoise equipoise valise marquise malaise highrise fundraise uprise
-enfranchise darkturquoise mediumturquoise paleturquoise unraised
+enfranchise darkturquoise mediumturquoise paleturquoise unraised microenterprise
 analyses urinalyses geyser geysers
 four hour our pour sour tour your flour scour devour contour detour dour amour glamour velour
 troubadour pompadour paramour downpour outpour overpour
@@ -242,12 +242,14 @@ AMERICAN_SAMPLES = r"""QuiescentRegionCount MonoBehaviour aria-labelledby toward
     geysers urinalyses chaises counterpoises equipoise valise marquise malaise troubadours
     pompadour paramour imprecise inadvisable disfranchise dispraise highrise downpours fundraising
     darkturquoise mediumturquoise paleturquoise uprising enfranchised disenfranchised unraised
-    outpouring overpouring hatred thoroughbred underbred mediumvioletred palevioletred""".split()
+    outpouring overpouring hatred thoroughbred underbred mediumvioletred palevioletred
+    microenterprise microenterprises eaa-microenterprise Microenterprise""".split()
 # Tracked paths: a binary file's name, a directory's, and a file name split at camelCase.
 BRITISH_PATHS = ("Docs/colour-chart.png", "centre/README.md", "Tests/NeighbourAlignmentTests.swift",
                  "Fonts/grey_sans.ttf")
 AMERICAN_PATHS = ("LICENCE", "Sources/QuiescentRegionCount.swift", "Unity/MonoBehaviour.cs",
-                  "center/color-chart.png")
+                  "center/color-chart.png", "docs/eaa-microenterprise.md",
+                  "Sources/Microenterprise.swift")
 
 
 def names_of(paths, rules):
