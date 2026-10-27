@@ -299,7 +299,10 @@ def main(argv=None):
     remote_setup.add_argument("formulae", nargs="*", metavar="formula", help="a further Homebrew formula to install")
     remote_setup.add_argument("--import", dest="imports", action="append", metavar="MODULE",
                               help="check that the build host's python3 imports MODULE (repeatable)")
-    remote_setup.add_argument("--check", action="store_true", help="only check; install nothing")
+    remote_setup.add_argument("--check", action="store_true", help="only check; install or copy nothing")
+    remote_setup.add_argument("--runtimes", action="store_true", help="instead, give this Mac and the build host the "
+        "union of the simulator runtimes that the Xcode at this Mac's developer directory lists, copying each one's "
+        "disk image over SSH to the Mac that lacks it; it deletes none, and exits 0 only when both list the same")
     for choice in (remote_run, remote_admit, remote_setup):
         choice.add_argument("--host", help="the build host's SSH destination (default: VOCARO_BUILD_HOST, else "
                              f"the ~/.ssh/config alias {remote.DEFAULT_HOST})")

@@ -7,13 +7,16 @@ own heavy-work admission. Standard output carries framed lines: `O` for output, 
 lane's log as it grows, and a closing `R` with the result as JSON. Standard input is the
 dispatcher's lifeline: its end, which a stop, the dispatcher's death or a dropped connection
 sends, stops the run as a stop signal stops a local one. Given `{"toolchain": DEVELOPER_DIR}`
-instead of a plan, it prints the Mac's Xcodes and simulator runtimes for `eng doctor`.
+instead of a plan, it prints the Mac's Xcodes and simulator runtimes for `eng doctor`; given
+`{"images": ...}` or `{"receive": ...}`, it lists the Mac's runtime images or adds one read from
+standard input, for `eng remote setup --runtimes`.
 """
 import fcntl
 import json
 import os
 from pathlib import Path
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -24,6 +27,11 @@ import time
 REPORT_SECONDS, CLAIM_TIMEOUT = 300, 5400
 # Seconds the output of a finished command may take to drain: a descendant can hold the pipe.
 DRAIN_SECONDS = 5
+# Bytes of a runtime image read or written at once.
+CHUNK = 8 << 20
+# The platform a runtime image names when simctl gives no runtime bundle to name it by.
+PLATFORMS = {"com.apple.platform.iphonesimulator": "iOS", "com.apple.platform.appletvsimulator": "tvOS",
+             "com.apple.platform.watchsimulator": "watchOS", "com.apple.platform.xrsimulator": "visionOS"}
 
 _output = threading.Lock()
 _stop = threading.Event()
@@ -91,6 +99,109 @@ def toolchain(developer_dir):
         except (TypeError, ValueError, KeyError):
             pass
     return {**found, "defaultDeveloperDir": default, "defaultXcode": xcode(default), "runtimes": runtimes}
+
+
+def image_file(record):
+    """The file of the disk image that a record of `simctl runtime list` names, and None; or None and
+    why no such file can be read. simctl names a disk image by its own path, and a cryptex by its
+    asset's AssetData folder, whose Restore folder holds the image beside the cryptex's signatures.
+    Either file's size is the record's sizeBytes (Xcode 27.2 on macOS 27.0.1 and 27.2, October 2026)."""
+    path, size = record.get("path"), record.get("sizeBytes")
+    if not path or not isinstance(size, int):
+        return None, "simctl names no path and size of its image"
+    path = Path(path)
+    try:
+        candidates = [path] if path.is_file() else sorted((path / "Restore").glob("*.dmg"))
+        matching = [candidate for candidate in candidates if candidate.is_file() and candidate.stat().st_size == size]
+    except OSError as error:
+        return None, f"{path} cannot be read: {error}"
+    if len(matching) != 1:
+        return None, f"{path} holds no single disk image of its {size} bytes"
+    if not os.access(matching[0], os.R_OK):
+        return None, f"{matching[0]} cannot be read"
+    return str(matching[0]), None
+
+
+def images(developer_dir):
+    """The runtime disk images `simctl runtime list` reports, each with the runtime it holds named as
+    toolchain names it, NAME (BUILD), and its image file, or None when simctl lists none."""
+    listed = output(["xcrun", "simctl", "runtime", "list", "-j"], {**os.environ, "DEVELOPER_DIR": developer_dir})
+    try:
+        records = list(json.loads(listed).values())
+    except (TypeError, ValueError, AttributeError):
+        return None
+    found = []
+    for record in records:
+        if not isinstance(record, dict) or not record.get("build"): continue
+        bundle = Path(record.get("runtimeBundlePath") or "")
+        name = bundle.stem if bundle.suffix == ".simruntime" else \
+            f"{PLATFORMS.get(record.get('platformIdentifier'), record.get('platformIdentifier'))} {record.get('version')}"
+        file, unreadable = image_file(record)
+        found.append({"runtime": f"{name} ({record['build']})", "name": name, "build": record["build"],
+                      "identifier": record.get("identifier"), "state": record.get("state"),
+                      "sizeBytes": record.get("sizeBytes"), "architectures": record.get("supportedArchitectures") or [],
+                      "file": file, "unreadable": unreadable})
+    return sorted(found, key=lambda image: image["runtime"])
+
+
+def stage(directory, clear):
+    """The free bytes where runtime images are staged, and the staged images an earlier copy left
+    there, which clear removes. Only clear creates the directory."""
+    directory = Path(directory)
+    if clear: directory.mkdir(parents=True, exist_ok=True)
+    left = sorted(path.name for path in directory.glob("*.dmg*")) if directory.is_dir() else []
+    if clear:
+        for name in left: (directory / name).unlink(missing_ok=True)
+    existing = next(path for path in (directory, *directory.parents) if path.exists())
+    return {"free": shutil.disk_usage(existing).free, "left": left}
+
+
+def receive(stream, directory, build, size, developer_dir, progress=None):
+    """Stage a runtime image read from stream in directory, then have simctl add it, moving it into
+    simctl's own storage. Only an image of exactly size bytes is added, and whatever fails removes
+    the staged file, so a failed copy adds nothing and leaves nothing behind. Return None once the
+    image is added, else why it was not. progress, given the bytes received so far, may raise to stop."""
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    partial, staged = directory / f"{build}.dmg.partial", directory / f"{build}.dmg"
+    try:
+        received = 0
+        with partial.open("wb") as file:
+            while not _stop.is_set():
+                chunk = stream.read(CHUNK)
+                if not chunk: break
+                file.write(chunk)
+                received += len(chunk)
+                if progress is not None: progress(received)
+        if _stop.is_set(): return "stopped before it was added"
+        if received != size: return f"received {received} of its {size} bytes"
+        partial.rename(staged)
+        # In a session of its own, so a terminal's interrupt cannot end it halfway through.
+        added = subprocess.run(["xcrun", "simctl", "runtime", "add", str(staged), "--move"], stdin=subprocess.DEVNULL,
+                               capture_output=True, text=True, env={**os.environ, "DEVELOPER_DIR": developer_dir},
+                               start_new_session=True)
+        if added.returncode:
+            lines = [line.strip() for line in (added.stderr + added.stdout).splitlines() if line.strip()]
+            return f"simctl runtime add exited {added.returncode}: {lines[-1] if lines else 'no output'}"
+        return None
+    except OSError as error:
+        return f"staging it in {directory} failed: {error}"
+    finally:
+        # simctl removes the staged file once it holds the image; a failure leaves it to remove.
+        for path in (partial, staged): path.unlink(missing_ok=True)
+
+
+def answer(request):
+    """build_host.py's answer to a request other than a plan, for `eng doctor` and `eng remote setup`."""
+    if "toolchain" in request: return toolchain(request["toolchain"])
+    if "images" in request:
+        return {"images": images(request["images"]), **stage(Path.home() / request["staging"], request.get("clear"))}
+    # A stop or a dropped connection ends the copy, and the staged file is removed.
+    for number in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(number, lambda *_: _stop.set())
+    copy = request["receive"]
+    return {"failed": receive(sys.stdin.buffer, Path.home() / copy["staging"], copy["build"], copy["size"],
+                              copy["developerDir"])}
 
 
 def git(*arguments, cwd=None):
@@ -302,5 +413,5 @@ def main(plan):
 
 if __name__ == "__main__":
     request = json.loads(sys.argv[1])
-    if "toolchain" in request: print(json.dumps(toolchain(request["toolchain"])))
+    if {"toolchain", "images", "receive"} & request.keys(): print(json.dumps(answer(request)))
     else: main(request)

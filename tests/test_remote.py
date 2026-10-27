@@ -15,7 +15,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
-from vocaro_engineering import build_host, cli, config, remote, resources
+from vocaro_engineering import build_host, cli, config, processes, remote, resources
 
 # Stands in for ssh: the build host is a home directory on this Mac. Like sshd, it runs the
 # command in that home through a shell, and git's own ssh transport reaches it the same way.
@@ -917,6 +917,9 @@ class BuildHostDoctorTests(unittest.TestCase):
             self.assertEqual(status, 1)
             self.assertEqual(len(found["errors"]), 1, found)
             self.assertIn("only this Mac has iOS 27.2 (24C5028f)", found["errors"][0])
+            # The fix is the command that brings both Macs to the union, which deletes none.
+            self.assertIn("to fix it, run `python3 scripts/eng remote setup --runtimes`, which copies each runtime to "
+                          "the Mac that lacks it and deletes none", found["errors"][0])
 
     def test_an_unreachable_or_unconfigured_build_host_is_named_with_what_was_not_checked(self):
         with patch.dict(os.environ, {"FAKE_UNREACHABLE": "1"}):
@@ -934,3 +937,379 @@ class BuildHostDoctorTests(unittest.TestCase):
             status, found = self.doctor()
         self.assertEqual((status, found["host"], found["errors"]), (0, None, []), found)
         self.assertIn("no build host is configured", found["unchecked"][0])
+
+
+# Two Macs' simulator runtimes on one file system, for eng remote setup --runtimes. FAKE_MAC names
+# the Mac a command runs on, and FAKE_RUNTIMES/MAC holds its runtime images as simctl's storage
+# holds cryptexes: NAME.asset/AssetData/Restore/BUILD.dmg, a file whose first line is the runtime
+# it holds and whose size is its image's. An image whose record says unreadable is listed with
+# another size, so no file is its image. FAKE_RUNTIMES/catalog holds what xcodebuild downloads, and
+# FAKE_ADD_FAIL makes simctl refuse every image it is given. Nothing reaches the real runtimes.
+RUNTIME_XCRUN = """#!PYTHON
+import json, os, pathlib, shutil, sys
+runtimes = pathlib.Path(os.environ["FAKE_RUNTIMES"])
+store, arguments = runtimes / os.environ["FAKE_MAC"], sys.argv[1:]
+
+def held():
+    for image in sorted(store.glob("*.asset/AssetData/Restore/*.dmg")):
+        with image.open("rb") as file: yield image, json.loads(file.readline())
+
+def install(image, record):
+    target = store / f"{record['build']}.asset/AssetData/Restore/{record['build']}.dmg"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(image, target)
+
+def log(name):
+    with (store / name).open("a") as file: print(" ".join(arguments), file=file)
+
+if arguments == ["xcodebuild", "-version"]:
+    version = store / "version"
+    print(version.read_text().strip() if version.exists() else "Xcode 27.2\\nBuild version 27B48")
+elif arguments[:2] == ["xcodebuild", "-downloadPlatform"]:
+    log("downloads.log")
+    build = arguments[arguments.index("-buildVersion") + 1]
+    offered = runtimes / "catalog" / f"{build}.asset/AssetData/Restore/{build}.dmg"
+    if not offered.exists():
+        print("xcodebuild: error: no such runtime is offered", file=sys.stderr)
+        sys.exit(70)
+    print("Downloading iOS Simulator: 100%")
+    with offered.open("rb") as file: install(offered, json.loads(file.readline()))
+elif arguments == ["simctl", "list", "runtimes", "-j"]:
+    print(json.dumps({"runtimes": [{"name": record["name"], "buildversion": record["build"], "isAvailable": True}
+                                   for _, record in held()]}))
+elif arguments == ["simctl", "runtime", "list", "-j"]:
+    print(json.dumps({record["build"]: {
+        "build": record["build"], "identifier": record["build"], "kind": "Patchable Cryptex Disk Image",
+        "path": str(image.parents[1]), "sizeBytes": image.stat().st_size + bool(record.get("unreadable")),
+        "state": "Ready", "version": record["name"].split()[-1], "supportedArchitectures": ["arm64"],
+        "platformIdentifier": "com.apple.platform.iphonesimulator",
+        "runtimeBundlePath": f"/Library/Developer/CoreSimulator/Volumes/{record['build']}/{record['name']}.simruntime",
+    } for image, record in held()}))
+elif arguments[:3] == ["simctl", "runtime", "add"]:
+    log("adds.log")
+    if os.environ.get("FAKE_ADD_FAIL"):
+        print("simctl: the image could not be verified", file=sys.stderr)
+        sys.exit(1)
+    image = pathlib.Path(arguments[3])
+    with image.open("rb") as file: install(image, json.loads(file.readline()))
+    if "--move" in arguments: image.unlink()
+else:
+    sys.exit(1)
+"""
+# ssh to the build host, which is the other Mac. FAKE_CUT drops the connection once that many bytes
+# have gone either way.
+RUNTIME_SSH = """#!/bin/sh
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -o|-p|-i|-l|-F|-J) shift 2 ;;
+        -*) shift ;;
+        *) break ;;
+    esac
+done
+shift
+cd "$FAKE_HOME" || exit 255
+if [ -n "$FAKE_CUT" ]; then
+    head -c "$FAKE_CUT" | FAKE_MAC=there HOME="$FAKE_HOME" SHELL="$FAKE_SHELL" /bin/sh -c "$*" | head -c "$FAKE_CUT"
+    exit
+fi
+FAKE_MAC=there HOME="$FAKE_HOME" SHELL="$FAKE_SHELL" exec /bin/sh -c "$*"
+"""
+# A runtime image's bytes in these tests, and where a copy drops the connection: past every answer,
+# short of an image.
+IMAGE = 1 << 20
+CUT = 300000
+# What each Mac held on 2026-10-26: this Mac four runtimes the build host lacked, and the build host
+# a beta this Mac lacked.
+HERE_RUNTIMES = [("iOS 26.5", "23F73"), ("iOS 27.0", "24A434"), ("iOS 27.1", "24A94401"), ("iOS 27.2", "24B5110a"),
+                 ("iOS 27.2", "24B91011")]
+THERE_RUNTIMES = [("iOS 27.0", "24A434"), ("iOS 27.0", "24A5423a")]
+EVERY_RUNTIME = sorted(f"{name} ({build})" for name, build in {*HERE_RUNTIMES, *THERE_RUNTIMES})
+XCODE = "Xcode 27.2, Build version 27B48"
+
+
+class RemoteRuntimeTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        base = Path(self.temp.name).resolve()
+        # The build host's home and this Mac's, each with the staging folder a copy to it uses.
+        self.home, self.local = base / "build-host-home", base / "home"
+        self.home.mkdir()
+        self.local.mkdir()
+        self.staging = {"here": self.local / remote.LOCAL_RUNTIME_STAGING, "there": self.home / remote.RUNTIME_STAGING}
+        tools = base / "bin"
+        tools.mkdir()
+        for name, text in [("ssh", RUNTIME_SSH), ("login-shell", FAKE_SHELL),
+                           ("xcrun", RUNTIME_XCRUN.replace("PYTHON", sys.executable, 1)),
+                           ("xcode-select", '#!/bin/sh\n[ "$1" = -p ] && echo "$FAKE_DEVELOPER"\n')]:
+            (tools / name).write_text(text)
+            (tools / name).chmod(0o755)
+        system = Path("/usr/bin/python3")
+        (tools / "python3").symlink_to(system if sys.platform == "darwin" and system.exists() else sys.executable)
+        self.runtimes = base / "runtimes"
+        for mac in ("here", "there", "catalog"): (self.runtimes / mac).mkdir(parents=True)
+        self.developer = base / "Xcode.app/Contents/Developer"
+        self.developer.mkdir(parents=True)
+        self.project = base / "example"
+        self.project.mkdir()
+        (self.project / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example"}))
+        self.environment = patch.dict(os.environ, {
+            "PATH": f"{tools}{os.pathsep}{os.environ['PATH']}", "FAKE_HOME": str(self.home), "HOME": str(self.local),
+            "FAKE_SHELL": str(tools / "login-shell"), "FAKE_RUNTIMES": str(self.runtimes), "FAKE_MAC": "here",
+            "FAKE_DEVELOPER": str(self.developer), "VOCARO_BUILD_HOST": "fake"})
+        self.environment.start()
+        for name in ("DEVELOPER_DIR", "FAKE_CUT", "FAKE_ADD_FAIL"): os.environ.pop(name, None)
+        # The real volumes' free space decides nothing here; the space test sets its own margin.
+        self.patches = [patch.object(remote, "developer_directory", return_value=str(self.developer)),
+                        patch.object(remote, "RUNTIME_MARGIN", 0)]
+        for item in self.patches: item.start()
+
+    def tearDown(self):
+        for item in self.patches: item.stop()
+        self.environment.stop()
+        self.temp.cleanup()
+
+    def image(self, mac, name, build, **record):
+        """An image of the runtime NAME (BUILD) in a Mac's store, or the catalog's."""
+        path = self.runtimes / mac / f"{build}.asset/AssetData/Restore/{build}.dmg"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        line = json.dumps({"name": name, "build": build, **record}).encode() + b"\n"
+        path.write_bytes(line + build.encode().ljust(IMAGE - len(line), b"\0"))
+        return path
+
+    def give(self, mac, runtimes):
+        for name, build in runtimes: self.image(mac, name, build)
+
+    def held(self, mac):
+        """The runtimes in a Mac's store, as simctl lists them."""
+        found = []
+        for path in (self.runtimes / mac).glob("*.asset/AssetData/Restore/*.dmg"):
+            with path.open("rb") as file: record = json.loads(file.readline())
+            found.append(f"{record['name']} ({record['build']})")
+        return sorted(found)
+
+    def logged(self, mac, name):
+        path = self.runtimes / mac / name
+        return path.read_text().splitlines() if path.exists() else []
+
+    def staged(self, mac):
+        """What a copy left in the Mac's staging folder, but the lock."""
+        folder = self.staging[mac]
+        return sorted(path.name for path in folder.iterdir() if path.name != ".lock") if folder.exists() else []
+
+    def eng(self, *arguments):
+        with contextlib.redirect_stdout(StringIO()) as output, contextlib.redirect_stderr(StringIO()) as error:
+            status = cli.main(["--project", str(self.project), "remote", "setup", "--host", "fake", "--runtimes",
+                               *arguments])
+        return status, output.getvalue(), error.getvalue()
+
+    def same(self, runtimes):
+        return (f"runtimes: this Mac and fake list the same {len(runtimes)} runtimes of {XCODE} at {self.developer}: "
+                f"{', '.join(runtimes)}")
+
+    def test_matching_macs_need_nothing(self):
+        self.give("here", THERE_RUNTIMES)
+        self.give("there", THERE_RUNTIMES)
+        status, output, error = self.eng()
+        self.assertEqual(status, 0, output + error)
+        self.assertEqual(output.strip(), self.same(["iOS 27.0 (24A434)", "iOS 27.0 (24A5423a)"]))
+        self.assertEqual(self.logged("here", "adds.log") + self.logged("there", "adds.log"), [])
+        # What an earlier copy left staged, as a reboot leaves it, the next run removes on both Macs.
+        for mac in ("here", "there"): (self.staging[mac] / "24A5423a.dmg.partial").write_bytes(b"part")
+        status, output, error = self.eng()
+        self.assertEqual(status, 0, output + error)
+        for side in ("this Mac", "fake"):
+            self.assertIn(f"runtimes: removed 24A5423a.dmg.partial, which an earlier copy left staged on {side}", output)
+        self.assertEqual((self.staged("here"), self.staged("there")), ([], []))
+
+    def test_a_runtime_only_here_is_copied_there_and_added(self):
+        self.give("here", [("iOS 27.0", "24A434"), ("iOS 27.1", "24A94401")])
+        self.give("there", [("iOS 27.0", "24A434")])
+        status, output, error = self.eng()
+        self.assertEqual(status, 0, output + error)
+        for line in ["runtimes: iOS 27.1 (24A94401), 0.0 GiB: copying from this Mac to fake",
+                     "runtimes: iOS 27.1 (24A94401): 0.0 GiB of 0.0 GiB copied",
+                     "runtimes: iOS 27.1 (24A94401): added on fake",
+                     self.same(["iOS 27.0 (24A434)", "iOS 27.1 (24A94401)"])]:
+            self.assertIn(line, output)
+        self.assertTrue(output.strip().endswith(self.same(["iOS 27.0 (24A434)", "iOS 27.1 (24A94401)"])), output)
+        # Added from the build host's staging folder with --move, which leaves no second copy there.
+        self.assertEqual(self.logged("there", "adds.log"),
+                         [f"simctl runtime add {self.staging['there'] / '24A94401.dmg'} --move"])
+        self.assertEqual(self.staged("there"), [])
+        self.assertEqual(self.held("there"), self.held("here"))
+
+    def test_a_runtime_only_there_is_copied_here_and_added(self):
+        self.give("here", [("iOS 27.0", "24A434")])
+        self.give("there", THERE_RUNTIMES)
+        status, output, error = self.eng()
+        self.assertEqual(status, 0, output + error)
+        self.assertIn("runtimes: iOS 27.0 (24A5423a), 0.0 GiB: copying from fake to this Mac", output)
+        self.assertIn("runtimes: iOS 27.0 (24A5423a): added on this Mac", output)
+        self.assertEqual(self.logged("here", "adds.log"),
+                         [f"simctl runtime add {self.staging['here'] / '24A5423a.dmg'} --move"])
+        self.assertEqual(self.staged("here"), [])
+        self.assertEqual(self.held("here"), ["iOS 27.0 (24A434)", "iOS 27.0 (24A5423a)"])
+
+    def test_both_directions_at_once_give_both_macs_the_union_and_delete_nothing(self):
+        self.give("here", HERE_RUNTIMES)
+        self.give("there", THERE_RUNTIMES)
+        status, output, error = self.eng()
+        self.assertEqual(status, 0, output + error)
+        self.assertEqual(output.count("added on fake"), 4, output)
+        self.assertEqual(output.count("added on this Mac"), 1, output)
+        self.assertTrue(output.strip().endswith(self.same(EVERY_RUNTIME)), output)
+        self.assertEqual((self.held("here"), self.held("there")), (EVERY_RUNTIME, EVERY_RUNTIME))
+        # Each copy is its source's image, byte for byte.
+        for mac, other, build in [("there", "here", "24B5110a"), ("here", "there", "24A5423a")]:
+            path = f"{build}.asset/AssetData/Restore/{build}.dmg"
+            self.assertEqual((self.runtimes / mac / path).read_bytes(), (self.runtimes / other / path).read_bytes())
+        self.assertEqual((self.staged("here"), self.staged("there")), ([], []))
+        # Run again, there is nothing to do.
+        status, output, error = self.eng()
+        self.assertEqual((status, output.strip()), (0, self.same(EVERY_RUNTIME)), output + error)
+
+    def test_check_says_what_it_would_do_and_changes_nothing(self):
+        self.give("here", HERE_RUNTIMES)
+        self.give("there", THERE_RUNTIMES)
+        status, output, error = self.eng("--check")
+        self.assertEqual(status, 1, output + error)
+        for runtime in ["iOS 26.5 (23F73)", "iOS 27.1 (24A94401)", "iOS 27.2 (24B5110a)", "iOS 27.2 (24B91011)"]:
+            self.assertIn(f"runtimes: {runtime}, 0.0 GiB: would be copied from this Mac to fake, which has ", output)
+        self.assertIn("runtimes: iOS 27.0 (24A5423a), 0.0 GiB: would be copied from fake to this Mac, which has ", output)
+        self.assertIn("runtimes: 5 runtime(s) differ; `eng remote setup --runtimes` brings both Macs to their union",
+                      output)
+        self.assertNotIn("copying", output)
+        self.assertEqual((self.held("here"), self.held("there")),
+                         (sorted(f"{n} ({b})" for n, b in HERE_RUNTIMES), sorted(f"{n} ({b})" for n, b in THERE_RUNTIMES)))
+        self.assertEqual(self.logged("here", "adds.log") + self.logged("there", "adds.log"), [])
+        # Not even a staging folder or the lock is made.
+        self.assertFalse(self.staging["here"].exists())
+        self.assertFalse(self.staging["there"].exists())
+
+    def test_a_copy_that_fails_adds_nothing_and_leaves_nothing_staged(self):
+        self.give("here", [("iOS 27.0", "24A434"), ("iOS 27.1", "24A94401")])
+        self.give("there", THERE_RUNTIMES)
+        before = (self.held("here"), self.held("there"))
+        for failure, variables, lines in [
+                ("dropped", {"FAKE_CUT": str(CUT)},
+                 [f"runtimes: iOS 27.1 (24A94401): not added on fake: received {CUT} of its {IMAGE} bytes; nothing of it "
+                  "stays staged there",
+                  f"runtimes: iOS 27.0 (24A5423a): not added on this Mac: received {CUT} of its {IMAGE} bytes; nothing of "
+                  "it stays staged there"]),
+                ("refused", {"FAKE_ADD_FAIL": "1"},
+                 ["runtimes: iOS 27.1 (24A94401): not added on fake: simctl runtime add exited 1: simctl: the image "
+                  "could not be verified; nothing of it stays staged there",
+                  "runtimes: iOS 27.0 (24A5423a): not added on this Mac: simctl runtime add exited 1: simctl: the image "
+                  "could not be verified; nothing of it stays staged there"])]:
+            with self.subTest(failure), patch.dict(os.environ, variables):
+                status, output, error = self.eng()
+                self.assertEqual(status, 1, output + error)
+                for line in lines: self.assertIn(line, output)
+                self.assertIn(f"runtimes: the runtimes of {XCODE} at {self.developer} still differ: only this Mac has "
+                              "iOS 27.1 (24A94401); only fake has iOS 27.0 (24A5423a)", output)
+                self.assertEqual((self.held("here"), self.held("there")), before)
+                self.assertEqual((self.staged("here"), self.staged("there")), ([], []))
+        # Only the refused images reached simctl: a dropped copy was never added.
+        self.assertEqual(len(self.logged("here", "adds.log") + self.logged("there", "adds.log")), 2)
+
+    def test_a_stop_during_a_copy_adds_nothing_and_leaves_nothing_staged(self):
+        def stopping(runtime, size):
+            def report(done):
+                if done >= size // 2: raise processes.Interrupted(signal.SIGTERM, f"while copying {runtime}")
+            return report
+        # Small reads, so the stop comes halfway through the image.
+        with patch.object(build_host, "CHUNK", 1 << 16), patch.object(remote, "reporter", stopping):
+            for direction, here, there in [("to the build host", [("iOS 27.1", "24A94401")], []),
+                                           ("from the build host", [], [("iOS 27.0", "24A5423a")])]:
+                with self.subTest(direction):
+                    for mac, runtimes in [("here", here), ("there", there)]:
+                        shutil.rmtree(self.runtimes / mac)
+                        (self.runtimes / mac).mkdir()
+                        self.give(mac, runtimes)
+                    with self.assertRaises(processes.Interrupted):
+                        self.eng()
+                    self.assertEqual(self.held("here") + self.held("there"), [f"{n} ({b})" for n, b in here + there])
+                    self.assertEqual((self.staged("here"), self.staged("there")), ([], []))
+        self.assertEqual(self.logged("here", "adds.log") + self.logged("there", "adds.log"), [])
+
+    def test_a_copy_that_would_leave_too_little_free_space_is_refused_before_it_starts(self):
+        self.give("here", [("iOS 27.0", "24A434"), ("iOS 27.1", "24A94401")])
+        self.give("there", THERE_RUNTIMES)
+        with patch.object(remote, "RUNTIME_MARGIN", 1 << 62):
+            status, output, error = self.eng("--check")
+            self.assertEqual(status, 1, output + error)
+            self.assertIn("runtimes: iOS 27.1 (24A94401), 0.0 GiB: would be refused on fake: ", output)
+            status, output, error = self.eng()
+        self.assertEqual(status, 1, output + error)
+        for runtime, mac in [("iOS 27.1 (24A94401)", "fake"), ("iOS 27.0 (24A5423a)", "this Mac")]:
+            self.assertIn(f"runtimes: {runtime}, 0.0 GiB: refused on {mac}: ", output)
+        self.assertIn("more would leave less than the 4294967296.0 GiB it must keep free; free space there, then run it "
+                      "again", output)
+        self.assertNotIn("copying", output)
+        self.assertIn("still differ", output)
+        self.assertEqual(self.logged("here", "adds.log") + self.logged("there", "adds.log"), [])
+        self.assertEqual((self.staged("here"), self.staged("there")), ([], []))
+
+    def test_a_runtime_whose_image_cannot_be_read_is_downloaded_by_its_build(self):
+        self.image("here", "iOS 27.0", "24A5423a", unreadable=True)
+        status, output, error = self.eng("--check")
+        self.assertEqual(status, 1, output + error)
+        self.assertIn("runtimes: iOS 27.0 (24A5423a), 0.0 GiB: would be downloaded on fake, which has ", output)
+        self.assertIn("free, with `xcodebuild -downloadPlatform iOS -buildVersion 24A5423a -architectureVariant arm64`, "
+                      "since its image on this Mac cannot be copied: ", output)
+        self.assertIn(f"/24A5423a.asset/AssetData holds no single disk image of its {IMAGE + 1} bytes", output)
+        # Apple no longer offers the build: the download fails, and the runtime stays on this Mac only.
+        status, output, error = self.eng()
+        self.assertEqual(status, 1, output + error)
+        self.assertIn("runtimes: fake: xcodebuild: error: no such runtime is offered", output)
+        self.assertIn("runtimes: iOS 27.0 (24A5423a): xcodebuild exited 70 on fake", output)
+        self.assertIn("still differ: only this Mac has iOS 27.0 (24A5423a)", output)
+        # It is offered.
+        self.image("catalog", "iOS 27.0", "24A5423a")
+        status, output, error = self.eng()
+        self.assertEqual(status, 0, output + error)
+        self.assertIn("runtimes: iOS 27.0 (24A5423a): downloaded on fake", output)
+        self.assertEqual(self.held("there"), ["iOS 27.0 (24A5423a)"])
+        self.assertEqual(self.logged("there", "downloads.log"),
+                         ["xcodebuild -downloadPlatform iOS -buildVersion 24A5423a -architectureVariant arm64"] * 2)
+
+    def test_another_xcode_another_run_or_other_setup_work_is_refused_before_anything_changes(self):
+        self.give("here", [("iOS 27.1", "24A94401")])
+        with self.subTest("xcode"):
+            (self.runtimes / "there/version").write_text("Xcode 27.1\nBuild version 27A9275\n")
+            status, output, error = self.eng()
+            self.assertEqual(status, 1, output + error)
+            self.assertIn(f"runtimes: the Xcode at {self.developer} is {XCODE} on this Mac and Xcode 27.1, Build version "
+                          "27A9275 on fake; install this Mac's Xcode at that path there first", output)
+            (self.runtimes / "there/version").unlink()
+        with self.subTest("another run"):
+            lock = remote.runtime_lock()
+            try:
+                status, output, error = self.eng()
+            finally:
+                os.close(lock)
+            self.assertEqual(status, 1, output + error)
+            self.assertIn("runtimes: another `eng remote setup --runtimes` is running on this Mac", output)
+        with self.subTest("formulae"):
+            status, output, error = self.eng("numpy")
+            self.assertEqual(status, 2, output + error)
+            self.assertIn("--runtimes brings only the simulator runtimes to their union", error)
+        with self.subTest("unreachable"):
+            with patch.dict(os.environ, {"FAKE_HOME": str(self.home / "missing")}):
+                status, output, error = self.eng()
+            self.assertEqual(status, 1, output + error)
+            self.assertIn("runtimes: fake cannot be reached", output)
+        self.assertEqual(self.held("there"), [])
+        self.assertEqual(self.logged("there", "adds.log"), [])
+
+    def test_an_image_is_its_listed_file_or_the_one_its_asset_restores_at_its_size(self):
+        image = self.image("here", "iOS 26.5", "23F73")
+        size = image.stat().st_size
+        # A disk image simctl names by its own path, as iOS 26.5's, and a cryptex by its AssetData folder.
+        self.assertEqual(build_host.image_file({"path": str(image), "sizeBytes": size}), (str(image), None))
+        self.assertEqual(build_host.image_file({"path": str(image.parents[1]), "sizeBytes": size}), (str(image), None))
+        for record in [{"path": str(image.parents[1]), "sizeBytes": size + 1}, {"path": str(image), "sizeBytes": 1},
+                       {"path": str(image.parent / "missing.dmg"), "sizeBytes": size}, {"sizeBytes": size}]:
+            file, why = build_host.image_file(record)
+            self.assertIsNone(file, record)
+            self.assertTrue(why, record)

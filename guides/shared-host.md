@@ -200,6 +200,7 @@ python3 scripts/eng remote run LANE [-- ARGUMENTS]     # any lane, on the build 
 python3 scripts/eng remote admit [--exclusive | --model] -- COMMAND
 python3 scripts/eng remote passed LANE [--commit REV]
 python3 scripts/eng remote setup [FORMULA ...] [--check]  # the gates' tools (Setting up a build host)
+python3 scripts/eng remote setup --runtimes [--check]     # both Macs' simulator runtimes: their union
 ```
 
 ### Which Mac runs a lane
@@ -264,7 +265,10 @@ stops the caller too, and otherwise with the lane's status there.
 there uses, and the simulator runtimes that Xcode lists on each, as well as a build host it cannot
 reach. A build host whose default Xcode differs still runs lanes, since a run selects this Mac's
 developer directory, but whatever reads its default, such as `ssh build-host xcodebuild -version`
-or a script without `DEVELOPER_DIR`, sees another Xcode. Under `buildHost` in the report,
+or a script without `DEVELOPER_DIR`, sees another Xcode. The two Macs keep the same runtimes:
+when one has a runtime the other lacks, the error names the fix, `eng remote setup --runtimes`,
+which brings both to the union of their runtimes and never deletes one
+([setting up a build host](#setting-up-a-build-host)). Under `buildHost` in the report,
 `unchecked` names what was not compared: a build host's Xcodes and runtimes when it cannot be
 reached, and the whole comparison when no build host is configured.
 
@@ -348,8 +352,35 @@ The owner prepares the build host once:
    with nothing changed. `--check` only checks. A project's runbook names its own formulae.
    Without Homebrew, the system's Python 3.9 runs the toolkit, and lanes that need a newer
    Python fail.
-5. Keep it on power and awake. A sleeping build host leaves its run unmeasured.
-6. When a project's packages depend on private repositories, create a fine-grained GitHub token
+5. Give both Macs the same simulator runtimes, and again whenever either gains one:
+
+   ```sh
+   python3 scripts/eng remote setup --runtimes [--check]
+   ```
+
+   It brings both Macs to the union of the runtimes that the Xcode at this Mac's developer
+   directory lists on each, as `eng doctor` compares them, and it never deletes a runtime: one
+   that only one Mac has is copied to the other. Both must have that Xcode at the same path. The
+   copy is the runtime's own disk image, as `xcrun simctl runtime list -j` names it (for a
+   cryptex, the one disk image of its listed size in its asset's `Restore` folder), so a beta
+   build Apple no longer serves comes across exactly. It goes over the build host's SSH
+   connection, never GitHub, into `~/Development/build-host/runtimes` on the build host or
+   `~/Library/Application Support/vocaro-engineering/runtimes` on this Mac, outside
+   `/private/tmp`, which a reboot empties. Only an image of exactly its listed size is added,
+   with `xcrun simctl runtime add --move`, which leaves no second copy. A copy that fails or is
+   stopped adds nothing and leaves nothing staged, and the next run removes what a reboot or a
+   killed run left. Only a runtime whose image cannot be read is downloaded instead, by its
+   build (`xcodebuild -downloadPlatform PLATFORM -buildVersion BUILD`). Before each copy or
+   download it measures the free space where it lands and refuses one that would leave less
+   than 40 GiB: room for simctl to copy the image once more where it cannot clone it, and for
+   other sessions' building worktrees. It reports each runtime's size, copy and addition, then
+   lists both Macs' runtimes again and exits 0 only when they match, otherwise 1 with what still
+   differs. `--check` says what it would copy, download or refuse, changes nothing, and exits 1
+   while the runtimes differ. One run at a time copies: a second refuses while one runs on this
+   Mac. A copy of five runtimes moves about 40 GB, so run it in the background; it reads no
+   input, and its last line is the outcome.
+6. Keep it on power and awake. A sleeping build host leaves its run unmeasured.
+7. When a project's packages depend on private repositories, create a fine-grained GitHub token
    with read-only Contents permission on them (on all of the owner's repositories, if the owner
    prefers not to update it as dependencies change), and write it on the build
    host, readable only by its owner, as one line `https://USER:TOKEN@github.com` in
