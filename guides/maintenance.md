@@ -92,9 +92,12 @@ git merge-base --is-ancestor origin/main HEAD && git push origin HEAD:main
 If `origin/main` is not an ancestor, rebase onto it. A tool that brings `main` in by merging,
 such as the Claude app's sync with the base branch, leaves a merge commit that the push would
 put on `main`; rebase the branch's own commits instead. When `main`'s new commits change only
-documents the branch does not touch, the gated result carries over: check that the rebased tree
-differs from the gated one by exactly those commits, run the documentation check, and push.
-Otherwise run the gate again on the rebased tree, and push that.
+documents the branch does not touch, or only files that the project's `doc/testing.md` lists as
+read by none of the gate's suites, the gated result carries over: check that the rebased tree
+differs from the gated one by exactly those commits, run the documentation check and the lane
+the list names for each changed file, and push. Otherwise run the gate again on the rebased
+tree, and push that. A carried-over result is not a gate of the pushed commit: a release is
+tagged only on a commit its gate passed.
 
 ```sh
 cmp <(git diff GATED HEAD) <(git diff OLD_BASE origin/main)  # silent: the same change
