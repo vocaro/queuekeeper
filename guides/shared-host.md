@@ -367,6 +367,16 @@ reached, and the whole comparison when no build host is configured. `leftovers` 
 processes on the build host that runs left running, which are no error
 ([processes left over from runs](#processes-left-over-from-runs)).
 
+`connection` in the report says how ssh connects to the build host: the name and port `ssh -G`
+gives, and the addresses that name resolves to under its `AddressFamily`, in the order ssh tries
+them, each with the time a TCP connection to it took or why none was made, up to the first that
+answers, after which ssh tries none. First addresses that do not answer, and so keep every
+connection waiting before a later one does, are an error. When they are all of the other family,
+it names the `AddressFamily` line that skips them
+([setting up a build host](#setting-up-a-build-host)). One refused at once costs nothing and is no
+error. A name that does not resolve is in `unresolved`, beside the error that the build host
+cannot be reached, and a build host that ssh reaches through a proxy is not measured.
+
 ### Simulators on the build host
 
 A lane that boots simulators runs on the build host as it does here: headless, from a session
@@ -470,6 +480,17 @@ signal stops a local one, and the run leaves the build host's admission. A run t
 result, such as one the network cut off, is unmeasured, never passed or failed. Foreground lanes
 run only on this Mac, and the policy says what else stays here.
 
+ssh closes a connection that has heard nothing from the build host for about two minutes
+(`ServerAliveInterval` 30 s, four times), so a shorter silence leaves the run going. When a run
+returns no result, `eng remote` says what ssh last said, such as `Timeout, server NAME not
+responding.`, when the run was dispatched and when it was lost, in UTC, and how long this Mac
+slept in between, read as the difference between a clock that runs through sleep and one that
+stops for it. A Mac asleep runs no ssh. On 2026-10-26 a dispatch lost its connection around
+17:05 UTC while its run waited in the build host's queue, and this Mac's power log
+(`pmset -g log`) has it asleep with its lid closed from 16:59 to 17:04 UTC, apart from 45 s of
+dark wake; nothing kept says how the connection ended
+([vocaro-engineering#44](https://github.com/vocaro/vocaro-engineering/issues/44)).
+
 ### Setting up a build host
 
 The owner prepares the build host once:
@@ -487,8 +508,13 @@ The owner prepares the build host once:
 
    `AddressFamily inet` keeps ssh to IPv4. The build host's `.local` name resolved first to an
    IPv6 link-local address that never answered, so each connection waited out `eng remote`'s
-   `ConnectTimeout` of 10 s before trying IPv4: about 10 s for every connection, several per run,
-   where it now takes 0.3 s (2026-10-27).
+   `ConnectTimeout` of 10 s before trying IPv4: about 10 s for every connection, four for a
+   project's run, where it now takes 0.3 s (2026-10-27). An ssh without `ConnectTimeout`, such as
+   a plain `ssh build-host`, waited out macOS's own TCP connection timeout instead, 75 s
+   (`net.inet.tcp.keepinit`). Neither Mac reached the other over IPv6 at all, while IPv4 worked;
+   that is the network's, which is the owner's. `eng doctor` measures each address ssh tries, and
+   reports first addresses that keep every connection waiting as an error
+   ([which Mac runs a lane](#which-mac-runs-a-lane)).
 
 3. Install the Xcode this Mac uses at the same path. Accept its license and run its first launch
    (`sudo xcodebuild -license accept`, then `xcodebuild -runFirstLaunch`).
@@ -534,7 +560,11 @@ The owner prepares the build host once:
    while the runtimes differ. One run at a time copies: a second refuses while one runs on this
    Mac. A copy of five runtimes moves about 40 GB, so run it in the background; it reads no
    input, and its last line is the outcome.
-6. Keep it on power and awake. A sleeping build host leaves its run unmeasured.
+6. Keep it on power and awake. A sleeping build host leaves its run unmeasured. Its `.local` name
+   is multicast DNS: it resolves only while the build host is awake on this Mac's network and
+   the network carries multicast between them, and `dscacheutil -q host -a name NAME.local`
+   shows whether it does. Sleep did not explain the night of 2026-10-24 to 25, when the name did
+   not resolve from this Mac: neither Mac's power log records a sleep then.
 7. When a project's packages depend on private repositories, create a fine-grained GitHub token
    with read-only Contents permission on them (on all of the owner's repositories, if the owner
    prefers not to update it as dependencies change), and write it on the build

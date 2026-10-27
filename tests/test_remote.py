@@ -8,6 +8,7 @@ from pathlib import Path
 import shlex
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -49,6 +50,42 @@ exec /bin/sh "$@"
 NAP = ("import os, pathlib, sys, time; name = sys.argv[1]; print(name, 'started', flush=True); "
        "partial = pathlib.Path('.build', name + '.partial'); partial.write_text(str(os.getpid())); "
        "partial.rename(pathlib.Path('.build', name + '.pid')); time.sleep(300)")
+# Stands in for ssh in front of FAKE_SSH, whose path FAKE_SSH_REAL names: the connection that carries
+# a run (its command holds the plan's work) is lost once the file FAKE_DROP names exists. ssh then
+# says why, as it does when the build host stops answering, and exits 255; the end of the build
+# host's standard input is its end of the connection closing.
+DROPPING_SSH = """#!/bin/sh
+case "$*" in
+    *'"work": ['*) exec "$FAKE_PYTHON" "$FAKE_DROPPER" "$@" ;;
+esac
+exec "$FAKE_SSH_REAL" "$@"
+"""
+DROPPER = """import os, subprocess, sys, threading, time
+arguments = sys.argv[1:]
+while arguments[0].startswith("-"):
+    arguments = arguments[2:] if arguments[0] in ("-o", "-p", "-i", "-l", "-F", "-J") else arguments[1:]
+host, command = arguments[0], " ".join(arguments[1:])
+environment = {**os.environ, "HOME": os.environ["FAKE_HOME"], "SHELL": os.environ["FAKE_SHELL"],
+               "HEAVY_SLOT_DIR": os.environ["FAKE_SLOTS"], "SW_GATE_LOCK_FILE": os.environ["FAKE_GATE"],
+               "TMPDIR": os.environ["FAKE_TMPDIR"]}
+child = subprocess.Popen(["/bin/sh", "-c", command], cwd=os.environ["FAKE_HOME"], env=environment,
+                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+def forward():
+    for line in iter(child.stdout.readline, b""):
+        sys.stdout.buffer.write(line)
+        sys.stdout.buffer.flush()
+relay = threading.Thread(target=forward, daemon=True)
+relay.start()
+while child.poll() is None and not os.path.exists(os.environ["FAKE_DROP"]):
+    time.sleep(0.05)
+if child.poll() is None:
+    sys.stderr.write(f"Timeout, server {host} not responding.\\n")
+    sys.stderr.flush()
+    child.stdin.close()
+    os._exit(255)
+relay.join()
+sys.exit(child.returncode)
+"""
 
 
 def git(directory, *arguments):
@@ -326,6 +363,67 @@ class RemoteTests(unittest.TestCase):
                 with contextlib.suppress(ProcessLookupError): os.kill(pid, signal.SIGKILL)
             if dispatcher.poll() is None: dispatcher.kill()
             dispatcher.communicate()
+
+    def test_a_lost_connection_says_what_ssh_said_when_it_was_lost_and_that_this_mac_slept(self):
+        # As on 2026-10-26, when the dispatching Mac slept for five minutes with a run under way there.
+        marker = self.checkout(0) / ".build/linger.pid"
+        real, ssh = self.tools / "fake-ssh", self.tools / "ssh"
+        ssh.rename(real)
+        ssh.write_text(DROPPING_SSH)
+        ssh.chmod(0o755)
+        (self.tools / "drop.py").write_text(DROPPER)
+        variables = {"FAKE_SSH_REAL": str(real), "FAKE_DROPPER": str(self.tools / "drop.py"),
+                     "FAKE_PYTHON": sys.executable, "FAKE_DROP": str(marker)}
+        lane = None
+        try:
+            with patch.dict(os.environ, variables), patch.object(remote, "asleep", side_effect=[1000.0, 1300.0]):
+                status, output, error = self.eng("remote", "run", "linger")
+            lane = int(marker.read_text())
+            self.assertEqual(status, 2, output + error)
+            self.assertRegex(error, r"eng: No result from fake \(ssh exited 255: Timeout, server fake not responding\.\); "
+                                    r"dispatched at \d{4}-\d\d-\d\d \d\d:\d\d:\d\d UTC and lost at \d{4}-\d\d-\d\d "
+                                    r"\d\d:\d\d:\d\d UTC, and this Mac slept for 300 s of that\. The run is unmeasured, "
+                                    r"and fake stops it once its end of the connection closes\.")
+            results = self.project / ".build/engineering/remote/linger"
+            self.assertIn("Timeout, server fake not responding.", (results / "output.log").read_text())
+            self.assertFalse((results / "source.json").exists())
+            self.assertEqual(self.eng("remote", "passed", "linger")[0], 1)
+            # Its end of the connection closed, so the build host stopped the run.
+            deadline = time.monotonic() + 60
+            while time.monotonic() < deadline:
+                try: os.kill(lane, 0)
+                except ProcessLookupError: break
+                time.sleep(0.1)
+            with self.assertRaises(ProcessLookupError):
+                os.kill(lane, 0)
+        finally:
+            if lane is not None:
+                with contextlib.suppress(ProcessLookupError): os.kill(lane, signal.SIGKILL)
+
+    def test_a_lost_run_names_sleep_only_when_this_mac_slept_and_ssh_only_for_its_own_failure(self):
+        output = Path("/build/output.log")
+        cases = [((255, "Timeout, server fake not responding.", 10.0, 1300.0), "ssh exited 255: Timeout", "slept for 1290 s"),
+                 ((255, "Timeout, server fake not responding.", 10.0, 10.0 + remote.SLEEP_NOTED - 0.5), "ssh exited 255:",
+                  None),
+                 ((255, None, None, 50.0), "(ssh exited 255);", None),
+                 ((1, "a line of the shell's", 10.0, 10.0), "(ssh exited 1);", None)]
+        for (status, said, before, after), cause, sleep in cases:
+            with self.subTest(status=status, said=said, before=before, after=after), \
+                    patch.object(remote, "asleep", return_value=after):
+                message = remote.lost("fake", status, said, 0, before, output)
+            self.assertIn(cause, message)
+            self.assertIn("dispatched at 1970-01-01 00:00:00 UTC and lost at ", message)
+            self.assertIn("The run is unmeasured", message)
+            if sleep: self.assertIn(f"this Mac {sleep} of that", message)
+            else: self.assertNotIn("slept", message)
+            if status != 255: self.assertNotIn(said, message)
+
+    def test_this_macs_sleep_reads_as_a_difference_that_does_not_run_while_it_is_awake(self):
+        first = remote.asleep()
+        if first is None: self.skipTest("this system has no pair of clocks that differ by sleep")
+        time.sleep(0.2)
+        # Awake, the clock that runs through sleep and the one that stops for it keep together.
+        self.assertLess(abs(remote.asleep() - first), 0.05)
 
     def test_a_census_that_fails_is_reported_and_stops_no_run(self):
         with patch.object(remote, "census_command", return_value="sh -c 'echo census broke >&2; exit 3'"):
@@ -1067,8 +1165,14 @@ class BuildHostDoctorTests(unittest.TestCase):
         # Both Macs select the same Xcode 27.1, with the same runtimes.
         self.release = self.xcode("Xcode.app", here=(RELEASE, RUNTIMES), there=(RELEASE, RUNTIMES))
         self.select(here=self.release, there=self.release)
+        # The fake build host is no address; ConnectionTests measure real ones.
+        self.reached = {"hostname": "fake.local", "port": 22, "addressFamily": "any",
+                        "addresses": [{"address": "192.0.2.7", "seconds": 0.004, "outcome": "connected"}]}
+        self.connection = patch.object(remote, "connection", side_effect=lambda host: self.reached)
+        self.connection.start()
 
     def tearDown(self):
+        self.connection.stop()
         self.environment.stop()
         self.temp.cleanup()
 
@@ -1167,6 +1271,168 @@ class BuildHostDoctorTests(unittest.TestCase):
             status, found = self.doctor()
         self.assertEqual((status, found["host"], found["errors"]), (0, None, []), found)
         self.assertIn("no build host is configured", found["unchecked"][0])
+
+    def test_first_addresses_that_keep_each_connection_waiting_are_an_error(self):
+        # As until 2026-10-27: the .local name resolved first to a link-local IPv6 address that never
+        # answered, so each connection waited 10 s before trying IPv4.
+        dead = {"address": "fe80::1%en0", "seconds": 10.001, "outcome": "no answer in 10 s"}
+        used = {"address": "192.0.2.7", "seconds": 0.004, "outcome": "connected"}
+        later = {"address": "2001:db8::7", "outcome": "not tried: ssh connects to the one before it"}
+        self.reached["addresses"] = [dead, used, later]
+        status, found = self.doctor()
+        self.assertEqual(status, 1)
+        self.assertEqual(found["connection"], self.reached)
+        self.assertEqual(len(found["errors"]), 1, found)
+        for text in ["ssh tries 1 address of fake.local that does not answer before 192.0.2.7, which answered in 0.00 s: "
+                     "fe80::1%en0, no answer in 10 s (10.0 s)", "up to ConnectTimeout's 10 s for it",
+                     "add `AddressFamily inet` under `Host fake` in ~/.ssh/config, so ssh tries only IPv4"]:
+            self.assertIn(text, found["errors"][0])
+        # The rest of the comparison still runs, and passes.
+        self.assertEqual((found["unchecked"], found["leftovers"]), ([], []), found)
+        with self.subTest("the same family"):
+            self.reached["addresses"] = [{**dead, "address": "192.0.2.9"}, used]
+            status, found = self.doctor()
+            self.assertEqual(status, 1)
+            self.assertIn("ssh tries 1 address of fake.local that does not answer before 192.0.2.7", found["errors"][0])
+            self.assertIn("make those addresses answer, or name in `Host fake`", found["errors"][0])
+            self.assertNotIn("AddressFamily", found["errors"][0])
+        with self.subTest("refused at once"):
+            # ssh moves on from a refusal at once, so it costs nothing.
+            self.reached["addresses"] = [{**dead, "seconds": 0.001, "outcome": "Connection refused"}, used]
+            self.assertEqual(self.doctor()[0], 0)
+        with self.subTest("the first answers"):
+            self.reached["addresses"] = [used, later]
+            self.assertEqual(self.doctor()[0], 0)
+        with self.subTest("none answers"):
+            # The comparison that connects says what is wrong; this adds nothing.
+            self.reached["addresses"] = [dead, {**dead, "address": "192.0.2.7"}]
+            status, found = self.doctor()
+            self.assertEqual((status, found["errors"]), (0, []), found)
+        with self.subTest("through a proxy"):
+            self.reached = {"hostname": "fake", "port": 22, "addressFamily": "any",
+                            "unchecked": "how ssh connects to fake, which it reaches through jump"}
+            status, found = self.doctor()
+            self.assertEqual((status, found["errors"], found["unchecked"]),
+                             (0, [], ["how ssh connects to fake, which it reaches through jump"]), found)
+
+
+# `ssh -G` for ConnectionTests: the settings FAKE_SETTINGS names, one per line.
+SETTINGS_SSH = """#!/bin/sh
+[ "$1" = -G ] || exit 255
+printf '%b' "$FAKE_SETTINGS"
+"""
+
+
+class ConnectionTests(unittest.TestCase):
+    """remote.connection over real sockets on this Mac: a port that listens and one that refuses, with
+    getaddrinfo answering for the build host's name."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        tools = Path(self.temp.name) / "bin"
+        tools.mkdir()
+        (tools / "ssh").write_text(SETTINGS_SSH)
+        (tools / "ssh").chmod(0o755)
+        self.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.listener.bind(("127.0.0.1", 0))
+        self.listener.listen(8)
+        self.port = self.listener.getsockname()[1]
+        closed = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        closed.bind(("127.0.0.1", 0))
+        self.closed = closed.getsockname()[1]
+        closed.close()
+        self.environment = patch.dict(os.environ, {"PATH": f"{tools}{os.pathsep}{os.environ['PATH']}",
+                                                   "FAKE_SETTINGS": f"hostname fake.local\\nport {self.port}\\n"})
+        self.environment.start()
+        self.asked = []
+
+    def tearDown(self):
+        self.environment.stop()
+        self.listener.close()
+        self.temp.cleanup()
+
+    def resolving(self, *ports):
+        """getaddrinfo for fake.local: 127.0.0.1 at each of ports, in order."""
+        def resolve(name, port, family=0, kind=0, *rest):
+            self.asked.append((name, port, family, kind))
+            if name != "fake.local": raise socket.gaierror(socket.EAI_NONAME, "nodename nor servname provided")
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", each)) for each in ports]
+        return patch.object(remote.socket, "getaddrinfo", side_effect=resolve)
+
+    def test_addresses_are_connected_to_in_order_until_one_answers_as_ssh_does(self):
+        with self.resolving(self.closed, self.port, self.port):
+            found = remote.connection("build-host")
+        self.assertEqual(self.asked, [("fake.local", self.port, socket.AF_UNSPEC, socket.SOCK_STREAM)])
+        self.assertEqual((found["hostname"], found["port"], found["addressFamily"]), ("fake.local", self.port, "any"))
+        outcomes = [(entry["address"], entry["outcome"]) for entry in found["addresses"]]
+        self.assertEqual(outcomes, [("127.0.0.1", "Connection refused"), ("127.0.0.1", "connected"),
+                                    ("127.0.0.1", "not tried: ssh connects to the one before it")])
+        self.assertNotIn("seconds", found["addresses"][2])
+        # A refusal costs ssh nothing, so it is no error.
+        self.assertIsNone(remote.slow_connection("build-host", found))
+
+    def test_an_address_that_does_not_answer_keeps_ssh_waiting_for_its_connect_timeout(self):
+        real = remote.reach
+        def reach(address, family, timeout):
+            # The first address takes no connection and sends no refusal, as a link-local address
+            # that nothing on the network carries does.
+            if address[1] == self.closed: return timeout, f"no answer in {timeout} s"
+            return real(address, family, timeout)
+        with self.resolving(self.closed, self.port), patch.object(remote, "reach", side_effect=reach):
+            found = remote.connection("build-host")
+        self.assertEqual([entry["outcome"] for entry in found["addresses"]], ["no answer in 10 s", "connected"])
+        self.assertIn("ssh tries 1 address of fake.local that does not answer before 127.0.0.1",
+                      remote.slow_connection("build-host", found))
+
+    def test_reach_times_a_connection_and_names_a_refusal_or_silence(self):
+        seconds, failure = remote.reach(("127.0.0.1", self.port), socket.AF_INET, 5)
+        self.assertIsNone(failure)
+        self.assertLess(seconds, 5)
+        self.assertEqual(remote.reach(("127.0.0.1", self.closed), socket.AF_INET, 5)[1], "Connection refused")
+        with patch.object(socket.socket, "connect", side_effect=socket.timeout("timed out")):
+            self.assertEqual(remote.reach(("127.0.0.1", self.port), socket.AF_INET, 3)[1], "no answer in 3 s")
+
+    def test_ssh_settings_choose_the_family_and_a_proxy_or_unresolved_name_is_reported(self):
+        with self.subTest("AddressFamily inet"):
+            with patch.dict(os.environ, {"FAKE_SETTINGS": f"hostname fake.local\\nport {self.port}\\naddressfamily inet\\n"}), \
+                    self.resolving(self.port):
+                found = remote.connection("build-host")
+            self.assertEqual(self.asked[-1][2], socket.AF_INET)
+            self.assertEqual(found["addresses"][0]["outcome"], "connected")
+        with self.subTest("a proxy"):
+            with patch.dict(os.environ, {"FAKE_SETTINGS": "hostname fake.local\\nproxyjump gateway\\n"}), \
+                    self.resolving(self.port):
+                asked = len(self.asked)
+                found = remote.connection("build-host")
+            self.assertEqual(found["unchecked"], "how ssh connects to build-host, which it reaches through gateway")
+            self.assertNotIn("addresses", found)
+            self.assertEqual(len(self.asked), asked)
+        with self.subTest("unresolved"):
+            with patch.dict(os.environ, {"FAKE_SETTINGS": "hostname gone.local\\n"}), self.resolving(self.port):
+                found = remote.connection("build-host")
+            self.assertEqual((found["hostname"], found["port"]), ("gone.local", 22))
+            self.assertIn("nodename nor servname provided", found["unresolved"])
+            self.assertIsNone(remote.slow_connection("build-host", found))
+        with self.subTest("no settings"):
+            # ssh that says nothing leaves the host's own name.
+            with patch.dict(os.environ, {"FAKE_SETTINGS": ""}), self.resolving(self.port):
+                found = remote.connection("fake.local")
+            self.assertEqual((found["hostname"], found["port"], found["addressFamily"]), ("fake.local", 22, "any"))
+
+    def test_an_unresolved_local_name_is_named_as_multicast_dns(self):
+        local = remote.unreachable("build-host", "ssh: Could not resolve hostname mac.local: nodename nor servname "
+                                                 "provided, or not known")
+        self.assertIn("build-host cannot be reached: ssh: Could not resolve hostname mac.local", local.problem)
+        self.assertIn("mac.local is a multicast DNS name, which resolves only while both Macs are awake on one network",
+                      local.fix)
+        self.assertIn("`dscacheutil -q host -a name mac.local`", local.fix)
+        self.assertIn("until `ssh build-host true` succeeds without a prompt", local.fix)
+        for detail in ["ssh: Could not resolve hostname mac.example.com: nodename nor servname provided, or not known",
+                       "ssh: connect to host mac.local port 22: Operation timed out", None]:
+            with self.subTest(detail):
+                other = remote.unreachable("build-host", detail)
+                self.assertNotIn("multicast", other.fix)
+                self.assertIn("wake build-host and connect it to the network", other.fix)
 
 
 # Starts as a fake ps listing prints them: the day of the month is padded, which a guard's record

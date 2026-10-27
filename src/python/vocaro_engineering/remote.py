@@ -15,9 +15,9 @@ snapshot's is not.
 anything runs, because its queue or every checkout is busy, the lane runs on this Mac instead.
 A configuration problem, such as a build host that cannot be reached or has another Xcode, stops
 the lane for the owner's decision (agents/core.md, Shared resources); only `--here` then runs it
-here. `eng doctor` compares the two Macs, and `eng remote setup --runtimes` gives both the same
-simulator runtimes. Before it sends work, and in `eng doctor`, it lists the processes there that
-earlier runs left running, which nothing stops.
+here. `eng doctor` compares the two Macs and times how ssh connects to the build host, and
+`eng remote setup --runtimes` gives both the same simulator runtimes. Before it sends work, and in
+`eng doctor`, it lists the processes there that earlier runs left running, which nothing stops.
 """
 import base64
 import binascii
@@ -30,6 +30,7 @@ import queue
 import re
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -47,8 +48,17 @@ DEFAULT_HOST = "build-host"
 ROOT = "Development/build-host"
 # Persistent checkouts per project on the build host; more wait for one to come free.
 CHECKOUTS = 4
-SSH = ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=30",
+# Seconds ssh waits for each address the build host's name resolves to before it tries the next.
+CONNECT_TIMEOUT = 10
+# ssh closes a connection that has heard nothing from the build host for about ServerAliveInterval
+# times ServerAliveCountMax seconds, two minutes (ssh_config(5)); a shorter silence leaves it open.
+SSH = ["ssh", "-T", "-o", "BatchMode=yes", "-o", f"ConnectTimeout={CONNECT_TIMEOUT}", "-o", "ServerAliveInterval=30",
        "-o", "ServerAliveCountMax=4"]
+# What getaddrinfo is asked for under each of ssh's AddressFamily values.
+FAMILIES = {"any": socket.AF_UNSPEC, "inet": socket.AF_INET, "inet6": socket.AF_INET6}
+# Seconds of sleep below which a dispatch is not said to have slept: the two clocks compared may
+# differ by a little without any.
+SLEEP_NOTED = 5
 REF = "refs/vocaro/build-host/"
 # Seconds a stopped run has to end on the build host before the connection is closed.
 STOP_WAIT = 120
@@ -118,10 +128,17 @@ def last_line(text):
 
 
 def unreachable(host, detail):
+    """A build host that ssh could not reach, as ssh's last line, detail, says. A .local name that did
+    not resolve is multicast DNS, which only both Macs awake on one network answer."""
+    unresolved = re.search(r"Could not resolve hostname (\S+?):", detail or "")
+    name = unresolved.group(1) if unresolved else None
+    wake = (f"wake {host} and connect it to this Mac's network: {name} is a multicast DNS name, which resolves only "
+            "while both Macs are awake on one network that passes multicast between them, as "
+            f"`dscacheutil -q host -a name {name}` shows" if name and name.rstrip(".").lower().endswith(".local")
+            else f"wake {host} and connect it to the network")
     return Misconfigured(f"{host} cannot be reached: {detail or 'ssh exited 255'}",
-                         f"wake {host} and connect it to the network, or correct its entry in ~/.ssh/config or "
-                         f"its authorized_keys, until `ssh {host} true` succeeds without a prompt "
-                         "(guides/shared-host.md, Setting up a build host)")
+                         f"{wake}, or correct its entry in ~/.ssh/config or its authorized_keys, until `ssh {host} true` "
+                         "succeeds without a prompt (guides/shared-host.md, Setting up a build host)")
 
 
 def no_toolkit(host, status, detail):
@@ -280,6 +297,32 @@ def group_files(config, lane):
     return [f"lanes/{member}{suffix}" for member in members for suffix in (".log", ".json")] if members else None
 
 
+def asleep():
+    """Seconds this Mac has slept since it started, or None where that cannot be read: a clock that runs
+    through sleep less one that stops for it. On macOS those are CLOCK_MONOTONIC_RAW and CLOCK_UPTIME_RAW,
+    which clock_gettime(3) describes as the same clock but for sleep; on Linux, CLOCK_BOOTTIME and
+    CLOCK_MONOTONIC. Only a difference of two readings means anything."""
+    for running, stopping in [("CLOCK_MONOTONIC_RAW", "CLOCK_UPTIME_RAW"), ("CLOCK_BOOTTIME", "CLOCK_MONOTONIC")]:
+        if hasattr(time, running) and hasattr(time, stopping):
+            try: return time.clock_gettime(getattr(time, running)) - time.clock_gettime(getattr(time, stopping))
+            except OSError: return None
+    return None
+
+
+def lost(host, status, said, dispatched, slept, output):
+    """What `eng remote` says of a run that returned no result: ssh's own last line, said, when it exits
+    255 for a failure of its own; when the run was dispatched and lost, in UTC; and how long this Mac
+    slept in between, of which slept is asleep()'s reading at the dispatch."""
+    now, sleeping = time.time(), asleep()
+    moment = lambda seconds: time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(seconds))
+    cause = f"ssh exited {status}" + (f": {said}" if status == 255 and said else "")
+    sleep = sleeping - slept if None not in (slept, sleeping) else 0
+    return (f"No result from {host} ({cause}); dispatched at {moment(dispatched)} and lost at {moment(now)}"
+            + (f", and this Mac slept for {sleep:.0f} s of that" if sleep >= SLEEP_NOTED else "")
+            + f". The run is unmeasured, and {host} stops it once its end of the connection closes. "
+            f"Its output is in {output}")
+
+
 def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, decline=False):
     """Run eng's work on the build host and return its exit status, with the log and receipt kept here.
 
@@ -348,7 +391,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     staging = results.with_name(f".{name}.{os.getpid()}")
     shutil.rmtree(staging, ignore_errors=True)
     staging.mkdir(parents=True)
-    started = time.time()
+    started, slept = time.time(), asleep()
     source = Path(build_host.__file__).read_text()
     command = [*SSH, host, login(shlex.join(["python3", "-c", source, json.dumps(plan)]))]
     lines, result, stopping = queue.Queue(), None, None
@@ -425,8 +468,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     shutil.rmtree(results, ignore_errors=True)
     staging.rename(results)
     if result is None:
-        raise RuntimeError(f"No result from {host} (ssh exited {channel.returncode}); the run is unmeasured. "
-                           f"Its output is in {results / 'output.log'}")
+        raise RuntimeError(lost(host, channel.returncode, stray, started, slept, results / "output.log"))
     # commit is what ran there: HEAD, or a snapshot of the working tree on it.
     receipt = {"host": host, "commit": commit, "head": head, "snapshot": commit != head,
                "toolkit": kit["commit"] if kit else commit, "lane": lane, "arguments": list(arguments),
@@ -993,18 +1035,116 @@ def leftover_lines(host, census, missing):
     return lines
 
 
+def ssh_settings(host):
+    """What `ssh -G` says ssh would use to reach host, by lowercase keyword; empty when it says nothing."""
+    try:
+        found = subprocess.run(["ssh", "-G", host], stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                               timeout=10, env=environment())
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    settings = {}
+    for line in found.stdout.splitlines() if found.returncode == 0 else []:
+        key, _, value = line.strip().partition(" ")
+        settings.setdefault(key.lower(), value.strip())
+    return settings
+
+
+def reach(address, family, timeout):
+    """The seconds a TCP connection to address took and None, or the seconds spent and why none was made."""
+    started = time.monotonic()
+    with socket.socket(family, socket.SOCK_STREAM) as attempt:
+        attempt.settimeout(timeout)
+        try:
+            attempt.connect(address)
+        except socket.timeout:
+            return time.monotonic() - started, f"no answer in {timeout} s"
+        except OSError as error:
+            return time.monotonic() - started, error.strerror or str(error)
+    return time.monotonic() - started, None
+
+
+def address_name(family, address):
+    """An address as ssh -v names it, with a link-local IPv6 address's interface."""
+    name = address[0]
+    if family == socket.AF_INET6 and "%" not in name and len(address) > 3 and address[3]:
+        with contextlib.suppress(OSError): name += "%" + socket.if_indextoname(address[3])
+    return name
+
+
+def connection(host, timeout=CONNECT_TIMEOUT):
+    """How ssh connects to host, as `eng doctor` reports it: the name and port `ssh -G` gives, and the
+    addresses that name resolves to under its AddressFamily, in the order ssh tries them. Each is
+    connected to in turn, as ssh does, for at most timeout seconds, until one answers; ssh tries none
+    after that one. A host reached through a proxy is not measured, and unchecked says so; a name that
+    does not resolve is reported in unresolved."""
+    settings = ssh_settings(host)
+    name, family = settings.get("hostname") or host, settings.get("addressfamily") or "any"
+    port = int(settings["port"]) if settings.get("port", "").isdigit() else 22
+    found = {"hostname": name, "port": port, "addressFamily": family}
+    proxy = next((settings[key] for key in ("proxyjump", "proxycommand") if settings.get(key, "none") != "none"), None)
+    if proxy is not None:
+        found["unchecked"] = f"how ssh connects to {host}, which it reaches through {proxy}"
+        return found
+    try:
+        resolved = socket.getaddrinfo(name, port, FAMILIES.get(family, socket.AF_UNSPEC), socket.SOCK_STREAM)
+    except (OSError, UnicodeError) as error:
+        found["unresolved"] = str(error)
+        return found
+    found["addresses"], answered = [], False
+    for kind, _type, _protocol, _canonical, address in resolved:
+        entry = {"address": address_name(kind, address)}
+        if answered:
+            entry["outcome"] = "not tried: ssh connects to the one before it"
+        else:
+            seconds, failure = reach(address, kind, timeout)
+            answered = failure is None
+            entry.update(seconds=round(seconds, 3), outcome=failure or "connected")
+        found["addresses"].append(entry)
+    return found
+
+
+def slow_connection(host, found, timeout=CONNECT_TIMEOUT):
+    """The error `eng doctor` reports when the first addresses ssh tries for host do not answer and keep
+    each connection waiting before a later one does, as the build host's link-local IPv6 address did,
+    10 s for each connection, until 2026-10-27; or None."""
+    tried = [entry for entry in found.get("addresses") or [] if "seconds" in entry]
+    if len(tried) < 2 or tried[-1]["outcome"] != "connected": return None
+    dead, used = tried[:-1], tried[-1]
+    if sum(entry["seconds"] for entry in dead) < 1: return None  # Refused at once, as ssh moves on at once.
+    ipv6 = ":" in used["address"]
+    if all((":" in entry["address"]) != ipv6 for entry in dead):
+        fix = (f"add `AddressFamily {'inet6' if ipv6 else 'inet'}` under `Host {host}` in ~/.ssh/config, so ssh tries "
+               f"only {'IPv6' if ipv6 else 'IPv4'}, or make the {'IPv4' if ipv6 else 'IPv6'} addresses answer")
+    else:
+        fix = f"make those addresses answer, or name in `Host {host}` in ~/.ssh/config a HostName that resolves to one that does"
+    plural = len(dead) > 1
+    waits = "; ".join(f"{entry['address']}, {entry['outcome']} ({entry['seconds']:.1f} s)" for entry in dead)
+    return (f"ssh tries {len(dead)} address{'es' if plural else ''} of {found['hostname']} that {'do' if plural else 'does'} "
+            f"not answer before {used['address']}, which answered in {used['seconds']:.2f} s: {waits}. So each "
+            f"connection to {host}, several in every run, first waits up to ConnectTimeout's {timeout} s for "
+            f"{'each' if plural else 'it'}, and an ssh without ConnectTimeout, such as a plain `ssh {host}`, waits out "
+            f"the system's TCP connection timeout; to fix it, {fix} (guides/shared-host.md, Setting up a build host)")
+
+
 def compare_hosts():
     """What `eng doctor` reports of the build host: this Mac's and the build host's default Xcodes
     (`xcode-select -p`), the Xcode at this Mac's developer directory, which every run there uses,
     and the simulator runtimes it lists. A difference, or a build host that cannot be reached, is
     an error; what could not be compared is named in unchecked. The processes there that runs left
-    running are listed in leftovers, which are no error: they say what to tell the owner."""
+    running are listed in leftovers, which are no error: they say what to tell the owner. How ssh
+    connects to it is in connection, and first addresses that keep each connection waiting are an
+    error too."""
     host = configured()
     report = {"host": host, "errors": [], "unchecked": []}
     if host is None:
         report["unchecked"].append(f"no build host is configured (VOCARO_BUILD_HOST, or the ssh alias {DEFAULT_HOST} "
                                    "in ~/.ssh/config), so this Mac was compared with none")
         return report
+    # Measured first, so that it also says why a build host that cannot be reached is not.
+    reached = report["connection"] = connection(host)
+    if reached.get("unchecked"): report["unchecked"].append(reached["unchecked"])
+    slow = slow_connection(host, reached)
+    if slow: report["errors"].append(slow)
     developer = developer_directory()
     here = report["local"] = build_host.toolchain(developer)
     try:
