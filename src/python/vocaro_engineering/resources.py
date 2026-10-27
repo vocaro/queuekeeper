@@ -4,10 +4,15 @@ The bridge holds StudyWright's shlock while publishing a guard; old gate/warm-pu
 already wait on that guard. Exclusive work holds every old PDF slot. Crashed owners retain
 their guard for explicit inspection rather than treating a deadline as release.
 
-HEAVY_SLOTS jobs are always admitted. More, up to HEAVY_SLOTS_MAX, are admitted one at a time
-while the load average and memory pressure show spare capacity: a fixed count left the host
-idle behind jobs waiting on simulators, while ten unqueued builds starved watchdogd until the
-kernel panicked (2026-10-14). Admission cannot preempt a job that becomes heavy later.
+HEAVY_SLOTS jobs are always admitted while no exclusive request waits. More, up to
+HEAVY_SLOTS_MAX, are admitted one at a time while the load average and memory pressure show
+spare capacity: a fixed count left the host idle behind jobs waiting on simulators, while ten
+unqueued builds starved watchdogd until the kernel panicked (2026-10-14). Admission cannot
+preempt a job that becomes heavy later.
+
+Exclusive requests queue in arrival order, and every other request waits behind a live one, so
+an exclusive request waits only for the work running when it asked. While heavy jobs kept
+taking freed slots, exclusive gates waited for hours (October 2026).
 """
 import argparse
 import contextlib
@@ -30,6 +35,17 @@ FREE_WAIT, BUSY = 5, 75
 def process_start(pid):
     result = subprocess.run(["ps", "-p", str(pid), "-o", "lstart="], capture_output=True, text=True)
     return result.stdout.strip() if result.returncode == 0 else None
+
+
+def running(record):
+    """Whether the process a guard owner or queued request recorded still runs as itself."""
+    if process_start(record["pid"]) != record.get("start"):
+        return False
+    try:
+        os.kill(record["pid"], 0)
+    except ProcessLookupError:
+        return False
+    return True
 
 
 def slot_directory():
@@ -144,10 +160,13 @@ class Admission:
         self.waiting = None
         self.legacy = Path(os.environ.get("SW_GATE_LOCK_FILE", "/tmp/studywright-gate-suite.lock"))
         self.guard = Path(str(self.legacy) + ".warm-push-guard")
+        # Exclusive requests waiting for admission, first come first.
+        self.queue = self.directory / "exclusive-queue.json"
         self.identity = uuid.uuid4().hex
         self.descriptors = []
         self.previous = None
         self.reused = False
+        self.queued = False
 
     def _recorded(self):
         """The published guard with its owners unvalidated, or None if it is foreign or unreadable."""
@@ -167,13 +186,39 @@ class Admission:
             return None
         # Never reclaim a disappeared owner: its children may still use a different session.
         for owner in value.get("owners", {}).values():
-            if owner.get("uncertain") or process_start(owner["pid"]) != owner.get("start"):
-                return None
-            try:
-                os.kill(owner["pid"], 0)
-            except ProcessLookupError:
+            if owner.get("uncertain") or not running(owner):
                 return None
         return value
+
+    def _waiters(self):
+        """The live exclusive requests, first come first. The caller holds the coordination lock.
+
+        A queued request holds no slot and has started nothing, so the record of one whose
+        process ended or whose identity changed is dropped, where a guard owner's is kept.
+        """
+        try:
+            recorded = json.loads(self.queue.read_text())["waiters"]
+            live = [waiter for waiter in recorded if running(waiter)]
+        except FileNotFoundError:
+            return []
+        except (OSError, ValueError, KeyError, TypeError):
+            # Only admission writes the queue, atomically. Losing an unreadable queue's order
+            # stops nobody: each live request records itself again at its next attempt.
+            recorded, live = None, []
+        if live != recorded:
+            self._record(live)
+        return live
+
+    def _record(self, waiters):
+        if waiters: publish_guard(self.queue, {"vocaroEngineering": 1, "waiters": waiters})
+        else: self.queue.unlink(missing_ok=True)
+
+    def _withdraw(self):
+        """Take this request out of the queue when it stops waiting without admission."""
+        with (self.directory / "coordination.lock").open("a+") as bridge:
+            fcntl.flock(bridge, fcntl.LOCK_EX)
+            self._record([waiter for waiter in self._waiters() if waiter["identity"] != self.identity])
+        self.queued = False
 
     def _legacy_lock(self):
         if Path("/usr/bin/shlock").is_file():
@@ -216,9 +261,23 @@ class Admission:
         self.directory.mkdir(parents=True, exist_ok=True)
         with (self.directory / "coordination.lock").open("a+") as bridge:
             fcntl.flock(bridge, fcntl.LOCK_EX)
+            waiters = self._waiters()
+            if self.exclusive and all(waiter["identity"] != self.identity for waiter in waiters):
+                # Its first attempt sets its place, whatever refuses it now.
+                born = process_start(os.getpid())
+                if born is None:
+                    raise RuntimeError("Cannot establish the admission owner's process identity")
+                waiters.append({"identity": self.identity, "pid": os.getpid(), "start": born, "label": self.label[:160]})
+                # Set first, so that leaving the wait by any exception withdraws the record.
+                self.queued = True
+                self._record(waiters)
             state = self._guard()
             if state is None:
                 self.waiting = "a foreign, dead or uncertain guard owner requires inspection"
+                return False
+            if waiters and waiters[0]["identity"] != self.identity:
+                # Work already admitted runs on; nothing new starts before the exclusive request.
+                self.waiting = f"it waits behind exclusive work: {waiters[0]['label']}"
                 return False
             if not self._legacy_lock():
                 self.waiting = "a legacy gate holds its lock"
@@ -245,6 +304,10 @@ class Admission:
                                                     "exclusive": self.exclusive}
                 # A legacy keeper cannot obtain shlock until this publication finishes.
                 publish_guard(self.guard, state)
+                if self.exclusive:
+                    # The next exclusive request waits for these slots, and every other behind it.
+                    self._record(waiters[1:])
+                    self.queued = False
                 locks = []
                 for slot, fd in self.descriptors:
                     os.ftruncate(fd, 0)
@@ -264,17 +327,22 @@ class Admission:
         from vocaro_engineering.processes import Interrupted, requested
         started = time.monotonic()
         reported = None
-        while not self._attempt():
-            # Nothing is published yet, so a stop leaves nothing to release.
-            if requested() is not None:
-                raise Interrupted(requested(), "while waiting for admission")
-            waited = int(time.monotonic() - started)
-            if reported is None or waited - reported >= 300:
-                print(f"heavy: waiting ({waited}s): {self.waiting}", file=sys.stderr, flush=True)
-                reported = waited
-            if time.monotonic() - started >= self.timeout:
-                raise TimeoutError(f"Resource queue busy or an orphan requires inspection ({self.waiting}); no lock was reclaimed")
-            time.sleep(self.poll)
+        try:
+            while not self._attempt():
+                # Nothing is published yet but an exclusive request's place in the queue, so a
+                # stop or a timeout leaves nothing to release once it withdraws.
+                if requested() is not None:
+                    raise Interrupted(requested(), "while waiting for admission")
+                waited = int(time.monotonic() - started)
+                if reported is None or waited - reported >= 300:
+                    print(f"heavy: waiting ({waited}s): {self.waiting}", file=sys.stderr, flush=True)
+                    reported = waited
+                if time.monotonic() - started >= self.timeout:
+                    raise TimeoutError(f"Resource queue busy or an orphan requires inspection ({self.waiting}); no lock was reclaimed")
+                time.sleep(self.poll)
+        except BaseException:
+            if self.queued: self._withdraw()
+            raise
         print(f"heavy: slot {','.join(str(slot) for slot, _fd in self.descriptors)} after {int(time.monotonic() - started)}s: {self.label[:160]}", file=sys.stderr, flush=True)
         return self
 

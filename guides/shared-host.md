@@ -58,9 +58,28 @@ are fixed. A test that a busy host decided reports itself unmeasured, and its la
 however many workers it starts, so bound its build and test parallelism
 ([parallel tests](parallel-tests.md#bound-what-runs-at-once)).
 
-HEAVY_SLOTS jobs (3) are always admitted. Beyond them one job at a time is admitted, up to
-HEAVY_SLOTS_MAX (half the CPU count), while the one-minute load average is below
-HEAVY_LOAD_LIMIT (75% of the CPU count), macOS reports normal memory pressure
+`--jobs` does not bound every thread a build or test starts. A debug `swift test --jobs 2` is
+bounded: its compiler frontends are build-system tasks, and samples every 2 s found no more than
+two single-threaded frontends at once. A release `swift test -c release --jobs 2` is not, and
+cannot be bounded today: every module compiles with whole-module optimization and `-num-threads`
+set to the core count, and one frontend was sampled at 18 threads and 482% CPU. Swift Build
+appends its own `-num-threads` after `-Xswiftc -num-threads -Xswiftc 2`, and the last value wins;
+`swift build` has no way to pass a build setting through. A project whose gate builds in release
+documents its compiles as unbounded rather than passing a flag that does nothing.
+`xcodebuild test` takes a build task per core unless given `-jobs N`. A test that fans out with
+`DispatchQueue.concurrentPerform` runs a thread per core for as long as it runs, so the test
+bounds its own fan-out. These were measured on an 18-core M5 Max with Swift 6.4 and Xcode 27.1
+(27A9275), SwiftPM building through Swift Build (2026-10-23). A build's `-num-threads` values
+are in its Swift Build task store:
+
+```sh
+strings -n 1 .build/SCRATCH/out/Intermediates.noindex/XCBuildData/*.xcbuilddata/task-store.msgpack \
+  | grep -A1 -- '^-num-threads$'
+```
+
+While no exclusive request waits, HEAVY_SLOTS jobs (3) are always admitted. Beyond them one job
+at a time is admitted, up to HEAVY_SLOTS_MAX (half the CPU count), while the one-minute load
+average is below HEAVY_LOAD_LIMIT (75% of the CPU count), macOS reports normal memory pressure
 (`kern.memorystatus_vm_pressure_level` is 1), and no slot was taken in the last
 HEAVY_SETTLE_SECONDS (30) for the load average to show. Setting HEAVY_SLOTS_MAX to HEAVY_SLOTS
 restores a fixed limit. Admission cannot preempt: a job admitted while the host was quiet may
@@ -69,10 +88,23 @@ variables from its own environment, so set them for every session or for none: a
 job holds only the slots below its own maximum, and a caller with a higher one can take slots
 above it.
 
+Exclusive requests are admitted one at a time, in the order they asked. Each joins the queue,
+`exclusive-queue.json` in the slot directory, at its first attempt, and is admitted once it is
+first and every slot is free. While a live exclusive request waits, no other request is admitted
+ahead of it: a heavy request waits even when a guaranteed slot is free, and prints that it waits
+behind exclusive work. Jobs already running finish normally, so an exclusive request waits for
+the work admitted before it asked and for the exclusive requests ahead of it, never for heavy
+work that arrives later. Exclusive requests that follow one another hold heavy work back in turn.
+A queued request holds nothing: one whose process has ended, or whose PID now has another start
+time, is dropped from the queue, and a timeout or a stop takes the request out. A waiting process
+keeps its place for as long as it runs, even orphaned from the script that started it; stop that
+process to give up its place.
+
 Nested work reuses its inherited admission. Admission exports `VOCARO_RESOURCE_TOKEN` and keeps
 its lock descriptors open across exec. A nested `eng run`, resource CLI call or legacy gate
 validates the inherited descriptors against their lock files, the owner's nonce, its guard
-entry and its process start time, then runs inside the outer admission without taking a slot.
+entry and its process start time, then runs inside the outer admission without taking a slot,
+and without waiting behind a queued exclusive request, which waits for the outer job to end.
 Nesting the queue therefore never obtains a second slot, and an exclusive request inside shared
 admission is refused. Work that needs the whole machine asks for exclusive admission.
 
@@ -84,10 +116,11 @@ directory must not multiply the host's build budget.
 
 A wait is expected. Admission prints `heavy: waiting (Ns): REASON` when it starts waiting and
 every five minutes after, naming the reason: the guaranteed slots are busy and the load, memory
-pressure or settling time refuses another; a legacy gate holds its lock; or a foreign, dead or
+pressure or settling time refuses another; it waits behind exclusive work, named by its label;
+exclusive work needs every slot free; a legacy gate holds its lock; or a foreign, dead or
 uncertain guard owner requires inspection. After its timeout (5,400 s by default) admission
-fails without reclaiming any lock. A script that runs several jobs at once leaves at least one
-of the guaranteed HEAVY_SLOTS for other sessions.
+fails without reclaiming any lock, and an exclusive request leaves the queue. A script that runs
+several jobs at once leaves at least one of the guaranteed HEAVY_SLOTS for other sessions.
 
 Before a full gate, look for other sessions' runs across the host, not only under the usual
 worktree directory: sessions also test from checkouts elsewhere, such as a share under
@@ -785,7 +818,7 @@ appears, stop your processes, leave the dialog for the owner and say so. Samplin
 
 ## Lock reclamation
 
-Three kinds of marker coexist, and they are reclaimed differently:
+Four kinds of marker coexist, and they are reclaimed differently:
 
 - The legacy shlock gate file (`/tmp/studywright-gate-suite.lock` by default) holds a PID, and
   `shlock` reclaims it once that process is gone, so a killed gate does not strand the next one.
@@ -794,6 +827,11 @@ Three kinds of marker coexist, and they are reclaimed differently:
   or by time, because a dead keeper's compilers or simulator children can outlive it. Gates
   check the guard before trying `shlock`, and admission refuses to proceed while any guard owner
   is dead, foreign or uncertain.
+- The exclusive queue (`exclusive-queue.json` in the slot directory, changed only under its
+  `coordination.lock`) records each waiting exclusive request's PID, process start and label, in
+  arrival order. A queued request holds no slot and has started nothing, so admission drops one
+  whose process has ended or whose PID has another start time, and a request that times out or
+  is stopped takes itself out ([heavy-work admission](#heavy-work-admission)).
 - The device record's lock (`device-handoff.json.lock` beside the record) is an `flock` held for
   one change. The kernel releases it when its process ends, so it needs no reclamation, and its
   file is never removed. A reservation in the record ends only by its owner's release or an
