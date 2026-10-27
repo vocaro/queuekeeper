@@ -1,5 +1,6 @@
 import contextlib
 from io import StringIO
+import json
 from pathlib import Path
 import os
 import signal
@@ -8,7 +9,8 @@ import tempfile
 import time
 import unittest
 from unittest.mock import patch
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
+SOURCE = Path(__file__).resolve().parents[1] / "src/python"
+sys.path.insert(0, str(SOURCE))
 from vocaro_engineering import processes
 
 # Starts each descendant in its own session, as Xcode starts DTServiceHub apart from xcodebuild's
@@ -61,6 +63,81 @@ while how == "ends":
 (here / "orphaned").touch()
 if how == "stays": time.sleep(120)
 raise SystemExit(5)
+"""
+# An admission owner that never settles: it records itself in the guard, as eng admit does, and
+# ignores SIGTERM.
+STUCK_OWNER = READY + """import json, subprocess
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+start = subprocess.run(["ps", "-p", str(os.getpid()), "-o", "lstart="], capture_output=True, text=True).stdout.strip()
+Path(os.environ["SW_GATE_LOCK_FILE"] + ".warm-push-guard").write_text(json.dumps(
+    {"vocaroEngineering": 1, "owners": {"stuck": {"pid": os.getpid(), "start": start, "label": "stuck"}}}))
+(here / f'ready-{os.getpid()}').touch()
+time.sleep(120)
+"""
+# On SIGTERM starts a child, as an admission starts its ps samples; as "owner" it first records
+# itself in the guard. Once the supervisor has sampled that child twice, it leaves the guard and ends.
+SAMPLES = READY + """import json, subprocess
+role = "ROLE"
+guard = Path(os.environ["SW_GATE_LOCK_FILE"] + ".warm-push-guard")
+def stop(*_):
+    sample = subprocess.Popen([sys.executable, "-c", "import sys, time\\nfrom pathlib import Path\\n"
+                               "while Path(sys.argv[1]).exists(): time.sleep(0.05)", str(here)])
+    (here / f"sample-{role}.tmp").write_text(str(sample.pid))
+    (here / f"sample-{role}.tmp").replace(here / f"sample-{role}")
+signal.signal(signal.SIGTERM, stop)
+if role == "owner":
+    start = subprocess.run(["ps", "-p", str(os.getpid()), "-o", "lstart="], capture_output=True, text=True).stdout.strip()
+    guard.write_text(json.dumps({"vocaroEngineering": 1, "owners": {"owner": {"pid": os.getpid(), "start": start}}}))
+(here / f'ready-{os.getpid()}').touch()
+while not (here / f"sampled-{role}").exists(): time.sleep(0.01)
+if role == "owner": guard.unlink(missing_ok=True)
+"""
+# A lane's script that runs a nested admission, outlives a stop and records how the admission ended.
+LANE = """
+import signal, subprocess, sys
+from pathlib import Path
+signal.signal(signal.SIGTERM, lambda *_: None)
+status = subprocess.call(sys.argv[2:])
+Path(sys.argv[1], "status").write_text(str(status))
+raise SystemExit(status)
+"""
+# A nested admission's command that takes longer than the outer supervisor's KILL_AFTER to end
+# after SIGTERM, as DTServiceHub or a simulator's test runner can: it ends once that supervisor
+# reports SIGKILL waiting, the cue "due". With "leaves" it first leaves a descendant in its
+# session, as a daemon started between two samples does, which runs until the test's directory goes.
+SLOW_TO_END = """
+import os, signal, sys, time
+from pathlib import Path
+here, how = Path(sys.argv[1]), sys.argv[2]
+if how == "leaves":
+    if os.fork() == 0:
+        if os.fork() == 0:
+            os.setpgid(0, 0)
+            (here / "orphan.tmp").write_text(str(os.getpid()))
+            (here / "orphan.tmp").replace(here / "orphan")
+            began = time.monotonic()
+            while here.exists() and time.monotonic() - began < 120: time.sleep(0.05)
+        os._exit(0)
+    os.wait()
+    while not (here / "orphan").exists(): time.sleep(0.01)
+signal.signal(signal.SIGTERM, lambda *_: (here / "terminated").touch())
+(here / "command.tmp").write_text(str(os.getpid()))
+(here / "command.tmp").replace(here / "command")
+began = time.monotonic()
+while not (here / "due").exists() and time.monotonic() - began < 120: time.sleep(0.01)
+"""
+# The resource CLI, sampling only once its command is ready, so that a descendant the command
+# left first is never observed, as if it had been left between two samples.
+UNOBSERVING = """
+import sys, time
+from pathlib import Path
+from vocaro_engineering import processes, resources
+here, real = Path(sys.argv[1]), processes.snapshot
+def unobserved():
+    while not (here / "command").exists(): time.sleep(0.01)
+    return real()
+processes.snapshot = unobserved
+raise SystemExit(resources.main(sys.argv[2:]))
 """
 
 
@@ -196,6 +273,89 @@ class ProcessTests(unittest.TestCase):
                 self.assertEqual({pid for pid, birth in births.items() if current.get(pid, (0, 0, None))[2] == birth}, set())
                 self.assertIn("SIGTERM received; forwarding it to the command", error.getvalue())
 
+    def test_sigkill_waits_a_bounded_time_for_an_admission_owner_that_never_settles(self):
+        # An owner that never settles, as one behind a hung coordination lock would not, still ends:
+        # SIGKILL reaches it SETTLE_WAIT seconds after it was due, after a stop and after the grace.
+        self.addCleanup(processes._stops.clear)
+        limits = {"LINGER": 0.2, "KILL_AFTER": 0.5, "SETTLE_WAIT": 2}
+        for how in ["stop", "linger"]:
+            with self.subTest(how=how), tempfile.TemporaryDirectory() as directory:
+                processes._stops.clear()
+                here, real, births, begun, moments = Path(directory), processes.snapshot, {}, time.monotonic(), {}
+                def observed():
+                    if time.monotonic() - begun > 60: self.fail("supervision was still waiting after 60 s")
+                    current = real()
+                    try: root, owner = map(int, (here / "children").read_text().split())
+                    except FileNotFoundError: return current
+                    if not births and current.get(owner, (None,))[0] == root and (here / f"ready-{owner}").exists():
+                        births[owner] = current[owner][2]
+                        # A stop, or ROOT's exit once it sees its descendant adopted, starts the stop under test.
+                        moments["started"] = time.monotonic()
+                        if how == "stop": processes.request_stop(signal.SIGTERM)
+                        else: (here / "adopted").touch()
+                    if births and "ended" not in moments and current.get(owner, (0, 0, None))[2] != births[owner]:
+                        moments["ended"] = time.monotonic()
+                    return current
+                def cleanup():
+                    for pid, birth in births.items():
+                        if real().get(pid, (0, 0, None))[2] == birth: os.kill(pid, signal.SIGKILL)
+                self.addCleanup(cleanup)
+                with patch.object(processes, "snapshot", observed), patch.multiple(processes, create=True, **limits), \
+                     patch.dict(os.environ, {"SW_GATE_LOCK_FILE": str(here / "gate")}), \
+                     contextlib.redirect_stderr(StringIO()) as error:
+                    command = [sys.executable, "-c", ROOT, directory, STUCK_OWNER]
+                    if how == "stop":
+                        with self.assertRaises(processes.Interrupted): processes.supervise(command, cwd=directory)
+                    else:
+                        self.assertEqual(processes.supervise(command, cwd=directory), 3)
+                (owner, _birth), = births.items()
+                self.assertIn(f"admission owner(s) PID {owner} still running; SIGKILL waits", error.getvalue())
+                # A lower bound only, which a busy host cannot break.
+                due = (limits["LINGER"] if how == "linger" else 0) + limits["KILL_AFTER"]
+                self.assertGreaterEqual(moments["ended"] - moments["started"], due + limits["SETTLE_WAIT"])
+
+    def test_a_stop_leaves_an_admission_owners_new_children_to_it(self):
+        # Sent the stop's SIGTERM as each appeared, three of a nested admission's ps samples in a
+        # row ended, its supervision failed and its entry stayed uncertain (2026-10-27).
+        self.addCleanup(processes._stops.clear)
+        with tempfile.TemporaryDirectory() as directory:
+            here, real, births, begun, sampled = Path(directory), processes.snapshot, {}, time.monotonic(), set()
+            def observed():
+                if time.monotonic() - begun > 60: self.fail("supervision was still waiting after 60 s")
+                current = real()
+                try: root, *children = map(int, (here / "children").read_text().split())
+                except FileNotFoundError: return current
+                if not births and all(current.get(pid, (None,))[0] == root and (here / f"ready-{pid}").exists()
+                                      for pid in children):
+                    births.update({pid: current[pid][2] for pid in children})
+                    processes.request_stop(signal.SIGTERM)
+                for role in ["owner", "plain"]:
+                    # A child the previous sample saw has had its signal, or been left alone.
+                    sample = int((here / f"sample-{role}").read_text()) if (here / f"sample-{role}").exists() else None
+                    if sample in sampled: (here / f"sampled-{role}").touch()
+                    if sample in current:
+                        sampled.add(sample)
+                        births.setdefault(sample, current[sample][2])
+                return current
+            def cleanup():
+                for pid, birth in births.items():
+                    if real().get(pid, (0, 0, None))[2] == birth: os.kill(pid, signal.SIGKILL)
+            self.addCleanup(cleanup)
+            kill, sent = os.kill, []
+            def recorded(pid, number):
+                sent.append((pid, number))
+                kill(pid, number)
+            with patch.object(processes, "snapshot", observed), patch.object(processes, "KILL_AFTER", 0.5), \
+                 patch.object(processes, "SETTLE_WAIT", 60, create=True), patch.object(processes.os, "kill", recorded), \
+                 patch.dict(os.environ, {"SW_GATE_LOCK_FILE": str(here / "gate")}), contextlib.redirect_stderr(StringIO()):
+                with self.assertRaises(processes.Interrupted):
+                    processes.supervise([sys.executable, "-c", ROOT, directory, *(SAMPLES.replace("ROLE", role)
+                                         for role in ["owner", "plain"])], cwd=directory)
+            owner, plain = (int((here / f"sample-{role}").read_text()) for role in ["owner", "plain"])
+            self.assertIn((plain, signal.SIGTERM), sent, "a new child of another process was not sent the stop")
+            self.assertNotIn((owner, signal.SIGTERM), sent, "a new child of an admission owner was sent the stop")
+            self.assertIn((owner, signal.SIGKILL), sent)
+
     def orphaning(self, directory, how):
         """Supervise ORPHANS, sampling only once it has orphaned its grandchild, as if that all
         happened between two samples, so that only the census can find the grandchild."""
@@ -239,3 +399,91 @@ class ProcessTests(unittest.TestCase):
             with self.assertRaisesRegex(processes.Interrupted, "SIGHUP before"):
                 processes.supervise([sys.executable, "-c", f"open({str(Path(directory) / 'ran')!r}, 'w')"], cwd=directory)
             self.assertFalse((Path(directory) / "ran").exists())
+
+
+class NestedAdmissionTests(unittest.TestCase):
+    """A light lane that runs eng admit itself, stopped as eng run stops it. BreezEPUB's book-opening
+    lane admits its own preparation (#46): a stop's SIGKILL ended its eng admit while the admitted
+    command was still ending, and the entry it left refused every session's heavy work until
+    attended recovery (#53)."""
+
+    def stop(self, how, lane=True):
+        """Run the resource CLI, with a guard of its own, as a light lane's command or inside the
+        lane's script, and stop it once its command is ready. Returns the outcome, the supervisor's
+        stderr, the directory, how the admission ended as the script saw it, and the guard's owners."""
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        here = Path(temporary.name)
+        guard = here / "gate.warm-push-guard"
+        environment = {name: value for name, value in os.environ.items() if name != "VOCARO_RESOURCE_TOKEN"}
+        environment.update(PYTHONPATH=str(SOURCE), HEAVY_SLOT_DIR=str(here / "slots"), SW_GATE_LOCK_FILE=str(here / "gate"))
+        nested = [sys.executable, "-c", SLOW_TO_END, str(here), how]
+        admission = ([sys.executable, "-m", "vocaro_engineering.resources", "--", *nested] if how == "ends"
+                     else [sys.executable, "-c", UNOBSERVING, str(here), "--", *nested])
+        command = [sys.executable, "-c", LANE, str(here), *admission] if lane else admission
+        real, begun, births, roles, error = processes.snapshot, time.monotonic(), {}, {}, StringIO()
+        def running(role, current):
+            return roles.get(role) in births and current.get(roles[role], (0, 0, None))[2] == births[roles[role]]
+        def observed():
+            # The first sample waits for the command, after any descendant it leaves.
+            while not (here / "command").exists():
+                if time.monotonic() - begun > 60: self.fail("the admitted command was not ready within 60 s")
+                time.sleep(0.01)
+            if time.monotonic() - begun > 120: self.fail("supervision was still waiting after 120 s")
+            current = real()
+            if not births:
+                owner = next(iter(json.loads(guard.read_text())["owners"].values()))["pid"]
+                roles.update(command=int((here / "command").read_text()), admission=owner)
+                if lane and owner in current: roles["script"] = current[owner][0]
+                if (here / "orphan").exists(): roles["orphan"] = int((here / "orphan").read_text())
+                births.update({pid: current[pid][2] for pid in roles.values() if pid in current})
+                processes.request_stop(signal.SIGTERM)
+            # The command ends only once this supervisor's SIGKILL is due and waits for the admission.
+            waiting = "SIGKILL waits" in error.getvalue()
+            if waiting: (here / "due").touch()
+            # Once the admission it waits for has ended, the script records how before this
+            # supervisor sees it gone and sends SIGKILL to what remains, the script included.
+            while waiting and running("script", current) and not running("admission", current) \
+                    and not (here / "status").exists():
+                if time.monotonic() - begun > 120: self.fail("the lane's script recorded nothing within 120 s")
+                time.sleep(0.01)
+                current = real()
+            return current
+        def cleanup():
+            for pid, birth in births.items():
+                if real().get(pid, (0, 0, None))[2] == birth: os.kill(pid, signal.SIGKILL)
+        self.addCleanup(cleanup)
+        processes._stops.clear()
+        self.addCleanup(processes._stops.clear)
+        # This supervisor's KILL_AFTER is shorter than the admitted command takes to end, and than
+        # the nested admission's own. SETTLE_WAIT is long, so that a busy host cannot reach it.
+        with patch.object(processes, "snapshot", observed), patch.object(processes, "KILL_AFTER", 1), \
+             patch.object(processes, "SETTLE_WAIT", 300, create=True), contextlib.redirect_stderr(error):
+            try: outcome = processes.run(command, cwd=here, log_path=here / "lane.log", env=environment)
+            except (processes.Interrupted, RuntimeError) as raised: outcome = raised
+        status = (here / "status").read_text() if (here / "status").exists() else None
+        owners = json.loads(guard.read_text())["owners"] if guard.exists() else {}
+        return outcome, error.getvalue(), here, status, owners
+
+    def test_a_stopped_lane_lets_its_nested_admission_settle_before_sigkill_and_leaves_no_entry(self):
+        for lane in [True, False]:
+            with self.subTest(lane=lane):
+                outcome, error, here, status, owners = self.stop("ends", lane)
+                log = (here / "lane.log").read_text()
+                self.assertEqual(owners, {}, f"{error}\n{log}")
+                self.assertIsInstance(outcome, processes.Interrupted, f"{error}\n{log}")
+                self.assertTrue((here / "terminated").exists())
+                if lane:
+                    # The admission ended by the stop it carried out, not by SIGKILL.
+                    self.assertEqual(status, str(-signal.SIGTERM), f"{error}\n{log}")
+
+    def test_a_nested_admission_whose_command_leaves_a_descendant_still_leaves_its_entry_uncertain(self):
+        outcome, error, here, status, owners = self.stop("leaves")
+        log = (here / "lane.log").read_text()
+        orphan = int((here / "orphan").read_text())
+        # The admission settled its entry itself, as uncertain, once its census found the descendant.
+        self.assertEqual(status, str(-signal.SIGTERM), f"{error}\n{log}")
+        self.assertEqual([owner.get("uncertain") for owner in owners.values()], [True], f"{error}\n{log}")
+        self.assertIsInstance(outcome, RuntimeError)
+        self.assertIn(f"PID {orphan} (group {orphan}, session ", str(outcome))
+        self.assertIn("reservation retained", str(outcome))

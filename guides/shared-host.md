@@ -846,12 +846,12 @@ Supervise the process group you own. The toolkit's `processes.supervise`, which 
   admission over a typo.
 - `eng admit`, `eng run` and the resource CLI carry out SIGTERM, SIGINT and SIGHUP as a stop
   ([lock reclamation](#lock-reclamation)). The supervisor forwards the signal to the root's group
-  and to each observed descendant, sends SIGKILL to what remains 10 s later, and raises
-  `Interrupted` once the root and every observed descendant have ended and the census finds
-  nothing. A later signal does not hasten SIGKILL, because a task stop can deliver its SIGTERM
-  twice, to the process group and to the process. A stop sent to the whole process tree can end
-  a sample's own `ps`, which is then asked again. A signal the caller ignores, as `nohup` ignores
-  SIGHUP, stays ignored.
+  and to each observed descendant, sends SIGKILL to what remains 10 s later, or once a nested
+  admission has settled (below), and raises `Interrupted` once the root and every observed
+  descendant have ended and the census finds nothing. A later signal does not hasten SIGKILL,
+  because a task stop can deliver its SIGTERM twice, to the process group and to the process. A
+  stop sent to the whole process tree can end a sample's own `ps`, which is then asked again. A
+  signal the caller ignores, as `nohup` ignores SIGHUP, stays ignored.
 - A lane's `timeout` that expires while the root runs is carried out the same way with SIGTERM:
   once to the root's group and to each observed descendant, SIGKILL to what remains 10 s later,
   and `TimedOut` once all have ended and the census finds nothing. The run is unmeasured
@@ -859,6 +859,26 @@ Supervise the process group you own. The toolkit's `processes.supervise`, which 
   or one the census finds, leaves the guard uncertain. Until 2026-10-23 the timeout sent SIGTERM
   again every 50 ms, never sent descendants SIGKILL, and left the guard uncertain even when
   everything had ended.
+- SIGKILL waits for a nested admission to settle. When SIGKILL falls due, after a stop, a timeout
+  or the grace, and the root or an observed descendant is an admission owner (its PID and start
+  time are an owner's in the guard), the supervisor sends no SIGKILL until every such owner has
+  ended, for at most `SETTLE_WAIT` (30 s) more. Such an owner is an `eng admit` or resource CLI
+  run inside a command that holds no admission, such as a light lane's script, so it has a guard
+  entry of its own. It has received the signal too, so it stops its own command, with its own
+  10 s to SIGKILL and 5 s after, and then removes its entry, or keeps it uncertain if a process
+  of its command is left. Then SIGKILL reaches what remains, an owner that never settled
+  included, which leaves its entry for attended recovery; a stopped or timed-out run is
+  uncertain if any process is still running 5 s after that SIGKILL. Until 2026-10-27 SIGKILL
+  came 10 s after the stop whatever ran, so a light lane whose script admits its own work, as
+  BreezEPUB's book-opening lane does, could end its `eng admit` while Xcode's tools were still
+  ending, and the entry left behind refused every session's heavy work until the guard was
+  recovered by hand.
+- After the first signal of a stop, a timeout or the grace, a process first seen later receives
+  that signal once, unless its parent is such an admission owner: the owner forwards the stop to
+  its command itself, and its other children are its own `ps` samples. While each new one was
+  sent SIGTERM, three in a row ended, the owner's supervision failed and its entry stayed
+  uncertain in 4 of 144 stops of a nested admission, run 12 at a time (2026-10-27, macOS 27.0.1,
+  Python 3.14.6).
 
 Terminate only an observed launch PID whose current executable still matches; an unknown or
 reused PID never authorizes termination, and a cleanup error keeps the first failure.
@@ -1093,6 +1113,17 @@ recovery. SIGKILL itself cannot be caught: a killed job's entry stays, dead, for
 recovery. Until 2026-10-22 none of these signals was handled. SIGTERM and SIGHUP ended the
 admitting process at once, leaving its entry dead and its command, in its own session, running
 unsupervised; SIGINT stopped only the command's process group and left the entry uncertain.
+
+A job admitted inside another supervised command, as when a light lane's script runs `eng admit`,
+is stopped in this order. The outer supervisor sends the stop's signal to the lane's processes,
+the nested `eng admit` and its command among them, and leaves the nested job's later children
+to it. The nested job marks its entry uncertain and stops its command: the signal, then SIGKILL
+10 s later. Once the command and every observed descendant have ended and its census finds
+nothing left, it removes its entry and ends by the signal; if any process is left, it keeps the
+entry uncertain and ends the same way. The outer
+supervisor sends SIGKILL to nothing while the nested job runs, up to 30 s beyond its own 10 s,
+and then to whatever remains ([process supervision](#process-supervision)). Only a nested job
+that has not settled in that time is killed with its entry in place.
 
 An agent's task stop is such a signal: Claude Code's TaskStop sends SIGTERM to every process
 descended from the task's shell, the command in its own session included, and SIGKILL 1.5 s

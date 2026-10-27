@@ -62,6 +62,22 @@ def running(record):
     return True
 
 
+def guard_owners(environment):
+    """Each owner the guard in this environment records, as (PID, process start with its spacing
+    collapsed), read as other readers read it, without the coordination lock. A missing, foreign
+    or unreadable guard records none."""
+    legacy = environment.get("SW_GATE_LOCK_FILE", "/tmp/studywright-gate-suite.lock")
+    try:
+        state = json.loads(Path(legacy + ".warm-push-guard").read_text())
+    except (OSError, ValueError):
+        return set()
+    owners = state.get("owners") if isinstance(state, dict) and state.get("vocaroEngineering") == 1 else None
+    if not isinstance(owners, dict):
+        return set()
+    return {(owner["pid"], " ".join(owner["start"].split())) for owner in owners.values()
+            if isinstance(owner, dict) and isinstance(owner.get("pid"), int) and isinstance(owner.get("start"), str)}
+
+
 def slot_directory():
     if os.environ.get("HEAVY_SLOT_DIR"):
         return Path(os.environ["HEAVY_SLOT_DIR"])

@@ -14,6 +14,11 @@ import time
 LINGER, KILL_AFTER = 60, 10
 # Seconds a stopped command's processes have after SIGKILL before the run is uncertain.
 KILL_WAIT = 5
+# Seconds beyond KILL_AFTER that SIGKILL waits while a live admission owner is among the processes,
+# as a nested eng admit in a light lane's script is: it stops its own command, with a KILL_AFTER
+# and KILL_WAIT of its own, then settles its guard entry, which SIGKILL would strand. It also
+# bounds an owner that never settles.
+SETTLE_WAIT = 30
 # The signals forwarding_signals carries out as a supervised stop. SIGKILL cannot be caught.
 STOP_SIGNALS = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
 _stops = []
@@ -65,6 +70,13 @@ def describe(pids, known, root):
     seen = "; ".join(f"{pid} with parent {known[pid][0]}, group {known[pid][1]}" for pid in pids)
     return (f"supervise: stopping {len(pids)} process(es) still running {LINGER:g}s after the command "
             f"(PID {root}) exited, with SIGTERM, then SIGKILL after {KILL_AFTER:g}s; first seen: {seen}\n{listing}")
+
+
+def owners(identities, environment):
+    """Those of these {PID: start} processes that the environment's admission guard records as owners."""
+    from vocaro_engineering.resources import guard_owners
+    recorded = guard_owners(environment)
+    return sorted(pid for pid, start in identities.items() if (pid, " ".join(start.split())) in recorded)
 
 
 class NotStarted(OSError):
@@ -141,6 +153,10 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
     admission releases; any still running KILL_WAIT seconds after SIGKILL leave it uncertain.
     A timeout that expires while the root runs is carried out the same way with SIGTERM, without
     on_stop, and the run raises TimedOut, which admission also releases.
+    Any SIGKILL waits up to SETTLE_WAIT seconds more while the root or an observed descendant is
+    an admission owner the guard records: a nested admission stops its own command and then
+    settles its entry, which SIGKILL would strand. After the first SIGTERM or stop signal, such an
+    owner's new children are left to it.
     """
     if requested() is not None:
         raise Interrupted(requested(), "before its command started")
@@ -163,6 +179,36 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
     # When the timeout expired and when a stop was first seen, whether the signal reached the
     # root's group, and who else had it.
     expired, stopped, group_forwarded, forwarded = None, None, False, set()
+    # Whether the stop's or timeout's first signal went out, and when its SIGKILL began.
+    signaled, killed = False, None
+    # Each process seen as an admission owner, as (PID, start), and the PIDs SIGKILL was reported waiting for.
+    recognized, reported = set(), set()
+
+    def recognize(identities):
+        """Those of these {PID: start} processes that are admission owners. One that has settled
+        its guard entry is an owner until it ends."""
+        recognized.update((pid, identities[pid]) for pid in owners(identities, environment))
+        return {pid for pid, start in recognized if identities.get(pid) == start}
+
+    def unowned(pids, identities):
+        """These processes but the children of an admission owner among these processes. The owner
+        forwards a stop to its command itself, and its other children are its own samples, which a
+        signal would end: three in a row fail its supervision and strand its entry."""
+        parents = {known[pid][0] for pid in pids} & identities.keys()
+        found = recognize({pid: identities[pid] for pid in parents}) if parents else set()
+        return {pid for pid in pids if known[pid][0] not in found}
+
+    def held(beyond, identities):
+        """Whether SIGKILL, due this many seconds ago, waits for an admission owner among these processes."""
+        if beyond >= SETTLE_WAIT: return False
+        found = recognize(identities)
+        if found - reported:
+            reported.update(found)
+            print(f"supervise: admission owner(s) PID {', '.join(map(str, sorted(found)))} still running; SIGKILL "
+                  f"waits up to {SETTLE_WAIT:g}s more for them to stop their commands, settle their guard entries "
+                  "and end", file=sys.stderr, flush=True)
+        return bool(found)
+
     try:
         while True:
             current = snapshot()
@@ -185,6 +231,7 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
                 known.update({pid: current[pid] for pid in added})
             live = {pid for pid, seen in known.items() if pid in current and current[pid][2] == seen[2]}
             for pid in live: spaces.update(space for space in (current[pid][1], session(pid)) if space is not None)
+            identities = {pid: known[pid][2] for pid in live} | ({child.pid: born} if root_active else {})
             if timeout is not None and exited is None and expired is None and time.monotonic() - started >= timeout:
                 expired = time.monotonic()
                 print(f"supervise: timed out after {timeout:g}s; sending SIGTERM to the command (PID {child.pid}) "
@@ -201,17 +248,22 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
                 if expired is not None or stopped is not None else None
             if ending is not None:
                 # A later signal does not hasten SIGKILL: a task stop can deliver its SIGTERM twice.
-                kill = time.monotonic() - ending >= KILL_AFTER
+                due = time.monotonic() - ending - KILL_AFTER
+                if killed is None and due >= 0 and not held(due, identities):
+                    killed = time.monotonic()
+                kill = killed is not None
                 number = signal.SIGKILL if kill else signum if signum is not None else signal.SIGTERM
                 # The stop's or timeout's signal once for each process, then SIGKILL until it is gone.
                 if root_active and (kill or not group_forwarded):
                     try: os.killpg(child.pid, number)
                     except (ProcessLookupError, PermissionError): pass
                     group_forwarded = True
-                for pid in live if kill else {pid for pid in live if (pid, known[pid][2]) not in forwarded}:
+                fresh = {pid for pid in live if (pid, known[pid][2]) not in forwarded}
+                for pid in live if kill else unowned(fresh, identities) if signaled else fresh:
                     try: os.kill(pid, number)
                     except (ProcessLookupError, PermissionError): pass
                 forwarded.update((pid, known[pid][2]) for pid in live)
+                signaled = True
             result = child.poll()
             cause = (f"Stopped by {signal.Signals(signum).name}" if signum is not None
                      else f"Timed out after {timeout:g}s" if expired is not None
@@ -231,7 +283,7 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
                     raise TimedOut(f"Owned command timed out after {timeout:g}s: {command[0]}; it and its observed "
                                    "descendants ended")
                 return result
-            if ending is not None and time.monotonic() - ending > KILL_AFTER + KILL_WAIT:
+            if killed is not None and time.monotonic() - killed > KILL_WAIT:
                 raise RuntimeError(f"{cause}, but owned descendants have no confirmed terminal result; "
                                    "reservation retained")
             if result is not None and expired is None and stopped is None:
@@ -240,10 +292,12 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
                 if overdue >= 0:
                     # SIGTERM once for each process, then SIGKILL, which cannot be caught, until it is gone.
                     fresh = {pid for pid in live if (pid, known[pid][2]) not in stopping}
+                    if stopping: fresh = unowned(fresh, identities)
                     if fresh: print(describe(fresh, known, child.pid), file=sys.stderr, flush=True)
                     stopping.update((pid, known[pid][2]) for pid in fresh)
-                    for pid in live if overdue >= KILL_AFTER else fresh:
-                        try: os.kill(pid, signal.SIGKILL if overdue >= KILL_AFTER else signal.SIGTERM)
+                    kill = overdue >= KILL_AFTER and not held(overdue - KILL_AFTER, identities)
+                    for pid in live if kill else fresh:
+                        try: os.kill(pid, signal.SIGKILL if kill else signal.SIGTERM)
                         except (ProcessLookupError, PermissionError): pass
             time.sleep(0.05)
     finally:
