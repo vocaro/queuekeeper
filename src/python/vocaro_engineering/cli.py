@@ -11,7 +11,7 @@ import subprocess
 import sys
 
 from . import __version__, devices, disk, docs, evidence, parallel, processes, remote, resources, spelling
-from .config import TOOLKIT_ROOT, CAPABILITIES, DEFAULT_TOOLKIT, FORMER_TOOLKIT, load, source_identity
+from .config import TOOLKIT_ROOT, CAPABILITIES, DEFAULT_TOOLKIT, load, source_identity
 from .resources import BUSY, FREE_WAIT
 from .simulators import matrix, pool as simulator_pool
 
@@ -34,11 +34,8 @@ MANIFESTS = ("Package.swift", "project.yml", "project.pbxproj")
 def unlinked_packages(root, config):
     """Warnings for toolkit packages that the project's tracked Swift manifests name by a relative
     path that does not resolve from this checkout, as from a linked worktree with no toolkit beside
-    it. The launcher falls back to the main checkout's sibling; Xcode and SwiftPM do not. With
-    the default path, a manifest may still name the toolkit by its former name."""
-    location = config.get("toolkit", {}).get("path", DEFAULT_TOOLKIT)
-    name = "|".join(re.escape(Path(path).name)
-                    for path in ([location, FORMER_TOOLKIT] if location == DEFAULT_TOOLKIT else [location]))
+    it. The launcher falls back to the main checkout's sibling; Xcode and SwiftPM do not."""
+    name = re.escape(Path(config.get("toolkit", {}).get("path", DEFAULT_TOOLKIT)).name)
     try:
         listed = subprocess.run(["git", "-C", str(root), "ls-files", "-z", "--", *(f"*{m}" for m in MANIFESTS)],
                                 capture_output=True, text=True, timeout=60, check=True).stdout
@@ -52,7 +49,7 @@ def unlinked_packages(root, config):
         base = manifest.parent.parent if manifest.name == "project.pbxproj" else manifest.parent
         try: text = manifest.read_text(errors="replace")
         except OSError: continue
-        for match in re.finditer(rf"((?:\.\./)+(?:{name}))/src/swift/[\w.-]+", text):
+        for match in re.finditer(rf"((?:\.\./)+{name})/src/swift/[\w.-]+", text):
             if not (base / match.group(0)).exists():
                 links.setdefault(Path(os.path.normpath(base / match.group(1))), set()).add(relative)
     return [f"{', '.join(sorted(manifests))} name{'s' if len(manifests) == 1 else ''} toolkit packages under {link}, "

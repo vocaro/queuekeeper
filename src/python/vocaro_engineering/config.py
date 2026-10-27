@@ -4,9 +4,8 @@ import os
 from pathlib import Path
 
 TOOLKIT_ROOT = Path(__file__).resolve().parents[3]
-# integrations/shared.py, copied into each project, keeps its own copy of these paths.
+# integrations/shared.py, copied into each project, keeps its own copy of this path.
 DEFAULT_TOOLKIT = "../vocaro-engineering"
-FORMER_TOOLKIT = "../apple-engineering"
 CAPABILITIES = {
     "simulator-pool", "voiceover", "background-mac",
     "packaging", "measurement", "native-python", "external-validation",
