@@ -368,6 +368,36 @@ class RemoteTests(unittest.TestCase):
                 self.assertEqual(status, 0, output + error)
                 self.assertIn(f"Ran 2 tests in {self.project.resolve()}", (local / "run.log").read_text())
 
+    def test_a_push_that_loses_the_race_for_a_ref_the_build_host_holds_has_sent_the_commit(self):
+        # Stands in for git: with FAKE_PUSH push lands the ref and then fails, as the push that loses
+        # to another session's push of the same commit does, and with FAKE_PUSH=fail it lands nothing.
+        real = shutil.which("git")
+        wrapper = self.tools / "git"
+        wrapper.write_text(f"""#!/bin/sh
+if [ "$3" = push ] && [ -n "$FAKE_PUSH" ]; then
+    [ "$FAKE_PUSH" = fail ] || {shlex.quote(real)} "$@" || exit
+    echo "error: cannot lock ref 'refs/vocaro/build-host/x': reference already exists" >&2
+    exit 1
+fi
+exec {shlex.quote(real)} "$@"
+""")
+        wrapper.chmod(0o755)
+        with patch.dict(os.environ, {"FAKE_PUSH": "race"}):
+            status, output, error = self.run_here("gate")
+        self.assertEqual(status, 0, output + error)
+        self.assertIn(f"Ran 2 tests in {self.checkout(0).resolve()}",
+                      (self.project / ".build/engineering/remote/gate/run.log").read_text())
+        # A push that lands nothing is still a configuration problem, and nothing runs here.
+        settings = json.loads((self.project / "engineering.json").read_text())
+        settings["lanes"]["gate"]["minimumTests"] = 1
+        (self.project / "engineering.json").write_text(json.dumps(settings, indent=2))
+        commit = commit_all(self.project)
+        with patch.dict(os.environ, {"FAKE_PUSH": "fail"}):
+            status, output, error = self.run_here("gate")
+        self.assertEqual(status, remote.MISCONFIGURED, output + error)
+        self.assertIn(f"fake did not receive {commit[:12]}", error)
+        self.assertFalse((self.project / ".build/engineering/gate").exists())
+
     def test_build_host_only_passes_the_build_hosts_status_through_and_never_runs_the_lane_here(self):
         status, output, error = self.run_here("--build-host-only", "gate")
         self.assertEqual(status, 0, output + error)

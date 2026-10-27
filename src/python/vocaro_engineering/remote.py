@@ -164,12 +164,18 @@ def ssh(host, script, **options):
 
 def send(root, host, repository, commit):
     """Push one commit by name to a bare repository on the build host, without the push hooks:
-    this is no publication, and a pre-push hook would run the gates this offloads."""
+    this is no publication, and a pre-push hook would run the gates this offloads.
+
+    Sessions that send one commit at once race for its ref, and the push that loses fails with
+    "reference already exists". The commit is then there all the same, so that push has sent it."""
     variables = {**environment(), "GIT_SSH_COMMAND": shlex.join(SSH)}
     result = subprocess.run(["git", "-C", str(root), "push", "--no-verify", "--quiet", "--receive-pack=git receive-pack",
                              f"{host}:{repository}", f"{commit}:{REF}{commit}"], env=variables,
                             capture_output=True, text=True)
     if result.returncode:
+        held = subprocess.run(["git", "-C", str(root), "ls-remote", "--upload-pack=git upload-pack",
+                               f"{host}:{repository}", f"{REF}{commit}"], env=variables, capture_output=True, text=True)
+        if held.returncode == 0 and held.stdout.split()[:1] == [commit]: return
         raise Misconfigured(f"{host} did not receive {commit[:12]} into ~/{repository} (git push exited "
                             f"{result.returncode}): {last_line(result.stderr) or 'no output'}",
                             f"repair ~/{repository} on {host}, or free space there, until the push succeeds")
