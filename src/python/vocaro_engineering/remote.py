@@ -1,12 +1,14 @@
 """Run a lane or an admitted command on the build host: a second Mac reached over SSH.
 
 Nothing here takes a slot on this host. The exact commit, and the toolkit commit that runs it,
-go to bare repositories on the build host by git over SSH, never through GitHub. build_host.py,
+go to bare repositories on the build host by git over SSH, never through GitHub. A working tree
+with uncommitted changes goes as a snapshot commit on HEAD, which no branch holds. build_host.py,
 sent along and run there by the host's own Python, checks them out in a persistent checkout,
 so builds stay warm, and runs `eng run` or `eng admit` under the build host's own heavy-work
 admission: that host's queue, not a private pool beside this one. The log and the result come
-back to this checkout's .build/engineering/remote. A whole lane's result is also kept by commit
-in the repository's Git directory, where every worktree of the repository can find it.
+back to this checkout's .build/engineering/remote. A whole lane's result at a commit is also kept
+by commit in the repository's Git directory, where every worktree of the repository can find it;
+a snapshot's is not.
 
 `eng run` sends a lane marked buildHost here first: when the build host declines it before
 anything runs, because its queue or every checkout is busy, the lane runs on this Mac instead.
@@ -23,6 +25,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 
@@ -49,6 +52,10 @@ GIT_LOCATION = {"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECT
 MISCONFIGURED = 78
 # Seconds `eng doctor` waits for the build host to report its Xcodes and runtimes.
 SURVEY_TIMEOUT = 180
+# The author and committer of a snapshot commit, which records a working tree rather than anyone's
+# work, and needs no identity configured in the session's git.
+SNAPSHOT_IDENTITY = {"GIT_AUTHOR_NAME": "eng snapshot", "GIT_AUTHOR_EMAIL": "snapshot@vocaro-engineering.invalid",
+                     "GIT_COMMITTER_NAME": "eng snapshot", "GIT_COMMITTER_EMAIL": "snapshot@vocaro-engineering.invalid"}
 
 
 # What every project's gates use on the build host (guides/shared-host.md, Setting up a build host).
@@ -115,20 +122,43 @@ def environment():
     return {key: value for key, value in os.environ.items() if key not in GIT_LOCATION}
 
 
-def git(root, *arguments):
+def git(root, *arguments, variables=None):
     result = subprocess.run(["git", "-C", str(root), *arguments], capture_output=True, text=True,
-                            env=environment(), timeout=120)
+                            env=variables or environment(), timeout=120)
     if result.returncode:
         raise RuntimeError(f"git {' '.join(arguments)} in {root} failed: {result.stderr.strip()}")
     return result.stdout.strip()
 
 
 def committed(root, untracked):
-    """HEAD of a checkout with nothing uncommitted: the build host runs commits, not working trees."""
+    """HEAD of a checkout with nothing uncommitted, as the toolkit's must be: only the project's
+    working tree goes as a snapshot."""
     status = git(root, "status", "--porcelain", f"--untracked-files={'normal' if untracked else 'no'}")
     if status:
         raise Unavailable(f"{root} has changes the build host would not run; commit them first:\n{status}")
     return git(root, "rev-parse", "HEAD")
+
+
+def snapshot(root):
+    """The commit that holds the checkout's working tree, and HEAD: HEAD itself when the tree is
+    HEAD's, otherwise a snapshot commit with HEAD as its parent, which no branch holds.
+
+    `git add -A` takes the working tree into a temporary index, a copy of the checkout's own:
+    tracked changes, deletions and nonignored untracked files, and no ignored file, as a commit
+    would. The session's own index, HEAD, branch and working tree are untouched."""
+    head = git(root, "rev-parse", "--verify", "HEAD^{commit}")
+    index = Path(git(root, "rev-parse", "--path-format=absolute", "--git-path", "index"))
+    with tempfile.TemporaryDirectory(prefix="eng-snapshot-") as directory:
+        variables = {**environment(), "GIT_INDEX_FILE": str(Path(directory) / "index")}
+        # The copy keeps the index's file stats, so git add reads only the files that changed.
+        if index.is_file(): shutil.copyfile(index, variables["GIT_INDEX_FILE"])
+        else: git(root, "read-tree", head, variables=variables)
+        git(root, "add", "-A", variables=variables)
+        tree = git(root, "write-tree", variables=variables)
+    if tree == git(root, "rev-parse", f"{head}^{{tree}}"): return head, head
+    commit = git(root, "commit-tree", tree, "-p", head, "-m", f"Snapshot of the working tree on {head}",
+                 variables={**environment(), **SNAPSHOT_IDENTITY})
+    return commit, head
 
 
 def common_directory(root):
@@ -186,14 +216,17 @@ def store(root):
 
 
 def passed(root, lane, revision="HEAD"):
-    """The receipt of a passing build-host run of the whole lane at exactly revision's commit, or None."""
+    """The receipt of a passing build-host run of the whole lane at exactly revision's commit, or None.
+
+    A snapshot's run never counts, for HEAD or for the snapshot itself: no branch holds it."""
     commit = git(root, "rev-parse", "--verify", f"{revision}^{{commit}}")
     try:
         receipt = json.loads((store(root) / commit / f"{lane}.json").read_text())
     except (OSError, ValueError):
         return None
     result = receipt.get("result", {})
-    whole = receipt.get("commit") == commit and receipt.get("lane") == lane and not receipt.get("arguments")
+    whole = receipt.get("commit") == commit and receipt.get("lane") == lane and not receipt.get("arguments") \
+        and not receipt.get("snapshot")
     return receipt if whole and result.get("exitStatus") == 0 and not result.get("stopped") else None
 
 
@@ -213,13 +246,14 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     """Run eng's work on the build host and return its exit status, with the log and receipt kept here.
 
     work is the build host's eng arguments: run [--expect N] LANE [-- ARGUMENTS] or
-    admit [--exclusive] -- COMMAND. With decline, the build host refuses work it cannot start now
-    rather than waiting for it, and Unavailable says why. Misconfigured says what of the build
+    admit [--exclusive] -- COMMAND. It runs at HEAD, or at a snapshot commit of the working tree
+    when that has uncommitted changes. With decline, the build host refuses work it cannot start
+    now rather than waiting for it, and Unavailable says why. Misconfigured says what of the build
     host's configuration kept the work from running there, and what fixing it takes.
     """
     toolkit = Path(TOOLKIT_ROOT).resolve()
     try:
-        commit = committed(root, untracked=True)
+        commit, head = snapshot(root)
         directory = checkout_name(root)
         kept = store(root) / commit
         kit = None
@@ -247,7 +281,8 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     repositories = [f"{ROOT}/{part['repository']}" for part in (project, kit) if part is not None]
     prepare = " && ".join([f"mkdir -p {shlex.quote(ROOT + '/repositories')}", *(
         f"{{ [ -d {shlex.quote(path)} ] || git init --bare --quiet {shlex.quote(path)}; }}" for path in repositories)])
-    print(f"remote: sending {commit[:12]} to {host}", file=sys.stderr, flush=True)
+    at = commit[:12] if commit == head else f"{commit[:12]}, a snapshot of the working tree on {head[:12]},"
+    print(f"remote: sending {at} to {host}", file=sys.stderr, flush=True)
     prepared = ssh(host, prepare, stdin=subprocess.DEVNULL, capture_output=True, text=True)
     # ssh's own failures, a name that does not resolve among them, exit 255.
     if prepared.returncode == 255: raise unreachable(host, last_line(prepared.stderr))
@@ -322,18 +357,20 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     if result is None:
         raise RuntimeError(f"No result from {host} (ssh exited {channel.returncode}); the run is unmeasured. "
                            f"Its output is in {results / 'output.log'}")
-    receipt = {"host": host, "commit": commit, "toolkit": kit["commit"] if kit else commit, "lane": lane,
-               "arguments": list(arguments), "expect": expect, "work": work, "local": local, "result": result,
-               "dispatched": started}
+    # commit is what ran there: HEAD, or a snapshot of the working tree on it.
+    receipt = {"host": host, "commit": commit, "head": head, "snapshot": commit != head,
+               "toolkit": kit["commit"] if kit else commit, "lane": lane, "arguments": list(arguments),
+               "expect": expect, "work": work, "local": local, "result": result, "dispatched": started}
     (results / "source.json").write_text(json.dumps(receipt, indent=2) + "\n")
-    if lane is not None and not arguments and expect is None:
+    # A snapshot's result stays here: no branch holds it, so it is no commit's pass.
+    if lane is not None and not arguments and expect is None and commit == head:
         kept.mkdir(parents=True, exist_ok=True)
         (kept / f"{lane}.json").write_text(json.dumps(receipt, indent=2) + "\n")
     if result.get("error"):
         raise RuntimeError(f"{host}: {result['error']}")
     status = result["exitStatus"]
     remote = result["host"]
-    print(f"remote: {name} at {commit[:12]} on {describe(remote)} in {result.get('checkout')}: "
+    print(f"remote: {name} at {at} on {describe(remote)} in {result.get('checkout')}: "
           f"{'stopped' if result['stopped'] else f'exit {status}'}; results in {results}", file=sys.stderr, flush=True)
     if (remote.get("macOS"), remote.get("build")) != (local.get("macOS"), local.get("build")):
         print(f"remote: the build host runs macOS {remote.get('macOS')} ({remote.get('build')}) and this Mac "
@@ -478,10 +515,12 @@ def setup(host, formulae, modules, check):
 def first(root, config, lane, arguments, expect, fallback=True):
     """Run a buildHost lane on the build host if it takes it now and return its status.
 
-    The build host declines a lane when none is configured, the tree has uncommitted changes, or its
-    queue or every checkout is busy. After saying why, return None, for the caller to run the lane on
-    this Mac, or without fallback BUSY. A configuration problem of the build host's stops the lane
-    instead: return MISCONFIGURED after saying what is wrong and what fixing it takes.
+    A tree with uncommitted changes goes as a snapshot commit (execute). The build host declines a
+    lane when none is configured or its queue or every checkout is busy, and nothing is sent when
+    Git cannot name the commits to send, as when the toolkit's checkout has changes to tracked files.
+    After saying why, return None, for the caller to run the lane on this Mac, or without fallback
+    BUSY. A configuration problem of the build host's stops the lane instead: return MISCONFIGURED
+    after saying what is wrong and what fixing it takes.
     """
     host = configured()
     if host is None:

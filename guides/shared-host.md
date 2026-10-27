@@ -172,36 +172,53 @@ it unlocked and the display awake
 ([lock screen and display sleep](background-mac-testing.md#lock-screen-and-display-sleep)), and
 the build host's screen is usually locked. A command started over SSH there can open an
 offscreen window, so a locked screen leaves such tests unmeasured as it does here, and it is
-not trusted for accessibility (observed on macOS 27.2 beta 26B5091g, October 2026). `eng run` sends a marked lane to the build host,
-which runs it only if it can start now. Its queue must admit the lane within five seconds
-(`eng run --if-free` there, which exits 75 without running otherwise), and one of the project's
-four checkouts there must be free. When the build host is only busy, or the tree has uncommitted
-changes, it declines before anything runs, and `eng run` says why and runs the lane here, under
-this Mac's admission as before. A configuration problem stops the lane instead, for the owner's
-decision ([shared resources](../agents/core.md#shared-resources)): when the build host cannot be
-reached or its name does not resolve, cannot receive the commit or run the toolkit, refuses the
-lane for any reason but being busy, as when its Xcode at this Mac's developer directory differs or
-every checkout holds changes a run left, or fails the project's `provision` lane, `eng run` runs
-nothing here. It says what is wrong and what fixing it takes, and exits 78 (`EX_CONFIG`). A run
-that starts there finishes there: a connection lost during it leaves the run unmeasured rather
-than running the lane a second time here.
+not trusted for accessibility (observed on macOS 27.2 beta 26B5091g, October 2026).
 
-`eng run --here` keeps a marked lane on this Mac, for instance when a session needs the lane's
-build products here, or, once the owner has decided so, while the build host is misconfigured.
+`eng run` sends a marked lane to the build host, whole or filtered (`eng run LANE -- FILTER`),
+over the working tree as it is: a tree with uncommitted changes or new files goes as a snapshot
+commit ([how a run reaches the build host](#how-a-run-reaches-the-build-host)), so a session's
+iteration over its edits runs there too. The build host runs the lane only if it can start now.
+Its queue must admit the lane within five seconds (`eng run --if-free` there, which exits 75
+without running otherwise), and one of the project's four checkouts there must be free. When the
+build host is only busy, it declines before anything runs, and `eng run` says why and runs the
+lane here, under this Mac's admission as before. It does the same when the toolkit's checkout has
+changes to tracked files, since the toolkit goes only as a commit. A configuration problem stops
+the lane instead, for the owner's decision
+([shared resources](../agents/core.md#shared-resources)):
+when the build host cannot be reached or its name does not resolve, cannot receive the commit or
+run the toolkit, refuses the lane for any reason but being busy, as when its Xcode at this Mac's
+developer directory differs or every checkout holds changes a run left, or fails the project's
+`provision` lane, `eng run` runs nothing here. It says what is wrong and what fixing it takes, and
+exits 78 (`EX_CONFIG`). A run that starts there finishes there: a connection lost during it leaves
+the run unmeasured rather than running the lane a second time here.
+
+`eng run --here` keeps a marked lane on this Mac, for instance a build whose products the session
+uses here, or, once the owner has decided so, any lane while the build host is misconfigured.
 Nested work runs inside the admission it inherits, here. `eng run` looks for
 the build host only when `VOCARO_BUILD_HOST` names one or `~/.ssh/config` defines the
 `build-host` alias, which `ssh -G` reports; `VOCARO_BUILD_HOST=none` keeps every lane here. A
 lane's results come back to `.build/engineering/remote/LANE/` when it ran on the build host and
 stay in `.build/engineering/LANE/` when it ran here; the last lines `eng run` prints name them.
 
+`eng admit -- COMMAND` always runs here. Its command runs in the current directory, often a
+subdirectory of the checkout, and names paths relative to it, absolute paths in this checkout or
+in a scratch directory, and often a simulator or device by its identifier, all of which belong to
+this Mac. What it leaves, such as a build's products, DerivedData or a result bundle, is often
+what the session uses next, here, and nothing about a command tells a test from such a build. Run
+on the build host, in another checkout at another path, it would read and write the wrong places.
+Verification belongs in a `buildHost` lane instead, which `eng run LANE -- FILTER` sends over the
+session's edits; `eng remote admit -- COMMAND` sends a command on purpose, to run in the root of
+a build host checkout.
+
 A caller that holds or will take its own admission here, such as a push keeper that runs a gate
 under the push's one admission, offers the lane with `eng run --build-host-only LANE` instead:
 `eng run` would run a declined lane under an admission of its own, and the caller would then run
-it a second time. The build host takes it on the same terms, but it never runs here. The command
-exits 75 (`BUSY`) when the build host declines the lane because none is configured, the tree has
-uncommitted changes or the build host is busy, and the caller then runs the lane itself. It exits
-78 when the build host is misconfigured, which stops the caller too, and otherwise with the
-lane's status there.
+it a second time. The build host takes it on the same terms, a tree with uncommitted changes as a
+snapshot, so the status is that of the working tree the caller would otherwise run; but it never
+runs here. The command exits 75 (`BUSY`) when the build host declines the lane because none is
+configured or the build host is busy, or when the toolkit's checkout has changes to tracked files,
+and the caller then runs the lane itself. It exits 78 when the build host is misconfigured, which
+stops the caller too, and otherwise with the lane's status there.
 
 `eng doctor` compares the two Macs and reports a difference as an error: their default Xcodes
 (`xcode-select -p` and its version), the Xcode at this Mac's developer directory, which every run
@@ -214,9 +231,20 @@ reached, and the whole comparison when no build host is configured.
 
 ### How a run reaches the build host
 
-`eng remote` runs HEAD, never a working tree: it refuses a checkout with uncommitted changes or
-nonignored untracked files. It takes no slot here. It pushes the commit, and the toolkit commit
-that runs it, by git over SSH and without hooks to bare repositories under
+`eng remote` runs a commit: HEAD when the working tree is HEAD's, and otherwise a snapshot commit
+of the working tree. It copies the checkout's index to a temporary file and, with
+`GIT_INDEX_FILE` naming the copy, takes the working tree with `git add -A`, tracked changes,
+deletions and nonignored untracked files alike, writes it with `git write-tree`, and makes the
+commit with `git commit-tree`, HEAD its parent. The session's own index, HEAD, branch and working
+tree are untouched, and no branch or other ref holds the snapshot. Ignored files stay out, as they
+do from a commit: the build host's checkout has ignored inputs of its own. A large untracked file
+that no `.gitignore` names is sent too, and its copy stays among the repository's objects until
+Git's garbage collection prunes the snapshot, so ignore what the build host does not need.
+`eng run`, `eng remote run` and `eng remote admit` all send work this way. The toolkit goes only
+as a commit: a toolkit checkout with changes to tracked files is refused.
+
+`eng remote` takes no slot here. It pushes the commit, and the toolkit commit that runs it, by git
+over SSH and without hooks to bare repositories under
 `~/Development/build-host` on the build host, so nothing reaches GitHub. There `build_host.py`,
 sent along and run by the host's own Python, takes one of four persistent checkouts of the
 project, checks the commit out detached with the toolkit beside it, and runs `eng run` or
@@ -237,6 +265,12 @@ whole lane's receipt is also kept by commit in the repository's Git directory, s
 `eng remote passed LANE` answers from any worktree whether the lane, without arguments, passed
 at exactly that commit. A later run of the lane at that commit replaces it. A push path that
 accepts it in place of running the gate again prints both Macs' macOS versions from the receipt.
+
+The receipt names the commit that ran (`commit`) and the HEAD it was sent from (`head`), the same
+commit unless `snapshot` is true. A snapshot's receipt stays in `.build/engineering/remote/LANE/`:
+no branch holds the snapshot, so its result is no commit's pass, and `eng remote passed` never
+counts it, for HEAD or for the snapshot itself. Commit the work and run the lane again for a pass
+that counts.
 
 A stop carries over. The build host's standard input is the dispatcher's lifeline: its end, from
 a stop signal, the dispatcher's death or a dropped connection, stops the run there as a stop

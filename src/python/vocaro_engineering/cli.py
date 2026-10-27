@@ -220,6 +220,8 @@ def judge(lane, result, log, extra=(), expect=None):
 
 
 def admit(root, args):
+    # A command always runs here, in the current directory: its paths, devices and products are this
+    # Mac's (guides/shared-host.md, Which Mac runs a lane). eng remote admit sends one on purpose.
     # Without a leading --, argparse collected the command, and a later -- belongs to it.
     command = args.command + ([] if args.passed is None else ["--", *args.passed]) if args.command else args.passed
     if not command: raise ValueError("Name the command: eng admit [--exclusive] -- COMMAND")
@@ -283,9 +285,9 @@ def main(argv=None):
         "LANE says whether the whole lane passed there at a commit")
     operations = distant.add_subparsers(dest="operation", required=True)
     remote_run = operations.add_parser("run", usage="%(prog)s [-h] [--host HOST] [--expect N] lane [-- ARGUMENTS ...]",
-        help="run a configured lane at HEAD on the build host")
-    remote_admit = operations.add_parser("admit", help="run a heavy command at HEAD on the build host, in its "
-        "checkout's root")
+        help="run a configured lane on the build host at HEAD, or at a snapshot commit of uncommitted work")
+    remote_admit = operations.add_parser("admit", help="run a heavy command on the build host, in its checkout's "
+        "root, at HEAD or at a snapshot commit of uncommitted work")
     remote_setup = operations.add_parser("setup", help="install on the build host, with Homebrew, the tools "
         f"every project's gates use ({', '.join(remote.SETUP_FORMULAE)}) and the formulae named, then check them as "
         "eng remote sees the build host; Homebrew itself the owner installs")
@@ -301,7 +303,7 @@ def main(argv=None):
     remote_admit.add_argument("--exclusive", action="store_true", help="hold every slot of the build host")
     remote_admit.add_argument("command", nargs=argparse.REMAINDER, help="the command and its arguments, after --")
     remote_passed = operations.add_parser("passed", help="exit 0 when the whole lane passed on the build host at "
-        "exactly this commit")
+        "exactly this commit; a snapshot's run never counts")
     remote_passed.add_argument("lane")
     remote_passed.add_argument("--commit", default="HEAD")
     evid = commands.add_parser("evidence")

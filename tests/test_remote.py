@@ -178,15 +178,16 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual(self.eng("remote", "passed", "check")[0], 1)
         self.assertEqual(self.eng("remote", "passed", "check", "--commit", self.commit)[0], 0)
 
-    def test_uncommitted_changes_and_foreground_lanes_are_refused_before_anything_is_sent(self):
-        (self.project / "engineering.json").write_text((self.project / "engineering.json").read_text() + "\n")
-        status, _output, error = self.eng("remote", "run", "check")
-        self.assertEqual(status, 2)
-        self.assertIn("commit them first", error)
-        git(self.project, "checkout", "--", "engineering.json")
-        (self.project / "notes.txt").write_text("untracked\n")
-        self.assertIn("commit them first", self.eng("remote", "run", "check")[2])
-        (self.project / "notes.txt").unlink()
+    def test_a_toolkit_with_uncommitted_changes_and_foreground_lanes_are_refused_before_anything_is_sent(self):
+        # Only the project's working tree goes as a snapshot; the toolkit runs at its commit.
+        (self.toolkit / "engineering.json").write_text((self.toolkit / "engineering.json").read_text() + "\n")
+        for operation in [["run", "check"], ["admit", "--", "true"]]:
+            with self.subTest(operation):
+                status, _output, error = self.eng("remote", *operation)
+                self.assertEqual(status, 2)
+                self.assertIn(f"{self.toolkit.resolve()} has changes the build host would not run; commit them first",
+                              error)
+        git(self.toolkit, "checkout", "--", "engineering.json")
         self.assertIn("foreground lanes run only here", self.eng("remote", "run", "screen")[2])
         self.assertFalse((self.home / remote.ROOT).exists())
 
@@ -422,9 +423,10 @@ exec {shlex.quote(real)} "$@"
             status, output, error = self.run_here("--build-host-only", "gate")
         self.assertEqual(status, remote.MISCONFIGURED, output + error)
         self.assertIn("fake cannot be reached", error)
-        (self.project / "notes.txt").write_text("uncommitted\n")
+        (self.toolkit / "engineering.json").write_text((self.toolkit / "engineering.json").read_text() + "\n")
         status, output, error = self.run_here("--build-host-only", "gate")
         self.assertEqual(status, resources.BUSY, output + error)
+        self.assertIn("eng: gate not run: ", error)
         self.assertIn("commit them first", error)
         # Never here, and no result of the build host's either.
         self.assertFalse((self.project / ".build/engineering/gate").exists())
@@ -436,7 +438,9 @@ exec {shlex.quote(real)} "$@"
         with self.assertRaises(SystemExit):
             self.run_here("--build-host-only", "--here", "gate")
 
-    def test_a_lane_stays_here_when_asked_unmarked_uncommitted_or_without_a_build_host(self):
+    def test_a_lane_stays_here_when_asked_unmarked_without_a_build_host_or_with_a_changed_toolkit(self):
+        # Uncommitted work would go as a snapshot, so none of these stays here for want of a commit.
+        (self.project / "notes.txt").write_text("uncommitted\n")
         for arguments in [["--here", "gate"], ["build"]]:
             with self.subTest(arguments):
                 self.assertEqual(self.run_here(*arguments)[0], 0)
@@ -446,12 +450,168 @@ exec {shlex.quote(real)} "$@"
                 if not setting: del os.environ["VOCARO_BUILD_HOST"]
                 self.assertEqual(self.run_here("gate")[0], 0)
         self.assertFalse((self.home / remote.ROOT).exists())
-        (self.project / "notes.txt").write_text("uncommitted\n")
+        (self.toolkit / "engineering.json").write_text((self.toolkit / "engineering.json").read_text() + "\n")
         status, _output, error = self.run_here("gate")
         self.assertEqual(status, 0)
-        self.assertIn("running gate on this Mac", error)
+        self.assertIn(f"running gate on this Mac: {self.toolkit.resolve()} has changes", error)
         self.assertIn("commit them first", error)
         self.assertFalse((self.home / remote.ROOT / "checkouts").exists())
+
+    def work_in_progress(self, checkout=None):
+        """Uncommitted work of every kind on a new commit: a tracked edit beyond what is staged, a
+        deletion, a new untracked file and an ignored input. Returns that commit."""
+        checkout = checkout or self.project
+        (checkout / ".gitignore").write_text(".build/\nignored-input.txt\n")
+        for name in ["edited.txt", "deleted.txt"]: (checkout / name).write_text("committed\n")
+        base = commit_all(checkout)
+        (checkout / "edited.txt").write_text("staged\n")
+        git(checkout, "add", "edited.txt")
+        (checkout / "edited.txt").write_text("edited\n")
+        (checkout / "deleted.txt").unlink()
+        (checkout / "new.txt").write_text("new\n")
+        (checkout / "ignored-input.txt").write_text("this Mac's own\n")
+        return base
+
+    def session(self, checkout=None):
+        """What a snapshot leaves as it was: HEAD and its branch, the index and the working tree."""
+        checkout = checkout or self.project
+        files = {name: (checkout / name).read_text() if (checkout / name).exists() else None
+                 for name in ["edited.txt", "deleted.txt", "new.txt", "ignored-input.txt"]}
+        return {"HEAD": git(checkout, "rev-parse", "HEAD"), "branch": git(checkout, "symbolic-ref", "-q", "HEAD"),
+                "cached": git(checkout, "diff", "--cached"), "stage": git(checkout, "ls-files", "--stage"),
+                "status": git(checkout, "status", "--porcelain", "--untracked-files=all"),
+                "diff": git(checkout, "diff"), "files": files}
+
+    def index(self, checkout=None):
+        return Path(git(checkout or self.project, "rev-parse", "--path-format=absolute", "--git-path", "index"))
+
+    def test_uncommitted_work_runs_on_the_build_host_as_a_snapshot_and_leaves_the_session_as_it_was(self):
+        base = self.work_in_progress()
+        before = self.session()
+        self.assertTrue(before["cached"] and before["diff"] and before["branch"], before)
+        results = self.project / ".build/engineering/remote/gate"
+        for filtered in [[], ["--", "a"]]:
+            with self.subTest(filtered):
+                # Read after git status, which may refresh the index's file stats.
+                index = self.index().read_bytes()
+                status, output, error = self.run_here("gate", *filtered)
+                self.assertEqual(status, 0, output + error)
+                self.assertEqual(self.index().read_bytes(), index)
+                self.assertEqual(self.session(), before)
+                receipt = json.loads((results / "source.json").read_text())
+                snapshot = receipt["commit"]
+                self.assertEqual((receipt["head"], receipt["snapshot"], receipt["arguments"]), (base, True, filtered[1:]))
+                self.assertEqual(git(self.project, "rev-parse", f"{snapshot}^@"), base)
+                self.assertEqual(receipt["result"]["receipt"]["project"]["revision"], snapshot)
+                self.assertIn(f"remote: sending {snapshot[:12]}, a snapshot of the working tree on {base[:12]}, to fake",
+                              error)
+                self.assertIn(f"gate at {snapshot[:12]}, a snapshot of the working tree on {base[:12]}, on ", error)
+                # The build host ran the working tree: the edit rather than what is staged, without the
+                # deleted file, with the new one, and without the ignored input, which stays here.
+                checkout = self.checkout(0)
+                self.assertEqual(git(checkout, "rev-parse", "HEAD"), snapshot)
+                self.assertIn(f"Ran 2 tests in {checkout.resolve()}", (results / "run.log").read_text())
+                self.assertEqual((checkout / "edited.txt").read_text(), "edited\n")
+                self.assertFalse((checkout / "deleted.txt").exists())
+                self.assertEqual((checkout / "new.txt").read_text(), "new\n")
+                self.assertFalse((checkout / "ignored-input.txt").exists())
+                self.assertNotIn("ignored-input.txt", git(self.project, "ls-tree", "-r", "--name-only", snapshot))
+                self.assertFalse((self.project / ".build/engineering/gate").exists())
+        # No branch or other ref of the session's holds a snapshot.
+        self.assertEqual(git(self.project, "for-each-ref", "--contains", snapshot), "")
+        self.assertEqual(git(self.project, "stash", "list"), "")
+
+    def test_a_snapshots_result_never_counts_as_a_pass_of_head_or_of_the_snapshot(self):
+        base = self.work_in_progress()
+        self.assertEqual(self.run_here("gate")[0], 0)
+        receipt = self.project / ".build/engineering/remote/gate/source.json"
+        snapshot = json.loads(receipt.read_text())["commit"]
+        self.assertEqual(json.loads(receipt.read_text())["result"]["exitStatus"], 0)
+        for commit in [base, snapshot]:
+            with self.subTest(commit):
+                self.assertEqual(self.eng("remote", "passed", "gate", "--commit", commit)[0], 1)
+                self.assertFalse((remote.store(self.project) / commit).exists())
+        self.assertEqual(self.eng("remote", "passed", "gate")[0], 1)
+        # Even a snapshot's receipt kept by commit counts for neither.
+        for commit in [base, snapshot]:
+            (remote.store(self.project) / commit).mkdir(parents=True)
+            shutil.copyfile(receipt, remote.store(self.project) / commit / "gate.json")
+            self.assertIsNone(remote.passed(self.project, "gate", commit))
+        # The same work committed is a commit's run, and its pass counts.
+        commit = commit_all(self.project)
+        self.assertEqual(git(self.project, "rev-parse", f"{commit}^{{tree}}"),
+                         git(self.project, "rev-parse", f"{snapshot}^{{tree}}"))
+        status, output, error = self.run_here("gate")
+        self.assertEqual(status, 0, output + error)
+        self.assertEqual(json.loads(receipt.read_text())["snapshot"], False)
+        self.assertEqual(git(self.checkout(0), "rev-parse", "HEAD"), commit)
+        self.assertEqual(self.eng("remote", "passed", "gate")[0], 0)
+
+    def test_uncommitted_work_comes_back_here_from_a_busy_build_host_and_stops_for_a_misconfigured_one(self):
+        self.work_in_progress()
+        before = self.session()
+        with self.busy_build_host():
+            status, output, error = self.run_here("gate")
+        self.assertEqual(status, 0, output + error)
+        self.assertIn("running gate on this Mac: fake did not take it: its heavy-work queue cannot take the lane now",
+                      error)
+        self.assertIn(f"Ran 2 tests in {self.project.resolve()}",
+                      (self.project / ".build/engineering/gate/run.log").read_text())
+        self.assertFalse((self.project / ".build/engineering/remote/gate").exists())
+        shutil.rmtree(self.project / ".build/engineering/gate")
+        with patch.dict(os.environ, {"FAKE_UNREACHABLE": "1"}):
+            status, output, error = self.run_here("gate")
+        self.assertEqual(status, remote.MISCONFIGURED, output + error)
+        self.assertIn("fake cannot be reached", error)
+        self.assertFalse((self.project / ".build/engineering/gate").exists())
+        self.assertEqual(self.session(), before)
+
+    def test_build_host_only_sends_uncommitted_work_as_a_snapshot(self):
+        base = self.work_in_progress()
+        status, output, error = self.run_here("--build-host-only", "gate", "--", "a")
+        self.assertEqual(status, 0, output + error)
+        receipt = json.loads((self.project / ".build/engineering/remote/gate/source.json").read_text())
+        self.assertEqual((receipt["head"], receipt["snapshot"], receipt["arguments"]), (base, True, ["a"]))
+        self.assertEqual(git(self.checkout(0), "rev-parse", "HEAD"), receipt["commit"])
+        with self.busy_build_host():
+            status, output, error = self.run_here("--build-host-only", "gate")
+        self.assertEqual(status, resources.BUSY, output + error)
+        self.assertIn("eng: gate not run: fake did not take it", error)
+        self.assertFalse((self.project / ".build/engineering/gate").exists())
+
+    def test_eng_remote_run_and_admit_send_uncommitted_work_as_a_snapshot(self):
+        base = self.work_in_progress()
+        before = self.session()
+        status, output, error = self.eng("remote", "run", "check", "--", "a")
+        self.assertEqual(status, 0, output + error)
+        receipt = json.loads((self.project / ".build/engineering/remote/check/source.json").read_text())
+        self.assertEqual((receipt["head"], receipt["snapshot"]), (base, True))
+        status, output, error = self.eng("remote", "admit", "--", sys.executable, "-c",
+                                         "print('new is', open('new.txt').read().strip())")
+        self.assertEqual(status, 0, output + error)
+        self.assertIn("new is new", output)
+        receipt = json.loads((self.project / ".build/engineering/remote/admit/source.json").read_text())
+        self.assertEqual((receipt["head"], receipt["snapshot"]), (base, True))
+        self.assertEqual(self.session(), before)
+
+    def test_a_tree_changed_only_in_ignored_files_runs_at_head_and_a_linked_worktree_keeps_its_own_index(self):
+        (self.project / ".build").mkdir()
+        (self.project / ".build/input").write_text("ignored\n")
+        self.assertEqual(remote.snapshot(self.project), (self.commit, self.commit))
+        # A session's linked worktree has an index of its own, which the snapshot copies.
+        linked = Path(self.temp.name) / "linked"
+        git(self.project, "worktree", "add", "-q", "-b", "session", str(linked))
+        base = self.work_in_progress(linked)
+        before, index = self.session(linked), self.index(linked).read_bytes()
+        main = self.index().read_bytes()
+        commit, head = remote.snapshot(linked)
+        self.assertEqual(head, base)
+        self.assertNotEqual(commit, base)
+        self.assertEqual((self.index(linked).read_bytes(), self.index().read_bytes()), (index, main))
+        self.assertEqual(self.session(linked), before)
+        self.assertEqual(git(linked, "show", f"{commit}:edited.txt"), "edited")
+        self.assertEqual(git(linked, "ls-tree", "-r", "--name-only", commit).split(),
+                         [".gitignore", "edited.txt", "engineering.json", "new.txt"])
 
     def test_nested_work_runs_its_lane_inside_the_admission_it_inherits(self):
         inner = [sys.executable, str(self.toolkit / "bin/eng"), "--project", str(self.project), "run", "gate"]
