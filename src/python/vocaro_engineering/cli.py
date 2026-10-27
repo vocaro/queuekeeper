@@ -227,6 +227,17 @@ def judge(lane, result, log, extra=(), expect=None):
     return result, []
 
 
+def lane_label(root, config, lane):
+    """A lane run's admission label: its project's name, a space and the lane, such as `EPUBLib gate`,
+    so that two projects' lanes of one name stay apart in waiting messages, the guard and the admission
+    log (#51). A space, as in the labels callers pass, such as `warm push REV`, and in an `eng admit`
+    command line; no configured project name or lane has one, and a colon would read as one more field
+    after the `: ` that waiting messages put before a label. The name is engineering.json's, else the
+    checkout's; a linked worktree's directory is named for its session, so it takes its main checkout's."""
+    name = config.get("name") or (project_adapter(TOOLKIT_ROOT).main_checkout(root) or root).name
+    return f"{name} {lane}"
+
+
 def admit(root, args):
     # A command always runs here, in the current directory: its paths, devices and products are this
     # Mac's (guides/shared-host.md, Which Mac runs a lane). eng remote admit sends one on purpose.
@@ -465,7 +476,7 @@ def main(argv=None):
                     else:
                         with contextlib.ExitStack() as stack:
                             try:
-                                admission = stack.enter_context(resources.Admission(args.lane,
+                                admission = stack.enter_context(resources.Admission(lane_label(root, config, args.lane),
                                     exclusive=resource == "exclusive", timeout=FREE_WAIT if args.if_free else 5400,
                                     model=lane.get("model", False)))
                             except TimeoutError as error:

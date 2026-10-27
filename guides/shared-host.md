@@ -128,6 +128,15 @@ inspection. After its timeout (5,400 s by default) admission fails without recla
 and an exclusive request leaves the queue. A script that runs several jobs at once leaves at
 least one of the guaranteed HEAVY_SLOTS for other sessions.
 
+A request's label names it in waiting messages, the guard and the [admission log](#admission-log).
+A lane run's label is its project's name, from engineering.json, a space and the lane, such as
+`EPUBLib gate`, so that the `gate` lanes of several projects, or the `tests` lanes of
+BackgroundTaskLib and FileHandoffLib, stay apart. A request waiting behind EPUBLib's gate prints
+`heavy: waiting (0s): it waits behind exclusive work: EPUBLib gate`. An `eng admit` request's label
+is its command line, and a caller that admits its own work names it, as StudyWright's push keeper
+does with `warm push REV`. A toolkit older than October 27, 2026 labels a lane run with the lane
+alone, as in `gate`; its guard entries, queued requests and log lines are read as they are.
+
 Before a full gate, look for other sessions' runs across the host, not only under the usual
 worktree directory: sessions also test from checkouts elsewhere, such as a share under
 `/private/tmp`. The brackets keep `grep` from matching its own command line:
@@ -197,8 +206,9 @@ A line holds:
 - `event`: `admitted`, `ended` or `withdrawn`.
 - `identity`: the request's nonce, which pairs an admission with its end and keys its guard entry;
   `pid`: the admitting process.
-- `kind`: `heavy`, `model` or `exclusive`; `label`: the lane or command, as waiting messages name
-  it, up to 160 characters.
+- `kind`: `heavy`, `model` or `exclusive`; `label`: the request's label, as waiting messages name
+  it, up to 160 characters: `EPUBLib gate` for EPUBLib's `gate` lane, the command line for
+  `eng admit`, or the label a caller gives, such as `warm push REV`.
 - `slots`: the slot numbers held, on `admitted` and `ended` lines.
 - `waited`: seconds from the request to its admission or withdrawal, on `admitted` and `withdrawn`
   lines; `held`: seconds from admission to its end, on `ended` lines.
@@ -225,7 +235,9 @@ holds, and how the admissions ended, `unlogged` for one with no `ended` line. A 
 the period in which it was admitted or withdrawn. A date or time without a zone is local. A period
 that begins before the log's first line is reported as such: older requests have rotated out and
 count nowhere. Lines that cannot be read, such as one a full volume cut short, are counted and
-skipped. To summarize the build host's log, pass a copy, the previous generation first:
+skipped. Two projects' lanes of one name are counted apart, as `EPUBLib gate` and `StaticSVG gate`;
+lines an older toolkit wrote count under the lane alone, as `gate`. To summarize the build host's
+log, pass a copy, the previous generation first:
 
 ```sh
 python3 scripts/eng admissions <(ssh build-host \
