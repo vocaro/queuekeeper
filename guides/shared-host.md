@@ -458,7 +458,13 @@ The owner prepares the build host once:
    ```
    Host build-host
        HostName NAME.local
+       AddressFamily inet
    ```
+
+   `AddressFamily inet` keeps ssh to IPv4. The build host's `.local` name resolved first to an
+   IPv6 link-local address that never answered, so each connection waited out `eng remote`'s
+   `ConnectTimeout` of 10 s before trying IPv4: about 10 s for every connection, several per run,
+   where it now takes 0.3 s (2026-10-27).
 
 3. Install the Xcode this Mac uses at the same path. Accept its license and run its first launch
    (`sudo xcodebuild -license accept`, then `xcodebuild -runFirstLaunch`).
@@ -699,11 +705,13 @@ While the volume is falling, symptomsd's log names each process that has dirtied
 ### Processes left over from runs
 
 Those fills began the evening `eng remote` work started on the build host, came every six to
-seven hours, and ended at the restart that installed the 2026-10-26 macOS update (19:05 local
-time), which also ended whatever was writing; nothing left could say what that was. The same work
-had not filled the volume again 16 hours later. The likely writer is a process that a run left
-running, which lived from that run to the restart, and supervision cannot see a child that moved
-to a session of its own and was orphaned between two samples
+seven hours, and stopped at the restart that installed macOS 27.2 (26B123), at 02:05 UTC on
+2026-10-27. The restart also emptied `$TMPDIR`, and with it what could have named the writer.
+Nothing in the toolkit was found to write the space, and the investigation closed it as a likely
+defect of the macOS 27.2 or Xcode 27.2 beta that the restart replaced
+([vocaro-engineering#45](https://github.com/vocaro/vocaro-engineering/issues/45)). The other
+explanation it weighed was a process that a run left running until the restart, and supervision
+cannot see a child that moved to a session of its own and was orphaned between two samples
 ([process supervision](#process-supervision)). So the build host is searched for such processes
 before work is sent there: `eng remote`, and `eng run` for a `buildHost` lane, print what the
 search finds in the connection that prepares the build host's repositories, before anything is
