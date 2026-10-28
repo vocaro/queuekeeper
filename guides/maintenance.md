@@ -143,6 +143,11 @@ comm -12 <(git log --format=%B main | grep -oE 'Closes #[0-9]+' | grep -oE '[0-9
   <(gh issue list --state open --limit 200 --json number --jq '.[].number' | sort)
 ```
 
+Read an issue's body before its comments. `gh issue view N` prints the title and body, but with
+`--comments` and its output not a terminal, as an agent's never is, it prints only the comments
+(gh 2.102.0). A session that read an issue that way once closed it having done only what a
+comment added (2026-10-27).
+
 ## Working through a backlog
 
 Asked to close as many issues as possible, triage before fixing.
