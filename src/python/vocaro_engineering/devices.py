@@ -18,8 +18,8 @@ drivers call require_foreground before acting; release waits for the processes t
 recorded as its own, and says whether the previous frontmost app was restored.
 
 Each Mac's simulators are its own, but a paired iPhone or iPad is reachable from both Macs, so a
-physical device is reserved in one record only: the Mac that sends runs to the build host. The
-build host's record defers physical devices to that Mac and refuses to reserve one. A run there
+physical device is reserved in one record only: the Mac that sends runs to the second Mac. The
+second Mac's record defers physical devices to that Mac and refuses to reserve one. A run there
 uses one under a reservation held in the sending Mac's record, which `eng remote --device` carries.
 A physical device's reservation records the window the owner agreed, as mac-foreground's does,
 and require_window refuses work on it once that window has ended.
@@ -28,7 +28,7 @@ A bounded run (`devices run KEY -- COMMAND`, BoundedRun) runs one command on phy
 session holds within the owner's approval, refusing a command that names any other device, and
 stops it before the reservation ends, keeping time for its termination and the session's
 restoration. It records the run in the entry and never releases the device. `eng remote --device`
-bounds a build-host run the same way, and there a bounded run takes its reservation from the lease.
+bounds a run on the second Mac the same way, and there a bounded run takes its reservation from the lease.
 """
 import argparse
 import contextlib
@@ -58,14 +58,14 @@ LEGACY = "/private/tmp/*device-handoff*.json"
 UDID = re.compile(r"[0-9A-F]{8}(?:-[0-9A-F]{4,16}){1,4}|[0-9A-F]{40}")
 # A physical device's hardware UDID: 8 and 16 hex digits, or 40 on older devices. A simulator's is a UUID.
 PHYSICAL = re.compile(r"[0-9A-F]{8}-[0-9A-F]{16}|[0-9A-F]{40}")
-# The Mac whose record holds physical devices, in a record that defers them to it: the build host's.
+# The Mac whose record holds physical devices, in a record that defers them to it: the second Mac's.
 DEFERRED = "physicalDevicesRecordedOn"
 # A hardware UDID as a word of uppercased text, not part of a longer run of hex digits such as a SHA-256.
 NAMED_PHYSICAL = re.compile(rf"(?<![0-9A-F])(?:{PHYSICAL.pattern})(?![0-9A-F])")
 # Seconds Git has to say whether forty hex digits name one of its objects, such as a commit.
 OBJECT_TIMEOUT = 10
-# The reservations a build-host run may use, held in the sending Mac's record, as JSON:
-# {"record": MAC, "devices": {KEY: UDID}, "until": the reservations' end}. build_host.py sets it for the run.
+# The reservations a run on the second Mac may use, held in the sending Mac's record, as JSON:
+# {"record": MAC, "devices": {KEY: UDID}, "until": the reservations' end}. offload_host.py sets it for the run.
 LEASE = "VOCARO_DEVICE_LEASE"
 # Seconds a bounded run keeps before its reservation ends for its own end once its bound expires:
 # supervision's wait for descendants that outlive the command, then its SIGTERM, settling and
@@ -85,8 +85,8 @@ FOREGROUND = "mac-foreground"
 # The session a foreground driver acts for, as its reservation names it.
 OWNER = "VOCARO_DEVICE_OWNER"
 # The process that reserved a simulator pool member and holds it, {"pid", "start"}: while it runs
-# as one of a live run's processes, the build host's census of leftover processes counts the
-# member's simulator as that run's (build_host.leftovers).
+# as one of a live run's processes, the second Mac's census of leftover processes counts the
+# member's simulator as that run's (offload_host.leftovers).
 HOLDER = "holderProcess"
 # How a foreground release left the frontmost app: restored, or no longer the session's to restore.
 FRONTMOST = ("restored", "not-ours")
@@ -448,12 +448,12 @@ class Record:
     def recover(self, key, *, by, revision, verified, unchecked=None, users=None):
         """Attended recovery of an entry whose owner cannot release it, once its work has stopped.
 
-        An entry whose run went to the build host also waits until nothing there may still use its
+        An entry whose run went to the second Mac also waits until nothing there may still use its
         device, as users (remote.device_users) lists it, unless unchecked records why that host
         cannot be checked, which is the owner's decision."""
         if not by or not verified:
             raise ValueError("recovery records who verified the device and what they verified")
-        checked = self._checked_build_host(key, revision, unchecked, users)
+        checked = self._checked_offload_host(key, revision, unchecked, users)
 
         def change(current, _record):
             state = condition(current) if current is not None else "absent"
@@ -472,12 +472,12 @@ class Record:
                           "recovery": {"by": by, "at": now(), "verified": verified, "condition": state,
                                        "state": current.get("state"),
                                        "uncertainReason": current.get("uncertainReason"),
-                                       **({"buildHost": checked} if checked else {})}})
+                                       **({"offload": checked} if checked else {})}})
             return entry
         return self._change(key, revision, change)
 
-    def _checked_build_host(self, key, revision, unchecked, users):
-        """For a recovery of a physical device whose run went to the build host: that host's check,
+    def _checked_offload_host(self, key, revision, unchecked, users):
+        """For a recovery of a physical device whose run went to the second Mac: that host's check,
         or a refusal while something there may still use the device. None for any other entry, and
         for one that recovery refuses anyway, which it then does under the lock."""
         current = self.entry(key)
@@ -495,7 +495,7 @@ class Record:
             still = users(host, current["device"].upper(), since.timestamp() if since else None)
         except RuntimeError as error:
             raise Refused(f"{key}'s run went to {host}, which could not be checked: {error}. Recovery waits for it, "
-                          "or records why it cannot be checked (--build-host-unchecked). Nothing was changed") from None
+                          "or records why it cannot be checked (--offload-unchecked). Nothing was changed") from None
         if still:
             raise Refused(f"{key}'s run went to {host}, where these may still use its device; recovery waits for "
                           "them. Nothing was changed:\n  " + "\n  ".join(still))
@@ -504,7 +504,7 @@ class Record:
     def defer(self, mac, *, replace=False):
         """Defer physical devices to mac's record, after which this record refuses to reserve one.
 
-        The build host's record defers them to the Mac that sends it runs; None ends a deferral.
+        The second Mac's record defers them to the Mac that sends it runs; None ends a deferral.
         Changing which Mac holds them is the owner's decision, so another Mac needs replace. It
         returns whether the record changed."""
         with self._exclusive():
@@ -634,7 +634,7 @@ class BoundedRun:
     Here the reservations come from this Mac's record: the session holds each with no run active,
     at revision when one is given, within the owner's approval. Each entry records the run: active,
     with this process as the run's and the command as the entry's own process, then its outcome.
-    On the build host, whose record defers physical devices, they come from the lease the dispatch
+    On the second Mac, whose record defers physical devices, they come from the lease the dispatch
     carries (LEASE), and the dispatch records the run in the sending Mac's record. Every device
     identifier the command names, a hardware UDID or any device the record knows, is one it holds;
     an object of root's Git, by default the current directory's, is none (named).
@@ -700,7 +700,7 @@ class BoundedRun:
         return devices, min(ends)
 
     def _leased(self, keys, mac):
-        """The reservations held in mac's record that this build-host run carries."""
+        """The reservations held in mac's record that this run on the second Mac carries."""
         if not os.environ.get(LEASE):
             raise deferred_refusal(mac, keys[0])
         try:
@@ -908,12 +908,14 @@ def main(argv=None):
     recover.add_argument("--by", required=True)
     recover.add_argument("--revision", type=int, required=True)
     recover.add_argument("--verified", required=True)
-    recover.add_argument("--build-host-unchecked", metavar="REASON", help="the owner's reason to recover without "
-                         "checking the build host the entry's run went to, such as that it is gone")
+    recover.add_argument("--offload-unchecked", metavar="REASON", help="the owner's reason to recover without "
+                         "checking the second Mac the entry's run went to, such as that it is gone")
+    # Its name until vocaro-engineering#58, still read, with a warning, until the projects have moved.
+    recover.add_argument("--build-host-unchecked", metavar="REASON", help=argparse.SUPPRESS)
     importer = commands.add_parser("import", help="merge earlier ad hoc records, preserving every entry")
     importer.add_argument("paths", nargs="+")
     importer.add_argument("--by", required=True)
-    defer = commands.add_parser("defer", help="reserve physical devices only in MAC's record, as the build host's "
+    defer = commands.add_parser("defer", help="reserve physical devices only in MAC's record, as the second Mac's "
                                 "record does; prints what it changed")
     target = defer.add_mutually_exclusive_group(required=True)
     target.add_argument("mac", nargs="?", help="the Mac whose record holds physical devices")
@@ -969,8 +971,15 @@ def main(argv=None):
                   f"{FOREGROUND}: held by {args.owner} for {entry.get('purpose')}, approved until "
                   f"{entry['approval']['until']}")
         elif args.action == "recover":
+            unchecked = args.offload_unchecked
+            if args.build_host_unchecked is not None:
+                print("devices: --build-host-unchecked is --offload-unchecked's old name, read only until the projects "
+                      "have moved: " + ("--offload-unchecked is given too, and wins" if unchecked is not None else
+                                        "use --offload-unchecked") + " (guides/shared-host.md, Earlier names)",
+                      file=sys.stderr, flush=True)
+                if unchecked is None: unchecked = args.build_host_unchecked
             _report(args.key, record.recover(args.key, by=args.by, revision=args.revision, verified=args.verified,
-                                             unchecked=args.build_host_unchecked))
+                                             unchecked=unchecked))
         elif args.action == "import":
             print("\n".join(record.import_legacy(args.paths, by=args.by)))
         elif args.action == "defer":

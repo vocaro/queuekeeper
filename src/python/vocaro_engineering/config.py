@@ -2,6 +2,7 @@
 import json
 import os
 import re
+import sys
 from pathlib import Path
 
 TOOLKIT_ROOT = Path(__file__).resolve().parents[3]
@@ -98,20 +99,34 @@ def load(root):
     exceptions = value.get("exceptions", [])
     if not isinstance(exceptions, list) or any(not isinstance(x, dict) or not all(isinstance(x.get(k), str) and x[k] for k in ["rule", "reason"]) for x in exceptions):
         raise ValueError("Exceptions require a rule and a reason")
+    redundant(lanes)
     return value
 
 
 RESOURCES = ["light", "heavy", "exclusive"]
 
 
+def redundant(lanes):
+    """Say which lanes and groups still mark themselves "buildHost": true, which once sent a lane to the
+    second Mac. Every heavy or exclusive lane goes there now unless it says why it stays, so the mark
+    is redundant, and it is read only until the projects have moved (vocaro-engineering#58)."""
+    marked = [name for name, lane in lanes.items() if isinstance(lane, dict) and lane.get("buildHost")]
+    if not marked: return
+    named = ", ".join(marked[:-1]) + " and " + marked[-1] if len(marked) > 1 else marked[0]
+    print(f"eng: engineering.json marks {named} \"buildHost\": true, which is redundant, since every "
+          "heavy or exclusive lane goes to the second Mac unless it says why it stays, with \"here\": delete "
+          f"{'it' if len(marked) == 1 else 'each'}; it is read only until the projects have moved "
+          "(guides/shared-host.md, Earlier names)", file=sys.stderr, flush=True)
+
+
 def place(name, lane):
-    """A heavy or exclusive lane goes to the build host unless "here" says why it stays on this Mac, such as
+    """A heavy or exclusive lane goes to the second Mac unless "here" says why it stays on this Mac, such as
     a physical device or a measurement tied to this Mac's hardware, like goldens rendered on its GPU
-    (guides/shared-host.md, Which Mac runs a lane). "buildHost": true, which once sent a lane there, is the default and still accepted; false no
-    longer keeps a lane here, since it gives no reason."""
+    (guides/shared-host.md, Which Mac runs a lane). "buildHost": true, which once sent a lane there, is
+    redundant and still accepted (redundant); false no longer keeps a lane here, since it gives no reason."""
     if lane.get("buildHost") is False:
         raise ValueError(f"{name}.buildHost: false no longer keeps a lane on this Mac, which every heavy or exclusive "
-                         "lane leaves for the build host unless it says why it stays: replace it with \"here\": "
+                         "lane leaves for the second Mac unless it says why it stays: replace it with \"here\": "
                          "\"REASON\"")
     if "here" not in lane: return
     if not isinstance(lane["here"], str) or not lane["here"].strip():
@@ -120,13 +135,13 @@ def place(name, lane):
     if lane.get("resource", "light") == "light":
         raise ValueError(f"{name}.here keeps a heavy or exclusive lane on this Mac, and a light lane runs here already")
     if lane.get("buildHost"):
-        raise ValueError(f"{name} says both that it goes to the build host (buildHost) and why it stays on this Mac "
-                         "(here): keep one")
+        raise ValueError(f"{name} says both that it goes to the second Mac (buildHost) and why it stays on this Mac "
+                         "(here): delete buildHost, which is redundant")
 
 
 def stays(lanes, name):
     """Why the lane name runs only on this Mac, as its configuration says, or None for a lane that goes to the
-    build host: a light lane runs where it starts, a foreground lane takes this Mac's screen, and a lane, or
+    second Mac: a light lane runs where it starts, a foreground lane takes this Mac's screen, and a lane, or
     a lane of a group, says why with "here". A group runs its lanes under its one admission on one Mac, so a
     lane of it that stays here keeps the group here."""
     lane = lanes[name]
@@ -185,8 +200,8 @@ def group(name, lane, lanes):
         raise ValueError(f"{name}.buildHost needs a heavy or exclusive lane that does not take the screen")
     staying = [member for member in members if isinstance(lanes[member].get("here"), str)]
     if lane.get("buildHost") and staying:
-        raise ValueError(f"{name}.buildHost sends the group to the build host, but its lane {staying[0]} stays on this "
-                         "Mac (here), and a group runs its lanes on one Mac: leave buildHost out")
+        raise ValueError(f"{name}.buildHost sends the group to the second Mac, but its lane {staying[0]} stays on this "
+                         "Mac (here), and a group runs its lanes on one Mac: delete buildHost, which is redundant")
     place(name, lane)
     model(name, lane)
 

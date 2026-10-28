@@ -210,7 +210,7 @@ temporary-file cleaner's after three idle days
 keeps its own log beside its slots. A line that would take the log past 8 MiB first makes it
 `admissions.1.jsonl`, replacing the previous generation, so the two together stay within 16 MiB;
 at two lines of 200 to 550 bytes, each holds 8,000 to 20,000 admissions. Each Mac keeps its own
-log: the build host logs what is admitted there.
+log: the second Mac logs what is admitted there.
 
 A line holds:
 
@@ -288,7 +288,7 @@ without a zone is local. A period that begins before the log's first line is rep
 older requests have rotated out and count nowhere. Lines that cannot be read, such as one a full
 volume cut short, are counted and skipped. Two projects' lanes of one name are counted apart, as
 `EPUBLib gate` and `StaticSVG gate`; lines an older toolkit wrote count under the lane alone, as
-`gate`. To summarize the build host's log, pass a copy, the previous generation first:
+`gate`. To summarize the second Mac's log, pass a copy, the previous generation first:
 
 ```sh
 python3 scripts/eng admissions <(ssh build-host \
@@ -307,44 +307,47 @@ Admission reads the load before it admits and cannot account for work that never
 - A long background measurement holds its checkout's SwiftPM build lock, so a `swift test` from
   a pre-push hook in that checkout waits silently behind it for up to the measurement's length.
 
-## Build host
+## <a id="build-host"></a>Second Mac
 
-The owner's second Mac, the build host, takes heavy work first. This Mac takes what has to run
-here, what the build host cannot run, and heavy work while the build host is at capacity, until
-this Mac is too. This Mac is the owner's workstation, busy with work the queue never sees, while
-the build host is otherwise idle and has more memory and disk. eng, not the session, chooses the
-Mac. The build host runs work under its own heavy-work admission: each
-host's queue sees that host's load, so the build host is no private slot pool. `eng remote`
-reaches it by the SSH alias `build-host`; `--host` or `VOCARO_BUILD_HOST` names another
-destination.
+The owner's second Mac takes heavy work first. This Mac takes what has to run here, what the
+second Mac cannot run, and heavy work while the second Mac is at capacity, until this Mac is too.
+This Mac is the owner's workstation, busy with work the queue never sees, while the second Mac is
+otherwise idle and has more memory and disk. eng, not the session, chooses the Mac; configuration
+calls sending work there offloading it. The second Mac runs work under its own heavy-work
+admission: each host's queue sees that host's load, so the second Mac is no private slot pool.
+`eng remote` reaches it by the SSH alias `build-host`, or `second-mac`; `--host` or
+`VOCARO_OFFLOAD_HOST` names another destination. Until 2026-10-28 the second Mac was the build
+host. Records made until then, measurements among them, keep that name, and eng still reads the
+configuration's earlier names for a while ([earlier names](#earlier-names)).
 
 ```sh
-python3 scripts/eng run LANE [-- ARGUMENTS]            # a heavy lane: the build host first, then this Mac
+python3 scripts/eng run LANE [-- ARGUMENTS]            # a heavy lane: the second Mac first, then this Mac
 python3 scripts/eng run --here LANE                    # this Mac
-python3 scripts/eng run --build-host-only LANE         # the build host if it can start it now, never here
-python3 scripts/eng admit --verify -- COMMAND          # a test or build: the build host, as a lane goes
-python3 scripts/eng remote run LANE [-- ARGUMENTS]     # any lane, on the build host
+python3 scripts/eng run --offload-only LANE            # the second Mac if it can start it now, never here
+python3 scripts/eng admit --verify -- COMMAND          # a test or build: the second Mac, as a lane goes
+python3 scripts/eng remote run LANE [-- ARGUMENTS]     # any lane, on the second Mac
 python3 scripts/eng remote admit [--exclusive | --model] -- COMMAND
 python3 scripts/eng remote passed LANE [--commit REV]
-python3 scripts/eng remote setup [FORMULA ...] [--check]  # the gates' tools (Setting up a build host)
+python3 scripts/eng remote setup [FORMULA ...] [--check]  # the gates' tools (Setting up the second Mac)
 python3 scripts/eng remote setup --runtimes [--check]     # both Macs' simulator runtimes: their union
 ```
 
 ### Which Mac runs a lane
 
-Every heavy or exclusive lane in engineering.json goes to the build host unless it says why it
+Every heavy or exclusive lane in engineering.json goes to the second Mac unless it says why it
 stays on this Mac, as `"here": "REASON"`, which configuration validation requires to be a
 nonempty reason. A lane says `here` when it needs a physical device, or a measurement tied to
 this Mac's hardware, such as goldens rendered on this Mac's GPU. A foreground lane, which takes the
 screen, runs only here anyway, and a light lane runs where it starts. Simulator lanes and
-background Mac UI lanes go to the build host like the rest, and a lane's first run there is its
+background Mac UI lanes go to the second Mac like the rest, and a lane's first run there is its
 check (the owner's decision, 2026-10-28): counts that differ from this Mac's are a defect to fix,
 not a reason to keep the lane here. A lane group runs its lanes under its one admission on one
 Mac, so a group stays here when it, or one of its lanes, says `here`. `"buildHost": true` once
-marked a lane for the build host; it is the default now and still accepted, while
-`"buildHost": false`, which gives no reason, is refused, as is a lane or group that says both.
+marked a lane for the second Mac; it is redundant now, and read, with a warning to delete it,
+only until the projects have moved ([earlier names](#earlier-names)). `"buildHost": false`, which
+gives no reason, is refused, as is a lane or group that says both.
 
-The build host's screen is usually locked, and `displaysleep` 0 there does not keep its display
+The second Mac's screen is usually locked, and `displaysleep` 0 there does not keep its display
 on behind a lock made by hand. A command started over SSH there runs in an audit session of its
 own and is not trusted for accessibility (on the 27.2 beta 26B5091g as on 27.2 26B123), yet the
 window server gives it the console user's session: it opens offscreen windows and reads its own
@@ -355,59 +358,59 @@ keeps it on, and what is unmeasured, is in
 [lock screen and display sleep](background-mac-testing.md#lock-screen-and-display-sleep).
 A run whose mechanism a lock or a sleeping display stops is unmeasured, never passed
 ([shared resources](../agents/core.md#shared-resources)). Behind the lock, the accessibility API
-(`AXUIElement`) vends no offscreen window on the build host's 27.2 either, as on this Mac on 27.0,
-so a test that reads its own tree through it is unmeasured while the build host's screen is
+(`AXUIElement`) vends no offscreen window on the second Mac's 27.2 either, as on this Mac on 27.0,
+so a test that reads its own tree through it is unmeasured while the second Mac's screen is
 locked; with its display asleep, a scroll that the display link animates gets no frame.
 Pagepour's Mac lanes, `mac-tests` and `mac-purchases`, read their tree that way, and still go to
-the build host: `here` would not help them, since this Mac locks too, and their tests move to the
+the second Mac: `here` would not help them, since this Mac locks too, and their tests move to the
 in-process NSAccessibility methods instead
 ([Pagepour#123](https://github.com/vocaro/Pagepour/issues/123)).
 
-`eng run` sends the lane to the build host, whole or filtered (`eng run LANE -- FILTER`), over
+`eng run` sends the lane to the second Mac, whole or filtered (`eng run LANE -- FILTER`), over
 the working tree as it is: a tree with uncommitted changes or new files goes as a snapshot commit
-([how a run reaches the build host](#how-a-run-reaches-the-build-host)), so a session's iteration
-over its edits runs there too. The build host comes first, and this Mac takes heavy work while
-the build host is at capacity, until it is too (the owner's decision, 2026-10-28):
+([how a run reaches the second Mac](#how-a-run-reaches-the-second-mac)), so a session's iteration
+over its edits runs there too. The second Mac comes first, and this Mac takes heavy work while
+the second Mac is at capacity, until it is too (the owner's decision, 2026-10-28):
 
-1. The build host runs the lane if it can start it now: its queue admits the lane within five
+1. The second Mac runs the lane if it can start it now: its queue admits the lane within five
    seconds (`eng run --if-free` there, which exits 75 without running otherwise) and one of the
    project's four checkouts there is free.
-2. When the build host declines it as busy, this Mac's own admission gets the same five seconds,
+2. When the second Mac declines it as busy, this Mac's own admission gets the same five seconds,
    and the lane runs here if it admits it. `eng: trying LANE on this Mac:` says why, and the
-   receipt's `hereBecause` records that the build host was busy. Busy is no configuration problem.
-3. While both are busy, the lane waits for whichever admits it first, the build host preferred.
+   receipt's `hereBecause` records that the second Mac was busy. Busy is no configuration problem.
+3. While both are busy, the lane waits for whichever admits it first, the second Mac preferred.
    It waits in this Mac's queue, 15 s at first, doubling to 120 s, and between those waits it is
-   offered to the build host again, so the build host is asked at least every two minutes; each
-   offer costs the build host a checkout's claim, the project's `provision` lane and a policy
-   refresh. An offer made again sends nothing a second time: the build host holds the commits
+   offered to the second Mac again, so the second Mac is asked at least every two minutes; each
+   offer costs the second Mac a checkout's claim, the project's `provision` lane and a policy
+   refresh. An offer made again sends nothing a second time: the second Mac holds the commits
    after the first. `eng: LANE waits for whichever Mac admits it first:` says so, with what the
-   build host declined it for, and this Mac's admission prints what it waits behind
+   second Mac declined it for, and this Mac's admission prints what it waits behind
    ([heavy-work admission](#heavy-work-admission)). A lane that neither admits within 5,400 s ends
    with exit 75 (`BUSY`) and runs nowhere.
 
 Each of this Mac's waits that ends unadmitted leaves its queue and is logged as withdrawn, as each
-declined offer is on the build host ([admission log](#admission-log)); an exclusive lane rejoins
+declined offer is on the second Mac ([admission log](#admission-log)); an exclusive lane rejoins
 this Mac's exclusive queue at each wait, behind requests that came meanwhile. `eng run --if-free`
 asks each Mac once, five seconds each, and exits 75 when both are busy. The admission logs of
 2026-10-27 hold this overflow before it was the rule: the build host's three `timed-out` requests
 were `eng run --if-free` declining after 5.5 s, and each of those lanes then ran on this Mac
 ([vocaro-engineering#49](https://github.com/vocaro/vocaro-engineering/issues/49)).
 
-First `eng run` checks, before it sends anything, that the build host can be reached: its name
+First `eng run` checks, before it sends anything, that the second Mac can be reached: its name
 resolves, an address of it answers on its ssh port within 3 s, and `ssh build-host true` finishes
-within 30 s. The build host stays on its own wired network, while the owner takes this Mac to
-others, where the build host's `.local` name does not resolve at all. The check then stops at the
+within 30 s. The second Mac stays on its own wired network, while the owner takes this Mac to
+others, where the second Mac's `.local` name does not resolve at all. The check then stops at the
 name, after the 5 s that macOS waits for a multicast DNS answer that never comes (macOS 27.0.1,
 2026-10-27), and sends nothing; an address that does not answer costs 3 s, not ssh's 10 s
-`ConnectTimeout`. When this Mac is away from the build host's network in that way, when nothing
-answers, or when ssh cannot connect, the build host cannot be reached, which is no configuration
+`ConnectTimeout`. When this Mac is away from the second Mac's network in that way, when nothing
+answers, or when ssh cannot connect, the second Mac cannot be reached, which is no configuration
 problem: `eng run` prints one line, `eng: running LANE on this Mac:`, with why, and runs the lane
 here, under this Mac's admission, at once (the owner's decision, 2026-10-27). It does the same
-when the build host could not run the lane as it runs here: when the lane's arguments name a
-physical device ([physical devices and the build host](#physical-devices-and-the-build-host)), or
+when the second Mac could not run the lane as it runs here: when the lane's arguments name a
+physical device ([physical devices and the second Mac](#physical-devices-and-the-second-mac)), or
 when the toolkit's checkout has changes to tracked files, since the toolkit goes only as a commit.
 
-A build host that answers but is misconfigured stops the lane instead, for the owner's decision
+A second Mac that answers but is misconfigured stops the lane instead, for the owner's decision
 ([shared resources](../agents/core.md#shared-resources)): when it refuses the login, as for a key
 it does not accept or a host key that changed, its login shell fails, it cannot receive the
 commit or run the toolkit, it refuses the lane for any reason but being busy, as when its Xcode
@@ -418,12 +421,12 @@ lost once the work was sent leaves the run unmeasured rather than running the la
 here, since it may still run there.
 
 `eng run --here` keeps a lane on this Mac, for instance a build whose products the session uses
-here, or, once the owner has decided so, any lane while the build host is misconfigured.
+here, or, once the owner has decided so, any lane while the second Mac is misconfigured.
 `eng run --serial GROUP`, a group's serial reference, runs here too, and nested work runs inside
-the admission it inherits, here. `eng run` looks for
-the build host only when `VOCARO_BUILD_HOST` names one or `~/.ssh/config` defines the
-`build-host` alias, which `ssh -G` reports; `VOCARO_BUILD_HOST=none` keeps every lane here. A
-lane's results come back to `.build/engineering/remote/LANE/` when it ran on the build host and
+the admission it inherits, here. `eng run` looks for the second Mac only when
+`VOCARO_OFFLOAD_HOST` names one or `~/.ssh/config` defines the alias `build-host` or
+`second-mac`, which `ssh -G` reports; `VOCARO_OFFLOAD_HOST=none` keeps every lane here. A
+lane's results come back to `.build/engineering/remote/LANE/` when it ran on the second Mac and
 stay in `.build/engineering/LANE/` when it ran here; the last lines `eng run` prints name them.
 A lane group's results hold each of its lanes' log and receipt as well, under `lanes/` as on the
 Mac that ran it, so here `.build/engineering/remote/GROUP/lanes/LANE.log` and `LANE.json`. They
@@ -431,18 +434,19 @@ come back once the run there ends, whether the lane passed or failed, its timeou
 stop did. A lane's receipt gives its status, outcome, seconds and the executed and skipped tests
 its log counts, so its counts read here; a lane a stop ended has the outcome `stopped` and no
 status. A run whose connection is lost before it ends brings none back and is unmeasured; they
-stay in the build host's checkout until a later run there replaces them.
+stay in the second Mac's checkout until a later run there replaces them.
 
-Every run's receipt says where it ran. `ranOn` is `this Mac` or `build host` and `mac` names the
-Mac. On this Mac, `hereBecause` says why the run ran here: the lane's own reason, `--here`,
-`--serial`, nested work, no build host configured, a build host that was busy, or why the build
-host could not be reached or could not run it. The build host's own receipt, kept within the receipt that comes back, names the
-Mac that sent the run in `dispatchedFrom`. A receipt holds its lane's last run only. The share of
-heavy work each Mac runs over a period is in their admission logs, one line for each admission:
-`eng admissions` here and on a copy of the build host's log counts each Mac's admissions by lane
-([admission log](#admission-log)).
+Every run's receipt says where it ran. `ranOn` is `this Mac` or `second Mac`, which a receipt
+written before 2026-10-28 gives as `build host`, and `mac` names the Mac. On this Mac,
+`hereBecause` says why the run ran here: the lane's own reason, `--here`, `--serial`, nested
+work, no second Mac configured, the second Mac being busy, or why it could not be reached or
+could not run the work. The second Mac's own receipt, kept within the receipt that comes back,
+names the Mac that sent the run in `dispatchedFrom`. A receipt holds its lane's last run only.
+The share of heavy work each Mac runs over a period is in their admission logs, one line for
+each admission: `eng admissions` here and on a copy of the second Mac's log counts each Mac's
+admissions by lane ([admission log](#admission-log)).
 
-The build host runs a lane in its own login shell's environment, not this Mac's, so a variable
+The second Mac runs a lane in its own login shell's environment, not this Mac's, so a variable
 set for `eng run` here does not reach it. On 2026-10-27 a variable set for `eng remote admit`
 read as unset there (toolkit `e137d7e`). A run that a variable selects, such as one that points a
 package at a binary built here into an ignored path, takes `--here`, or its lane names the
@@ -453,83 +457,83 @@ subdirectory of the checkout, and names paths relative to it, absolute paths in 
 in a scratch directory, and often a simulator or device by its identifier, all of which belong to
 this Mac. What it leaves, such as a build's products, DerivedData or a result bundle, is often
 what the session uses next, here, and nothing about a command tells a test from such a build. Run
-on the build host, in another checkout at another path, it would read and write the wrong places.
+on the second Mac, in another checkout at another path, it would read and write the wrong places.
 So the session says which it is: `eng admit --verify -- COMMAND` marks the command as
 verification, a test or build whose result is its log and exit status and whose products this
-Mac does not use. Such a command goes as a lane does, at HEAD or a snapshot commit: to the build
-host first, to this Mac while the build host is busy or cannot be reached, and while both are busy
+Mac does not use. Such a command goes as a lane does, at HEAD or a snapshot commit: to the second
+Mac first, to this Mac while the second Mac is busy or cannot be reached, and while both are busy
 to whichever admits it first, within its `--timeout`; `--if-free` asks each once. It runs
-in the directory of the build host's checkout that matches the current one, and its output and
+in the directory of the second Mac's checkout that matches the current one, and its output and
 receipt come back to `.build/engineering/remote/admit/`. eng keeps it here, saying why, when the
-build host could not run it as it runs here: its directory is outside the checkout or one Git
+second Mac could not run it as it runs here: its directory is outside the checkout or one Git
 ignores, which the commit sent lacks, or its words name this checkout's path, a simulator by its
 identifier, which is a member of this Mac's pool, or a physical device of this Mac's record.
 Nested in an admission, it runs inside that admission, here. A test that a lane covers runs best
 as that lane, `eng run LANE -- FILTER`; `eng remote admit -- COMMAND` sends a command on purpose,
-to run in the root of a build host checkout.
+to run in the root of a checkout there.
 
 A caller that holds or will take its own admission here, such as a push keeper that runs a gate
-under the push's one admission, offers the lane with `eng run --build-host-only LANE` instead:
+under the push's one admission, offers the lane with `eng run --offload-only LANE` instead:
 `eng run` would run a lane it could not send under an admission of its own, and the caller would
-then run it a second time. The build host takes it only if it can start it now, a tree with
+then run it a second time. The second Mac takes it only if it can start it now, a tree with
 uncommitted changes as a snapshot, so the status is that of the working tree the caller would
-otherwise run; but it never runs here. The command exits 75 (`BUSY`) when the build host declines
+otherwise run; but it never runs here. The command exits 75 (`BUSY`) when the second Mac declines
 the lane because none is configured, it cannot be reached or it is busy, or when the toolkit's
 checkout has changes to tracked files, and the caller then runs the lane itself. It exits 78 when
-the build host is misconfigured, which stops the caller too, and otherwise with the lane's status
+the second Mac is misconfigured, which stops the caller too, and otherwise with the lane's status
 there.
 
 `eng doctor` compares the two Macs and reports a difference as an error: their default Xcodes
 (`xcode-select -p` and its version), the Xcode at this Mac's developer directory, which every run
-there uses, and the simulator runtimes that Xcode lists on each, as well as a build host that
-answers but refuses the login. A build host that cannot be reached, as when this Mac is away from
+there uses, and the simulator runtimes that Xcode lists on each, as well as a second Mac that
+answers but refuses the login. A second Mac that cannot be reached, as when this Mac is away from
 its network, is no error, since work then runs here (the owner's decision, 2026-10-28): `unchecked`
-says why it was not compared. A build host whose default Xcode differs still runs lanes, since a run selects this Mac's
+says why it was not compared. A second Mac whose default Xcode differs still runs lanes, since a run selects this Mac's
 developer directory, but whatever reads its default, such as `ssh build-host xcodebuild -version`
 or a script without `DEVELOPER_DIR`, sees another Xcode. The two Macs keep the same runtimes:
 when one has a runtime the other lacks, the error names the fix, `eng remote setup --runtimes`,
 which brings both to the union of their runtimes and never deletes one
-([setting up a build host](#setting-up-a-build-host)). Under `buildHost` in the report,
-`unchecked` names what was not compared: the build host, and why, when it cannot be reached, its
-Xcodes and runtimes when it did not report them, and the whole comparison when no build host is
+([setting up the second Mac](#setting-up-the-second-mac)). Under `offload` in the report,
+`unchecked` names what was not compared: the second Mac, and why, when it cannot be reached, its
+Xcodes and runtimes when it did not report them, and the whole comparison when no second Mac is
 configured. `leftovers` lists the
-processes on the build host that runs left running, which are no error
+processes on the second Mac that runs left running, which are no error
 ([processes left over from runs](#processes-left-over-from-runs)).
 
-`connection` in the report says how ssh connects to the build host: the name and port `ssh -G`
+`connection` in the report says how ssh connects to the second Mac: the name and port `ssh -G`
 gives, and the addresses that name resolves to under its `AddressFamily`, in the order ssh tries
 them, each with the time a TCP connection to it took or why none was made, up to the first that
 answers, after which ssh tries none. First addresses that do not answer, and so keep every
 connection waiting before a later one does, are an error. When they are all of the other family,
 it names the `AddressFamily` line that skips them
-([setting up a build host](#setting-up-a-build-host)). One refused at once costs nothing and is no
-error. A name that does not resolve is in `unresolved`, beside the unchecked build host that
-cannot be reached, and a build host that ssh reaches through a proxy is not measured.
+([setting up the second Mac](#setting-up-the-second-mac)). One refused at once costs nothing and is no
+error. A name that does not resolve is in `unresolved`, beside the unchecked second Mac that
+cannot be reached, and a second Mac that ssh reaches through a proxy is not measured.
 
-### Simulators on the build host
+### <a id="simulators-on-the-build-host"></a>Simulators on the second Mac
 
-A lane that boots simulators runs on the build host as it does here: headless, from a session
-started over SSH, with the screen locked, and from the build host's own pool. It goes there like
+A lane that boots simulators runs on the second Mac as it does here: headless, from a session
+started over SSH, with the screen locked, and from the second Mac's own pool. It goes there like
 any other heavy lane, and its first run there is its check (the owner's decision, 2026-10-28, in
 place of the earlier rule that a simulator lane went there only once a run there had passed with
 this Mac's test counts): counts that differ are a defect to fix there. One that also needs a
 physical device stays here for that.
 
 Each Mac keeps its own [pool](simulator-testing.md#reserved-simulator-pool) and its own
-[device record](#device-reservations). A lane on the build host takes or creates members in the
-build host's simulators and reserves them in the build host's record, so a member of the same
+[device record](#device-reservations). A lane on the second Mac takes or creates members in the
+second Mac's simulators and reserves them in the second Mac's record, so a member of the same
 name on each Mac is two simulators, and a reservation on one Mac says nothing about the other's.
 Physical devices, which both Macs reach, are reserved only in this Mac's record
-([physical devices and the build host](#physical-devices-and-the-build-host)).
+([physical devices and the second Mac](#physical-devices-and-the-second-mac)).
 A project's first run there creates its first members and lets their first boot finish. A
 session's `VOCARO_DEVICE_OWNER` and agent session do not cross SSH, so a reservation there names
 an owner the run generates: `simulator-tests-UUID` for `eng simulator-tests`, and `POOL-UUID` for
 a gate that takes its member with `vocaro_engineering.simulators.pool.member()`.
-`eng simulator-pool list` and `eng disk` show the pool of the Mac they run on; a run on the build
-host prunes that host's members of the kind it takes.
+`eng simulator-pool list` and `eng disk` show the pool of the Mac they run on; a run on the second
+Mac prunes that Mac's members of the kind it takes.
 
 Only logs and receipts come back: the lane's, or a group's and each of its lanes'.
-`eng simulator-tests` leaves each device's log and result bundle in the build host's checkout,
+`eng simulator-tests` leaves each device's log and result bundle in the second Mac's checkout,
 where the lane's log names them, and puts a failing device's last 40 lines in the lane's log. A
 session that needs a result bundle or a device log here runs the lane with `--here`.
 
@@ -559,7 +563,7 @@ the 23 minutes of tests that followed averaged 40. No run needed the screen unlo
 the builds and every gate, EPUBLib's Mac suite included, ran with the screen locked and the
 display on; the screen was unlocked, not by the run, for the last 15 minutes of `ios-tests`.
 
-### How a run reaches the build host
+### <a id="how-a-run-reaches-the-build-host"></a>How a run reaches the second Mac
 
 `eng remote` runs a commit: HEAD when the working tree is HEAD's, and otherwise a snapshot commit
 of the working tree. It copies the checkout's index, with its modification time, to a temporary
@@ -571,18 +575,18 @@ index entry is no older than the index, in whole seconds, and otherwise trusts i
 dated when it was made therefore held what was staged of a file rewritten at its size within the
 second it was staged: a test that does so failed that way in 4 of 72 runs, six at a time on this
 Mac (2026-10-27, [vocaro-engineering#56](https://github.com/vocaro/vocaro-engineering/issues/56)).
-Ignored files stay out, as they do from a commit: the build host's checkout has ignored inputs of
+Ignored files stay out, as they do from a commit: the second Mac's checkout has ignored inputs of
 its own. A large untracked file that no `.gitignore` names is sent too, and its copy stays among
 the repository's objects until Git's garbage collection prunes the snapshot, so ignore what the
-build host does not need.
+second Mac does not need.
 `eng run`, `eng admit --verify`, `eng remote run` and `eng remote admit` all send work this way.
 The toolkit goes only as a commit: a toolkit checkout with changes to tracked files is refused.
 
 `eng remote` takes no slot here. It pushes the commit, and the toolkit commit that runs it, by git
 over SSH and without hooks to bare repositories under
-`~/Development/build-host` on the build host, so nothing reaches GitHub. The connection that
+`~/Development/build-host` on the second Mac, so nothing reaches GitHub. The connection that
 prepares them first lists the processes earlier runs left running there
-([processes left over from runs](#processes-left-over-from-runs)). There `build_host.py`,
+([processes left over from runs](#processes-left-over-from-runs)). There `offload_host.py`,
 sent along and run by the host's own Python, takes one of four persistent checkouts of the
 project, checks the commit out detached with the toolkit beside it, and runs `eng run` or
 `eng admit` in the checkout's root, or `eng admit --verify`'s command in the directory that matches
@@ -598,13 +602,13 @@ changes stays as it is for inspection and is passed over. Once it is read, remov
 
 Output comes back as it is written. The lane's log, the command's output and a receipt land in
 `.build/engineering/remote/LANE/` (`remote/admit/` for a command), and the exit status is the
-build host's. A lane group's lanes' logs and receipts follow once the run there ends, a stopped
+second Mac's. A lane group's lanes' logs and receipts follow once the run there ends, a stopped
 run's included, into `lanes/` there, and the receipt's `returned` lists those that came. Before
-the run, the build host removes those its checkout holds from an earlier run, so none comes back
-as this run's. The receipt names the build host's model, macOS and Xcode beside this Mac's. The
-build host must have the same Xcode build at this Mac's developer directory, or the run is
+the run, the second Mac removes those its checkout holds from an earlier run, so none comes back
+as this run's. The receipt names the second Mac's model, macOS and Xcode beside this Mac's. The
+second Mac must have the same Xcode build at this Mac's developer directory, or the run is
 refused. A different macOS is reported but refuses nothing: a whole lane's pass there counts
-for a push from this Mac, while as a qualification claim it names the build host's platform. A
+for a push from this Mac, while as a qualification claim it names the second Mac's platform. A
 whole lane's receipt is also kept by commit in the repository's Git directory, so
 `eng remote passed LANE` answers from any worktree whether the lane, without arguments, passed
 at exactly that commit. A later run of the lane at that commit replaces it. A push path that
@@ -615,18 +619,18 @@ commit unless `snapshot` is true. A snapshot's receipt stays in `.build/engineer
 no branch holds the snapshot, so its result is no commit's pass, and `eng remote passed` never
 counts it, for HEAD or for the snapshot itself. Commit the work and run the lane again for a pass
 that counts. `eng remote run --serial GROUP` runs a group's lanes one after another there, under
-the build host's admission: the group's serial reference
+the second Mac's admission: the group's serial reference
 ([parallel-only failures](parallel-tests.md#a-failure-seen-only-side-by-side)). Its receipt says
 `serial` and, like a snapshot's, stays in `.build/engineering/remote/GROUP/`: it is no pass of the
 group's, whose lanes run side by side.
 
-A stop carries over. The build host's standard input is the dispatcher's lifeline: its end, from
+A stop carries over. The second Mac's standard input is the dispatcher's lifeline: its end, from
 a stop signal, the dispatcher's death or a dropped connection, stops the run there as a stop
-signal stops a local one, and the run leaves the build host's admission. A run that returns no
+signal stops a local one, and the run leaves the second Mac's admission. A run that returns no
 result, such as one the network cut off, is unmeasured, never passed or failed. Foreground lanes
 run only on this Mac, and the policy says what else stays here.
 
-ssh closes a connection that has heard nothing from the build host for about two minutes
+ssh closes a connection that has heard nothing from the second Mac for about two minutes
 (`ServerAliveInterval` 30 s, four times), so a shorter silence leaves the run going. When a run
 returns no result, `eng remote` says what ssh last said, such as `Timeout, server NAME not
 responding.`, when the run was dispatched and when it was lost, in UTC, and how long this Mac
@@ -640,13 +644,13 @@ dark wake; nothing kept says how the connection ended
 A connection that ssh cannot make says what ssh said and what that shows. `ssh: connect to host
 ADDRESS port 22: Operation timed out` means nothing answered the TCP connection within
 `ConnectTimeout`'s 10 s. `Connection to ADDRESS port 22 timed out` means the connection was made,
-so the build host's address answered, and the SSH exchange then timed out. After `Connection timed
+so the second Mac's address answered, and the SSH exchange then timed out. After `Connection timed
 out during banner exchange`, no SSH banner came within 10 s. Without that line, the banner came and
 then nothing more for `ServerAliveInterval` times `ServerAliveCountMax`, two minutes, during key
 exchange or authentication (OpenSSH 10.3p1 against a listener on this Mac, 2026-10-27). Each
 connection also reads this Mac's sleep across the attempt, as a lost run does. A Mac asleep answers
-nothing, so a timeout that this Mac slept through says nothing about the build host, and eng then
-says to keep this Mac awake rather than to wake the build host.
+nothing, so a timeout that this Mac slept through says nothing about the second Mac, and eng then
+says to keep this Mac awake rather than to wake the second Mac.
 
 On 2026-10-27 the build host accepted `eng run`'s first connection at 22:13:09 UTC, and this Mac
 then slept until 22:16:39: its lid had closed at 22:11:35, and its power log gives
@@ -656,14 +660,15 @@ timeout ran out at 22:18:38, two minutes of awake time after the connection bega
 `Connection to ADDRESS port 22 timed out`, and eng said to wake the build host, which had stayed
 awake and on its network.
 
-### Setting up a build host
+### <a id="setting-up-a-build-host"></a>Setting up the second Mac
 
-The owner prepares the build host once:
+The owner prepares the second Mac once:
 
 1. Turn on Remote Login (System Settings, General, Sharing) and add this Mac's public key to the
-   build host's `~/.ssh/authorized_keys`.
+   second Mac's `~/.ssh/authorized_keys`.
 2. Name it in this Mac's `~/.ssh/config`, so that `ssh build-host true` succeeds without a
-   prompt:
+   prompt. eng takes the alias `second-mac` as well, in place of `build-host` or on the same
+   `Host` line beside it, and tries `build-host` first ([earlier names](#earlier-names)):
 
    ```
    Host build-host
@@ -683,7 +688,7 @@ The owner prepares the build host once:
 
 3. Install the Xcode this Mac uses at the same path. Accept its license and run its first launch
    (`sudo xcodebuild -license accept`, then `xcodebuild -runFirstLaunch`).
-4. Install Homebrew there (https://brew.sh); its installer asks for the build host's password.
+4. Install Homebrew there (https://brew.sh); its installer asks for the second Mac's password.
    Then, from this Mac, install the tools the projects' gates use:
 
    ```sh
@@ -691,10 +696,10 @@ The owner prepares the build host once:
    ```
 
    It puts Homebrew on the login shell's PATH in `~/.zprofile`, since `eng remote` runs in the
-   build host's login shell, and installs Homebrew's Python, `uv`, `shellcheck`, `xcodegen`,
+   second Mac's login shell, and installs Homebrew's Python, `uv`, `shellcheck`, `xcodegen`,
    `zstd` and each formula a project names. A new login shell then checks every one, each
    `--import` module in that Python, and the Xcode at this Mac's developer directory, one line
-   each, and the command fails while anything is missing. A build host without Homebrew stops it
+   each, and the command fails while anything is missing. A second Mac without Homebrew stops it
    with nothing changed. `--check` only checks. A project's runbook names its own formulae.
    Without Homebrew, the system's Python 3.9 runs the toolkit, and lanes that need a newer
    Python fail.
@@ -709,8 +714,8 @@ The owner prepares the build host once:
    that only one Mac has is copied to the other. Both must have that Xcode at the same path. The
    copy is the runtime's own disk image, as `xcrun simctl runtime list -j` names it (for a
    cryptex, the one disk image of its listed size in its asset's `Restore` folder), so a beta
-   build Apple no longer serves comes across exactly. It goes over the build host's SSH
-   connection, never GitHub, into `~/Development/build-host/runtimes` on the build host or
+   build Apple no longer serves comes across exactly. It goes over the second Mac's SSH
+   connection, never GitHub, into `~/Development/build-host/runtimes` on the second Mac or
    `~/Library/Application Support/vocaro-engineering/runtimes` on this Mac, outside
    `/private/tmp`, which a reboot empties. Only an image of exactly its listed size is added,
    with `xcrun simctl runtime add --move`, which leaves no second copy. A copy that fails or is
@@ -725,8 +730,8 @@ The owner prepares the build host once:
    while the runtimes differ. One run at a time copies: a second refuses while one runs on this
    Mac. A copy of five runtimes moves about 40 GB, so run it in the background; it reads no
    input, and its last line is the outcome.
-6. Keep it on power and awake. A sleeping build host leaves its run unmeasured. Its `.local` name
-   is multicast DNS: it resolves only while the build host is awake on this Mac's network and
+6. Keep it on power and awake. A sleeping second Mac leaves its run unmeasured. Its `.local` name
+   is multicast DNS: it resolves only while the second Mac is awake on this Mac's network and
    the network carries multicast between them, and `dscacheutil -q host -a name NAME.local`
    shows whether it does. On the night of 2026-10-24 to 25 the name did not resolve from this
    Mac because this Mac was at another location, on another network, as the owner reported;
@@ -734,7 +739,7 @@ The owner prepares the build host once:
 7. For the private toolkit's policy refresh and any private package dependencies, create a
    fine-grained GitHub token with read-only Contents permission on `vocaro/vocaro-engineering`
    and those dependencies (on all of the owner's repositories, if the owner prefers not to
-   update it as dependencies change), and write it on the build host, readable only by its
+   update it as dependencies change), and write it on the second Mac, readable only by its
    owner, as one line `https://USER:TOKEN@github.com` in
    `~/Development/build-host/git-credentials`. In zsh, without leaving the token in the shell's
    history:
@@ -745,7 +750,7 @@ The owner prepares the build host once:
    unset token
    ```
 
-The project's commits reach the build host over SSH without a GitHub credential. A heavy lane's
+The project's commits reach the second Mac over SSH without a GitHub credential. A heavy lane's
 policy refresh fetches the private toolkit over HTTPS and needs read access to it through the
 credential file above, even when the project has no private package dependencies. SwiftPM
 clones a private dependency with git, and git's default helper on a Mac, osxkeychain, cannot read
@@ -753,8 +758,8 @@ the keychain from an SSH session: it fails with `-25308`, and the clone fails. W
 `git-credentials` exists, `eng remote`
 gives each run's git that file through the store helper and no other helper, by
 `GIT_CONFIG_COUNT` variables that reach only the run, so the owner's own git configuration on
-the build host is unchanged. A token reaches only the repositories it names, read-only, and it
-expires: renew it before then. Check the build host with a light lane first, such as this
+the second Mac is unchanged. A token reaches only the repositories it names, read-only, and it
+expires: renew it before then. Check the second Mac with a light lane first, such as this
 toolkit's `python3 scripts/eng remote run python-tests`.
 
 Private GitHub release assets need the authenticated API as well as Git source access.
@@ -762,6 +767,54 @@ Declare their packages in `githubArtifacts`; admitted builds use the shared
 [artifact preparation](public-access.md#private-binary-artifacts-and-build-credentials), whose
 credential lookup reads this same run-scoped Git helper. Do not put a token into a package
 manifest, asset URL or committed configuration.
+
+### Earlier names
+
+Until 2026-10-28 the second Mac was the build host, which read as the one Mac that builds,
+though both do. Its names in configuration became offload names, and each earlier one is still
+read, with a warning that names its replacement, until the projects have moved
+([vocaro-engineering#58](https://github.com/vocaro/vocaro-engineering/issues/58)); then they go:
+
+- `"buildHost": true` marked a lane or group for the second Mac. Every heavy or exclusive lane
+  goes there now unless it says `here`, so the mark is redundant, and there is no new one: delete
+  it. Each command that reads engineering.json names the lanes and groups that still have it.
+  `"buildHost": false` is refused, as before: a lane that stays here says why with `here`.
+- `eng run --build-host-only` is `eng run --offload-only`, the flag a push keeper uses. The old
+  flag does what the new one does and says to use it. Beside `--here` it is refused, as the new
+  one is, and beside `--offload-only` too: both name one flag.
+- `VOCARO_BUILD_HOST` is `VOCARO_OFFLOAD_HOST`, including `none`. eng reads the old variable when
+  the new one is unset and says to set the new one instead; when both are set, the new one wins,
+  and eng says so and to unset the old one.
+- `devices recover --build-host-unchecked REASON` is `--offload-unchecked REASON`, read the same
+  way: given both, the new one wins.
+- `eng doctor`'s `buildHost` section is `offload`. Only `offload` is printed: no script reads the
+  report, and a copy under the old name would double its largest part.
+- A receipt's `ranOn` says `second Mac` where it said `build host`, and a device record's
+  recovery records the second Mac's check as `offload` where it said `buildHost`. What was written
+  before keeps its words. No reader tells the two apart: `eng remote passed` and `eng release`
+  read the second Mac's receipts by commit, whatever their `ranOn`, and `eng admissions` counts
+  each Mac's share from the admission logs.
+- `build_host.py`, the second Mac's side of `eng remote`, is `offload_host.py`. It reaches the
+  second Mac as an argument of `python3 -c`, never as a file there, so nothing there names it.
+  Its lines in a run's output begin `second Mac:` where they began `build-host:`.
+
+These keep the build host's name:
+
+- The SSH alias `build-host`, which the owner defines in `~/.ssh/config`, stays the default, since
+  the toolkit cannot change that file. eng also takes `second-mac` once the owner defines it,
+  with `Host second-mac` in place of `Host build-host`, or both on one line,
+  `Host build-host second-mac`. Without `--host` or `VOCARO_OFFLOAD_HOST`, eng uses the first of
+  `build-host` and `second-mac` that `ssh -G` resolves.
+- `~/Development/build-host` on the second Mac, which holds its bare repositories, its warm
+  checkouts, the runtime staging and `git-credentials`: another name would make every checkout
+  cold and leave the token behind.
+- `refs/vocaro/build-host/`, under which a push carries a commit into those repositories; a ref a
+  lost run left there stays under it.
+- The anchors of this guide's renamed sections, such as `#build-host` and
+  `#setting-up-a-build-host`, which other repositories' documents link. Each renamed heading keeps
+  its old anchor beside its new one until those links have moved.
+- Records made before the rename, measurements, logs and receipts among them, which keep their
+  words.
 
 ## Scratch and result directories
 
@@ -815,7 +868,7 @@ Durable inputs live outside `/private/tmp` too. Keep pinned model weights and ot
 downloads, which are too large for a worktree and shared by every checkout, in
 `~/Development/models/PROJECT/`, one folder for each pinned snapshot, and make a project's
 download script and backend documentation default there. That folder survives reboots and the
-temporary-file cleaner, has the same path on the build host, and is never an `eng disk`
+temporary-file cleaner, has the same path on the second Mac, and is never an `eng disk`
 candidate. `~/Library/Caches` is no substitute: macOS treats caches as regenerable and may delete
 them when the volume runs short, which on this host happens when sessions are busiest.
 `eng doctor` warns when the project's tracked Markdown names model storage under `/tmp` or
@@ -941,11 +994,11 @@ defect of the macOS 27.2 or Xcode 27.2 beta that the restart replaced
 ([vocaro-engineering#45](https://github.com/vocaro/vocaro-engineering/issues/45)). The other
 explanation it weighed was a process that a run left running until the restart, and supervision
 cannot see a child that moved to a session of its own and was orphaned between two samples
-([process supervision](#process-supervision)). So the build host is searched for such processes
+([process supervision](#process-supervision)). So the second Mac is searched for such processes
 before work is sent there: `eng remote`, and `eng run` for a lane it sends there, print what the
-search finds in the connection that prepares the build host's repositories, before anything is
-pushed, and `eng doctor` lists it under `buildHost`, `leftovers`. A process is listed when it is
-the account's, runs from a build-host checkout (`~/Development/build-host/checkouts`), the
+search finds in the connection that prepares the second Mac's repositories, before anything is
+pushed, and `eng doctor` lists it under `offload`, `leftovers`. A process is listed when it is
+the account's, runs from a checkout there (`~/Development/build-host/checkouts`), the
 temporary directory (`$TMPDIR`) or a simulator's device directory, and no live run accounts for
 it:
 
@@ -954,13 +1007,13 @@ it:
   IMTransferAgent works in the temporary directory on both Macs.
 - A live run accounts for the process when the process or an ancestor is a live admission
   owner, as the guard or the [admission log](#admission-log) records it, or a live
-  `build_host.py`, which writes its PID and start into the checkout slot's lock file when it
+  `offload_host.py`, which writes its PID and start into the checkout slot's lock file when it
   takes the slot: a light lane, and a project's `provision` lane, take no admission. A recorded
   PID counts only while its process has the recorded start, and an admission that the log has
   not ended counts only for a process that started before it.
 - Some of a run's processes launchd starts or adopts, and what a live run holds is its own with
   everything below it. A simulator's processes descend from `launchd_sim`, never from a run, so
-  a device is a live run's while the build host's [device record](#device-reservations) holds
+  a device is a live run's while the second Mac's [device record](#device-reservations) holds
   it, unreleased, for one of that run's processes with its recorded start, or while one of them
   names its UDID. The reservation is the exact signal: `eng simulator-tests` names its devices
   by their kind, so the run names a device only while an `xcodebuild` of its names it. A pool
@@ -1060,8 +1113,8 @@ uncertain. Neither is reserved again until its owner releases it or
 `devices recover KEY --by SESSION --revision N --verified "…"` records an attended recovery: by
 the owner or a session they agreed, once the run's processes have stopped and the device's
 settings and apps are verified. Recovery refuses while the recorded process still runs, and for
-a run sent to the build host, while anything there may still use the device
-([physical devices and the build host](#physical-devices-and-the-build-host)).
+a run sent to the second Mac, while anything there may still use the device
+([physical devices and the second Mac](#physical-devices-and-the-second-mac)).
 
 Give every command the device's explicit identifier: the canonical uppercase UDID of a device
 you own or have reserved, never a name or `booted`. [Simulator testing](simulator-testing.md)
@@ -1093,7 +1146,7 @@ python3 -m vocaro_engineering.devices run iPhone --owner SESSION --revision N --
 A project's launcher calls it from Python, `devices.BoundedRun([KEY], owner, command, revision=N,
 limit=…, restoration=…).execute(command, stdout=log)`, and adds its own restoration queries and
 release around it, as Pagepour's mobile UI session does. `eng remote --device` runs the same
-checks and bound for a run on the build host ([below](#physical-devices-and-the-build-host)).
+checks and bound for a run on the second Mac ([below](#physical-devices-and-the-second-mac)).
 The launcher:
 
 - requires the session, `--owner` or else `VOCARO_DEVICE_OWNER` or the agent session, to hold
@@ -1140,26 +1193,26 @@ processes and the measured build identities. Remove only the exact owned app and
 verify their absence, release the entry, and tell the other session that the device is released,
 including any unresolved restoration state.
 
-### Physical devices and the build host
+### <a id="physical-devices-and-the-build-host"></a>Physical devices and the second Mac
 
 Each Mac's simulators are its own, but the paired iPhone and iPad are reachable from both Macs:
 on 2026-10-27 the build host's `devicectl list devices` listed both as `available (paired)`. A
 record on each Mac would let a run on each use one device, under reservations neither record
 shows the other. So a physical device is reserved only in this Mac's record, the Mac that sends
-runs to the build host, and the build host's record holds only the build host's simulators.
-The build host never reads this Mac's record itself: that would give code running there a way
+runs to the second Mac, and the second Mac's record holds only the second Mac's simulators.
+The second Mac never reads this Mac's record itself: that would give code running there a way
 into this Mac, so a run carries the reservation it may use instead.
 
-Every `eng remote` run first makes the build host's record defer physical devices to the sending
+Every `eng remote` run first makes the second Mac's record defer physical devices to the sending
 Mac's (`devices defer MAC`, kept as the record's `physicalDevicesRecordedOn`, which `status`
 reports). A record that defers them refuses to reserve a physical device or to give an entry one,
 and names the record that holds them. A hardware UDID, 8 and 16 hex digits or 40, is physical; a
-simulator's is a UUID. A build host record that already defers them to another Mac, or holds a
+simulator's is a UUID. A record there that already defers them to another Mac, or holds a
 physical device, stops the run as a configuration problem for the owner's decision: which Mac's
 record holds them changes only by `devices defer MAC --replace` (`--end` ends a deferral), and a
 held device is released or recovered first.
 
-A run on the build host uses a physical device only under a reservation held here, which it
+A run on the second Mac uses a physical device only under a reservation held here, which it
 carries:
 
 ```sh
@@ -1177,21 +1230,21 @@ python3 scripts/eng remote run --device iPhone LANE -- ARGUMENTS
   it ends, with the host, the work and the results directory, in the entry's `run`. Its end, by a
   stop, its death or a dropped connection, stops the run there, so a run whose dispatcher vanished
   is an orphan here.
-- `devices recover` of an entry whose run went to the build host asks that host first, and
+- `devices recover` of an entry whose run went to the second Mac asks that host first, and
   refuses while it lists any process whose command line names the device's UDID, live or left
   over, or any process left over in a checkout or the temporary directory since the run started
-  ([processes left over from runs](#processes-left-over-from-runs)). The run's own `build_host.py`
+  ([processes left over from runs](#processes-left-over-from-runs)). The run's own `offload_host.py`
   names the UDID while the run lasts, since its plan carries the lease, and `xcodebuild` and
   `devicectl` name the device they are given. macOS does not show another process's environment,
-  so a process that reaches the device without naming it is not seen. A build host that cannot be
+  so a process that reaches the device without naming it is not seen. A second Mac that cannot be
   reached keeps the device until it can be, or until the owner recovers it with
-  `--build-host-unchecked REASON`, which the recovery records.
+  `--offload-unchecked REASON`, which the recovery records.
 - The bound starts when the dispatch does, so it counts sending the commits and waiting for
   admission there. Once it passes, by this Mac's clock, the dispatch stops the run there as a stop
   does, and the outcome begins `stopped at its Ns bound`.
 - The run reads its reservations from `VOCARO_DEVICE_LEASE`:
   `{"record": MAC, "devices": {KEY: UDID}, "until": END}`, where END is the reservations' end.
-  There `devices run KEY -- COMMAND` takes KEY from the lease, since the build host's record
+  There `devices run KEY -- COMMAND` takes KEY from the lease, since the second Mac's record
   defers physical devices: it checks the devices the command names against the lease, bounds the
   command by END as here, and leaves the recording to the dispatch.
 - The device stays reserved after the run. Preflight, restoration and the release are the
@@ -1205,12 +1258,12 @@ python3 scripts/eng remote run --device iPhone LANE -- ARGUMENTS
   this Mac, and `eng admit --verify` a command that names any hardware UDID.
 
 `eng doctor` reports both Macs' records under `deviceRecord`. It is an error for this Mac's record
-to defer physical devices, or for the build host's to hold one or to defer them to another Mac;
-a build host record that defers them to no Mac yet is listed as unchecked until the next run.
+to defer physical devices, or for the second Mac's to hold one or to defer them to another Mac;
+a record there that defers them to no Mac yet is listed as unchecked until the next run.
 
 The records constrain only work that goes through the toolkit: `xcodebuild` or `devicectl` run
-by hand on the build host, or Xcode there, reaches the devices without them. A lane that needs a
-device says so with `"here"`, so sending one to the build host is always an explicit
+by hand on the second Mac, or Xcode there, reaches the devices without them. A lane that needs a
+device says so with `"here"`, so sending one to the second Mac is always an explicit
 `eng remote --device`.
 
 ## Attended Mac sessions
@@ -1313,7 +1366,7 @@ Supervise the process group you own. The toolkit's `processes.supervise`, which 
   second on the 18-core host, wrapping the PID space about every 19 minutes (2026-10-23, macOS
   27.0). The census adds one `ps`, as each sample takes, and a `getsid` sweep: 0.17 ms for 892
   processes on that M5 Max (2026-10-26, macOS 27.0.1). It cannot see a child that moved to a
-  session of its own and was orphaned between two samples; on the build host, the next run there
+  session of its own and was orphaned between two samples; on the second Mac, the next run there
   lists one that runs from a checkout, the temporary directory or a simulator
   ([processes left over from runs](#processes-left-over-from-runs)). An unrelated process that
   takes over a recorded ID and leaves its own children in that group or session reads as a

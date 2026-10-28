@@ -1,8 +1,8 @@
-"""The build host's side of `eng remote`, sent over SSH and run there by the host's own Python.
+"""The second Mac's side of `eng remote`, sent over SSH and run there by that Mac's own Python.
 
 It imports nothing from the toolkit, because it runs before the toolkit is checked out there,
 and Python 3.9, a Mac's system Python, runs it. It claims a persistent checkout of the project,
-places the dispatched commits, and runs `eng run` or `eng admit` there under the build host's
+places the dispatched commits, and runs `eng run` or `eng admit` there under the second Mac's
 own heavy-work admission, with its device record deferring physical devices to the sending Mac's
 and the run given the reservations it carries. Standard output carries framed lines: `O` for
 output, `L` for the lane's log as it grows, then, once the work has ended, an `F` naming each file the plan asks back,
@@ -79,7 +79,7 @@ _stop = threading.Event()
 
 
 class Refusal(RuntimeError):
-    """The build host will not start the work, and nothing of it ran. A busy build host cannot start
+    """The second Mac will not start the work, and nothing of it ran. A busy second Mac cannot start
     it now; any other refusal is its configuration's, and fix says what fixing that takes."""
 
     def __init__(self, reason, fix=None, busy=False):
@@ -99,7 +99,7 @@ def emit(kind, data):
 
 
 def say(text):
-    emit(b"O", f"build-host: {text}".encode())
+    emit(b"O", f"second Mac: {text}".encode())
 
 
 def output(command, environment=None):
@@ -535,7 +535,7 @@ def leftovers(root, listed=listing, written=disk_writes):
     candidates = {pid: where for pid, where in placed.items() if pid not in runs}
     children = {}
     for pid, process in table.items(): children.setdefault(process["parent"], []).append(pid)
-    # This file stays ASCII: it reaches the build host as a command-line argument.
+    # This file stays ASCII: it reaches the second Mac as a command-line argument.
     command = lambda pid: table[pid]["args"][:COMMAND_LIMIT] + ("..." if len(table[pid]["args"]) > COMMAND_LIMIT else "")
     now, rows = time.time(), []
     for pid, (kind, path, device) in candidates.items():
@@ -562,7 +562,7 @@ def leftovers(root, listed=listing, written=disk_writes):
 def device_users(request, listed=listing, written=disk_writes):
     """What here may still use the physical device a run was given, for `devices recover`: each of
     the account's processes whose command line names its UDID, live or left over, among them the
-    run's own build_host.py, whose plan names it while the run lasts; and each leftover that started
+    run's own offload_host.py, whose plan names it while the run lasts; and each leftover that started
     since the run did. It reads and reports, and stops nothing."""
     udid = request["udid"].upper()
     table = process_table(listed(["ps", "-axww", "-o", "pid=,ppid=,uid=,lstart=,args="]))
@@ -579,7 +579,7 @@ def device_users(request, listed=listing, written=disk_writes):
 
 
 def answer(request):
-    """build_host.py's answer to a request other than a plan, for `eng doctor`, `eng remote`,
+    """offload_host.py's answer to a request other than a plan, for `eng doctor`, `eng remote`,
     `eng remote setup` and `devices recover`."""
     if "toolchain" in request: return toolchain(request["toolchain"])
     if "leftovers" in request or "device" in request:
@@ -674,11 +674,11 @@ def place(repository, checkout, commit, ref, origin=None):
 
 
 def credentials(environment, path):
-    """Give the run's git the build host's credential file and no other helper.
+    """Give the run's git the second Mac's credential file and no other helper.
 
     SwiftPM clones private dependencies with git, and an SSH session cannot unlock the keychain
     that osxkeychain, Xcode's git default, reads. The variables reach only this run, so the
-    owner's own git configuration on the build host is unchanged."""
+    owner's own git configuration on the second Mac is unchanged."""
     count = int(environment.get("GIT_CONFIG_COUNT", "0"))
     for offset, value in enumerate(["", f"store --file={shlex.quote(str(path))}"]):
         environment[f"GIT_CONFIG_KEY_{count + offset}"] = "credential.helper"
@@ -701,8 +701,8 @@ def defer_devices(kit, mac):
     if deferred.returncode:
         problem = deferred.stderr.strip().splitlines()[-1:] or [f"exit {deferred.returncode}"]
         raise Refusal(f"its device record cannot defer physical devices to {mac}: {problem[0]}",
-                      "decide which Mac's record holds physical devices and resolve that in the build host's record "
-                      "(guides/shared-host.md, Physical devices and the build host)")
+                      "decide which Mac's record holds physical devices and resolve that in the second Mac's record "
+                      "(guides/shared-host.md, Physical devices and the second Mac)")
     if deferred.stdout.strip(): say(deferred.stdout.strip())
 
 
@@ -791,8 +791,8 @@ def main(plan):
         if expected and found != expected:
             version = lambda text: " ".join(text.split())
             raise Refusal(f"the Xcode at {plan['developerDir']} is {version(found or 'missing')}, not the dispatcher's "
-                          f"{version(expected)}", "install this Mac's Xcode at that path on the build host "
-                          "(guides/shared-host.md, Setting up a build host), or select with DEVELOPER_DIR an Xcode "
+                          f"{version(expected)}", "install this Mac's Xcode at that path on the second Mac "
+                          "(guides/shared-host.md, Setting up the second Mac), or select with DEVELOPER_DIR an Xcode "
                           "both Macs have at the same path")
         root, project, toolkit = Path.home() / plan["root"], plan["project"], plan.get("toolkit")
         base = root / "checkouts" / project["directory"]
@@ -814,7 +814,7 @@ def main(plan):
         # The reservations, held in the sending Mac's record, that this run may use (devices.LEASE).
         if plan.get("lease"): environment["VOCARO_DEVICE_LEASE"] = json.dumps(plan["lease"])
         if plan.get("developerDir"): environment["DEVELOPER_DIR"] = plan["developerDir"]
-        # A receipt the work writes here says that it ran on the build host, sent from this Mac (remote.DISPATCHER).
+        # A receipt the work writes here says that it ran on the second Mac, sent from this Mac (remote.DISPATCHER).
         if plan.get("dispatcher"): environment["VOCARO_DISPATCHED_FROM"] = plan["dispatcher"]
         if (root / "git-credentials").is_file(): credentials(environment, root / "git-credentials")
         eng = [sys.executable, str(kit / "bin/eng"), "--project", str(checkout)]

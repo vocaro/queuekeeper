@@ -246,9 +246,11 @@ class LaneGroupTests(unittest.TestCase):
                 self.assertEqual(self.run_lane("group")[0], 2)
         for group in ({"parallel": ["one", "two"], "jobs": 1}, {"parallel": ["heavy", "one"], "resource": "exclusive",
                                                                 "buildHost": True}):
-            with self.subTest(group):
+            with self.subTest(group), contextlib.redirect_stderr(StringIO()) as error:
                 self.configure({**lanes, "group": group})
                 cli.load(self.root)
+            # A group's old mark is read too, and says to delete it.
+            self.assertEqual("buildHost" in group, "marks group \"buildHost\": true, which is redundant" in error.getvalue())
 
 
 if __name__ == "__main__":

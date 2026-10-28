@@ -219,7 +219,7 @@ class DeviceRecordTests(unittest.TestCase):
         self.assertEqual(released["recovery"]["condition"], "orphan")
         self.reserve(owner="session-b", revision=released["revision"], approval=approval())
 
-    def test_recovering_a_run_sent_to_the_build_host_waits_until_nothing_there_may_use_the_device(self):
+    def test_recovering_a_run_sent_to_the_second_mac_waits_until_nothing_there_may_use_the_device(self):
         child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
         self.addCleanup(child.wait)
         self.addCleanup(child.kill)
@@ -249,27 +249,48 @@ class DeviceRecordTests(unittest.TestCase):
         self.assertEqual(self.path.read_bytes(), before)
         self.assertEqual(asked[0], ("build-host", PHONE, devices.moment(started).timestamp()))
         recovered = recover(users([]))
-        self.assertEqual(recovered["recovery"]["buildHost"]["host"], "build-host")
-        self.assertIn("checkedAt", recovered["recovery"]["buildHost"])
-        # The owner can recover without the build host, recording why.
+        self.assertEqual(recovered["recovery"]["offload"]["host"], "build-host")
+        self.assertIn("checkedAt", recovered["recovery"]["offload"])
+        # The owner can recover without the second Mac, recording why.
         entry = self.reserve(owner="session-b", revision=recovered["revision"], approval=approval())
         entry = self.record.update("iPhone", owner="session-b", revision=entry["revision"], state="uncertain-run",
                                    uncertain=True, run={"host": "build-host", "startedAt": started})
         asked.clear()
-        code, output, _error = self.cli("recover", "iPhone", "--by", "owner", "--revision", str(entry["revision"]),
-                                        "--verified", "checked by hand", "--build-host-unchecked", "it is gone")
-        self.assertEqual(code, 0)
-        self.assertEqual(json.loads(output)["entry"]["recovery"]["buildHost"], {"host": "build-host",
-                                                                                "unchecked": "it is gone"})
-        self.assertEqual(asked, [])
-        # A run that stayed on this Mac asks no build host.
+        code, output, error = self.cli("recover", "iPhone", "--by", "owner", "--revision", str(entry["revision"]),
+                                       "--verified", "checked by hand", "--offload-unchecked", "it is gone")
+        self.assertEqual(code, 0, error)
+        self.assertEqual(json.loads(output)["entry"]["recovery"]["offload"], {"host": "build-host",
+                                                                              "unchecked": "it is gone"})
+        self.assertEqual((error, asked), ("", []))
+        # A run that stayed on this Mac asks no second Mac.
         entry = self.reserve(owner="session-c", revision=self.record.entry("iPhone")["revision"], approval=approval())
         entry = self.record.update("iPhone", owner="session-c", revision=entry["revision"], uncertain=True,
                                    run="a local result bundle")
         recovered = self.record.recover("iPhone", by="owner", revision=entry["revision"], verified="v",
                                         users=users(RuntimeError("never asked")))
-        self.assertNotIn("buildHost", recovered["recovery"])
+        self.assertNotIn("offload", recovered["recovery"])
         self.assertEqual(asked, [])
+
+    def test_recovery_still_reads_the_old_name_of_offload_unchecked_and_says_to_use_the_new_one(self):
+        entry = self.reserve(device=PHONE)
+        started = devices.now()
+        run = {"host": "build-host", "startedAt": started}
+        for given, recorded, said in [
+                (["--build-host-unchecked", "it is gone"], "it is gone", "use --offload-unchecked"),
+                (["--build-host-unchecked", "old", "--offload-unchecked", "new"], "new",
+                 "--offload-unchecked is given too, and wins")]:
+            with self.subTest(given):
+                entry = self.record.update("iPhone", owner=entry.get("ownerChatID") or "session-a",
+                                           revision=entry["revision"], uncertain=True, run=run)
+                code, output, error = self.cli("recover", "iPhone", "--by", "owner", "--revision",
+                                               str(entry["revision"]), "--verified", "checked by hand", *given)
+                self.assertEqual(code, 0, error)
+                self.assertEqual(json.loads(output)["entry"]["recovery"]["offload"],
+                                 {"host": "build-host", "unchecked": recorded})
+                self.assertIn("devices: --build-host-unchecked is --offload-unchecked's old name, read only until "
+                              f"the projects have moved: {said} (guides/shared-host.md, Earlier names)", error)
+                entry = self.reserve(owner="session-b", revision=json.loads(output)["entry"]["revision"],
+                                     approval=approval())
 
     def test_unverified_restoration_keeps_the_device_until_its_owner_releases_it(self):
         entry = self.reserve()
@@ -820,7 +841,7 @@ class BoundedRunTests(unittest.TestCase):
         # The stop ended the command before the launcher recorded the outcome.
         self.assertNotEqual(process_start(command["pid"]), command["start"])
 
-    def test_on_the_build_host_a_run_takes_its_reservation_from_the_lease_and_changes_no_record(self):
+    def test_on_the_second_mac_a_run_takes_its_reservation_from_the_lease_and_changes_no_record(self):
         self.record.defer("workstation")
         lease = {"record": "workstation", "devices": {"iPad": TABLET}, "until": later()}
         def run(*words, key="iPad", carried=lease):

@@ -1,29 +1,29 @@
-"""Run a lane or an admitted command on the build host: a second Mac reached over SSH.
+"""Run a lane or an admitted command on the owner's second Mac, reached over SSH.
 
 Nothing here takes a slot on this host. The exact commit, and the toolkit commit that runs it,
-go to bare repositories on the build host by git over SSH, never through GitHub. A working tree
-with uncommitted changes goes as a snapshot commit on HEAD, which no branch holds. build_host.py,
+go to bare repositories on the second Mac by git over SSH, never through GitHub. A working tree
+with uncommitted changes goes as a snapshot commit on HEAD, which no branch holds. offload_host.py,
 sent along and run there by the host's own Python, checks them out in a persistent checkout,
-so builds stay warm, and runs `eng run` or `eng admit` under the build host's own heavy-work
+so builds stay warm, and runs `eng run` or `eng admit` under the second Mac's own heavy-work
 admission: that host's queue, not a private pool beside this one. The log and the result come
 back to this checkout's .build/engineering/remote, and a lane group's lanes' logs and receipts
 with them once the run there ends. A whole lane's result at a commit is also kept by commit in
 the repository's Git directory, where every worktree of the repository can find it; a
 snapshot's is not.
 
-`eng run` offers every heavy or exclusive lane to the build host first unless the lane says why
+`eng run` offers every heavy or exclusive lane to the second Mac first unless the lane says why
 it stays on this Mac, and `eng admit --verify` a command whose result is its log and status. The
-build host runs the work if it can start it now; while it is at capacity, this Mac takes the
-work, and while both are, the work goes to whichever admits it first, offered to the build host
+second Mac runs the work if it can start it now; while it is at capacity, this Mac takes the
+work, and while both are, the work goes to whichever admits it first, offered to the second Mac
 again and again (overflow; the owner's decision, 2026-10-28). First it checks, within seconds,
-that the build host can be reached. When it cannot, because its name does not resolve, as when
-this Mac is away from the build host's network, nothing answers on its ssh port or ssh cannot
-connect, the work runs on this Mac at once (the owner's decision, 2026-10-27). A build host that
+that the second Mac can be reached. When it cannot, because its name does not resolve, as when
+this Mac is away from the second Mac's network, nothing answers on its ssh port or ssh cannot
+connect, the work runs on this Mac at once (the owner's decision, 2026-10-27). A second Mac that
 answers but is misconfigured, such as one that refuses the login or has another Xcode, stops the
 work for the owner's decision (agents/core.md, Shared resources); only `--here` then runs it
 here. A run that was sent and lost its connection is unmeasured and runs nowhere else.
-`eng doctor` compares the two Macs and times how ssh connects to the build host, and reports a
-build host it cannot reach as unchecked, and `eng remote setup --runtimes` gives both the same
+`eng doctor` compares the two Macs and times how ssh connects to the second Mac, and reports a
+second Mac it cannot reach as unchecked, and `eng remote setup --runtimes` gives both the same
 simulator runtimes. Before it sends work, and
 in `eng doctor`, it lists the processes there that earlier runs left running, which nothing
 stops.
@@ -46,20 +46,27 @@ import tempfile
 import threading
 import time
 
-from . import build_host, devices, disk, processes
+from . import devices, disk, offload_host, processes
 from .config import TOOLKIT_ROOT
 from .resources import BUSY, FREE_WAIT
 
-# The SSH destination when neither --host nor VOCARO_BUILD_HOST names one: an alias the owner
-# defines in ~/.ssh/config, so no machine's name is written here.
+# The SSH destinations tried in turn when neither --host nor VOCARO_OFFLOAD_HOST names one: aliases the
+# owner defines in ~/.ssh/config, so no machine's name is written here. build-host, which the owner
+# defined first, stays the default; second-mac serves once it is the one defined (guides/shared-host.md,
+# Earlier names).
 DEFAULT_HOST = "build-host"
-# The build host's directory for repositories and checkouts, relative to its home.
+ALIASES = (DEFAULT_HOST, "second-mac")
+# The variable that names the second Mac's SSH destination, or none for this Mac only, and the name it
+# had until vocaro-engineering#58, which is still read, with a warning, until the projects have moved.
+HOST_VARIABLE, OLD_HOST_VARIABLE = "VOCARO_OFFLOAD_HOST", "VOCARO_BUILD_HOST"
+# The second Mac's directory for repositories and checkouts, relative to its home. It keeps the build
+# host's name: another would leave every warm checkout there behind.
 ROOT = "Development/build-host"
-# Persistent checkouts per project on the build host; more wait for one to come free.
+# Persistent checkouts per project on the second Mac; more wait for one to come free.
 CHECKOUTS = 4
-# Seconds ssh waits for each address the build host's name resolves to before it tries the next.
+# Seconds ssh waits for each address the second Mac's name resolves to before it tries the next.
 CONNECT_TIMEOUT = 10
-# ssh closes a connection that has heard nothing from the build host for about ServerAliveInterval
+# ssh closes a connection that has heard nothing from the second Mac for about ServerAliveInterval
 # times ServerAliveCountMax seconds, two minutes (ssh_config(5)); a shorter silence leaves it open.
 SSH = ["ssh", "-T", "-o", "BatchMode=yes", "-o", f"ConnectTimeout={CONNECT_TIMEOUT}", "-o", "ServerAliveInterval=30",
        "-o", "ServerAliveCountMax=4"]
@@ -75,31 +82,33 @@ SLEEP_NOTED = 5
 NO_ANSWER = re.compile(r"^ssh: connect to host \S+ port \d+: Operation timed out$")
 NO_BANNER = "Connection timed out during banner exchange"
 TIMED_OUT = re.compile(r"^Connection to \S+ port \d+ timed out$")
+# The refs that carry a commit into the second Mac's repositories. They keep the build host's name, as
+# ROOT does: those repositories hold refs under it, which another name would orphan.
 REF = "refs/vocaro/build-host/"
-# Seconds a stopped run has to end on the build host before the connection is closed.
+# Seconds a stopped run has to end on the second Mac before the connection is closed.
 STOP_WAIT = 120
 # What a Git hook exports for its own repository must not reach another.
 GIT_LOCATION = {"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
                 "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_PREFIX"}
-# `eng run`'s status when the build host's configuration stopped a lane: sysexits' EX_CONFIG.
+# `eng run`'s status when the second Mac's configuration stopped a lane: sysexits' EX_CONFIG.
 MISCONFIGURED = 78
-# Seconds the check before a dispatch gives each address of the build host's name to answer on its ssh
-# port, and then `ssh true` to finish there, login shell included: an offline build host costs a few
+# Seconds the check before a dispatch gives each address of the second Mac's name to answer on its ssh
+# port, and then `ssh true` to finish there, login shell included: an offline second Mac costs a few
 # seconds, where ssh's ConnectTimeout would take ten for each address.
 REACH_TIMEOUT, REACH_SECONDS = 3, 30
 # ssh's own lines when it could not connect at all, before any login: a name that does not resolve, an
 # address that refuses or never answers, a connection closed during the banner exchange. Nothing it was
-# to run reached the build host.
+# to run reached the second Mac.
 OFFLINE = re.compile(r"Could not resolve hostname|connect to host \S+ port \d+:|banner exchange|"
                      r"kex_exchange_identification:")
-# ssh's own lines when it connected and the build host, or this Mac's ssh configuration, refused the login.
+# ssh's own lines when it connected and the second Mac, or this Mac's ssh configuration, refused the login.
 LOGIN = re.compile(r"Permission denied|Host key verification failed|Too many authentication failures|"
                    r"REMOTE HOST IDENTIFICATION HAS CHANGED|no matching host key type")
-# Set by build_host.py for the work it runs: the name of the Mac that sent it, which a receipt records.
+# Set by offload_host.py for the work it runs: the name of the Mac that sent it, which a receipt records.
 DISPATCHER = "VOCARO_DISPATCHED_FROM"
-# Seconds `eng doctor` waits for the build host to report its Xcodes and runtimes.
+# Seconds `eng doctor` waits for the second Mac to report its Xcodes and runtimes.
 SURVEY_TIMEOUT = 180
-# Seconds `eng doctor` waits for the census of the build host's leftover processes.
+# Seconds `eng doctor` waits for the census of the second Mac's leftover processes.
 CENSUS_TIMEOUT = 60
 # Where a leftover process is explained.
 LEFTOVER_GUIDE = "guides/shared-host.md, Processes left over from runs"
@@ -109,18 +118,18 @@ SNAPSHOT_IDENTITY = {"GIT_AUTHOR_NAME": "eng snapshot", "GIT_AUTHOR_EMAIL": "sna
                      "GIT_COMMITTER_NAME": "eng snapshot", "GIT_COMMITTER_EMAIL": "snapshot@vocaro-engineering.invalid"}
 
 
-# What every project's gates use on the build host (guides/shared-host.md, Setting up a build host).
+# What every project's gates use on the second Mac (guides/shared-host.md, Setting up the second Mac).
 SETUP_FORMULAE = ["python", "uv", "shellcheck", "xcodegen", "zstd"]
 # Where Homebrew's installer puts brew: Apple silicon, then Intel.
 BREW = ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"]
-# The exit status of the setup script when the build host has no Homebrew.
+# The exit status of the setup script when the second Mac has no Homebrew.
 NO_HOMEBREW = 4
 FORMULA = re.compile(r"^[A-Za-z0-9][A-Za-z0-9@._+/-]*$")
 MODULE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]*$")
 
-# How messages name this Mac beside the build host.
+# How messages name this Mac beside the second Mac.
 HERE = "this Mac"
-# Where a runtime image copied from the other Mac is staged until simctl adds it: on the build host
+# Where a runtime image copied from the other Mac is staged until simctl adds it: on the second Mac
 # under ~/Development/build-host, and here among the toolkit's durable state, never in /private/tmp,
 # which a reboot empties. Both are relative to the Mac's home.
 RUNTIME_STAGING = f"{ROOT}/runtimes"
@@ -134,22 +143,22 @@ RUNTIME_MARGIN = 40 << 30
 RUNTIME_ESTIMATE = 10 << 30
 # The platforms whose runtimes `xcodebuild -downloadPlatform` downloads (Xcode 27.2's help).
 DOWNLOADABLE = {"iOS", "watchOS", "tvOS", "visionOS"}
-# A runtime as build_host.toolchain names it: NAME (BUILD).
+# A runtime as offload_host.toolchain names it: NAME (BUILD).
 RUNTIME = re.compile(r"^(.*) \(([^()]+)\)$")
 
 
 class Unavailable(RuntimeError):
-    """The build host did not take the work, and nothing of it ran there."""
+    """The second Mac did not take the work, and nothing of it ran there."""
 
 
 class Busy(Unavailable):
-    """The build host could not start the work in time, or at once when the work asked it not to wait:
-    its queue or every checkout is in use. A busy build host is no configuration problem, and this Mac
+    """The second Mac could not start the work in time, or at once when the work asked it not to wait:
+    its queue or every checkout is in use. A busy second Mac is no configuration problem, and this Mac
     takes the work while it is busy, if it can (overflow)."""
 
 
 class Misconfigured(Unavailable):
-    """The build host's configuration kept the work from running there: the owner's to fix, and
+    """The second Mac's configuration kept the work from running there: the owner's to fix, and
     no reason to run it on this Mac without the owner's decision (agents/core.md, Shared resources).
     problem says what is wrong, and fix what fixing it takes."""
 
@@ -159,8 +168,8 @@ class Misconfigured(Unavailable):
 
 
 class Unreachable(Unavailable):
-    """The build host could not be reached, so nothing was sent: its name did not resolve, nothing
-    answered on its ssh port, or ssh could not connect. An offline build host is no configuration
+    """The second Mac could not be reached, so nothing was sent: its name did not resolve, nothing
+    answered on its ssh port, or ssh could not connect. An offline second Mac is no configuration
     problem, and the work runs on this Mac instead (the owner's decision, 2026-10-27)."""
 
     def __init__(self, problem, fix):
@@ -169,10 +178,10 @@ class Unreachable(Unavailable):
 
 
 def ssh_failure(host, said, *context, sent=False):
-    """What ssh's own failure, its exit of 255, makes of the build host before any work started there. said
+    """What ssh's own failure, its exit of 255, makes of the second Mac before any work started there. said
     is what ssh wrote, whose last line names the failure, and unreachable() describes it from said and
     context, such as asleep()'s reading when ssh started. A refused login is a configuration problem
-    (Misconfigured). Before the work was sent, every other failure, or none said, is a build host that
+    (Misconfigured). Before the work was sent, every other failure, or none said, is a second Mac that
     cannot be reached (Unreachable). Once it was sent, only one in which ssh never logged in is: a last
     line that says ssh never connected (OFFLINE), or no SSH banner at all (NO_BANNER); the rest stops
     the work as unreachable() says, since the work may have started there."""
@@ -182,7 +191,7 @@ def ssh_failure(host, said, *context, sent=False):
         return Misconfigured(f"ssh reached {host} but could not log in: {line}",
                              f"correct its entry in ~/.ssh/config, its host key in ~/.ssh/known_hosts or this Mac's key "
                              f"in its ~/.ssh/authorized_keys, until `ssh {host} true` succeeds without a prompt "
-                             "(guides/shared-host.md, Setting up a build host)")
+                             "(guides/shared-host.md, Setting up the second Mac)")
     stop = unreachable(host, said, *context)
     if sent and line and not OFFLINE.search(line) and not banner: return stop
     return Unreachable(stop.problem, stop.fix)
@@ -214,7 +223,7 @@ def reachable(host, found=None):
         raise Misconfigured(f"{host}'s login shell could not run `true` (exit {checked.returncode}): "
                             f"{last_line(checked.stderr) or 'no output'}",
                             f"repair the login shell there, which every run uses, until `ssh {host} true` succeeds "
-                            "(guides/shared-host.md, Setting up a build host)")
+                            "(guides/shared-host.md, Setting up the second Mac)")
 
 
 def last_line(text):
@@ -223,11 +232,11 @@ def last_line(text):
 
 
 def unreachable(host, detail, slept=None):
-    """A build host that ssh could not reach, as ssh's lines, detail, say: the last names the failure.
+    """A second Mac that ssh could not reach, as ssh's lines, detail, say: the last names the failure.
     A .local name that did not resolve is multicast DNS, which only both Macs awake on one network
-    answer. A timeout says whether the build host's address answered at all. slept is asleep()'s
+    answer. A timeout says whether the second Mac's address answered at all. slept is asleep()'s
     reading when ssh started, if it was read: a connection that this Mac slept through times out
-    whatever the build host does, since a Mac asleep answers nothing, and that is said instead."""
+    whatever the second Mac does, since a Mac asleep answers nothing, and that is said instead."""
     lines = [line.strip() for line in (detail or "").splitlines() if line.strip()]
     said = lines[-1] if lines else None
     unresolved = re.search(r"Could not resolve hostname (\S+?):", said or "")
@@ -246,40 +255,60 @@ def unreachable(host, detail, slept=None):
         problem += (f"; this Mac slept for {sleep:.0f} s while ssh waited, and a Mac asleep answers nothing, so the "
                     f"timeout says nothing of {host}")
         return Misconfigured(problem, f"keep this Mac awake while eng connects to {host}; `ssh {host} true` shows "
-                                      f"whether {host} answers now (guides/shared-host.md, How a run reaches the build "
-                                      "host)")
+                                      f"whether {host} answers now (guides/shared-host.md, How a run reaches the second "
+                                      "Mac)")
     remedy = (f"wake {host} and connect it to this Mac's network: {name} is a multicast DNS name, which resolves only "
               "while both Macs are awake on one network that passes multicast between them, as "
               f"`dscacheutil -q host -a name {name}` shows" if name and name.rstrip(".").lower().endswith(".local")
               else f"see whether {host} is overloaded or its sshd is stuck, as `ssh -v {host} true` shows" if connected
               else f"wake {host} and connect it to the network")
     return Misconfigured(problem, f"{remedy}, or correct its entry in ~/.ssh/config or its authorized_keys, until "
-                                  f"`ssh {host} true` succeeds without a prompt (guides/shared-host.md, Setting up a "
-                                  "build host)")
+                                  f"`ssh {host} true` succeeds without a prompt (guides/shared-host.md, Setting up the "
+                                  "second Mac)")
 
 
 def no_toolkit(host, status, detail):
     return Misconfigured(f"{host} could not run the toolkit (exit {status}): {detail or 'no output'}",
                          f"give {host}'s login shell a python3 that runs it: Homebrew's, which `eng remote setup` "
                          "installs, or the system's, which Xcode's command line tools provide "
-                         "(guides/shared-host.md, Setting up a build host)")
+                         "(guides/shared-host.md, Setting up the second Mac)")
 
 
 def configured():
-    """The build host that `eng run` and `eng admit --verify` send work to, or None for this Mac only.
+    """The second Mac that `eng run` and `eng admit --verify` send work to, or None for this Mac only.
 
-    VOCARO_BUILD_HOST names it, and `none` turns it off. Otherwise it is the ssh alias, when
-    ~/.ssh/config defines one: `ssh -G` resolves an undefined alias to its own name.
+    VOCARO_OFFLOAD_HOST names it, and `none` turns it off (named_host). Otherwise it is the ssh alias
+    that ~/.ssh/config defines (alias).
     """
-    named = os.environ.get("VOCARO_BUILD_HOST")
-    if named is not None:
-        return None if named.strip().lower() in {"", "none", "off"} else named
-    try:
-        resolved = subprocess.run(["ssh", "-G", DEFAULT_HOST], capture_output=True, text=True, timeout=10)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    names = [line.split(None, 1)[1] for line in resolved.stdout.splitlines() if line.startswith("hostname ")]
-    return DEFAULT_HOST if resolved.returncode == 0 and names and names[0] != DEFAULT_HOST else None
+    host = named_host()
+    if host is not None:
+        return None if host.strip().lower() in {"", "none", "off"} else host
+    return alias()
+
+
+def named_host():
+    """What VOCARO_OFFLOAD_HOST names, else VOCARO_BUILD_HOST, its old name, or None when neither is set.
+    Reading the old name says to set the new one instead, or, when both are set, that the new one wins."""
+    host, old = os.environ.get(HOST_VARIABLE), os.environ.get(OLD_HOST_VARIABLE)
+    if old is not None:
+        print(f"eng: {OLD_HOST_VARIABLE} is {HOST_VARIABLE}'s old name, read only until the projects have moved: "
+              + (f"{HOST_VARIABLE} is set too, and wins, so unset {OLD_HOST_VARIABLE}" if host is not None
+                 else f"set {HOST_VARIABLE} instead") + " (guides/shared-host.md, Earlier names)",
+              file=sys.stderr, flush=True)
+    return host if host is not None else old
+
+
+def alias():
+    """The first alias of ALIASES that ~/.ssh/config defines, or None: `ssh -G` resolves an undefined
+    alias to its own name."""
+    for name in ALIASES:
+        try:
+            resolved = subprocess.run(["ssh", "-G", name], capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        names = [line.split(None, 1)[1] for line in resolved.stdout.splitlines() if line.startswith("hostname ")]
+        if resolved.returncode == 0 and names and names[0] != name: return name
+    return None
 
 
 def environment():
@@ -299,7 +328,7 @@ def committed(root, untracked):
     working tree goes as a snapshot."""
     status = git(root, "status", "--porcelain", f"--untracked-files={'normal' if untracked else 'no'}")
     if status:
-        raise Unavailable(f"{root} has changes the build host would not run; commit them first:\n{status}")
+        raise Unavailable(f"{root} has changes the second Mac would not run; commit them first:\n{status}")
     return git(root, "rev-parse", "HEAD")
 
 
@@ -346,12 +375,12 @@ def origin(root):
 
 
 def developer_directory():
-    selected = os.environ.get("DEVELOPER_DIR") or build_host.output(["xcode-select", "-p"])
+    selected = os.environ.get("DEVELOPER_DIR") or offload_host.output(["xcode-select", "-p"])
     return selected if selected and Path(selected).is_dir() else None
 
 
 def login(script):
-    """Have the build host's login shell run script, so its PATH is Terminal's, Homebrew's included."""
+    """Have the second Mac's login shell run script, so its PATH is Terminal's, Homebrew's included."""
     return f'exec "$SHELL" -l -c {shlex.quote(script)}'
 
 
@@ -360,7 +389,7 @@ def ssh(host, script, **options):
 
 
 def send(root, host, repository, commit):
-    """Push one commit by name to a bare repository on the build host, without the push hooks:
+    """Push one commit by name to a bare repository on the second Mac, without the push hooks:
     this is no publication, and a pre-push hook would run the gates this offloads.
 
     Sessions that send one commit at once race for its ref, and the push that loses fails with
@@ -383,7 +412,9 @@ def store(root):
 
 
 def passed(root, lane, revision="HEAD"):
-    """The receipt of a passing build-host run of the whole lane at exactly revision's commit, or None.
+    """The receipt of a passing run of the whole lane on the second Mac at exactly revision's commit, or
+    None. Only a run there keeps this receipt, so its ranOn, `second Mac`, or `build host` in a receipt
+    written before vocaro-engineering#58, is not read.
 
     A snapshot's run never counts, for HEAD or for the snapshot itself: no branch holds it. Nor
     does a group's serial reference."""
@@ -445,8 +476,8 @@ def lost(host, status, said, dispatched, slept, output):
 
 
 class Lease(devices.BoundedRun):
-    """Physical devices a build-host run uses, each reserved in this Mac's record by the session that
-    sends the run (guides/shared-host.md, Physical devices and the build host): a bounded run
+    """Physical devices a run on the second Mac uses, each reserved in this Mac's record by the session
+    that sends the run (guides/shared-host.md, Physical devices and the second Mac): a bounded run
     whose command runs there.
 
     The dispatch marks each entry's run active with its own process, whose end, by a stop, its death
@@ -475,11 +506,12 @@ def named_devices(words, record=None):
 
 
 def lease(keys, owner, words, record=None, root=None):
-    """The reservations held here that a build-host run carries, or None when it uses no physical device.
+    """The reservations held here that a run on the second Mac carries, or None when it uses no physical
+    device.
 
     The keys are a bounded run's (devices.BoundedRun): owner holds each one's physical device here
     with no run active, within the window the owner agreed, and every device the command names is one of
-    them. The build host reaches the paired devices too, and its own record refuses them, so
+    them. The second Mac reaches the paired devices too, and its own record refuses them, so
     without a key a command that names any hardware UDID is refused, whether or not this record
     holds its device: a run on a device goes through a reservation. Forty hex digits that the Git
     of root's checkout knows as an object, such as a commit's whole hash, name no device (devices.named)."""
@@ -490,7 +522,7 @@ def lease(keys, owner, words, record=None, root=None):
             key, udid = next(iter(named.items()))
             raise devices.Refused(f"the command names {key}'s device {udid}, which no --device covers: reserve {key} "
                                   f"here and add --device {key}. Nothing was sent")
-        # A device no entry here holds, which the build host may reach all the same.
+        # A device no entry here holds, which the second Mac may reach all the same.
         for udid in sorted(devices.named(words, root=root)):
             raise devices.Refused(f"the command names the hardware UDID {udid}, which no entry of this Mac's record "
                                   "holds and no --device covers: reserve its device here under a key and add "
@@ -521,22 +553,22 @@ def carrying(lease, root, host, work, name, send):
 
 def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, decline=False, lease=None,
             serial=False, subdirectory=None, sent=None):
-    """Run eng's work on the build host and return its exit status, with the log and receipt kept here.
+    """Run eng's work on the second Mac and return its exit status, with the log and receipt kept here.
 
-    work is the build host's eng arguments: run [--serial] [--expect N] LANE [-- ARGUMENTS] or
+    work is the second Mac's eng arguments: run [--serial] [--expect N] LANE [-- ARGUMENTS] or
     admit [--exclusive | --model] -- COMMAND, which runs in the checkout's root, or in its subdirectory
     when one is named. It runs at HEAD, or at a snapshot commit of the working tree when that has
     uncommitted changes. A lane group's lanes' logs and receipts come back under the results' lanes/
-    once the run there ends, however it ended (group_files). The build host waits for a checkout and
+    once the run there ends, however it ended (group_files). The second Mac waits for a checkout and
     for its own admission; with decline, it refuses work it cannot start now instead, and Busy says
     why, as it does when no checkout came free in time. Unreachable says that ssh could not reach the
-    build host before the work was sent, and Misconfigured what of the build host's configuration kept
-    the work from running there, and what fixing it takes. The build host's device record defers
+    second Mac before the work was sent, and Misconfigured what of the second Mac's configuration kept
+    the work from running there, and what fixing it takes. The second Mac's device record defers
     physical devices to this Mac's, and lease gives the run the reservations it carries from here.
     serial says the work runs a group's lanes in turn: the serial reference, whose result, like a
     snapshot's, is no commit's pass. sent, when given, keeps what the first call sent: a later call
     with it offers the same commits again, without a snapshot, the preparing connection or a push,
-    since the build host holds them.
+    since the second Mac holds them.
     """
     toolkit = Path(TOOLKIT_ROOT).resolve()
     if sent:
@@ -559,7 +591,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
         except RuntimeError as error:  # Git cannot name a commit to send, so nothing is sent.
             raise Unavailable(str(error)) from error
         developer = developer_directory()
-        local = build_host.identity(developer)
+        local = offload_host.identity(developer)
     kept = store(root) / commit
     name = lane if lane is not None else "admit"
     returns = group_files(config, lane)
@@ -582,7 +614,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
             f"{{ [ -d {shlex.quote(path)} ] || git init --bare --quiet {shlex.quote(path)}; }}" for path in repositories)])
         print(f"remote: sending {at} to {host}", file=sys.stderr, flush=True)
         # The connection that prepares the repositories also lists what earlier runs left running there,
-        # before any work is sent: a connection to the build host can take seconds of its own.
+        # before any work is sent: a connection to the second Mac can take seconds of its own.
         attempt = asleep()
         prepared = ssh(host, f"{prepare} || exit $?\n{census_command()} || true", stdin=subprocess.DEVNULL,
                        capture_output=True, text=True)
@@ -592,7 +624,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
             raise Misconfigured(f"{host} could not prepare ~/{ROOT} (exit {prepared.returncode}): "
                                 f"{last_line(prepared.stderr) or 'no output'}",
                                 f"make ~/{ROOT} writable there and install the Xcode this Mac uses, with its license "
-                                "accepted and its first launch run (guides/shared-host.md, Setting up a build host)")
+                                "accepted and its first launch run (guides/shared-host.md, Setting up the second Mac)")
         for line in leftover_lines(host, *read_census(prepared)):
             print(f"remote: {line}", file=sys.stderr, flush=True)
         send(root, host, repositories[0], commit)
@@ -600,7 +632,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
         if sent is not None:
             sent.update(commit=commit, head=head, project=project, kit=kit, developer=developer, local=local)
     if processes.requested() is not None:
-        raise processes.Interrupted(processes.requested(), "before the build host started the run")
+        raise processes.Interrupted(processes.requested(), "before the second Mac started the run")
 
     results = Path(root) / ".build/engineering/remote" / name
     # Results are staged, so a refusal leaves the previous run's whole.
@@ -608,10 +640,10 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     shutil.rmtree(staging, ignore_errors=True)
     staging.mkdir(parents=True)
     started, slept = time.time(), asleep()
-    source = Path(build_host.__file__).read_text()
+    source = Path(offload_host.__file__).read_text()
     command = [*SSH, host, login(shlex.join(["python3", "-c", source, json.dumps(plan)]))]
     lines, result, stopping = queue.Queue(), None, None
-    # Whether build_host.py started there, and the last line of anything else, such as the shell's.
+    # Whether offload_host.py started there, and the last line of anything else, such as the shell's.
     framed, stray = False, None
     # The files asked back that have arrived, in order, and the one arriving now.
     returned, receiving = [], None
@@ -633,7 +665,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
                           f"reservations set; asking {host} to stop it", file=sys.stderr, flush=True)
                 else:
                     print(f"remote: stop requested; asking {host} to stop the run", file=sys.stderr, flush=True)
-                # The end of the build host's standard input is its stop.
+                # The end of the second Mac's standard input is its stop.
                 try: channel.stdin.close()
                 except OSError: pass
             if stopping is not None and time.monotonic() - stopping > STOP_WAIT and channel.poll() is None:
@@ -679,7 +711,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
         channel.wait()
         if receiving is not None: receiving.close()
     if result is None and not framed and stopping is None:
-        # build_host.py never said it started, so nothing ran there unless its first words were lost.
+        # offload_host.py never said it started, so nothing ran there unless its first words were lost.
         shutil.rmtree(staging, ignore_errors=True)
         if channel.returncode == 255: raise ssh_failure(host, stray, slept, sent=True)
         raise no_toolkit(host, channel.returncode, stray)
@@ -694,7 +726,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
         raise RuntimeError(lost(host, channel.returncode, stray, started, slept, results / "output.log"))
     # commit is what ran there: HEAD, or a snapshot of the working tree on it. ranOn and mac say where, as
     # a run on this Mac's receipt does, so that the share of each Mac's work can be counted.
-    receipt = {"ranOn": "build host", "mac": (result.get("host") or {}).get("name"), "host": host,
+    receipt = {"ranOn": "second Mac", "mac": (result.get("host") or {}).get("name"), "host": host,
                "commit": commit, "head": head, "snapshot": commit != head,
                "toolkit": kit["commit"] if kit else commit, "lane": lane, "arguments": list(arguments),
                "expect": expect, "work": work, "local": local, "result": result, "dispatched": started,
@@ -722,15 +754,15 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
             print(f"remote: no log came back for {', '.join(member for member in members if member not in came)}",
                   file=sys.stderr, flush=True)
     if (remote.get("macOS"), remote.get("build")) != (local.get("macOS"), local.get("build")):
-        print(f"remote: the build host runs macOS {remote.get('macOS')} ({remote.get('build')}) and this Mac "
-              f"{local.get('macOS')} ({local.get('build')}): the result qualifies the build host's platform",
+        print(f"remote: the second Mac runs macOS {remote.get('macOS')} ({remote.get('build')}) and this Mac "
+              f"{local.get('macOS')} ({local.get('build')}): the result qualifies the second Mac's platform",
               file=sys.stderr, flush=True)
     if result.get("stage") == "provision" and status and not result["stopped"]:
         raise Misconfigured(f"{host} could not provision its checkout: the provision lane exited {status} in "
                             f"{result.get('checkout')}, so {name} did not run there; its log is {results / 'run.log'}",
                             f"give {host} what provisioning needs, which that log names, such as a tool "
                             "`eng remote setup` installs or the git-credentials token for private dependencies "
-                            "(guides/shared-host.md, Setting up a build host)")
+                            "(guides/shared-host.md, Setting up the second Mac)")
     if status is None: return 1
     # A command a signal ended has a negative status; a shell reports it as 128 plus the signal.
     return 128 - status if status < 0 else status
@@ -740,11 +772,11 @@ def main(root, config, args):
     if args.operation == "passed":
         receipt = passed(root, args.lane, args.commit)
         if receipt is None:
-            print(f"No passing build-host run of the whole {args.lane} lane at {args.commit}")
+            print(f"No passing run of the whole {args.lane} lane on the second Mac at {args.commit}")
             return 1
         print(f"{args.lane} passed at {receipt['commit']} on {describe(receipt['result']['host'])}")
         return 0
-    host = args.host or os.environ.get("VOCARO_BUILD_HOST") or DEFAULT_HOST
+    host = args.host or named_host() or alias() or DEFAULT_HOST
     if args.operation == "setup": return setup(host, args.formulae, args.imports or [], args.check, args.runtimes)
     if args.operation == "run":
         lane = config.get("lanes", {}).get(args.lane)
@@ -754,7 +786,7 @@ def main(root, config, args):
         if args.serial and "parallel" not in lane:
             raise ValueError(f"--serial runs a lane group, and {args.lane} is not one")
         extra = args.passed or []
-        # The build host runs a group's lanes in turn under its own admission, as `eng run --serial` does here.
+        # The second Mac runs a group's lanes in turn under its own admission, as `eng run --serial` does here.
         work = ["run", "--here", *(["--serial"] if args.serial else []),
                 *(["--expect", str(args.expect)] if args.expect else []), args.lane, *(["--", *extra] if extra else [])]
         held = lease(args.device or [], args.device_owner or devices.default_owner(), extra, root=root)
@@ -775,8 +807,8 @@ def main(root, config, args):
 def install_script(formulae):
     """Find Homebrew, put it first on the login shell's PATH in ~/.zprofile, and install formulae.
 
-    Installing Homebrew itself needs the build host's password, which only the owner types, so a
-    build host without it ends the script with NO_HOMEBREW and nothing changed."""
+    Installing Homebrew itself needs the second Mac's password, which only the owner types, so a
+    second Mac without it ends the script with NO_HOMEBREW and nothing changed."""
     candidates = " ".join(shlex.quote(candidate) for candidate in BREW)
     return f"""set -u
 brew=$(command -v brew || true)
@@ -784,7 +816,7 @@ for candidate in {candidates}; do
     if [ -z "$brew" ] && [ -x "$candidate" ]; then brew=$candidate; fi
 done
 if [ -z "$brew" ]; then
-    echo "setup: Homebrew is not installed on this build host. Its installer asks for the build host's password, so install it there yourself (https://brew.sh), then run eng remote setup again." >&2
+    echo "setup: Homebrew is not installed on the second Mac. Its installer asks for the second Mac's password, so install it there yourself (https://brew.sh), then run eng remote setup again." >&2
     exit {NO_HOMEBREW}
 fi
 # Homebrew's bin must come before /usr/bin, or the system's python3 3.9 shadows Homebrew's, as it
@@ -808,7 +840,7 @@ echo "setup: brew install {' '.join(formulae)}"
 
 def verify_script(formulae, modules, developer=None):
     """One `ok` or `MISSING` line for each thing the gates need, read by a fresh login shell, as
-    `eng remote` reads the build host; exit 1 when anything is missing. The last line is the
+    `eng remote` reads the second Mac; exit 1 when anything is missing. The last line is the
     version of the Xcode at developer, the path a run there uses, which the caller compares."""
     lines = ["fail=0",
              "prefix=$(brew --prefix 2>/dev/null) || { echo \"MISSING Homebrew on the login shell's PATH\"; exit 1; }",
@@ -832,7 +864,7 @@ def verify_script(formulae, modules, developer=None):
 
 
 def setup(host, formulae, modules, check, runtimes=False):
-    """Install what the gates use on the build host, then check it as `eng remote` will see it.
+    """Install what the gates use on the second Mac, then check it as `eng remote` will see it.
     With check, only check. With runtimes, give both Macs the same simulator runtimes instead
     (match_runtimes)."""
     if runtimes:
@@ -858,7 +890,7 @@ def setup(host, formulae, modules, check, runtimes=False):
     # A new login shell, so a PATH line just written to ~/.zprofile is read as eng remote reads it.
     # A run there uses the Xcode at this Mac's developer directory, and must find the same version.
     developer = developer_directory()
-    here = " ".join((build_host.output(["xcrun", "xcodebuild", "-version"], {**os.environ, "DEVELOPER_DIR": developer})
+    here = " ".join((offload_host.output(["xcrun", "xcodebuild", "-version"], {**os.environ, "DEVELOPER_DIR": developer})
                      or "").split()) if developer else None
     result = ssh(host, verify_script(wanted, modules, developer), capture_output=True, text=True)
     status = 0 if result.returncode == 0 else 1
@@ -888,15 +920,15 @@ def runtime_differences(here, there, host):
 
 
 def toolchains(host, developer):
-    """Each Mac's build_host.toolchain with the Xcode at this Mac's developer directory."""
-    return {HERE: build_host.toolchain(developer), host: survey(host, developer)}
+    """Each Mac's offload_host.toolchain with the Xcode at this Mac's developer directory."""
+    return {HERE: offload_host.toolchain(developer), host: survey(host, developer)}
 
 
 def runtime_images(host, side, developer, clear=False):
     """A Mac's runtime images, the free space where a copy to it is staged, and what an earlier copy
-    left staged there, which clear removes: build_host.images and build_host.stage on side."""
+    left staged there, which clear removes: offload_host.images and offload_host.stage on side."""
     if side == HERE:
-        return {"images": build_host.images(developer), **build_host.stage(Path.home() / LOCAL_RUNTIME_STAGING, clear)}
+        return {"images": offload_host.images(developer), **offload_host.stage(Path.home() / LOCAL_RUNTIME_STAGING, clear)}
     return ask(host, {"images": developer, "staging": RUNTIME_STAGING, "clear": clear})
 
 
@@ -959,11 +991,11 @@ def reporter(runtime, size):
 
 
 def send_runtime(host, image, developer, report):
-    """Send this Mac's image of a runtime to host, where build_host.receive stages it and simctl adds
+    """Send this Mac's image of a runtime to host, where offload_host.receive stages it and simctl adds
     it. Return None once it is added there, else why not."""
     request = {"receive": {"staging": RUNTIME_STAGING, "build": image["build"], "size": image["sizeBytes"],
                            "developerDir": developer}}
-    command = [*SSH, host, login(shlex.join(["python3", "-c", Path(build_host.__file__).read_text(),
+    command = [*SSH, host, login(shlex.join(["python3", "-c", Path(offload_host.__file__).read_text(),
                                              json.dumps(request)]))]
     failure = None
     with subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -971,12 +1003,12 @@ def send_runtime(host, image, developer, report):
         try:
             with open(image["file"], "rb") as source:
                 sent = 0
-                for chunk in iter(lambda: source.read(build_host.CHUNK), b""):
+                for chunk in iter(lambda: source.read(offload_host.CHUNK), b""):
                     channel.stdin.write(chunk)
                     sent += len(chunk)
                     report(sent)
         except BrokenPipeError:
-            pass  # The build host stopped reading, and its answer says why.
+            pass  # The second Mac stopped reading, and its answer says why.
         except OSError as error:
             failure = f"reading {image['file']} failed: {error}"
         finally:
@@ -994,14 +1026,14 @@ def send_runtime(host, image, developer, report):
 
 
 def fetch_runtime(host, image, developer, report):
-    """Fetch host's image of a runtime over SSH, then stage and add it here as build_host.receive does
+    """Fetch host's image of a runtime over SSH, then stage and add it here as offload_host.receive does
     there. Return None once it is added here, else why not."""
     # cat needs no login shell, whose profile could write into the image.
     command = [*SSH, host, shlex.join(["cat", image["file"]])]
     with subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                           env=environment()) as channel:
         try:
-            failure = build_host.receive(channel.stdout, Path.home() / LOCAL_RUNTIME_STAGING, image["build"],
+            failure = offload_host.receive(channel.stdout, Path.home() / LOCAL_RUNTIME_STAGING, image["build"],
                                          image["sizeBytes"], developer, report)
         finally:
             channel.stdout.close()  # A stop ends cat too.
@@ -1160,11 +1192,11 @@ def bring_runtimes(host, developer, check):
 
 
 def first(root, config, lane, arguments, expect, fallback=True):
-    """Offer a lane to the build host to start now, once (Offer.make), and return the Offer.
+    """Offer a lane to the second Mac to start now, once (Offer.make), and return the Offer.
 
-    The build host runs the lane only if it can start it now: its queue admits the lane within
+    The second Mac runs the lane only if it can start it now: its queue admits the lane within
     FREE_WAIT (`eng run --if-free` there) and one of the project's checkouts there is free. A tree with
-    uncommitted changes goes as a snapshot commit (execute). The build host cannot run a lane whose
+    uncommitted changes goes as a snapshot commit (execute). The second Mac cannot run a lane whose
     arguments name a physical device of this Mac's record, nor any lane when Git cannot name the
     commits to send, as when the toolkit's checkout has changes to tracked files.
     """
@@ -1172,7 +1204,7 @@ def first(root, config, lane, arguments, expect, fallback=True):
             *(["--", *arguments] if arguments else [])]
     # A run that names a physical device uses it here, or there only by `eng remote run --device`.
     named = named_devices(arguments)
-    refused = (f"its arguments name the physical device of {', '.join(named)}, which the build host uses only under "
+    refused = (f"its arguments name the physical device of {', '.join(named)}, which the second Mac uses only under "
                "a reservation `eng remote run --device` carries from here") if named else None
     offered = Offer(lane, f"`eng run --here {lane}`", lambda host, sent: execute(
         root, config, host, work, lane=lane, arguments=arguments, expect=expect, decline=True, sent=sent), refused)
@@ -1185,12 +1217,12 @@ SIMULATOR = re.compile(r"(?<![0-9A-F])[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-
 
 
 def first_command(root, config, command, kind):
-    """Offer `eng admit --verify`'s command to the build host to start now, once, as first() offers a lane,
+    """Offer `eng admit --verify`'s command to the second Mac to start now, once, as first() offers a lane,
     to run in the directory of its checkout that matches the current one here; return the Offer. The
-    build host cannot run it as it runs here when its directory is outside the checkout or one Git
+    second Mac cannot run it as it runs here when its directory is outside the checkout or one Git
     ignores, which the commit sent lacks, or when its words name this checkout's path, a simulator by
     its identifier, or a hardware UDID (devices.named), all of which are this Mac's; a device goes
-    to the build host only under a reservation `eng remote admit --device` carries. kind is
+    to the second Mac only under a reservation `eng remote admit --device` carries. kind is
     --exclusive or --model, if either."""
     top, directory, words = Path(root).resolve(), Path.cwd().resolve(), " ".join(command)
     try:
@@ -1202,15 +1234,15 @@ def first_command(root, config, command, kind):
         refused = f"its directory {directory} is outside the checkout {top}"
     elif relative != "." and subprocess.run(["git", "-C", str(top), "check-ignore", "-q", relative], env=environment(),
                                             capture_output=True).returncode == 0:
-        refused = f"its directory {relative} is one Git ignores, which the build host's checkout lacks"
+        refused = f"its directory {relative} is one Git ignores, which the second Mac's checkout lacks"
     elif str(top) in words:
-        refused = f"it names this checkout's path {top}, which the build host's checkout is not"
+        refused = f"it names this checkout's path {top}, which the second Mac's checkout is not"
     elif SIMULATOR.search(words.upper()):
         refused = "it names a simulator by its identifier, a member of this Mac's pool"
     elif named:
-        refused = (f"it names the hardware UDID {', '.join(named)}, which the build host uses only under a "
+        refused = (f"it names the hardware UDID {', '.join(named)}, which the second Mac uses only under a "
                    "reservation `eng remote admit --device` carries from here")
-    # The build host's admission takes it now or declines it, as `eng run --if-free` does a lane.
+    # The second Mac's admission takes it now or declines it, as `eng run --if-free` does a lane.
     work = ["admit", *kind, "--if-free", "--", *command]
     offered = Offer("the command", "`eng admit` without --verify", lambda host, sent: execute(
         root, config, host, work, decline=True, subdirectory=None if relative in (None, ".") else relative,
@@ -1220,13 +1252,13 @@ def first_command(root, config, command, kind):
 
 
 class Offer:
-    """Work offered to the build host to start now, which it runs or declines before anything runs.
+    """Work offered to the second Mac to start now, which it runs or declines before anything runs.
 
     send(host, sent) runs the work there (execute), keeping in sent what it sent, so that the work
-    can be offered again without a second snapshot or push. refused is why the build host cannot run
+    can be offered again without a second snapshot or push. refused is why the second Mac cannot run
     the work, if it cannot, and instead the command that runs it here when the owner so decides after a
     configuration problem stopped it. status, once made, is the work's status there, MISCONFIGURED or
-    BUSY, or why the work runs on this Mac instead; busy is why the build host declined it, while it
+    BUSY, or why the work runs on this Mac instead; busy is why the second Mac declined it, while it
     was busy, and None once it ran there or can no longer take it."""
 
     def __init__(self, name, instead, send, refused=None):
@@ -1237,28 +1269,28 @@ class Offer:
         """Offer the work once: its status there, or Busy, Unreachable or Unavailable raised."""
         if self.refused is not None: raise Unavailable(self.refused)
         with processes.forwarding_signals():
-            # A build host that cannot be reached costs seconds here, and nothing is sent to it.
+            # A second Mac that cannot be reached costs seconds here, and nothing is sent to it.
             reachable(self.host)
             return self.send(self.host, self.sent)
 
     def make(self, fallback=True):
         """Offer the work once and set status. Without fallback, for a caller that runs the work itself
-        when the build host does not, every reason that it does not is BUSY, after saying why."""
+        when the second Mac does not, every reason that it does not is BUSY, after saying why."""
         self.host = configured()
         if self.host is None:
             if not fallback:
-                print(f"eng: {self.name} not run: no build host is configured (VOCARO_BUILD_HOST, or the ssh alias "
-                      f"{DEFAULT_HOST} in ~/.ssh/config)", file=sys.stderr, flush=True)
-            self.status = "no build host is configured" if fallback else BUSY
+                print(f"eng: {self.name} not run: no second Mac is configured ({HOST_VARIABLE}, or the ssh alias "
+                      f"{' or '.join(ALIASES)} in ~/.ssh/config)", file=sys.stderr, flush=True)
+            self.status = "no second Mac is configured" if fallback else BUSY
             return self.status
         try:
             self.status = self.attempt()
         except Misconfigured as stop:
             self.stopped(stop)
         except Busy as busy:
-            # This Mac takes work the build host is too busy to start now, when it can (overflow).
+            # This Mac takes work the second Mac is too busy to start now, when it can (overflow).
             self.busy = str(busy)
-            said = f"the build host is busy: {busy}"
+            said = f"the second Mac is busy: {busy}"
             print(f"eng: {f'trying {self.name} on this Mac' if fallback else f'{self.name} not run'}: {said}",
                   file=sys.stderr, flush=True)
             self.status = said if fallback else BUSY
@@ -1277,8 +1309,8 @@ class Offer:
         return MISCONFIGURED
 
     def again(self):
-        """Offer the work to the build host once more, while it was busy: its status when it ran there,
-        MISCONFIGURED when the build host's configuration stopped it, or None while the build host is
+        """Offer the work to the second Mac once more, while it was busy: its status when it ran there,
+        MISCONFIGURED when the second Mac's configuration stopped it, or None while the second Mac is
         still busy, and from then on when it can no longer be reached."""
         if self.busy is None: return None
         try:
@@ -1296,7 +1328,7 @@ class Offer:
         return None
 
 
-# Seconds this Mac's admission waits between offers to the build host while both Macs are busy: at
+# Seconds this Mac's admission waits between offers to the second Mac while both Macs are busy: at
 # first, after its FREE_WAIT, and at most. The wait doubles from one offer to the next.
 OVERFLOW_WAIT, OVERFLOW_WAIT_MAX = 15, 120
 # Seconds `eng run` and `eng admit --verify` wait in all for one Mac or the other to admit the work.
@@ -1304,16 +1336,16 @@ OVERFLOW_TIMEOUT = 5400
 
 
 def overflow(offered, admit, timeout=OVERFLOW_TIMEOUT, once=False):
-    """This Mac's admission of work the build host declined as busy, the work's status when the build host
+    """This Mac's admission of work the second Mac declined as busy, the work's status when the second Mac
     took it after all or its configuration stopped it, or BUSY when neither Mac admitted it in timeout
     seconds, after saying so.
 
-    admit(seconds) is this Mac's admission of the work, or None when none came in that time. The build
-    host comes first, and this Mac takes the work while the build host is at capacity, until it is too:
-    this Mac's admission waits FREE_WAIT, as the build host's did, then, while both are busy,
-    OVERFLOW_WAIT doubling to OVERFLOW_WAIT_MAX, and between those waits the build host is offered the
+    admit(seconds) is this Mac's admission of the work, or None when none came in that time. The second
+    Mac comes first, and this Mac takes the work while the second Mac is at capacity, until it is too:
+    this Mac's admission waits FREE_WAIT, as the second Mac's did, then, while both are busy,
+    OVERFLOW_WAIT doubling to OVERFLOW_WAIT_MAX, and between those waits the second Mac is offered the
     work again (Offer.again). The wait in this Mac's queue is the backoff between offers, so the work
-    starts on whichever Mac admits it first, and the build host is asked again at least every
+    starts on whichever Mac admits it first, and the second Mac is asked again at least every
     OVERFLOW_WAIT_MAX seconds: each offer costs it a checkout claim, the project's provision lane and
     a policy refresh, so not every few seconds. Each of this Mac's waits that ends unadmitted leaves
     its queue and is logged as withdrawn, as a declined offer is there; an exclusive request rejoins
@@ -1321,17 +1353,17 @@ def overflow(offered, admit, timeout=OVERFLOW_TIMEOUT, once=False):
     asked once."""
     deadline, window, said = time.monotonic() + timeout, FREE_WAIT, None
     while True:
-        # Once the build host can no longer take it, this Mac's queue alone, for the rest of the time.
+        # Once the second Mac can no longer take it, this Mac's queue alone, for the rest of the time.
         bound = window if offered.busy is not None else deadline - time.monotonic()
         admission = admit(max(min(bound, deadline - time.monotonic()), 0))
         if admission is not None: return admission
         if once or time.monotonic() >= deadline:
             print(f"eng: {offered.name} not run: neither Mac admitted it {'now' if once else f'in {timeout:g}s'}"
-                  + (f"; the build host is busy: {offered.busy}" if offered.busy else ""), file=sys.stderr, flush=True)
+                  + (f"; the second Mac is busy: {offered.busy}" if offered.busy else ""), file=sys.stderr, flush=True)
             return BUSY
         if offered.busy is not None and offered.busy != said:
-            print(f"eng: {offered.name} waits for whichever Mac admits it first, the build host asked again every "
-                  f"{OVERFLOW_WAIT_MAX}s or sooner: the build host is busy ({offered.busy}), and so is this Mac",
+            print(f"eng: {offered.name} waits for whichever Mac admits it first, the second Mac asked again every "
+                  f"{OVERFLOW_WAIT_MAX}s or sooner: the second Mac is busy ({offered.busy}), and so is this Mac",
                   file=sys.stderr, flush=True)
             said = offered.busy
         status = offered.again()
@@ -1340,8 +1372,8 @@ def overflow(offered, admit, timeout=OVERFLOW_TIMEOUT, once=False):
 
 
 def ask(host, request):
-    """build_host.py's answer to request on the build host, run by its login shell as a run there is."""
-    request = shlex.join(["python3", "-c", Path(build_host.__file__).read_text(), json.dumps(request)])
+    """offload_host.py's answer to request on the second Mac, run by its login shell as a run there is."""
+    request = shlex.join(["python3", "-c", Path(offload_host.__file__).read_text(), json.dumps(request)])
     attempt = asleep()
     try:
         found = ssh(host, request, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=SURVEY_TIMEOUT)
@@ -1357,14 +1389,14 @@ def ask(host, request):
 
 
 def survey(host, developer):
-    """The build host's build_host.toolchain, read in its login shell as a run there reads it."""
+    """The second Mac's offload_host.toolchain, read in its login shell as a run there reads it."""
     return ask(host, {"toolchain": developer})
 
 
 def census_command():
-    """The build host's command that prints build_host.leftovers, the census of what runs left
+    """The second Mac's command that prints offload_host.leftovers, the census of what runs left
     running there, as its last line."""
-    return shlex.join(["python3", "-c", Path(build_host.__file__).read_text(), json.dumps({"leftovers": ROOT})])
+    return shlex.join(["python3", "-c", Path(offload_host.__file__).read_text(), json.dumps({"leftovers": ROOT})])
 
 
 def read_census(found):
@@ -1379,8 +1411,8 @@ def read_census(found):
 
 
 def leftover_census(host):
-    """The build host's census of leftover processes, read in its login shell as a run there reads
-    it, and None; or None and why it is missing. A build host that cannot be reached raises; any
+    """The second Mac's census of leftover processes, read in its login shell as a run there reads
+    it, and None; or None and why it is missing. A second Mac that cannot be reached raises; any
     other failure of the census is only reported, since it stops nothing."""
     attempt = asleep()
     try:
@@ -1395,13 +1427,13 @@ def leftover_census(host):
 
 
 def device_users(host, udid, since):
-    """What on the build host may still use the physical device a run there was given, since the
-    epoch time since, as lines to show; none when nothing does (build_host.device_users). A build
-    host that cannot be reached or does not answer raises, and a recovery waits for it."""
+    """What on the second Mac may still use the physical device a run there was given, since the
+    epoch time since, as lines to show; none when nothing does (offload_host.device_users). A second
+    Mac that cannot be reached or does not answer raises, and a recovery waits for it."""
     request = json.dumps({"device": {"udid": udid, "root": ROOT, "since": since}})
     attempt = asleep()
     try:
-        found = ssh(host, shlex.join(["python3", "-c", Path(build_host.__file__).read_text(), request]),
+        found = ssh(host, shlex.join(["python3", "-c", Path(offload_host.__file__).read_text(), request]),
                     stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=CENSUS_TIMEOUT)
     except subprocess.TimeoutExpired:
         raise Unavailable(f"{host} did not list its processes in {CENSUS_TIMEOUT}s") from None
@@ -1529,13 +1561,13 @@ def slow_connection(host, found, timeout=CONNECT_TIMEOUT):
             f"not answer before {used['address']}, which answered in {used['seconds']:.2f} s: {waits}. So each "
             f"connection to {host}, several in every run, first waits up to ConnectTimeout's {timeout} s for "
             f"{'each' if plural else 'it'}, and an ssh without ConnectTimeout, such as a plain `ssh {host}`, waits out "
-            f"the system's TCP connection timeout; to fix it, {fix} (guides/shared-host.md, Setting up a build host)")
+            f"the system's TCP connection timeout; to fix it, {fix} (guides/shared-host.md, Setting up the second Mac)")
 
 
 def compare_device_records(report, host, here, there):
     """Add to `eng doctor`'s report what the two Macs' device records say of physical devices, which
-    only this Mac's record holds (guides/shared-host.md, Physical devices and the build host): this
-    Mac's must defer them to no Mac, and the build host's must defer them to this Mac and hold none."""
+    only this Mac's record holds (guides/shared-host.md, Physical devices and the second Mac): this
+    Mac's must defer them to no Mac, and the second Mac's must defer them to this Mac and hold none."""
     fix = "which Mac's record holds physical devices is the owner's decision"
     ours, theirs = here.get("deviceRecord") or {}, there.get("deviceRecord") or {}
     for side, found in [("this Mac", ours), (host, theirs)]:
@@ -1559,10 +1591,10 @@ def compare_device_records(report, host, here, there):
 
 
 def compare_hosts():
-    """What `eng doctor` reports of the build host: this Mac's and the build host's default Xcodes
+    """What `eng doctor` reports of the second Mac: this Mac's and the second Mac's default Xcodes
     (`xcode-select -p`), the Xcode at this Mac's developer directory, which every run there uses,
     and the simulator runtimes it lists. A difference is an error, and what could not be compared is
-    named in unchecked. A build host that cannot be reached, as when this Mac is away from its
+    named in unchecked. A second Mac that cannot be reached, as when this Mac is away from its
     network, is no error, since work then runs here (the owner's decision, 2026-10-28): unchecked
     says why it was not compared, while one that answers but refuses the login is an error. The
     processes there that runs left running are listed in leftovers, which are no error: they say
@@ -1572,16 +1604,16 @@ def compare_hosts():
     host = configured()
     report = {"host": host, "errors": [], "unchecked": []}
     if host is None:
-        report["unchecked"].append(f"no build host is configured (VOCARO_BUILD_HOST, or the ssh alias {DEFAULT_HOST} "
-                                   "in ~/.ssh/config), so this Mac was compared with none")
+        report["unchecked"].append(f"no second Mac is configured ({HOST_VARIABLE}, or the ssh alias "
+                                   f"{' or '.join(ALIASES)} in ~/.ssh/config), so this Mac was compared with none")
         return report
-    # Measured first, so that it also says why a build host that cannot be reached is not.
+    # Measured first, so that it also says why a second Mac that cannot be reached is not.
     reached = report["connection"] = connection(host)
     if reached.get("unchecked"): report["unchecked"].append(reached["unchecked"])
     slow = slow_connection(host, reached)
     if slow: report["errors"].append(slow)
     developer = developer_directory()
-    here = report["local"] = build_host.toolchain(developer)
+    here = report["local"] = offload_host.toolchain(developer)
     try:
         reachable(host, reached)
     except Unreachable as away:
@@ -1631,7 +1663,7 @@ def compare_hosts():
             f"the Xcode at this Mac's developer directory, {developer}, is {version(here['xcode'])} on this Mac and "
             f"{version(there.get('xcode')) if there.get('xcode') else 'missing'} on {host}, so eng remote refuses "
             f"every run there; to fix it, install this Mac's Xcode at that path on {host} (guides/shared-host.md, "
-            "Setting up a build host), or select with DEVELOPER_DIR an Xcode both Macs have at the same path")
+            "Setting up the second Mac), or select with DEVELOPER_DIR an Xcode both Macs have at the same path")
     if None in (here.get("runtimes"), there.get("runtimes")):
         report["unchecked"].append(f"the simulator runtimes, which simctl did not list on "
                                    f"{'this Mac' if here.get('runtimes') is None else host}")

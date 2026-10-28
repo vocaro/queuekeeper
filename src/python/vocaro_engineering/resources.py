@@ -50,7 +50,7 @@ import uuid
 
 TOKEN = "VOCARO_RESOURCE_TOKEN"
 # `eng run --if-free` waits this many seconds for admission, then exits with BUSY (EX_TEMPFAIL)
-# without running: how the build host says it cannot take a lane now.
+# without running: how the second Mac says it cannot take a lane now.
 FREE_WAIT, BUSY = 5, 75
 # The admission log and its previous generation. A line that would take the log past LOG_LIMIT
 # bytes first makes the log the previous generation, so the two together stay within twice it.

@@ -10,8 +10,8 @@ import shutil
 import subprocess
 import sys
 
-from . import __version__, build_host, devices, disk, docs, evidence, github_artifacts, parallel, processes, release, \
-    remote, resources, spelling
+from . import __version__, devices, disk, docs, evidence, github_artifacts, offload_host, parallel, processes, \
+    release, remote, resources, spelling
 from .config import TOOLKIT_ROOT, CAPABILITIES, DEFAULT_TOOLKIT, load, source_identity, stays
 from .resources import BUSY, FREE_WAIT
 from .simulators import matrix, pool as simulator_pool
@@ -241,19 +241,19 @@ def lane_label(root, config, lane):
 
 def placement(reason):
     """Where a run ran, for its receipt, so that the share of heavy work each Mac ran can be counted:
-    ranOn, `this Mac` or `build host`, the name of the Mac, and on this Mac hereBecause, why the run
-    ran here rather than on the build host. Work the build host runs for this Mac says so, and names
+    ranOn, `this Mac` or `second Mac`, the name of the Mac, and on this Mac hereBecause, why the run
+    ran here rather than on the second Mac. Work the second Mac runs for this Mac says so, and names
     the Mac that sent it (remote.DISPATCHER)."""
     sender = os.environ.get(remote.DISPATCHER)
-    if sender: return {"ranOn": "build host", "mac": build_host.mac_name(), "dispatchedFrom": sender}
-    return {"ranOn": "this Mac", "mac": build_host.mac_name(), "hereBecause": reason}
+    if sender: return {"ranOn": "second Mac", "mac": offload_host.mac_name(), "dispatchedFrom": sender}
+    return {"ranOn": "this Mac", "mac": offload_host.mac_name(), "hereBecause": reason}
 
 
 def admitted_here(stack, name, label, timeout, offered=None, once=False, exclusive=False, model=False):
     """This Mac's heavy-work admission of the work label names, entered in stack, or the work's status
-    instead: its status on the build host when the build host took it after all, MISCONFIGURED, or
-    BUSY when no admission came, after saying so. Work the build host declined as busy (offered)
-    goes to whichever Mac admits it first, the build host preferred (remote.overflow). Other work
+    instead: its status on the second Mac when the second Mac took it after all, MISCONFIGURED, or
+    BUSY when no admission came, after saying so. Work the second Mac declined as busy (offered)
+    goes to whichever Mac admits it first, the second Mac preferred (remote.overflow). Other work
     waits in this Mac's queue for timeout seconds, or with once FREE_WAIT, and only once declines."""
     refused = []
 
@@ -277,7 +277,7 @@ def admitted_here(stack, name, label, timeout, offered=None, once=False, exclusi
 def admit(root, args, config=None):
     # A command runs here, in the current directory: its paths, devices and products are this Mac's
     # (guides/shared-host.md, Which Mac runs a lane). Only --verify, which says that its result is its
-    # log and status, lets eng send it to the build host; eng remote admit sends one on purpose.
+    # log and status, lets eng send it to the second Mac; eng remote admit sends one on purpose.
     # Without a leading --, argparse collected the command, and a later -- belongs to it.
     command = args.command + ([] if args.passed is None else ["--", *args.passed]) if args.command else args.passed
     if not command: raise ValueError("Name the command: eng admit [--exclusive | --model] [--verify] -- COMMAND")
@@ -288,7 +288,7 @@ def admit(root, args, config=None):
         "nested in the admission it inherits" if os.environ.get(resources.TOKEN) else None
     offered = None
     if reason is None:
-        # The build host first, this Mac while the build host is busy (admitted_here).
+        # The second Mac first, this Mac while the second Mac is busy (admitted_here).
         offered = remote.first_command(root, config, command, kind)
         if not isinstance(offered.status, str): return offered.status
         reason = offered.status
@@ -326,20 +326,22 @@ def main(argv=None):
     policy = commands.add_parser("policy")
     policy.add_argument("operation", choices=["refresh"])
     run = commands.add_parser("run", usage="%(prog)s [-h] [--expect N] lane [-- ARGUMENTS ...]",
-        help="run a configured lane, admitting a heavy or exclusive one, on the build host first and on this Mac "
-        "while the build host is at capacity or cannot be reached, unless the lane says why it stays on this Mac: "
+        help="run a configured lane, admitting a heavy or exclusive one, on the second Mac first and on this Mac "
+        "while the second Mac is at capacity or cannot be reached, unless the lane says why it stays on this Mac: "
         "eng run LANE [-- ARGUMENTS], which appends the arguments, such as a test filter, to the lane's command")
     run.add_argument("--expect", type=int, metavar="N", help="require exactly N executed tests; without it, a "
         "run with arguments needs at least one in place of the lane's minimumTests")
     where = run.add_mutually_exclusive_group()
-    where.add_argument("--here", action="store_true", help="run the lane on this Mac rather than on the build host: "
-        "for a build whose products the session uses here, or, with the owner's decision, while the build host is "
+    where.add_argument("--here", action="store_true", help="run the lane on this Mac rather than on the second Mac: "
+        "for a build whose products the session uses here, or, with the owner's decision, while the second Mac is "
         f"misconfigured (exit {remote.MISCONFIGURED})")
-    where.add_argument("--build-host-only", action="store_true", help="offer the lane to the build host, which runs it "
-        f"only if it can start it now, and never run it here: exit {BUSY} when the build host declines it, cannot be "
+    where.add_argument("--offload-only", action="store_true", help="offer the lane to the second Mac, which runs it "
+        f"only if it can start it now, and never run it here: exit {BUSY} when the second Mac declines it, cannot be "
         f"reached or none is configured, {remote.MISCONFIGURED} when it is misconfigured, else the lane's status "
         "there; for a caller that holds or will take its own admission here")
-    run.add_argument("--if-free", action="store_true", help=f"run only if the build host's heavy-work admission, or "
+    # Its name until vocaro-engineering#58, still read, with a warning, until the projects have moved.
+    where.add_argument("--build-host-only", action="store_true", help=argparse.SUPPRESS)
+    run.add_argument("--if-free", action="store_true", help=f"run only if the second Mac's heavy-work admission, or "
         f"else this Mac's, admits the lane within {FREE_WAIT}s; otherwise exit {BUSY} without running it")
     run.add_argument("--serial", action="store_true", help="run a lane group's lanes one after another, on this "
         "Mac: the reference a failure seen only side by side is checked against")
@@ -355,7 +357,7 @@ def main(argv=None):
     admission =commands.add_parser("admit", help="run any other heavy command (a build, swift test, xcodebuild "
         "test, a simulator run, a gate suite) through the host's heavy-work admission: eng admit -- COMMAND; add "
         "--model for a generative-model run, --exclusive only for work that needs the host to itself, and --verify "
-        "for a test or build whose result is its log and status, which may then run on the build host")
+        "for a test or build whose result is its log and status, which may then run on the second Mac")
     kind = admission.add_mutually_exclusive_group()
     kind.add_argument("--exclusive", action="store_true", help="hold every slot, and the model with them, for the "
                       "timed run alone, built and set up beforehand as heavy work: a whole-machine or timing "
@@ -364,11 +366,11 @@ def main(argv=None):
                       "model run holds at a time: on-device generation, on this Mac or in a simulator, another local "
                       "generative model on the GPU, or Core ML whose compute units include the GPU")
     admission.add_argument("--verify", action="store_true", help="the command is verification, a test or build whose "
-        "result is its log and exit status and whose products this Mac does not use: send it to the build host, as "
+        "result is its log and exit status and whose products this Mac does not use: send it to the second Mac, as "
         "eng run sends a lane, to run in its checkout's directory that matches this one, at HEAD or a snapshot commit; "
-        "it stays here when it names this checkout's path, a simulator or device, or the build host cannot be reached")
+        "it stays here when it names this checkout's path, a simulator or device, or the second Mac cannot be reached")
     admission.add_argument("--if-free", action="store_true", help=f"run only if heavy-work admission admits the "
-        f"command within {FREE_WAIT}s, on the build host or here with --verify; otherwise exit {BUSY} without running it")
+        f"command within {FREE_WAIT}s, on the second Mac or here with --verify; otherwise exit {BUSY} without running it")
     admission.add_argument("--timeout", type=float, default=5400, help="seconds to wait for admission (default 5400)")
     admission.add_argument("command", nargs=argparse.REMAINDER, help="the command and its arguments, after --; "
         "it runs in the current directory")
@@ -384,30 +386,31 @@ def main(argv=None):
     logged.add_argument("--since", type=resources.local_time, metavar="WHEN", help="count requests made from WHEN, "
                         "an ISO 8601 date or time, local unless it names a zone")
     logged.add_argument("--until", type=resources.local_time, metavar="WHEN", help="count requests made before WHEN")
-    logged.add_argument("logs", nargs="*", type=Path, metavar="log", help="a copy of a log, such as the build host's, "
+    logged.add_argument("logs", nargs="*", type=Path, metavar="log", help="a copy of a log, such as the second Mac's, "
                         "to read instead of this host's; name the previous generation first")
-    distant = commands.add_parser("remote", help="run a lane or other heavy command on the build host, the owner's "
-        "second Mac, over SSH: eng remote run LANE [-- ARGUMENTS] or eng remote admit -- COMMAND; eng remote passed "
+    distant = commands.add_parser("remote", help="run a lane or other heavy command on the owner's second Mac over "
+        "SSH: eng remote run LANE [-- ARGUMENTS] or eng remote admit -- COMMAND; eng remote passed "
         "LANE says whether the whole lane passed there at a commit")
     operations = distant.add_subparsers(dest="operation", required=True)
     remote_run = operations.add_parser("run", usage="%(prog)s [-h] [--host HOST] [--serial] [--expect N] "
         "[--device KEY] [--device-owner SESSION] lane [-- ARGUMENTS ...]",
-        help="run a configured lane on the build host at HEAD, or at a snapshot commit of uncommitted work")
-    remote_admit = operations.add_parser("admit", help="run a heavy command on the build host, in its checkout's "
+        help="run a configured lane on the second Mac at HEAD, or at a snapshot commit of uncommitted work")
+    remote_admit = operations.add_parser("admit", help="run a heavy command on the second Mac, in its checkout's "
         "root, at HEAD or at a snapshot commit of uncommitted work")
-    remote_setup = operations.add_parser("setup", help="install on the build host, with Homebrew, the tools "
+    remote_setup = operations.add_parser("setup", help="install on the second Mac, with Homebrew, the tools "
         f"every project's gates use ({', '.join(remote.SETUP_FORMULAE)}) and the formulae named, then check them as "
-        "eng remote sees the build host; Homebrew itself the owner installs")
+        "eng remote sees the second Mac; Homebrew itself the owner installs")
     remote_setup.add_argument("formulae", nargs="*", metavar="formula", help="a further Homebrew formula to install")
     remote_setup.add_argument("--import", dest="imports", action="append", metavar="MODULE",
-                              help="check that the build host's python3 imports MODULE (repeatable)")
+                              help="check that the second Mac's python3 imports MODULE (repeatable)")
     remote_setup.add_argument("--check", action="store_true", help="only check; install or copy nothing")
-    remote_setup.add_argument("--runtimes", action="store_true", help="instead, give this Mac and the build host the "
+    remote_setup.add_argument("--runtimes", action="store_true", help="instead, give this Mac and the second Mac the "
         "union of the simulator runtimes that the Xcode at this Mac's developer directory lists, copying each one's "
         "disk image over SSH to the Mac that lacks it; it deletes none, and exits 0 only when both list the same")
     for choice in (remote_run, remote_admit, remote_setup):
-        choice.add_argument("--host", help="the build host's SSH destination (default: VOCARO_BUILD_HOST, else "
-                             f"the ~/.ssh/config alias {remote.DEFAULT_HOST})")
+        choice.add_argument("--host", help=f"the second Mac's SSH destination (default: {remote.HOST_VARIABLE}, "
+                            f"else the ~/.ssh/config alias {' or '.join(remote.ALIASES)} that is defined, else "
+                            f"{remote.DEFAULT_HOST})")
     for choice in (remote_run, remote_admit):
         choice.add_argument("--device", action="append", metavar="KEY", help="a physical device the run uses, "
                             "reserved in this Mac's device record and held, with no run active, by the session "
@@ -417,13 +420,13 @@ def main(argv=None):
                             f"{devices.OWNER}, else the agent session)")
     remote_run.add_argument("--expect", type=int, metavar="N", help="require exactly N executed tests")
     remote_run.add_argument("--serial", action="store_true", help="run a lane group's lanes one after another, on the "
-        "build host under its admission: the serial reference of a group that runs there, which counts for no commit")
+        "second Mac under its admission: the serial reference of a group that runs there, which counts for no commit")
     remote_run.add_argument("lane")
     kind = remote_admit.add_mutually_exclusive_group()
-    kind.add_argument("--exclusive", action="store_true", help="hold every slot of the build host")
-    kind.add_argument("--model", action="store_true", help="hold one slot and the model lock of the build host")
+    kind.add_argument("--exclusive", action="store_true", help="hold every slot of the second Mac")
+    kind.add_argument("--model", action="store_true", help="hold one slot and the model lock of the second Mac")
     remote_admit.add_argument("command", nargs=argparse.REMAINDER, help="the command and its arguments, after --")
-    remote_passed = operations.add_parser("passed", help="exit 0 when the whole lane passed on the build host at "
+    remote_passed = operations.add_parser("passed", help="exit 0 when the whole lane passed on the second Mac at "
         "exactly this commit; a snapshot's run never counts")
     remote_passed.add_argument("lane")
     remote_passed.add_argument("--commit", default="HEAD")
@@ -493,11 +496,13 @@ def main(argv=None):
                                 "or \"pull-request\" for a project that takes changes only by pull request (agents/core.md)")
             warnings += temporary_model_storage(root, config)
             warnings += unlinked_packages(root, config)
-            # A difference between the two Macs is an error; a build host that cannot be reached is unchecked.
+            # A difference between the two Macs is an error; a second Mac that cannot be reached is unchecked.
             hosts = remote.compare_hosts()
+            # offload was buildHost until vocaro-engineering#58. No script reads the report, so it is
+            # not printed under both (guides/shared-host.md, Earlier names).
             print(json.dumps({"project": config["name"], "toolkit": str(TOOLKIT_ROOT),
                 "source": source_identity(TOOLKIT_ROOT), "capabilities": config.get("capabilities", []),
-                "missingCommands": missing, "warnings": warnings, "buildHost": hosts}, indent=2))
+                "missingCommands": missing, "warnings": warnings, "offload": hosts}, indent=2))
             return int(bool(missing or hosts["errors"]))
         elif args.action == "github-artifacts": github_artifacts.prepare(root, args.package, args.cache_path)
         elif args.action == "policy": refresh_policy(root)
@@ -530,21 +535,24 @@ def main(argv=None):
                 raise ValueError(f"{args.lane} runs a group of lanes, which takes no arguments or --expect; "
                                  "pass them to one of its lanes")
             if group is None and args.serial: raise ValueError(f"--serial runs a lane group, and {args.lane} is not one")
-            # Why the lane runs only here, as its configuration says, or None: it goes to the build host.
+            # Why the lane runs only here, as its configuration says, or None: it goes to the second Mac.
             reason = stays(config["lanes"], args.lane)
             if args.build_host_only:
+                print("eng: --build-host-only is --offload-only's old name, read only until the projects have moved: "
+                      "use --offload-only (guides/shared-host.md, Earlier names)", file=sys.stderr, flush=True)
+            if args.offload_only or args.build_host_only:
                 if reason is not None:
-                    raise ValueError(f"{args.lane} stays on this Mac ({reason}), so --build-host-only cannot offer it "
-                                     "to the build host")
-                if args.serial: raise ValueError("--serial runs a lane group here, and --build-host-only never does")
-                # The caller runs the lane under its own admission when the build host declines it.
+                    raise ValueError(f"{args.lane} stays on this Mac ({reason}), so --offload-only cannot offer it "
+                                     "to the second Mac")
+                if args.serial: raise ValueError("--serial runs a lane group here, and --offload-only never does")
+                # The caller runs the lane under its own admission when the second Mac declines it.
                 return remote.first(root, config, args.lane, extra, args.expect, fallback=False).status
             # Nested work runs inside the admission it inherits, here. The serial reference runs here too.
             reason = reason or ("--here" if args.here else "--serial runs the serial reference here" if args.serial
                                 else "nested in the admission it inherits" if os.environ.get(resources.TOKEN) else None)
             offered = None
             if reason is None:
-                # The build host first, this Mac while the build host is busy, and while both are, whichever
+                # The second Mac first, this Mac while the second Mac is busy, and while both are, whichever
                 # admits the lane first (admitted_here).
                 offered = remote.first(root, config, args.lane, extra, args.expect)
                 if not isinstance(offered.status, str): return offered.status
