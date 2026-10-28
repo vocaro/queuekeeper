@@ -493,6 +493,25 @@ stops for it. A Mac asleep runs no ssh. On 2026-10-26 a dispatch lost its connec
 dark wake; nothing kept says how the connection ended
 ([vocaro-engineering#44](https://github.com/vocaro/vocaro-engineering/issues/44)).
 
+A connection that ssh cannot make says what ssh said and what that shows. `ssh: connect to host
+ADDRESS port 22: Operation timed out` means nothing answered the TCP connection within
+`ConnectTimeout`'s 10 s. `Connection to ADDRESS port 22 timed out` means the connection was made,
+so the build host's address answered, and the SSH exchange then timed out. After `Connection timed
+out during banner exchange`, no SSH banner came within 10 s. Without that line, the banner came and
+then nothing more for `ServerAliveInterval` times `ServerAliveCountMax`, two minutes, during key
+exchange or authentication (OpenSSH 10.3p1 against a listener on this Mac, 2026-10-27). Each
+connection also reads this Mac's sleep across the attempt, as a lost run does. A Mac asleep answers
+nothing, so a timeout that this Mac slept through says nothing about the build host, and eng then
+says to keep this Mac awake rather than to wake the build host.
+
+On 2026-10-27 the build host accepted `eng run`'s first connection at 22:13:09 UTC, and this Mac
+then slept until 22:16:39: its lid had closed at 22:11:35, and its power log gives
+`Thermal Emergency Sleep` for each sleep after the first. The build host ended that connection, never
+authenticated, at 22:15:12, about sshd's default `LoginGraceTime` of 120 s later. ssh's two-minute
+timeout ran out at 22:18:38, two minutes of awake time after the connection began. ssh had said
+`Connection to ADDRESS port 22 timed out`, and eng said to wake the build host, which had stayed
+awake and on its network.
+
 ### Setting up a build host
 
 The owner prepares the build host once:
@@ -565,8 +584,9 @@ The owner prepares the build host once:
 6. Keep it on power and awake. A sleeping build host leaves its run unmeasured. Its `.local` name
    is multicast DNS: it resolves only while the build host is awake on this Mac's network and
    the network carries multicast between them, and `dscacheutil -q host -a name NAME.local`
-   shows whether it does. Sleep did not explain the night of 2026-10-24 to 25, when the name did
-   not resolve from this Mac: neither Mac's power log records a sleep then.
+   shows whether it does. On the night of 2026-10-24 to 25 the name did not resolve from this
+   Mac because this Mac was at another location, on another network, as the owner reported;
+   neither Mac slept.
 7. For the private toolkit's policy refresh and any private package dependencies, create a
    fine-grained GitHub token with read-only Contents permission on `vocaro/vocaro-engineering`
    and those dependencies (on all of the owner's repositories, if the owner prefers not to

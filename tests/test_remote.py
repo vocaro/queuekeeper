@@ -21,7 +21,8 @@ from vocaro_engineering import build_host, cli, config, devices, evidence, proce
 
 # Stands in for ssh: the build host is a home directory on this Mac. Like sshd, it runs the
 # command in that home through a shell, and git's own ssh transport reaches it the same way.
-# FAKE_UNREACHABLE makes it fail as ssh does when the build host's name does not resolve,
+# FAKE_UNREACHABLE makes it fail as ssh does when the build host's name does not resolve, and
+# FAKE_SSH_SAYS fail with the lines it holds, as ssh says them of a failure of its own.
 # FAKE_TMPDIR gives the build host a temporary directory of its own, and FAKE_DEVICE_RECORD its
 # device record, which is never this Mac's.
 FAKE_SSH = """#!/bin/sh
@@ -34,6 +35,10 @@ while [ $# -gt 0 ]; do
 done
 if [ -n "$FAKE_UNREACHABLE" ]; then
     echo "ssh: Could not resolve hostname $1: nodename nor servname provided, or not known" >&2
+    exit 255
+fi
+if [ -n "$FAKE_SSH_SAYS" ]; then
+    printf '%s\\n' "$FAKE_SSH_SAYS" >&2
     exit 255
 fi
 shift
@@ -613,7 +618,9 @@ class RemoteTests(unittest.TestCase):
                      "FAKE_PYTHON": sys.executable, "FAKE_DROP": str(marker)}
         lane = None
         try:
-            with patch.dict(os.environ, variables), patch.object(remote, "asleep", side_effect=[1000.0, 1300.0]):
+            # Read before the connection that prepares the build host, at the dispatch, and once it is lost.
+            with patch.dict(os.environ, variables), \
+                    patch.object(remote, "asleep", side_effect=[1000.0, 1000.0, 1300.0]):
                 status, output, error = self.eng("remote", "run", "linger")
             lane = int(marker.read_text())
             self.assertEqual(status, 2, output + error)
@@ -654,6 +661,30 @@ class RemoteTests(unittest.TestCase):
             if sleep: self.assertIn(f"this Mac {sleep} of that", message)
             else: self.assertNotIn("slept", message)
             if status != 255: self.assertNotIn(said, message)
+
+    def test_a_connection_this_mac_slept_through_says_so_rather_than_that_the_build_host_is_away(self):
+        # As at 22:13 UTC on 2026-10-27: the build host accepted eng's first connection, this Mac slept
+        # for 210 s with it open, and ssh timed out two minutes after this Mac woke. eng said to wake
+        # the build host, which was awake.
+        said = "Connection to 192.0.2.7 port 22 timed out"
+        with patch.dict(os.environ, {"FAKE_SSH_SAYS": said}), \
+                patch.object(remote, "asleep", side_effect=[1000.0, 1210.0]):
+            status, output, error = self.eng("remote", "run", "check")
+        self.assertEqual(status, 2, output + error)
+        self.assertIn(f"eng: fake cannot be reached: {said}; ssh's TCP connection was made, so the address answered, "
+                      "and then the SSH exchange timed out; this Mac slept for 210 s while ssh waited, and a Mac "
+                      "asleep answers nothing, so the timeout says nothing of fake; to fix it, keep this Mac awake "
+                      "while eng connects to fake; `ssh fake true` shows whether fake answers now", error)
+        self.assertNotIn("wake fake", error)
+        self.assertFalse(self.checkout(0).exists())
+        # Awake, the same timeout says only that the build host answered and then fell silent.
+        with patch.dict(os.environ, {"FAKE_SSH_SAYS": said}), \
+                patch.object(remote, "asleep", side_effect=[1000.0, 1001.0]):
+            status, output, error = self.eng("remote", "run", "check")
+        self.assertEqual(status, 2, output + error)
+        self.assertIn("the SSH exchange timed out; to fix it, see whether fake is overloaded or its sshd is stuck",
+                      error)
+        self.assertNotIn("slept", error)
 
     def test_this_macs_sleep_reads_as_a_difference_that_does_not_run_while_it_is_awake(self):
         first = remote.asleep()
@@ -1712,6 +1743,40 @@ class ConnectionTests(unittest.TestCase):
                 other = remote.unreachable("build-host", detail)
                 self.assertNotIn("multicast", other.fix)
                 self.assertIn("wake build-host and connect it to the network", other.fix)
+
+    def test_a_timeout_says_whether_the_address_answered_and_whether_this_mac_slept_meanwhile(self):
+        # ssh's lines for each phase, as OpenSSH 10.3p1 said them against a listener on 127.0.0.1.
+        silent = "Connection to 192.0.2.7 port 22 timed out"
+        made = "ssh's TCP connection was made, so the address answered, and then"
+        cases = [
+            ("no answer", "ssh: connect to host 192.0.2.7 port 22: Operation timed out", 1000.0, 1000.0,
+             ["nothing answered ssh's TCP connection in ConnectTimeout's 10 s"], ["wake build-host and connect it"],
+             made),
+            ("no banner", f"{remote.NO_BANNER}\n{silent}", 1000.0, 1000.0,
+             [f"{silent}; {made} no SSH banner came in ConnectTimeout's 10 s"],
+             ["see whether build-host is overloaded or its sshd is stuck"], "wake build-host"),
+            ("silent", silent, 1000.0, 1000.0 + remote.SLEEP_NOTED - 0.5, [f"{made} the SSH exchange timed out"],
+             ["see whether build-host is overloaded", "until `ssh build-host true` succeeds"], "slept"),
+            ("slept", silent, 1000.0, 1210.0,
+             [f"{made} the SSH exchange timed out; this Mac slept for 210 s while ssh waited, and a Mac asleep "
+              "answers nothing, so the timeout says nothing of build-host"],
+             ["keep this Mac awake while eng connects to build-host", "`ssh build-host true` shows whether"],
+             "wake build-host"),
+            ("slept resolving", "ssh: Could not resolve hostname mac.local: nodename nor servname provided, or not "
+             "known", 1000.0, 1300.0, ["this Mac slept for 300 s while ssh waited"], ["keep this Mac awake"],
+             "multicast"),
+            ("unread", silent, None, 1210.0, [f"{made} the SSH exchange timed out"], ["see whether"], "slept"),
+            ("unreadable", silent, 1000.0, None, [f"{made} the SSH exchange timed out"], ["see whether"], "slept"),
+        ]
+        for name, detail, before, after, problem, fix, absent in cases:
+            with self.subTest(name), patch.object(remote, "asleep", return_value=after) as clock:
+                found = remote.unreachable("build-host", detail, before)
+            self.assertTrue(found.problem.startswith("build-host cannot be reached: "), found.problem)
+            for text in problem: self.assertIn(text, found.problem)
+            for text in fix: self.assertIn(text, found.fix)
+            self.assertNotIn(absent, found.problem + found.fix)
+            # Without a reading from when ssh started, there is nothing to compare.
+            if before is None: clock.assert_not_called()
 
 
 # Starts as a fake ps listing prints them: the day of the month is padded, which a guard's record

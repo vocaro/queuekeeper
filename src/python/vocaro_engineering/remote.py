@@ -59,6 +59,13 @@ FAMILIES = {"any": socket.AF_UNSPEC, "inet": socket.AF_INET, "inet6": socket.AF_
 # Seconds of sleep below which a dispatch is not said to have slept: the two clocks compared may
 # differ by a little without any.
 SLEEP_NOTED = 5
+# How ssh's lines tell the phase a connection timed out in (OpenSSH 10.3p1, against a listener on
+# 127.0.0.1, 2026-10-27). A TCP connection that gets no answer in ConnectTimeout ends with the first;
+# one that is made but brings no SSH banner in ConnectTimeout says the second, then the third; one that
+# brings a banner and then nothing for ServerAliveInterval times ServerAliveCountMax says only the third.
+NO_ANSWER = re.compile(r"^ssh: connect to host \S+ port \d+: Operation timed out$")
+NO_BANNER = "Connection timed out during banner exchange"
+TIMED_OUT = re.compile(r"^Connection to \S+ port \d+ timed out$")
 REF = "refs/vocaro/build-host/"
 # Seconds a stopped run has to end on the build host before the connection is closed.
 STOP_WAIT = 120
@@ -127,18 +134,40 @@ def last_line(text):
     return lines[-1] if lines else None
 
 
-def unreachable(host, detail):
-    """A build host that ssh could not reach, as ssh's last line, detail, says. A .local name that did
-    not resolve is multicast DNS, which only both Macs awake on one network answer."""
-    unresolved = re.search(r"Could not resolve hostname (\S+?):", detail or "")
+def unreachable(host, detail, slept=None):
+    """A build host that ssh could not reach, as ssh's lines, detail, say: the last names the failure.
+    A .local name that did not resolve is multicast DNS, which only both Macs awake on one network
+    answer. A timeout says whether the build host's address answered at all. slept is asleep()'s
+    reading when ssh started, if it was read: a connection that this Mac slept through times out
+    whatever the build host does, since a Mac asleep answers nothing, and that is said instead."""
+    lines = [line.strip() for line in (detail or "").splitlines() if line.strip()]
+    said = lines[-1] if lines else None
+    unresolved = re.search(r"Could not resolve hostname (\S+?):", said or "")
     name = unresolved.group(1) if unresolved else None
-    wake = (f"wake {host} and connect it to this Mac's network: {name} is a multicast DNS name, which resolves only "
-            "while both Macs are awake on one network that passes multicast between them, as "
-            f"`dscacheutil -q host -a name {name}` shows" if name and name.rstrip(".").lower().endswith(".local")
-            else f"wake {host} and connect it to the network")
-    return Misconfigured(f"{host} cannot be reached: {detail or 'ssh exited 255'}",
-                         f"{wake}, or correct its entry in ~/.ssh/config or its authorized_keys, until `ssh {host} true` "
-                         "succeeds without a prompt (guides/shared-host.md, Setting up a build host)")
+    now = asleep() if slept is not None else None
+    sleep = now - slept if now is not None else 0
+    problem = f"{host} cannot be reached: {said or 'ssh exited 255'}"
+    connected = bool(TIMED_OUT.match(said or ""))
+    if NO_ANSWER.match(said or ""):
+        problem += f"; nothing answered ssh's TCP connection in ConnectTimeout's {CONNECT_TIMEOUT} s"
+    elif connected:
+        problem += ("; ssh's TCP connection was made, so the address answered, and then "
+                    + (f"no SSH banner came in ConnectTimeout's {CONNECT_TIMEOUT} s" if NO_BANNER in lines
+                       else "the SSH exchange timed out"))
+    if sleep >= SLEEP_NOTED:
+        problem += (f"; this Mac slept for {sleep:.0f} s while ssh waited, and a Mac asleep answers nothing, so the "
+                    f"timeout says nothing of {host}")
+        return Misconfigured(problem, f"keep this Mac awake while eng connects to {host}; `ssh {host} true` shows "
+                                      f"whether {host} answers now (guides/shared-host.md, How a run reaches the build "
+                                      "host)")
+    remedy = (f"wake {host} and connect it to this Mac's network: {name} is a multicast DNS name, which resolves only "
+              "while both Macs are awake on one network that passes multicast between them, as "
+              f"`dscacheutil -q host -a name {name}` shows" if name and name.rstrip(".").lower().endswith(".local")
+              else f"see whether {host} is overloaded or its sshd is stuck, as `ssh -v {host} true` shows" if connected
+              else f"wake {host} and connect it to the network")
+    return Misconfigured(problem, f"{remedy}, or correct its entry in ~/.ssh/config or its authorized_keys, until "
+                                  f"`ssh {host} true` succeeds without a prompt (guides/shared-host.md, Setting up a "
+                                  "build host)")
 
 
 def no_toolkit(host, status, detail):
@@ -440,10 +469,11 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     print(f"remote: sending {at} to {host}", file=sys.stderr, flush=True)
     # The connection that prepares the repositories also lists what earlier runs left running there,
     # before any work is sent: a connection to the build host can take seconds of its own.
+    attempt = asleep()
     prepared = ssh(host, f"{prepare} || exit $?\n{census_command()} || true", stdin=subprocess.DEVNULL,
                    capture_output=True, text=True)
     # ssh's own failures, a name that does not resolve among them, exit 255.
-    if prepared.returncode == 255: raise unreachable(host, last_line(prepared.stderr))
+    if prepared.returncode == 255: raise unreachable(host, prepared.stderr, attempt)
     if prepared.returncode:
         raise Misconfigured(f"{host} could not prepare ~/{ROOT} (exit {prepared.returncode}): "
                             f"{last_line(prepared.stderr) or 'no output'}",
@@ -535,7 +565,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     if result is None and not framed and stopping is None:
         # build_host.py never started, so nothing ran there.
         shutil.rmtree(staging, ignore_errors=True)
-        if channel.returncode == 255: raise unreachable(host, stray)
+        if channel.returncode == 255: raise unreachable(host, stray, slept)
         raise no_toolkit(host, channel.returncode, stray)
     if result is not None and result.get("refused"):
         shutil.rmtree(staging, ignore_errors=True)
@@ -1045,13 +1075,14 @@ def first(root, config, lane, arguments, expect, fallback=True):
 def ask(host, request):
     """build_host.py's answer to request on the build host, run by its login shell as a run there is."""
     request = shlex.join(["python3", "-c", Path(build_host.__file__).read_text(), json.dumps(request)])
+    attempt = asleep()
     try:
         found = ssh(host, request, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=SURVEY_TIMEOUT)
     except subprocess.TimeoutExpired:
-        raise unreachable(host, f"it did not answer in {SURVEY_TIMEOUT}s") from None
+        raise unreachable(host, f"it did not answer in {SURVEY_TIMEOUT}s", attempt) from None
     except OSError as error:
         raise unreachable(host, str(error)) from None
-    if found.returncode == 255: raise unreachable(host, last_line(found.stderr))
+    if found.returncode == 255: raise unreachable(host, found.stderr, attempt)
     try:
         return json.loads(last_line(found.stdout))
     except (TypeError, ValueError):
@@ -1084,6 +1115,7 @@ def leftover_census(host):
     """The build host's census of leftover processes, read in its login shell as a run there reads
     it, and None; or None and why it is missing. A build host that cannot be reached raises; any
     other failure of the census is only reported, since it stops nothing."""
+    attempt = asleep()
     try:
         found = ssh(host, census_command(), stdin=subprocess.DEVNULL, capture_output=True, text=True,
                     timeout=CENSUS_TIMEOUT)
@@ -1091,7 +1123,7 @@ def leftover_census(host):
         return None, f"it did not answer in {CENSUS_TIMEOUT}s"
     except OSError as error:
         raise unreachable(host, str(error)) from None
-    if found.returncode == 255: raise unreachable(host, last_line(found.stderr))
+    if found.returncode == 255: raise unreachable(host, found.stderr, attempt)
     return read_census(found)
 
 
@@ -1100,6 +1132,7 @@ def device_users(host, udid, since):
     epoch time since, as lines to show; none when nothing does (build_host.device_users). A build
     host that cannot be reached or does not answer raises, and a recovery waits for it."""
     request = json.dumps({"device": {"udid": udid, "root": ROOT, "since": since}})
+    attempt = asleep()
     try:
         found = ssh(host, shlex.join(["python3", "-c", Path(build_host.__file__).read_text(), request]),
                     stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=CENSUS_TIMEOUT)
@@ -1107,7 +1140,7 @@ def device_users(host, udid, since):
         raise Unavailable(f"{host} did not list its processes in {CENSUS_TIMEOUT}s") from None
     except OSError as error:
         raise unreachable(host, str(error)) from None
-    if found.returncode == 255: raise unreachable(host, last_line(found.stderr))
+    if found.returncode == 255: raise unreachable(host, found.stderr, attempt)
     census, missing = read_census(found)
     if census is None: raise Unavailable(f"{host} did not list its processes: {missing}")
     return ([f"PID {row['pid']}, started {row['start']}, names {udid}: {row['command']}" for row in census["naming"]]
