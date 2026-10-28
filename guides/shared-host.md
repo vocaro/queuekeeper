@@ -130,9 +130,14 @@ every five minutes after, naming the reason: the guaranteed slots are busy and t
 pressure or settling time refuses another; it waits behind exclusive work, named by its label;
 exclusive work needs every slot free; the on-device model is held by another run, named by its
 label; a legacy gate holds its lock; or a foreign, dead or uncertain guard owner requires
-inspection. After its timeout (5,400 s by default) admission fails without reclaiming any lock,
-and an exclusive request leaves the queue. A script that runs several jobs at once leaves at
-least one of the guaranteed HEAVY_SLOTS for other sessions.
+inspection, which names `eng admissions recover`. After its timeout (5,400 s by default)
+admission fails without reclaiming any lock, and an exclusive request leaves the queue. A script
+that runs several jobs at once leaves at least one of the guaranteed HEAVY_SLOTS for other sessions.
+
+A dead or uncertain entry refuses every session's heavy work until it is recovered.
+`python3 scripts/eng admissions recover` lists those entries, and
+`eng admissions recover OWNER` removes one once its owner has ended and a census against its
+process record finds nothing it ran still running ([lock reclamation](#lock-reclamation)).
 
 A request's label names it in waiting messages, the guard and the [admission log](#admission-log).
 A lane run's label is its project's name, from engineering.json, a space and the lane, such as
@@ -193,9 +198,10 @@ Each host logs its heavy-work admissions, so that an audit counts how often each
 is taken, how long requests wait and how long each holds. An October 2026 audit of exclusive work
 could not say, because nothing recorded past admissions. Admission appends one JSON line when it
 admits a request and another when that admission ends, and a request that stops waiting without
-admission appends one. A refused attempt writes nothing, nor does nested work that reuses its
-inherited admission. Each line is written under the coordination lock that admission and release
-hold, so the lines are in the order slots were taken and given back.
+admission appends one, as does a recovery that removes an entry. A refused attempt writes nothing,
+nor does nested work that reuses its inherited admission. Each line is written under the
+coordination lock that admission and release hold, so the lines are in the order slots were taken
+and given back.
 
 The log is `~/Library/Application Support/vocaro-engineering/admissions.jsonl`, in the account's
 durable state, because an audit looks back weeks and files in the slot directory are the
@@ -209,7 +215,7 @@ log: the build host logs what is admitted there.
 A line holds:
 
 - `time`: when it was written, in UTC (ISO 8601).
-- `event`: `admitted`, `ended` or `withdrawn`.
+- `event`: `admitted`, `ended`, `withdrawn` or `recovered`.
 - `identity`: the request's nonce, which pairs an admission with its end and keys its guard entry;
   `pid`: the admitting process.
 - `kind`: `heavy`, `model` or `exclusive`; `label`: the request's label, as waiting messages name
@@ -223,11 +229,15 @@ A line holds:
   observed descendant end; or `uncertain` when the guard entry was kept for inspection
   ([lock reclamation](#lock-reclamation)). On a `withdrawn` line: `timed-out`, which includes
   `eng run --if-free` declining; `stopped`; or `failed`.
+- On a `recovered` line, which `eng admissions recover` writes when it removes an entry: `pid` is
+  the entry's owner; `uncertain`, whether the entry was marked so; `commands`, `processes` and
+  `spaces`, how many unsettled commands, recorded processes and process groups or sessions its
+  census checked.
 
 An `admitted` line with no `ended` line is still held, or SIGKILL ended its admitting process,
-which leaves its guard entry for recovery as well. A log that cannot be written never fails or
-holds up admission or release: admission prints `heavy: the admission log was not written: ERROR`
-and goes on.
+which leaves its guard entry for recovery as well, and a `recovered` line follows once it is
+recovered. A log that cannot be written never fails or holds up admission or release: admission
+prints `heavy: the admission log was not written: ERROR` and goes on.
 
 `eng admissions` summarizes the log over a period:
 
@@ -237,7 +247,8 @@ python3 scripts/eng admissions --since 2026-10-20 --until 2026-10-27
 
 It prints the times of the log's first and last lines, then, for each kind and each label within
 it, the requests admitted and withdrawn, their mean and longest waits, the mean, longest and total
-holds, and how the admissions ended, `unlogged` for one with no `ended` line. A request counts in
+holds, and how the admissions ended: `recovered` for one with no `ended` line whose entry was
+recovered, and `unlogged` for any other without one. A request counts in
 the period in which it was admitted or withdrawn. A date or time without a zone is local. A period
 that begins before the log's first line is reported as such: older requests have rotated out and
 count nowhere. Lines that cannot be read, such as one a full volume cut short, are counted and
@@ -1180,6 +1191,12 @@ Supervise the process group you own. The toolkit's `processes.supervise`, which 
   survivor, which errs toward inspection. A zero exit has no census, so that a daemon a passing
   command starts on purpose does not stop the host's heavy work. Until 2026-10-26 no run had a
   census, and a failed command's unobserved orphan ran on after its admission was released.
+- Inside an admission that its own process holds, the supervisor appends what it sees to the
+  admission's process record ([lock reclamation](#lock-reclamation)): the command before it
+  starts, its root once started, each process with its start and each process group and session
+  at the first sample that sees it, and the command's confirmed end. When the admitting process
+  is killed before it settles its entry, `eng admissions recover` runs this census against the
+  record.
 - A push keeper ([checkout provisioning and publication](#checkout-provisioning-and-publication))
   supervises its own commands and applies the same census to a command that fails on its own,
   with a positive status and no stop. When the census finds nothing, the keeper releases its
@@ -1437,10 +1454,11 @@ Four kinds of marker coexist, and they are reclaimed differently:
 - The legacy shlock gate file (`/tmp/studywright-gate-suite.lock` by default) holds a PID, and
   `shlock` reclaims it once that process is gone, so a killed gate does not strand the next one.
 - A guard (`<gate lock>.warm-push-guard`, which admission and the push keeper publish) records
-  each owner's PID, process start, label and an uncertainty flag. It is never reclaimed by PID
-  or by time, because a dead keeper's compilers or simulator children can outlive it. Gates
-  check the guard before trying `shlock`, and admission refuses to proceed while any guard owner
-  is dead, foreign or uncertain.
+  each owner's PID, process start, label, admission time and an uncertainty flag; beside it,
+  each entry's process record lists what supervision saw of that owner's commands. It is never
+  reclaimed by PID or by time, because a dead keeper's compilers or simulator children can
+  outlive it. Gates check the guard before trying `shlock`, and admission refuses to proceed
+  while any guard owner is dead, foreign or uncertain.
 - The exclusive queue (`exclusive-queue.json` in the slot directory, changed only under its
   `coordination.lock`) records each waiting exclusive request's PID, process start and label, in
   arrival order. A queued request holds no slot and has started nothing, so admission drops one
@@ -1551,14 +1569,64 @@ admitted command to its terminal result before ending its turn. How long a Codex
 keeps a command after its turn ends, and what quitting the Claude desktop app sends, were not
 measured.
 
-Recovery of a guard is attended. Inspect its recorded owner, that owner's command processes and
-any reserved tree; stop or wait for all of the transaction's children; then remove the abandoned
-markers by hand. A free owned descriptor or a later foreign acquisition, checked against the
-recorded process birth and descriptor nonce, establishes that an old lock was released. Preserve
-every foreign reservation. Time passing alone establishes none of this. Recovering the guard those
+Recovery of a guard entry is attended, and `eng admissions recover` carries it out. The first
+command below lists each entry that refuses admission, dead or uncertain, with its identity, label,
+PID and how long ago it was admitted (for an entry an older toolkit wrote, how long ago its owner
+started), whether its owner still runs, and whether it has a process record. The second recovers
+one entry, named by its owner's PID or by its identity:
+
+```sh
+python3 scripts/eng admissions recover
+python3 scripts/eng admissions recover 56766
+```
+
+It removes that entry alone, and the guard with its last entry, deletes the entry's process record
+and logs a `recovered` line ([admission log](#admission-log)), only when all of these hold:
+
+- Its owner has ended: its PID is gone, or `ps` reads another start there. A live owner's entry is
+  never touched, uncertain or not, named by PID or by identity: the owner removes it, or leaves it,
+  when it ends. A `ps` that cannot say leaves the owner taken as running.
+- It has a process record that reads whole and names the process of each command it has not
+  settled.
+- The census a run ends with ([process supervision](#process-supervision)), run against that
+  record, finds nothing: no recorded process still runs with its recorded start, and no live
+  process is in a process group or session the commands were seen using, but for an ID that is now
+  a live process's PID.
+
+Otherwise it changes nothing, exits 1 and says why: each process still running, by PID with why it
+counts and a `ps` listing, or what to check by hand. Stop or wait for what still runs, then run it
+again. It leaves a foreign guard alone too, such as a legacy keeper's (below).
+
+The process record is `<guard>.IDENTITY.jsonl`, beside the guard, named by the identity that keys
+the entry. The toolkit's supervision in the admitting process (`eng admit`, `eng run`, the
+resource CLI, and `processes.supervise` inside an `Admission` the same process holds) appends JSON
+lines to it, each naming one command by a key of its own: `argv` before the command starts; `root`,
+its PID, once started; at each sample that sees something new, the `processes` first seen, as
+`[PID, start]`, and the process groups and sessions first seen, as `spaces`; and `settled` once the
+run confirms that the command ended, by exiting, or by a stop or timeout that saw it and every
+observed descendant end and whose census found nothing. Recovery checks no settled command, so a
+daemon a passing command starts on purpose does not keep the entry, as it does not keep the run
+uncertain. Nested work in another process reuses the admission and writes nothing to the record,
+since the outer supervisor sees its processes. Release deletes the record after the entry; an
+uncertain end keeps it. A line that cannot be written deletes the record and ends recording, with
+`heavy: the process record was not written`, so recovery never trusts a record that lacks a line.
+
+An entry without a process record is left for a check by hand: one an older toolkit wrote, one
+whose owner ended before it began a supervised command, and one whose caller runs its own commands,
+as StudyWright's push keeper does with `Admission` directly. Inspect its recorded owner, that
+owner's command processes and any reserved tree; stop or wait for all of the transaction's
+children; then remove the entry by hand. A push keeper's `owner.json`, in its checkout's transaction
+lock, lists each command the keeper ran with its PID, process group, start time and observed
+descendants. A free owned descriptor or a later foreign acquisition, checked against the recorded
+process birth and descriptor nonce, establishes that an old lock was released. Preserve every
+foreign reservation. Time passing alone establishes none of this. Recovering the guard those
 subagent stops left (2026-10-22) found all three recorded PIDs dead, no swift-frontend, xctest,
 xcodebuild, DTServiceHub or simctl process left, and no slot file held open. The VoiceOver run had
-left two booted simulators, which its own logs proved its, so they were deleted by UDID.
+left two booted simulators, which its own logs proved its, so they were deleted by UDID. On
+2026-10-27 a persistent push keeper that an agent's task stop ended ten minutes into its gate had
+left nothing running: a census against its `owner.json` checked 22,992 PIDs with their start
+times and 8,088 process groups and found no survivor, and the host still admitted no heavy work
+until the entry was removed by hand.
 
 A push keeper's guard is `{"keeper": PID, "checkoutLock": PATH}`. Admission reads it as foreign
 and waits, so while it stands no session on the host is admitted to heavy work. `PATH/owner.json`
@@ -1574,7 +1642,11 @@ SystemExit for a nonzero result. An exception inside the context retains its unc
 by design, because the coordinator cannot infer whether that exception left children running.
 Admission used directly handles no signals. To stop as the supplied commands do, enter
 `processes.forwarding_signals()` around it and pass `on_stop=admission.interrupted` to
-`supervise`.
+`supervise`. `supervise` called in the process that holds the admission writes its process
+record; a caller that supervises its own commands writes none, so an entry its killed process
+leaves is recovered by hand ([lock reclamation](#lock-reclamation)). The record holds only what
+`supervise` ran, so a caller that also starts long-lived processes another way inside the
+admission leaves recovery blind to them: run them through `supervise` too.
 
 Legacy shell gates authenticate inherited exclusive admission for their exact lock namespace.
 The coordinator does not export a lock opt-out into the suite: regression fixtures retain

@@ -8,6 +8,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 
 # Seconds an observed descendant may outlive the root before it is stopped, and then before
 # SIGTERM becomes SIGKILL. Xcode's DTServiceHub can outlive xcodebuild by minutes, ignoring SIGTERM.
@@ -159,19 +160,35 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
     an admission owner the guard records: a nested admission stops its own command and then
     settles its entry, which SIGKILL would strand. After the first SIGTERM or stop signal, such an
     owner's new children are left to it.
+
+    Inside an admission this process holds, the admission's process record gets the command before
+    it starts, then its root, each process and each process group or session at the first sample
+    that sees it, and a confirmed end, so that `eng admissions recover` can run this census once
+    this process has gone.
     """
     if requested() is not None:
         raise Interrupted(requested(), "before its command started")
     environment = dict(os.environ) if env is None else env
     token = json.loads(environment.get("VOCARO_RESOURCE_TOKEN", "{}"))
     descriptors = tuple(item["fd"] for item in token.get("locks", []))
+    from vocaro_engineering.resources import holding
+    admission, key = holding(environment), uuid.uuid4().hex
+
+    def note(**observed):
+        """Append what was seen of this command to the process record, if it runs in an admission held here."""
+        if admission is not None: admission.observe({"command": key, **observed})
+
+    # First, so that a record without this command's root says it may have started.
+    note(argv=[str(part) for part in command])
     try:
         child = subprocess.Popen(command, cwd=cwd, env=environment, stdout=stdout,
             stderr=subprocess.STDOUT if stdout is not None else None, start_new_session=True,
             pass_fds=descriptors)
     except (OSError, ValueError) as error:
         # Popen reaps a child whose exec failed before it raises; nothing else ran.
+        note(settled="not-started")
         raise NotStarted(f"Command did not start: {error}") from error
+    note(root=child.pid, spaces=[child.pid])
     # Each observed descendant's (parent, group, start) when first seen, for its identity and report.
     known, born, exited, stopping = {}, None, None, set()
     # The process groups and sessions the command was seen using, for the census at its end. The
@@ -185,6 +202,8 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
     signaled, killed = False, None
     # Each process seen as an admission owner, as (PID, start), and the PIDs SIGKILL was reported waiting for.
     recognized, reported = set(), set()
+    # Each process the process record holds, as (PID, start).
+    noted = set()
 
     def recognize(identities):
         """Those of these {PID: start} processes that are admission owners. One that has settled
@@ -233,8 +252,14 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
                 parents.update(added)
                 known.update({pid: current[pid] for pid in added})
             live = {pid for pid, seen in known.items() if pid in current and current[pid][2] == seen[2]}
-            for pid in live: spaces.update(space for space in (current[pid][1], session(pid)) if space is not None)
+            sampled = {space for pid in live for space in (current[pid][1], session(pid)) if space is not None}
             identities = {pid: known[pid][2] for pid in live} | ({child.pid: born} if root_active else {})
+            if admission is not None:
+                # What this sample saw first.
+                fresh, opened = sorted(set(identities.items()) - noted), sorted(sampled - spaces)
+                if fresh or opened: note(processes=[(pid, " ".join(start.split())) for pid, start in fresh], spaces=opened)
+                noted.update(fresh)
+            spaces |= sampled
             if timeout is not None and exited is None and expired is None and time.monotonic() - started >= timeout:
                 expired = time.monotonic()
                 print(f"supervise: timed out after {timeout:g}s; sending SIGTERM to the command (PID {child.pid}) "
@@ -281,6 +306,8 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
                                        "sessions it was seen using: " + ", ".join(
                                            f"PID {pid} (group {group}, session {sid})" for pid, group, sid in left)
                                        + "; reservation retained")
+                # Confirmed, so recovery has nothing of this command to check.
+                note(settled="stopped" if signum is not None else "timed-out" if expired is not None else "exited")
                 if signum is not None: raise Interrupted(signum, "after its command and observed descendants ended")
                 if expired is not None:
                     raise TimedOut(f"Owned command timed out after {timeout:g}s: {command[0]}; it and its observed "

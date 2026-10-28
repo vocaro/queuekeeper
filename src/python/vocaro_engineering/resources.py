@@ -21,6 +21,13 @@ driving one Mac's on-device model both stalled. Exclusive work holds the model w
 
 Each admission appends a line to the host's admission log, and its end another, so that an audit
 can count admissions, waits and holds instead of guessing (#46); `eng admissions` summarizes it.
+
+Beside its guard entry, each admission keeps a process record: what the toolkit's supervision in
+the owner's process saw of each command, its processes with their starts and the process groups
+and sessions they used, appended at each sample that sees something new. Once the owner has ended,
+`eng admissions recover` runs the end-of-run census against that record and removes the entry only
+when nothing of an unsettled command still runs (#61). An entry without a record is left for a
+check by hand.
 """
 import argparse
 from collections import Counter
@@ -31,9 +38,11 @@ import json
 import os
 from pathlib import Path
 import pwd
+import re
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 
@@ -44,6 +53,9 @@ FREE_WAIT, BUSY = 5, 75
 # The admission log and its previous generation. A line that would take the log past LOG_LIMIT
 # bytes first makes the log the previous generation, so the two together stay within twice it.
 LOG, PREVIOUS_LOG, LOG_LIMIT = "admissions.jsonl", "admissions.1.jsonl", 8 << 20
+# The admissions this process holds, by identity: only the owner's own supervision writes an entry's
+# process record. Nested work in another process reuses the admission and writes nothing to it.
+_held = {}
 
 
 def process_start(pid):
@@ -76,6 +88,20 @@ def guard_owners(environment):
         return set()
     return {(owner["pid"], " ".join(owner["start"].split())) for owner in owners.values()
             if isinstance(owner, dict) and isinstance(owner.get("pid"), int) and isinstance(owner.get("start"), str)}
+
+
+def record_path(guard, identity):
+    """An admission's process record: beside its guard, named by the identity that keys its entry."""
+    return Path(f"{guard}.{identity}.jsonl")
+
+
+def holding(environment):
+    """The admission this process holds that the environment's token names, or None."""
+    try:
+        nonces = {item["nonce"] for item in json.loads(environment.get(TOKEN) or "{}").get("locks", [])}
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return None
+    return next((_held[nonce] for nonce in nonces if nonce in _held), None)
 
 
 def slot_directory():
@@ -248,6 +274,10 @@ class Admission:
         # Exclusive requests waiting for admission, first come first.
         self.queue = self.directory / "exclusive-queue.json"
         self.identity = uuid.uuid4().hex
+        # What supervision in this process sees of each command, for the entry's recovery, and
+        # whether a line failed to reach it, which ends recording. Lane groups supervise in threads.
+        self.process_record = record_path(self.guard, self.identity)
+        self.unrecorded, self.recording = False, threading.Lock()
         self.descriptors = []
         # The model lock's descriptor while admission holds it.
         self.held_model = None
@@ -390,7 +420,8 @@ class Admission:
                 self._record(waiters)
             state = self._guard()
             if state is None:
-                self.waiting = "a foreign, dead or uncertain guard owner requires inspection"
+                self.waiting = ("a foreign, dead or uncertain guard owner requires inspection; "
+                                "`python3 scripts/eng admissions recover` lists it")
                 return False
             if waiters and waiters[0]["identity"] != self.identity:
                 # Work already admitted runs on; nothing new starts before the exclusive request.
@@ -420,7 +451,8 @@ class Admission:
                     self._release()
                     raise RuntimeError("Cannot establish the admission owner's process identity")
                 state["owners"][self.identity] = {"pid": os.getpid(), "start": born, "label": self.label,
-                                                    "exclusive": self.exclusive, "model": self.model}
+                                                    "exclusive": self.exclusive, "model": self.model,
+                                                    "admitted": datetime.now(timezone.utc).isoformat(timespec="seconds")}
                 # A legacy keeper cannot obtain shlock until this publication finishes.
                 publish_guard(self.guard, state)
                 if self.exclusive:
@@ -474,10 +506,32 @@ class Admission:
                 # how a request fails: `eng run --if-free` tells a busy host by its TimeoutError.
                 if self.queued: raise
             raise
+        _held[self.identity] = self
         print(f"heavy: slot {','.join(str(slot) for slot, _fd in self.descriptors)}"
               f"{' and the model' if self.held_model is not None else ''} after {int(time.monotonic() - started)}s: "
               f"{self.label[:160]}", file=sys.stderr, flush=True)
         return self
+
+    def observe(self, line):
+        """Append a line to this admission's process record: what supervision in this process saw of a
+        command (#61). Recovery trusts a record only whole, so a line that cannot be written removes the
+        record and ends recording, and recovery then leaves the entry for a check by hand. As with the
+        log, a failure never fails or holds up the run."""
+        with self.recording:
+            if self.unrecorded: return
+            try:
+                data = (json.dumps(line) + "\n").encode()
+                fd = os.open(self.process_record, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+                try:
+                    if os.write(fd, data) != len(data): raise OSError("the line was cut short")
+                finally:
+                    os.close(fd)
+            except Exception as error:
+                self.unrecorded = True
+                with contextlib.suppress(OSError): self.process_record.unlink(missing_ok=True)
+                with contextlib.suppress(Exception):
+                    print(f"heavy: the process record was not written, so recovering this entry needs a check by "
+                          f"hand: {error}", file=sys.stderr, flush=True)
 
     def _settle(self, release):
         """Remove this job's entry, or mark it uncertain. The caller holds the coordination lock.
@@ -493,6 +547,8 @@ class Admission:
             del owners[self.identity]
             if owners: publish_guard(self.guard, state)
             else: self.guard.unlink(missing_ok=True)
+            # After the entry, so that a release cut short never leaves an entry whose record is gone.
+            with contextlib.suppress(OSError): self.process_record.unlink(missing_ok=True)
         else:
             owners[self.identity]["uncertain"] = True
             publish_guard(self.guard, state)
@@ -508,6 +564,7 @@ class Admission:
     def __exit__(self, kind, _value, _traceback):
         if self.reused:
             return False
+        _held.pop(self.identity, None)
         if self.previous is None: os.environ.pop(TOKEN, None)
         else: os.environ[TOKEN] = self.previous
         with (self.directory / "coordination.lock").open("a+") as bridge:
@@ -534,12 +591,14 @@ def read_entry(line):
     try:
         entry = json.loads(line)
         entry["time"] = datetime.fromisoformat(entry["time"])
-        seconds = entry[{"admitted": "waited", "withdrawn": "waited", "ended": "held"}[entry["event"]]]
+        # A recovery's line counts no seconds of its own.
+        field = {"admitted": "waited", "withdrawn": "waited", "ended": "held", "recovered": None}[entry["event"]]
+        seconds = entry[field] if field else 0
     except (ValueError, KeyError, TypeError):
         return None
     if (entry["time"].tzinfo is None or not isinstance(seconds, (int, float))
             or not all(isinstance(entry.get(key), str) for key in ["identity", "kind", "label"])
-            or (entry["event"] != "admitted" and not isinstance(entry.get("outcome"), str))):
+            or (entry["event"] in ("withdrawn", "ended") and not isinstance(entry.get("outcome"), str))):
         return None
     return entry
 
@@ -598,8 +657,9 @@ def summarize(entries, since=None, until=None):
                 group["withdrawn"][first["outcome"]] += 1
                 continue
             group["admitted"] += 1
-            # An admission with no end logged is still held, or its process was killed.
-            group["ends"][end["outcome"] if end else "unlogged"] += 1
+            # An admission with no end logged is still held, or its process was killed and its entry
+            # either awaits recovery or was recovered since.
+            group["ends"][end["outcome"] if end else "recovered" if "recovered" in lines else "unlogged"] += 1
             if end: group["held"].append(end["held"])
 
     def counts(counter):
@@ -651,6 +711,204 @@ def report(paths=None, since=None, until=None, out=print):
     return 0
 
 
+# What recovery tells a person to do about an entry it leaves.
+BY_HAND = ("check by hand that nothing its owner started still runs, then remove its entry from the guard "
+           "(guides/shared-host.md, Lock reclamation)")
+
+
+def entry_age(owner):
+    """How long ago an entry's job was admitted, or, for an entry an older toolkit wrote, its owner started."""
+    try: return f"admitted {duration(max(0, time.time() - datetime.fromisoformat(owner['admitted']).timestamp()))} ago"
+    except (KeyError, TypeError, ValueError): pass
+    try:
+        began = time.mktime(time.strptime(" ".join(owner["start"].split()), "%a %b %d %H:%M:%S %Y"))
+        return f"its owner started {duration(max(0, time.time() - began))} ago"
+    except (KeyError, TypeError, ValueError, AttributeError, OverflowError):
+        return "admitted at an unknown time"
+
+
+def ended(owner):
+    """Whether an entry's owner has certainly ended: its PID is gone, or ps reads another start there. A ps
+    that cannot say leaves the owner running, so that recovery never takes a live owner's entry."""
+    try: os.kill(owner["pid"], 0)
+    except ProcessLookupError: return True
+    except PermissionError: pass
+    listed = subprocess.run(["ps", "-p", str(owner["pid"]), "-o", "lstart="], capture_output=True, text=True)
+    start = " ".join(listed.stdout.split())
+    return listed.returncode == 0 and bool(start) and start != " ".join(owner["start"].split())
+
+
+def census(path):
+    """What still runs of the commands an admission's process record leaves unsettled, as {PID: why}, with
+    how many commands, recorded processes and process groups or sessions were checked. A ValueError says
+    why the record cannot vouch for every command: a line that cannot be read, or a command whose
+    process it never named.
+
+    It is the census a run ends with (processes.survivors): each recorded process has ended, by PID and
+    start, and no live process is in a group or session one was seen using, but for an ID that is now a
+    live process's PID (#26). A command the record settled was confirmed ended by its own supervision.
+    """
+    from vocaro_engineering.processes import snapshot, survivors
+    commands = {}
+    with path.open("rb") as stream:
+        for number, text in enumerate(stream, 1):
+            try:
+                line = json.loads(text)
+                if not isinstance(line["command"], str) or not isinstance(line.get("argv", []), list):
+                    raise TypeError("an unexpected value")
+                command = commands.setdefault(line["command"], {"argv": [], "root": None, "processes": set(),
+                                                                "spaces": set(), "settled": False})
+                processes = {(pid, start) for pid, start in line.get("processes", [])}
+                spaces, root = set(line.get("spaces", [])), line.get("root", command["root"])
+                if not all(type(pid) is int and isinstance(start, str) for pid, start in processes) or \
+                        not all(type(space) is int for space in spaces) or not (root is None or type(root) is int):
+                    raise TypeError("an unexpected value")
+            except (ValueError, KeyError, TypeError, AttributeError):
+                raise ValueError(f"line {number} of {path} cannot be read") from None
+            command["argv"], command["root"] = line.get("argv", command["argv"]), root
+            command["processes"] |= processes
+            command["spaces"] |= spaces
+            command["settled"] = command["settled"] or "settled" in line
+    unsettled = [command for command in commands.values() if not command["settled"]]
+    for command in unsettled:
+        if command["root"] is None:
+            raise ValueError(f"its command `{' '.join(map(str, command['argv']))[:160]}` may have started before "
+                             "the record named its process")
+    current, left = snapshot(), {}
+    for command in unsettled:
+        for pid, start in command["processes"]:
+            if pid in current and " ".join(current[pid][2].split()) == " ".join(start.split()):
+                left[pid] = "a recorded process, still running"
+        if command["root"] in current and all(pid != command["root"] for pid, _start in command["processes"]):
+            left.setdefault(command["root"], "its command's PID, whose start the record never saw, is in use")
+    spaces = set().union(*(command["spaces"] | {command["root"]} for command in unsettled))
+    for pid, group, sid in survivors(spaces):
+        left.setdefault(pid, f"group {group}, session {sid}")
+    return left, len(unsettled), sum(len(command["processes"]) for command in unsettled), len(spaces)
+
+
+def recover(owner=None, out=print):
+    """List the guard's dead or uncertain entries, or recover the one whose owner's PID or identity is
+    named: remove that entry alone, and the guard with its last one, once its owner has ended and a census
+    against its process record finds nothing of its commands still running. Returns 0 when it listed the
+    entries or removed one, and 1 when it removed nothing.
+
+    A live owner's entry is never touched: the owner removes it, or leaves it, itself. An entry without a
+    process record, written by an older toolkit or by a caller that runs its own commands, is left for a
+    check by hand, as is a foreign guard such as a legacy push keeper's.
+    """
+    guard = Path(os.environ.get("SW_GATE_LOCK_FILE", "/tmp/studywright-gate-suite.lock") + ".warm-push-guard")
+    directory = slot_directory()
+    directory.mkdir(parents=True, exist_ok=True)
+
+    def whole(entry):
+        return (isinstance(entry, dict) and type(entry.get("pid")) is int and entry["pid"] > 0
+                and isinstance(entry.get("start"), str) and isinstance(entry.get("label", ""), str))
+
+    def shown(entry):
+        """An entry's label on one line: an eng admit label is its command line, which can span several."""
+        return " ".join(entry.get("label", "?").split())[:160]
+
+    def recorded(identity):
+        """The entry's process record, or None: an identity that is not admission's names none."""
+        path = record_path(guard, identity) if re.fullmatch(r"[0-9a-f]{32}", identity) else None
+        return path if path is not None and path.is_file() else None
+
+    with (directory / "coordination.lock").open("a+") as bridge:
+        fcntl.flock(bridge, fcntl.LOCK_EX)
+        try: state = json.loads(guard.read_text())
+        except FileNotFoundError: state = {"vocaroEngineering": 1, "owners": {}}
+        except (OSError, ValueError): state = None
+        owners = state.get("owners") if isinstance(state, dict) and state.get("vocaroEngineering") == 1 else None
+        if not isinstance(owners, dict):
+            out(f"{guard} is not admission's guard: a legacy push keeper's, or unreadable. Recovery leaves it "
+                "alone; inspect it by hand (guides/shared-host.md, Lock reclamation).")
+            return 1
+        if owner is None:
+            # The entries that refuse admission, as admission reads them.
+            stranded = [(identity, entry) for identity, entry in owners.items()
+                        if not whole(entry) or entry.get("uncertain") or not running(entry)]
+            if not stranded:
+                out(f"No entry of {guard} is dead or uncertain.")
+                return 0
+            out(f"{len(stranded)} entr{'y' if len(stranded) == 1 else 'ies'} of {guard} "
+                f"{'is' if len(stranded) == 1 else 'are'} dead or uncertain:")
+            for identity, entry in stranded:
+                if not whole(entry):
+                    out(f"  {identity}: an entry recovery cannot read; {BY_HAND}")
+                    continue
+                condition = ("uncertain, and its owner still runs" if running(entry) else
+                             "uncertain, and its owner has ended" if entry.get("uncertain") else "its owner has ended")
+                out(f"  {identity} {shown(entry)}: PID {entry['pid']}, {entry_age(entry)}, {condition}; "
+                    f"{'a' if recorded(identity) else 'no'} process record")
+            out("Recover one with `python3 scripts/eng admissions recover OWNER`, OWNER its PID or identity.")
+            return 0
+        named = [identity for identity, entry in owners.items()
+                 if identity == owner or (whole(entry) and str(entry["pid"]) == owner)]
+        if len(named) != 1:
+            out(f"No entry of {guard} has the PID or identity {owner}; nothing was changed." if not named else
+                f"PID {owner} owns {len(named)} entries of {guard}; name one by its identity: {', '.join(named)}. "
+                "Nothing was changed.")
+            return 1
+        identity, entry = named[0], owners[named[0]]
+        if not whole(entry):
+            out(f"{identity} is an entry recovery cannot read, so it stays; {BY_HAND}.")
+            return 1
+        name = f"{shown(entry)} (PID {entry['pid']})"
+        if not ended(entry):
+            out(f"{name} still runs, so its entry stays: its owner removes the entry, or leaves it for recovery, "
+                "when it ends.")
+            return 1
+        path = recorded(identity)
+        if path is None:
+            out(f"{name} has no process record, so its entry stays: an older toolkit admitted it, it ended before "
+                "it began a supervised command, or its caller runs its own commands, as a push keeper does, whose "
+                f"owner.json in its checkout's transaction lock lists them. To recover it, {BY_HAND}.")
+            return 1
+        try:
+            left, commands, processes, spaces = census(path)
+        except ValueError as error:
+            out(f"{name}'s process record cannot vouch for every command, so its entry stays: {error}. To recover "
+                f"it, {BY_HAND}.")
+            return 1
+        if left:
+            listing = subprocess.run(["ps", "-o", "pid,ppid,pgid,lstart,args", "-p", ",".join(map(str, sorted(left)))],
+                                     capture_output=True, text=True).stdout.rstrip()
+            out(f"{len(left)} process(es) of {name} still run, so its entry stays: "
+                + "; ".join(f"PID {pid} ({why})" for pid, why in sorted(left.items())) + (f"\n{listing}" if listing else ""))
+            return 1
+        del owners[identity]
+        if owners: publish_guard(guard, state)
+        else: guard.unlink(missing_ok=True)
+        with contextlib.suppress(OSError): path.unlink(missing_ok=True)
+        append_log({"event": "recovered", "identity": identity, "pid": entry["pid"],
+                    "kind": "exclusive" if entry.get("exclusive") else "model" if entry.get("model") else "heavy",
+                    "label": entry.get("label", "")[:160], "uncertain": bool(entry.get("uncertain")),
+                    "commands": commands, "processes": processes, "spaces": spaces})
+        out(f"Recovered {name}: " + (f"nothing of its {commands} unsettled command(s) still runs, among {processes} "
+            f"recorded processes and {spaces} process groups and sessions" if commands else
+            "its process record shows every command it ran confirmed ended")
+            + f". Its entry is removed{', and the guard with it' if not owners else ''}.")
+        return 0
+
+
+def recover_main(argv=None):
+    """eng admissions recover [OWNER]: the guard's dead or uncertain entries, or the recovery of one."""
+    parser = argparse.ArgumentParser(prog="eng admissions recover", description="List the guard's dead or uncertain "
+        "entries, or recover one: remove that entry alone, and the guard with its last one, once its owner has ended "
+        "and a census against its process record finds nothing of its commands still running. It exits 1 when it "
+        "removes nothing, and leaves a live owner's entry, an entry without a process record and a foreign guard "
+        "alone (guides/shared-host.md, Lock reclamation).")
+    parser.add_argument("owner", nargs="?", metavar="OWNER", help="the PID or identity of the entry's owner, as the "
+                        "listing names it; without it, list the guard's dead or uncertain entries")
+    args = parser.parse_args(argv)
+    try:
+        return recover(args.owner)
+    except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+        print(f"eng: {error}", file=sys.stderr)
+        return 2
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     kind = parser.add_mutually_exclusive_group()
@@ -673,4 +931,7 @@ def json_descriptors():
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    # The module as supervision imports it, not this copy run as __main__, so that supervision finds the
+    # admission this process holds and writes its process record.
+    from vocaro_engineering import resources
+    raise SystemExit(resources.main())

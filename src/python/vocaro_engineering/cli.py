@@ -313,8 +313,15 @@ def main(argv=None):
     admission.add_argument("--timeout", type=float, default=5400, help="seconds to wait for admission (default 5400)")
     admission.add_argument("command", nargs=argparse.REMAINDER, help="the command and its arguments, after --; "
         "it runs in the current directory")
-    logged = commands.add_parser("admissions", help="summarize this host's heavy-work admission log: for each kind "
-        "and label, the requests admitted and withdrawn, how long they waited and held, and how admissions ended")
+    logged = commands.add_parser("admissions", usage="%(prog)s [-h] [--since WHEN] [--until WHEN] [log ...]\n"
+        "       %(prog)s recover [OWNER]", help="summarize this host's heavy-work admission log: for each kind "
+        "and label, the requests admitted and withdrawn, how long they waited and held, and how admissions ended; "
+        "eng admissions recover lists the guard's dead or uncertain entries, and eng admissions recover OWNER "
+        "removes that owner's once a census against its process record finds nothing it ran still running",
+        description="Summarize the admission log, or, with recover, list the guard's dead or uncertain entries and "
+        "recover one: its owner, named by PID or identity, has ended, and nothing of the commands its process "
+        "record leaves unsettled still runs. A live owner's entry, an entry without a process record and a "
+        "foreign guard are left for inspection (guides/shared-host.md, Lock reclamation).")
     logged.add_argument("--since", type=resources.local_time, metavar="WHEN", help="count requests made from WHEN, "
                         "an ISO 8601 date or time, local unless it names a zone")
     logged.add_argument("--until", type=resources.local_time, metavar="WHEN", help="count requests made before WHEN")
@@ -391,6 +398,8 @@ def main(argv=None):
     project = argv[1] if first == 2 else argv[0].split("=", 1)[1] if first == 1 else None
     if argv[first:first + 1] == ["simulator-tests"]: return matrix.main(argv[first + 1:], project)
     if argv[first:first + 1] == ["simulator-pool"]: return simulator_pool.main(argv[first + 1:], project)
+    # Recovery, like the admission log, covers the whole host and reads no project.
+    if argv[first:first + 2] == ["admissions", "recover"]: return resources.recover_main(argv[first + 2:])
     split = argv.index("--") if "--" in argv else len(argv)
     args = parser.parse_args(argv[:split])
     args.passed = argv[split + 1:] if split < len(argv) else None
