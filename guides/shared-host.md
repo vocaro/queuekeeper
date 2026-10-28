@@ -1461,6 +1461,24 @@ is therefore still the run: follow it to its terminal result rather than stoppin
 another. Start an admitted command that can outlast the foreground wait in the background, and
 never stop its task to retry.
 
+Stopping a subagent with TaskStop stops every command it started, background commands included,
+as a task stop does. In each of three probes the command and its child in its own session
+received SIGTERM in the same millisecond and ended by SIGKILL 1.48 s later. Twice the subagent was
+waiting on a foreground command with a background command beside it, and both were stopped; once
+it had ended its turn and was waiting on its background command alone (2026-10-27, Claude desktop
+app 3.6556.2 running Claude Code 2.1.308, macOS 27.0.1, load average about 5). Claude Code 2.1.308
+ends the stopped subagent's turn, which stops its foreground command, then stops each of its shell
+tasks still running. An admitted command that has not ended 1.5 s after the SIGTERM is killed with
+its entry in place. On 2026-10-22 a coordinator at a usage limit stopped ten subagents this way.
+Three were inside `eng admit`, running a VoiceOver simulator session and two `swift test` runs, and
+their entries kept every session on the host from heavy work for more than two hours, until the
+owner approved removing the guard. The same subagents ending at the account's usage limit
+(HTTP 429) left nothing behind three times, as a subagent's end stops nothing. To wind subagents
+down, ask each to start nothing new, stop only its commands still waiting for admission, which
+hold no entry, and let its admitted commands finish. On 2026-10-23 that left the guard empty, and
+a gate already running released normally. Whether a person stopping a subagent, rather than a
+coordinator's TaskStop, sends the same was not measured.
+
 Interrupting a turn, and archiving or deleting a session, stop commands as a task stop does. An
 interrupt reaches only the turn's foreground command; the session's background commands run on.
 Archiving or deleting a session from the sidebar stops its background commands. The app's archive
@@ -1498,7 +1516,10 @@ Recovery of a guard is attended. Inspect its recorded owner, that owner's comman
 any reserved tree; stop or wait for all of the transaction's children; then remove the abandoned
 markers by hand. A free owned descriptor or a later foreign acquisition, checked against the
 recorded process birth and descriptor nonce, establishes that an old lock was released. Preserve
-every foreign reservation. Time passing alone establishes none of this.
+every foreign reservation. Time passing alone establishes none of this. Recovering the guard those
+subagent stops left (2026-10-22) found all three recorded PIDs dead, no swift-frontend, xctest,
+xcodebuild, DTServiceHub or simctl process left, and no slot file held open. The VoiceOver run had
+left two booted simulators, which its own logs proved its, so they were deleted by UDID.
 
 A push keeper's guard is `{"keeper": PID, "checkoutLock": PATH}`. Admission reads it as foreign
 and waits, so while it stands no session on the host is admitted to heavy work. `PATH/owner.json`
