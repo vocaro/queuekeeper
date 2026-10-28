@@ -168,6 +168,19 @@ class PoolTests(unittest.TestCase):
         self.assertEqual(self.simctl.deleted(), [])
         self.assertEqual(self.simctl.devices[created.udid]["state"], "Shutdown")
 
+    def test_a_reservation_whose_start_cannot_be_read_leaves_its_holder_out(self):
+        # EPUBLib's Duo tests run the pool with no `ps` on PATH. The holder only helps the census of
+        # leftover processes, so the reservation goes ahead without it.
+        cases = {"ps missing": FileNotFoundError("ps"), "ps refused": PermissionError("ps"), "no start": None}
+        for name, outcome in cases.items():
+            effect = {"side_effect": outcome} if isinstance(outcome, Exception) else {"return_value": None}
+            with self.subTest(name), mock.patch.object(simulator_pool, "process_start", **effect):
+                lease = self.make("me").take(DUO, RUNTIME, purpose="Tests")
+                entry = devices.Record(self.path).entry(lease.key)
+                self.assertEqual((entry["device"], entry["ownerChatID"]), (lease.udid, "me"))
+                self.assertNotIn(devices.HOLDER, entry)
+                self.assertTrue(self.pool.release(lease, outcome="done"))
+
     def test_a_number_whose_entry_another_session_holds_is_skipped(self):
         self.hold("Project iPhone 17 Pro 1", None)
         lease = self.pool.create(IPHONE, RUNTIME, purpose="Tests", label="iPhone 17 Pro")

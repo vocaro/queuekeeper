@@ -170,13 +170,20 @@ class Pool:
     def _reserve(self, key, purpose, device=None, revision=None, **details):
         """Reserve a key at the revision read, by default its current one; the new revision. The
         entry names this process as its holder, by its PID and start, so that a census of leftover
-        processes counts the booted member as a live run's while this process is one of that run's."""
+        processes counts the booted member as a live run's while this process is one of that run's.
+        The holder only helps that census, so a start that `ps` cannot give (a project's tests may run
+        the pool with no `ps` on PATH) leaves it out rather than failing the reservation."""
         if not self.owner:
             raise ValueError(f"name the owner whose reservation takes {key}")
         if revision is None:
             current = self.record.entry(key)
             revision = current.get("revision", 0) if current else 0
-        details[device_record.HOLDER] = {"pid": os.getpid(), "start": process_start(os.getpid())}
+        try:
+            start = process_start(os.getpid())
+        except OSError:
+            start = None
+        if start is not None:
+            details[device_record.HOLDER] = {"pid": os.getpid(), "start": start}
         entry = self.record.reserve(key, owner=self.owner, revision=revision, device=device, purpose=purpose,
                                     release_by=self._release_by(), details=details)
         return entry["revision"]
