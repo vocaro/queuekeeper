@@ -972,6 +972,8 @@ on 2026-10-27 the build host's `devicectl list devices` listed both as `availabl
 record on each Mac would let a run on each use one device, under reservations neither record
 shows the other. So a physical device is reserved only in this Mac's record, the Mac that sends
 runs to the build host, and the build host's record holds only the build host's simulators.
+The build host never reads this Mac's record itself: that would give code running there a way
+into this Mac, so a run carries the reservation it may use instead.
 
 Every `eng remote` run first makes the build host's record defer physical devices to the sending
 Mac's (`devices defer MAC`, kept as the record's `physicalDevicesRecordedOn`, which `status`
