@@ -105,6 +105,21 @@ def unlinked_packages(root, config):
             for link, manifests in sorted(links.items())]
 
 
+# The files init copies into a project, by the toolkit file each one copies.
+COPIES = {"scripts/eng": "integrations/eng.py", "scripts/_engineering.py": "integrations/shared.py"}
+
+
+def stale_copies(root):
+    """Warnings for a project's launcher and adapter that differ from this toolkit's. The
+    toolkit's own checkout, which has integrations/, keeps a launcher of its own."""
+    if (root / "integrations/shared.py").is_file():
+        return []
+    return [f"{copy} differs from the toolkit's {source}: replace it with "
+            f"`cp {TOOLKIT_ROOT / source} {root / copy}` (guides/adoption.md)"
+            for copy, source in COPIES.items()
+            if (root / copy).is_file() and (root / copy).read_bytes() != (TOOLKIT_ROOT / source).read_bytes()]
+
+
 def initialize(root, args):
     root.mkdir(parents=True, exist_ok=True)
     config_path = root / "engineering.json"
@@ -496,6 +511,7 @@ def main(argv=None):
                                 "or \"pull-request\" for a project that takes changes only by pull request (agents/core.md)")
             warnings += temporary_model_storage(root, config)
             warnings += unlinked_packages(root, config)
+            warnings += stale_copies(root)
             # A difference between the two Macs is an error; a second Mac that cannot be reached is unchecked.
             hosts = remote.compare_hosts()
             # offload was buildHost until vocaro-engineering#58. No script reads the report, so it is
