@@ -204,6 +204,9 @@ class RemoteTests(unittest.TestCase):
             "FAKE_DEVICE_RECORD": str(self.record_there)})
         (base / "build-host-tmp").mkdir()
         self.environment.start()
+        # Python writes bytecode, as it does for a session that sets no PYTHONDONTWRITEBYTECODE and in
+        # the build host's login shell, which never has this Mac's environment.
+        os.environ.pop("PYTHONDONTWRITEBYTECODE", None)
         # No session holds a device unless a test names one.
         for name in (devices.OWNER, "CODEX_THREAD_ID", "CLAUDE_CODE_SESSION_ID"):
             os.environ.pop(name, None)
@@ -225,6 +228,8 @@ class RemoteTests(unittest.TestCase):
         """A committed copy of this toolkit, whose origin is itself, as the build host receives it."""
         for part in ["bin", "integrations", "policies", "agents", "src/python"]:
             shutil.copytree(config.TOOLKIT_ROOT / part, root / part, ignore=shutil.ignore_patterns("__pycache__"))
+        # Its .gitignore keeps out the bytecode that running it writes beside its source.
+        shutil.copyfile(config.TOOLKIT_ROOT / ".gitignore", root / ".gitignore")
         (root / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "vocaro-engineering",
                                                            "toolkit": {"path": "."}}))
         subprocess.run(["git", "init", "-q", "-b", "main", str(root)], check=True)
@@ -884,7 +889,10 @@ class RemoteTests(unittest.TestCase):
         source.write_text(text.replace("def group_files(config, lane):\n",
                                        "def group_files(config, lane):\n    return None\n", 1))
         self.assertNotEqual(source.read_text(), text)
+        # The dispatcher wrote bytecode beside the toolkit's source, which stays out of its commit.
+        self.assertTrue((source.parent / "__pycache__").is_dir())
         commit_all(self.toolkit)
+        self.assertNotIn("__pycache__", git(self.toolkit, "ls-files"))
         shutil.rmtree(results)
         self.stop_group()
         self.assertTrue(json.loads((results / "source.json").read_text())["result"]["stopped"])
