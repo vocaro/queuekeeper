@@ -324,12 +324,15 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual(self.eng("remote", "admit", "--", sys.executable, "-c", "pass")[0], 0)
         self.assertEqual(there.load()["revision"], revision)
         self.assertNotIn(devices.DEFERRED, devices.Record(self.record_here).load())
-        # A run there cannot reserve a physical device in the build host's own record.
+        # A run there cannot reserve a physical device in the build host's own record, even one its command
+        # spells in two parts, which the dispatch here does not see as a hardware UDID.
+        udid = PHONE.replace("C", "D")
         helper = ("import os, runpy, sys; sys.path.insert(0, os.path.join(os.environ['VOCARO_ENGINEERING_ROOT'], "
-                  "'src/python')); runpy.run_module('vocaro_engineering.devices', run_name='__main__')")
+                  f"'src/python')); sys.argv[-1] = {udid[:9]!r} + {udid[9:]!r}; "
+                  "runpy.run_module('vocaro_engineering.devices', run_name='__main__')")
         status, output, _error = self.eng("remote", "admit", "--", sys.executable, "-c", helper,
             "reserve", "iPhone", "--owner", "there", "--revision", "0", "--purpose", "p",
-            "--release-by", "2099-01-01T00:00:00Z", "--device", PHONE.replace("C", "D"))
+            "--release-by", "2099-01-01T00:00:00Z", "--device", "UDID")
         self.assertNotEqual(status, 0)
         self.assertIn(f"reserved in {build_host.mac_name()}'s device record", output)
         self.assertIsNone(there.entry("iPhone"))
@@ -425,6 +428,33 @@ class RemoteTests(unittest.TestCase):
         self.assertIn("the build host uses only under a reservation", error)
         self.assertIn(f"Ran 2 tests in {self.project.resolve()}", (self.project / ".build/engineering/gate/run.log").read_text())
 
+    def test_a_command_that_names_a_hardware_udid_no_entry_holds_is_refused_without_a_device(self):
+        # The build host reaches a paired device whether or not this Mac's record has an entry for it.
+        self.hold()
+        older = "ab12" * 10
+        # Forty hex digits that the checkout's Git does not know, even another repository's commit, may be
+        # an older device's UDID.
+        elsewhere = git(self.toolkit, "rev-parse", "HEAD")
+        for words, udid in [(["admit", "--", sys.executable, "-c", "pass", "id=00008020-0011223344556677"],
+                             "00008020-0011223344556677"),
+                            (["run", "check", "--", f"platform=iOS,id={older}"], older.upper()),
+                            (["admit", "--", "git", "show", elsewhere], elsewhere.upper())]:
+            with self.subTest(words):
+                status, _output, error = self.eng("remote", *words)
+                self.assertEqual(status, 2)
+                self.assertIn(f"names the hardware UDID {udid}, which no entry of this Mac's record holds and no "
+                              "--device covers: reserve its device here under a key and add --device KEY. "
+                              "Nothing was sent", error)
+                self.assertTrue(self.nothing_sent())
+        # Positive controls: nothing named, a simulator's UUID, the checkout's commit by its whole hash and
+        # abbreviated, and a SHA-256.
+        self.assertEqual(self.eng("remote", "admit", "--", sys.executable, "-c", "pass")[0], 0)
+        named = [DUO, self.commit, self.commit[:12], "ab" * 32]
+        status, output, error = self.eng("remote", "admit", "--", sys.executable, "-c",
+                                         "import sys; print('named', *sys.argv[1:])", *named)
+        self.assertEqual(status, 0, error)
+        self.assertIn(f"named {' '.join(named)}", output)
+
     def test_recovering_a_run_sent_here_waits_for_what_on_the_build_host_names_its_device(self):
         # Its own device, which no other test's processes name.
         udid = PHONE.replace("1", "7")
@@ -461,18 +491,19 @@ class RemoteTests(unittest.TestCase):
 
     def test_a_device_run_names_only_its_devices_and_is_bounded(self):
         held = self.hold()
-        # A hardware UDID the record holds under no key is a device the run does not hold, as is another
-        # entry's simulator; the record's own device, in any case, a UUID it does not know and a SHA-256 are not.
+        # A hardware UDID the record holds under no key, in either form, is a device the run does not hold, as
+        # is another entry's simulator; the record's own device, in any case, a UUID it does not know, a commit
+        # of the checkout by its whole hash and a SHA-256 are not.
         self.hold("Example Duo 1", device=DUO, owner="session-b")
         device = ["--device", "iPhone", "--device-owner", "session-a", "--", sys.executable, "-c", "pass"]
-        for other in ["00008020-0011223344556677", DUO]:
+        for other in ["00008020-0011223344556677", "AB12" * 10, DUO]:
             with self.subTest(other):
                 status, _output, error = self.eng("remote", "admit", *device, f"id={other}")
                 self.assertEqual(status, 2)
                 self.assertIn(f"the command names {other}", error)
                 self.assertTrue(self.nothing_sent())
         status, _output, error = self.eng("remote", "admit", *device, f"id={PHONE.lower()}",
-                                          "C6E2A1F4-1D2B-4E5F-8A9B-0C1D2E3F4A5B", "ab" * 32)
+                                          "C6E2A1F4-1D2B-4E5F-8A9B-0C1D2E3F4A5B", self.commit, "ab" * 32)
         self.assertEqual(status, 0, error)
         self.assertEqual(devices.condition(devices.Record(self.record_here).entry("iPhone")), "held")
         # The dispatch stops the run there once the reservation leaves no more than its reserve.
@@ -497,7 +528,8 @@ class RemoteTests(unittest.TestCase):
         helper = ("import os, runpy, sys; sys.path.insert(0, os.path.join(os.environ['VOCARO_ENGINEERING_ROOT'], "
                   "'src/python')); runpy.run_module('vocaro_engineering.devices', run_name='__main__')")
         launch = [sys.executable, "-c", helper, "run"]
-        ran = [sys.executable, "-c", "print('ran there')"]
+        # The checkout there knows the commit's whole hash too, so it names no device there either.
+        ran = [sys.executable, "-c", "print('ran there')", self.commit]
         status, output, error = self.eng("remote", "admit", "--device", "iPhone", "--device-owner", "session-a", "--",
                                          *launch, "iPhone", "--", *ran)
         self.assertEqual(status, 0, output + error)

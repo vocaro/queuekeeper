@@ -41,6 +41,7 @@ import os
 from pathlib import Path
 import pwd
 import re
+import subprocess
 import sys
 import tempfile
 import time
@@ -61,6 +62,8 @@ PHYSICAL = re.compile(r"[0-9A-F]{8}-[0-9A-F]{16}|[0-9A-F]{40}")
 DEFERRED = "physicalDevicesRecordedOn"
 # A hardware UDID as a word of uppercased text, not part of a longer run of hex digits such as a SHA-256.
 NAMED_PHYSICAL = re.compile(rf"(?<![0-9A-F])(?:{PHYSICAL.pattern})(?![0-9A-F])")
+# Seconds Git has to say whether forty hex digits name one of its objects, such as a commit.
+OBJECT_TIMEOUT = 10
 # The reservations a build-host run may use, held in the sending Mac's record, as JSON:
 # {"record": MAC, "devices": {KEY: UDID}, "until": the reservations' end}. build_host.py sets it for the run.
 LEASE = "VOCARO_DEVICE_LEASE"
@@ -602,10 +605,24 @@ def require_foreground(owner, record=None):
     return require_window(FOREGROUND, entry)
 
 
-def named(words, known=()):
-    """The device identifiers words name, uppercased: every hardware UDID, and each of known that appears."""
+def git_object(word, root=None):
+    """Whether the Git of root's checkout, by default the current directory's, knows word as an object.
+    A device's UDID never is one; Git that cannot answer in time knows nothing."""
+    from .remote import environment
+    try:
+        return subprocess.run(["git", "cat-file", "-e", word], cwd=root, capture_output=True, env=environment(),
+                              timeout=OBJECT_TIMEOUT).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def named(words, known=(), root=None):
+    """The device identifiers words name, uppercased: every hardware UDID, and each of known that appears.
+
+    Forty hex digits are an older device's UDID or a commit's whole SHA-1, so such a word that the
+    Git of root's checkout knows as an object (git_object) names no device."""
     text = " ".join(map(str, words)).upper()
-    found = set(NAMED_PHYSICAL.findall(text))
+    found = {udid for udid in NAMED_PHYSICAL.findall(text) if len(udid) != 40 or not git_object(udid, root)}
     found.update(udid.upper() for udid in known if isinstance(udid, str) and udid and udid.upper() in text)
     return found
 
@@ -619,11 +636,12 @@ class BoundedRun:
     with this process as the run's and the command as the entry's own process, then its outcome.
     On the build host, whose record defers physical devices, they come from the lease the dispatch
     carries (LEASE), and the dispatch records the run in the sending Mac's record. Every device
-    identifier the command names, a hardware UDID or any device the record knows, is one it holds.
+    identifier the command names, a hardware UDID or any device the record knows, is one it holds;
+    an object of root's Git, by default the current directory's, is none (named).
     The bound is the reservations' remaining time, less what the run keeps for its termination
     and the session's restoration, and at most limit."""
 
-    def __init__(self, keys, owner, words, *, record=None, revision=None, limit=None, restoration=None):
+    def __init__(self, keys, owner, words, *, record=None, revision=None, limit=None, restoration=None, root=None):
         keys = list(dict.fromkeys(keys))
         if not keys:
             raise ValueError("a bounded run names the device entries it uses")
@@ -647,7 +665,7 @@ class BoundedRun:
             self.revisions = {}
             self.devices, self.deadline = self._held(keys, entries, revision)
         held = set(self.devices.values())
-        for udid in sorted(named(words, [entry.get("device") for entry in entries.values()]) - held):
+        for udid in sorted(named(words, [entry.get("device") for entry in entries.values()], root) - held):
             holders = [key for key, entry in entries.items() if str(entry.get("device") or "").upper() == udid]
             whose = f", {' and '.join(holders)}'s device," if holders else ""
             raise Refused(f"the command names {udid}{whose} but the run holds only "

@@ -382,13 +382,15 @@ def named_devices(words, record=None):
             if devices.physical(udid) and udid in named}
 
 
-def lease(keys, owner, words, record=None):
+def lease(keys, owner, words, record=None, root=None):
     """The reservations held here that a build-host run carries, or None when it uses no physical device.
 
     The keys are a bounded run's (devices.BoundedRun): owner holds each one's physical device here
     with no run active, within the window the owner agreed, and every device the command names is one of
     them. The build host reaches the paired devices too, and its own record refuses them, so
-    without a key a command that names a physical device of this record is refused."""
+    without a key a command that names any hardware UDID is refused, whether or not this record
+    holds its device: a run on a device goes through a reservation. Forty hex digits that the Git
+    of root's checkout knows as an object, such as a commit's whole hash, name no device (devices.named)."""
     record = record or devices.Record()
     if not keys:
         named = named_devices(words, record)
@@ -396,10 +398,15 @@ def lease(keys, owner, words, record=None):
             key, udid = next(iter(named.items()))
             raise devices.Refused(f"the command names {key}'s device {udid}, which no --device covers: reserve {key} "
                                   f"here and add --device {key}. Nothing was sent")
+        # A device no entry here holds, which the build host may reach all the same.
+        for udid in sorted(devices.named(words, root=root)):
+            raise devices.Refused(f"the command names the hardware UDID {udid}, which no entry of this Mac's record "
+                                  "holds and no --device covers: reserve its device here under a key and add "
+                                  "--device KEY. Nothing was sent")
         return None
     if not owner:
         raise ValueError(f"name the session whose reservations --device carries: --device-owner, or {devices.OWNER}")
-    return Lease(keys, owner, words, record=record)
+    return Lease(keys, owner, words, record=record, root=root)
 
 
 def carrying(lease, root, host, work, name, send):
@@ -634,7 +641,7 @@ def main(root, config, args):
         extra = args.passed or []
         work = ["run", "--here", *(["--expect", str(args.expect)] if args.expect else []), args.lane,
                 *(["--", *extra] if extra else [])]
-        held = lease(args.device or [], args.device_owner or devices.default_owner(), extra)
+        held = lease(args.device or [], args.device_owner or devices.default_owner(), extra, root=root)
         with processes.forwarding_signals():
             return carrying(held, root, host, work, args.lane, lambda: execute(
                 root, config, host, work, lane=args.lane, arguments=extra, expect=args.expect, lease=held))
@@ -642,7 +649,7 @@ def main(root, config, args):
     command = args.command + ([] if args.passed is None else ["--", *args.passed]) if args.command else args.passed
     if not command: raise ValueError("Name the command: eng remote admit [--exclusive | --model] -- COMMAND")
     kind = ["--exclusive"] if args.exclusive else ["--model"] if args.model else []
-    held = lease(args.device or [], args.device_owner or devices.default_owner(), command)
+    held = lease(args.device or [], args.device_owner or devices.default_owner(), command, root=root)
     work = ["admit", *kind, "--", *command]
     with processes.forwarding_signals():
         return carrying(held, root, host, work, "admit", lambda: execute(root, config, host, work, lease=held))

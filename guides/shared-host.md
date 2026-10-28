@@ -963,8 +963,10 @@ The launcher:
   (`devices.require_window`);
 - refuses, running nothing, a command that names any device but the entry's: a hardware UDID in
   any case, though not a longer run of hex digits such as a SHA-256, or any device the record
-  holds under another key, a simulator among them. It cannot recognize a device's name or its
-  CoreDevice identifier, so name the device by its UDID;
+  holds under another key, a simulator among them. Forty hex digits are an older device's UDID
+  or a commit's whole SHA-1, so 40 that the current directory's Git knows as an object
+  (`git cat-file -e`) name no device; a device's UDID never is one. It cannot recognize a
+  device's name or its CoreDevice identifier, so name the device by its UDID;
 - runs the command, supervised, under a bound: the reservation's remaining time, to the earlier
   of its expected release and the approval's end, less 105 seconds for the run's own end
   (supervision's wait for descendants that outlive the command, then its SIGTERM, settling and
@@ -1054,9 +1056,13 @@ python3 scripts/eng remote run --device iPhone LANE -- ARGUMENTS
   command by END as here, and leaves the recording to the dispatch.
 - The device stays reserved after the run. Preflight, restoration and the release are the
   session's, from this Mac, which reaches the device too.
-- A command, or a lane's arguments, that names a physical device of this record that no
-  `--device` covers is refused, and `eng run` keeps a `buildHost` lane whose arguments name one
-  on this Mac.
+- Without `--device`, a command, or a lane's arguments, that names any hardware UDID is refused,
+  whether or not this record holds its device, so a run on a device goes through a reservation:
+  reserve the device here and add `--device KEY`. As in a bounded run, a simulator's UUID, a
+  longer run of hex digits such as a SHA-256, and 40 hex digits that the Git of the project's
+  checkout knows as an object, such as a commit's whole hash, name no device, with `--device` or
+  without it. `eng run` keeps a `buildHost` lane whose arguments name a physical device of this
+  record on this Mac.
 
 `eng doctor` reports both Macs' records under `deviceRecord`. It is an error for this Mac's record
 to defer physical devices, or for the build host's to hold one or to defer them to another Mac;
