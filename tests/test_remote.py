@@ -1363,6 +1363,39 @@ exec {shlex.quote(real)} "$@"
                     {"schemaVersion": 1, "name": "Example", "lanes": {"lane": lane}}))
                 with self.assertRaises(ValueError): config.load(self.project)
 
+    def test_a_lane_that_stays_here_says_why_and_runs_here(self):
+        heavy = {"command": ["true"], "resource": "heavy"}
+        invalid = {
+            "a lane that stays here gives no reason": {"lane": {**heavy, "here": ""}},
+            "a reason is words": {"lane": {**heavy, "here": True}},
+            "a blank reason": {"lane": {**heavy, "here": "  "}},
+            "a light lane runs here already": {"lane": {"command": ["true"], "here": "GPU goldens"}},
+            "a foreground lane runs here already": {"lane": {**heavy, "foreground": True, "here": "GPU goldens"}},
+            "both ways at once": {"lane": {**heavy, "buildHost": True, "here": "GPU goldens"}},
+            "a group sent there runs a lane that stays": {"lane": {**heavy, "here": "GPU goldens"}, "other": heavy,
+                "group": {"parallel": ["lane", "other"], "resource": "heavy", "buildHost": True}},
+            "a group's own reason": {"other": heavy, "group": {"parallel": ["other"], "resource": "heavy", "here": ""}}}
+        for case, lanes in invalid.items():
+            with self.subTest(case):
+                (self.project / "engineering.json").write_text(json.dumps(
+                    {"schemaVersion": 1, "name": "Example", "lanes": lanes}))
+                with self.assertRaises(ValueError) as refused: config.load(self.project)
+                if case == "a group sent there runs a lane that stays":
+                    self.assertIn("its lane lane stays on this Mac (here)", str(refused.exception))
+        # The positive controls: a lane, and a group, that say why, and a group that runs such a lane.
+        goldens = {"command": [sys.executable, "-c", "print('Ran 1 tests')"], "resource": "heavy",
+                   "minimumTests": 1, "here": "its goldens come from this Mac's GPU"}
+        lanes = {"goldens": goldens, "other": {**heavy, "buildHost": True},
+                 "group": {"parallel": ["goldens", "other"], "resource": "heavy"},
+                 "own": {"parallel": ["other"], "resource": "heavy", "here": "a measurement tied to this Mac"}}
+        (self.project / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example", "lanes": lanes}))
+        self.assertEqual(config.load(self.project)["lanes"]["goldens"]["here"], goldens["here"])
+        # eng run runs it here, as it runs every lane not marked buildHost.
+        status, output, error = self.run_here("goldens")
+        self.assertEqual(status, 0, output + error)
+        self.assertTrue((self.project / ".build/engineering/goldens/run.log").exists())
+        self.assertFalse((self.home / remote.ROOT).exists())
+
     def test_the_toolkit_runs_itself_without_a_second_checkout(self):
         settings = json.loads((self.toolkit / "engineering.json").read_text())
         # Heavy, so the build host's policy refresh fetches the toolkit's origin from its own checkout.

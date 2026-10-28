@@ -68,13 +68,17 @@ def load(root):
             group(name, lane, lanes)
             continue
         if not isinstance(lane, dict) or set(lane) - {"command", "resource", "minimumTests", "timeout", "foreground",
-                                                       "buildHost", "model"}:
+                                                       "buildHost", "here", "model"}:
             raise ValueError(f"Invalid lane {name}")
         for key in ["foreground", "buildHost", "model"]:
             if key in lane and type(lane[key]) is not bool:
                 raise ValueError(f"{name}.{key} must be true or false")
         if lane.get("buildHost") and (lane.get("foreground") or lane.get("resource", "light") == "light"):
             raise ValueError(f"{name}.buildHost needs a heavy or exclusive lane that does not take the screen")
+        if "here" in lane and lane.get("foreground"):
+            raise ValueError(f"{name}.here keeps a lane on this Mac, and a foreground lane, which takes the screen, "
+                             "runs only here already")
+        place(name, lane)
         model(name, lane)
         command = lane.get("command")
         if not isinstance(command, list) or not command or any(not isinstance(x, str) or not x for x in command):
@@ -100,6 +104,22 @@ def load(root):
 RESOURCES = ["light", "heavy", "exclusive"]
 
 
+def place(name, lane):
+    """A heavy or exclusive lane says why it runs only on this Mac with "here", a nonempty reason, such as
+    a physical device or a measurement tied to this Mac's hardware, like goldens rendered on its GPU
+    (guides/shared-host.md, Which Mac runs a lane). eng run runs such a lane here, so it is no buildHost
+    lane, and a light lane runs here already."""
+    if "here" not in lane: return
+    if not isinstance(lane["here"], str) or not lane["here"].strip():
+        raise ValueError(f"{name}.here says why the lane stays on this Mac, such as a physical device or a "
+                         "measurement tied to this Mac's hardware: a nonempty reason")
+    if lane.get("resource", "light") == "light":
+        raise ValueError(f"{name}.here keeps a heavy or exclusive lane on this Mac, and a light lane runs here already")
+    if lane.get("buildHost"):
+        raise ValueError(f"{name} says both that it goes to the build host (buildHost) and why it stays on this Mac "
+                         "(here): keep one")
+
+
 def model(name, lane):
     """A generative-model lane takes one heavy slot and the host's model lock. A light lane is not
     admitted, and exclusive admission holds the model already (guides/shared-host.md)."""
@@ -112,8 +132,8 @@ def group(name, lane, lanes):
     """A lane group names other lanes to run side by side under its one admission, so it needs
     the heaviest resource among them, the model when one of them runs a model, and one lane at a
     time when several do (guides/parallel-tests.md)."""
-    if set(lane) - {"parallel", "jobs", "resource", "buildHost", "model"}:
-        raise ValueError(f"Lane group {name} takes only parallel, jobs, resource, buildHost and model")
+    if set(lane) - {"parallel", "jobs", "resource", "buildHost", "here", "model"}:
+        raise ValueError(f"Lane group {name} takes only parallel, jobs, resource, buildHost, here and model")
     members = lane["parallel"]
     if not isinstance(members, list) or not members or len(set(members)) != len(members) \
             or any(not isinstance(member, str) for member in members):
@@ -145,6 +165,11 @@ def group(name, lane, lanes):
             raise ValueError(f"{name}.{key} must be true or false")
     if lane.get("buildHost") and resource == "light":
         raise ValueError(f"{name}.buildHost needs a heavy or exclusive lane that does not take the screen")
+    staying = [member for member in members if isinstance(lanes[member].get("here"), str)]
+    if lane.get("buildHost") and staying:
+        raise ValueError(f"{name}.buildHost sends the group to the build host, but its lane {staying[0]} stays on this "
+                         "Mac (here), and a group runs its lanes on one Mac: leave buildHost out")
+    place(name, lane)
     model(name, lane)
 
 
