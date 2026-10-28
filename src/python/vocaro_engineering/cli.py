@@ -10,8 +10,9 @@ import shutil
 import subprocess
 import sys
 
-from . import __version__, devices, disk, docs, evidence, github_artifacts, parallel, processes, release, remote, resources, spelling
-from .config import TOOLKIT_ROOT, CAPABILITIES, DEFAULT_TOOLKIT, load, source_identity
+from . import __version__, build_host, devices, disk, docs, evidence, github_artifacts, parallel, processes, release, \
+    remote, resources, spelling
+from .config import TOOLKIT_ROOT, CAPABILITIES, DEFAULT_TOOLKIT, load, source_identity, stays
 from .resources import BUSY, FREE_WAIT
 from .simulators import matrix, pool as simulator_pool
 
@@ -238,20 +239,70 @@ def lane_label(root, config, lane):
     return f"{name} {lane}"
 
 
+def placement(reason):
+    """Where a run ran, for its receipt, so that the share of heavy work each Mac ran can be counted:
+    ranOn, `this Mac` or `build host`, the name of the Mac, and on this Mac hereBecause, why the run
+    ran here rather than on the build host. Work the build host runs for this Mac says so, and names
+    the Mac that sent it (remote.DISPATCHER)."""
+    sender = os.environ.get(remote.DISPATCHER)
+    if sender: return {"ranOn": "build host", "mac": build_host.mac_name(), "dispatchedFrom": sender}
+    return {"ranOn": "this Mac", "mac": build_host.mac_name(), "hereBecause": reason}
+
+
+def admitted_here(stack, name, label, timeout, offered=None, once=False, exclusive=False, model=False):
+    """This Mac's heavy-work admission of the work label names, entered in stack, or the work's status
+    instead: its status on the build host when the build host took it after all, MISCONFIGURED, or
+    BUSY when no admission came, after saying so. Work the build host declined as busy (offered)
+    goes to whichever Mac admits it first, the build host preferred (remote.overflow). Other work
+    waits in this Mac's queue for timeout seconds, or with once FREE_WAIT, and only once declines."""
+    refused = []
+
+    def admit(seconds):
+        try:
+            return stack.enter_context(resources.Admission(label, exclusive=exclusive, timeout=seconds, model=model))
+        except TimeoutError as error:
+            # Admission published nothing, so declining leaves nothing to release.
+            refused.append(error)
+            return None
+    if offered is not None and offered.busy is not None:
+        return remote.overflow(offered, admit, timeout, once)
+    if not once: return stack.enter_context(resources.Admission(label, exclusive=exclusive, timeout=timeout, model=model))
+    admission = admit(FREE_WAIT)
+    if admission is None:
+        print(f"eng: {name} not run: {refused[-1]}", file=sys.stderr)
+        return BUSY
+    return admission
+
+
 def admit(root, args, config=None):
-    # A command always runs here, in the current directory: its paths, devices and products are this
-    # Mac's (guides/shared-host.md, Which Mac runs a lane). eng remote admit sends one on purpose.
+    # A command runs here, in the current directory: its paths, devices and products are this Mac's
+    # (guides/shared-host.md, Which Mac runs a lane). Only --verify, which says that its result is its
+    # log and status, lets eng send it to the build host; eng remote admit sends one on purpose.
     # Without a leading --, argparse collected the command, and a later -- belongs to it.
     command = args.command + ([] if args.passed is None else ["--", *args.passed]) if args.command else args.passed
-    if not command: raise ValueError("Name the command: eng admit [--exclusive | --model] -- COMMAND")
+    if not command: raise ValueError("Name the command: eng admit [--exclusive | --model] [--verify] -- COMMAND")
+    config = config if config is not None else load(root)
+    kind = ["--exclusive"] if args.exclusive else ["--model"] if args.model else []
+    # Nested work runs inside the admission it inherits, here.
+    reason = "eng admit runs here without --verify" if not args.verify else \
+        "nested in the admission it inherits" if os.environ.get(resources.TOKEN) else None
+    offered = None
+    if reason is None:
+        # The build host first, this Mac while the build host is busy (admitted_here).
+        offered = remote.first_command(root, config, command, kind)
+        if not isinstance(offered.status, str): return offered.status
+        reason = offered.status
     # The policy goes to stderr so that stdout carries only the command's own output.
     receipt = {"project": source_identity(root), "toolkit": source_identity(TOOLKIT_ROOT),
                "policy": refresh_policy(root, sys.stderr), "command": command,
-               "directory": str(Path.cwd()), "exclusive": args.exclusive, "model": args.model}
-    with processes.forwarding_signals(), \
-            resources.Admission(" ".join(command), args.exclusive, args.timeout, args.model) as admission:
+               "directory": str(Path.cwd()), "exclusive": args.exclusive, "model": args.model, **placement(reason)}
+    with processes.forwarding_signals(), contextlib.ExitStack() as stack:
+        admission = admitted_here(stack, "the command", " ".join(command), args.timeout, offered, args.if_free,
+                                  args.exclusive, args.model)
+        if isinstance(admission, int): return admission
+        if offered is not None: receipt["hereBecause"] = offered.status
         def work():
-            github_artifacts.configured(root, config if config is not None else load(root))
+            github_artifacts.configured(root, config)
             return processes.supervise(command, cwd=Path.cwd(), on_stop=admission.interrupted)
         return record(root / ".build/engineering/admit", receipt,
                       work)
@@ -275,20 +326,21 @@ def main(argv=None):
     policy = commands.add_parser("policy")
     policy.add_argument("operation", choices=["refresh"])
     run = commands.add_parser("run", usage="%(prog)s [-h] [--expect N] lane [-- ARGUMENTS ...]",
-        help="run a configured lane, admitting a heavy or exclusive one: eng run "
-        "LANE [-- ARGUMENTS], which appends the arguments, such as a test filter, to the lane's command")
+        help="run a configured lane, admitting a heavy or exclusive one, on the build host first and on this Mac "
+        "while the build host is at capacity or cannot be reached, unless the lane says why it stays on this Mac: "
+        "eng run LANE [-- ARGUMENTS], which appends the arguments, such as a test filter, to the lane's command")
     run.add_argument("--expect", type=int, metavar="N", help="require exactly N executed tests; without it, a "
         "run with arguments needs at least one in place of the lane's minimumTests")
     where = run.add_mutually_exclusive_group()
-    where.add_argument("--here", action="store_true", help="run a buildHost lane on this Mac rather than on the "
-        f"build host first; when the build host is misconfigured (exit {remote.MISCONFIGURED}), only with the owner's "
-        "decision")
-    where.add_argument("--build-host-only", action="store_true", help="offer a buildHost lane to the build host, "
-        f"which runs it only if it can start it now, and never run it here: exit {BUSY} when the build host declines "
-        f"it, {remote.MISCONFIGURED} when it is misconfigured, else the lane's status there; for a caller that holds "
-        "or will take its own admission here")
-    run.add_argument("--if-free", action="store_true", help=f"run only if heavy-work admission admits the lane within "
-        f"{FREE_WAIT}s; otherwise exit {BUSY} without running it")
+    where.add_argument("--here", action="store_true", help="run the lane on this Mac rather than on the build host: "
+        "for a build whose products the session uses here, or, with the owner's decision, while the build host is "
+        f"misconfigured (exit {remote.MISCONFIGURED})")
+    where.add_argument("--build-host-only", action="store_true", help="offer the lane to the build host, which runs it "
+        f"only if it can start it now, and never run it here: exit {BUSY} when the build host declines it, cannot be "
+        f"reached or none is configured, {remote.MISCONFIGURED} when it is misconfigured, else the lane's status "
+        "there; for a caller that holds or will take its own admission here")
+    run.add_argument("--if-free", action="store_true", help=f"run only if the build host's heavy-work admission, or "
+        f"else this Mac's, admits the lane within {FREE_WAIT}s; otherwise exit {BUSY} without running it")
     run.add_argument("--serial", action="store_true", help="run a lane group's lanes one after another, on this "
         "Mac: the reference a failure seen only side by side is checked against")
     run.add_argument("lane")
@@ -302,7 +354,8 @@ def main(argv=None):
         "eng unittest [-s START] [-p PATTERN] [-j JOBS] [-v]; eng unittest -h for the rest")
     admission =commands.add_parser("admit", help="run any other heavy command (a build, swift test, xcodebuild "
         "test, a simulator run, a gate suite) through the host's heavy-work admission: eng admit -- COMMAND; add "
-        "--model for a generative-model run, and --exclusive only for work that needs the host to itself")
+        "--model for a generative-model run, --exclusive only for work that needs the host to itself, and --verify "
+        "for a test or build whose result is its log and status, which may then run on the build host")
     kind = admission.add_mutually_exclusive_group()
     kind.add_argument("--exclusive", action="store_true", help="hold every slot, and the model with them, for the "
                       "timed run alone, built and set up beforehand as heavy work: a whole-machine or timing "
@@ -310,6 +363,12 @@ def main(argv=None):
     kind.add_argument("--model", action="store_true", help="hold one slot and the host's model lock, which one "
                       "model run holds at a time: on-device generation, on this Mac or in a simulator, another local "
                       "generative model on the GPU, or Core ML whose compute units include the GPU")
+    admission.add_argument("--verify", action="store_true", help="the command is verification, a test or build whose "
+        "result is its log and exit status and whose products this Mac does not use: send it to the build host, as "
+        "eng run sends a lane, to run in its checkout's directory that matches this one, at HEAD or a snapshot commit; "
+        "it stays here when it names this checkout's path, a simulator or device, or the build host cannot be reached")
+    admission.add_argument("--if-free", action="store_true", help=f"run only if heavy-work admission admits the "
+        f"command within {FREE_WAIT}s, on the build host or here with --verify; otherwise exit {BUSY} without running it")
     admission.add_argument("--timeout", type=float, default=5400, help="seconds to wait for admission (default 5400)")
     admission.add_argument("command", nargs=argparse.REMAINDER, help="the command and its arguments, after --; "
         "it runs in the current directory")
@@ -434,7 +493,7 @@ def main(argv=None):
                                 "or \"pull-request\" for a project that takes changes only by pull request (agents/core.md)")
             warnings += temporary_model_storage(root, config)
             warnings += unlinked_packages(root, config)
-            # A difference between the two Macs, or a build host that cannot be reached, is an error.
+            # A difference between the two Macs is an error; a build host that cannot be reached is unchecked.
             hosts = remote.compare_hosts()
             print(json.dumps({"project": config["name"], "toolkit": str(TOOLKIT_ROOT),
                 "source": source_identity(TOOLKIT_ROOT), "capabilities": config.get("capabilities", []),
@@ -471,22 +530,30 @@ def main(argv=None):
                 raise ValueError(f"{args.lane} runs a group of lanes, which takes no arguments or --expect; "
                                  "pass them to one of its lanes")
             if group is None and args.serial: raise ValueError(f"--serial runs a lane group, and {args.lane} is not one")
+            # Why the lane runs only here, as its configuration says, or None: it goes to the build host.
+            reason = stays(config["lanes"], args.lane)
             if args.build_host_only:
-                if not lane.get("buildHost"):
-                    raise ValueError(f"{args.lane} is not marked buildHost, so --build-host-only cannot offer it to "
-                                     "the build host")
+                if reason is not None:
+                    raise ValueError(f"{args.lane} stays on this Mac ({reason}), so --build-host-only cannot offer it "
+                                     "to the build host")
                 if args.serial: raise ValueError("--serial runs a lane group here, and --build-host-only never does")
                 # The caller runs the lane under its own admission when the build host declines it.
-                return remote.first(root, config, args.lane, extra, args.expect, fallback=False)
+                return remote.first(root, config, args.lane, extra, args.expect, fallback=False).status
             # Nested work runs inside the admission it inherits, here. The serial reference runs here too.
-            if lane.get("buildHost") and not args.here and not args.serial and not os.environ.get(resources.TOKEN):
-                status = remote.first(root, config, args.lane, extra, args.expect)
-                if status is not None: return status
+            reason = reason or ("--here" if args.here else "--serial runs the serial reference here" if args.serial
+                                else "nested in the admission it inherits" if os.environ.get(resources.TOKEN) else None)
+            offered = None
+            if reason is None:
+                # The build host first, this Mac while the build host is busy, and while both are, whichever
+                # admits the lane first (admitted_here).
+                offered = remote.first(root, config, args.lane, extra, args.expect)
+                if not isinstance(offered.status, str): return offered.status
+                reason = offered.status
             resource = lane.get("resource", "light")
             policy_commit = refresh_policy(root) if resource != "light" else None
             directory = root / ".build/engineering" / args.lane
             receipt = {"project": source_identity(root), "toolkit": source_identity(TOOLKIT_ROOT),
-                       "policy": policy_commit}
+                       "policy": policy_commit, **placement(reason)}
             def prepared(work):
                 if resource != "light": github_artifacts.configured(root, config)
                 return work()
@@ -508,15 +575,11 @@ def main(argv=None):
                     if resource == "light": result = execute()
                     else:
                         with contextlib.ExitStack() as stack:
-                            try:
-                                admission = stack.enter_context(resources.Admission(lane_label(root, config, args.lane),
-                                    exclusive=resource == "exclusive", timeout=FREE_WAIT if args.if_free else 5400,
-                                    model=lane.get("model", False)))
-                            except TimeoutError as error:
-                                # Admission published nothing, so declining leaves nothing to release.
-                                if not args.if_free: raise
-                                print(f"eng: {args.lane} not run: {error}", file=sys.stderr)
-                                return BUSY
+                            admission = admitted_here(stack, args.lane, lane_label(root, config, args.lane),
+                                                      remote.OVERFLOW_TIMEOUT, offered, args.if_free,
+                                                      resource == "exclusive", lane.get("model", False))
+                            if isinstance(admission, int): return admission
+                            if offered is not None: receipt["hereBecause"] = offered.status
                             result = execute(admission.interrupted)
             except processes.TimedOut as error:
                 # The lane's timeout is its backstop, so a run a busy host slowed past it is

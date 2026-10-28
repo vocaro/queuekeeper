@@ -309,16 +309,20 @@ Admission reads the load before it admits and cannot account for work that never
 
 ## Build host
 
-The owner's second Mac, the build host, takes heavy work first, and this Mac takes what the build
-host cannot. This Mac is the owner's workstation, busy with work the queue never sees, while the
-build host is otherwise idle and has more memory and disk. It runs work under its own
-heavy-work admission: each host's queue sees that host's load, so the build host is no private
-slot pool. `eng remote` reaches it by the SSH alias `build-host`; `--host` or
-`VOCARO_BUILD_HOST` names another destination.
+The owner's second Mac, the build host, takes heavy work first. This Mac takes what has to run
+here, what the build host cannot run, and heavy work while the build host is at capacity, until
+this Mac is too. This Mac is the owner's workstation, busy with work the queue never sees, while
+the build host is otherwise idle and has more memory and disk. eng, not the session, chooses the
+Mac. The build host runs work under its own heavy-work admission: each
+host's queue sees that host's load, so the build host is no private slot pool. `eng remote`
+reaches it by the SSH alias `build-host`; `--host` or `VOCARO_BUILD_HOST` names another
+destination.
 
 ```sh
-python3 scripts/eng run LANE [-- ARGUMENTS]            # a buildHost lane: the build host first
-python3 scripts/eng run --build-host-only LANE         # a buildHost lane: the build host, never here
+python3 scripts/eng run LANE [-- ARGUMENTS]            # a heavy lane: the build host first, then this Mac
+python3 scripts/eng run --here LANE                    # this Mac
+python3 scripts/eng run --build-host-only LANE         # the build host if it can start it now, never here
+python3 scripts/eng admit --verify -- COMMAND          # a test or build: the build host, as a lane goes
 python3 scripts/eng remote run LANE [-- ARGUMENTS]     # any lane, on the build host
 python3 scripts/eng remote admit [--exclusive | --model] -- COMMAND
 python3 scripts/eng remote passed LANE [--commit REV]
@@ -328,42 +332,95 @@ python3 scripts/eng remote setup --runtimes [--check]     # both Macs' simulator
 
 ### Which Mac runs a lane
 
-A lane marked `"buildHost": true` in engineering.json goes to the build host first. Mark a heavy
-or exclusive lane that needs no device, screen or timing measurement, such as a SwiftPM gate
-suite: those stay on this Mac. A lane that boots simulators qualifies too, once a run there has
-passed with the test counts it has here
-([simulators on the build host](#simulators-on-the-build-host)). Background Mac tests need the
-screen too. The build host's screen is usually locked, and its display does not sleep
-(`displaysleep` 0). A command started over SSH there runs in an audit session of its own and is
-not trusted for accessibility (on the 27.2 beta 26B5091g as on 27.2 26B123), yet the window
-server gives it the console user's session: it opens offscreen windows and reads its own
+Every heavy or exclusive lane in engineering.json goes to the build host unless it says why it
+stays on this Mac, as `"here": "REASON"`, which configuration validation requires to be a
+nonempty reason. A lane says `here` when it needs a physical device, or a measurement tied to
+this Mac's hardware, such as goldens rendered on this Mac's GPU. A foreground lane, which takes the
+screen, runs only here anyway, and a light lane runs where it starts. Simulator lanes and
+background Mac UI lanes go to the build host like the rest, and a lane's first run there is its
+check (the owner's decision, 2026-10-28): counts that differ from this Mac's are a defect to fix,
+not a reason to keep the lane here. A lane group runs its lanes under its one admission on one
+Mac, so a group stays here when it, or one of its lanes, says `here`. `"buildHost": true` once
+marked a lane for the build host; it is the default now and still accepted, while
+`"buildHost": false`, which gives no reason, is refused, as is a lane or group that says both.
+
+The build host's screen is usually locked, and `displaysleep` 0 there does not keep its display
+on behind a lock made by hand. A command started over SSH there runs in an audit session of its
+own and is not trusted for accessibility (on the 27.2 beta 26B5091g as on 27.2 26B123), yet the
+window server gives it the console user's session: it opens offscreen windows and reads its own
 accessibility. On macOS 27.2 (26B123), locked with the display awake, EPUBLib's Mac suite passed
 there twice, case for case with this Mac's unlocked run. What a locked screen or a sleeping
-display has been seen to stop, on which Mac and build, and what is unmeasured, such as display
-sleep there, is in
+display has been seen to stop, on which Mac and build, what wakes a locked screen's display and
+keeps it on, and what is unmeasured, is in
 [lock screen and display sleep](background-mac-testing.md#lock-screen-and-display-sleep).
+A run whose mechanism a lock or a sleeping display stops is unmeasured, never passed
+([shared resources](../agents/core.md#shared-resources)). Behind the lock, the accessibility API
+(`AXUIElement`) vends no offscreen window on the build host's 27.2 either, as on this Mac on 27.0,
+so a test that reads its own tree through it is unmeasured while the build host's screen is
+locked; with its display asleep, a scroll that the display link animates gets no frame.
+Pagepour's Mac lanes, `mac-tests` and `mac-purchases`, read their tree that way, and still go to
+the build host: `here` would not help them, since this Mac locks too, and their tests move to the
+in-process NSAccessibility methods instead
+([Pagepour#123](https://github.com/vocaro/Pagepour/issues/123)).
 
-`eng run` sends a marked lane to the build host, whole or filtered (`eng run LANE -- FILTER`),
-over the working tree as it is: a tree with uncommitted changes or new files goes as a snapshot
-commit ([how a run reaches the build host](#how-a-run-reaches-the-build-host)), so a session's
-iteration over its edits runs there too. The build host runs the lane only if it can start now.
-Its queue must admit the lane within five seconds (`eng run --if-free` there, which exits 75
-without running otherwise), and one of the project's four checkouts there must be free. When the
-build host is only busy, it declines before anything runs, and `eng run` says why and runs the
-lane here, under this Mac's admission as before. It does the same when the toolkit's checkout has
-changes to tracked files, since the toolkit goes only as a commit. A configuration problem stops
-the lane instead, for the owner's decision
-([shared resources](../agents/core.md#shared-resources)):
-when the build host cannot be reached or its name does not resolve, cannot receive the commit or
-run the toolkit, refuses the lane for any reason but being busy, as when its Xcode at this Mac's
-developer directory differs or every checkout holds changes a run left, or fails the project's
-`provision` lane, `eng run` runs nothing here. It says what is wrong and what fixing it takes, and
-exits 78 (`EX_CONFIG`). A run that starts there finishes there: a connection lost during it leaves
-the run unmeasured rather than running the lane a second time here.
+`eng run` sends the lane to the build host, whole or filtered (`eng run LANE -- FILTER`), over
+the working tree as it is: a tree with uncommitted changes or new files goes as a snapshot commit
+([how a run reaches the build host](#how-a-run-reaches-the-build-host)), so a session's iteration
+over its edits runs there too. The build host comes first, and this Mac takes heavy work while
+the build host is at capacity, until it is too (the owner's decision, 2026-10-28):
 
-`eng run --here` keeps a marked lane on this Mac, for instance a build whose products the session
-uses here, or, once the owner has decided so, any lane while the build host is misconfigured.
-Nested work runs inside the admission it inherits, here. `eng run` looks for
+1. The build host runs the lane if it can start it now: its queue admits the lane within five
+   seconds (`eng run --if-free` there, which exits 75 without running otherwise) and one of the
+   project's four checkouts there is free.
+2. When the build host declines it as busy, this Mac's own admission gets the same five seconds,
+   and the lane runs here if it admits it. `eng: trying LANE on this Mac:` says why, and the
+   receipt's `hereBecause` records that the build host was busy. Busy is no configuration problem.
+3. While both are busy, the lane waits for whichever admits it first, the build host preferred.
+   It waits in this Mac's queue, 15 s at first, doubling to 120 s, and between those waits it is
+   offered to the build host again, so the build host is asked at least every two minutes; each
+   offer costs the build host a checkout's claim, the project's `provision` lane and a policy
+   refresh. An offer made again sends nothing a second time: the build host holds the commits
+   after the first. `eng: LANE waits for whichever Mac admits it first:` says so, with what the
+   build host declined it for, and this Mac's admission prints what it waits behind
+   ([heavy-work admission](#heavy-work-admission)). A lane that neither admits within 5,400 s ends
+   with exit 75 (`BUSY`) and runs nowhere.
+
+Each of this Mac's waits that ends unadmitted leaves its queue and is logged as withdrawn, as each
+declined offer is on the build host ([admission log](#admission-log)); an exclusive lane rejoins
+this Mac's exclusive queue at each wait, behind requests that came meanwhile. `eng run --if-free`
+asks each Mac once, five seconds each, and exits 75 when both are busy. The admission logs of
+2026-10-27 hold this overflow before it was the rule: the build host's three `timed-out` requests
+were `eng run --if-free` declining after 5.5 s, and each of those lanes then ran on this Mac
+([vocaro-engineering#49](https://github.com/vocaro/vocaro-engineering/issues/49)).
+
+First `eng run` checks, before it sends anything, that the build host can be reached: its name
+resolves, an address of it answers on its ssh port within 3 s, and `ssh build-host true` finishes
+within 30 s. The build host stays on its own wired network, while the owner takes this Mac to
+others, where the build host's `.local` name does not resolve at all. The check then stops at the
+name, after the 5 s that macOS waits for a multicast DNS answer that never comes (macOS 27.0.1,
+2026-10-27), and sends nothing; an address that does not answer costs 3 s, not ssh's 10 s
+`ConnectTimeout`. When this Mac is away from the build host's network in that way, when nothing
+answers, or when ssh cannot connect, the build host cannot be reached, which is no configuration
+problem: `eng run` prints one line, `eng: running LANE on this Mac:`, with why, and runs the lane
+here, under this Mac's admission, at once (the owner's decision, 2026-10-27). It does the same
+when the build host could not run the lane as it runs here: when the lane's arguments name a
+physical device ([physical devices and the build host](#physical-devices-and-the-build-host)), or
+when the toolkit's checkout has changes to tracked files, since the toolkit goes only as a commit.
+
+A build host that answers but is misconfigured stops the lane instead, for the owner's decision
+([shared resources](../agents/core.md#shared-resources)): when it refuses the login, as for a key
+it does not accept or a host key that changed, its login shell fails, it cannot receive the
+commit or run the toolkit, it refuses the lane for any reason but being busy, as when its Xcode
+at this Mac's developer directory differs or every checkout holds changes a run left, or it fails
+the project's `provision` lane. `eng run` runs nothing here then. It says what is wrong and what
+fixing it takes, and exits 78 (`EX_CONFIG`). A run that was sent finishes there: a connection
+lost once the work was sent leaves the run unmeasured rather than running the lane a second time
+here, since it may still run there.
+
+`eng run --here` keeps a lane on this Mac, for instance a build whose products the session uses
+here, or, once the owner has decided so, any lane while the build host is misconfigured.
+`eng run --serial GROUP`, a group's serial reference, runs here too, and nested work runs inside
+the admission it inherits, here. `eng run` looks for
 the build host only when `VOCARO_BUILD_HOST` names one or `~/.ssh/config` defines the
 `build-host` alias, which `ssh -G` reports; `VOCARO_BUILD_HOST=none` keeps every lane here. A
 lane's results come back to `.build/engineering/remote/LANE/` when it ran on the build host and
@@ -376,43 +433,66 @@ its log counts, so its counts read here; a lane a stop ended has the outcome `st
 status. A run whose connection is lost before it ends brings none back and is unmeasured; they
 stay in the build host's checkout until a later run there replaces them.
 
+Every run's receipt says where it ran. `ranOn` is `this Mac` or `build host` and `mac` names the
+Mac. On this Mac, `hereBecause` says why the run ran here: the lane's own reason, `--here`,
+`--serial`, nested work, no build host configured, a build host that was busy, or why the build
+host could not be reached or could not run it. The build host's own receipt, kept within the receipt that comes back, names the
+Mac that sent the run in `dispatchedFrom`. A receipt holds its lane's last run only. The share of
+heavy work each Mac runs over a period is in their admission logs, one line for each admission:
+`eng admissions` here and on a copy of the build host's log counts each Mac's admissions by lane
+([admission log](#admission-log)).
+
 The build host runs a lane in its own login shell's environment, not this Mac's, so a variable
 set for `eng run` here does not reach it. On 2026-10-27 a variable set for `eng remote admit`
 read as unset there (toolkit `e137d7e`). A run that a variable selects, such as one that points a
 package at a binary built here into an ignored path, takes `--here`, or its lane names the
 setting in its command.
 
-`eng admit -- COMMAND` always runs here. Its command runs in the current directory, often a
+`eng admit -- COMMAND` runs here. Its command runs in the current directory, often a
 subdirectory of the checkout, and names paths relative to it, absolute paths in this checkout or
 in a scratch directory, and often a simulator or device by its identifier, all of which belong to
 this Mac. What it leaves, such as a build's products, DerivedData or a result bundle, is often
 what the session uses next, here, and nothing about a command tells a test from such a build. Run
 on the build host, in another checkout at another path, it would read and write the wrong places.
-Verification belongs in a `buildHost` lane instead, which `eng run LANE -- FILTER` sends over the
-session's edits; `eng remote admit -- COMMAND` sends a command on purpose, to run in the root of
-a build host checkout.
+So the session says which it is: `eng admit --verify -- COMMAND` marks the command as
+verification, a test or build whose result is its log and exit status and whose products this
+Mac does not use. Such a command goes as a lane does, at HEAD or a snapshot commit: to the build
+host first, to this Mac while the build host is busy or cannot be reached, and while both are busy
+to whichever admits it first, within its `--timeout`; `--if-free` asks each once. It runs
+in the directory of the build host's checkout that matches the current one, and its output and
+receipt come back to `.build/engineering/remote/admit/`. eng keeps it here, saying why, when the
+build host could not run it as it runs here: its directory is outside the checkout or one Git
+ignores, which the commit sent lacks, or its words name this checkout's path, a simulator by its
+identifier, which is a member of this Mac's pool, or a physical device of this Mac's record.
+Nested in an admission, it runs inside that admission, here. A test that a lane covers runs best
+as that lane, `eng run LANE -- FILTER`; `eng remote admit -- COMMAND` sends a command on purpose,
+to run in the root of a build host checkout.
 
 A caller that holds or will take its own admission here, such as a push keeper that runs a gate
 under the push's one admission, offers the lane with `eng run --build-host-only LANE` instead:
-`eng run` would run a declined lane under an admission of its own, and the caller would then run
-it a second time. The build host takes it on the same terms, a tree with uncommitted changes as a
-snapshot, so the status is that of the working tree the caller would otherwise run; but it never
-runs here. The command exits 75 (`BUSY`) when the build host declines the lane because none is
-configured or the build host is busy, or when the toolkit's checkout has changes to tracked files,
-and the caller then runs the lane itself. It exits 78 when the build host is misconfigured, which
-stops the caller too, and otherwise with the lane's status there.
+`eng run` would run a lane it could not send under an admission of its own, and the caller would
+then run it a second time. The build host takes it only if it can start it now, a tree with
+uncommitted changes as a snapshot, so the status is that of the working tree the caller would
+otherwise run; but it never runs here. The command exits 75 (`BUSY`) when the build host declines
+the lane because none is configured, it cannot be reached or it is busy, or when the toolkit's
+checkout has changes to tracked files, and the caller then runs the lane itself. It exits 78 when
+the build host is misconfigured, which stops the caller too, and otherwise with the lane's status
+there.
 
 `eng doctor` compares the two Macs and reports a difference as an error: their default Xcodes
 (`xcode-select -p` and its version), the Xcode at this Mac's developer directory, which every run
-there uses, and the simulator runtimes that Xcode lists on each, as well as a build host it cannot
-reach. A build host whose default Xcode differs still runs lanes, since a run selects this Mac's
+there uses, and the simulator runtimes that Xcode lists on each, as well as a build host that
+answers but refuses the login. A build host that cannot be reached, as when this Mac is away from
+its network, is no error, since work then runs here (the owner's decision, 2026-10-28): `unchecked`
+says why it was not compared. A build host whose default Xcode differs still runs lanes, since a run selects this Mac's
 developer directory, but whatever reads its default, such as `ssh build-host xcodebuild -version`
 or a script without `DEVELOPER_DIR`, sees another Xcode. The two Macs keep the same runtimes:
 when one has a runtime the other lacks, the error names the fix, `eng remote setup --runtimes`,
 which brings both to the union of their runtimes and never deletes one
 ([setting up a build host](#setting-up-a-build-host)). Under `buildHost` in the report,
-`unchecked` names what was not compared: a build host's Xcodes and runtimes when it cannot be
-reached, and the whole comparison when no build host is configured. `leftovers` lists the
+`unchecked` names what was not compared: the build host, and why, when it cannot be reached, its
+Xcodes and runtimes when it did not report them, and the whole comparison when no build host is
+configured. `leftovers` lists the
 processes on the build host that runs left running, which are no error
 ([processes left over from runs](#processes-left-over-from-runs)).
 
@@ -423,15 +503,17 @@ answers, after which ssh tries none. First addresses that do not answer, and so 
 connection waiting before a later one does, are an error. When they are all of the other family,
 it names the `AddressFamily` line that skips them
 ([setting up a build host](#setting-up-a-build-host)). One refused at once costs nothing and is no
-error. A name that does not resolve is in `unresolved`, beside the error that the build host
+error. A name that does not resolve is in `unresolved`, beside the unchecked build host that
 cannot be reached, and a build host that ssh reaches through a proxy is not measured.
 
 ### Simulators on the build host
 
 A lane that boots simulators runs on the build host as it does here: headless, from a session
-started over SSH, with the screen locked, and from the build host's own pool. Mark it `buildHost`
-once a run there has passed with the test counts it has here; one that also needs the screen,
-a device or a timing measurement stays here for that.
+started over SSH, with the screen locked, and from the build host's own pool. It goes there like
+any other heavy lane, and its first run there is its check (the owner's decision, 2026-10-28, in
+place of the earlier rule that a simulator lane went there only once a run there had passed with
+this Mac's test counts): counts that differ are a defect to fix there. One that also needs a
+physical device stays here for that.
 
 Each Mac keeps its own [pool](simulator-testing.md#reserved-simulator-pool) and its own
 [device record](#device-reservations). A lane on the build host takes or creates members in the
@@ -493,8 +575,8 @@ Ignored files stay out, as they do from a commit: the build host's checkout has 
 its own. A large untracked file that no `.gitignore` names is sent too, and its copy stays among
 the repository's objects until Git's garbage collection prunes the snapshot, so ignore what the
 build host does not need.
-`eng run`, `eng remote run` and `eng remote admit` all send work this way. The toolkit goes only
-as a commit: a toolkit checkout with changes to tracked files is refused.
+`eng run`, `eng admit --verify`, `eng remote run` and `eng remote admit` all send work this way.
+The toolkit goes only as a commit: a toolkit checkout with changes to tracked files is refused.
 
 `eng remote` takes no slot here. It pushes the commit, and the toolkit commit that runs it, by git
 over SSH and without hooks to bare repositories under
@@ -503,13 +585,15 @@ prepares them first lists the processes earlier runs left running there
 ([processes left over from runs](#processes-left-over-from-runs)). There `build_host.py`,
 sent along and run by the host's own Python, takes one of four persistent checkouts of the
 project, checks the commit out detached with the toolkit beside it, and runs `eng run` or
-`eng admit` in the checkout's root. A checkout keeps its ignored inputs and build products, so
-its next build is warm; `eng remote` waits for one when all four are in use. A project's `provision` lane, when
-it has one, runs first to provision the checkout's ignored inputs, and the work runs only if it
-passes. The work runs with `PYTHONDONTWRITEBYTECODE=1`, so its Python leaves no `__pycache__` in
-the checkout, which a project's `.gitignore` need not name; only a process that sets its own
-environment can still write one. A checkout that a run left with changes stays as it is for
-inspection and is passed over. Once it is read, remove it with
+`eng admit` in the checkout's root, or `eng admit --verify`'s command in the directory that matches
+the one it was sent from. The work it runs knows it runs there for this Mac, whose name
+`VOCARO_DISPATCHED_FROM` gives, and its receipts say so. A checkout keeps its ignored inputs and
+build products, so its next build is warm; `eng remote` waits for one when all four are in use.
+A project's `provision` lane, when it has one, runs first to provision the checkout's ignored
+inputs, and the work runs only if it passes. The work runs with `PYTHONDONTWRITEBYTECODE=1`, so
+its Python leaves no `__pycache__` in the checkout, which a project's `.gitignore` need not name;
+only a process that sets its own environment can still write one. A checkout that a run left with
+changes stays as it is for inspection and is passed over. Once it is read, remove it with
 `git --git-dir ~/Development/build-host/repositories/NAME.git worktree remove --force PATH`.
 
 Output comes back as it is written. The lane's log, the command's output and a receipt land in
@@ -858,7 +942,7 @@ defect of the macOS 27.2 or Xcode 27.2 beta that the restart replaced
 explanation it weighed was a process that a run left running until the restart, and supervision
 cannot see a child that moved to a session of its own and was orphaned between two samples
 ([process supervision](#process-supervision)). So the build host is searched for such processes
-before work is sent there: `eng remote`, and `eng run` for a `buildHost` lane, print what the
+before work is sent there: `eng remote`, and `eng run` for a lane it sends there, print what the
 search finds in the connection that prepares the build host's repositories, before anything is
 pushed, and `eng doctor` lists it under `buildHost`, `leftovers`. A process is listed when it is
 the account's, runs from a build-host checkout (`~/Development/build-host/checkouts`), the
@@ -1117,8 +1201,8 @@ python3 scripts/eng remote run --device iPhone LANE -- ARGUMENTS
   reserve the device here and add `--device KEY`. As in a bounded run, a simulator's UUID, a
   longer run of hex digits such as a SHA-256, and 40 hex digits that the Git of the project's
   checkout knows as an object, such as a commit's whole hash, name no device, with `--device` or
-  without it. `eng run` keeps a `buildHost` lane whose arguments name a physical device of this
-  record on this Mac.
+  without it. `eng run` keeps a lane whose arguments name a physical device of this record on
+  this Mac, and `eng admit --verify` a command that names any hardware UDID.
 
 `eng doctor` reports both Macs' records under `deviceRecord`. It is an error for this Mac's record
 to defer physical devices, or for the build host's to hold one or to defer them to another Mac;
@@ -1126,7 +1210,7 @@ a build host record that defers them to no Mac yet is listed as unchecked until 
 
 The records constrain only work that goes through the toolkit: `xcodebuild` or `devicectl` run
 by hand on the build host, or Xcode there, reaches the devices without them. A lane that needs a
-device is not marked `buildHost`, so sending one to the build host is always an explicit
+device says so with `"here"`, so sending one to the build host is always an explicit
 `eng remote --device`.
 
 ## Attended Mac sessions

@@ -105,10 +105,14 @@ RESOURCES = ["light", "heavy", "exclusive"]
 
 
 def place(name, lane):
-    """A heavy or exclusive lane says why it runs only on this Mac with "here", a nonempty reason, such as
+    """A heavy or exclusive lane goes to the build host unless "here" says why it stays on this Mac, such as
     a physical device or a measurement tied to this Mac's hardware, like goldens rendered on its GPU
-    (guides/shared-host.md, Which Mac runs a lane). eng run runs such a lane here, so it is no buildHost
-    lane, and a light lane runs here already."""
+    (guides/shared-host.md, Which Mac runs a lane). "buildHost": true, which once sent a lane there, is the default and still accepted; false no
+    longer keeps a lane here, since it gives no reason."""
+    if lane.get("buildHost") is False:
+        raise ValueError(f"{name}.buildHost: false no longer keeps a lane on this Mac, which every heavy or exclusive "
+                         "lane leaves for the build host unless it says why it stays: replace it with \"here\": "
+                         "\"REASON\"")
     if "here" not in lane: return
     if not isinstance(lane["here"], str) or not lane["here"].strip():
         raise ValueError(f"{name}.here says why the lane stays on this Mac, such as a physical device or a "
@@ -118,6 +122,20 @@ def place(name, lane):
     if lane.get("buildHost"):
         raise ValueError(f"{name} says both that it goes to the build host (buildHost) and why it stays on this Mac "
                          "(here): keep one")
+
+
+def stays(lanes, name):
+    """Why the lane name runs only on this Mac, as its configuration says, or None for a lane that goes to the
+    build host: a light lane runs where it starts, a foreground lane takes this Mac's screen, and a lane, or
+    a lane of a group, says why with "here". A group runs its lanes under its one admission on one Mac, so a
+    lane of it that stays here keeps the group here."""
+    lane = lanes[name]
+    if lane.get("resource", "light") == "light": return "a light lane runs where it starts"
+    if lane.get("foreground"): return "it takes this Mac's screen"
+    if lane.get("here"): return f"the lane says: {lane['here']}"
+    for member in lane.get("parallel", []):
+        if lanes[member].get("here"): return f"its lane {member} says: {lanes[member]['here']}"
+    return None
 
 
 def model(name, lane):

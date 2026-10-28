@@ -21,11 +21,19 @@ from vocaro_engineering import build_host, cli, config, devices, evidence, proce
 
 # Stands in for ssh: the build host is a home directory on this Mac. Like sshd, it runs the
 # command in that home through a shell, and git's own ssh transport reaches it the same way.
-# FAKE_UNREACHABLE makes it fail as ssh does when the build host's name does not resolve, and
-# FAKE_SSH_SAYS fail with the lines it holds, as ssh says them of a failure of its own.
+# `ssh -G fake` names this Mac's loopback address and FAKE_PORT, where the test listens as the
+# build host's sshd would, or FAKE_HOSTNAME instead; any other name is an alias that ~/.ssh/config
+# does not define, which ssh resolves to itself. FAKE_UNREACHABLE makes it fail as ssh does when
+# the build host's name does not resolve, FAKE_DENIED as it does when the build host refuses the
+# login, and FAKE_SSH_SAYS fail with the lines it holds, as ssh says them of a failure of its own.
 # FAKE_TMPDIR gives the build host a temporary directory of its own, and FAKE_DEVICE_RECORD its
 # device record, which is never this Mac's.
 FAKE_SSH = """#!/bin/sh
+if [ "$1" = -G ]; then
+    if [ "$2" = fake ]; then printf 'hostname %s\\nport %s\\naddressfamily any\\n' "${FAKE_HOSTNAME:-127.0.0.1}" "$FAKE_PORT"
+    else printf 'hostname %s\\nport 22\\n' "$2"; fi
+    exit 0
+fi
 while [ $# -gt 0 ]; do
     case "$1" in
         -o|-p|-i|-l|-F|-J) shift 2 ;;
@@ -35,6 +43,10 @@ while [ $# -gt 0 ]; do
 done
 if [ -n "$FAKE_UNREACHABLE" ]; then
     echo "ssh: Could not resolve hostname $1: nodename nor servname provided, or not known" >&2
+    exit 255
+fi
+if [ -n "$FAKE_DENIED" ]; then
+    echo "someone@$1: Permission denied (publickey,password,keyboard-interactive)." >&2
     exit 255
 fi
 if [ -n "$FAKE_SSH_SAYS" ]; then
@@ -163,7 +175,10 @@ class RemoteTests(unittest.TestCase):
                      "resource": "heavy", "minimumTests": 2, "buildHost": True},
             "failing": {"command": [python, "-c", "print('Ran 2 tests'); raise SystemExit(5)"],
                         "resource": "heavy", "minimumTests": 2, "buildHost": True},
-            "build": {"command": [python, "-c", "print('Ran 1 tests')"], "resource": "heavy"},
+            "build": {"command": [python, "-c", "print('Ran 1 tests')"], "resource": "heavy",
+                      "here": "its goldens come from this Mac's GPU"},
+            # Stays here because one of its lanes does.
+            "local-pair": {"parallel": ["left", "build"], "resource": "heavy"},
             # Lane groups and their lanes: right's count names a skip, overdue outlasts its timeout,
             # and napper and dozer say they have started, then wait to be stopped.
             "left": {"command": [python, "-c", "print('Ran 2 tests')"], "resource": "heavy", "minimumTests": 2},
@@ -198,6 +213,9 @@ class RemoteTests(unittest.TestCase):
         (self.project / "engineering.json").write_text(json.dumps(
             {"schemaVersion": 1, "name": "Example", "lanes": lanes}, indent=2))
         (self.project / ".gitignore").write_text(".build/\n")
+        # A directory of the checkout's own, for a command that runs in one.
+        (self.project / "pkg").mkdir()
+        (self.project / "pkg/README.md").write_text("a package\n")
         git(base, "init", "-q", str(self.project))
         self.commit = commit_all(self.project)
         # Each Mac's device record, where a restart does not empty it, which the record requires.
@@ -205,7 +223,14 @@ class RemoteTests(unittest.TestCase):
         self.addCleanup(records.cleanup)
         self.record_here = Path(records.name) / "here" / "device-handoff.json"
         self.record_there = Path(records.name) / "there" / "device-handoff.json"
+        # The build host's ssh port, which the check before each dispatch connects to. The kernel
+        # completes each connection into the backlog, so nothing needs to accept it.
+        self.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.listener.bind(("127.0.0.1", 0))
+        self.listener.listen(128)
+        self.addCleanup(self.listener.close)
         self.environment = patch.dict(os.environ, {
+            "FAKE_PORT": str(self.listener.getsockname()[1]),
             "PATH": f"{tools}{os.pathsep}{os.environ['PATH']}", "FAKE_HOME": str(self.home),
             "FAKE_SHELL": str(tools / "login-shell"), "HEAVY_SLOT_DIR": str(base / "slots"),
             "SW_GATE_LOCK_FILE": str(base / "gate"), "HEAVY_POLL_SECONDS": "0.01", "VOCARO_BUILD_HOST": "fake",
@@ -813,6 +838,47 @@ class RemoteTests(unittest.TestCase):
         self.assertFalse((self.project / ".build/engineering/gate").exists())
         self.assertEqual(self.eng("remote", "passed", "gate")[0], 0)
 
+    def test_every_heavy_lane_goes_to_the_build_host_unless_it_says_why_and_each_receipt_says_where_it_ran(self):
+        # check is heavy and says nothing of the build host: it goes there, where its provision lane runs first.
+        status, output, error = self.run_here("check")
+        self.assertEqual(status, 0, output + error)
+        self.assertTrue((self.checkout(0) / ".build/provisioned").exists())
+        self.assertFalse((self.project / ".build/engineering/check").exists())
+        receipt = json.loads((self.project / ".build/engineering/remote/check/source.json").read_text())
+        self.assertEqual((receipt["ranOn"], receipt["mac"], receipt["host"]), ("build host", build_host.mac_name(), "fake"))
+        # The build host's own receipt says so too, and names the Mac that sent the run.
+        there = receipt["result"]["receipt"]
+        self.assertEqual((there["ranOn"], there["dispatchedFrom"]), ("build host", build_host.mac_name()))
+        self.assertNotIn("hereBecause", there)
+        # build says why it stays here, and a group that runs it stays with it; a light lane runs where it starts.
+        for lane, because in [("build", "the lane says: its goldens come from this Mac's GPU"),
+                              ("local-pair", "its lane build says: its goldens come from this Mac's GPU"),
+                              ("fail", "a light lane runs where it starts")]:
+            with self.subTest(lane):
+                status, output, error = self.run_here(lane)
+                self.assertEqual(status, 3 if lane == "fail" else 0, output + error)
+                receipt = json.loads((self.project / ".build/engineering" / lane / "source.json").read_text())
+                self.assertEqual((receipt["ranOn"], receipt["mac"], receipt["hereBecause"]),
+                                 ("this Mac", build_host.mac_name(), because))
+                self.assertFalse((self.project / ".build/engineering/remote" / lane).exists())
+        # The negative control: buildHost: true, which once sent a lane there, still does.
+        self.assertTrue(json.loads((self.project / "engineering.json").read_text())["lanes"]["gate"]["buildHost"])
+        self.assertEqual(self.run_here("gate")[0], 0)
+        self.assertEqual(json.loads((self.project / ".build/engineering/remote/gate/source.json").read_text())["ranOn"],
+                         "build host")
+
+    def test_serial_runs_a_group_here_as_the_serial_reference(self):
+        status, output, error = self.run_here("--serial", "pair")
+        self.assertEqual(status, 0, output + error)
+        receipt = json.loads((self.project / ".build/engineering/pair/source.json").read_text())
+        self.assertEqual((receipt["ranOn"], receipt["hereBecause"], receipt["jobs"]),
+                         ("this Mac", "--serial runs the serial reference here", 1))
+        self.assertFalse((self.project / ".build/engineering/remote/pair").exists())
+        self.assertFalse((self.home / remote.ROOT).exists())
+        # The negative control: without --serial the group goes to the build host.
+        self.assertEqual(self.run_here("pair")[0], 0)
+        self.assertTrue((self.project / ".build/engineering/remote/pair/source.json").exists())
+
     def lane_files(self, group, lane, place=None):
         """A lane's log and receipt among its group's results: here, or in the directory place names."""
         lanes = (place or self.project / ".build/engineering/remote" / group) / "lanes"
@@ -976,14 +1042,14 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual(self.eng("remote", "passed", "turns")[0], 0)
 
     @contextlib.contextmanager
-    def busy_build_host(self):
-        """Exclusive work that holds every slot of the build host's queue while the block runs."""
+    def busy_mac(self, slots="FAKE_SLOTS", gate="FAKE_GATE"):
+        """Exclusive work that holds every slot of a Mac's queue while the block runs: the build host's,
+        or with HEAVY_SLOT_DIR and SW_GATE_LOCK_FILE this Mac's."""
         holder = subprocess.Popen([sys.executable, "-m", "vocaro_engineering.resources", "--exclusive", "--",
-                                   sys.executable, "-c", "print('held', flush=True); import time; time.sleep(120)"],
+                                   sys.executable, "-c", "print('held', flush=True); import time; time.sleep(300)"],
                                   stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, env={
                                       **os.environ, "PYTHONPATH": str(config.TOOLKIT_ROOT / "src/python"),
-                                      "HEAVY_SLOT_DIR": os.environ["FAKE_SLOTS"],
-                                      "SW_GATE_LOCK_FILE": os.environ["FAKE_GATE"]})
+                                      "HEAVY_SLOT_DIR": os.environ[slots], "SW_GATE_LOCK_FILE": os.environ[gate]})
         try:
             self.assertEqual(holder.stdout.readline().strip(), "held")
             yield
@@ -992,38 +1058,256 @@ class RemoteTests(unittest.TestCase):
             holder.wait(timeout=60)
             holder.stdout.close()
 
-    def test_a_busy_build_host_sends_the_lane_back_here(self):
+    def busy_build_host(self):
+        return self.busy_mac()
+
+    def busy_here(self):
+        return self.busy_mac("HEAVY_SLOT_DIR", "SW_GATE_LOCK_FILE")
+
+    def waits_there(self, lane, phrase, release, hold=0):
+        """Run `eng run LANE` from a dispatcher of its own, call release once its output has said phrase
+        and the dispatcher has gone on waiting for hold seconds more, and return its status and output
+        once it has ended."""
+        log = Path(self.temp.name) / "dispatch.log"
+        with log.open("w") as output:
+            dispatcher = subprocess.Popen([sys.executable, str(self.toolkit / "bin/eng"), "--project", str(self.project),
+                                           "run", lane], stdout=output, stderr=subprocess.STDOUT)
+        try:
+            # A bound for a busy host, not a measure: the phrase ends the wait.
+            deadline = time.monotonic() + 120
+            while phrase not in log.read_text() and dispatcher.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.1)
+            self.assertIn(phrase, log.read_text())
+            time.sleep(hold)
+            self.assertIsNone(dispatcher.poll(), log.read_text())
+            self.assertFalse((self.project / ".build/engineering" / lane).exists(), log.read_text())
+            release()
+            dispatcher.wait(timeout=300)
+        finally:
+            if dispatcher.poll() is None:
+                dispatcher.kill()
+                dispatcher.wait()
+        return dispatcher.returncode, log.read_text()
+
+    def ran_here(self, lane="gate"):
+        receipt = json.loads((self.project / ".build/engineering" / lane / "source.json").read_text())
+        self.assertIn(f"Ran 2 tests in {self.project.resolve()}",
+                      (self.project / ".build/engineering" / lane / "run.log").read_text())
+        return receipt
+
+    def test_a_busy_build_host_sends_the_lane_to_this_mac_when_this_mac_admits_it(self):
         with self.busy_build_host():
             status, output, error = self.run_here("gate")
         self.assertEqual(status, 0, output + error)
-        self.assertIn("running gate on this Mac: fake did not take it: its heavy-work queue cannot take the lane now",
-                      error)
-        self.assertIn(f"Ran 2 tests in {self.project.resolve()}",
-                      (self.project / ".build/engineering/gate/run.log").read_text())
-        # Nothing ran there, so no result of the build host's is recorded.
+        busy = "the build host is busy: fake did not take it: its heavy-work queue cannot take the lane now"
+        self.assertIn(f"eng: trying gate on this Mac: {busy}", error)
+        receipt = self.ran_here()
+        self.assertEqual((receipt["ranOn"], receipt["hereBecause"]), ("this Mac", busy))
+        # It was offered there and declined: no result of the build host's is kept.
         self.assertFalse((self.project / ".build/engineering/remote/gate").exists())
-        self.assertEqual(self.eng("remote", "passed", "gate")[0], 1)
-
-    @patch.object(remote, "CHECKOUTS", 1)
-    def test_a_build_host_with_every_checkout_in_use_sends_the_lane_back_here(self):
+        # A build host whose every checkout is in use is busy too.
+        shutil.rmtree(self.project / ".build/engineering/gate")
         base = self.home / remote.ROOT / "checkouts/example"
-        base.mkdir(parents=True)
-        lock = os.open(base / "0.lock", os.O_RDWR | os.O_CREAT, 0o644)
+        base.mkdir(parents=True, exist_ok=True)
+        locks = [os.open(base / f"{slot}.lock", os.O_RDWR | os.O_CREAT, 0o644) for slot in range(remote.CHECKOUTS)]
         try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            for lock in locks: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             status, output, error = self.run_here("gate")
         finally:
-            os.close(lock)
+            for lock in locks: os.close(lock)
         self.assertEqual(status, 0, output + error)
-        self.assertIn("running gate on this Mac: fake did not take it: every checkout of example is in use", error)
+        self.assertIn("eng: trying gate on this Mac: the build host is busy: fake did not take it: every checkout of "
+                      "example is in use", error)
+        self.assertIn("every checkout of example is in use", self.ran_here()["hereBecause"])
+        # The negative control: free, the build host takes it.
+        shutil.rmtree(self.project / ".build/engineering/gate")
+        self.assertEqual(self.run_here("gate")[0], 0)
+        self.assertFalse((self.project / ".build/engineering/gate").exists())
+        self.assertTrue((self.project / ".build/engineering/remote/gate/source.json").exists())
+
+    def test_while_both_macs_are_busy_the_lane_runs_on_whichever_admits_it_first(self):
+        waiting = "waits for whichever Mac admits it first"
+        with self.subTest("the build host"), contextlib.ExitStack() as here, contextlib.ExitStack() as there:
+            here.enter_context(self.busy_here())
+            there.enter_context(self.busy_build_host())
+            status, output = self.waits_there("gate", waiting, there.close)
+            self.assertEqual(status, 0, output)
+            self.assertIn(f"Ran 2 tests in {self.checkout(0).resolve()}",
+                          (self.project / ".build/engineering/remote/gate/run.log").read_text())
+            self.assertFalse((self.project / ".build/engineering/gate").exists())
+            # Offered again without a second snapshot, preparing connection or push.
+            self.assertEqual(output.count("remote: sending "), 1, output)
+            self.assertIn(" to fake again", output)
+        shutil.rmtree(self.project / ".build/engineering/remote/gate")
+        with self.subTest("this Mac"), contextlib.ExitStack() as here, contextlib.ExitStack() as there:
+            here.enter_context(self.busy_here())
+            there.enter_context(self.busy_build_host())
+            status, output = self.waits_there("gate", waiting, here.close)
+            self.assertEqual(status, 0, output)
+            receipt = self.ran_here()
+            self.assertTrue(receipt["hereBecause"].startswith("the build host is busy: "), receipt)
+            self.assertFalse((self.project / ".build/engineering/remote/gate").exists())
+
+    @patch.object(remote, "OVERFLOW_TIMEOUT", 8)
+    def test_a_lane_that_neither_mac_admits_in_time_runs_nowhere_and_if_free_asks_each_once(self):
+        with self.busy_here(), self.busy_build_host():
+            started = time.monotonic()
+            status, output, error = self.run_here("gate")
+            waited = time.monotonic() - started
+            self.assertEqual(status, resources.BUSY, output + error)
+            self.assertIn("eng: gate not run: neither Mac admitted it in 8s; the build host is busy: fake did not take "
+                          "it", error)
+            self.assertIn("waits for whichever Mac admits it first", error)
+            self.assertGreaterEqual(waited, 8)
+            status, output, error = self.run_here("--if-free", "gate")
+            self.assertEqual(status, resources.BUSY, output + error)
+            self.assertIn("eng: gate not run: neither Mac admitted it now", error)
+            self.assertNotIn(" again", error)
+        for place in (".build/engineering/gate", ".build/engineering/remote/gate"):
+            self.assertFalse((self.project / place).exists())
+
+    def offline(self):
+        """Each way the build host cannot be reached, as a function that brings it about in an ExitStack,
+        with what eng says of it."""
+        def unresolved(stack):
+            # RFC 6761: an .invalid name never resolves.
+            stack.enter_context(patch.dict(os.environ, {"FAKE_HOSTNAME": "fake.invalid"}))
+
+        def silent(stack):
+            # A port nothing listens on refuses at once, as a build host without sshd running does.
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as closed:
+                closed.bind(("127.0.0.1", 0))
+                port = closed.getsockname()[1]
+            stack.enter_context(patch.dict(os.environ, {"FAKE_PORT": str(port)}))
+
+        def ssh(stack):
+            # The check's connection answered, but ssh itself could not resolve the name.
+            stack.enter_context(patch.dict(os.environ, {"FAKE_UNREACHABLE": "1"}))
+
+        return [("unresolved", unresolved, "fake cannot be reached: ssh: Could not resolve hostname fake.invalid"),
+                ("silent", silent, "fake cannot be reached: nothing answered on port"),
+                ("ssh", ssh, "fake cannot be reached: ssh: Could not resolve hostname fake")]
+
+    def test_a_build_host_that_cannot_be_reached_runs_the_lane_here_and_its_receipt_says_why(self):
+        local = self.project / ".build/engineering/gate"
+        for name, take_offline, said in self.offline():
+            with self.subTest(name), contextlib.ExitStack() as stack:
+                shutil.rmtree(local, ignore_errors=True)
+                take_offline(stack)
+                started = time.monotonic()
+                status, output, error = self.run_here("gate")
+                self.assertEqual(status, 0, output + error)
+                # One line says why, and the check took seconds, not ConnectTimeout for each address.
+                lines = [line for line in error.splitlines() if line.startswith("eng: running gate on this Mac: ")]
+                self.assertEqual(len(lines), 1, error)
+                self.assertIn(said, lines[0])
+                self.assertNotIn("not run", error)
+                self.assertLess(time.monotonic() - started, 60)
+                self.assertIn(f"Ran 2 tests in {self.project.resolve()}", (local / "run.log").read_text())
+                receipt = json.loads((local / "source.json").read_text())
+                self.assertEqual(receipt["ranOn"], "this Mac")
+                self.assertIn(said, receipt["hereBecause"])
+                # Nothing was sent.
+                self.assertFalse((self.home / remote.ROOT / "checkouts").exists())
+        # The negative control: reached, it goes there.
+        self.assertEqual(self.run_here("gate")[0], 0)
+        self.assertTrue((self.home / remote.ROOT / "checkouts").exists())
+
+    def test_a_build_host_that_goes_offline_after_the_check_runs_the_lane_here_while_nothing_was_sent(self):
+        # ssh fails at the connection that prepares the build host, before anything is sent.
+        with patch.object(remote, "reachable"), patch.dict(os.environ, {"FAKE_UNREACHABLE": "1"}):
+            status, output, error = self.run_here("gate")
+        self.assertEqual(status, 0, output + error)
+        self.assertIn("eng: running gate on this Mac: fake cannot be reached: ssh: Could not resolve hostname fake", error)
         self.assertIn(f"Ran 2 tests in {self.project.resolve()}",
                       (self.project / ".build/engineering/gate/run.log").read_text())
+
+    def test_a_run_whose_connection_is_lost_after_it_was_sent_is_unmeasured_and_never_runs_here(self):
+        marker = self.checkout(0) / ".build/slow.pid"
+        real, ssh = self.tools / "fake-ssh", self.tools / "ssh"
+        ssh.rename(real)
+        ssh.write_text(DROPPING_SSH)
+        ssh.chmod(0o755)
+        (self.tools / "drop.py").write_text(DROPPER)
+        variables = {"FAKE_SSH_REAL": str(real), "FAKE_DROPPER": str(self.tools / "drop.py"),
+                     "FAKE_PYTHON": sys.executable, "FAKE_DROP": str(marker)}
+        lane = runner = None
+        try:
+            with patch.dict(os.environ, variables):
+                status, output, error = self.run_here("slow")
+            lane = int(marker.read_text())
+            # build_host.py, which claimed the checkout and ends once the run there has left its admission.
+            runner = json.loads((self.home / remote.ROOT / "checkouts/example/0.lock").read_text())["pid"]
+            self.assertEqual(status, 2, output + error)
+            self.assertIn("eng: No result from fake (ssh exited 255: Timeout, server fake not responding.)", error)
+            self.assertIn("The run is unmeasured", error)
+            self.assertNotIn("running slow on this Mac", error)
+            self.assertFalse((self.project / ".build/engineering/slow").exists())
+            # Its end of the connection closed, so the build host stopped the run.
+            for pid in (lane, runner):
+                deadline = time.monotonic() + 60
+                while time.monotonic() < deadline:
+                    try: os.kill(pid, 0)
+                    except ProcessLookupError: break
+                    time.sleep(0.1)
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(pid, 0)
+        finally:
+            for pid in (lane, runner):
+                if pid is not None:
+                    with contextlib.suppress(ProcessLookupError): os.kill(pid, signal.SIGKILL)
+
+    def test_the_check_before_a_dispatch_tells_an_offline_build_host_from_a_misconfigured_one(self):
+        reached = {"hostname": "fake.local", "port": 22, "addressFamily": "any",
+                   "addresses": [{"address": "192.0.2.7", "seconds": 0.004, "outcome": "connected"}]}
+        silent = {**reached, "addresses": [{"address": "fe80::1%en0", "seconds": 3.0, "outcome": "no answer in 3 s"},
+                                           {"address": "192.0.2.7", "seconds": 0.001, "outcome": "Connection refused"}]}
+        done = lambda status, said="": subprocess.CompletedProcess([], status, "", said)
+        cases = [
+            ({**reached, "addresses": None, "unresolved": "[Errno 8] nodename nor servname provided"}, None,
+             remote.Unreachable, "Could not resolve hostname fake.local: [Errno 8]"),
+            (silent, None, remote.Unreachable, "nothing answered on port 22 of fake.local (fe80::1%en0: no answer in 3 s; "
+                                               "192.0.2.7: Connection refused)"),
+            (reached, done(255, "ssh: connect to host fake.local port 22: Operation timed out\n"), remote.Unreachable,
+             "Operation timed out"),
+            (reached, subprocess.TimeoutExpired(["ssh"], remote.REACH_SECONDS), remote.Unreachable,
+             f"`ssh fake true` did not finish in {remote.REACH_SECONDS}s"),
+            (reached, done(255, "someone@fake.local: Permission denied (publickey).\n"), remote.Misconfigured,
+             "ssh reached fake but could not log in: someone@fake.local: Permission denied"),
+            (reached, done(255, "Host key verification failed.\n"), remote.Misconfigured, "could not log in"),
+            (reached, done(1, "zsh: no such file or directory: /opt/homebrew/bin/brew\n"), remote.Misconfigured,
+             "fake's login shell could not run `true` (exit 1)"),
+            # A host reached through a proxy is checked by ssh alone.
+            ({"hostname": "fake.local", "port": 22, "addressFamily": "any", "unchecked": "through a proxy"}, done(0),
+             None, None),
+            (reached, done(0), None, None)]
+        for found, checked, kind, said in cases:
+            with self.subTest(found=found, checked=checked), \
+                    patch.object(remote, "connection", return_value=found) as measured, \
+                    patch.object(remote, "ssh", side_effect=[checked]) as ssh:
+                if kind is None:
+                    remote.reachable("fake")
+                else:
+                    with self.assertRaises(kind) as raised:
+                        remote.reachable("fake")
+                    self.assertIn(said, str(raised.exception))
+                    # A misconfiguration is never taken for an offline build host, nor the reverse.
+                    self.assertEqual(isinstance(raised.exception, remote.Misconfigured), kind is remote.Misconfigured)
+            # Each address has REACH_TIMEOUT, and ssh REACH_SECONDS, not ConnectTimeout for each address.
+            self.assertEqual(measured.call_args.args, ("fake", remote.REACH_TIMEOUT))
+            if ssh.called: self.assertEqual(ssh.call_args.kwargs["timeout"], remote.REACH_SECONDS)
+        # After the work was sent, only a line that says ssh never connected is an offline build host.
+        self.assertIsInstance(remote.ssh_failure("fake", "Timeout, server fake not responding.", sent=True),
+                              remote.Misconfigured)
+        self.assertIsInstance(remote.ssh_failure("fake", "Timeout, server fake not responding."), remote.Unreachable)
+        self.assertIsInstance(remote.ssh_failure("fake", "ssh: connect to host fake port 22: No route to host",
+                                                 sent=True), remote.Unreachable)
 
     def misconfigurations(self):
         """Each configuration problem of the build host's that stops a lane, as a function that
         brings it about in an ExitStack, with what eng says of it."""
-        def unreachable(stack):
-            stack.enter_context(patch.dict(os.environ, {"FAKE_UNREACHABLE": "1"}))
+        def login(stack):
+            stack.enter_context(patch.dict(os.environ, {"FAKE_DENIED": "1"}))
 
         def xcode(stack):
             # The build host has nothing at this Mac's developer directory.
@@ -1046,9 +1330,9 @@ class RemoteTests(unittest.TestCase):
             (self.project / "engineering.json").write_text(json.dumps(settings, indent=2))
             commit_all(self.project)
 
-        return [("unreachable", unreachable, ["fake cannot be reached: ssh: Could not resolve hostname fake",
-                                              "until `ssh fake true` succeeds"]),
-                ("xcode", xcode, ["fake refused it: the Xcode at", "not the dispatcher's Xcode 99.0 Build version 99A1",
+        return [("login", login, ["ssh reached fake but could not log in: someone@fake: Permission denied",
+                                  "authorized_keys, until `ssh fake true` succeeds"]),
+                ("xcode", xcode,["fake refused it: the Xcode at", "not the dispatcher's Xcode 99.0 Build version 99A1",
                                   "install this Mac's Xcode at that path on the build host"]),
                 ("toolkit", toolkit, ["fake could not run the toolkit", "command not found: python3",
                                       "eng remote setup"]),
@@ -1118,15 +1402,21 @@ exec {shlex.quote(real)} "$@"
         with self.busy_build_host():
             status, output, error = self.run_here("--build-host-only", "gate")
         self.assertEqual(status, resources.BUSY, output + error)
-        self.assertIn("eng: gate not run: fake did not take it: its heavy-work queue cannot take the lane now", error)
+        self.assertIn("eng: gate not run: the build host is busy: fake did not take it: its heavy-work queue cannot "
+                      "take the lane now", error)
         with patch.dict(os.environ, {"VOCARO_BUILD_HOST": "none"}):
             status, output, error = self.run_here("--build-host-only", "gate")
         self.assertEqual(status, resources.BUSY, output + error)
         self.assertIn("eng: gate not run: no build host is configured", error)
+        # An offline build host declines too, and the caller runs the lane here itself.
         with patch.dict(os.environ, {"FAKE_UNREACHABLE": "1"}):
             status, output, error = self.run_here("--build-host-only", "gate")
+        self.assertEqual(status, resources.BUSY, output + error)
+        self.assertIn("eng: gate not run: fake cannot be reached", error)
+        with patch.dict(os.environ, {"FAKE_DENIED": "1"}):
+            status, output, error = self.run_here("--build-host-only", "gate")
         self.assertEqual(status, remote.MISCONFIGURED, output + error)
-        self.assertIn("fake cannot be reached", error)
+        self.assertIn("ssh reached fake but could not log in", error)
         (self.toolkit / "engineering.json").write_text((self.toolkit / "engineering.json").read_text() + "\n")
         status, output, error = self.run_here("--build-host-only", "gate")
         self.assertEqual(status, resources.BUSY, output + error)
@@ -1136,29 +1426,35 @@ exec {shlex.quote(real)} "$@"
         self.assertFalse((self.project / ".build/engineering/gate").exists())
         self.assertFalse((self.project / ".build/engineering/remote/gate").exists())
         # A lane the build host never takes, and --here, contradict the mode.
-        status, _output, error = self.run_here("--build-host-only", "build")
-        self.assertEqual(status, 2)
-        self.assertIn("build is not marked buildHost", error)
+        for lane, because in [("build", "the lane says: its goldens"), ("local-pair", "its lane build says"),
+                              ("fail", "a light lane runs where it starts")]:
+            status, _output, error = self.run_here("--build-host-only", lane)
+            self.assertEqual(status, 2)
+            self.assertIn(f"{lane} stays on this Mac ({because}", error)
         with self.assertRaises(SystemExit):
             self.run_here("--build-host-only", "--here", "gate")
 
-    def test_a_lane_stays_here_when_asked_unmarked_without_a_build_host_or_with_a_changed_toolkit(self):
+    def test_a_lane_stays_here_when_asked_when_it_says_why_without_a_build_host_or_with_a_changed_toolkit(self):
         # Uncommitted work would go as a snapshot, so none of these stays here for want of a commit.
         (self.project / "notes.txt").write_text("uncommitted\n")
+        receipt = lambda: json.loads((self.project / ".build/engineering/gate/source.json").read_text())
         for arguments in [["--here", "gate"], ["build"]]:
             with self.subTest(arguments):
                 self.assertEqual(self.run_here(*arguments)[0], 0)
+        self.assertEqual((receipt()["ranOn"], receipt()["hereBecause"]), ("this Mac", "--here"))
         for setting in [{"VOCARO_BUILD_HOST": "none"}, {}]:
             with self.subTest(setting), patch.dict(os.environ, setting):
                 # Without VOCARO_BUILD_HOST, `ssh -G` names no build-host alias.
                 if not setting: del os.environ["VOCARO_BUILD_HOST"]
                 self.assertEqual(self.run_here("gate")[0], 0)
+                self.assertEqual(receipt()["hereBecause"], "no build host is configured")
         self.assertFalse((self.home / remote.ROOT).exists())
         (self.toolkit / "engineering.json").write_text((self.toolkit / "engineering.json").read_text() + "\n")
         status, _output, error = self.run_here("gate")
         self.assertEqual(status, 0)
         self.assertIn(f"running gate on this Mac: {self.toolkit.resolve()} has changes", error)
         self.assertIn("commit them first", error)
+        self.assertIn("commit them first", receipt()["hereBecause"])
         self.assertFalse((self.home / remote.ROOT / "checkouts").exists())
 
     def work_in_progress(self, checkout=None):
@@ -1281,22 +1577,21 @@ exec {shlex.quote(real)} "$@"
         # The session's own git, with its own index, reads the edit as the snapshot did.
         self.assertEqual(git(self.project, "diff", "--name-only"), "edited.txt")
 
-    def test_uncommitted_work_comes_back_here_from_a_busy_build_host_and_stops_for_a_misconfigured_one(self):
+    def test_uncommitted_work_runs_here_when_the_build_host_cannot_be_reached_and_stops_for_a_misconfigured_one(self):
         self.work_in_progress()
         before = self.session()
-        with self.busy_build_host():
+        with patch.dict(os.environ, {"FAKE_UNREACHABLE": "1"}):
             status, output, error = self.run_here("gate")
         self.assertEqual(status, 0, output + error)
-        self.assertIn("running gate on this Mac: fake did not take it: its heavy-work queue cannot take the lane now",
-                      error)
+        self.assertIn("running gate on this Mac: fake cannot be reached", error)
         self.assertIn(f"Ran 2 tests in {self.project.resolve()}",
                       (self.project / ".build/engineering/gate/run.log").read_text())
         self.assertFalse((self.project / ".build/engineering/remote/gate").exists())
         shutil.rmtree(self.project / ".build/engineering/gate")
-        with patch.dict(os.environ, {"FAKE_UNREACHABLE": "1"}):
+        with patch.dict(os.environ, {"FAKE_DENIED": "1"}):
             status, output, error = self.run_here("gate")
         self.assertEqual(status, remote.MISCONFIGURED, output + error)
-        self.assertIn("fake cannot be reached", error)
+        self.assertIn("ssh reached fake but could not log in", error)
         self.assertFalse((self.project / ".build/engineering/gate").exists())
         self.assertEqual(self.session(), before)
 
@@ -1310,7 +1605,7 @@ exec {shlex.quote(real)} "$@"
         with self.busy_build_host():
             status, output, error = self.run_here("--build-host-only", "gate")
         self.assertEqual(status, resources.BUSY, output + error)
-        self.assertIn("eng: gate not run: fake did not take it", error)
+        self.assertIn("eng: gate not run: the build host is busy: fake did not take it", error)
         self.assertFalse((self.project / ".build/engineering/gate").exists())
 
     def test_eng_remote_run_and_admit_send_uncommitted_work_as_a_snapshot(self):
@@ -1345,7 +1640,7 @@ exec {shlex.quote(real)} "$@"
         self.assertEqual(self.session(linked), before)
         self.assertEqual(git(linked, "show", f"{commit}:edited.txt"), "edited")
         self.assertEqual(git(linked, "ls-tree", "-r", "--name-only", commit).split(),
-                         [".gitignore", "edited.txt", "engineering.json", "new.txt"])
+                         [".gitignore", "edited.txt", "engineering.json", "new.txt", "pkg/README.md"])
 
     def test_nested_work_runs_its_lane_inside_the_admission_it_inherits(self):
         inner = [sys.executable, str(self.toolkit / "bin/eng"), "--project", str(self.project), "run", "gate"]
@@ -1353,6 +1648,8 @@ exec {shlex.quote(real)} "$@"
             self.assertEqual(self.eng("admit", "--", "/bin/sh", "-c", f"exec {shlex.join(inner)} >/dev/null 2>&1")[0], 0)
         self.assertIn(f"Ran 2 tests in {self.project.resolve()}",
                       (self.project / ".build/engineering/gate/run.log").read_text())
+        self.assertEqual(json.loads((self.project / ".build/engineering/gate/source.json").read_text())["hereBecause"],
+                         "nested in the admission it inherits")
         self.assertFalse((self.home / remote.ROOT).exists())
 
     def test_only_a_heavy_lane_that_keeps_off_the_screen_may_go_to_the_build_host(self):
@@ -1369,32 +1666,128 @@ exec {shlex.quote(real)} "$@"
             "a lane that stays here gives no reason": {"lane": {**heavy, "here": ""}},
             "a reason is words": {"lane": {**heavy, "here": True}},
             "a blank reason": {"lane": {**heavy, "here": "  "}},
+            "buildHost false gives none": {"lane": {**heavy, "buildHost": False}},
             "a light lane runs here already": {"lane": {"command": ["true"], "here": "GPU goldens"}},
             "a foreground lane runs here already": {"lane": {**heavy, "foreground": True, "here": "GPU goldens"}},
             "both ways at once": {"lane": {**heavy, "buildHost": True, "here": "GPU goldens"}},
             "a group sent there runs a lane that stays": {"lane": {**heavy, "here": "GPU goldens"}, "other": heavy,
                 "group": {"parallel": ["lane", "other"], "resource": "heavy", "buildHost": True}},
             "a group's own reason": {"other": heavy, "group": {"parallel": ["other"], "resource": "heavy", "here": ""}}}
+        messages = {"buildHost false gives none": "replace it with \"here\": \"REASON\"",
+                    "a group sent there runs a lane that stays": "its lane lane stays on this Mac (here)"}
         for case, lanes in invalid.items():
             with self.subTest(case):
                 (self.project / "engineering.json").write_text(json.dumps(
                     {"schemaVersion": 1, "name": "Example", "lanes": lanes}))
                 with self.assertRaises(ValueError) as refused: config.load(self.project)
-                if case == "a group sent there runs a lane that stays":
-                    self.assertIn("its lane lane stays on this Mac (here)", str(refused.exception))
-        # The positive controls: a lane, and a group, that say why, and a group that runs such a lane.
+                if case in messages: self.assertIn(messages[case], str(refused.exception))
+        # The positive controls: a lane, and a group, that say why, a group that runs such a lane, and the
+        # old mark, which is the default now.
         goldens = {"command": [sys.executable, "-c", "print('Ran 1 tests')"], "resource": "heavy",
                    "minimumTests": 1, "here": "its goldens come from this Mac's GPU"}
         lanes = {"goldens": goldens, "other": {**heavy, "buildHost": True},
                  "group": {"parallel": ["goldens", "other"], "resource": "heavy"},
                  "own": {"parallel": ["other"], "resource": "heavy", "here": "a measurement tied to this Mac"}}
         (self.project / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example", "lanes": lanes}))
-        self.assertEqual(config.load(self.project)["lanes"]["goldens"]["here"], goldens["here"])
-        # eng run runs it here, as it runs every lane not marked buildHost.
+        loaded = config.load(self.project)["lanes"]
+        self.assertEqual([config.stays(loaded, name) for name in lanes],
+                         ["the lane says: its goldens come from this Mac's GPU", None,
+                          "its lane goldens says: its goldens come from this Mac's GPU",
+                          "the lane says: a measurement tied to this Mac"])
+        # eng run runs it here, though every heavy lane that says nothing goes to the build host.
         status, output, error = self.run_here("goldens")
         self.assertEqual(status, 0, output + error)
         self.assertTrue((self.project / ".build/engineering/goldens/run.log").exists())
         self.assertFalse((self.home / remote.ROOT).exists())
+
+    def admit_in(self, directory, *arguments):
+        """eng admit run from directory, with this Mac's policy refresh left out."""
+        previous = os.getcwd()
+        os.chdir(directory)
+        try:
+            with patch.object(cli, "refresh_policy", return_value="policy"):
+                return self.eng("admit", *arguments)
+        finally:
+            os.chdir(previous)
+
+    def probe(self):
+        """A command that appends the directory it runs in to a file outside the checkout, which both Macs
+        reach: a command run here writes to this terminal, not to the output eng captures."""
+        self.ran = Path(self.temp.name) / "ran-in.txt"
+        return [sys.executable, "-c", "import os, sys; open(sys.argv[1], 'a').write(os.getcwd() + '\\n')", str(self.ran)]
+
+    def ran_in(self):
+        return Path(self.ran.read_text().splitlines()[-1])
+
+    def test_admit_verify_sends_a_command_to_the_build_host_to_run_in_the_matching_directory(self):
+        probe = self.probe()
+        (self.project / "pkg/new.txt").write_text("uncommitted\n")
+        status, output, error = self.admit_in(self.project / "pkg", "--verify", "--", *probe)
+        self.assertEqual(status, 0, output + error)
+        self.assertEqual(self.ran_in(), (self.checkout(0) / "pkg").resolve())
+        receipt = json.loads((self.project / ".build/engineering/remote/admit/source.json").read_text())
+        self.assertEqual((receipt["ranOn"], receipt["subdirectory"], receipt["snapshot"]), ("build host", "pkg", True))
+        self.assertEqual((receipt["result"]["receipt"]["ranOn"], receipt["result"]["receipt"]["directory"]),
+                         ("build host", str((self.checkout(0) / "pkg").resolve())))
+        self.assertFalse((self.project / ".build/engineering/admit").exists())
+        # From the checkout's root it runs in the root there.
+        status, output, error = self.admit_in(self.project, "--verify", "--", *probe)
+        self.assertEqual(status, 0, output + error)
+        self.assertEqual(self.ran_in(), self.checkout(0).resolve())
+        # A busy build host declines it, as `eng admit --if-free` there, and this Mac admits it.
+        with self.busy_build_host():
+            status, output, error = self.admit_in(self.project / "pkg", "--verify", "--", *probe)
+        self.assertEqual(status, 0, output + error)
+        self.assertEqual(self.ran_in(), (self.project / "pkg").resolve())
+        receipt = json.loads((self.project / ".build/engineering/admit/source.json").read_text())
+        self.assertEqual(receipt["ranOn"], "this Mac")
+        self.assertTrue(receipt["hereBecause"].startswith("the build host is busy: fake did not take it"), receipt)
+        shutil.rmtree(self.project / ".build/engineering/admit")
+        # The negative control: without --verify it runs here.
+        status, output, error = self.admit_in(self.project / "pkg", "--", *probe)
+        self.assertEqual(status, 0, output + error)
+        self.assertEqual(self.ran_in(), (self.project / "pkg").resolve())
+        receipt = json.loads((self.project / ".build/engineering/admit/source.json").read_text())
+        self.assertEqual((receipt["ranOn"], receipt["hereBecause"]), ("this Mac", "eng admit runs here without --verify"))
+
+    def test_admit_verify_keeps_here_what_the_build_host_could_not_run_as_it_runs_here(self):
+        probe = self.probe()
+        (self.project / ".build/scratch").mkdir(parents=True)
+        outside = Path(self.temp.name) / "elsewhere"
+        outside.mkdir()
+        cases = [(outside, [], f"its directory {outside.resolve()} is outside the checkout"),
+                 (self.project / ".build/scratch", [], "its directory .build/scratch is one Git ignores"),
+                 (self.project, [str(self.project.resolve() / "pkg")], "it names this checkout's path"),
+                 (self.project, [f"platform=iOS Simulator,id={DUO}"], "it names a simulator by its identifier"),
+                 # A hardware UDID that no entry of this Mac's record holds, as #57 refuses it without --device.
+                 (self.project, [f"platform=iOS,id={PHONE}"], f"it names the hardware UDID {PHONE}"),
+                 (self.project, [], "fake cannot be reached")]
+        for directory, words, said in cases:
+            with self.subTest(said), patch.dict(os.environ, {"FAKE_UNREACHABLE": "1"} if "reached" in said else {}):
+                status, output, error = self.admit_in(directory, "--verify", "--", *probe, *words)
+                self.assertEqual(status, 0, output + error)
+                self.assertEqual(self.ran_in(), directory.resolve())
+                self.assertIn(f"eng: running the command on this Mac: {said}", error)
+                receipt = json.loads((self.project / ".build/engineering/admit/source.json").read_text())
+                self.assertEqual(receipt["ranOn"], "this Mac")
+                self.assertIn(said, receipt["hereBecause"])
+        self.assertFalse((self.home / remote.ROOT / "checkouts").exists())
+        # Nested in an admission, it runs inside it, here.
+        inner = [sys.executable, str(self.toolkit / "bin/eng"), "--project", str(self.project), "admit", "--verify",
+                 "--", *probe]
+        status, output, error = self.admit_in(self.project, "--", "/bin/sh", "-c", f"exec {shlex.join(inner)} 2>/dev/null")
+        self.assertEqual(status, 0, output + error)
+        self.assertEqual(self.ran_in(), self.project.resolve())
+        self.assertFalse((self.home / remote.ROOT / "checkouts").exists())
+        # A misconfigured build host stops it, and nothing runs here.
+        shutil.rmtree(self.project / ".build/engineering/admit")
+        self.ran.unlink()
+        with patch.dict(os.environ, {"FAKE_DENIED": "1"}):
+            status, output, error = self.admit_in(self.project, "--verify", "--", *probe)
+        self.assertEqual(status, remote.MISCONFIGURED, output + error)
+        self.assertFalse(self.ran.exists())
+        self.assertIn("then `eng admit` without --verify", error)
+        self.assertFalse((self.project / ".build/engineering/admit").exists())
 
     def test_the_toolkit_runs_itself_without_a_second_checkout(self):
         settings = json.loads((self.toolkit / "engineering.json").read_text())
@@ -1744,17 +2137,23 @@ class BuildHostDoctorTests(unittest.TestCase):
                           for row in found["leftovers"]], [(left.pid, start, "sleep 60", "checkout", str(checkout.resolve()))])
 
     def test_an_unreachable_or_unconfigured_build_host_is_named_with_what_was_not_checked(self):
+        # As when this Mac is away from the build host's network: work then runs here, so it is no error.
         with patch.dict(os.environ, {"FAKE_UNREACHABLE": "1"}):
+            status, found = self.doctor()
+        self.assertEqual((status, found["errors"]), (0, []), found)
+        self.assertEqual(len(found["unchecked"]), 1, found)
+        self.assertIn("fake, which cannot be reached, so work runs on this Mac until it can: fake cannot be reached: "
+                      "ssh: Could not resolve hostname fake", found["unchecked"][0])
+        # This Mac's side is still reported.
+        self.assertEqual(found["local"]["xcode"], RELEASE)
+        # A build host that answers but refuses the login is misconfigured, and an error.
+        with patch.dict(os.environ, {"FAKE_DENIED": "1"}):
             status, found = self.doctor()
         self.assertEqual(status, 1)
         self.assertEqual(len(found["errors"]), 1, found)
-        self.assertIn("fake cannot be reached: ssh: Could not resolve hostname fake", found["errors"][0])
-        self.assertIn("`ssh fake true`", found["errors"][0])
-        self.assertEqual(len(found["unchecked"]), 1, found)
+        self.assertIn("ssh reached fake but could not log in: someone@fake: Permission denied", found["errors"][0])
         self.assertIn("fake's default Xcode, its Xcode at this Mac's developer directory and its simulator runtimes",
                       found["unchecked"][0])
-        # This Mac's side is still reported.
-        self.assertEqual(found["local"]["xcode"], RELEASE)
         with patch.dict(os.environ, {"VOCARO_BUILD_HOST": "none"}):
             status, found = self.doctor()
         self.assertEqual((status, found["host"], found["errors"]), (0, None, []), found)

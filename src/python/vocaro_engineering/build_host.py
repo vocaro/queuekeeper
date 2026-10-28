@@ -742,10 +742,10 @@ def send_back(directory, paths):
                 emit(b"D", base64.b64encode(chunk))
 
 
-def step(command, checkout, environment, lock, log):
-    """Run one eng command; a stop sends it SIGTERM, which it carries out as a supervised stop."""
+def step(command, directory, environment, lock, log):
+    """Run one eng command in directory; a stop sends it SIGTERM, which it carries out as a supervised stop."""
     if log is not None: log.unlink(missing_ok=True)
-    child = subprocess.Popen(command, cwd=checkout, env=environment, stdin=subprocess.DEVNULL,
+    child = subprocess.Popen(command, cwd=directory, env=environment, stdin=subprocess.DEVNULL,
                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True,
                              pass_fds=(lock,))
     done = threading.Event()
@@ -814,20 +814,24 @@ def main(plan):
         # The reservations, held in the sending Mac's record, that this run may use (devices.LEASE).
         if plan.get("lease"): environment["VOCARO_DEVICE_LEASE"] = json.dumps(plan["lease"])
         if plan.get("developerDir"): environment["DEVELOPER_DIR"] = plan["developerDir"]
+        # A receipt the work writes here says that it ran on the build host, sent from this Mac (remote.DISPATCHER).
+        if plan.get("dispatcher"): environment["VOCARO_DISPATCHED_FROM"] = plan["dispatcher"]
         if (root / "git-credentials").is_file(): credentials(environment, root / "git-credentials")
         eng = [sys.executable, str(kit / "bin/eng"), "--project", str(checkout)]
-        steps = [("provision", [*eng, "run", "provision"], checkout / ".build/engineering/provision/run.log")] \
-            if plan.get("provision") else []
-        steps.append(("work", [*eng, *plan["work"]], checkout / plan["log"] if plan.get("log") else None))
+        steps = [("provision", [*eng, "run", "provision"], checkout / ".build/engineering/provision/run.log",
+                  checkout)] if plan.get("provision") else []
+        # `eng admit --verify` runs its command in the checkout's directory that matches the sender's.
+        steps.append(("work", [*eng, *plan["work"]], checkout / plan["log"] if plan.get("log") else None,
+                      checkout / plan["subdirectory"] if plan.get("subdirectory") else checkout))
         returns = plan.get("returns")
         if returns:
             back = checkout / returns["directory"], returns["paths"]
             # The work writes them afresh, so none that an earlier run left goes back as this run's.
             for path in back[1]: (back[0] / path).unlink(missing_ok=True)
-        for stage, command, log in steps:
+        for stage, command, log, directory in steps:
             if _stop.is_set(): break
             begun = True
-            result.update(stage=stage, exitStatus=step(command, checkout, environment, lock, log))
+            result.update(stage=stage, exitStatus=step(command, directory, environment, lock, log))
             if result["exitStatus"] != 0: break
         result["stopped"] = _stop.is_set()
         receipt = checkout / plan["receipt"]
