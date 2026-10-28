@@ -288,11 +288,15 @@ or exclusive lane that needs no device, screen or timing measurement, such as a 
 suite: those stay on this Mac. A lane that boots simulators qualifies too, once a run there has
 passed with the test counts it has here
 ([simulators on the build host](#simulators-on-the-build-host)). Background Mac tests need the
-screen too: they need it unlocked and the display awake
-([lock screen and display sleep](background-mac-testing.md#lock-screen-and-display-sleep)), and
-the build host's screen is usually locked. A command started over SSH there can open an
-offscreen window, so a locked screen leaves such tests unmeasured as it does here, and it is
-not trusted for accessibility (observed on macOS 27.2 beta 26B5091g, October 2026).
+screen too. The build host's screen is usually locked, and its display does not sleep
+(`displaysleep` 0). A command started over SSH there runs in an audit session of its own and is
+not trusted for accessibility (on the 27.2 beta 26B5091g as on 27.2 26B123), yet the window
+server gives it the console user's session: it opens offscreen windows and reads its own
+accessibility. On macOS 27.2 (26B123), locked with the display awake, EPUBLib's Mac suite passed
+there twice, case for case with this Mac's unlocked run. What a locked screen or a sleeping
+display has been seen to stop, on which Mac and build, and what is unmeasured, such as display
+sleep there, is in
+[lock screen and display sleep](background-mac-testing.md#lock-screen-and-display-sleep).
 
 `eng run` sends a marked lane to the build host, whole or filtered (`eng run LANE -- FILTER`),
 over the working tree as it is: a tree with uncommitted changes or new files goes as a snapshot
