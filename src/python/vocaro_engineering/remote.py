@@ -219,7 +219,7 @@ def checkout_name(root):
 
 
 def origin(root):
-    """The toolkit's public origin for the build host's policy refresh, which needs no GitHub key."""
+    """The toolkit's origin for policy refresh, with GitHub SSH URLs normalized to HTTPS."""
     try: url = git(root, "config", "--get", "remote.origin.url")
     except RuntimeError: return None
     return "https://github.com/" + url[len("git@github.com:"):] if url.startswith("git@github.com:") else url

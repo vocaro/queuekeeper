@@ -567,10 +567,11 @@ The owner prepares the build host once:
    the network carries multicast between them, and `dscacheutil -q host -a name NAME.local`
    shows whether it does. Sleep did not explain the night of 2026-10-24 to 25, when the name did
    not resolve from this Mac: neither Mac's power log records a sleep then.
-7. When a project's packages depend on private repositories, create a fine-grained GitHub token
-   with read-only Contents permission on them (on all of the owner's repositories, if the owner
-   prefers not to update it as dependencies change), and write it on the build
-   host, readable only by its owner, as one line `https://USER:TOKEN@github.com` in
+7. For the private toolkit's policy refresh and any private package dependencies, create a
+   fine-grained GitHub token with read-only Contents permission on `vocaro/vocaro-engineering`
+   and those dependencies (on all of the owner's repositories, if the owner prefers not to
+   update it as dependencies change), and write it on the build host, readable only by its
+   owner, as one line `https://USER:TOKEN@github.com` in
    `~/Development/build-host/git-credentials`. In zsh, without leaving the token in the shell's
    history:
 
@@ -580,10 +581,12 @@ The owner prepares the build host once:
    unset token
    ```
 
-The project's commits reach the build host over SSH, and a heavy lane's policy refresh fetches
-the public toolkit over HTTPS, so neither needs a credential. SwiftPM clones a private dependency
-with git, and git's default helper on a Mac, osxkeychain, cannot read the keychain from an SSH
-session: it fails with `-25308`, and the clone fails. When `git-credentials` exists, `eng remote`
+The project's commits reach the build host over SSH without a GitHub credential. A heavy lane's
+policy refresh fetches the private toolkit over HTTPS and needs read access to it through the
+credential file above, even when the project has no private package dependencies. SwiftPM
+clones a private dependency with git, and git's default helper on a Mac, osxkeychain, cannot read
+the keychain from an SSH session: it fails with `-25308`, and the clone fails. When
+`git-credentials` exists, `eng remote`
 gives each run's git that file through the store helper and no other helper, by
 `GIT_CONFIG_COUNT` variables that reach only the run, so the owner's own git configuration on
 the build host is unchanged. A token reaches only the repositories it names, read-only, and it
