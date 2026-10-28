@@ -173,6 +173,16 @@ class RemoteTests(unittest.TestCase):
                         "timeout": 1},
             "napper": {"command": [python, "-c", NAP, "napper"]},
             "dozer": {"command": [python, "-c", NAP, "dozer"]},
+            # first holds .build/first.running while it runs, and second says whether it found it.
+            "first": {"command": [python, "-c", "import pathlib, time; running = pathlib.Path('.build/first.running'); "
+                                  "running.touch(); time.sleep(0.5); running.unlink(); print('Ran 1 tests')"]},
+            "second": {"command": [python, "-c", "import pathlib; print('first running:', "
+                                   "pathlib.Path('.build/first.running').exists()); print('Ran 1 tests')"]},
+            "turns": {"parallel": ["first", "second"], "resource": "heavy"},
+            # Imports a module of the project's, as a project's scripts/eng imports scripts/_engineering.py,
+            # and says whether its Python may write bytecode.
+            "imports": {"command": [python, "-c", "import sys; sys.path.insert(0, 'scripts'); import helper; "
+                                    "print('bytecode', 'off' if sys.dont_write_bytecode else 'on'); print('Ran 1 tests')"]},
             "pair": {"parallel": ["left", "right"], "resource": "heavy", "buildHost": True},
             "mixed": {"parallel": ["left", "broken", "overdue"], "resource": "heavy", "buildHost": True},
             "stalled": {"parallel": ["napper", "dozer"], "resource": "heavy", "buildHost": True},
@@ -573,6 +583,43 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual(status, 2)
         self.assertIn("inspect and remove them", error)
 
+    @patch.object(remote, "CHECKOUTS", 2)
+    def test_work_on_the_build_host_leaves_no_bytecode_in_its_checkout(self):
+        # The project's .gitignore names no __pycache__, as many projects' do not.
+        (self.project / "scripts").mkdir()
+        (self.project / "scripts/helper.py").write_text("NAME = 'helper'\n")
+        commit_all(self.project)
+        command = json.loads((self.project / "engineering.json").read_text())["lanes"]["imports"]["command"]
+        results = lambda name: self.project / ".build/engineering/remote" / name
+        slot = lambda name: json.loads((results(name) / "source.json").read_text())["result"]["slot"]
+        # A lane's output is in its log, and a command's in its output.
+        for operation, name, said in [(["run", "imports"], "imports", "run.log"),
+                                      (["admit", "--", *command], "admit", "output.log")]:
+            with self.subTest(operation):
+                status, output, error = self.eng("remote", *operation)
+                self.assertEqual(status, 0, output + error)
+                self.assertIn("bytecode off", (results(name) / said).read_text())
+                self.assertNotIn("passing over", output)
+                self.assertEqual(slot(name), 0)
+                self.assertFalse((self.checkout(0) / "scripts/__pycache__").exists())
+                self.assertEqual(git(self.checkout(0), "status", "--porcelain", "--untracked-files=all"), "")
+        # The negative control: a build host that lets the work's Python write bytecode leaves it in the
+        # checkout, and the next run passes that checkout over.
+        sent = Path(self.temp.name) / "build_host.py"
+        text = Path(build_host.__file__).read_text()
+        sent.write_text(text.replace('NO_BYTECODE = {"PYTHONDONTWRITEBYTECODE": "1"}', "NO_BYTECODE = {}", 1))
+        self.assertNotEqual(sent.read_text(), text)
+        with patch.object(remote.build_host, "__file__", str(sent)):
+            status, output, error = self.eng("remote", "run", "imports")
+        self.assertEqual(status, 0, output + error)
+        self.assertIn("bytecode on", (results("imports") / "run.log").read_text())
+        self.assertTrue(list((self.checkout(0) / "scripts/__pycache__").glob("helper.*.pyc")))
+        status, output, error = self.eng("remote", "run", "imports")
+        self.assertEqual(status, 0, output + error)
+        self.assertIn(f"passing over {self.checkout(0)}, which a run left with changes:", output)
+        self.assertIn("?? scripts/__pycache__/", output)
+        self.assertEqual(slot("imports"), 1)
+
     def test_a_stop_ends_the_build_host_run_and_releases_its_checkout_and_admission(self):
         command = [sys.executable, str(self.toolkit / "bin/eng"), "--project", str(self.project), "remote", "run", "slow"]
         dispatcher = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -899,6 +946,34 @@ class RemoteTests(unittest.TestCase):
         self.assertFalse((results / "lanes").exists())
         there = self.checkout(0) / ".build/engineering/stalled"
         self.assertEqual(self.lane_files("stalled", "napper", there)[1]["outcome"], "stopped")
+
+    def test_serial_runs_a_groups_lanes_in_turn_on_the_build_host_and_counts_for_no_commit(self):
+        # Only a group runs in turn: anything else is refused before anything is sent.
+        status, output, error = self.eng("remote", "run", "--serial", "check")
+        self.assertEqual(status, 2, output + error)
+        self.assertIn("--serial runs a lane group, and check is not one", error)
+        self.assertTrue(self.nothing_sent())
+        results = self.project / ".build/engineering/remote/turns"
+        status, output, error = self.eng("remote", "run", "--serial", "turns")
+        self.assertEqual(status, 0, output + error)
+        kept = json.loads((results / "source.json").read_text())
+        self.assertEqual((kept["work"], kept["serial"]), (["run", "--here", "--serial", "turns"], True))
+        # The build host ran the lanes one at a time, under its own admission, and each came back.
+        self.assertEqual(kept["result"]["receipt"]["jobs"], 1)
+        self.assertIn("heavy: slot", output)
+        self.assertIn(f"{self.checkout(0)} at {self.commit[:12]}", output)
+        self.assertIn("first running: False", self.lane_files("turns", "second")[0])
+        self.assertEqual([self.lane_files("turns", lane)[1]["outcome"] for lane in ("first", "second")],
+                         ["passed", "passed"])
+        # The serial reference is no pass of the group's.
+        self.assertEqual(self.eng("remote", "passed", "turns")[0], 1)
+        # The negative control: without --serial, the build host runs them side by side, and their pass counts.
+        status, output, error = self.eng("remote", "run", "turns")
+        self.assertEqual(status, 0, output + error)
+        kept = json.loads((results / "source.json").read_text())
+        self.assertEqual((kept["work"], kept["result"]["receipt"]["jobs"]), (["run", "--here", "turns"], 2))
+        self.assertNotIn("serial", kept)
+        self.assertEqual(self.eng("remote", "passed", "turns")[0], 0)
 
     @contextlib.contextmanager
     def busy_build_host(self):

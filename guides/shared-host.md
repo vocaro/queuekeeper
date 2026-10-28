@@ -472,8 +472,10 @@ project, checks the commit out detached with the toolkit beside it, and runs `en
 `eng admit` in the checkout's root. A checkout keeps its ignored inputs and build products, so
 its next build is warm; `eng remote` waits for one when all four are in use. A project's `provision` lane, when
 it has one, runs first to provision the checkout's ignored inputs, and the work runs only if it
-passes. A checkout that a run left with changes stays as it is for inspection and is passed
-over. Once it is read, remove it with
+passes. The work runs with `PYTHONDONTWRITEBYTECODE=1`, so its Python leaves no `__pycache__` in
+the checkout, which a project's `.gitignore` need not name; only a process that sets its own
+environment can still write one. A checkout that a run left with changes stays as it is for
+inspection and is passed over. Once it is read, remove it with
 `git --git-dir ~/Development/build-host/repositories/NAME.git worktree remove --force PATH`.
 
 Output comes back as it is written. The lane's log, the command's output and a receipt land in
@@ -494,7 +496,11 @@ The receipt names the commit that ran (`commit`) and the HEAD it was sent from (
 commit unless `snapshot` is true. A snapshot's receipt stays in `.build/engineering/remote/LANE/`:
 no branch holds the snapshot, so its result is no commit's pass, and `eng remote passed` never
 counts it, for HEAD or for the snapshot itself. Commit the work and run the lane again for a pass
-that counts.
+that counts. `eng remote run --serial GROUP` runs a group's lanes one after another there, under
+the build host's admission: the group's serial reference
+([parallel-only failures](parallel-tests.md#a-failure-seen-only-side-by-side)). Its receipt says
+`serial` and, like a snapshot's, stays in `.build/engineering/remote/GROUP/`: it is no pass of the
+group's, whose lanes run side by side.
 
 A stop carries over. The build host's standard input is the dispatcher's lifeline: its end, from
 a stop signal, the dispatcher's death or a dropped connection, stops the run there as a stop

@@ -297,7 +297,8 @@ def store(root):
 def passed(root, lane, revision="HEAD"):
     """The receipt of a passing build-host run of the whole lane at exactly revision's commit, or None.
 
-    A snapshot's run never counts, for HEAD or for the snapshot itself: no branch holds it."""
+    A snapshot's run never counts, for HEAD or for the snapshot itself: no branch holds it. Nor
+    does a group's serial reference."""
     commit = git(root, "rev-parse", "--verify", f"{revision}^{{commit}}")
     try:
         receipt = json.loads((store(root) / commit / f"{lane}.json").read_text())
@@ -305,7 +306,7 @@ def passed(root, lane, revision="HEAD"):
         return None
     result = receipt.get("result", {})
     whole = receipt.get("commit") == commit and receipt.get("lane") == lane and not receipt.get("arguments") \
-        and not receipt.get("snapshot")
+        and not receipt.get("snapshot") and not receipt.get("serial")
     return receipt if whole and result.get("exitStatus") == 0 and not result.get("stopped") else None
 
 
@@ -430,17 +431,20 @@ def carrying(lease, root, host, work, name, send):
         lease.finish(outcome)
 
 
-def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, decline=False, lease=None):
+def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, decline=False, lease=None,
+            serial=False):
     """Run eng's work on the build host and return its exit status, with the log and receipt kept here.
 
-    work is the build host's eng arguments: run [--expect N] LANE [-- ARGUMENTS] or
+    work is the build host's eng arguments: run [--serial] [--expect N] LANE [-- ARGUMENTS] or
     admit [--exclusive | --model] -- COMMAND. It runs at HEAD, or at a snapshot commit of the
     working tree when that has uncommitted changes. A lane group's lanes' logs and receipts come
     back under the results' lanes/ once the run there ends, however it ended (group_files). With
     decline, the build host refuses work it cannot start now rather than waiting for it, and
     Unavailable says why. Misconfigured says what of the build host's configuration kept the work
     from running there, and what fixing it takes. The build host's device record defers physical
-    devices to this Mac's, and lease gives the run the reservations it carries from here.
+    devices to this Mac's, and lease gives the run the reservations it carries from here. serial
+    says the work runs a group's lanes in turn: the serial reference, whose result, like a
+    snapshot's, is no commit's pass.
     """
     toolkit = Path(TOOLKIT_ROOT).resolve()
     try:
@@ -590,10 +594,11 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     receipt = {"host": host, "commit": commit, "head": head, "snapshot": commit != head,
                "toolkit": kit["commit"] if kit else commit, "lane": lane, "arguments": list(arguments),
                "expect": expect, "work": work, "local": local, "result": result, "dispatched": started,
-               **({"returned": returned} if returns else {})}
+               **({"serial": True} if serial else {}), **({"returned": returned} if returns else {})}
     (results / "source.json").write_text(json.dumps(receipt, indent=2) + "\n")
-    # A snapshot's result stays here: no branch holds it, so it is no commit's pass.
-    if lane is not None and not arguments and expect is None and commit == head:
+    # A snapshot's result stays here: no branch holds it, so it is no commit's pass. Nor is a group's
+    # serial reference: the group's pass is its lanes' side by side.
+    if lane is not None and not arguments and expect is None and commit == head and not serial:
         kept.mkdir(parents=True, exist_ok=True)
         (kept / f"{lane}.json").write_text(json.dumps(receipt, indent=2) + "\n")
     if result.get("error"):
@@ -641,13 +646,17 @@ def main(root, config, args):
         if lane is None: raise ValueError(f"No configured lane: {args.lane}")
         if lane.get("foreground"): raise ValueError(f"{args.lane} takes the screen; foreground lanes run only here")
         if args.expect is not None and args.expect < 1: raise ValueError("--expect needs at least 1 test")
+        if args.serial and "parallel" not in lane:
+            raise ValueError(f"--serial runs a lane group, and {args.lane} is not one")
         extra = args.passed or []
-        work = ["run", "--here", *(["--expect", str(args.expect)] if args.expect else []), args.lane,
-                *(["--", *extra] if extra else [])]
+        # The build host runs a group's lanes in turn under its own admission, as `eng run --serial` does here.
+        work = ["run", "--here", *(["--serial"] if args.serial else []),
+                *(["--expect", str(args.expect)] if args.expect else []), args.lane, *(["--", *extra] if extra else [])]
         held = lease(args.device or [], args.device_owner or devices.default_owner(), extra, root=root)
         with processes.forwarding_signals():
             return carrying(held, root, host, work, args.lane, lambda: execute(
-                root, config, host, work, lane=args.lane, arguments=extra, expect=args.expect, lease=held))
+                root, config, host, work, lane=args.lane, arguments=extra, expect=args.expect, lease=held,
+                serial=args.serial))
     # Without a leading --, argparse collected the command, and a later -- belongs to it.
     command = args.command + ([] if args.passed is None else ["--", *args.passed]) if args.command else args.passed
     if not command: raise ValueError("Name the command: eng remote admit [--exclusive | --model] -- COMMAND")

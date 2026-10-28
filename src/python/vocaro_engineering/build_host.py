@@ -70,6 +70,9 @@ XCODE = re.compile(r"[^\s'\"]*/Xcode[^/\s'\"]*\.app/Contents/")
 COMMAND_LIMIT = 1000
 # How ps prints a process's start (lstart), with its spacing collapsed.
 STARTED = "%a %b %d %H:%M:%S %Y"
+# What the work's Python processes are given: no bytecode, whose __pycache__ directories a
+# project's .gitignore need not name, and which would leave its checkout with changes (claim).
+NO_BYTECODE = {"PYTHONDONTWRITEBYTECODE": "1"}
 
 _output = threading.Lock()
 _stop = threading.Event()
@@ -691,7 +694,8 @@ def defer_devices(kit, mac):
     is a configuration problem for the owner, so the work does not start."""
     try:
         deferred = subprocess.run([sys.executable, "-m", "vocaro_engineering.devices", "defer", mac], capture_output=True,
-                                  text=True, env={**os.environ, "PYTHONPATH": str(kit / "src/python")}, timeout=60)
+                                  text=True, env={**os.environ, "PYTHONPATH": str(kit / "src/python"), **NO_BYTECODE},
+                                  timeout=60)
     except subprocess.TimeoutExpired:
         deferred = subprocess.CompletedProcess([], 1, "", "it did not finish in 60s")
     if deferred.returncode:
@@ -805,7 +809,7 @@ def main(plan):
             place(root / toolkit["repository"], kit, toolkit["commit"], toolkit["ref"], toolkit.get("origin"))
         result.update(checkout=str(checkout), slot=index)
         say(f"{checkout} at {project['commit'][:12]}")
-        environment = {**os.environ, "VOCARO_ENGINEERING_ROOT": str(kit)}
+        environment = {**os.environ, "VOCARO_ENGINEERING_ROOT": str(kit), **NO_BYTECODE}
         if plan.get("deviceRecord"): defer_devices(kit, plan["deviceRecord"])
         # The reservations, held in the sending Mac's record, that this run may use (devices.LEASE).
         if plan.get("lease"): environment["VOCARO_DEVICE_LEASE"] = json.dumps(plan["lease"])

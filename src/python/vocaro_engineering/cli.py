@@ -331,8 +331,8 @@ def main(argv=None):
         "second Mac, over SSH: eng remote run LANE [-- ARGUMENTS] or eng remote admit -- COMMAND; eng remote passed "
         "LANE says whether the whole lane passed there at a commit")
     operations = distant.add_subparsers(dest="operation", required=True)
-    remote_run = operations.add_parser("run", usage="%(prog)s [-h] [--host HOST] [--expect N] [--device KEY] "
-        "[--device-owner SESSION] lane [-- ARGUMENTS ...]",
+    remote_run = operations.add_parser("run", usage="%(prog)s [-h] [--host HOST] [--serial] [--expect N] "
+        "[--device KEY] [--device-owner SESSION] lane [-- ARGUMENTS ...]",
         help="run a configured lane on the build host at HEAD, or at a snapshot commit of uncommitted work")
     remote_admit = operations.add_parser("admit", help="run a heavy command on the build host, in its checkout's "
         "root, at HEAD or at a snapshot commit of uncommitted work")
@@ -357,6 +357,8 @@ def main(argv=None):
         choice.add_argument("--device-owner", metavar="SESSION", help="the session holding --device (default: "
                             f"{devices.OWNER}, else the agent session)")
     remote_run.add_argument("--expect", type=int, metavar="N", help="require exactly N executed tests")
+    remote_run.add_argument("--serial", action="store_true", help="run a lane group's lanes one after another, on the "
+        "build host under its admission: the serial reference of a group that runs there, which counts for no commit")
     remote_run.add_argument("lane")
     kind = remote_admit.add_mutually_exclusive_group()
     kind.add_argument("--exclusive", action="store_true", help="hold every slot of the build host")
