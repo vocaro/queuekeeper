@@ -226,8 +226,11 @@ def snapshot(root):
     index = Path(git(root, "rev-parse", "--path-format=absolute", "--git-path", "index"))
     with tempfile.TemporaryDirectory(prefix="eng-snapshot-") as directory:
         variables = {**environment(), "GIT_INDEX_FILE": str(Path(directory) / "index")}
-        # The copy keeps the index's file stats, so git add reads only the files that changed.
-        if index.is_file(): shutil.copyfile(index, variables["GIT_INDEX_FILE"])
+        # The copy keeps the index's file stats, so git add reads only the files that changed, and its
+        # mtime: git reads a file whose entry is no older than the index, in whole seconds, since one
+        # rewritten at its size within that second keeps its stats. A newer copy would trust them
+        # and snapshot what was staged.
+        if index.is_file(): shutil.copy2(index, variables["GIT_INDEX_FILE"])
         else: git(root, "read-tree", head, variables=variables)
         git(root, "add", "-A", variables=variables)
         tree = git(root, "write-tree", variables=variables)

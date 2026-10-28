@@ -1168,6 +1168,36 @@ exec {shlex.quote(real)} "$@"
         self.assertEqual(git(self.checkout(0), "rev-parse", "HEAD"), commit)
         self.assertEqual(self.eng("remote", "passed", "gate")[0], 0)
 
+    def test_a_snapshot_holds_an_edit_that_kept_a_files_size_and_second_after_it_was_staged(self):
+        # git trusts an entry's stats when the index is newer than the entry, in whole seconds, and
+        # otherwise reads the file. Here the staging, the edit and the index all have one past second,
+        # as a session's do when it stages a file and rewrites it at its size within a second, and the
+        # snapshot comes later. ctime, which no test can set, is left out of git's comparison.
+        git(self.project, "config", "core.trustctime", "false")
+        edited = self.project / "edited.txt"
+        edited.write_text("committed\n")
+        base = commit_all(self.project)
+        second = (int(time.time()) - 60) * 10**9
+        edited.write_text("staged\n")
+        os.utime(edited, ns=(second, second))
+        git(self.project, "add", "edited.txt")
+        edited.write_text("edited\n")
+        for path in (edited, self.index()): os.utime(path, ns=(second, second))
+        index = self.index().read_bytes()
+        commit, head = remote.snapshot(self.project)
+        self.assertEqual((git(self.project, "show", f"{commit}:edited.txt"), head), ("edited", base))
+        self.assertEqual(self.index().read_bytes(), index)
+        # The negative control: a copy of the index that is newer than its entries trusts the stats and
+        # holds what was staged.
+        copy = Path(self.temp.name) / "newer-index"
+        shutil.copyfile(self.index(), copy)
+        variables = {**remote.environment(), "GIT_INDEX_FILE": str(copy)}
+        remote.git(self.project, "add", "-A", variables=variables)
+        tree = remote.git(self.project, "write-tree", variables=variables)
+        self.assertEqual(git(self.project, "show", f"{tree}:edited.txt"), "staged")
+        # The session's own git, with its own index, reads the edit as the snapshot did.
+        self.assertEqual(git(self.project, "diff", "--name-only"), "edited.txt")
+
     def test_uncommitted_work_comes_back_here_from_a_busy_build_host_and_stops_for_a_misconfigured_one(self):
         self.work_in_progress()
         before = self.session()

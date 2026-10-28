@@ -446,14 +446,19 @@ display on; the screen was unlocked, not by the run, for the last 15 minutes of 
 ### How a run reaches the build host
 
 `eng remote` runs a commit: HEAD when the working tree is HEAD's, and otherwise a snapshot commit
-of the working tree. It copies the checkout's index to a temporary file and, with
-`GIT_INDEX_FILE` naming the copy, takes the working tree with `git add -A`, tracked changes,
-deletions and nonignored untracked files alike, writes it with `git write-tree`, and makes the
-commit with `git commit-tree`, HEAD its parent. The session's own index, HEAD, branch and working
-tree are untouched, and no branch or other ref holds the snapshot. Ignored files stay out, as they
-do from a commit: the build host's checkout has ignored inputs of its own. A large untracked file
-that no `.gitignore` names is sent too, and its copy stays among the repository's objects until
-Git's garbage collection prunes the snapshot, so ignore what the build host does not need.
+of the working tree. It copies the checkout's index, with its modification time, to a temporary
+file and, with `GIT_INDEX_FILE` naming the copy, takes the working tree with `git add -A`, tracked
+changes, deletions and nonignored untracked files alike, writes it with `git write-tree`, and makes
+the commit with `git commit-tree`, HEAD its parent. The session's own index, HEAD, branch and
+working tree are untouched, and no branch or other ref holds the snapshot. Git reads a file whose
+index entry is no older than the index, in whole seconds, and otherwise trusts its stats. A copy
+dated when it was made therefore held what was staged of a file rewritten at its size within the
+second it was staged: a test that does so failed that way in 4 of 72 runs, six at a time on this
+Mac (2026-10-27, [vocaro-engineering#56](https://github.com/vocaro/vocaro-engineering/issues/56)).
+Ignored files stay out, as they do from a commit: the build host's checkout has ignored inputs of
+its own. A large untracked file that no `.gitignore` names is sent too, and its copy stays among
+the repository's objects until Git's garbage collection prunes the snapshot, so ignore what the
+build host does not need.
 `eng run`, `eng remote run` and `eng remote admit` all send work this way. The toolkit goes only
 as a commit: a toolkit checkout with changes to tracked files is refused.
 
