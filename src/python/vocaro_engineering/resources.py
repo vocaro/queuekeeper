@@ -21,6 +21,8 @@ driving one Mac's on-device model both stalled. Exclusive work holds the model w
 
 Each admission appends a line to the host's admission log, and its end another, so that an audit
 can count admissions, waits and holds instead of guessing (#46); `eng admissions` summarizes it.
+A request that waited says why, which an audit could only infer from the holders logged beside it
+(#49): how many of its attempts each kind of refusal refused, and the load and memory pressure read.
 
 Beside its guard entry, each admission keeps a process record: what the toolkit's supervision in
 the owner's process saw of each command, its processes with their starts and the process groups
@@ -190,13 +192,26 @@ def last_admission(directory, slots):
     return latest
 
 
-def memory_normal():
-    """Whether macOS reports normal memory pressure: level 1, where 2 is warning and 4 critical."""
+def memory_level():
+    """The memory pressure level macOS reports: 1 normal, 2 warning, 4 critical, or None when it cannot be read."""
     if sys.platform != "darwin":
-        return False
+        return None
     result = subprocess.run(["/usr/sbin/sysctl", "-n", "kern.memorystatus_vm_pressure_level"],
         capture_output=True, text=True)
-    return result.returncode == 0 and result.stdout.strip() == "1"
+    return int(result.stdout) if result.returncode == 0 and result.stdout.strip().isdigit() else None
+
+
+def memory_normal():
+    """Whether macOS reports normal memory pressure: level 1, where 2 is warning and 4 critical."""
+    return memory_level() == 1
+
+
+def one_minute_load():
+    """The one-minute load average as the log records it, or None when it is unavailable."""
+    try:
+        return round(os.getloadavg()[0], 2)
+    except OSError:
+        return None
 
 
 def inherited(exclusive=False, model=False):
@@ -268,7 +283,16 @@ class Admission:
         self.poll = float(os.environ.get("HEAVY_POLL_SECONDS", "1"))
         if self.slots < 1 or self.maximum < self.slots or self.settle < 0 or self.poll <= 0 or timeout < 0:
             raise ValueError("Invalid resource limits")
-        self.waiting = None
+        # Why the latest attempt was refused: its kind, which the log counts (#49), and the waiting message.
+        # guard: a dead or uncertain guard entry needs inspection; exclusive: exclusive work holds the host
+        # or is queued ahead; legacy: a legacy gate holds its lock; model: another run holds the model;
+        # slots: every slot the request may take is busy; settle, load or memory: the settling time, the
+        # load average or memory pressure withholds a slot beyond the guaranteed ones.
+        self.refusal = self.waiting = None
+        # For the log line: the refused attempts by kind, in the order the kinds first refused it; the holders
+        # when it asked; the first, last and highest one-minute load its attempts read; and the highest memory
+        # pressure level read beside its refusals.
+        self.refusals, self.holders, self.loads, self.memory = Counter(), None, None, None
         self.legacy = Path(os.environ.get("SW_GATE_LOCK_FILE", "/tmp/studywright-gate-suite.lock"))
         self.guard = Path(str(self.legacy) + ".warm-push-guard")
         # Exclusive requests waiting for admission, first come first.
@@ -335,6 +359,22 @@ class Admission:
         append_log({"event": event, "identity": self.identity, "pid": os.getpid(), "kind": self.kind,
                     "label": self.label[:160], **fields})
 
+    def _seen(self):
+        """What the request saw, for its admitted or withdrawn line (#49): the holders and the one-minute load
+        when it asked, and, once an attempt was refused, why it waited."""
+        fields = {"holders": self.holders, "load": self.loads[0] if self.loads else None}
+        if self.refusals:
+            last, peak = self.loads[1:] if self.loads else (None, None)
+            fields["wait"] = {"refusals": dict(self.refusals), "first": next(iter(self.refusals)), "last": self.refusal,
+                              "load": {"last": last, "max": peak}, "memory": self.memory}
+        return fields
+
+    def _count(self):
+        """Count the refusal of the attempt just made by its kind, and read the memory pressure beside it."""
+        self.refusals[self.refusal] += 1
+        level = memory_level()
+        if level is not None: self.memory = max(level, self.memory or 0)
+
     def _withdraw(self, error):
         """Log that this request stopped waiting without admission, and take it out of the queue if it is there."""
         from vocaro_engineering.processes import Interrupted
@@ -344,7 +384,7 @@ class Admission:
             fcntl.flock(bridge, fcntl.LOCK_EX)
             if self.queued:
                 self._record([waiter for waiter in self._waiters() if waiter["identity"] != self.identity])
-            self._log("withdrawn", outcome=outcome, waited=round(time.monotonic() - self.started, 3))
+            self._log("withdrawn", outcome=outcome, waited=round(time.monotonic() - self.started, 3), **self._seen())
         self.queued = False
 
     def _legacy_lock(self):
@@ -358,19 +398,20 @@ class Admission:
             self.legacy.unlink()
 
     def _extra_refusal(self):
+        """Why no slot beyond the guaranteed ones may be taken now, as the refusal's kind and its reason, or None."""
         if self.maximum == self.slots:
-            return "no adaptive slots are configured"
+            return "slots", "no adaptive slots are configured"
         settling = time.time() - last_admission(self.directory, self.maximum)
         if settling < self.settle:
-            return f"the load does not yet show the job admitted {int(settling)}s ago"
+            return "settle", f"the load does not yet show the job admitted {int(settling)}s ago"
         try:
             load = os.getloadavg()[0]
         except OSError:
-            return "the load average is unavailable"
+            return "load", "the load average is unavailable"
         if load >= self.load_limit:
-            return f"load {load:.1f} is at or above {self.load_limit:g}"
+            return "load", f"load {load:.1f} is at or above {self.load_limit:g}"
         if not memory_normal():
-            return "memory pressure is not normal"
+            return "memory", "memory pressure is not normal"
         return None
 
     def _take_model(self):
@@ -382,7 +423,7 @@ class Admission:
         except BlockingIOError:
             holder = os.pread(fd, 4096, 0).decode(errors="replace").strip().split(" ", 2)
             os.close(fd)
-            self.waiting = f"the on-device model is held by {holder[2] if len(holder) == 3 else 'an unnamed holder'}"
+            self.refusal, self.waiting = "model", f"the on-device model is held by {holder[2] if len(holder) == 3 else 'an unnamed holder'}"
             return None
         return fd
 
@@ -400,14 +441,25 @@ class Admission:
             taken = take_slot(self.directory, self.maximum, start=self.slots)
             if taken is not None:
                 return taken
-            refusal = f"all {self.maximum} slots are busy"
-        self.waiting = f"all {self.slots} guaranteed slots are busy and {refusal}"
+            refusal = "slots", f"all {self.maximum} slots are busy"
+        kind, reason = refusal
+        self.refusal, self.waiting = kind, f"all {self.slots} guaranteed slots are busy and {reason}"
         return None
+
+    def _held_back(self, state):
+        """Refuse the attempt at the model or a slot. Exclusive work holds both while its guard entry stands,
+        so whatever refused the request there, it waits behind that work."""
+        if any(owner.get("exclusive") for owner in state["owners"].values()):
+            self.refusal = "exclusive"
+        return False
 
     def _attempt(self):
         self.directory.mkdir(parents=True, exist_ok=True)
         with (self.directory / "coordination.lock").open("a+") as bridge:
             fcntl.flock(bridge, fcntl.LOCK_EX)
+            load = one_minute_load()
+            if load is not None:
+                self.loads = [load, load, load] if self.loads is None else [self.loads[0], load, max(self.loads[2], load)]
             waiters = self._waiters()
             if self.exclusive and all(waiter["identity"] != self.identity for waiter in waiters):
                 # Its first attempt sets its place, whatever refuses it now.
@@ -419,32 +471,36 @@ class Admission:
                 self.queued = True
                 self._record(waiters)
             state = self._guard()
+            if self.holders is None:
+                # The admissions the guard records when the request asks, a dead or uncertain one among them.
+                recorded = state or self._recorded()
+                self.holders = len(recorded.get("owners") or {}) if recorded else None
             if state is None:
-                self.waiting = ("a foreign, dead or uncertain guard owner requires inspection; "
-                                "`python3 scripts/eng admissions recover` lists it")
+                self.refusal, self.waiting = "guard", ("a foreign, dead or uncertain guard owner requires inspection; "
+                                                       "`python3 scripts/eng admissions recover` lists it")
                 return False
             if waiters and waiters[0]["identity"] != self.identity:
                 # Work already admitted runs on; nothing new starts before the exclusive request.
-                self.waiting = f"it waits behind exclusive work: {waiters[0]['label']}"
+                self.refusal, self.waiting = "exclusive", f"it waits behind exclusive work: {waiters[0]['label']}"
                 return False
             if not self._legacy_lock():
-                self.waiting = "a legacy gate holds its lock"
+                self.refusal, self.waiting = "legacy", "a legacy gate holds its lock"
                 return False
             try:
                 # The model first, so that a request it refuses names the model's holder.
                 if self.model:
                     self.held_model = self._take_model()
                     if self.held_model is None:
-                        return False
+                        return self._held_back(state)
                 for _ in range(self.maximum if self.exclusive else 1):
                     taken = take_slot(self.directory, self.maximum if self.exclusive else self.slots)
                     if taken is None and not self.exclusive:
                         taken = self._extra_slot()
                     if taken is None:
                         if self.exclusive:
-                            self.waiting = f"exclusive work needs all {self.maximum} slots free"
+                            self.refusal, self.waiting = "slots", f"exclusive work needs all {self.maximum} slots free"
                         self._release()
-                        return False
+                        return self._held_back(state)
                     self.descriptors.append(taken)
                 born = process_start(os.getpid())
                 if born is None:
@@ -473,7 +529,7 @@ class Admission:
                                                 "guard": str(self.guard), "locks": locks})
                 self.admitted = time.monotonic()
                 self._log("admitted", slots=[slot for slot, _fd in self.descriptors],
-                          waited=round(self.admitted - self.started, 3))
+                          waited=round(self.admitted - self.started, 3), **self._seen())
                 return True
             finally:
                 self._unlock_legacy()
@@ -487,6 +543,7 @@ class Admission:
         reported = None
         try:
             while not self._attempt():
+                self._count()
                 # Nothing is published yet but an exclusive request's place in the queue, so a
                 # stop or a timeout leaves nothing to release once it withdraws.
                 if requested() is not None:
@@ -587,16 +644,23 @@ def heavy_slot(label, *, exclusive=False, timeout=5400, model=False):
 
 
 def read_entry(line):
-    """A log line with its time parsed, or None when it is not a whole entry."""
+    """A log line with its time parsed, or None when it is not a whole entry. A line an older toolkit wrote
+    lacks what the request saw, its holders, load and wait (#49), and reads as it is."""
+    number = lambda value: value is None or isinstance(value, (int, float))
     try:
         entry = json.loads(line)
         entry["time"] = datetime.fromisoformat(entry["time"])
         # A recovery's line counts no seconds of its own.
         field = {"admitted": "waited", "withdrawn": "waited", "ended": "held", "recovered": None}[entry["event"]]
         seconds = entry[field] if field else 0
-    except (ValueError, KeyError, TypeError):
+        # What the request saw, as the summary reads it: the load, and the refusals of each kind and the
+        # highest load of a request that waited.
+        wait = entry.get("wait")
+        seen = number(entry.get("load")) and (wait is None or (bool(wait["refusals"]) and number(wait["load"]["max"])
+            and all(type(count) is int and count > 0 for count in wait["refusals"].values())))
+    except (ValueError, KeyError, TypeError, AttributeError):
         return None
-    if (entry["time"].tzinfo is None or not isinstance(seconds, (int, float))
+    if (entry["time"].tzinfo is None or not isinstance(seconds, (int, float)) or not seen
             or not all(isinstance(entry.get(key), str) for key in ["identity", "kind", "label"])
             or (entry["event"] in ("withdrawn", "ended") and not isinstance(entry.get("outcome"), str))):
         return None
@@ -639,11 +703,32 @@ def summarize(entries, since=None, until=None):
 
     A request counts in the period when its admitted or withdrawn line falls in it; its end may come
     later. One admitted before the log's first line, whose end alone the log keeps, counts in none.
+
+    A request that waited counts behind each kind that refused it, and its wait is divided among those
+    kinds in proportion to their refusals (#49). Where the log also has requests that say what they saw,
+    those an older toolkit logged count as unrecorded.
     """
     requests = {}
     for entry in entries:
         requests.setdefault(entry["identity"], {})[entry["event"]] = entry
     groups = {}
+
+    def saw(group, first):
+        """Add what a request saw to its group: the kinds that refused it, with its wait, and its loads."""
+        if "holders" not in first:
+            group["behind"]["unrecorded"] += 1
+            group["queued"]["unrecorded"] += first["waited"]
+            return
+        group["recorded"] += 1
+        if first.get("load") is not None: group["loads"].append(first["load"])
+        wait = first.get("wait")
+        if wait is None: return
+        refusals = sum(wait["refusals"].values())
+        for kind, count in wait["refusals"].items():
+            group["behind"][kind] += 1
+            group["queued"][kind] += first["waited"] * count / refusals
+        if wait["load"]["max"] is not None: group["peaks"].append(wait["load"]["max"])
+
     for lines in requests.values():
         first, end = lines.get("admitted") or lines.get("withdrawn"), lines.get("ended")
         if first is None or (since and first["time"] < since) or (until and first["time"] >= until):
@@ -651,8 +736,10 @@ def summarize(entries, since=None, until=None):
         # Keyed by kind and label, and by kind and None for the kind as a whole.
         for key in [(first["kind"], None), (first["kind"], first["label"])]:
             group = groups.setdefault(key, {"admitted": 0, "withdrawn": Counter(), "ends": Counter(),
-                                            "waited": [], "held": []})
+                                            "waited": [], "held": [], "recorded": 0, "behind": Counter(),
+                                            "queued": Counter(), "loads": [], "peaks": []})
             group["waited"].append(first["waited"])
+            saw(group, first)
             if first["event"] == "withdrawn":
                 group["withdrawn"][first["outcome"]] += 1
                 continue
@@ -670,6 +757,14 @@ def summarize(entries, since=None, until=None):
         text = f"{group['admitted']} admitted"
         if withdrawn: text += f", {withdrawn} withdrawn ({counts(group['withdrawn'])})"
         text += f"; waited mean {duration(sum(waited) / len(waited))}, max {duration(max(waited))}"
+        behind, loads, peaks = group["behind"], group["loads"], group["peaks"]
+        if group["recorded"] and behind:
+            # The kind that refused the most requests first, and the requests an older toolkit logged last.
+            kinds = sorted(behind, key=lambda kind: (kind == "unrecorded", -behind[kind], kind))
+            text += "; waited behind " + ", ".join(f"{kind} {behind[kind]} ({duration(group['queued'][kind])})" for kind in kinds)
+        if loads:
+            text += f"; load when asked mean {sum(loads) / len(loads):.1f}, max {max(loads):.1f}"
+            if peaks: text += f", while waiting max {max(peaks):.1f}"
         if held: text += f"; held mean {duration(sum(held) / len(held))}, max {duration(max(held))}, total {duration(sum(held))}"
         if group["ends"]: text += f"; ends {counts(group['ends'])}"
         return text

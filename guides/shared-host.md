@@ -195,13 +195,13 @@ them compete for the same cores.
 ### Admission log
 
 Each host logs its heavy-work admissions, so that an audit counts how often each kind of admission
-is taken, how long requests wait and how long each holds. An October 2026 audit of exclusive work
-could not say, because nothing recorded past admissions. Admission appends one JSON line when it
-admits a request and another when that admission ends, and a request that stops waiting without
-admission appends one, as does a recovery that removes an entry. A refused attempt writes nothing,
-nor does nested work that reuses its inherited admission. Each line is written under the
-coordination lock that admission and release hold, so the lines are in the order slots were taken
-and given back.
+is taken, how long requests wait and why, and how long each holds. An October 2026 audit of
+exclusive work could not say, because nothing recorded past admissions. Admission appends one JSON
+line when it admits a request and another when that admission ends, and a request that stops
+waiting without admission appends one, as does a recovery that removes an entry. A refused attempt
+writes nothing, nor does nested work that reuses its inherited admission. Each line is written
+under the coordination lock that admission and release hold, so the lines are in the order slots
+were taken and given back.
 
 The log is `~/Library/Application Support/vocaro-engineering/admissions.jsonl`, in the account's
 durable state, because an audit looks back weeks and files in the slot directory are the
@@ -209,7 +209,7 @@ temporary-file cleaner's after three idle days
 ([scratch and result directories](#scratch-and-result-directories)). A HEAVY_SLOT_DIR namespace
 keeps its own log beside its slots. A line that would take the log past 8 MiB first makes it
 `admissions.1.jsonl`, replacing the previous generation, so the two together stay within 16 MiB;
-at two lines of 200 to 400 bytes, each holds 10,000 to 20,000 admissions. Each Mac keeps its own
+at two lines of 200 to 550 bytes, each holds 8,000 to 20,000 admissions. Each Mac keeps its own
 log: the build host logs what is admitted there.
 
 A line holds:
@@ -224,6 +224,25 @@ A line holds:
 - `slots`: the slot numbers held, on `admitted` and `ended` lines.
 - `waited`: seconds from the request to its admission or withdrawal, on `admitted` and `withdrawn`
   lines; `held`: seconds from admission to its end, on `ended` lines.
+- `holders` and `load`, on `admitted` and `withdrawn` lines: how many admissions the guard recorded
+  when the request asked, a dead or uncertain one among them, and the one-minute load average then.
+  A request admitted at once records nothing more.
+- `wait`, on the `admitted` or `withdrawn` line of a request that an attempt refused: why it waited.
+  `refusals` counts its refused attempts of each kind, about one a second; `first` and `last` are
+  the kinds of its first and last refusals; `load` holds the one-minute load its last attempt read,
+  as `last`, and the highest any read, as `max`; and `memory` is the highest memory pressure level
+  read beside its refusals, 1 normal, 2 warning and 4 critical. A load or level that could not be
+  read is null. A refusal's kind is the check that refused it:
+  - `slots`: for heavy or model work, every slot up to HEAVY_SLOTS_MAX is busy, which is every
+    guaranteed one when no adaptive slots are configured; for exclusive work, any slot is;
+  - `settle`, `load` or `memory`: every guaranteed slot is busy, and a slot taken less than
+    HEAVY_SETTLE_SECONDS ago, a load average at or above HEAVY_LOAD_LIMIT or one that cannot be
+    read, or memory pressure that is not normal withholds another;
+  - `model`: another run holds the on-device model;
+  - `exclusive`: an exclusive request is queued ahead, or exclusive work holds the host, whatever
+    the waiting message names of its slots or the model;
+  - `legacy`: a legacy gate holds its lock;
+  - `guard`: a foreign, dead or uncertain guard owner requires inspection.
 - `outcome`, on an `ended` line: `released` when the command finished, whatever its exit status;
   `not-started`; `stopped` or `timed-out` when a stop or the command's timeout saw it and every
   observed descendant end; or `uncertain` when the guard entry was kept for inspection
@@ -239,6 +258,15 @@ which leaves its guard entry for recovery as well, and a `recovered` line follow
 recovered. A log that cannot be written never fails or holds up admission or release: admission
 prints `heavy: the admission log was not written: ERROR` and goes on.
 
+A request's `wait` says why it waited, which an audit could only infer from the holders logged
+beside it. Whether admission's limits hold back work the host could run turns on the kinds: a wait
+behind `slots` is the guaranteed and maximum counts, and one behind `load`, `memory` or `settle`
+the signals that open the slots between, at the load its line records
+([vocaro-engineering#49](https://github.com/vocaro/vocaro-engineering/issues/49)). `legacy` says
+whether a legacy gate ever holds its lock, which retiring the shlock bridge waits on
+([vocaro-engineering#25](https://github.com/vocaro/vocaro-engineering/issues/25)). A line an older
+toolkit wrote has no `holders`, `load` or `wait`, and is read as it is.
+
 `eng admissions` summarizes the log over a period:
 
 ```sh
@@ -246,15 +274,21 @@ python3 scripts/eng admissions --since 2026-10-20 --until 2026-10-27
 ```
 
 It prints the times of the log's first and last lines, then, for each kind and each label within
-it, the requests admitted and withdrawn, their mean and longest waits, the mean, longest and total
-holds, and how the admissions ended: `recovered` for one with no `ended` line whose entry was
-recovered, and `unlogged` for any other without one. A request counts in
-the period in which it was admitted or withdrawn. A date or time without a zone is local. A period
-that begins before the log's first line is reported as such: older requests have rotated out and
-count nowhere. Lines that cannot be read, such as one a full volume cut short, are counted and
-skipped. Two projects' lanes of one name are counted apart, as `EPUBLib gate` and `StaticSVG gate`;
-lines an older toolkit wrote count under the lane alone, as `gate`. To summarize the build host's
-log, pass a copy, the previous generation first:
+it, the requests admitted and withdrawn, their mean and longest waits, what they waited behind,
+the loads they saw, the mean, longest and total holds, and how the admissions ended: `recovered`
+for one with no `ended` line whose entry was recovered, and `unlogged` for any other without one.
+`waited behind load 9 (30m02s)` says that the load refused 9 requests at least once, and that
+30m02s of their waits was behind it: each request's wait is divided among the kinds that refused
+it in proportion to their refusals. Beside requests that say what they saw, those an older toolkit
+logged count as `unrecorded`, with their whole waits; a kind or label with none of the former is
+summarized as before. `load when asked mean 45.1, max 412.3, while waiting max 858.0` gives the
+mean and highest load when its requests asked, and the highest that any attempt of a request that
+waited read. A request counts in the period in which it was admitted or withdrawn. A date or time
+without a zone is local. A period that begins before the log's first line is reported as such:
+older requests have rotated out and count nowhere. Lines that cannot be read, such as one a full
+volume cut short, are counted and skipped. Two projects' lanes of one name are counted apart, as
+`EPUBLib gate` and `StaticSVG gate`; lines an older toolkit wrote count under the lane alone, as
+`gate`. To summarize the build host's log, pass a copy, the previous generation first:
 
 ```sh
 python3 scripts/eng admissions <(ssh build-host \
