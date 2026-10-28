@@ -1,6 +1,7 @@
 """Small, strict project configuration without third-party dependencies."""
 import json
 import os
+import re
 from pathlib import Path
 
 TOOLKIT_ROOT = Path(__file__).resolve().parents[3]
@@ -20,7 +21,8 @@ def load(root):
     if not isinstance(value, dict) or value.get("schemaVersion") != 1:
         raise ValueError("engineering.json requires schemaVersion 1")
     allowed = {"schemaVersion", "name", "toolkit", "capabilities", "lanes", "exceptions",
-               "integration", "hostedRepositories", "voiceover", "repository", "spelling", "simulatorPool"}
+               "integration", "hostedRepositories", "voiceover", "repository", "spelling", "simulatorPool",
+               "githubArtifacts"}
     if set(value) - allowed:
         raise ValueError(f"Unknown configuration keys: {sorted(set(value) - allowed)}")
     if not isinstance(value.get("name"), str) or not value["name"]:
@@ -30,6 +32,10 @@ def load(root):
         raise ValueError("toolkit must contain only an optional checkout path")
     if value.get("integration", "direct-main") not in {"direct-main", "pull-request"}:
         raise ValueError("Unknown integration policy")
+    artifacts = value.get("githubArtifacts", [])
+    if not isinstance(artifacts, list) or any(not isinstance(name, str) or
+            not re.fullmatch(r"\.|[A-Za-z0-9_-]+", name) for name in artifacts) or len(set(artifacts)) != len(artifacts):
+        raise ValueError("githubArtifacts must list distinct package identities, or . for this package")
     repositories = value.get("hostedRepositories", [])
     if not isinstance(repositories, list) or any(not isinstance(r, str) or r.count("/") != 1 for r in repositories):
         raise ValueError("hostedRepositories must be owner/repository names")

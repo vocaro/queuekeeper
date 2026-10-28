@@ -10,7 +10,7 @@ import shutil
 import subprocess
 import sys
 
-from . import __version__, devices, disk, docs, evidence, parallel, processes, release, remote, resources, spelling
+from . import __version__, devices, disk, docs, evidence, github_artifacts, parallel, processes, release, remote, resources, spelling
 from .config import TOOLKIT_ROOT, CAPABILITIES, DEFAULT_TOOLKIT, load, source_identity
 from .resources import BUSY, FREE_WAIT
 from .simulators import matrix, pool as simulator_pool
@@ -238,7 +238,7 @@ def lane_label(root, config, lane):
     return f"{name} {lane}"
 
 
-def admit(root, args):
+def admit(root, args, config=None):
     # A command always runs here, in the current directory: its paths, devices and products are this
     # Mac's (guides/shared-host.md, Which Mac runs a lane). eng remote admit sends one on purpose.
     # Without a leading --, argparse collected the command, and a later -- belongs to it.
@@ -250,8 +250,11 @@ def admit(root, args):
                "directory": str(Path.cwd()), "exclusive": args.exclusive, "model": args.model}
     with processes.forwarding_signals(), \
             resources.Admission(" ".join(command), args.exclusive, args.timeout, args.model) as admission:
+        def work():
+            github_artifacts.configured(root, config if config is not None else load(root))
+            return processes.supervise(command, cwd=Path.cwd(), on_stop=admission.interrupted)
         return record(root / ".build/engineering/admit", receipt,
-                      lambda: processes.supervise(command, cwd=Path.cwd(), on_stop=admission.interrupted))
+                      work)
 
 
 def main(argv=None):
@@ -264,6 +267,11 @@ def main(argv=None):
     init.add_argument("--capability", action="append", choices=sorted(CAPABILITIES), default=[])
     commands.add_parser("doctor")
     commands.add_parser("instructions")
+    artifacts = commands.add_parser("github-artifacts", help="prepare checksum-pinned GitHub binary artifacts "
+        "through authenticated API downloads in SwiftPM's artifact cache")
+    artifacts.add_argument("--package", help="read this dependency's manifest at its Package.resolved commit")
+    artifacts.add_argument("--cache-path", type=Path, help="SwiftPM or Xcode package cache root; default is the "
+                           "user's standard SwiftPM cache")
     policy = commands.add_parser("policy")
     policy.add_argument("operation", choices=["refresh"])
     run = commands.add_parser("run", usage="%(prog)s [-h] [--expect N] lane [-- ARGUMENTS ...]",
@@ -420,8 +428,9 @@ def main(argv=None):
                 "source": source_identity(TOOLKIT_ROOT), "capabilities": config.get("capabilities", []),
                 "missingCommands": missing, "warnings": warnings, "buildHost": hosts}, indent=2))
             return int(bool(missing or hosts["errors"]))
+        elif args.action == "github-artifacts": github_artifacts.prepare(root, args.package, args.cache_path)
         elif args.action == "policy": refresh_policy(root)
-        elif args.action == "admit": return admit(root, args)
+        elif args.action == "admit": return admit(root, args, config)
         elif args.action == "remote": return remote.main(root, config, args)
         elif args.action == "release": return release.main(root, config, args)
         elif args.action == "source":
@@ -466,19 +475,22 @@ def main(argv=None):
             directory = root / ".build/engineering" / args.lane
             receipt = {"project": source_identity(root), "toolkit": source_identity(TOOLKIT_ROOT),
                        "policy": policy_commit}
+            def prepared(work):
+                if resource != "light": github_artifacts.configured(root, config)
+                return work()
             if group is None:
                 command = [*lane["command"], *extra]
                 receipt.update(command=command, arguments=extra)
                 def execute(on_stop=None):
-                    return record(directory, receipt, lambda: processes.run(command, cwd=root,
-                                  log_path=directory / "run.log", timeout=lane.get("timeout"), on_stop=on_stop))
+                    return record(directory, receipt, lambda: prepared(lambda: processes.run(command, cwd=root,
+                                  log_path=directory / "run.log", timeout=lane.get("timeout"), on_stop=on_stop)))
             else:
                 jobs = 1 if args.serial else lane.get("jobs", len(group))
                 receipt.update(parallel=group, jobs=jobs)
                 members = [(name, config["lanes"][name]) for name in group]
                 def execute(on_stop=None):
-                    return record(directory, receipt, lambda: parallel.lanes(root, members, directory / "lanes", jobs,
-                                  lambda member, status, log: judge(member, status, log)[0], receipt, on_stop))
+                    return record(directory, receipt, lambda: prepared(lambda: parallel.lanes(root, members, directory / "lanes", jobs,
+                                  lambda member, status, log: judge(member, status, log)[0], receipt, on_stop)))
             try:
                 with processes.forwarding_signals():
                     if resource == "light": result = execute()

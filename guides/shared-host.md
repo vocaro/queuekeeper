@@ -593,6 +593,12 @@ the build host is unchanged. A token reaches only the repositories it names, rea
 expires: renew it before then. Check the build host with a light lane first, such as this
 toolkit's `python3 scripts/eng remote run python-tests`.
 
+Private GitHub release assets need the authenticated API as well as Git source access.
+Declare their packages in `githubArtifacts`; admitted builds use the shared
+[artifact preparation](public-access.md#private-binary-artifacts-and-build-credentials), whose
+credential lookup reads this same run-scoped Git helper. Do not put a token into a package
+manifest, asset URL or committed configuration.
+
 ## Scratch and result directories
 
 A worktree that builds a package and its apps holds 8 to 14 GB of SwiftPM and Xcode output, and
