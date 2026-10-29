@@ -352,7 +352,9 @@ on behind a lock made by hand. A command started over SSH there runs in an audit
 own and is not trusted for accessibility (on the 27.2 beta 26B5091g as on 27.2 26B123), yet the
 window server gives it the console user's session: it opens offscreen windows and reads its own
 accessibility. On macOS 27.2 (26B123), locked with the display awake, EPUBLib's Mac suite passed
-there twice, case for case with this Mac's unlocked run. What a locked screen or a sleeping
+there twice, case for case with this Mac's unlocked run, and its whole gate passed there behind
+a lock made by hand, its Mac suite waking the display with the lane's `"display": true`
+(2026-10-29). What a locked screen or a sleeping
 display has been seen to stop, on which Mac and build, what wakes a locked screen's display and
 keeps it on, and what is unmeasured, is in
 [lock screen and display sleep](background-mac-testing.md#lock-screen-and-display-sleep).
