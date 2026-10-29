@@ -1,6 +1,7 @@
 import contextlib
 from io import StringIO
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -25,6 +26,12 @@ RENDEZVOUS = textwrap.dedent("""
         time.sleep(0.05)
     print("Ran 1 test")
 """)
+
+
+def is_open(fd):
+    try: os.fstat(fd)
+    except OSError: return False
+    return True
 
 
 def module(name, body):
@@ -222,6 +229,20 @@ class LaneGroupTests(unittest.TestCase):
         slow = json.loads((self.root / ".build/engineering/group/lanes/slow.json").read_text())
         self.assertEqual((slow["status"], slow["executedTests"]), (3, None))
         self.assertIn("timed out after 1s", slow["error"])
+
+    def test_lanes_start_under_an_admission_token_whose_descriptor_this_process_does_not_hold(self):
+        # eng unittest under eng admit starts this module's process with the admission's token and
+        # without its descriptor. Passed on, that closed descriptor stopped a lane from starting.
+        closed = next(fd for fd in range(200, 1000) if not is_open(fd))
+        token = json.dumps({"schemaVersion": 1, "locks": [{"fd": closed, "path": str(self.root / "slot0"), "nonce": "outer"}]})
+        self.configure({"one": {"command": [sys.executable, "-c", "print('Ran 1 test')"], "minimumTests": 1},
+                        "two": {"command": [sys.executable, "-c", "print('Ran 1 test')"], "minimumTests": 1},
+                        "group": {"parallel": ["one", "two"]}})
+        for lane in ["one", "group"]:
+            with self.subTest(lane), patch.dict(os.environ, {"VOCARO_RESOURCE_TOKEN": token}):
+                status, output = self.run_lane(lane)
+                self.assertEqual(status, 0, output)
+                self.assertNotIn("did not start", output)
 
     def test_a_group_takes_no_arguments_and_serial_needs_a_group(self):
         self.configure({"one": {"command": [sys.executable, "-c", "pass"]}, "group": {"parallel": ["one"]}})

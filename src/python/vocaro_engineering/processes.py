@@ -80,6 +80,32 @@ def owners(identities, environment):
     return sorted(pid for pid, start in identities.items() if (pid, " ".join(start.split())) in recorded)
 
 
+def held_locks(environment):
+    """The descriptors of the admission locks that the environment's token names and this process
+    holds, for the command to inherit: each open on the lock file its entry names, which names the
+    entry's owner.
+
+    A token can reach a process without its descriptors, as `eng unittest` starts each module's
+    process, and its numbers then name nothing or another file. Passed on, a closed one stopped a
+    lane from starting with EBADF, and an open one gave the command that file (#70). The command
+    keeps the token, so a nested admission in it refuses the token rather than taking a slot.
+    """
+    try:
+        locks = json.loads(environment.get("VOCARO_RESOURCE_TOKEN") or "{}").get("locks", [])
+    except (ValueError, AttributeError):
+        return ()
+    held = []
+    for item in locks if isinstance(locks, list) else []:
+        try:
+            opened, named = os.fstat(item["fd"]), os.stat(item["path"])
+            if (opened.st_dev, opened.st_ino) == (named.st_dev, named.st_ino) and \
+                    item["nonce"] in os.pread(item["fd"], 4096, 0).decode(errors="replace"):
+                held.append(item["fd"])
+        except (KeyError, TypeError, ValueError, OSError):
+            continue
+    return tuple(held)
+
+
 class NotStarted(OSError):
     """The command could not be started, so it left no process to wait for."""
 
@@ -161,6 +187,9 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
     settles its entry, which SIGKILL would strand. After the first SIGTERM or stop signal, such an
     owner's new children are left to it.
 
+    The command inherits the admission lock descriptors that the token in env names and this
+    process holds (held_locks), so that nested work reuses the admission.
+
     Inside an admission this process holds, the admission's process record gets the command before
     it starts, then its root, each process and each process group or session at the first sample
     that sees it, and a confirmed end, so that `eng admissions recover` can run this census once
@@ -169,8 +198,7 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
     if requested() is not None:
         raise Interrupted(requested(), "before its command started")
     environment = dict(os.environ) if env is None else env
-    token = json.loads(environment.get("VOCARO_RESOURCE_TOKEN", "{}"))
-    descriptors = tuple(item["fd"] for item in token.get("locks", []))
+    descriptors = held_locks(environment)
     from vocaro_engineering.resources import holding
     admission, key = holding(environment), uuid.uuid4().hex
 

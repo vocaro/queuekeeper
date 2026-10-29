@@ -11,7 +11,7 @@ import unittest
 from unittest.mock import patch
 SOURCE = Path(__file__).resolve().parents[1] / "src/python"
 sys.path.insert(0, str(SOURCE))
-from vocaro_engineering import processes
+from vocaro_engineering import processes, resources
 
 # Starts each descendant in its own session, as Xcode starts DTServiceHub apart from xcodebuild's
 # group, and exits 3 once each is ready and the supervisor has seen it under this root.
@@ -487,3 +487,90 @@ class NestedAdmissionTests(unittest.TestCase):
         self.assertIsInstance(outcome, RuntimeError)
         self.assertIn(f"PID {orphan} (group {orphan}, session ", str(outcome))
         self.assertIn("reservation retained", str(outcome))
+
+
+# Prints the inode open at descriptor argv[1], or "closed".
+DESCRIPTOR = """
+import os, sys
+try: print("open", os.fstat(int(sys.argv[1])).st_ino)
+except OSError: print("closed")
+"""
+# Validates the inherited admission, then runs a command that validates it again: nested work two deep.
+REUSES = """
+import sys
+from pathlib import Path
+from vocaro_engineering import processes, resources
+print("child", resources.inherited(), flush=True)
+log = Path(sys.argv[1]) / "grandchild.log"
+status = processes.run([sys.executable, "-c", "from vocaro_engineering import resources; print('grandchild', resources.inherited())"],
+                       cwd=sys.argv[1], log_path=log)
+print(log.read_text(), end="")
+raise SystemExit(status)
+"""
+
+
+def is_open(fd):
+    try: os.fstat(fd)
+    except OSError: return False
+    return True
+
+
+class InheritedDescriptorTests(unittest.TestCase):
+    """A command inherits the admission lock descriptors that the token names only while this process
+    holds them. eng unittest under eng admit starts each module's process with the token and without
+    its descriptor, and a lane group's lane in one failed to start with EBADF (#70)."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.here = Path(temporary.name)
+        # The caller's own token is restored afterward.
+        variables = patch.dict(os.environ, {"PYTHONPATH": str(SOURCE), "HEAVY_SLOT_DIR": str(self.here / "slots"),
+                                            "SW_GATE_LOCK_FILE": str(self.here / "gate")})
+        variables.start()
+        self.addCleanup(variables.stop)
+        os.environ.pop(resources.TOKEN, None)
+
+    def run_with(self, token, *command):
+        """Run a Python command under this token, as a lane runs, and return its status and output."""
+        log = self.here / "command.log"
+        status = processes.run([sys.executable, "-c", *command], cwd=self.here, log_path=log,
+                               env={**os.environ, resources.TOKEN: token})
+        return status, log.read_text()
+
+    def test_a_command_inherits_an_admissions_descriptors_and_reuses_it_two_deep(self):
+        with contextlib.redirect_stderr(StringIO()), resources.Admission("outer", timeout=0):
+            token = os.environ[resources.TOKEN]
+            self.assertEqual(self.run_with(token, REUSES, str(self.here)), (0, "child True\ngrandchild True\n"))
+            # The descriptor reaches the command as the lock file itself.
+            (item,) = json.loads(token)["locks"]
+            self.assertEqual(self.run_with(token, DESCRIPTOR, str(item["fd"])),
+                             (0, f"open {os.stat(item['path']).st_ino}\n"))
+
+    def test_a_descriptor_this_process_does_not_hold_as_the_tokens_lock_is_not_passed(self):
+        # A number nothing here holds, above the descriptors Popen's own pipes take.
+        number = next(fd for fd in range(200, 1000) if not is_open(fd))
+        lock, unrelated = self.here / "lock", self.here / "unrelated"
+        lock.write_text(f"{os.getpid()} forged label\n")
+        unrelated.write_text("not a lock\n")
+        token = lambda nonce="forged": json.dumps({"schemaVersion": 1, "exclusive": False, "model": False,
+            "guard": str(self.here / "gate.warm-push-guard"), "locks": [{"fd": number, "path": str(lock), "nonce": nonce}]})
+        # Closed here, as the token's descriptor is in a module's process: passing it stopped the
+        # command from starting with EBADF. A token that is not JSON names nothing to pass.
+        for case, value in {"closed": token(), "not JSON": "{"}.items():
+            with self.subTest(case):
+                self.assertEqual(self.run_with(value, DESCRIPTOR, str(number)), (0, "closed\n"))
+        # Open on another file, or on the lock without the token's owner in it: passing it gave the
+        # command that file. The positive control: open on the lock that names the owner, it is passed.
+        cases = [("another file", unrelated, "forged", "closed"), ("another owner", lock, "another", "closed"),
+                 ("the owner's lock", lock, "forged", f"open {os.stat(lock).st_ino}")]
+        for case, path, nonce, expected in cases:
+            with self.subTest(case):
+                fd = os.open(path, os.O_RDWR)
+                try:
+                    os.dup2(fd, number)
+                    result = self.run_with(token(nonce), DESCRIPTOR, str(number))
+                finally:
+                    os.close(fd)
+                    os.close(number)
+                self.assertEqual(result, (0, f"{expected}\n"))
