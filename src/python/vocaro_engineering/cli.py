@@ -372,8 +372,8 @@ def main(argv=None):
         f"only if it can start it now, and never run it here: exit {BUSY} when the second Mac declines it, cannot be "
         f"reached or none is configured, {remote.MISCONFIGURED} when it is misconfigured, else the lane's status "
         "there; for a caller that holds or will take its own admission here")
-    # Its name until vocaro-engineering#58, still read, with a warning, until the projects have moved.
-    where.add_argument("--build-host-only", action="store_true", help=argparse.SUPPRESS)
+    # Its name until vocaro-engineering#58, which main refuses, naming the new one, beside --here too.
+    run.add_argument("--build-host-only", action="store_true", help=argparse.SUPPRESS)
     run.add_argument("--if-free", action="store_true", help=f"run only if the second Mac's heavy-work admission, or "
         f"else this Mac's, admits the lane within {FREE_WAIT}s; otherwise exit {BUSY} without running it")
     run.add_argument("--serial", action="store_true", help="run a lane group's lanes one after another, on this "
@@ -532,8 +532,6 @@ def main(argv=None):
             warnings += stale_copies(root)
             # A difference between the two Macs is an error; a second Mac that cannot be reached is unchecked.
             hosts = remote.compare_hosts()
-            # offload was buildHost until vocaro-engineering#58. No script reads the report, so it is
-            # not printed under both (guides/shared-host.md, Earlier names).
             print(json.dumps({"project": config["name"], "toolkit": str(TOOLKIT_ROOT),
                 "source": source_identity(TOOLKIT_ROOT), "capabilities": config.get("capabilities", []),
                 "missingCommands": missing, "warnings": warnings, "offload": hosts}, indent=2))
@@ -558,6 +556,9 @@ def main(argv=None):
                 if args.query.lower() in (item["title"] + " " + item["path"]).lower():
                     print(f"{item['id']}: {item['title']} — {TOOLKIT_ROOT / item['path']}")
         elif args.action == "run":
+            if args.build_host_only:
+                raise ValueError("--build-host-only was --offload-only's name until vocaro-engineering#58, and is no "
+                                 "longer read: use --offload-only (guides/shared-host.md, Earlier names)")
             lane = config.get("lanes", {}).get(args.lane)
             if lane is None: raise ValueError(f"No configured lane: {args.lane}")
             if args.expect is not None and args.expect < 1: raise ValueError("--expect needs at least 1 test")
@@ -571,10 +572,7 @@ def main(argv=None):
             if group is None and args.serial: raise ValueError(f"--serial runs a lane group, and {args.lane} is not one")
             # Why the lane runs only here, as its configuration says, or None: it goes to the second Mac.
             reason = stays(config["lanes"], args.lane)
-            if args.build_host_only:
-                print("eng: --build-host-only is --offload-only's old name, read only until the projects have moved: "
-                      "use --offload-only (guides/shared-host.md, Earlier names)", file=sys.stderr, flush=True)
-            if args.offload_only or args.build_host_only:
+            if args.offload_only:
                 if reason is not None:
                     raise ValueError(f"{args.lane} stays on this Mac ({reason}), so --offload-only cannot offer it "
                                      "to the second Mac")

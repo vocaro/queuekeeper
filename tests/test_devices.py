@@ -271,26 +271,30 @@ class DeviceRecordTests(unittest.TestCase):
         self.assertNotIn("offload", recovered["recovery"])
         self.assertEqual(asked, [])
 
-    def test_recovery_still_reads_the_old_name_of_offload_unchecked_and_says_to_use_the_new_one(self):
+    def test_recovery_refuses_the_old_name_of_offload_unchecked_with_the_new_one_and_hides_it_from_help(self):
+        refused = ("devices: --build-host-unchecked was --offload-unchecked's name until vocaro-engineering#58, and "
+                   "is no longer read: use --offload-unchecked (guides/shared-host.md, Earlier names)\n")
         entry = self.reserve(device=PHONE)
-        started = devices.now()
-        run = {"host": "build-host", "startedAt": started}
-        for given, recorded, said in [
-                (["--build-host-unchecked", "it is gone"], "it is gone", "use --offload-unchecked"),
-                (["--build-host-unchecked", "old", "--offload-unchecked", "new"], "new",
-                 "--offload-unchecked is given too, and wins")]:
+        entry = self.record.update("iPhone", owner="session-a", revision=entry["revision"], uncertain=True,
+                                   run={"host": "build-host", "startedAt": devices.now()})
+        before = self.path.read_bytes()
+        recover = ["recover", "iPhone", "--by", "owner", "--revision", str(entry["revision"]), "--verified",
+                   "checked by hand"]
+        # Refused alone, with an empty reason, and beside the new name, and the record is unchanged.
+        for given in (["--build-host-unchecked", "it is gone"], ["--build-host-unchecked", ""],
+                      ["--build-host-unchecked", "old", "--offload-unchecked", "new"]):
             with self.subTest(given):
-                entry = self.record.update("iPhone", owner=entry.get("ownerChatID") or "session-a",
-                                           revision=entry["revision"], uncertain=True, run=run)
-                code, output, error = self.cli("recover", "iPhone", "--by", "owner", "--revision",
-                                               str(entry["revision"]), "--verified", "checked by hand", *given)
-                self.assertEqual(code, 0, error)
-                self.assertEqual(json.loads(output)["entry"]["recovery"]["offload"],
-                                 {"host": "build-host", "unchecked": recorded})
-                self.assertIn("devices: --build-host-unchecked is --offload-unchecked's old name, read only until "
-                              f"the projects have moved: {said} (guides/shared-host.md, Earlier names)", error)
-                entry = self.reserve(owner="session-b", revision=json.loads(output)["entry"]["revision"],
-                                     approval=approval())
+                self.assertEqual(self.cli(*recover, *given), (2, "", refused))
+        self.assertEqual(self.path.read_bytes(), before)
+        with contextlib.redirect_stdout(StringIO()) as shown, self.assertRaises(SystemExit):
+            devices.main(["recover", "--help"])
+        self.assertIn("--offload-unchecked", shown.getvalue())
+        self.assertNotIn("build-host", shown.getvalue())
+        # The positive control: the new name recovers the entry, recording the owner's reason.
+        code, output, error = self.cli(*recover, "--offload-unchecked", "it is gone")
+        self.assertEqual((code, error), (0, ""), error)
+        self.assertEqual(json.loads(output)["entry"]["recovery"]["offload"], {"host": "build-host",
+                                                                              "unchecked": "it is gone"})
 
     def test_unverified_restoration_keeps_the_device_until_its_owner_releases_it(self):
         entry = self.reserve()

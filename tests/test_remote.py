@@ -5,6 +5,7 @@ from io import StringIO
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import shutil
 import signal
@@ -250,6 +251,8 @@ class RemoteTests(unittest.TestCase):
             os.environ.pop(name, None)
         os.environ.pop("VOCARO_RESOURCE_TOKEN", None)
         os.environ.pop("DEVELOPER_DIR", None)
+        # VOCARO_OFFLOAD_HOST's old name, which eng refuses, is set only where a test sets it.
+        os.environ.pop(remote.OLD_HOST_VARIABLE, None)
         # A run on the real second Mac hands its git the credential file through these.
         for key in [key for key in os.environ if key.startswith("GIT_CONFIG_") and key != "GIT_CONFIG_GLOBAL"]:
             del os.environ[key]
@@ -840,9 +843,8 @@ class RemoteTests(unittest.TestCase):
                       (self.project / ".build/engineering/remote/gate/run.log").read_text())
         self.assertFalse((self.project / ".build/engineering/gate").exists())
         self.assertEqual(self.eng("remote", "passed", "gate")[0], 0)
-        # The new names read without a warning: VOCARO_OFFLOAD_HOST, and a lane with no buildHost.
-        self.assertNotIn("old name", error)
-        self.assertNotIn("redundant", error)
+        # The new names run without a refusal: VOCARO_OFFLOAD_HOST, and a lane with no buildHost.
+        self.assertNotIn("vocaro-engineering#58", error)
 
     def test_every_heavy_lane_goes_to_the_second_mac_unless_it_says_why_and_each_receipt_says_where_it_ran(self):
         # check is heavy and says nothing of the second Mac: it goes there, where its provision lane runs first.
@@ -867,19 +869,39 @@ class RemoteTests(unittest.TestCase):
                 self.assertEqual((receipt["ranOn"], receipt["mac"], receipt["hereBecause"]),
                                  ("this Mac", offload_host.mac_name(), because))
                 self.assertFalse((self.project / ".build/engineering/remote" / lane).exists())
-        # The negative control: buildHost: true, which once sent a lane there, still does, read until the
-        # projects have moved, with a warning that says to delete it.
-        settings = json.loads((self.project / "engineering.json").read_text())
-        for name in ["gate", "pair"]: settings["lanes"][name]["buildHost"] = True
-        (self.project / "engineering.json").write_text(json.dumps(settings, indent=2))
-        commit_all(self.project)
+
+    def test_buildhost_on_a_lane_or_group_is_refused_before_anything_runs_on_either_mac(self):
+        # vocaro-engineering#58 removed it. A checkout that still gives it, true to send a lane there or
+        # false to keep it here, is refused, rather than having its work go where it did not say.
+        refused = ("eng: engineering.json gives {} \"buildHost\", which vocaro-engineering#58 removed: every heavy or "
+                   "exclusive lane goes to the second Mac unless it says why it stays, with \"here\": \"REASON\", so "
+                   "delete {}, and rebase a checkout older than that change onto main (guides/shared-host.md, "
+                   "Earlier names)\n")
+        original = (self.project / "engineering.json").read_text()
+        for marks, named, pronoun in [({"gate": True}, "gate", "it"), ({"gate": False}, "gate", "it"),
+                                      ({"pair": True}, "pair", "it"), ({"pair": False}, "pair", "it"),
+                                      ({"gate": True, "pair": False}, "gate and pair", "each"),
+                                      ({"fail": True, "gate": False, "pair": True}, "fail, gate and pair", "each")]:
+            with self.subTest(marks):
+                settings = json.loads(original)
+                for name, value in marks.items(): settings["lanes"][name]["buildHost"] = value
+                (self.project / "engineering.json").write_text(json.dumps(settings, indent=2))
+                for arguments in (["gate"], ["--here", "gate"], ["--offload-only", "gate"], ["pair"], ["fail"]):
+                    status, output, error = self.run_here(*arguments)
+                    self.assertEqual((status, error), (2, refused.format(named, pronoun)), output + error)
+                status, output, error = self.eng("remote", "run", "gate")
+                self.assertEqual((status, error), (2, refused.format(named, pronoun)), output + error)
+                # Nothing ran on either Mac: no result here, and nothing reached the second Mac.
+                for place in ["gate", "pair", "fail", "remote/gate", "remote/pair"]:
+                    self.assertFalse((self.project / ".build/engineering" / place).exists(), place)
+                self.assertFalse((self.home / remote.ROOT).exists())
+        # The positive control: the same lanes without it run, the heavy one on the second Mac.
+        (self.project / "engineering.json").write_text(original)
         status, output, error = self.run_here("gate")
         self.assertEqual(status, 0, output + error)
         self.assertEqual(json.loads((self.project / ".build/engineering/remote/gate/source.json").read_text())["ranOn"],
                          "second Mac")
-        self.assertIn("eng: engineering.json marks gate and pair \"buildHost\": true, which is redundant, since every "
-                      "heavy or exclusive lane goes to the second Mac unless it says why it stays, with \"here\": delete "
-                      "each; it is read only until the projects have moved (guides/shared-host.md, Earlier names)", error)
+        self.assertNotIn("buildHost", error)
 
     def test_a_receipt_from_before_the_rename_counts_as_one_of_now(self):
         # Receipts written before vocaro-engineering#58 say the second Mac's run ran on the build host.
@@ -1468,59 +1490,79 @@ exec {shlex.quote(real)} "$@"
         with self.assertRaises(SystemExit):
             self.run_here("--offload-only", "--here", "gate")
 
-    def test_the_old_name_of_offload_only_still_offers_the_lane_there_and_says_to_use_the_new_one(self):
-        said = ("eng: --build-host-only is --offload-only's old name, read only until the projects have moved: use "
-                "--offload-only (guides/shared-host.md, Earlier names)")
+    def test_the_old_name_of_offload_only_is_refused_with_the_new_one_and_hidden_from_help(self):
+        refused = ("eng: --build-host-only was --offload-only's name until vocaro-engineering#58, and is no longer "
+                   "read: use --offload-only (guides/shared-host.md, Earlier names)\n")
+        # Refused whatever the lane and beside any other flag, before anything runs on either Mac.
+        for arguments in (["gate"], ["failing"], ["build"], ["fail"], ["pair"], ["--here", "gate"],
+                          ["--offload-only", "gate"], ["--if-free", "gate"], ["--serial", "pair"], ["missing"]):
+            with self.subTest(arguments):
+                status, output, error = self.run_here("--build-host-only", *arguments)
+                self.assertEqual((status, error), (2, refused), output + error)
+        for place in ["gate", "failing", "build", "fail", "pair", "remote/gate", "remote/failing", "remote/pair"]:
+            self.assertFalse((self.project / ".build/engineering" / place).exists(), place)
+        self.assertFalse((self.home / remote.ROOT).exists())
+        # Help names only the new flag.
+        with contextlib.redirect_stdout(StringIO()) as shown, self.assertRaises(SystemExit):
+            cli.main(["--project", str(self.project), "run", "--help"])
+        self.assertIn("--offload-only", shown.getvalue())
+        self.assertNotIn("build-host", shown.getvalue())
+        # The positive control: the new name offers the lane to the second Mac, which runs it.
         status, output, error = self.run_here("--offload-only", "gate")
         self.assertEqual(status, 0, output + error)
-        self.assertNotIn("old name", error)
-        status, output, error = self.run_here("--build-host-only", "failing")
-        self.assertEqual(status, 5, output + error)
-        self.assertIn(said, error)
-        self.assertIn("Ran 2 tests", (self.project / ".build/engineering/remote/failing/run.log").read_text())
-        with self.busy_second_mac():
-            status, output, error = self.run_here("--build-host-only", "gate")
-        self.assertEqual(status, resources.BUSY, output + error)
-        self.assertIn(said, error)
-        for lane in ["gate", "failing"]:
-            self.assertFalse((self.project / ".build/engineering" / lane).exists())
-        # It is the same flag: it stays exclusive of --here, and one of the two names is enough.
-        status, _output, error = self.run_here("--build-host-only", "build")
-        self.assertEqual(status, 2)
-        self.assertIn("build stays on this Mac (the lane says: its goldens", error)
-        self.assertIn("so --offload-only cannot offer it to the second Mac", error)
-        for both in (["--build-host-only", "--here"], ["--build-host-only", "--offload-only"]):
-            with self.subTest(both), self.assertRaises(SystemExit):
-                self.run_here(*both, "gate")
+        self.assertEqual(json.loads((self.project / ".build/engineering/remote/gate/source.json").read_text())["ranOn"],
+                         "second Mac")
+        self.assertNotIn("vocaro-engineering#58", error)
 
-    def test_the_old_name_of_the_offload_variable_is_still_read_and_the_new_name_wins(self):
-        warning = ("eng: VOCARO_BUILD_HOST is VOCARO_OFFLOAD_HOST's old name, read only until the projects have "
-                   "moved: ")
+    def test_the_old_name_of_the_offload_variable_is_refused_before_eng_chooses_a_mac(self):
+        refused = ("VOCARO_BUILD_HOST was VOCARO_OFFLOAD_HOST's name until vocaro-engineering#58, and is no longer "
+                   "read: unset it, and set VOCARO_OFFLOAD_HOST instead, to the same value (none keeps work on this "
+                   "Mac). eng chooses no Mac while it is set, since ignoring it could send work to the second Mac "
+                   "that it was meant to keep here (guides/shared-host.md, Earlier names)")
         receipt = lambda place: json.loads((self.project / ".build/engineering" / place / "source.json").read_text())
-        with contextlib.redirect_stderr(StringIO()) as said:
-            self.assertEqual(remote.configured(), "fake")
-        self.assertEqual(said.getvalue(), "")
-        del os.environ["VOCARO_OFFLOAD_HOST"]
-        with patch.dict(os.environ, {"VOCARO_BUILD_HOST": "fake"}):
-            status, output, error = self.run_here("gate")
-        self.assertEqual(status, 0, output + error)
-        self.assertEqual((receipt("remote/gate")["ranOn"], receipt("remote/gate")["host"]), ("second Mac", "fake"))
-        self.assertIn(warning + "set VOCARO_OFFLOAD_HOST instead (guides/shared-host.md, Earlier names)", error)
-        # eng remote reads it too, when no --host is given.
-        with patch.dict(os.environ, {"VOCARO_BUILD_HOST": "fake"}):
-            status, output, error = self.eng("remote", "run", "check")
-        self.assertEqual(status, 0, output + error)
-        self.assertIn(warning, error)
-        # When both are set, the new name wins, whichever way they point.
-        for new, old, place in [("none", "fake", "gate"), ("fake", "none", "remote/gate")]:
-            with self.subTest(new=new, old=old), patch.dict(os.environ, {"VOCARO_OFFLOAD_HOST": new,
-                                                                          "VOCARO_BUILD_HOST": old}):
-                shutil.rmtree(self.project / ".build/engineering" / place, ignore_errors=True)
-                status, output, error = self.run_here("gate")
-                self.assertEqual(status, 0, output + error)
-                self.assertEqual(receipt(place)["ranOn"], "this Mac" if new == "none" else "second Mac")
-                self.assertIn(warning + "VOCARO_OFFLOAD_HOST is set too, and wins, so unset VOCARO_BUILD_HOST "
-                              "(guides/shared-host.md, Earlier names)", error)
+        # The positive control: the new name alone names the second Mac, or none, without a word.
+        for new, found in [("fake", "fake"), ("none", None)]:
+            with patch.dict(os.environ, {"VOCARO_OFFLOAD_HOST": new}), contextlib.redirect_stderr(StringIO()) as said:
+                self.assertEqual(remote.configured(), found)
+            self.assertEqual(said.getvalue(), "")
+        probe = self.probe()
+        # Set at all, alone or beside the new name, either way they point, the old name is refused wherever
+        # eng would read the new one: before it chooses a Mac for a lane or a command, in eng remote without
+        # --host, and in eng doctor. Nothing runs on either Mac.
+        for new, old in [(None, "fake"), (None, "none"), (None, ""), ("fake", "none"), ("none", "fake"), ("fake", "fake")]:
+            with self.subTest(new=new, old=old), patch.dict(os.environ, {"VOCARO_BUILD_HOST": old}):
+                if new is None: os.environ.pop("VOCARO_OFFLOAD_HOST")
+                else: os.environ["VOCARO_OFFLOAD_HOST"] = new
+                with self.assertRaises(ValueError) as raised: remote.configured()
+                self.assertEqual(str(raised.exception), refused)
+                for arguments in (["gate"], ["--offload-only", "gate"], ["--if-free", "gate"], ["pair"]):
+                    status, output, error = self.run_here(*arguments)
+                    self.assertEqual((status, error), (2, f"eng: {refused}\n"), output + error)
+                status, output, error = self.admit_in(self.project, "--verify", "--", *probe)
+                self.assertEqual((status, error), (2, f"eng: {refused}\n"), output + error)
+                for arguments in (["remote", "run", "check"], ["remote", "admit", "--", *probe], ["doctor"]):
+                    status, output, error = self.eng(*arguments)
+                    self.assertEqual((status, output, error), (2, "", f"eng: {refused}\n"), arguments)
+                for place in ["gate", "pair", "check", "admit", "remote/gate", "remote/pair", "remote/check",
+                              "remote/admit"]:
+                    self.assertFalse((self.project / ".build/engineering" / place).exists(), place)
+                self.assertFalse(self.ran.exists())
+                self.assertFalse((self.home / remote.ROOT).exists())
+        # A command that neither chooses a Mac nor reaches the second Mac never read it, and runs as before:
+        # a light lane, a lane that says here, --here, and eng admit without --verify, all here; and eng remote
+        # given --host, there.
+        with patch.dict(os.environ, {"VOCARO_BUILD_HOST": "none"}):
+            for arguments, status, place in [(["fail"], 3, "fail"), (["build"], 0, "build"), (["--here", "gate"], 0, "gate")]:
+                result = self.run_here(*arguments)
+                self.assertEqual(result[0], status, result)
+                self.assertEqual(receipt(place)["ranOn"], "this Mac")
+                self.assertNotIn("vocaro-engineering#58", result[2])
+            status, output, error = self.admit_in(self.project, "--", *probe)
+            self.assertEqual((status, self.ran_in()), (0, self.project.resolve()), output + error)
+            status, output, error = self.eng("remote", "run", "--host", "fake", "check")
+            self.assertEqual(status, 0, output + error)
+            self.assertEqual((receipt("remote/check")["ranOn"], receipt("remote/check")["host"]), ("second Mac", "fake"))
+            self.assertNotIn("vocaro-engineering#58", error)
 
     def test_without_the_variable_the_second_mac_is_the_alias_that_ssh_config_defines(self):
         del os.environ["VOCARO_OFFLOAD_HOST"]
@@ -1761,13 +1803,39 @@ exec {shlex.quote(real)} "$@"
                          "nested in the admission it inherits")
         self.assertFalse((self.home / remote.ROOT).exists())
 
-    def test_only_a_heavy_lane_that_keeps_off_the_screen_may_go_to_the_second_mac(self):
-        for lane in [{"command": ["true"], "buildHost": True}, {"command": ["true"], "resource": "heavy", "buildHost": 1},
-                     {"command": ["true"], "resource": "heavy", "foreground": True, "buildHost": True}]:
-            with self.subTest(lane):
-                (self.project / "engineering.json").write_text(json.dumps(
-                    {"schemaVersion": 1, "name": "Example", "lanes": {"lane": lane}}))
-                with self.assertRaises(ValueError): config.load(self.project)
+    def test_configuration_refuses_buildhost_on_any_lane_or_group_whatever_its_value(self):
+        # vocaro-engineering#58 removed it. True, which sent a lane to the second Mac, and false, which no longer
+        # kept one here, are refused alike, on a lane of any kind and on a group, before any other check.
+        refused = ("engineering.json gives {} \"buildHost\", which vocaro-engineering#58 removed: every heavy or "
+                   "exclusive lane goes to the second Mac unless it says why it stays, with \"here\": \"REASON\", so "
+                   "delete {}, and rebase a checkout older than that change onto main (guides/shared-host.md, "
+                   "Earlier names)")
+        heavy = {"command": ["true"], "resource": "heavy"}
+        kinds = [{"lane": heavy}, {"lane": {"command": ["true"]}}, {"lane": {**heavy, "foreground": True}},
+                 {"lane": {**heavy, "here": "GPU goldens"}}, {"lane": heavy, "group": {"parallel": ["lane"], "resource": "heavy"}}]
+        for lanes in kinds:
+            marked = "group" if "group" in lanes else "lane"
+            for value in [True, False, 1, None]:
+                with self.subTest(lanes=lanes, value=value):
+                    (self.project / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
+                        "lanes": {**lanes, marked: {**lanes[marked], "buildHost": value}}}))
+                    with self.assertRaises(ValueError) as raised: config.load(self.project)
+                    self.assertEqual(str(raised.exception), refused.format(marked, "it"))
+        # It names every lane and group that gives it, so that one change fixes them all.
+        (self.project / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example", "lanes": {
+            "a": {**heavy, "buildHost": True}, "b": heavy, "c": {**heavy, "buildHost": False},
+            "g": {"parallel": ["b"], "resource": "heavy", "buildHost": True}}}))
+        with self.assertRaises(ValueError) as raised: config.load(self.project)
+        self.assertEqual(str(raised.exception), refused.format("a, c and g", "each"))
+        # The positive control: the same lanes without it load, and the heavy ones go to the second Mac.
+        for lanes, reason in zip(kinds, [None, "a light lane runs where it starts", "it takes this Mac's screen",
+                                         "the lane says: GPU goldens", None]):
+            with self.subTest(lanes=lanes), contextlib.redirect_stderr(StringIO()) as said:
+                (self.project / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
+                                                                           "lanes": lanes}))
+                loaded = config.load(self.project)["lanes"]
+                self.assertEqual(config.stays(loaded, "group" if "group" in lanes else "lane"), reason)
+            self.assertEqual(said.getvalue(), "")
 
     def test_a_lane_that_stays_here_says_why_and_runs_here(self):
         heavy = {"command": ["true"], "resource": "heavy"}
@@ -1775,33 +1843,23 @@ exec {shlex.quote(real)} "$@"
             "a lane that stays here gives no reason": {"lane": {**heavy, "here": ""}},
             "a reason is words": {"lane": {**heavy, "here": True}},
             "a blank reason": {"lane": {**heavy, "here": "  "}},
-            "buildHost false gives none": {"lane": {**heavy, "buildHost": False}},
             "a light lane runs here already": {"lane": {"command": ["true"], "here": "GPU goldens"}},
             "a foreground lane runs here already": {"lane": {**heavy, "foreground": True, "here": "GPU goldens"}},
-            "both ways at once": {"lane": {**heavy, "buildHost": True, "here": "GPU goldens"}},
-            "a group sent there runs a lane that stays": {"lane": {**heavy, "here": "GPU goldens"}, "other": heavy,
-                "group": {"parallel": ["lane", "other"], "resource": "heavy", "buildHost": True}},
             "a group's own reason": {"other": heavy, "group": {"parallel": ["other"], "resource": "heavy", "here": ""}}}
-        messages = {"buildHost false gives none": "replace it with \"here\": \"REASON\"",
-                    "a group sent there runs a lane that stays": "its lane lane stays on this Mac (here)"}
         for case, lanes in invalid.items():
             with self.subTest(case):
                 (self.project / "engineering.json").write_text(json.dumps(
                     {"schemaVersion": 1, "name": "Example", "lanes": lanes}))
-                with self.assertRaises(ValueError) as refused: config.load(self.project)
-                if case in messages: self.assertIn(messages[case], str(refused.exception))
-        # The positive controls: a lane, and a group, that say why, a group that runs such a lane, and the
-        # old mark, which is the default now.
+                with self.assertRaises(ValueError): config.load(self.project)
+        # The positive controls: a lane, and a group, that say why, a group that runs such a lane, and a
+        # lane that says nothing, which goes to the second Mac.
         goldens = {"command": [sys.executable, "-c", "print('Ran 1 tests')"], "resource": "heavy",
                    "minimumTests": 1, "here": "its goldens come from this Mac's GPU"}
-        lanes = {"goldens": goldens, "other": {**heavy, "buildHost": True},
+        lanes = {"goldens": goldens, "other": heavy,
                  "group": {"parallel": ["goldens", "other"], "resource": "heavy"},
                  "own": {"parallel": ["other"], "resource": "heavy", "here": "a measurement tied to this Mac"}}
         (self.project / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example", "lanes": lanes}))
-        with contextlib.redirect_stderr(StringIO()) as said:
-            loaded = config.load(self.project)["lanes"]
-        self.assertIn("eng: engineering.json marks other \"buildHost\": true, which is redundant", said.getvalue())
-        self.assertIn("delete it; it is read only until the projects have moved", said.getvalue())
+        loaded = config.load(self.project)["lanes"]
         self.assertEqual([config.stays(loaded, name) for name in lanes],
                          ["the lane says: its goldens come from this Mac's GPU", None,
                           "its lane goldens says: its goldens come from this Mac's GPU",
@@ -3131,3 +3189,40 @@ class RemoteRuntimeTests(unittest.TestCase):
             file, why = offload_host.image_file(record)
             self.assertIsNone(file, record)
             self.assertTrue(why, record)
+
+
+class EarlierNameTests(unittest.TestCase):
+    def test_the_source_names_each_old_name_only_where_it_refuses_it(self):
+        # vocaro-engineering#58 removed these, and nothing reads one as it did: every line of the toolkit's
+        # source that names one is part of its refusal. The names that stay, such as the alias build-host,
+        # the directory Development/build-host and refs/vocaro/build-host/, are not among them.
+        old = re.compile(r"buildHost|BUILD_HOST|OLD_HOST_VARIABLE|build_host|build-host-only|build-host-unchecked")
+        named = {}
+        for path in sorted((config.TOOLKIT_ROOT / "src/python").rglob("*.py")):
+            for line in path.read_text().splitlines():
+                if old.search(line): named.setdefault(path.name, []).append(line.strip())
+        self.assertEqual(named, {
+            "config.py": [
+                '"""Refuse "buildHost", true or false, on any lane or group. It once sent a lane to the second Mac, and',
+                'marked = [name for name, lane in lanes.items() if isinstance(lane, dict) and "buildHost" in lane]',
+                'raise ValueError(f"engineering.json gives {named} \\"buildHost\\", which vocaro-engineering#58 '
+                'removed: every heavy "'],
+            "remote.py": [
+                'HOST_VARIABLE, OLD_HOST_VARIABLE = "VOCARO_OFFLOAD_HOST", "VOCARO_BUILD_HOST"',
+                "VOCARO_BUILD_HOST, its name until vocaro-engineering#58, is refused when it is set at all, beside the",
+                "if OLD_HOST_VARIABLE in os.environ:",
+                'raise ValueError(f"{OLD_HOST_VARIABLE} was {HOST_VARIABLE}\'s name until vocaro-engineering#58, and '
+                'is no "'],
+            "cli.py": [
+                'run.add_argument("--build-host-only", action="store_true", help=argparse.SUPPRESS)',
+                "if args.build_host_only:",
+                'raise ValueError("--build-host-only was --offload-only\'s name until vocaro-engineering#58, and is no "'],
+            "devices.py": [
+                'recover.add_argument("--build-host-unchecked", metavar="REASON", help=argparse.SUPPRESS)',
+                "if args.build_host_unchecked is not None:",
+                'raise ValueError("--build-host-unchecked was --offload-unchecked\'s name until '
+                'vocaro-engineering#58, "']})
+        # The negative control: the pattern finds reads such as those the refusals replaced.
+        for read in ['if lane.get("buildHost"):', 'os.environ.get("VOCARO_BUILD_HOST")', "if args.build_host_only:",
+                     "unchecked = args.build_host_unchecked"]:
+            self.assertTrue(old.search(read), read)

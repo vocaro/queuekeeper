@@ -307,7 +307,7 @@ Admission reads the load before it admits and cannot account for work that never
 - A long background measurement holds its checkout's SwiftPM build lock, so a `swift test` from
   a pre-push hook in that checkout waits silently behind it for up to the measurement's length.
 
-## <a id="build-host"></a>Second Mac
+## Second Mac
 
 The owner's second Mac takes heavy work first. This Mac takes what has to run here, what the
 second Mac cannot run, and heavy work while the second Mac is at capacity, until this Mac is too.
@@ -317,8 +317,8 @@ calls sending work there offloading it. The second Mac runs work under its own h
 admission: each host's queue sees that host's load, so the second Mac is no private slot pool.
 `eng remote` reaches it by the SSH alias `build-host`, or `second-mac`; `--host` or
 `VOCARO_OFFLOAD_HOST` names another destination. Until 2026-10-28 the second Mac was the build
-host. Records made until then, measurements among them, keep that name, and eng still reads the
-configuration's earlier names for a while ([earlier names](#earlier-names)).
+host. Records made until then, measurements among them, keep that name, and eng refuses the
+configuration's earlier names ([earlier names](#earlier-names)).
 
 ```sh
 python3 scripts/eng run LANE [-- ARGUMENTS]            # a heavy lane: the second Mac first, then this Mac
@@ -342,10 +342,8 @@ screen, runs only here anyway, and a light lane runs where it starts. Simulator 
 background Mac UI lanes go to the second Mac like the rest, and a lane's first run there is its
 check (the owner's decision, 2026-10-28): counts that differ from this Mac's are a defect to fix,
 not a reason to keep the lane here. A lane group runs its lanes under its one admission on one
-Mac, so a group stays here when it, or one of its lanes, says `here`. `"buildHost": true` once
-marked a lane for the second Mac; it is redundant now, and read, with a warning to delete it,
-only until the projects have moved ([earlier names](#earlier-names)). `"buildHost": false`, which
-gives no reason, is refused, as is a lane or group that says both.
+Mac, so a group stays here when it, or one of its lanes, says `here`. `"buildHost"`, which once
+marked a lane for the second Mac, is refused, true or false ([earlier names](#earlier-names)).
 
 The second Mac's screen is usually locked, and `displaysleep` 0 there does not keep its display
 on behind a lock made by hand. A command started over SSH there runs in an audit session of its
@@ -512,7 +510,7 @@ it names the `AddressFamily` line that skips them
 error. A name that does not resolve is in `unresolved`, beside the unchecked second Mac that
 cannot be reached, and a second Mac that ssh reaches through a proxy is not measured.
 
-### <a id="simulators-on-the-build-host"></a>Simulators on the second Mac
+### Simulators on the second Mac
 
 A lane that boots simulators runs on the second Mac as it does here: headless, from a session
 started over SSH, with the screen locked, and from the second Mac's own pool. It goes there like
@@ -565,7 +563,7 @@ the 23 minutes of tests that followed averaged 40. No run needed the screen unlo
 the builds and every gate, EPUBLib's Mac suite included, ran with the screen locked and the
 display on; the screen was unlocked, not by the run, for the last 15 minutes of `ios-tests`.
 
-### <a id="how-a-run-reaches-the-build-host"></a>How a run reaches the second Mac
+### How a run reaches the second Mac
 
 `eng remote` runs a commit: HEAD when the working tree is HEAD's, and otherwise a snapshot commit
 of the working tree. It copies the checkout's index, with its modification time, to a temporary
@@ -662,7 +660,7 @@ timeout ran out at 22:18:38, two minutes of awake time after the connection bega
 `Connection to ADDRESS port 22 timed out`, and eng said to wake the build host, which had stayed
 awake and on its network.
 
-### <a id="setting-up-a-build-host"></a>Setting up the second Mac
+### Setting up the second Mac
 
 The owner prepares the second Mac once:
 
@@ -773,50 +771,44 @@ manifest, asset URL or committed configuration.
 ### Earlier names
 
 Until 2026-10-28 the second Mac was the build host, which read as the one Mac that builds,
-though both do. Its names in configuration became offload names, and each earlier one is still
-read, with a warning that names its replacement, until the projects have moved
-([vocaro-engineering#58](https://github.com/vocaro/vocaro-engineering/issues/58)); then they go:
+though both do. Its configuration names became offload names, and since
+[vocaro-engineering#58](https://github.com/vocaro/vocaro-engineering/issues/58) eng reads none of
+the old ones. It refuses each, naming what replaces it, rather than ignoring it: a checkout or a
+shell that still uses one meant something by it, and ignoring it would move that work silently.
 
-- `"buildHost": true` marked a lane or group for the second Mac. Every heavy or exclusive lane
-  goes there now unless it says `here`, so the mark is redundant, and there is no new one: delete
-  it. Each command that reads engineering.json names the lanes and groups that still have it.
-  `"buildHost": false` is refused, as before: a lane that stays here says why with `here`.
-- `eng run --build-host-only` is `eng run --offload-only`, the flag a push keeper uses. The old
-  flag does what the new one does and says to use it. Beside `--here` it is refused, as the new
-  one is, and beside `--offload-only` too: both name one flag.
-- `VOCARO_BUILD_HOST` is `VOCARO_OFFLOAD_HOST`, including `none`. eng reads the old variable when
-  the new one is unset and says to set the new one instead; when both are set, the new one wins,
-  and eng says so and to unset the old one.
-- `devices recover --build-host-unchecked REASON` is `--offload-unchecked REASON`, read the same
-  way: given both, the new one wins.
-- `eng doctor`'s `buildHost` section is `offload`. Only `offload` is printed: no script reads the
-  report, and a copy under the old name would double its largest part.
-- A receipt's `ranOn` says `second Mac` where it said `build host`, and a device record's
-  recovery records the second Mac's check as `offload` where it said `buildHost`. What was written
-  before keeps its words. No reader tells the two apart: `eng remote passed` and `eng release`
-  read the second Mac's receipts by commit, whatever their `ranOn`, and `eng admissions` counts
-  each Mac's share from the admission logs.
-- `build_host.py`, the second Mac's side of `eng remote`, is `offload_host.py`. It reaches the
-  second Mac as an argument of `python3 -c`, never as a file there, so nothing there names it.
-  Its lines in a run's output begin `second Mac:` where they began `build-host:`.
+- `"buildHost"` on a lane or group, true or false: configuration validation refuses it, naming
+  every lane and group that gives it. Delete it, since every heavy or exclusive lane goes to the
+  second Mac unless it says why it stays, with `here`; a checkout older than its project's change
+  rebases onto main.
+- `eng run --build-host-only`: refused, beside any other flag too; use `--offload-only`.
+- `devices recover --build-host-unchecked REASON`: refused; use `--offload-unchecked REASON`.
+- `VOCARO_BUILD_HOST`, set to anything, even beside `VOCARO_OFFLOAD_HOST`: refused; set
+  `VOCARO_OFFLOAD_HOST` instead, to the same value. Ignored, it could send work to the second Mac
+  that it was meant to keep here, so eng refuses it wherever it reads `VOCARO_OFFLOAD_HOST`: before
+  `eng run` or `eng admit --verify` chooses a Mac, in `eng remote run`, `admit` or `setup`
+  without `--host`, and in `eng doctor`. A command that neither chooses a Mac nor reaches the second Mac, such as a light
+  lane, a lane that says `here`, `eng run --here` or `eng spelling`, never read it and runs as
+  before, so a pre-push check, or the second Mac's own `eng run --here`, does not stop for it.
+
+Nothing reads the other renamed words, so nothing refuses them: a receipt's `ranOn`, now
+`second Mac`, and a device record's recovery, which records its check of the second Mac as
+`offload`. Receipts and records written before keep `build host` and `buildHost`, since they are
+data already on disk, and such a receipt still counts: `eng remote passed` and `eng release` read
+the second Mac's receipts by commit, whatever their `ranOn`.
 
 These keep the build host's name:
 
 - The SSH alias `build-host`, which the owner defines in `~/.ssh/config`, stays the default, since
-  the toolkit cannot change that file. eng also takes `second-mac` once the owner defines it,
-  with `Host second-mac` in place of `Host build-host`, or both on one line,
-  `Host build-host second-mac`. Without `--host` or `VOCARO_OFFLOAD_HOST`, eng uses the first of
-  `build-host` and `second-mac` that `ssh -G` resolves.
+  the toolkit cannot change that file. eng also takes `second-mac`, as `Host second-mac` in place
+  of `Host build-host` or both on one line, and without `--host` or `VOCARO_OFFLOAD_HOST` uses the
+  first of the two that `ssh -G` resolves.
 - `~/Development/build-host` on the second Mac, which holds its bare repositories, its warm
   checkouts, the runtime staging and `git-credentials`: another name would make every checkout
   cold and leave the token behind.
-- `refs/vocaro/build-host/`, under which a push carries a commit into those repositories; a ref a
-  lost run left there stays under it.
-- The anchors of this guide's renamed sections, such as `#build-host` and
-  `#setting-up-a-build-host`, which other repositories' documents link. Each renamed heading keeps
-  its old anchor beside its new one until those links have moved.
-- Records made before the rename, measurements, logs and receipts among them, which keep their
-  words.
+- `refs/vocaro/build-host/`, under which a push carries a commit into those repositories: another
+  prefix would orphan the refs already there, such as one a lost run left.
+- Records made before the rename, measurements, logs and receipts among them, and the guides'
+  dated observations, which keep their words.
 
 ## Scratch and result directories
 
@@ -1195,7 +1187,7 @@ processes and the measured build identities. Remove only the exact owned app and
 verify their absence, release the entry, and tell the other session that the device is released,
 including any unresolved restoration state.
 
-### <a id="physical-devices-and-the-build-host"></a>Physical devices and the second Mac
+### Physical devices and the second Mac
 
 Each Mac's simulators are its own, but the paired iPhone and iPad are reachable from both Macs:
 on 2026-10-27 the build host's `devicectl list devices` listed both as `available (paired)`. A

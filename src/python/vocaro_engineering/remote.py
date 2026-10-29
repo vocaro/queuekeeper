@@ -57,7 +57,7 @@ from .resources import BUSY, FREE_WAIT
 DEFAULT_HOST = "build-host"
 ALIASES = (DEFAULT_HOST, "second-mac")
 # The variable that names the second Mac's SSH destination, or none for this Mac only, and the name it
-# had until vocaro-engineering#58, which is still read, with a warning, until the projects have moved.
+# had until vocaro-engineering#58, which eng refuses (named_host).
 HOST_VARIABLE, OLD_HOST_VARIABLE = "VOCARO_OFFLOAD_HOST", "VOCARO_BUILD_HOST"
 # The second Mac's directory for repositories and checkouts, relative to its home. It keeps the build
 # host's name: another would leave every warm checkout there behind.
@@ -287,15 +287,18 @@ def configured():
 
 
 def named_host():
-    """What VOCARO_OFFLOAD_HOST names, else VOCARO_BUILD_HOST, its old name, or None when neither is set.
-    Reading the old name says to set the new one instead, or, when both are set, that the new one wins."""
-    host, old = os.environ.get(HOST_VARIABLE), os.environ.get(OLD_HOST_VARIABLE)
-    if old is not None:
-        print(f"eng: {OLD_HOST_VARIABLE} is {HOST_VARIABLE}'s old name, read only until the projects have moved: "
-              + (f"{HOST_VARIABLE} is set too, and wins, so unset {OLD_HOST_VARIABLE}" if host is not None
-                 else f"set {HOST_VARIABLE} instead") + " (guides/shared-host.md, Earlier names)",
-              file=sys.stderr, flush=True)
-    return host if host is not None else old
+    """What VOCARO_OFFLOAD_HOST names, or None when it is unset.
+
+    VOCARO_BUILD_HOST, its name until vocaro-engineering#58, is refused when it is set at all, beside the
+    new name too: it may say none, to keep work on this Mac, and ignoring it would let that work go to the
+    second Mac. Only what reads the new name refuses it, before it chooses a Mac or reaches the second
+    Mac, so a command that does neither, or names its destination with --host, runs as it did."""
+    if OLD_HOST_VARIABLE in os.environ:
+        raise ValueError(f"{OLD_HOST_VARIABLE} was {HOST_VARIABLE}'s name until vocaro-engineering#58, and is no "
+                         f"longer read: unset it, and set {HOST_VARIABLE} instead, to the same value (none keeps work "
+                         "on this Mac). eng chooses no Mac while it is set, since ignoring it could send work to the "
+                         "second Mac that it was meant to keep here (guides/shared-host.md, Earlier names)")
+    return os.environ.get(HOST_VARIABLE)
 
 
 def alias():

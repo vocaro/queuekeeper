@@ -910,7 +910,7 @@ def main(argv=None):
     recover.add_argument("--verified", required=True)
     recover.add_argument("--offload-unchecked", metavar="REASON", help="the owner's reason to recover without "
                          "checking the second Mac the entry's run went to, such as that it is gone")
-    # Its name until vocaro-engineering#58, still read, with a warning, until the projects have moved.
+    # Its name until vocaro-engineering#58, which main refuses, naming the new one.
     recover.add_argument("--build-host-unchecked", metavar="REASON", help=argparse.SUPPRESS)
     importer = commands.add_parser("import", help="merge earlier ad hoc records, preserving every entry")
     importer.add_argument("paths", nargs="+")
@@ -971,15 +971,11 @@ def main(argv=None):
                   f"{FOREGROUND}: held by {args.owner} for {entry.get('purpose')}, approved until "
                   f"{entry['approval']['until']}")
         elif args.action == "recover":
-            unchecked = args.offload_unchecked
             if args.build_host_unchecked is not None:
-                print("devices: --build-host-unchecked is --offload-unchecked's old name, read only until the projects "
-                      "have moved: " + ("--offload-unchecked is given too, and wins" if unchecked is not None else
-                                        "use --offload-unchecked") + " (guides/shared-host.md, Earlier names)",
-                      file=sys.stderr, flush=True)
-                if unchecked is None: unchecked = args.build_host_unchecked
+                raise ValueError("--build-host-unchecked was --offload-unchecked's name until vocaro-engineering#58, "
+                                 "and is no longer read: use --offload-unchecked (guides/shared-host.md, Earlier names)")
             _report(args.key, record.recover(args.key, by=args.by, revision=args.revision, verified=args.verified,
-                                             unchecked=unchecked))
+                                             unchecked=args.offload_unchecked))
         elif args.action == "import":
             print("\n".join(record.import_legacy(args.paths, by=args.by)))
         elif args.action == "defer":

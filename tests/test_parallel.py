@@ -244,13 +244,20 @@ class LaneGroupTests(unittest.TestCase):
             with self.subTest(group):
                 self.configure({**lanes, "inner": {"parallel": ["one"]}, "group": group})
                 self.assertEqual(self.run_lane("group")[0], 2)
-        for group in ({"parallel": ["one", "two"], "jobs": 1}, {"parallel": ["heavy", "one"], "resource": "exclusive",
-                                                                "buildHost": True}):
+        # A group that gives buildHost, which vocaro-engineering#58 removed, is refused for it, true or false.
+        for value in [True, False]:
+            with self.subTest(buildHost=value):
+                self.configure({**lanes, "group": {"parallel": ["heavy", "one"], "resource": "exclusive",
+                                                   "buildHost": value}})
+                status, said = self.run_lane("group")
+                self.assertEqual(status, 2, said)
+                self.assertIn("engineering.json gives group \"buildHost\", which vocaro-engineering#58 removed", said)
+        # The positive controls, the second the group above without buildHost.
+        for group in ({"parallel": ["one", "two"], "jobs": 1}, {"parallel": ["heavy", "one"], "resource": "exclusive"}):
             with self.subTest(group), contextlib.redirect_stderr(StringIO()) as error:
                 self.configure({**lanes, "group": group})
                 cli.load(self.root)
-            # A group's old mark is read too, and says to delete it.
-            self.assertEqual("buildHost" in group, "marks group \"buildHost\": true, which is redundant" in error.getvalue())
+            self.assertEqual(error.getvalue(), "")
 
 
 if __name__ == "__main__":
