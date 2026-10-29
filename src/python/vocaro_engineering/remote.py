@@ -1374,14 +1374,14 @@ def overflow(offered, admit, timeout=OVERFLOW_TIMEOUT, once=False):
         window = min(max(2 * window, OVERFLOW_WAIT), OVERFLOW_WAIT_MAX)
 
 
-def ask(host, request):
+def ask(host, request, timeout=SURVEY_TIMEOUT):
     """offload_host.py's answer to request on the second Mac, run by its login shell as a run there is."""
     request = shlex.join(["python3", "-c", Path(offload_host.__file__).read_text(), json.dumps(request)])
     attempt = asleep()
     try:
-        found = ssh(host, request, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=SURVEY_TIMEOUT)
+        found = ssh(host, request, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
-        raise unreachable(host, f"it did not answer in {SURVEY_TIMEOUT}s", attempt) from None
+        raise unreachable(host, f"it did not answer in {timeout}s", attempt) from None
     except OSError as error:
         raise unreachable(host, str(error)) from None
     if found.returncode == 255: raise unreachable(host, found.stderr, attempt)

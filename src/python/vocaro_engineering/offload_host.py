@@ -15,7 +15,8 @@ instead of a plan, it prints the Mac's Xcodes, simulator runtimes and device rec
 adds one read from standard input, for `eng remote setup --runtimes`; given `{"leftovers": ROOT}`,
 it lists the processes left over from runs there, which `eng remote` prints before it sends work;
 given `{"device": ...}`, what there may still use a physical device a run was given, for
-`devices recover`.
+`devices recover`; given `{"keychain": PATH}`, the Mac's name and whether that keychain file is
+there, for `eng keychain recover`.
 """
 import base64
 import ctypes
@@ -60,6 +61,8 @@ DEVICE = re.compile(r"[0-9A-F]{8}-(?:[0-9A-F]{4}-){3}[0-9A-F]{12}", re.IGNORECAS
 DEVICE_RECORD = "Library/Application Support/vocaro-engineering/device-handoff.json"
 DEFERRED = "physicalDevicesRecordedOn"
 PHYSICAL = re.compile(r"[0-9A-F]{8}-[0-9A-F]{16}|[0-9A-F]{40}")
+# Where a Mac keeps its users' keychain files, relative to the home.
+KEYCHAINS = "Library/Keychains"
 # The process that holds a simulator pool member's reservation, {"pid", "start"}, as
 # simulators/pool.py records it when it reserves the member.
 HOLDER = "holderProcess"
@@ -151,6 +154,23 @@ def device_record():
     held = sorted(key for key, entry in entries.items() if isinstance(entry, dict) and entry.get("state") != "released"
                   and PHYSICAL.fullmatch(str(entry.get("device") or "").upper()))
     return {"path": str(path), "deferredTo": record.get(DEFERRED), "physical": held}
+
+
+def keychain(path):
+    """The Mac's name, its home, the keychain file path names and whether it is there, and the keychain
+    files in ~/Library/Keychains, for `eng keychain recover`. path is absolute, starts with ~, or is a
+    file name in ~/Library/Keychains; it is never completed, so a misspelled name is reported missing.
+    It reads names and file types only: nothing opens a keychain."""
+    home = Path.home()
+    folder = home / KEYCHAINS
+    given = Path(path).expanduser() if path.startswith(("/", "~")) else home / path if "/" in path else folder / path
+    try:
+        names = sorted(entry.name for entry in folder.iterdir()
+                       if entry.name.endswith((".keychain-db", ".keychain")) and entry.is_file())
+    except OSError:
+        names = []
+    return {"mac": mac_name(), "home": str(home), "path": str(given), "exists": given.is_file(),
+            "keychains": [str(folder / name) for name in names]}
 
 
 def toolchain(developer_dir):
@@ -580,8 +600,9 @@ def device_users(request, listed=listing, written=disk_writes):
 
 def answer(request):
     """offload_host.py's answer to a request other than a plan, for `eng doctor`, `eng remote`,
-    `eng remote setup` and `devices recover`."""
+    `eng remote setup`, `devices recover` and `eng keychain recover`."""
     if "toolchain" in request: return toolchain(request["toolchain"])
+    if "keychain" in request: return keychain(request["keychain"])
     if "leftovers" in request or "device" in request:
         # A census that fails says why: it must never stop the work it is printed before.
         try: return leftovers(request["leftovers"]) if "leftovers" in request else device_users(request["device"])
@@ -859,5 +880,6 @@ def main(plan):
 
 if __name__ == "__main__":
     request = json.loads(sys.argv[1])
-    if {"toolchain", "images", "receive", "leftovers", "device"} & request.keys(): print(json.dumps(answer(request)))
+    if {"toolchain", "images", "receive", "leftovers", "device", "keychain"} & request.keys():
+        print(json.dumps(answer(request)))
     else: main(request)

@@ -10,8 +10,8 @@ import shutil
 import subprocess
 import sys
 
-from . import __version__, devices, disk, docs, evidence, github_artifacts, offload_host, parallel, processes, \
-    release, remote, resources, spelling
+from . import __version__, devices, disk, docs, evidence, github_artifacts, keychain, offload_host, parallel, \
+    processes, release, remote, resources, spelling
 from .config import TOOLKIT_ROOT, CAPABILITIES, DEFAULT_TOOLKIT, load, source_identity, stays
 from .resources import BUSY, FREE_WAIT
 from .simulators import matrix, pool as simulator_pool
@@ -486,6 +486,9 @@ def main(argv=None):
                                         "background-mac-probe.swift", "probe-simulator-voiceover-activation.m",
                                         "duo-pose-helper.c"])
     disk.add_arguments(commands.add_parser("disk", help="inventory reclaimable disk space; changes nothing without --delete"))
+    keychain.add_arguments(commands.add_parser("keychain", help="before the owner unlocks a keychain, say which Mac's "
+        "keychain the work needs and print commands that run only there (recover); where the automation runs, check "
+        "the keychain, the signing identity and signing with it, without a prompt (check)"))
     # Everything after the first -- belongs to the command. Python 3.9's argparse rejects options
     # before it and drops a later --, so argparse never sees it.
     argv = sys.argv[1:] if argv is None else list(argv)
@@ -510,6 +513,8 @@ def main(argv=None):
             return 0
         # The inventory and the admission log cover the whole host, so they need no project configuration.
         if args.action == "disk": return disk.execute(args)
+        # A keychain's Mac and its session are the host's, not a project's.
+        if args.action == "keychain": return keychain.execute(args)
         if args.action == "admissions": return resources.report(args.logs or None, args.since, args.until)
         config = load(root)
         if args.action == "instructions": instructions(config)

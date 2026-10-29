@@ -774,7 +774,8 @@ The project's commits reach the second Mac over SSH without a GitHub credential.
 policy refresh fetches the private toolkit over HTTPS and needs read access to it through the
 credential file above, even when the project has no private package dependencies. SwiftPM
 clones a private dependency with git, and git's default helper on a Mac, osxkeychain, cannot read
-the keychain from an SSH session: it fails with `-25308`, and the clone fails. When
+the keychain from an SSH session: it fails with `-25308`, and the clone fails
+([keychains on the right Mac](#keychains-on-the-right-mac)). When
 `git-credentials` exists, `eng remote`
 gives each run's git that file through the store helper and no other helper, by
 `GIT_CONFIG_COUNT` variables that reach only the run, so the owner's own git configuration on
@@ -787,6 +788,88 @@ Declare their packages in `githubArtifacts`; admitted builds use the shared
 [artifact preparation](public-access.md#private-binary-artifacts-and-build-credentials), whose
 credential lookup reads this same run-scoped Git helper. Do not put a token into a package
 manifest, asset URL or committed configuration.
+
+### Keychains on the right Mac
+
+A keychain is unlocked on one Mac, for the sessions that unlock reaches. Unlocking the
+workstation's keychain does nothing for the second Mac, and an unlocked desktop says nothing about
+a process that SSH started. An alias in this Mac's `~/.ssh/config` exists only on this Mac: given
+in a shell already on the second Mac, `ssh build-host` said `Could not resolve hostname build-host`
+(2026-10-28, [vocaro-engineering#65](https://github.com/vocaro/vocaro-engineering/issues/65)). So
+before asking the owner to unlock a keychain, establish which Mac the work needs and which Mac
+and session the owner's shell is in, and give only commands that check both. Never ask for the
+password, and never put it in chat, a command's arguments, an environment variable, a log or
+evidence: `security unlock-keychain` asks for it in the owner's own Terminal.
+
+```sh
+python3 scripts/eng keychain recover [--target MAC] [--keychain PATH] [--identity NAME]
+python3 scripts/eng remote admit -- python3 scripts/eng keychain check [--keychain PATH] --identity NAME
+```
+
+`eng keychain recover` is the owner's, and unlocks nothing and reads no password. It:
+
+- names this Mac, by the LocalHostName that receipts record, and the kind of session it runs in;
+- finds the target, by default the second Mac, through the resolver `eng remote` uses
+  (`VOCARO_OFFLOAD_HOST`, else the alias `~/.ssh/config` defines), and asks it for its name and
+  the keychain file over the same bounded SSH connection `eng doctor` makes, which never asks for
+  a password. On the second Mac, where neither names a destination, its device record, which
+  every `eng remote` run makes defer physical devices to the sending Mac, marks it as the target,
+  so the owner there gets the local command and no alias. `--target MAC` names this Mac or the
+  second Mac by its LocalHostName;
+- refuses, saying what to do instead, when the target is neither this Mac nor the second Mac,
+  when the destination is `build-host` or `second-mac` and `ssh -G` gives it back unchanged, an
+  alias this Mac's `~/.ssh/config` does not define, when this Mac names no second Mac and is not
+  one, and when the second Mac cannot be reached;
+- checks that the keychain file is on the target under its exact name. `--keychain` takes a path
+  or a file name in `~/Library/Keychains`, which it never completes, so `login.keychain-d` is
+  refused, with the keychain files that are there, closest first, to copy;
+- prints the unlock commands. Each runs only on the Mac it names, as `scutil --get LocalHostName`
+  reads it there, and on any other Mac says which Mac it is on and what to use instead, and fails.
+  The command that goes through the alias, `ssh -t build-host …`, is printed only on the Mac whose
+  `~/.ssh/config` defines the alias and runs only there, so pasted into a shell already on the
+  second Mac it reaches for nothing. Its remote half checks that the alias reached the target, so
+  an alias that names another Mac unlocks nothing there. On the target only the local command is
+  printed;
+- prints the check below last, for the context the automation runs in.
+
+`eng keychain check` runs where the automation that uses the key runs: on the second Mac, through
+`eng remote admit`, which runs it as every `eng remote` run is run, in its login shell under an
+SSH login. It prints a JSON record with four separate results:
+
+- `session`: the kind of session, `ssh`, `gui` or `background`, from the process's audit session
+  flags, with a note on what a result there establishes. An SSH login is flagged remote and has no
+  graphic access ([probing a session](background-mac-testing.md#probing-a-session)).
+- `keychain`: `security show-keychain-info` on the file. `unlocked` when it read the settings,
+  `locked` when Security refused it the interaction an unlock needs (errSecInteractionNotAllowed),
+  `missing` for no such keychain.
+- `identity`: whether `security find-identity -v -p codesigning` lists the identity `--identity`
+  names in that keychain, by its SHA-1 or part of its name as codesign takes it, else any valid
+  code-signing identity. It keeps counts, never names or hashes.
+- `signing`: `codesign --force --sign NAME --keychain PATH --timestamp=none` of a temporary copy
+  of `/usr/bin/true`, removed afterwards. It passes when codesign exits 0, which used the private
+  key; it does not judge the signature's trust.
+
+The outcome is `passed` only when signing passed, `failed` when signing failed, the keychain file
+is missing or the identity is absent, and otherwise `unmeasured`, with each cause; the exit status
+is 0, 1 or 3. A command that times out (30 s each, `--timeout`), cannot run, or prints what the
+check cannot read leaves its result unmeasured, never passed, and so does a check without
+`--identity`, which measures no use of the key. Each command gets no input. The check runs
+`security` and `codesign` only in a session without graphic access, where Security cannot show a
+dialog and refuses the interaction instead, as it refused osxkeychain over SSH above (-25308). In
+a session with graphic access, or one whose flags cannot be read, it runs none of them and records
+all three unmeasured: their manual pages do not say that they never raise a dialog, and there a
+locked keychain or a key's access control can raise one.
+
+- A result holds for the kind of session it was measured in. Signing that succeeds in the owner's
+  GUI session, as an owner-local build does, does not qualify the key's use from SSH, nor an SSH
+  result a GUI session. Whether an unlock reaches another session, such as an `ssh -t` unlock the
+  next `eng remote` run, is what the check measures. Retry signing work once it passes there.
+- Keychain access control and partition lists (`security set-key-partition-list`), trust
+  settings, certificates, where credentials are kept, TCC and host configuration stay the owner's
+  decisions. Neither command changes any of them; a failed check is reported for that decision.
+- Not measured: either command against the second Mac, what `show-keychain-info` answers over
+  SSH for a locked and an unlocked keychain on macOS 27, and the corrected workflow from a shell
+  on each Mac ([vocaro-engineering#65](https://github.com/vocaro/vocaro-engineering/issues/65)).
 
 ### Earlier names
 
