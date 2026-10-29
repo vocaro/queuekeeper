@@ -1,8 +1,11 @@
-"""Heavy-work admission interoperating with the existing PDF and StudyWright locks.
+"""Heavy-work admission interoperating with the existing PDF slot locks.
 
-The bridge holds StudyWright's shlock while publishing a guard; old gate/warm-push callers
-already wait on that guard. Exclusive work holds every old PDF slot. Crashed owners retain
-their guard for explicit inspection rather than treating a deadline as release.
+Admission records each job it admits in a guard, named by StudyWright's former host gate lock:
+SW_GATE_LOCK_FILE, `/tmp/studywright-gate-suite.lock` by default, with `.warm-push-guard`
+appended. StudyWright's gate checks an inherited admission against that path, and tests isolate
+admission by redirecting it; admission takes no lock there (#25). Exclusive work holds every old
+PDF slot. Crashed owners retain their guard for explicit inspection rather than treating a
+deadline as release.
 
 HEAVY_SLOTS jobs are always admitted while no exclusive request waits. More, up to
 HEAVY_SLOTS_MAX, are admitted one at a time while the load average and memory pressure show
@@ -56,6 +59,8 @@ FREE_WAIT, BUSY = 5, 75
 # The admission log and its previous generation. A line that would take the log past LOG_LIMIT
 # bytes first makes the log the previous generation, so the two together stay within twice it.
 LOG, PREVIOUS_LOG, LOG_LIMIT = "admissions.jsonl", "admissions.1.jsonl", 8 << 20
+# The path that names the guard's namespace, unless SW_GATE_LOCK_FILE names another.
+GATE_LOCK = "/tmp/studywright-gate-suite.lock"
 # The admissions this process holds, by identity: only the owner's own supervision writes an entry's
 # process record. Nested work in another process reuses the admission and writes nothing to it.
 _held = {}
@@ -77,13 +82,17 @@ def running(record):
     return True
 
 
+def guard_path(environment):
+    """Admission's guard in this environment's namespace."""
+    return Path(environment.get("SW_GATE_LOCK_FILE", GATE_LOCK) + ".warm-push-guard")
+
+
 def guard_owners(environment):
     """Each owner the guard in this environment records, as (PID, process start with its spacing
-    collapsed), read as other readers read it, without the coordination lock. A missing, foreign
-    or unreadable guard records none."""
-    legacy = environment.get("SW_GATE_LOCK_FILE", "/tmp/studywright-gate-suite.lock")
+    collapsed), read as other readers read it, without the coordination lock. A missing or unreadable
+    guard, or one not in admission's format, records none."""
     try:
-        state = json.loads(Path(legacy + ".warm-push-guard").read_text())
+        state = json.loads(guard_path(environment).read_text())
     except (OSError, ValueError):
         return set()
     owners = state.get("owners") if isinstance(state, dict) and state.get("vocaroEngineering") == 1 else None
@@ -231,8 +240,7 @@ def inherited(exclusive=False, model=False):
         nonces = {item["nonce"] for item in token["locks"]}
         if len(nonces) != 1:
             raise ValueError("Admission descriptors have different owners")
-        legacy = os.environ.get("SW_GATE_LOCK_FILE", "/tmp/studywright-gate-suite.lock")
-        guard = Path(token.get("guard", legacy + ".warm-push-guard"))
+        guard = Path(token.get("guard", guard_path(os.environ)))
         state = json.loads(guard.read_text())
         owner = state.get("owners", {}).get(next(iter(nonces)))
         if state.get("vocaroEngineering") != 1 or not owner or owner.get("uncertain"):
@@ -285,17 +293,19 @@ class Admission:
             raise ValueError("Invalid resource limits")
         # Why the latest attempt was refused: its kind, which the log counts (#49), and the waiting message,
         # which names the limit that refused it and its value beside what the attempt read.
-        # guard: a dead or uncertain guard entry needs inspection; exclusive: exclusive work holds the host
-        # or is queued ahead; legacy: a legacy gate holds its lock; model: another run holds the model;
-        # slots: every slot the request may take is busy; settle, load or memory: the settling time, the
-        # load average or memory pressure withholds a slot beyond the guaranteed ones.
+        # guard: the guard is unreadable or not in admission's format, or a dead or uncertain entry, and needs
+        # inspection; exclusive: exclusive work holds the host or is queued ahead; model: another run holds the
+        # model; slots: every slot the request may take is busy; settle, load or memory: the settling time, the
+        # load average or memory pressure withholds a slot beyond the guaranteed ones. An older toolkit's log
+        # lines also count legacy, a gate holding StudyWright's former host lock, which no longer refuses (#25).
         self.refusal = self.waiting = None
         # For the log line: the refused attempts by kind, in the order the kinds first refused it; the holders
         # when it asked; the first, last and highest one-minute load its attempts read; and the highest memory
         # pressure level read beside its refusals.
         self.refusals, self.holders, self.loads, self.memory = Counter(), None, None, None
-        self.legacy = Path(os.environ.get("SW_GATE_LOCK_FILE", "/tmp/studywright-gate-suite.lock"))
-        self.guard = Path(str(self.legacy) + ".warm-push-guard")
+        self.guard = guard_path(os.environ)
+        # Read by StudyWright's scripts/warm_push.py for a PID holding the retired gate lock; a directory holds none.
+        self.legacy = self.guard.parent
         # Exclusive requests waiting for admission, first come first.
         self.queue = self.directory / "exclusive-queue.json"
         self.identity = uuid.uuid4().hex
@@ -311,7 +321,7 @@ class Admission:
         self.queued = False
 
     def _recorded(self):
-        """The published guard with its owners unvalidated, or None if it is foreign or unreadable."""
+        """The published guard with its owners unvalidated, or None if it is unreadable or not in admission's format."""
         try:
             value = json.loads(self.guard.read_text())
         except (OSError, ValueError):
@@ -321,13 +331,14 @@ class Admission:
         return value
 
     def _guard(self):
-        """The published guard, or None, with the refusal naming why, when it is foreign or unreadable or
-        records a dead or uncertain owner."""
+        """The published guard, or None, with the refusal naming why, when it is unreadable or not in admission's
+        format or records a dead or uncertain owner. A guard admission cannot read is never overwritten: whatever
+        wrote it may still run what it records."""
         if not self.guard.exists():
             return {"vocaroEngineering": 1, "owners": {}}
         value = self._recorded()
         if value is None:
-            problem = f"the guard {self.guard} is foreign or unreadable"
+            problem = f"the guard {self.guard} is unreadable or not in admission's format"
         else:
             # Never reclaim a disappeared owner: its children may still use a different session.
             owner = next((owner for owner in value.get("owners", {}).values()
@@ -394,26 +405,6 @@ class Admission:
                 self._record([waiter for waiter in self._waiters() if waiter["identity"] != self.identity])
             self._log("withdrawn", outcome=outcome, waited=round(time.monotonic() - self.started, 3), **self._seen())
         self.queued = False
-
-    def _legacy_lock(self):
-        """Whether this process took the legacy lock, or, with the refusal naming the lock and the PID
-        written in it, False."""
-        if Path("/usr/bin/shlock").is_file():
-            if subprocess.run(["/usr/bin/shlock", "-f", str(self.legacy), "-p", str(os.getpid())],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
-                return True
-        elif not self.legacy.exists():
-            return True
-        try:
-            holder = self.legacy.read_text().strip()
-        except OSError:
-            holder = ""
-        self.refusal, self.waiting = "legacy", f"a legacy gate, PID {holder or 'unrecorded'}, holds its lock {self.legacy}"
-        return False
-
-    def _unlock_legacy(self):
-        if self.legacy.exists() and self.legacy.read_text().strip() == str(os.getpid()):
-            self.legacy.unlink()
 
     def _extra_refusal(self):
         """Why no slot beyond the guaranteed ones may be taken now, as the refusal's kind and its reason, or None.
@@ -508,57 +499,51 @@ class Admission:
                 # Work already admitted runs on; nothing new starts before the exclusive request.
                 self.refusal, self.waiting = "exclusive", f"it waits behind exclusive work queued ahead of it: {waiters[0]['label']}"
                 return False
-            if not self._legacy_lock():
-                return False
-            try:
-                # The model first, so that a request it refuses names the model's holder.
-                if self.model:
-                    self.held_model = self._take_model()
-                    if self.held_model is None:
-                        return self._held_back(state)
-                for _ in range(self.maximum if self.exclusive else 1):
-                    taken = take_slot(self.directory, self.maximum if self.exclusive else self.slots)
-                    if taken is None and not self.exclusive:
-                        taken = self._extra_slot()
-                    if taken is None:
-                        if self.exclusive:
-                            busy = self.maximum - len(self.descriptors)
-                            self.refusal, self.waiting = "slots", (f"exclusive work needs every slot up to HEAVY_SLOTS_MAX="
-                                                                   f"{self.maximum} free, and {busy} {'is' if busy == 1 else 'are'} busy")
-                        self._release()
-                        return self._held_back(state)
-                    self.descriptors.append(taken)
-                born = process_start(os.getpid())
-                if born is None:
+            # The model first, so that a request it refuses names the model's holder.
+            if self.model:
+                self.held_model = self._take_model()
+                if self.held_model is None:
+                    return self._held_back(state)
+            for _ in range(self.maximum if self.exclusive else 1):
+                taken = take_slot(self.directory, self.maximum if self.exclusive else self.slots)
+                if taken is None and not self.exclusive:
+                    taken = self._extra_slot()
+                if taken is None:
+                    if self.exclusive:
+                        busy = self.maximum - len(self.descriptors)
+                        self.refusal, self.waiting = "slots", (f"exclusive work needs every slot up to HEAVY_SLOTS_MAX="
+                                                               f"{self.maximum} free, and {busy} {'is' if busy == 1 else 'are'} busy")
                     self._release()
-                    raise RuntimeError("Cannot establish the admission owner's process identity")
-                state["owners"][self.identity] = {"pid": os.getpid(), "start": born, "label": self.label,
-                                                    "exclusive": self.exclusive, "model": self.model,
-                                                    "admitted": datetime.now(timezone.utc).isoformat(timespec="seconds")}
-                # A legacy keeper cannot obtain shlock until this publication finishes.
-                publish_guard(self.guard, state)
-                if self.exclusive:
-                    # The next exclusive request waits for these slots, and every other behind it.
-                    self._record(waiters[1:])
-                    self.queued = False
-                held = [(f"slot{slot}", fd) for slot, fd in self.descriptors]
-                if self.held_model is not None:
-                    held.append(("model", self.held_model))
-                locks = []
-                for name, fd in held:
-                    os.ftruncate(fd, 0)
-                    os.write(fd, f"{os.getpid()} {self.identity} {self.label[:160]}\n".encode())
-                    os.set_inheritable(fd, True)
-                    locks.append({"fd": fd, "path": str(self.directory / name), "nonce": self.identity})
-                self.previous = os.environ.get(TOKEN)
-                os.environ[TOKEN] = json.dumps({"schemaVersion": 1, "exclusive": self.exclusive, "model": self.model,
-                                                "guard": str(self.guard), "locks": locks})
-                self.admitted = time.monotonic()
-                self._log("admitted", slots=[slot for slot, _fd in self.descriptors],
-                          waited=round(self.admitted - self.started, 3), **self._seen())
-                return True
-            finally:
-                self._unlock_legacy()
+                    return self._held_back(state)
+                self.descriptors.append(taken)
+            born = process_start(os.getpid())
+            if born is None:
+                self._release()
+                raise RuntimeError("Cannot establish the admission owner's process identity")
+            state["owners"][self.identity] = {"pid": os.getpid(), "start": born, "label": self.label,
+                                                "exclusive": self.exclusive, "model": self.model,
+                                                "admitted": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+            publish_guard(self.guard, state)
+            if self.exclusive:
+                # The next exclusive request waits for these slots, and every other behind it.
+                self._record(waiters[1:])
+                self.queued = False
+            held = [(f"slot{slot}", fd) for slot, fd in self.descriptors]
+            if self.held_model is not None:
+                held.append(("model", self.held_model))
+            locks = []
+            for name, fd in held:
+                os.ftruncate(fd, 0)
+                os.write(fd, f"{os.getpid()} {self.identity} {self.label[:160]}\n".encode())
+                os.set_inheritable(fd, True)
+                locks.append({"fd": fd, "path": str(self.directory / name), "nonce": self.identity})
+            self.previous = os.environ.get(TOKEN)
+            os.environ[TOKEN] = json.dumps({"schemaVersion": 1, "exclusive": self.exclusive, "model": self.model,
+                                            "guard": str(self.guard), "locks": locks})
+            self.admitted = time.monotonic()
+            self._log("admitted", slots=[slot for slot, _fd in self.descriptors],
+                      waited=round(self.admitted - self.started, 3), **self._seen())
+            return True
 
     def __enter__(self):
         if inherited(self.exclusive, self.model):
@@ -920,9 +905,9 @@ def recover(owner=None, out=print):
 
     A live owner's entry is never touched: the owner removes it, or leaves it, itself. An entry without a
     process record, written by an older toolkit or by a caller that runs its own commands without
-    recording them, is left for a check by hand, as is a foreign guard such as a legacy push keeper's.
+    recording them, is left for a check by hand, as is a guard that is unreadable or not in admission's format.
     """
-    guard = Path(os.environ.get("SW_GATE_LOCK_FILE", "/tmp/studywright-gate-suite.lock") + ".warm-push-guard")
+    guard = guard_path(os.environ)
     directory = slot_directory()
     directory.mkdir(parents=True, exist_ok=True)
 
@@ -946,8 +931,8 @@ def recover(owner=None, out=print):
         except (OSError, ValueError): state = None
         owners = state.get("owners") if isinstance(state, dict) and state.get("vocaroEngineering") == 1 else None
         if not isinstance(owners, dict):
-            out(f"{guard} is not admission's guard: a legacy push keeper's, or unreadable. Recovery leaves it "
-                "alone; inspect it by hand (guides/shared-host.md, Lock reclamation).")
+            out(f"{guard} is unreadable or not in admission's format. Recovery leaves it alone; inspect it by hand "
+                "(guides/shared-host.md, Lock reclamation).")
             return 1
         if owner is None:
             # The entries that refuse admission, as admission reads them.
@@ -1023,8 +1008,8 @@ def recover_main(argv=None):
     parser = argparse.ArgumentParser(prog="eng admissions recover", description="List the guard's dead or uncertain "
         "entries, or recover one: remove that entry alone, and the guard with its last one, once its owner has ended "
         "and a census against its process record finds nothing of its commands still running. It exits 1 when it "
-        "removes nothing, and leaves a live owner's entry, an entry without a process record and a foreign guard "
-        "alone (guides/shared-host.md, Lock reclamation).")
+        "removes nothing, and leaves a live owner's entry, an entry without a process record and a guard that is "
+        "unreadable or not in admission's format alone (guides/shared-host.md, Lock reclamation).")
     parser.add_argument("owner", nargs="?", metavar="OWNER", help="the PID or identity of the entry's owner, as the "
                         "listing names it; without it, list the guard's dead or uncertain entries")
     args = parser.parse_args(argv)

@@ -111,7 +111,7 @@ keeps its place for as long as it runs, even orphaned from the script that start
 process to give up its place.
 
 Nested work reuses its inherited admission. Admission exports `VOCARO_RESOURCE_TOKEN` and keeps
-its lock descriptors open across exec. A nested `eng run`, resource CLI call or legacy gate
+its lock descriptors open across exec. A nested `eng run`, resource CLI call or project gate
 validates the inherited descriptors against their lock files, the owner's nonce, its guard
 entry and its process start time, then runs inside the outer admission without taking a slot,
 and without waiting behind a queued exclusive request, which waits for the outer job to end.
@@ -145,8 +145,7 @@ value, beside what the attempt read, so that a wait says which limit to look at:
 | `memory` | `all 3 guaranteed slots are busy and memory pressure is level 2 (warning), not 1 (normal)`, or `… memory pressure, which must be level 1 (normal), cannot be read` |
 | `model` | `the on-device model, one run at a time, is held by LABEL` |
 | `exclusive` | `it waits behind exclusive work queued ahead of it: LABEL`, or `… holding the host: LABEL` |
-| `legacy` | `a legacy gate, PID 4242, holds its lock /tmp/studywright-gate-suite.lock` |
-| `guard` | `the guard entry of LABEL, PID 4242, is dead and requires inspection; …`, `uncertain` for an entry marked so, or `the guard PATH is foreign or unreadable and requires inspection; …`, where `…` names `python3 scripts/eng admissions recover` |
+| `guard` | `the guard entry of LABEL, PID 4242, is dead and requires inspection; …`, `uncertain` for an entry marked so, or `the guard PATH is unreadable or not in admission's format and requires inspection; …`, where `…` names `python3 scripts/eng admissions recover` |
 
 Each kind is the one the [admission log](#admission-log) records for the refusal. After its
 timeout (5,400 s by default) admission fails without reclaiming any lock, naming the same reason,
@@ -261,8 +260,8 @@ A line holds:
   - `model`: another run holds the on-device model;
   - `exclusive`: an exclusive request is queued ahead, or exclusive work holds the host, which
     refuses the request at its slots or the model;
-  - `legacy`: a legacy gate holds its lock;
-  - `guard`: a foreign, dead or uncertain guard owner requires inspection.
+  - `guard`: the guard is unreadable or not in admission's format, or an owner is dead or
+    uncertain, and requires inspection.
 - `outcome`, on an `ended` line: `released` when the command finished, whatever its exit status;
   `not-started`; `stopped` or `timed-out` when a stop or the command's timeout saw it and every
   observed descendant end; or `uncertain` when the guard entry was kept for inspection
@@ -282,10 +281,11 @@ A request's `wait` says why it waited, which an audit could only infer from the 
 beside it. Whether admission's limits hold back work the host could run turns on the kinds: a wait
 behind `slots` is the guaranteed and maximum counts, and one behind `load`, `memory` or `settle`
 the signals that open the slots between, at the load its line records
-([vocaro-engineering#49](https://github.com/vocaro/vocaro-engineering/issues/49)). `legacy` says
-whether a legacy gate ever holds its lock, which retiring the shlock bridge waits on
-([vocaro-engineering#25](https://github.com/vocaro/vocaro-engineering/issues/25)). A line an older
-toolkit wrote has no `holders`, `load` or `wait`, and is read as it is.
+([vocaro-engineering#49](https://github.com/vocaro/vocaro-engineering/issues/49)). A line an older
+toolkit wrote has no `holders`, `load` or `wait`, and is read as it is. One may also count `legacy`
+refusals, from when admission waited while a gate held StudyWright's former host lock
+([vocaro-engineering#25](https://github.com/vocaro/vocaro-engineering/issues/25)); they are read
+and counted as any other kind.
 
 `eng admissions` summarizes the log over a period:
 
@@ -1884,16 +1884,18 @@ appears, stop your processes, leave the dialog for the owner and say so. Samplin
 
 ## Lock reclamation
 
-Four kinds of marker coexist, and they are reclaimed differently:
+Three kinds of marker coexist, and they are reclaimed differently:
 
-- The legacy shlock gate file (`/tmp/studywright-gate-suite.lock` by default) holds a PID, and
-  `shlock` reclaims it once that process is gone, so a killed gate does not strand the next one.
-- A guard (`<gate lock>.warm-push-guard`, which admission and the push keeper publish) records
-  each owner's PID, process start, label, admission time and an uncertainty flag; beside it,
-  each entry's process record lists what supervision saw of that owner's commands. It is never
-  reclaimed by PID or by time, because a dead keeper's compilers or simulator children can
-  outlive it. Gates check the guard before trying `shlock`, and admission refuses to proceed
-  while any guard owner is dead, foreign or uncertain.
+- Admission's guard records each owner's PID, process start, label, admission time and an
+  uncertainty flag; beside it, each entry's process record lists what supervision saw of that
+  owner's commands. It is `/tmp/studywright-gate-suite.lock.warm-push-guard`, named after
+  StudyWright's former host gate lock, or `SW_GATE_LOCK_FILE` with `.warm-push-guard` appended:
+  StudyWright's gate checks an inherited admission against that path, and tests isolate
+  admission by redirecting it. Admission takes no lock at the gate lock's own path, and a file
+  left there holds nothing back. The guard is never reclaimed by PID or by time, because a dead
+  owner's compilers or simulator children can outlive it. Admission refuses to proceed while any
+  owner is dead or uncertain, or while the guard is unreadable or not in admission's format,
+  which it never overwrites.
 - The exclusive queue (`exclusive-queue.json` in the slot directory, changed only under its
   `coordination.lock`) records each waiting exclusive request's PID, process start and label, in
   arrival order. A queued request holds no slot and has started nothing, so admission drops one
@@ -2040,7 +2042,7 @@ and logs a `recovered` line ([admission log](#admission-log)), only when all of 
 
 Otherwise it changes nothing, exits 1 and says why: each process still running, by PID with why it
 counts and a `ps` listing, or what to check by hand. Stop or wait for what still runs, then run it
-again. It leaves a foreign guard alone too, such as a legacy keeper's (below).
+again. It leaves alone, too, a guard that is unreadable or not in admission's format.
 
 The process record is `<guard>.IDENTITY.jsonl`, beside the guard, named by the identity that keys
 the entry. The toolkit's supervision in the admitting process (`eng admit`, `eng run`, the
@@ -2080,12 +2082,6 @@ run had left two booted simulators, which its own logs proved its, so they were 
 left nothing running: a census against its `owner.json` checked 22,992 PIDs with their start times
 and 8,088 process groups and found no survivor, and the host still admitted no heavy work until the
 entry was removed by hand.
-
-A push keeper's guard is `{"keeper": PID, "checkoutLock": PATH}`. Admission reads it as foreign
-and waits, so while it stands no session on the host is admitted to heavy work. `PATH/owner.json`
-lists each command the keeper ran, with its PID, process group, start time and observed
-descendants, plus `childrenUncertain`. Check each recorded process by PID and start time. This
-was observed when a studywright warm push's keeper died with uncertain children (2026-10-21).
 
 ### Probing stop signals
 
