@@ -12,7 +12,7 @@ import sys
 import time
 
 from . import __version__, devices, disk, docs, evidence, github_artifacts, keychain, offload_host, parallel, \
-    processes, release, remote, resources, spelling
+    processes, release, remote, resources, skills, spelling
 from .config import TOOLKIT_ROOT, CAPABILITIES, DEFAULT_TOOLKIT, load, source_identity, stays
 from .resources import BUSY, FREE_WAIT
 from .simulators import matrix, pool as simulator_pool
@@ -492,6 +492,10 @@ def main(argv=None):
     keychain.add_arguments(commands.add_parser("keychain", help="before the owner unlocks a keychain, say which Mac's "
         "keychain the work needs and print commands that run only there (recover); where the automation runs, check "
         "the keychain, the signing identity and signing with it, without a prompt (check)"))
+    linking = commands.add_parser("skills", help="check that Claude Code and Codex load the toolkit's agent skills "
+        "through links to its main checkout; changes nothing without --link")
+    linking.add_argument("--link", action="store_true", help="link each installed host's missing skills, and those "
+                         "that link elsewhere; a copy is never replaced")
     # Everything after the first -- belongs to the command. Python 3.9's argparse rejects options
     # before it and drops a later --, so argparse never sees it.
     argv = sys.argv[1:] if argv is None else list(argv)
@@ -514,10 +518,12 @@ def main(argv=None):
         if args.action == "init":
             initialize(root, args)
             return 0
-        # The inventory and the admission log cover the whole host, so they need no project configuration.
+        # The inventory, the skill links and the admission log cover the whole host, so they need no project
+        # configuration.
         if args.action == "disk": return disk.execute(args)
         # A keychain's Mac and its session are the host's, not a project's.
         if args.action == "keychain": return keychain.execute(args)
+        if args.action == "skills": return skills.main(named_checkout(TOOLKIT_ROOT), args.link)
         if args.action == "admissions": return resources.report(args.logs or None, args.since, args.until)
         config = load(root)
         if args.action == "instructions": instructions(config)
@@ -538,6 +544,7 @@ def main(argv=None):
             warnings += temporary_model_storage(root, config)
             warnings += unlinked_packages(root, config)
             warnings += stale_copies(root)
+            warnings += skills.warnings(named_checkout(TOOLKIT_ROOT))
             # A difference between the two Macs is an error; a second Mac that cannot be reached is unchecked.
             hosts = remote.compare_hosts()
             print(json.dumps({"project": config["name"], "toolkit": str(TOOLKIT_ROOT),

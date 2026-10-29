@@ -27,7 +27,7 @@ import subprocess
 import sys
 import time
 
-from . import devices as device_record
+from . import devices as device_record, landing
 from .config import TOOLKIT_ROOT
 from .simulators import pool as simulator_pool
 
@@ -334,17 +334,22 @@ def landing_base(run, main):
 
 
 def landed(run, main, head, base, name):
-    """Whether HEAD's work is in BASE: contained in it, or every commit has an equal patch there."""
+    """Whether HEAD's work is in BASE, by the proof Closeout's landed.sh uses (landing.contained):
+    contained in it, an equal patch there for every commit, or a merge that would change nothing.
+    The inventory never fetches, so it has no pull request proof."""
     short = f"HEAD {head[:10]}"
-    if git(run, main, "merge-base", "--is-ancestor", head, base).returncode == 0:
-        return True, f"{short} is in {name} {base[:10]}"
+    how = landing.contained(lambda *arguments: git(run, main, *arguments), base, head)
+    if how == landing.ANCESTOR: return True, f"{short} is in {name} {base[:10]}"
+    if how == landing.CONTENT_MERGED: return True, f"merging {short} into {name} {base[:10]} would change nothing"
+    # The rest only says why, or how many: the verdict is how's.
     merges = git(run, main, "rev-list", "--merges", f"{base}..{head}")
     marks = git(run, main, "rev-list", "--cherry-mark", "--right-only", "--no-merges", f"{base}...{head}")
+    commits = marks.stdout.split()
+    if how == landing.PATCH_EQUIVALENT:
+        return True, f"each of the {len(commits)} commits on {short} has an equal patch in {name}"
     if merges.returncode or marks.returncode: return False, f"could not compare {short} with {name}"
     if merges.stdout.strip(): return False, f"merge commits on {short} are not in {name} {base[:10]}"
-    commits = marks.stdout.split()
     pending = [commit for commit in commits if not commit.startswith("=")]
-    if commits and not pending: return True, f"each of the {len(commits)} commits on {short} has an equal patch in {name}"
     return False, f"{len(pending)} commits on {short} are not in {name} {base[:10]}"
 
 

@@ -13,7 +13,7 @@ from unittest.mock import patch
 import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
-from vocaro_engineering import cli, devices, disk
+from vocaro_engineering import cli, devices, disk, landing
 
 LATER = time.time() + 10 * 86400  # every fixture looks idle from here
 
@@ -87,6 +87,32 @@ class WorktreeTests(Fixture):
         self.assertEqual(items[str(picked)].status, disk.CANDIDATE, items[str(picked)].reason)
         self.assertIn("equal patch", items[str(picked)].reason)
         self.assertEqual(items[str(changed)].status, disk.KEPT)
+
+    def test_a_squash_counts_as_closeout_counts_it_and_one_main_edited_over_does_not(self):
+        squashed = self.worktree("squashed")
+        commit(squashed, "feature", "the feature\n")
+        commit(squashed, "notes", "notes\n")
+        edited = self.worktree("edited")
+        commit(edited, "shared", "edited version\n")
+        commit(edited, "more", "more\n")
+        for path in (squashed, edited):
+            git(self.main, "merge", "-q", "--squash", git(path, "rev-parse", "HEAD"))
+            git(self.main, "commit", "-q", "-m", f"Squash {path.name}")
+        commit(self.main, "shared", "main edited over the squash\n")
+        self.publish()
+        items = self.items(self.host(), ["worktree"])
+        self.assertEqual(items[str(squashed)].status, disk.CANDIDATE, items[str(squashed)].reason)
+        self.assertIn("would change nothing", items[str(squashed)].reason)
+        self.assertEqual(items[str(edited)].status, disk.KEPT)
+        self.assertIn("unlanded: 2 commits", items[str(edited)].reason)
+
+    def test_the_inventory_and_landed_sh_share_one_containment_proof(self):
+        self.assertIs(disk.landing, landing)
+        script = (Path(__file__).resolve().parents[1] / "skills/closeout/scripts/landed.sh").read_text()
+        # landed.sh's own proof is landing.py: no shell copy of the patch or merge comparison is left.
+        self.assertIn('contained() {\n    python3 -I -B "$landing" contained "$1" "$2"\n}', script)
+        self.assertNotIn('git cherry "$1"', script)
+        self.assertNotIn('merge-tree --write-tree "$1"', script)
 
     def test_a_live_process_keeps_a_landed_worktree(self):
         paths = {how: self.worktree(how) for how in ("cwd", "file", "argument", "idle")}

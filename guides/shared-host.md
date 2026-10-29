@@ -1069,8 +1069,10 @@ not measure.
   candidate lies in its project's `.claude/worktrees` or `.codex/worktrees` or in
   `~/.codex/worktrees`, is unlocked (Claude Code locks an agent's worktree while the agent
   runs), has no process, is clean (no modified or untracked path) and has landed: its HEAD is
-  contained in origin/main, or every one of its commits has an equal patch there and none is a
-  merge. Ignored files under a `measurements` or `evidence` directory keep it. The inventory reads
+  contained in origin/main, every one of its commits has an equal patch there and none is a
+  merge, or merging it into origin/main would change nothing (a squash). That is the proof
+  Closeout's `landed.sh` makes, by the same code ([agent skills](skills.md)), less its merged
+  pull request lookup, which needs the network. Ignored files under a `measurements` or `evidence` directory keep it. The inventory reads
   origin/main once per repository and does not fetch, so work that landed after the last fetch
   stays kept. Its `git status` runs with `GIT_OPTIONAL_LOCKS=0`, so it never refreshes another
   session's index. The command is `git worktree remove` without `--force`, which itself refuses
