@@ -114,8 +114,9 @@ def stale_copies(root):
     toolkit's own checkout, which has integrations/, keeps a launcher of its own."""
     if (root / "integrations/shared.py").is_file():
         return []
-    return [f"{copy} differs from the toolkit's {source}: replace it with "
-            f"`cp {TOOLKIT_ROOT / source} {root / copy}` (guides/adoption.md)"
+    # Either checkout may be the one behind; copying from a toolkit behind its origin installs an older file.
+    return [f"{copy} differs from the toolkit's {source}: pull whichever checkout is behind its origin, and if "
+            f"they still differ, replace it with `cp {TOOLKIT_ROOT / source} {root / copy}` (guides/adoption.md)"
             for copy, source in COPIES.items()
             if (root / copy).is_file() and (root / copy).read_bytes() != (TOOLKIT_ROOT / source).read_bytes()]
 
