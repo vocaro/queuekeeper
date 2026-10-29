@@ -45,6 +45,8 @@ WORKSPACE_FOLDER = re.compile(r".+-[a-z]{28}")
 # Caches a tool writes beside the files are not.
 EVIDENCE_NAMES = {"measurements", "evidence"}
 CACHE_NAMES = {"__pycache__", ".pytest_cache", ".ruff_cache", ".mypy_cache", ".build", ".swiftpm", ".DS_Store"}
+# Inside .build, eng's results: lane logs, receipts and remote results, which nothing rebuilds.
+RESULTS = (".build", "engineering")
 DATA_VOLUME = "/System/Volumes/Data"
 
 
@@ -334,27 +336,34 @@ def landing_base(run, main):
 
 
 def landed(run, main, head, base, name):
-    """Whether HEAD's work is in BASE, by the proof Closeout's landed.sh uses (landing.contained):
-    contained in it, an equal patch there for every commit, or a merge that would change nothing.
-    The inventory never fetches, so it has no pull request proof."""
+    """(whether HEAD's work is in BASE, why, how), by the proof Closeout's landed.sh uses
+    (landing.contained): contained in it, an equal patch there for every commit, or a merge that
+    would change nothing. The inventory never fetches, so it has no pull request proof."""
     short = f"HEAD {head[:10]}"
     how = landing.contained(lambda *arguments: git(run, main, *arguments), base, head)
-    if how == landing.ANCESTOR: return True, f"{short} is in {name} {base[:10]}"
-    if how == landing.CONTENT_MERGED: return True, f"merging {short} into {name} {base[:10]} would change nothing"
+    if how == landing.ANCESTOR: return True, f"{short} is in {name} {base[:10]}", how
+    if how == landing.CONTENT_MERGED:
+        return True, f"merging {short} into {name} {base[:10]} would change nothing", how
     # The rest only says why, or how many: the verdict is how's.
     merges = git(run, main, "rev-list", "--merges", f"{base}..{head}")
     marks = git(run, main, "rev-list", "--cherry-mark", "--right-only", "--no-merges", f"{base}...{head}")
     commits = marks.stdout.split()
     if how == landing.PATCH_EQUIVALENT:
-        return True, f"each of the {len(commits)} commits on {short} has an equal patch in {name}"
-    if merges.returncode or marks.returncode: return False, f"could not compare {short} with {name}"
-    if merges.stdout.strip(): return False, f"merge commits on {short} are not in {name} {base[:10]}"
+        return True, f"each of the {len(commits)} commits on {short} has an equal patch in {name}", how
+    if merges.returncode or marks.returncode: return False, f"could not compare {short} with {name}", how
+    if merges.stdout.strip(): return False, f"merge commits on {short} are not in {name} {base[:10]}", how
     pending = [commit for commit in commits if not commit.startswith("=")]
-    return False, f"{len(pending)} commits on {short} are not in {name} {base[:10]}"
+    return False, f"{len(pending)} commits on {short} are not in {name} {base[:10]}", how
 
 
-def possible_evidence(path):
+def possible_evidence(path, root):
+    """Whether an ignored path in the worktree at root may be evidence. A .build folder is a cache,
+    except for .build/engineering, where eng writes lane logs, receipts and remote results."""
     parts = Path(path).parts
+    if any(parts[index:index + 2] == RESULTS for index in range(len(parts))): return True
+    if parts and parts[-1] == RESULTS[0]:
+        results = Path(root, path, RESULTS[1])
+        return results.is_dir() and any(child.is_file() for child in results.rglob("*"))
     if not parts or parts[-1] in CACHE_NAMES or parts[-1].endswith(".pyc"): return False
     return bool(EVIDENCE_NAMES & {part.lower() for part in parts})
 
@@ -382,11 +391,18 @@ def worktree(host, usage, sizes, main, entry, base, name):
     lines = status.stdout.splitlines()
     changed = [line for line in lines if not line.startswith("!! ")]
     if changed: return item(KEPT, f"dirty: {len(changed)} modified or untracked paths")
-    evidence = [line[3:] for line in lines if line.startswith("!! ") and possible_evidence(line[3:])]
+    evidence = [line[3:] + ("engineering/" if Path(line[3:]).name == RESULTS[0] else "")
+                for line in lines if line.startswith("!! ") and possible_evidence(line[3:], path)]
     if evidence: return item(KEPT, "ignored files that may be evidence: " + ", ".join(evidence[:3]))
     if not entry.get("HEAD") or not base: return item(KEPT, "no HEAD or no origin/main to compare it with")
-    done, why = landed(host.run, main, entry["HEAD"], base, name)
+    done, why, how = landed(host.run, main, entry["HEAD"], base, name)
     if not done: return item(KEPT, "unlanded: " + why)
+    # Removing a detached worktree removes the last ref to commits origin/main holds only under other
+    # IDs. Whether evidence cites them takes the project's open issues, which the inventory never reads.
+    if how != landing.ANCESTOR and "branch" not in entry:
+        return item(KEPT, f"landed ({why}), but its detached HEAD is the last ref to commits origin/main does not "
+                          "reach, and whether the project's open issues cite them takes the network; Closeout's "
+                          "landed.sh checks")
     idle = host.now - last_activity(path)
     if idle < host.min_idle: return item(KEPT, f"clean and landed ({why}), but changed {age(idle)} ago", idle=idle)
     command = ["git", "-C", str(main), "worktree", "remove", path]

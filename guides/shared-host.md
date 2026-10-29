@@ -1071,8 +1071,13 @@ not measure.
   runs), has no process, is clean (no modified or untracked path) and has landed: its HEAD is
   contained in origin/main, every one of its commits has an equal patch there and none is a
   merge, or merging it into origin/main would change nothing (a squash). That is the proof
-  Closeout's `landed.sh` makes, by the same code ([agent skills](skills.md)), less its merged
-  pull request lookup, which needs the network. Ignored files under a `measurements` or `evidence` directory keep it. The inventory reads
+  Closeout's `landed.sh` makes, by the same code ([agent skills](skills.md)), less what needs
+  the network: its merged pull request lookup, and its search of the project's open issues for
+  citations. So a detached worktree that origin/main reaches only by equal patches or a squash is
+  kept: it is the last ref to those commits, and removing it would leave them to `git gc`. One on
+  a branch is not, since the branch remains. Ignored files under a `measurements` or `evidence`
+  directory keep it, as eng's results under `.build/engineering` (lane logs, receipts, remote
+  results) do; the rest of `.build` is a cache. The inventory reads
   origin/main once per repository and does not fetch, so work that landed after the last fetch
   stays kept. Its `git status` runs with `GIT_OPTIONAL_LOCKS=0`, so it never refreshes another
   session's index. The command is `git worktree remove` without `--force`, which itself refuses

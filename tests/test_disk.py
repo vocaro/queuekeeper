@@ -50,9 +50,9 @@ class Fixture(unittest.TestCase):
         """Point origin/main at the main checkout's HEAD, as a fetch would."""
         git(self.main, "update-ref", "refs/remotes/origin/main", "HEAD")
 
-    def worktree(self, name, parent=None):
+    def worktree(self, name, parent=None, branch=None):
         path = (parent or self.main / ".claude/worktrees") / name
-        git(self.main, "worktree", "add", "-q", "--detach", str(path), "origin/main")
+        git(self.main, "worktree", "add", "-q", *(["-b", branch] if branch else ["--detach"]), str(path), "origin/main")
         return path
 
     def host(self, processes=(), now=LATER, **values):
@@ -76,7 +76,7 @@ class WorktreeTests(Fixture):
         self.assertIsNone(items[str(unlanded)].command)
 
     def test_work_landed_by_an_equal_patch_counts_and_a_different_patch_does_not(self):
-        picked = self.worktree("picked")
+        picked = self.worktree("picked", branch="picked")  # its branch keeps the commits
         work = commit(picked, "feature", "the feature\n")
         changed = self.worktree("changed")
         commit(changed, "feature", "another version of the feature\n")
@@ -89,7 +89,7 @@ class WorktreeTests(Fixture):
         self.assertEqual(items[str(changed)].status, disk.KEPT)
 
     def test_a_squash_counts_as_closeout_counts_it_and_one_main_edited_over_does_not(self):
-        squashed = self.worktree("squashed")
+        squashed = self.worktree("squashed", branch="squashed")
         commit(squashed, "feature", "the feature\n")
         commit(squashed, "notes", "notes\n")
         edited = self.worktree("edited")
@@ -105,6 +105,41 @@ class WorktreeTests(Fixture):
         self.assertIn("would change nothing", items[str(squashed)].reason)
         self.assertEqual(items[str(edited)].status, disk.KEPT)
         self.assertIn("unlanded: 2 commits", items[str(edited)].reason)
+
+    def test_a_detached_worktree_main_reaches_only_by_equal_patch_is_kept_and_one_on_a_branch_is_not(self):
+        # Removing the detached one would leave its commits to git gc, and only the network can say
+        # whether an open issue cites them; the branch keeps the other's.
+        detached = self.worktree("detached")
+        on_branch = self.worktree("on-branch", branch="on-branch")
+        picks = [commit(path, f"feature-{path.name}", "the feature\n") for path in (detached, on_branch)]
+        commit(self.main, "other", "other work first, so each picked commit differs\n")
+        git(self.main, "cherry-pick", *picks)
+        self.publish()
+        items = self.items(self.host(), ["worktree"])
+        self.assertEqual(items[str(detached)].status, disk.KEPT, items[str(detached)].reason)
+        self.assertIn("its detached HEAD is the last ref to commits origin/main does not reach",
+                      items[str(detached)].reason)
+        self.assertIsNone(items[str(detached)].command)
+        self.assertEqual(items[str(on_branch)].status, disk.CANDIDATE, items[str(on_branch)].reason)
+
+    def test_eng_results_under_build_keep_a_worktree_and_swiftpm_output_does_not(self):
+        commit(self.main, ".gitignore", ".build/\n")
+        self.publish()
+        swiftpm = self.worktree("swiftpm")
+        for name in ("debug/Module.build/output.o", "checkouts/Dependency/Package.swift", "workspace-state.json"):
+            (swiftpm / ".build" / name).parent.mkdir(parents=True, exist_ok=True)
+            (swiftpm / ".build" / name).write_text("rebuilt by SwiftPM\n")
+        results = self.worktree("results")
+        (results / ".build/debug").mkdir(parents=True)
+        (results / ".build/engineering/suites/lanes").mkdir(parents=True)
+        (results / ".build/engineering/suites/lanes/run.log").write_text("Ran 12 tests\n")
+        emptied = self.worktree("emptied")
+        (emptied / ".build/engineering").mkdir(parents=True)  # no result in it
+        items = self.items(self.host(), ["worktree"])
+        self.assertEqual(items[str(swiftpm)].status, disk.CANDIDATE, items[str(swiftpm)].reason)
+        self.assertEqual(items[str(emptied)].status, disk.CANDIDATE, items[str(emptied)].reason)
+        self.assertEqual(items[str(results)].status, disk.KEPT)
+        self.assertEqual(items[str(results)].reason, "ignored files that may be evidence: .build/engineering/")
 
     def test_the_inventory_and_landed_sh_share_one_containment_proof(self):
         self.assertIs(disk.landing, landing)
