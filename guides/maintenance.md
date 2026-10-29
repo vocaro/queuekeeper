@@ -81,6 +81,16 @@ Shared records (generated counts, allow tables, issue-state snapshots) conflict 
 places on every pick: regenerate them from their sources after each pick rather than merging by
 hand ([documentation checks](#documentation-checks)).
 
+**Read a project's hooks before checking it out somewhere new.** A worktree of another project
+runs that project's hooks. mpm's `post-checkout` opens the Unity editor for each new worktree, on
+the owner's screen (2026-10-28). Read `git config core.hooksPath` and the hooks it names before
+`git worktree add`. When a checkout hook would launch anything, add the worktree with
+`git -c core.hooksPath=/dev/null worktree add …`, and then commit and push under the project's
+hooks as usual. A worktree outside `~/Development` also loses the toolkit's sibling path: run
+`scripts/eng` there with `VOCARO_ENGINEERING_ROOT` set. A project file may hard-code that path
+too. studywright's `app/project.yml` names `../../vocaro-engineering`, so its `check-app.sh`, which
+its pre-push hook runs, fails from a worktree that has no toolkit checkout beside it.
+
 **Push only onto the `main` you tested.** Immediately before pushing to a direct-main
 repository:
 
