@@ -1830,6 +1830,41 @@ lists each command the keeper ran, with its PID, process group, start time and o
 descendants, plus `childrenUncertain`. Check each recorded process by PID and start time. This
 was observed when a studywright warm push's keeper died with uncertain children (2026-10-21).
 
+### Probing stop signals
+
+The stops above were measured with `siglog.py` and `watch.py`, kept with the scripts that start
+and read them in [`src/python/StopSignals`](../src/python/StopSignals), standard library only.
+
+- `siglog.py LOG child SECONDS` logs each SIGTERM, SIGINT and SIGHUP it receives and runs on, and
+  starts a child that leads a session of its own and does the same. Each writes `exiting` after
+  SECONDS. Any other signal, SIGKILL among them, ends a process without a line.
+- `watch.py LOG OUT SECONDS` polls `kill(pid, 0)` every 5 ms for each process LOG names and for
+  the parent of its `child`, the command's shell, and writes when each is gone. It ends when all
+  are gone or after SECONDS.
+- `detach.py COMMAND …` starts COMMAND in a session of its own, with launchd as its parent and
+  its input and output on /dev/null, and prints its PID. A stop that signals the caller's process
+  group or session, or the descendants a scan finds from its shell, does not reach it.
+- `report.py DIR` reads each `NAME.log` with the `NAME.watch` beside it, and prints each probe's
+  lines in seconds from the first signal logged and what ended each process.
+
+Start the watcher detached, where the action under test cannot reach it, then have the agent or
+tool under test run the probe as its command, so the probe's processes are that command's:
+
+```sh
+K=~/Development/vocaro-engineering/src/python/StopSignals D=/private/tmp/stop-probe/NAME
+mkdir -p "$D" && python3 -I "$K/detach.py" python3 -I "$K/watch.py" "$D/probe.log" "$D/probe.watch" 1800
+python3 -I "$K/siglog.py" "$D/probe.log" child 300 && true    # run by the command under test
+python3 -I "$K/report.py" "$D"                                # once the action is done
+```
+
+`&& true` keeps a shell given the line with `-c` as the probe's parent, as Claude Code's Bash tool
+is; zsh otherwise replaces itself with a command that ends its string. In the report, a process
+that got a signal and went without `exiting` was killed after it, and the gap between the two is
+the stop's escalation to SIGKILL; one that went with no signal logged was killed by SIGKILL alone;
+a `session-child` that ran to its own end while its `child` was signaled was missed; and both
+running to their own end with no signal logged means the action stopped nothing. A parent that
+outlives the probe, such as an agent's long-running process, keeps the watcher until SECONDS.
+
 ## Ending a coordinated command
 
 Use the supplied `eng run` or resource CLI for commands. They return the child's status after
