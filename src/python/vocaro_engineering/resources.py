@@ -25,12 +25,12 @@ A request that waited says why, which an audit could only infer from the holders
 (#49): how many of its attempts each kind of refusal refused, and the load and memory pressure read.
 Its waiting message names the limit that refused it and the limit's value, beside what it read.
 
-Beside its guard entry, each admission keeps a process record: what the toolkit's supervision in
-the owner's process saw of each command, its processes with their starts and the process groups
-and sessions they used, appended at each sample that sees something new. Once the owner has ended,
-`eng admissions recover` runs the end-of-run census against that record and removes the entry only
-when nothing of an unsettled command still runs (#61). An entry without a record is left for a
-check by hand.
+Beside its guard entry, each admission keeps a process record: what supervision in the owner's
+process, the toolkit's or a caller's own, saw of each command, its processes with their starts and
+the process groups and sessions they used, appended at each sample that sees something new. Once
+the owner has ended, `eng admissions recover` runs the end-of-run census against that record and
+removes the entry only when nothing of an unsettled command still runs (#61). An entry without a
+record is left for a check by hand.
 """
 import argparse
 from collections import Counter
@@ -597,9 +597,13 @@ class Admission:
 
     def observe(self, line):
         """Append a line to this admission's process record: what supervision in this process saw of a
-        command (#61). Recovery trusts a record only whole, so a line that cannot be written removes the
-        record and ends recording, and recovery then leaves the entry for a check by hand. As with the
-        log, a failure never fails or holds up the run."""
+        command (#61). processes.supervise writes it, and so does a caller that supervises its own
+        commands, as StudyWright's push keeper does: a dictionary with the command's own key as
+        `command`, and `argv` before it starts, `root` and its `spaces` once started, the `processes`
+        ([PID, start]) and `spaces` each sample sees first, or `settled` once its end is confirmed.
+        Recovery trusts a record only whole, so a line that cannot be written removes the record and
+        ends recording, and recovery then leaves the entry for a check by hand. As with the log, a
+        failure never fails or holds up the run."""
         with self.recording:
             if self.unrecorded: return
             try:
@@ -915,8 +919,8 @@ def recover(owner=None, out=print):
     entries or removed one, and 1 when it removed nothing.
 
     A live owner's entry is never touched: the owner removes it, or leaves it, itself. An entry without a
-    process record, written by an older toolkit or by a caller that runs its own commands, is left for a
-    check by hand, as is a foreign guard such as a legacy push keeper's.
+    process record, written by an older toolkit or by a caller that runs its own commands without
+    recording them, is left for a check by hand, as is a foreign guard such as a legacy push keeper's.
     """
     guard = Path(os.environ.get("SW_GATE_LOCK_FILE", "/tmp/studywright-gate-suite.lock") + ".warm-push-guard")
     directory = slot_directory()
@@ -983,8 +987,9 @@ def recover(owner=None, out=print):
         path = recorded(identity)
         if path is None:
             out(f"{name} has no process record, so its entry stays: an older toolkit admitted it, it ended before "
-                "it began a supervised command, or its caller runs its own commands, as a push keeper does, whose "
-                f"owner.json in its checkout's transaction lock lists them. To recover it, {BY_HAND}.")
+                "it began a recorded command, its record could not be written, or its caller runs its own commands "
+                "without recording them, as an older push keeper does; a push keeper's owner.json, in its checkout's "
+                f"transaction lock, lists each command it ran. To recover it, {BY_HAND}.")
             return 1
         try:
             left, commands, processes, spaces = census(path)

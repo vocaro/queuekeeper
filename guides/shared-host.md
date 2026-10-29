@@ -1571,7 +1571,10 @@ Supervise the process group you own. The toolkit's `processes.supervise`, which 
   refused until someone has read why this one failed and removed the lock. A stop, a command
   ended by a signal, a killed keeper or a process the census finds leaves both in place, the
   admission entry marked uncertain, even after the observed children drain. A command that
-  passes has no census there either.
+  passes has no census there either. The keeper appends what it sees of each command it runs
+  inside the admission to the admission's process record, as the supervisor does, so
+  `eng admissions recover` checks a killed or uncertain keeper's entry as it checks any other;
+  the checkout lock stays for a check by hand.
 - Once the root exits, its observed descendants have 60 s to end. The supervisor lists any still
   running on stderr, as `ps -o pid,ppid,pgid,lstart,args` rows with the parent and group each
   had when first seen, and stops them: SIGTERM, then SIGKILL 10 s later. The root's status counts
@@ -1987,22 +1990,30 @@ since the outer supervisor sees its processes. Release deletes the record after 
 uncertain end keeps it. A line that cannot be written deletes the record and ends recording, with
 `heavy: the process record was not written`, so recovery never trusts a record that lacks a line.
 
-An entry without a process record is left for a check by hand: one an older toolkit wrote, one
-whose owner ended before it began a supervised command, and one whose caller runs its own commands,
-as StudyWright's push keeper does with `Admission` directly. Inspect its recorded owner, that
-owner's command processes and any reserved tree; stop or wait for all of the transaction's
-children; then remove the entry by hand. A push keeper's `owner.json`, in its checkout's transaction
-lock, lists each command the keeper ran with its PID, process group, start time and observed
-descendants. A free owned descriptor or a later foreign acquisition, checked against the recorded
-process birth and descriptor nonce, establishes that an old lock was released. Preserve every
-foreign reservation. Time passing alone establishes none of this. Recovering the guard those
-subagent stops left (2026-10-22) found all three recorded PIDs dead, no swift-frontend, xctest,
-xcodebuild, DTServiceHub or simctl process left, and no slot file held open. The VoiceOver run had
-left two booted simulators, which its own logs proved its, so they were deleted by UDID. On
+A caller that supervises its own commands inside an `Admission` its process holds, as
+StudyWright's push keeper does, appends the same lines itself, each a dictionary passed to
+`Admission.observe`: `command` and `argv` before the command starts, so that a record without its
+`root` says it may have started; `root`, with `spaces` holding it, as soon as it starts; each
+process its samples see, with the start `ps -o lstart=` reads, and each group and session; and
+`settled` only once a passing exit, or a failure whose census found nothing, confirms the end.
+Recovery then checks its entry as it checks supervision's.
+
+An entry without a process record is left for a check by hand: one an older toolkit wrote, one whose
+owner ended before it began a recorded command, one whose record could not be written, and one whose
+caller runs its own commands without recording them, as an older StudyWright push keeper does.
+Inspect its recorded owner, that owner's command processes and any reserved tree; stop or wait for
+all of the transaction's children; then remove the entry by hand. A push keeper's `owner.json`, in
+its checkout's transaction lock, lists each command the keeper ran with its PID, process group,
+start time and observed descendants. A free owned descriptor or a later foreign acquisition, checked
+against the recorded process birth and descriptor nonce, establishes that an old lock was released.
+Preserve every foreign reservation. Time passing alone establishes none of this. Recovering the
+guard those subagent stops left (2026-10-22) found all three recorded PIDs dead, no swift-frontend,
+xctest, xcodebuild, DTServiceHub or simctl process left, and no slot file held open. The VoiceOver
+run had left two booted simulators, which its own logs proved its, so they were deleted by UDID. On
 2026-10-27 a persistent push keeper that an agent's task stop ended ten minutes into its gate had
-left nothing running: a census against its `owner.json` checked 22,992 PIDs with their start
-times and 8,088 process groups and found no survivor, and the host still admitted no heavy work
-until the entry was removed by hand.
+left nothing running: a census against its `owner.json` checked 22,992 PIDs with their start times
+and 8,088 process groups and found no survivor, and the host still admitted no heavy work until the
+entry was removed by hand.
 
 A push keeper's guard is `{"keeper": PID, "checkoutLock": PATH}`. Admission reads it as foreign
 and waits, so while it stands no session on the host is admitted to heavy work. `PATH/owner.json`
@@ -2048,16 +2059,17 @@ outlives the probe, such as an agent's long-running process, keeps the watcher u
 ## Ending a coordinated command
 
 Use the supplied `eng run` or resource CLI for commands. They return the child's status after
-leaving admission normally. If using Admission directly, leave the context before raising
-SystemExit for a nonzero result. An exception inside the context retains its uncertain guard,
-by design, because the coordinator cannot infer whether that exception left children running.
-Admission used directly handles no signals. To stop as the supplied commands do, enter
-`processes.forwarding_signals()` around it and pass `on_stop=admission.interrupted` to
-`supervise`. `supervise` called in the process that holds the admission writes its process
-record; a caller that supervises its own commands writes none, so an entry its killed process
-leaves is recovered by hand ([lock reclamation](#lock-reclamation)). The record holds only what
-`supervise` ran, so a caller that also starts long-lived processes another way inside the
-admission leaves recovery blind to them: run them through `supervise` too.
+leaving admission normally. If using Admission directly, leave the context before raising SystemExit
+for a nonzero result. An exception inside the context retains its uncertain guard, by design,
+because the coordinator cannot infer whether that exception left children running. Admission used
+directly handles no signals. To stop as the supplied commands do, enter
+`processes.forwarding_signals()` around it and pass `on_stop=admission.interrupted` to `supervise`.
+`supervise` called in the process that holds the admission writes its process record. A caller that
+supervises its own commands writes the same lines with `Admission.observe` ([lock
+reclamation](#lock-reclamation)); when one writes none, an entry its killed process leaves is
+recovered by hand. The record holds only what was written to it, so a caller that also starts
+long-lived processes another way inside the admission leaves recovery blind to them: run them
+through `supervise`, or record them, too.
 
 Legacy shell gates authenticate inherited exclusive admission for their exact lock namespace.
 The coordinator does not export a lock opt-out into the suite: regression fixtures retain
