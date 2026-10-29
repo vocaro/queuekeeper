@@ -1714,6 +1714,16 @@ is therefore still the run: follow it to its terminal result rather than stoppin
 another. Start an admitted command that can outlast the foreground wait in the background, and
 never stop its task to retry.
 
+A fork, the Agent tool's `fork` type, ends the same way. A fork that started the probe in the
+background and ended its turn was reported as waiting on its own background work, and the
+command and its child in its own session ran their full 240 s without receiving a signal
+(2026-10-29, Claude desktop app running Claude Code 2.1.309, macOS 27.2). In that bundle the
+`fork` type runs through the same `runAgent` as other agent types, not the internal
+`runForkedAgent`, whose teardown kills the agent's shell tasks. `runAgent`'s cleanup skips that
+kill only for an agent that ran in the background, finished without being stopped and still owns
+a running background command. So a subagent run in the foreground, or one stopped, has its
+background commands stopped at its end; that was read from the bundle, not measured.
+
 Stopping a subagent with TaskStop stops every command it started, background commands included,
 as a task stop does. In each of three probes the command and its child in its own session
 received SIGTERM in the same millisecond and ended by SIGKILL 1.48 s later. Twice the subagent was
