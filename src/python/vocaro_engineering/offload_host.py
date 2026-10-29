@@ -13,7 +13,9 @@ sends, stops the run as a stop signal stops a local one. Given `{"toolchain": DE
 instead of a plan, it prints the Mac's Xcodes, simulator runtimes and device record for
 `eng doctor`; given `{"images": ...}` or `{"receive": ...}`, it lists the Mac's runtime images or
 adds one read from standard input, for `eng remote setup --runtimes`; given `{"leftovers": ROOT}`,
-it lists the processes left over from runs there, which `eng remote` prints before it sends work;
+it lists the processes left over from runs there, which `eng remote` prints before it sends work,
+and with `"advertise"` names as refs the commits the named repositories' checkouts hold, so that
+the push that follows sends only what they lack;
 given `{"device": ...}`, what there may still use a physical device a run was given, for
 `devices recover`; given `{"keychain": PATH}`, the Mac's name and whether that keychain file is
 there, for `eng keychain recover`.
@@ -76,6 +78,11 @@ STARTED = "%a %b %d %H:%M:%S %Y"
 # What the work's Python processes are given: no bytecode, whose __pycache__ directories a
 # project's .gitignore need not name, and which would leave its checkout with changes (claim).
 NO_BYTECODE = {"PYTHONDONTWRITEBYTECODE": "1"}
+# The refs under which a repository here names each commit a checkout of it holds. A push learns what
+# the second Mac has from its refs alone, and a detached checkout's HEAD is none of them, so without
+# these a push sends the commit's whole history (vocaro-engineering#67).
+CACHE = "refs/vocaro/checkouts/"
+COMMIT = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 
 _output = threading.Lock()
 _stop = threading.Event()
@@ -598,15 +605,50 @@ def device_users(request, listed=listing, written=disk_writes):
     return {**census, "leftovers": later, "naming": naming}
 
 
+def advertise(repository):
+    """Name each commit that a checkout of repository holds as CACHE + COMMIT, and remove every other
+    ref under CACHE, so that the next push to repository sends only what its checkouts lack. The refs
+    are no more than the checkouts. One ref per commit, not per checkout: sessions that advertise at
+    once write the same refs, and a checkout that moves meanwhile costs a push its saving, never its
+    commit. Return the commits advertised, or why none were."""
+    try:
+        held = set()
+        for block in git("--git-dir", str(repository), "worktree", "list", "--porcelain").split("\n\n"):
+            fields = dict((line.split(" ", 1) + [""])[:2] for line in block.splitlines())
+            # A checkout whose directory is gone is pruned when its slot is next claimed.
+            if "prunable" not in fields and COMMIT.fullmatch(fields.get("HEAD", "")) and fields["HEAD"].strip("0"):
+                held.add(fields["HEAD"])
+        refs = set(git("--git-dir", str(repository), "for-each-ref", "--format=%(refname)", CACHE).split())
+        wanted = {CACHE + commit for commit in held}
+        changes = "".join([f"update {ref} {ref[len(CACHE):]}\n" for ref in sorted(wanted - refs)]
+                          + [f"delete {ref}\n" for ref in sorted(refs - wanted)])
+        # Another session's transaction can hold a ref's lock for a moment; its refs serve as well.
+        for attempt in range(2):
+            if not changes: break
+            done = subprocess.run(["git", "--git-dir", str(repository), "update-ref", "--stdin"], input=changes,
+                                  capture_output=True, text=True, timeout=60)
+            if done.returncode == 0: break
+            if attempt: raise RuntimeError(f"git update-ref failed: {done.stderr.strip()}")
+            time.sleep(0.2)
+        return {"commits": sorted(held)}
+    except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+        return {"error": str(error)}
+
+
 def answer(request):
     """offload_host.py's answer to a request other than a plan, for `eng doctor`, `eng remote`,
-    `eng remote setup`, `devices recover` and `eng keychain recover`."""
+    `eng remote setup`, `devices recover` and `eng keychain recover`. A census before a dispatch can
+    also name repositories to advertise, and then says what each advertises and which Git does so."""
     if "toolchain" in request: return toolchain(request["toolchain"])
     if "keychain" in request: return keychain(request["keychain"])
     if "leftovers" in request or "device" in request:
         # A census that fails says why: it must never stop the work it is printed before.
-        try: return leftovers(request["leftovers"]) if "leftovers" in request else device_users(request["device"])
-        except Exception as error: return {"error": f"{type(error).__name__}: {error}"}
+        try: found = leftovers(request["leftovers"]) if "leftovers" in request else device_users(request["device"])
+        except Exception as error: found = {"error": f"{type(error).__name__}: {error}"}
+        if request.get("advertise"):
+            found.update(git=output(["git", "--version"]),
+                         advertised={path: advertise(Path.home() / path) for path in request["advertise"]})
+        return found
     if "images" in request:
         return {"images": images(request["images"]), **stage(Path.home() / request["staging"], request.get("clear"))}
     # A stop or a dropped connection ends the copy, and the staged file is removed.
@@ -690,8 +732,11 @@ def place(repository, checkout, commit, ref, origin=None):
         git("--git-dir", str(repository), "worktree", "add", "--detach", "--quiet", str(checkout), commit)
     if git("rev-parse", "HEAD", cwd=checkout) != commit:
         raise RuntimeError(f"{checkout} is not at {commit}")
-    # The detached worktree keeps the commit reachable; the pushed ref only carried it here.
+    # The detached worktree keeps the commit reachable; the pushed ref only carried it here. The
+    # checkouts' commits are named instead, for the next push (advertise).
     subprocess.run(["git", "--git-dir", str(repository), "update-ref", "-d", ref], capture_output=True)
+    advertised = advertise(repository)
+    if "error" in advertised: say(f"could not name what the checkouts of {repository} hold: {advertised['error']}")
 
 
 def credentials(environment, path):
@@ -802,8 +847,12 @@ def main(plan):
     for number in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         signal.signal(number, lambda *_: _stop.set())
     threading.Thread(target=watch, daemon=True).start()
+    # The seconds each stage here took: the wait for a free checkout, placing the commits in it, and each
+    # eng command, whose own receipt tells its queue's wait from its run.
+    phases = {}
     result = {"started": time.time(), "exitStatus": None, "stopped": False,
-              "host": identity(plan.get("developerDir"))}
+              "host": identity(plan.get("developerDir")), "phases": phases}
+    timed = lambda name, began: phases.__setitem__(name, round(time.monotonic() - began, 3))
     # Until the first command starts, a failure is a refusal: nothing ran. The dispatcher may run
     # the work on its own Mac instead only when the refusal is busy.
     begun, back = False, None
@@ -817,17 +866,21 @@ def main(plan):
                           "both Macs have at the same path")
         root, project, toolkit = Path.home() / plan["root"], plan["project"], plan.get("toolkit")
         base = root / "checkouts" / project["directory"]
+        began = time.monotonic()
         claimed = claim(base, plan["checkouts"], project["directory"], wait=not plan.get("decline"))
+        timed("claim", began)
         if claimed is None:
             result["stopped"] = True
             return result
         index, lock = claimed
         checkout = base / str(index) / project["directory"]
+        began = time.monotonic()
         place(root / project["repository"], checkout, project["commit"], project["ref"], project.get("origin"))
         kit = checkout
         if toolkit is not None:
             kit = base / str(index) / toolkit["directory"]
             place(root / toolkit["repository"], kit, toolkit["commit"], toolkit["ref"], toolkit.get("origin"))
+        timed("place", began)
         result.update(checkout=str(checkout), slot=index)
         say(f"{checkout} at {project['commit'][:12]}")
         environment = {**os.environ, "VOCARO_ENGINEERING_ROOT": str(kit), **NO_BYTECODE}
@@ -851,8 +904,9 @@ def main(plan):
             for path in back[1]: (back[0] / path).unlink(missing_ok=True)
         for stage, command, log, directory in steps:
             if _stop.is_set(): break
-            begun = True
+            begun, began = True, time.monotonic()
             result.update(stage=stage, exitStatus=step(command, directory, environment, lock, log))
+            timed(stage, began)
             if result["exitStatus"] != 0: break
         result["stopped"] = _stop.is_set()
         receipt = checkout / plan["receipt"]

@@ -5,9 +5,11 @@ go to bare repositories on the second Mac by git over SSH, never through GitHub.
 with uncommitted changes goes as a snapshot commit on HEAD, which no branch holds. offload_host.py,
 sent along and run there by the host's own Python, checks them out in a persistent checkout,
 so builds stay warm, and runs `eng run` or `eng admit` under the second Mac's own heavy-work
-admission: that host's queue, not a private pool beside this one. The log and the result come
-back to this checkout's .build/engineering/remote, and a lane group's lanes' logs and receipts
-with them once the run there ends. A whole lane's result at a commit is also kept by commit in
+admission: that host's queue, not a private pool beside this one. A push sends only what the
+second Mac's checkouts lack, which their refs name there. The log and the result come back to
+this checkout's .build/engineering/remote, each dispatch's in a directory of its own as well, with
+what its preparation cost, and a lane group's lanes' logs and receipts with them once the run
+there ends. A whole lane's result at a commit is also kept by commit in
 the repository's Git directory, where every worktree of the repository can find it; a
 snapshot's is not.
 
@@ -39,6 +41,7 @@ import queue
 import re
 import shlex
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -64,6 +67,10 @@ HOST_VARIABLE, OLD_HOST_VARIABLE = "VOCARO_OFFLOAD_HOST", "VOCARO_BUILD_HOST"
 ROOT = "Development/build-host"
 # Persistent checkouts per project on the second Mac; more wait for one to come free.
 CHECKOUTS = 4
+# Where each dispatch's own results stay, unique to it, under .build/engineering/remote/DISPATCHES/NAME/,
+# beside NAME/, the latest; and how many of each name's stay: two for each run that can overlap another.
+DISPATCHES = ".dispatches"
+DISPATCHES_KEPT = 2 * CHECKOUTS
 # Seconds ssh waits for each address the second Mac's name resolves to before it tries the next.
 CONNECT_TIMEOUT = 10
 # ssh closes a connection that has heard nothing from the second Mac for about ServerAliveInterval
@@ -85,6 +92,22 @@ TIMED_OUT = re.compile(r"^Connection to \S+ port \d+ timed out$")
 # The refs that carry a commit into the second Mac's repositories. They keep the build host's name, as
 # ROOT does: those repositories hold refs under it, which another name would orphan.
 REF = "refs/vocaro/build-host/"
+# Seconds a push of one commit to the second Mac may take before eng stops it. A push there once ran
+# for over 50 minutes before it failed (vocaro-engineering#67); one that sends only what the second
+# Mac lacks takes seconds, and a lost connection ends within ssh's two minutes.
+SEND_TIMEOUT = 1800
+# Seconds a stopped push has to end, with everything it started, before it is killed.
+SEND_STOP_WAIT = 10
+# What `git push --progress` prints of the pack it sends (Git 2.54.0): its progress lines, the last
+# line of writing it, with the bytes written as Git rounds them, and its count of objects.
+PROGRESS = re.compile(r"^(Enumerating objects|Counting objects|Delta compression|Compressing objects|Writing objects|"
+                      r"Total \d+)")
+WRITTEN = re.compile(r"^Writing objects: 100% \(\d+/\d+\), ([\d.]+) (bytes|KiB|MiB|GiB)\b.*done\.$")
+TOTAL = re.compile(r"^Total (\d+) \(delta \d+\), reused (\d+)")
+UNITS = {"bytes": 1, "KiB": 1 << 10, "MiB": 1 << 20, "GiB": 1 << 30}
+# What Git says when push.negotiate's exchange failed and the push went on without it, as it does when
+# protocol v2 does not reach the second Mac.
+NEGOTIATION_FAILED = "push negotiation failed"
 # Seconds a stopped run has to end on the second Mac before the connection is closed.
 STOP_WAIT = 120
 # What a Git hook exports for its own repository must not reach another.
@@ -391,27 +414,248 @@ def ssh(host, script, **options):
     return subprocess.run([*SSH, host, login(script)], env=environment(), **options)
 
 
-def send(root, host, repository, commit):
+def send(root, host, repository, commit, advertised=None, sends=None):
     """Push one commit by name to a bare repository on the second Mac, without the push hooks:
-    this is no publication, and a pre-push hook would run the gates this offloads.
+    this is no publication, and a pre-push hook would run the gates this offloads. Return the push's
+    record, which sends, a list, also gets before the push starts, so that a push that fails or is
+    stopped leaves its record: its exit status and seconds, what its lines say it cost (pushed), its
+    lines (said) beyond the progress and the ref's report, which it prints, and Git's push.negotiate
+    setting, unset by default.
+
+    advertised is what the repository there said its checkouts hold before the push
+    (offload_host.advertise), or None when it said nothing. Git sends only what the second Mac lacks
+    of the commits it advertises that this Mac has too, so the push is warm when this Mac has one
+    of them and cold, sending the commit's whole history, when it has none.
 
     Sessions that send one commit at once race for its ref, and the push that loses fails with
-    "reference already exists". The commit is then there all the same, so that push has sent it."""
+    "reference already exists". The commit is then there all the same, so that push has sent it.
+    A push still running after SEND_TIMEOUT seconds, or when a stop is requested, ends with
+    everything it started, and nothing of it enters the second Mac's repository."""
     variables = {**environment(), "GIT_SSH_COMMAND": shlex.join(SSH)}
-    result = subprocess.run(["git", "-C", str(root), "push", "--no-verify", "--quiet", "--receive-pack=git receive-pack",
-                             f"{host}:{repository}", f"{commit}:{REF}{commit}"], env=variables,
-                            capture_output=True, text=True)
-    if result.returncode:
-        held = subprocess.run(["git", "-C", str(root), "ls-remote", "--upload-pack=git upload-pack",
-                               f"{host}:{repository}", f"{REF}{commit}"], env=variables, capture_output=True, text=True)
-        if held.returncode == 0 and held.stdout.split()[:1] == [commit]: return
+    known = advertised is not None and "commits" in advertised
+    have = held(root, advertised["commits"]) if known and advertised["commits"] else []
+    record = {"repository": repository, "commit": commit, "pushNegotiate": setting(root, "push.negotiate"),
+              "advertised": len(advertised["commits"]) if known else None, "held": len(have),
+              "transfer": ("warm" if have else "cold") if known else "unknown"}
+    if sends is not None: sends.append(record)
+    lines, started, stop = [], time.monotonic(), None
+    pushing = subprocess.Popen(["git", "-C", str(root), "push", "--no-verify", "--progress",
+                                "--receive-pack=git receive-pack", f"{host}:{repository}", f"{commit}:{REF}{commit}"],
+                               env=variables, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                               start_new_session=True)
+    reader = threading.Thread(target=collect, args=(pushing.stdout, lines, started), daemon=True)
+    reader.start()
+    try:
+        while stop is None:
+            try:
+                pushing.wait(timeout=0.1)
+                break
+            except subprocess.TimeoutExpired:
+                pass
+            if processes.requested() is not None: stop = "stopped"
+            elif time.monotonic() - started >= SEND_TIMEOUT: stop = "timedOut"
+    finally:
+        # In a session of its own, a terminal's interrupt reaches only eng, which ends the push here.
+        if pushing.poll() is None: end(pushing)
+    # What the push started could hold its output open; its record then ends with what came so far.
+    reader.join(SEND_STOP_WAIT)
+    if not reader.is_alive(): pushing.stdout.close()
+    record.update(pushed(list(lines)), status=pushing.returncode, seconds=round(time.monotonic() - started, 3))
+    if stop: record[stop] = True
+    # A push that succeeds says nothing beyond its progress unless something is worth reading, such as
+    # push.negotiate's failure.
+    for line in record["said"]:
+        if line != "Everything up-to-date": print(f"remote: git push said: {line}", file=sys.stderr, flush=True)
+    if stop == "stopped":
+        raise processes.Interrupted(processes.requested(), f"while sending {commit[:12]} to {host}, before the second "
+                                                           "Mac started the run")
+    if stop == "timedOut":
+        raise Misconfigured(f"the push of {commit[:12]} into ~/{repository} on {host} did not finish in {SEND_TIMEOUT}s "
+                            f"and was stopped, so nothing ran there: {sending(record)}",
+                            f"see whether the link between the Macs is slow, as Wi-Fi can be, or what keeps {host} from "
+                            "taking the pack, as its disk or load; a push that completes leaves what it sent there, "
+                            "so the next sends only what is new (guides/shared-host.md, How a run reaches the second Mac)")
+    if pushing.returncode:
+        try:
+            listed = subprocess.run(["git", "-C", str(root), "ls-remote", "--upload-pack=git upload-pack",
+                                     f"{host}:{repository}", f"{REF}{commit}"], env=variables, capture_output=True,
+                                    text=True, timeout=REACH_SECONDS)
+        except subprocess.TimeoutExpired:
+            listed = None
+        if listed is not None and listed.returncode == 0 and listed.stdout.split()[:1] == [commit]:
+            record["race"] = "another session's push of the commit took its ref first"
+            print(f"remote: {host} holds {commit[:12]} all the same: {record['race']}", file=sys.stderr, flush=True)
+            return record
         raise Misconfigured(f"{host} did not receive {commit[:12]} into ~/{repository} (git push exited "
-                            f"{result.returncode}): {last_line(result.stderr) or 'no output'}",
+                            f"{pushing.returncode}): {(record['said'] or ['no output'])[-1]}",
                             f"repair ~/{repository} on {host}, or free space there, until the push succeeds")
+    return record
+
+
+def collect(stream, lines, started):
+    """Append each line a push writes to lines, as (seconds since started, text), when it arrives:
+    Git ends a progress line with a carriage return and redraws it."""
+    pending = b""
+    while True:
+        try: chunk = os.read(stream.fileno(), 65536)
+        except (OSError, ValueError): chunk = b""
+        if not chunk: break
+        pending += chunk
+        *complete, pending = re.split(rb"[\r\n]", pending)
+        moment = round(time.monotonic() - started, 3)
+        lines.extend((moment, line.decode(errors="replace").rstrip()) for line in complete if line.strip())
+    if pending.strip(): lines.append((round(time.monotonic() - started, 3), pending.decode(errors="replace").rstrip()))
+
+
+def end(process):
+    """End a process that runs in a session of its own and everything it started: SIGTERM to its
+    group, then SIGKILL to what is left of it after SEND_STOP_WAIT seconds."""
+    with contextlib.suppress(ProcessLookupError, PermissionError): os.killpg(process.pid, signal.SIGTERM)
+    try:
+        process.wait(timeout=SEND_STOP_WAIT)
+    except subprocess.TimeoutExpired:
+        pass
+    # The group outlives its leader while ssh or pack-objects runs on.
+    with contextlib.suppress(ProcessLookupError, PermissionError): os.killpg(process.pid, signal.SIGKILL)
+    process.wait()
+
+
+def pushed(lines):
+    """What a push's lines, each (seconds since it started, text), say it cost, as far as they go.
+
+    phases: connect, from the push's start to the first line of the pack Git makes, which follows the
+    second Mac's ref advertisement and Git's search for what to send; pack, until Git began to write
+    the pack; transfer, until it wrote the pack's last byte, which the second Mac indexes as it
+    arrives; and receiver, until the second Mac reported the ref, which takes the rest of its indexing,
+    its check that every object is there and the ref's update. A phase whose end the lines do not
+    show is left out. objects and bytes are as Git reports them, the bytes to Git's rounding, and
+    written as Git writes them; negotiationFailed says that push.negotiate's exchange failed and the
+    push went on without it; said holds every line but the progress and the ref's report."""
+    marks = [("connect", next((moment for moment, text in lines if PROGRESS.match(text)), None)),
+             ("pack", next((moment for moment, text in lines if text.startswith("Writing objects")), None)),
+             ("transfer", next((moment for moment, text in lines if WRITTEN.match(text)), None)),
+             ("receiver", next((moment for moment, text in lines if text.startswith("To ")), None))]
+    phases, previous = {}, 0.0
+    for name, moment in marks:
+        if moment is None or previous is None:
+            previous = None
+            continue
+        phases[name], previous = round(moment - previous, 3), moment
+    found = {"phases": phases, "negotiationFailed": any(NEGOTIATION_FAILED in text for _moment, text in lines),
+             "said": [text for _moment, text in lines if not PROGRESS.match(text) and not text.startswith(("To ", " "))]}
+    for _moment, text in lines:
+        written, total = WRITTEN.match(text), TOTAL.match(text)
+        if written:
+            found.update(bytes=round(float(written.group(1)) * UNITS[written.group(2)]),
+                         written=f"{written.group(1)} {written.group(2)}")
+        if total: found.update(objects=int(total.group(1)), reused=int(total.group(2)))
+    return found
+
+
+def sending(record):
+    """A push's record, as eng says it."""
+    phases = ", ".join(f"{name} {seconds:.2f} s" for name, seconds in record.get("phases", {}).items())
+    if record.get("objects") == 0 or "Everything up-to-date" in record.get("said", []):
+        sent = "it sent nothing, the commit being there"
+    else:
+        sent = f"it sent {record['objects']} objects in {record.get('written', '0 bytes')}" if "objects" in record \
+            else "Git reported no count of what it sent"
+    advertised, have = record["advertised"], record["held"]
+    commits = f"{advertised} commit{'' if advertised == 1 else 's'}"
+    cache = {"warm": f"warm: the second Mac's checkouts hold {commits}, "
+                     + ("which this Mac has" if have == advertised == 1 else f"{have} of them here too"),
+             "cold": f"cold: the second Mac's checkouts hold {commits}, none of them here" if advertised
+             else "cold: the second Mac's checkouts hold no commit",
+             "unknown": "warm or cold unknown: the second Mac said nothing of what its checkouts hold"}[record["transfer"]]
+    return f"{record['seconds']:.2f} s, {cache}; {sent}" + (f" ({phases})" if phases else "")
+
+
+def preparing(preparation, phases, receipt):
+    """What came before the work's queue, and then the queue's wait, as eng says it: preparation is
+    execute's, phases the second Mac's, and receipt the work's own there, which gives queueSeconds."""
+    here = preparation.get("seconds", {})
+    parts = [f"{label} {here[key]:.2f} s" for key, label in
+             (("staging", "staging"), ("connection", "the preparing connection"), ("send", "the pushes")) if key in here]
+    there = [f"{label} {phases[key]:.2f} s" for key, label in
+             (("claim", "the wait for a checkout"), ("place", "placing the commits"), ("provision", "the provision lane"))
+             if key in phases]
+    queued = (receipt or {}).get("queueSeconds")
+    return ((f"sent at the first offer, after {', '.join(parts)}; " if preparation.get("offeredAgain")
+             else f"before the queue: here, {', '.join(parts)}; ")
+            + f"there, {', '.join(there) or 'nothing timed'}; "
+            + (f"then the queue's wait, {queued:.2f} s" if queued is not None else "no wait in the queue recorded"))
+
+
+def final_object(found):
+    """The JSON object that a finished command's output ends with, or an empty one."""
+    try: answered = json.loads(last_line(found.stdout))
+    except (TypeError, ValueError): return {}
+    return answered if isinstance(answered, dict) else {}
+
+
+def setting(root, key):
+    """A Git setting as the push in root reads it, or None when it is unset."""
+    found = subprocess.run(["git", "-C", str(root), "config", "--get", key], capture_output=True, text=True,
+                           env=environment(), timeout=60)
+    return found.stdout.strip() if found.returncode == 0 else None
+
+
+def held(root, commits):
+    """Those of commits that root's repository holds as commits."""
+    found = subprocess.run(["git", "-C", str(root), "cat-file", "--batch-check=%(objectname) %(objecttype)"],
+                           input="".join(f"{commit}\n" for commit in commits), capture_output=True, text=True,
+                           env=environment(), timeout=60)
+    return [line.split()[0] for line in found.stdout.splitlines() if line.endswith(" commit")]
 
 
 def store(root):
     return common_directory(root) / "vocaro-engineering/remote"
+
+
+@contextlib.contextmanager
+def results_lock(base, name):
+    """An flock under which one dispatch of a name at a time files its results in base."""
+    base.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(base / f".{name}.lock", os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(descriptor)
+
+
+def file_results(base, name, dispatch, staging=None, receipt=None, latest=True):
+    """Keep a dispatch's results in a directory of their own under base/DISPATCHES/NAME/, named for
+    the dispatch, and return it: staging's, moved there whole, or, for a dispatch that ran nothing,
+    one that holds its receipt alone. With latest, base/NAME becomes a copy of them too, its files
+    linked to the dispatch's own, in place of the previous dispatch's at once. Each name keeps its
+    newest DISPATCHES_KEPT dispatches, naming each one removed.
+
+    Dispatches of one name file their results in turn. Two that each removed base/NAME and renamed
+    their own into its place could interleave, and the second rename then failed with "Directory not
+    empty" (Errno 66) and left that dispatch's results unfiled (vocaro-engineering#67)."""
+    with results_lock(base, name):
+        runs = base / DISPATCHES / name
+        runs.mkdir(parents=True, exist_ok=True)
+        own, count = runs / dispatch, 1
+        while own.exists():
+            count += 1
+            own = runs / f"{dispatch}.{count}"
+        if staging is not None: staging.rename(own)
+        else: own.mkdir()
+        if receipt is not None: (own / "source.json").write_text(json.dumps(receipt, indent=2) + "\n")
+        if latest:
+            fresh, previous = (base / f".{name}.{os.getpid()}.{part}" for part in ("latest", "previous"))
+            for path in (fresh, previous): shutil.rmtree(path, ignore_errors=True)
+            shutil.copytree(own, fresh, copy_function=os.link)
+            with contextlib.suppress(FileNotFoundError): (base / name).rename(previous)
+            fresh.rename(base / name)
+            shutil.rmtree(previous, ignore_errors=True)
+        for old in sorted(runs.iterdir())[:-DISPATCHES_KEPT]:
+            shutil.rmtree(old, ignore_errors=True)
+            print(f"remote: removed {old}, each name keeping its newest {DISPATCHES_KEPT} dispatches", file=sys.stderr,
+                  flush=True)
+    return own
 
 
 def passed(root, lane, revision="HEAD"):
@@ -572,12 +816,26 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     snapshot's, is no commit's pass. sent, when given, keeps what the first call sent: a later call
     with it offers the same commits again, without a snapshot, the preparing connection or a push,
     since the second Mac holds them.
+
+    The receipt's preparation records what came before the second Mac's queue: the seconds of
+    staging the commits, the preparing connection and the pushes here, each push's record (send),
+    and both Macs' Git. The result's phases give the second Mac's wait for a checkout, placing the
+    commits there and each eng command, and the work's own receipt its queue's wait. A dispatch's
+    results stay in a directory of their own as well as in the latest (file_results); a push that
+    fails or is stopped leaves its preparation there, with nothing in the latest.
     """
     toolkit = Path(TOOLKIT_ROOT).resolve()
+    dispatch = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + f"-{os.getpid()}"
+    name = lane if lane is not None else "admit"
+    base = Path(root) / ".build/engineering/remote"
     if sent:
         commit, head, project, kit, developer, local = (sent[key] for key in ("commit", "head", "project", "kit",
                                                                              "developer", "local"))
+        preparation = {**sent["preparation"], "offeredAgain": True} if sent.get("preparation") else None
     else:
+        preparation = {"git": {"here": offload_host.output(["git", "--version"])}, "seconds": {}, "sends": []}
+        # Staging: the snapshot, when the working tree has changes, and the toolkit's commit.
+        began = time.monotonic()
         try:
             commit, head = snapshot(root)
             directory = checkout_name(root)
@@ -593,10 +851,10 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
                        "commit": kit_commit, "ref": f"{REF}{kit_commit}", "origin": origin(toolkit)}
         except RuntimeError as error:  # Git cannot name a commit to send, so nothing is sent.
             raise Unavailable(str(error)) from error
+        preparation["seconds"]["staging"] = round(time.monotonic() - began, 3)
         developer = developer_directory()
         local = offload_host.identity(developer)
     kept = store(root) / commit
-    name = lane if lane is not None else "admit"
     returns = group_files(config, lane)
     plan = {"root": ROOT, "checkouts": CHECKOUTS, "project": project, "toolkit": kit, "work": work,
             "decline": decline, "busy": BUSY,
@@ -613,14 +871,21 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
         print(f"remote: offering {at} to {host} again", file=sys.stderr, flush=True)
     else:
         repositories = [f"{ROOT}/{part['repository']}" for part in (project, kit) if part is not None]
+        # Two first dispatches of a project at once both create its repository, and one `git init` then
+        # fails with "cannot mkdir ...: File exists"; once the other's has finished, a second leaves its
+        # repository as it is.
+        init = lambda path: f"git init --bare --quiet {shlex.quote(path)}"
         prepare = " && ".join([f"mkdir -p {shlex.quote(ROOT + '/repositories')}", *(
-            f"{{ [ -d {shlex.quote(path)} ] || git init --bare --quiet {shlex.quote(path)}; }}" for path in repositories)])
+            f"{{ [ -d {shlex.quote(path)} ] || {init(path)} 2>/dev/null || {{ sleep 1; {init(path)}; }}; }}"
+            for path in repositories)])
         print(f"remote: sending {at} to {host}", file=sys.stderr, flush=True)
         # The connection that prepares the repositories also lists what earlier runs left running there,
-        # before any work is sent: a connection to the second Mac can take seconds of its own.
-        attempt = asleep()
-        prepared = ssh(host, f"{prepare} || exit $?\n{census_command()} || true", stdin=subprocess.DEVNULL,
+        # before any work is sent: a connection to the second Mac can take seconds of its own. It has
+        # each repository name the commits its checkouts hold, which the pushes then need not send.
+        attempt, moment = asleep(), time.monotonic()
+        prepared = ssh(host, f"{prepare} || exit $?\n{census_command(repositories)} || true", stdin=subprocess.DEVNULL,
                        capture_output=True, text=True)
+        preparation["seconds"]["connection"] = round(time.monotonic() - moment, 3)
         # ssh's own failures, a name that does not resolve among them, exit 255. Nothing is sent yet.
         if prepared.returncode == 255: raise ssh_failure(host, prepared.stderr, attempt)
         if prepared.returncode:
@@ -630,14 +895,33 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
                                 "accepted and its first launch run (guides/shared-host.md, Setting up the second Mac)")
         for line in leftover_lines(host, *read_census(prepared)):
             print(f"remote: {line}", file=sys.stderr, flush=True)
-        send(root, host, repositories[0], commit)
-        if kit is not None: send(toolkit, host, repositories[1], kit["commit"])
+        answered = final_object(prepared)
+        advertised = answered.get("advertised") if isinstance(answered.get("advertised"), dict) else {}
+        preparation["git"]["there"] = answered.get("git")
+        moment = time.monotonic()
+        pushes = [(root, repositories[0], commit), *([(toolkit, repositories[1], kit["commit"])] if kit else [])]
+        try:
+            for checkout, repository, pushing in pushes:
+                record = send(checkout, host, repository, pushing, advertised.get(repository), preparation["sends"])
+                print(f"remote: sent {pushing[:12]} to ~/{repository} in {sending(record)}", file=sys.stderr, flush=True)
+        except (Misconfigured, processes.Interrupted) as error:
+            # What the preparation cost and how it ended stay, unique to this dispatch; the latest results stay whole.
+            receipt = {"host": host, "commit": commit, "head": head, "snapshot": commit != head,
+                       "toolkit": kit["commit"] if kit else commit, "lane": lane, "arguments": list(arguments),
+                       "work": work, "local": local, "preparation": preparation, "stage": "preparation",
+                       "outcome": "failed-or-interrupted", "error": str(error)}
+            own = file_results(base, name, dispatch, receipt=receipt, latest=False)
+            print(f"remote: nothing ran on {host}; the record of what was sent is {own / 'source.json'}",
+                  file=sys.stderr, flush=True)
+            raise
+        preparation["seconds"]["send"] = round(time.monotonic() - moment, 3)
         if sent is not None:
-            sent.update(commit=commit, head=head, project=project, kit=kit, developer=developer, local=local)
+            sent.update(commit=commit, head=head, project=project, kit=kit, developer=developer, local=local,
+                        preparation=preparation)
     if processes.requested() is not None:
         raise processes.Interrupted(processes.requested(), "before the second Mac started the run")
 
-    results = Path(root) / ".build/engineering/remote" / name
+    results = base / name
     # Results are staged, so a refusal leaves the previous run's whole.
     staging = results.with_name(f".{name}.{os.getpid()}")
     shutil.rmtree(staging, ignore_errors=True)
@@ -723,30 +1007,37 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
         if result.get("busy"): raise Busy(f"{host} did not take it: {result['refused']}")
         raise Misconfigured(f"{host} refused it: {result['refused']}",
                             result.get("fix") or f"repair on {host} what that names")
-    shutil.rmtree(results, ignore_errors=True)
-    staging.rename(results)
     if result is None:
-        raise RuntimeError(lost(host, channel.returncode, stray, started, slept, results / "output.log"))
+        own = file_results(base, name, dispatch, staging)
+        raise RuntimeError(lost(host, channel.returncode, stray, started, slept, own / "output.log"))
     # commit is what ran there: HEAD, or a snapshot of the working tree on it. ranOn and mac say where, as
     # a run on this Mac's receipt does, so that the share of each Mac's work can be counted.
     receipt = {"ranOn": "second Mac", "mac": (result.get("host") or {}).get("name"), "host": host,
                "commit": commit, "head": head, "snapshot": commit != head,
                "toolkit": kit["commit"] if kit else commit, "lane": lane, "arguments": list(arguments),
                "expect": expect, "work": work, "local": local, "result": result, "dispatched": started,
+               "preparation": preparation,
                **({"serial": True} if serial else {}), **({"returned": returned} if returns else {}),
                **({"subdirectory": subdirectory} if subdirectory else {})}
-    (results / "source.json").write_text(json.dumps(receipt, indent=2) + "\n")
+    own = file_results(base, name, dispatch, staging, receipt)
     # A snapshot's result stays here: no branch holds it, so it is no commit's pass. Nor is a group's
     # serial reference: the group's pass is its lanes' side by side.
     if lane is not None and not arguments and expect is None and commit == head and not serial:
         kept.mkdir(parents=True, exist_ok=True)
-        (kept / f"{lane}.json").write_text(json.dumps(receipt, indent=2) + "\n")
+        # Whole or not at all, for a reader beside a run of the lane at this commit that ends at once.
+        partial = kept / f".{lane}.json.{os.getpid()}"
+        partial.write_text(json.dumps(receipt, indent=2) + "\n")
+        partial.replace(kept / f"{lane}.json")
+    if preparation:
+        print(f"remote: {preparing(preparation, result.get('phases') or {}, result.get('receipt'))}", file=sys.stderr,
+              flush=True)
     if result.get("error"):
         raise RuntimeError(f"{host}: {result['error']}")
     status = result["exitStatus"]
     remote = result["host"]
     print(f"remote: {name} at {at} on {describe(remote)} in {result.get('checkout')}: "
-          f"{'stopped' if result['stopped'] else f'exit {status}'}; results in {results}", file=sys.stderr, flush=True)
+          f"{'stopped' if result['stopped'] else f'exit {status}'}; results in {results}, and this dispatch's alone in "
+          f"{own}", file=sys.stderr, flush=True)
     if returns and result.get("stage") == "work":
         members = config["lanes"][lane]["parallel"]
         came = [member for member in members if f"lanes/{member}.log" in returned]
@@ -762,7 +1053,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
               file=sys.stderr, flush=True)
     if result.get("stage") == "provision" and status and not result["stopped"]:
         raise Misconfigured(f"{host} could not provision its checkout: the provision lane exited {status} in "
-                            f"{result.get('checkout')}, so {name} did not run there; its log is {results / 'run.log'}",
+                            f"{result.get('checkout')}, so {name} did not run there; its log is {own / 'run.log'}",
                             f"give {host} what provisioning needs, which that log names, such as a tool "
                             "`eng remote setup` installs or the git-credentials token for private dependencies "
                             "(guides/shared-host.md, Setting up the second Mac)")
@@ -1396,10 +1687,13 @@ def survey(host, developer):
     return ask(host, {"toolchain": developer})
 
 
-def census_command():
+def census_command(advertise=None):
     """The second Mac's command that prints offload_host.leftovers, the census of what runs left
-    running there, as its last line."""
-    return shlex.join(["python3", "-c", Path(offload_host.__file__).read_text(), json.dumps({"leftovers": ROOT})])
+    running there, as its last line; with advertise, paths of repositories relative to the home
+    there, it has each name the commits its checkouts hold, and says which, and its Git's version
+    (offload_host.advertise)."""
+    request = {"leftovers": ROOT, **({"advertise": list(advertise)} if advertise else {})}
+    return shlex.join(["python3", "-c", Path(offload_host.__file__).read_text(), json.dumps(request)])
 
 
 def read_census(found):

@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 
 from . import __version__, devices, disk, docs, evidence, github_artifacts, keychain, offload_host, parallel, \
     processes, release, remote, resources, spelling
@@ -330,9 +331,11 @@ def admit(root, args, config=None):
                "policy": refresh_policy(root, sys.stderr), "command": command,
                "directory": str(Path.cwd()), "exclusive": args.exclusive, "model": args.model, **placement(reason)}
     with processes.forwarding_signals(), contextlib.ExitStack() as stack:
+        asked = time.monotonic()
         admission = admitted_here(stack, "the command", " ".join(command), args.timeout, offered, args.if_free,
                                   args.exclusive, args.model)
         if isinstance(admission, int): return admission
+        receipt["queueSeconds"] = round(time.monotonic() - asked, 3)
         if offered is not None: receipt["hereBecause"] = offered.status
         def work():
             github_artifacts.configured(root, config)
@@ -621,10 +624,13 @@ def main(argv=None):
                     if resource == "light": result = execute()
                     else:
                         with contextlib.ExitStack() as stack:
+                            asked = time.monotonic()
                             admission = admitted_here(stack, args.lane, lane_label(root, config, args.lane),
                                                       remote.OVERFLOW_TIMEOUT, offered, args.if_free,
                                                       resource == "exclusive", lane.get("model", False))
                             if isinstance(admission, int): return admission
+                            # The wait in the queue, apart from what came before it (remote.execute).
+                            receipt["queueSeconds"] = round(time.monotonic() - asked, 3)
                             if offered is not None: receipt["hereBecause"] = offered.status
                             result = execute(admission.interrupted)
             except processes.TimedOut as error:

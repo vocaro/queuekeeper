@@ -13,6 +13,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -112,6 +113,69 @@ if child.poll() is None:
 relay.join()
 sys.exit(child.returncode)
 """
+# Stands in for ssh in front of FAKE_SSH, whose path FAKE_SSH_REAL names: a push's connection to
+# receive-pack goes through RELAY, which FAKE_RELAY names. With FAKE_DROP_PROTOCOL, the second Mac
+# never sees GIT_PROTOCOL, as a stock macOS sshd, which accepts only LANG and LC_*, never passes it.
+RELAYING_SSH = """#!/bin/sh
+case "$*" in
+    *receive-pack*) exec "$FAKE_PYTHON" "$FAKE_RELAY" "$@" ;;
+esac
+[ -n "$FAKE_DROP_PROTOCOL" ] && unset GIT_PROTOCOL
+exec "$FAKE_SSH_REAL" "$@"
+"""
+# Runs receive-pack in the second Mac's home and counts the bytes that reach it, adding a line with
+# them to the file FAKE_PASSED names once the push ends. With FAKE_THROTTLE, it passes that many bytes
+# each 0.2 s, as a slow link would, after writing its PID and receive-pack's to FAKE_THROTTLED.
+# receive-pack runs in a session of its own, as on the second Mac, where a push that ends here closes
+# its input and sends it no signal.
+RELAY = """import os, subprocess, sys, time
+arguments = sys.argv[1:]
+while arguments[0].startswith("-"):
+    arguments = arguments[2:] if arguments[0] in ("-o", "-p", "-i", "-l", "-F", "-J") else arguments[1:]
+child = subprocess.Popen(["/bin/sh", "-c", " ".join(arguments[1:])], cwd=os.environ["FAKE_HOME"],
+                         env={**os.environ, "HOME": os.environ["FAKE_HOME"]}, stdin=subprocess.PIPE,
+                         start_new_session=True)
+throttle, passed = int(os.environ.get("FAKE_THROTTLE") or 0), 0
+if throttle:
+    with open(os.environ["FAKE_THROTTLED"], "w") as marker: marker.write(f"{os.getpid()} {child.pid}\\n")
+while True:
+    chunk = os.read(0, throttle or 65536)
+    if not chunk: break
+    try:
+        child.stdin.write(chunk)
+        child.stdin.flush()
+    except BrokenPipeError:
+        break
+    passed += len(chunk)
+    if throttle: time.sleep(0.2)
+try: child.stdin.close()
+except BrokenPipeError: pass
+status = child.wait()
+with open(os.environ["FAKE_PASSED"], "a") as counted: counted.write(f"{passed}\\n")
+sys.exit(status)
+"""
+# Runs eng with the publication of results as the code before vocaro-engineering#67 made it, in two
+# steps, held between them: once a dispatch has removed .build/engineering/remote/admit, it waits for
+# the other to have done so too, up to 10 s, before it renames its own into place.
+BARRIER_DRIVER = """import os, sys, time
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from vocaro_engineering import cli, remote
+removing = remote.shutil.rmtree
+def rmtree(path, *arguments, **options):
+    removing(path, *arguments, **options)
+    path = Path(path)
+    if path.name == "admit" and path.parent.name == "remote":
+        mark = Path(os.environ["FAKE_BARRIER"]) / str(os.getpid())
+        mark.touch()
+        deadline = time.monotonic() + 10
+        while len(list(mark.parent.iterdir())) < 2 and time.monotonic() < deadline: time.sleep(0.05)
+remote.shutil.rmtree = rmtree
+sys.exit(cli.main(sys.argv[2:]))
+"""
+# Megabytes enough to tell a push of a commit's whole history from one of what is new, and few
+# enough for the suite: random, so that Git cannot compress them.
+LARGE = 4 << 20
 
 
 class Later(datetime):
@@ -303,8 +367,9 @@ class RemoteTests(unittest.TestCase):
         # The toolkit checkout sits beside the project's, at the dispatched commit.
         kit = self.checkout(0).parent / "vocaro-engineering"
         self.assertEqual(git(kit, "rev-parse", "HEAD"), git(self.toolkit, "rev-parse", "HEAD"))
-        # The pushed refs only carried the commits; the checkouts keep them.
-        self.assertEqual(git(self.home / remote.ROOT / "repositories/example.git", "for-each-ref"), "")
+        # The pushed refs only carried the commits; the checkouts keep them, and refs name what they hold.
+        self.assertEqual(git(self.home / remote.ROOT / "repositories/example.git", "for-each-ref", "--format=%(refname)"),
+                         f"{offload_host.CACHE}{self.commit}")
         self.assertEqual(self.eng("remote", "passed", "check")[0], 0)
 
     def test_a_whole_lane_counts_only_for_its_exact_commit_and_a_failure_is_its_status(self):
@@ -1159,6 +1224,8 @@ class RemoteTests(unittest.TestCase):
         self.assertIn(f"eng: trying gate on this Mac: {busy}", error)
         receipt = self.ran_here()
         self.assertEqual((receipt["ranOn"], receipt["hereBecause"]), ("this Mac", busy))
+        # Its wait in this Mac's queue, as a run on the second Mac's receipt gives it there.
+        self.assertIsInstance(receipt["queueSeconds"], float)
         # It was offered there and declined: no result of the second Mac's is kept.
         self.assertFalse((self.project / ".build/engineering/remote/gate").exists())
         # A second Mac whose every checkout is in use is busy too.
@@ -1194,6 +1261,11 @@ class RemoteTests(unittest.TestCase):
             # Offered again without a second snapshot, preparing connection or push.
             self.assertEqual(output.count("remote: sending "), 1, output)
             self.assertIn(" to fake again", output)
+            # Its receipt keeps what the first offer's preparation cost.
+            receipt = json.loads((self.project / ".build/engineering/remote/gate/source.json").read_text())
+            self.assertTrue(receipt["preparation"]["offeredAgain"])
+            self.assertEqual([sent["status"] for sent in receipt["preparation"]["sends"]], [0, 0])
+            self.assertIn("remote: sent at the first offer, after staging ", output)
         shutil.rmtree(self.project / ".build/engineering/remote/gate")
         with self.subTest("this Mac"), contextlib.ExitStack() as here, contextlib.ExitStack() as there:
             here.enter_context(self.busy_here())
@@ -1973,6 +2045,374 @@ exec {shlex.quote(real)} "$@"
         self.assertEqual(git(slot / "vocaro-engineering", "rev-parse", "HEAD"), commit)
         self.assertEqual([path.name for path in (self.home / remote.ROOT / "repositories").iterdir()],
                          ["vocaro-engineering.git"])
+
+    def relaying(self, **variables):
+        """RELAYING_SSH in front of the stand-in ssh while the block runs, with these variables."""
+        real, ssh = self.tools / "fake-ssh", self.tools / "ssh"
+        if not real.exists():
+            ssh.rename(real)
+            ssh.write_text(RELAYING_SSH)
+            ssh.chmod(0o755)
+            (self.tools / "relay.py").write_text(RELAY)
+        return patch.dict(os.environ, {"FAKE_SSH_REAL": str(real), "FAKE_RELAY": str(self.tools / "relay.py"),
+                                       "FAKE_PYTHON": sys.executable, "FAKE_PASSED": str(self.passed_file()),
+                                       **variables})
+
+    def passed_file(self):
+        return Path(self.temp.name) / "passed"
+
+    def passed(self):
+        """The bytes that reached receive-pack in each push since the last call, as RELAY counted them."""
+        counted = self.passed_file()
+        found = [int(line) for line in counted.read_text().split()] if counted.exists() else []
+        counted.unlink(missing_ok=True)
+        return found
+
+    def bare(self, name="example"):
+        return self.home / remote.ROOT / f"repositories/{name}.git"
+
+    def dispatched(self, lane="check"):
+        """Run `eng remote run LANE`; return the bytes that reached the project's receive-pack and the
+        receipt."""
+        status, output, error = self.eng("remote", "run", lane)
+        self.assertEqual(status, 0, output + error)
+        passed = self.passed()
+        # The project's push comes first, then the toolkit's.
+        self.assertEqual(len(passed), 2, error)
+        return passed[0], json.loads((self.project / f".build/engineering/remote/{lane}/source.json").read_text()), error
+
+    def test_a_push_sends_only_what_the_second_macs_checkouts_lack(self):
+        (self.project / "large.bin").write_bytes(os.urandom(LARGE))
+        first = commit_all(self.project)
+        kit = git(self.toolkit, "rev-parse", "HEAD")
+        cached = lambda: git(self.bare(), "for-each-ref", "--format=%(refname)", offload_host.CACHE).split()
+        with self.relaying():
+            # Cold: the second Mac holds nothing, so the whole history goes. Placing it deletes the ref that
+            # carried it; its checkout holds it, detached. The same commit again: the second Mac names what
+            # its checkout holds, and nothing goes.
+            cold, receipt, error = self.dispatched()
+            self.assertEqual(git(self.bare(), "for-each-ref", remote.REF), "")
+            passed, again, said = self.dispatched()
+            self.assertGreaterEqual(cold, LARGE)
+            self.assertLess(passed, 64 << 10)
+            sent = receipt["preparation"]["sends"][0]
+            self.assertEqual((sent["commit"], sent["status"], sent["transfer"], sent["advertised"]), (first, 0, "cold", 0))
+            self.assertGreaterEqual(sent["bytes"], LARGE)
+            self.assertEqual(list(sent["phases"]), ["connect", "pack", "transfer", "receiver"])
+            self.assertEqual(sent["pushNegotiate"], None)
+            self.assertIn(f"remote: sent {first[:12]} to ~/{remote.ROOT}/repositories/example.git in ", error)
+            self.assertIn("cold: the second Mac's checkouts hold no commit; it sent ", error)
+            receipt, error = again, said
+            sent = receipt["preparation"]["sends"][0]
+            self.assertEqual((sent["transfer"], sent["advertised"], sent["held"], sent["objects"]), ("warm", 1, 1, 0))
+            self.assertIn("it sent nothing, the commit being there", error)
+            self.assertEqual(receipt["preparation"]["sends"][1]["transfer"], "warm")
+            self.assertEqual(cached(), [offload_host.CACHE + first])
+            # A small change on it: only the new objects go.
+            (self.project / "README.md").write_text("a small change\n")
+            second = commit_all(self.project)
+            passed, receipt, error = self.dispatched()
+            self.assertLess(passed, 64 << 10)
+            sent = receipt["preparation"]["sends"][0]
+            self.assertEqual((sent["commit"], sent["transfer"]), (second, "warm"))
+            self.assertLessEqual(sent["objects"], 3)
+            self.assertLess(sent["bytes"], 4 << 10)
+            self.assertEqual(git(self.checkout(0), "rev-parse", "HEAD"), second)
+            self.assertEqual(git(self.checkout(0).parent / "vocaro-engineering", "rev-parse", "HEAD"), kit)
+            # A repository whose checkouts hold its commits only as detached worktrees, as one prepared before
+            # vocaro-engineering#67 does. The negative control: pushed as eng pushed then, without the refs,
+            # the next change takes its whole history along.
+            for ref in cached(): git(self.bare(), "update-ref", "-d", ref)
+            (self.project / "README.md").write_text("another change\n")
+            third = commit_all(self.project)
+            with contextlib.redirect_stderr(StringIO()):
+                sent = remote.send(self.project, "fake", f"{remote.ROOT}/repositories/example.git", third)
+            self.assertGreaterEqual(self.passed()[0], LARGE)
+            self.assertEqual((sent["status"], sent["transfer"]), (0, "unknown"))
+            git(self.bare(), "update-ref", "-d", f"{remote.REF}{third}")
+            # Once the preparing connection names what the checkouts hold, the next change goes alone.
+            (self.project / "README.md").write_text("a third change\n")
+            fourth = commit_all(self.project)
+            passed, receipt, error = self.dispatched()
+            self.assertLess(passed, 64 << 10)
+            self.assertEqual(receipt["preparation"]["sends"][0]["transfer"], "warm")
+            self.assertEqual(git(self.checkout(0), "rev-parse", "HEAD"), fourth)
+            # A missing cache: with the checkout gone, the refs go too, and the whole history again, although
+            # its objects are still there.
+            git(self.bare(), "worktree", "remove", "--force", str(self.checkout(0)))
+            (self.project / "README.md").write_text("a fourth change\n")
+            fifth = commit_all(self.project)
+            passed, receipt, error = self.dispatched()
+            self.assertGreaterEqual(passed, LARGE)
+            sent = receipt["preparation"]["sends"][0]
+            self.assertEqual((sent["transfer"], sent["advertised"]), ("cold", 0))
+            self.assertEqual(git(self.checkout(0), "rev-parse", "HEAD"), fifth)
+        # The preparation's other parts, the second Mac's, and the queue's wait apart from them.
+        seconds = receipt["preparation"]["seconds"]
+        self.assertEqual(sorted(seconds), ["connection", "send", "staging"])
+        self.assertEqual(sorted(receipt["result"]["phases"]), ["claim", "place", "provision", "work"])
+        self.assertIsInstance(receipt["result"]["receipt"]["queueSeconds"], float)
+        for side in ("here", "there"): self.assertTrue(receipt["preparation"]["git"][side].startswith("git version "))
+        self.assertIn("remote: before the queue: here, staging ", error)
+        self.assertIn("; then the queue's wait, ", error)
+        # Each checkout's commit, and nothing else, is named: as many refs as checkouts at most.
+        self.assertEqual(cached(), [offload_host.CACHE + fifth])
+
+    def test_a_failed_push_negotiation_is_said_and_recorded_and_the_push_goes_on(self):
+        negotiate = {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "push.negotiate", "GIT_CONFIG_VALUE_0": "true"}
+        failed = "warning: push negotiation failed; proceeding anyway with push"
+        # Without protocol v2 at the second Mac, Git says that negotiation failed, and pushes all the same.
+        with self.relaying(FAKE_DROP_PROTOCOL="1", **negotiate):
+            passed, receipt, error = self.dispatched()
+        self.assertIn(f"remote: git push said: {failed}", error)
+        for sent in receipt["preparation"]["sends"]:
+            self.assertEqual((sent["status"], sent["pushNegotiate"], sent["negotiationFailed"]), (0, "true", True))
+            self.assertIn(failed, sent["said"])
+        self.assertEqual(git(self.checkout(0), "rev-parse", "HEAD"), self.commit)
+        # The positive control: with protocol v2 there, it negotiates, and a push says nothing beyond its progress.
+        (self.project / "README.md").write_text("next\n")
+        commit = commit_all(self.project)
+        with self.relaying(**negotiate):
+            passed, receipt, error = self.dispatched()
+        self.assertNotIn("remote: git push said:", error)
+        for sent in receipt["preparation"]["sends"]:
+            self.assertEqual((sent["status"], sent["negotiationFailed"], sent["said"]), (0, False, []))
+        self.assertEqual(git(self.checkout(0), "rev-parse", "HEAD"), commit)
+
+    def throttled(self):
+        """A commit with LARGE bytes that the relay takes about 26 s to pass, and the file that names the
+        relay's PID and receive-pack's once it has started."""
+        (self.project / "large.bin").write_bytes(os.urandom(LARGE))
+        return commit_all(self.project), Path(self.temp.name) / "throttled"
+
+    def ended(self, marker):
+        """Wait, up to 30 s, for the processes the throttled relay's marker names to end."""
+        for pid in [int(word) for word in marker.read_text().split()]:
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                try: os.kill(pid, 0)
+                except ProcessLookupError: break
+                time.sleep(0.05)
+            with self.assertRaises(ProcessLookupError):
+                os.kill(pid, 0)
+
+    def nothing_received(self, commit):
+        """The second Mac's repository holds nothing of a push that did not finish: not its commit, any object or
+        its ref. receive-pack, which the closed connection ends with SIGPIPE, can leave its quarantine directory
+        outside the repository's objects, which Git's prune removes."""
+        self.assertNotEqual(subprocess.run(["git", "--git-dir", str(self.bare()), "cat-file", "-e", commit],
+                                           capture_output=True).returncode, 0)
+        counted = dict(line.split(": ") for line in git(self.bare(), "count-objects", "-v").splitlines())
+        self.assertEqual((counted["count"], counted["in-pack"]), ("0", "0"))
+        self.assertEqual([path.name for path in (self.bare() / "objects").iterdir() if path.name not in ("info", "pack")
+                          and not path.name.startswith("tmp_objdir-incoming-")], [])
+        self.assertEqual(git(self.bare(), "for-each-ref", remote.REF), "")
+        self.assertFalse(self.checkout(0).exists())
+
+    def failure_record(self, lane):
+        records = list((self.project / ".build/engineering/remote" / remote.DISPATCHES / lane).glob("*/source.json"))
+        self.assertEqual(len(records), 1, records)
+        record = json.loads(records[0].read_text())
+        self.assertEqual((record["stage"], record["outcome"]), ("preparation", "failed-or-interrupted"))
+        self.assertNotIn("result", record)
+        return record
+
+    @patch.object(remote, "SEND_TIMEOUT", 2)
+    def test_a_push_that_outlasts_its_bound_is_stopped_and_leaves_its_record_and_nothing_there(self):
+        commit, marker = self.throttled()
+        with self.relaying(FAKE_THROTTLE=str(32 << 10), FAKE_THROTTLED=str(marker)):
+            started = time.monotonic()
+            status, output, error = self.run_here("gate")
+            self.assertLess(time.monotonic() - started, 20)
+        self.assertEqual(status, remote.MISCONFIGURED, output + error)
+        self.assertIn(f"eng: gate not run: the push of {commit[:12]} into ~/{remote.ROOT}/repositories/example.git on "
+                      "fake did not finish in 2s and was stopped, so nothing ran there: ", error)
+        self.ended(marker)
+        self.nothing_received(commit)
+        # Nothing ran here either, and the latest results hold no run of it.
+        for place in (".build/engineering/gate", ".build/engineering/remote/gate"):
+            self.assertFalse((self.project / place).exists())
+        sent = self.failure_record("gate")["preparation"]["sends"][0]
+        self.assertTrue(sent["timedOut"])
+        self.assertNotEqual(sent["status"], 0)
+        self.assertGreaterEqual(sent["seconds"], 2)
+        self.assertIn("nothing ran on fake; the record of what was sent is ", error)
+        self.assertEqual(self.eng("remote", "passed", "gate")[0], 1)
+        # The positive control: at full speed the same commit goes, cold, and runs.
+        with self.relaying():
+            status, output, error = self.run_here("gate")
+        self.assertEqual(status, 0, output + error)
+        self.assertGreaterEqual(self.passed()[0], LARGE)
+        receipt = json.loads((self.project / ".build/engineering/remote/gate/source.json").read_text())
+        self.assertEqual(receipt["preparation"]["sends"][0]["transfer"], "cold")
+        self.assertEqual(self.eng("remote", "passed", "gate")[0], 0)
+
+    def test_a_stop_during_a_push_ends_it_at_once_and_runs_nothing(self):
+        commit, marker = self.throttled()
+        with self.relaying(FAKE_THROTTLE=str(32 << 10), FAKE_THROTTLED=str(marker)):
+            dispatcher = subprocess.Popen([sys.executable, str(self.toolkit / "bin/eng"), "--project", str(self.project),
+                                           "remote", "run", "check"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            try:
+                deadline = time.monotonic() + 60
+                while not marker.exists() and dispatcher.poll() is None and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                self.assertTrue(marker.exists(), dispatcher.stdout.read().decode() if dispatcher.poll() is not None else "")
+                time.sleep(0.5)
+                stopped = time.monotonic()
+                dispatcher.send_signal(signal.SIGTERM)
+                output = dispatcher.communicate(timeout=60)[0].decode()
+            finally:
+                if dispatcher.poll() is None:
+                    dispatcher.kill()
+                    dispatcher.communicate()
+        # The push alone would take about 26 s more.
+        self.assertLess(time.monotonic() - stopped, 10, output)
+        self.assertEqual(dispatcher.returncode, -signal.SIGTERM, output)
+        self.ended(marker)
+        self.nothing_received(commit)
+        record = self.failure_record("check")
+        self.assertIn(f"Stopped by SIGTERM while sending {commit[:12]} to fake", record["error"])
+        self.assertTrue(record["preparation"]["sends"][0]["stopped"])
+        self.assertFalse((self.project / ".build/engineering/remote/check").exists())
+
+    def test_concurrent_dispatches_of_one_commit_each_keep_their_own_results(self):
+        # Two `eng remote admit` dispatches at once send one commit and file their results under one name,
+        # the second held as the code before vocaro-engineering#67 could be (BARRIER_DRIVER): first to a
+        # second Mac that has no repository yet, then with a new commit to one that has.
+        base, barrier = self.project / ".build/engineering/remote", Path(self.temp.name) / "barrier"
+        commit, filed = self.commit, set()
+        for state in ("fresh", "warm"):
+            with self.subTest(state):
+                if state == "warm":
+                    (self.project / "README.md").write_text("next\n")
+                    commit = commit_all(self.project)
+                shutil.rmtree(barrier, ignore_errors=True)
+                barrier.mkdir()
+                dispatchers = {}
+                with patch.dict(os.environ, {"FAKE_BARRIER": str(barrier)}):
+                    for label in ("first", "second"):
+                        dispatchers[label] = subprocess.Popen(
+                            [sys.executable, "-c", BARRIER_DRIVER, str(self.toolkit / "src/python"), "--project",
+                             str(self.project), "remote", "admit", "--", sys.executable, "-c", f"print('ran {label}')"],
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                    outputs = {label: dispatcher.communicate(timeout=300)[0].decode()
+                               for label, dispatcher in dispatchers.items()}
+                for label, dispatcher in dispatchers.items():
+                    self.assertEqual(dispatcher.returncode, 0, outputs[label])
+                own = sorted(set((base / remote.DISPATCHES / "admit").iterdir()) - filed)
+                filed |= set(own)
+                self.assertEqual(len(own), 2)
+                receipts = {}
+                for directory in own:
+                    receipt = json.loads((directory / "source.json").read_text())
+                    label = receipt["work"][-1].split("'")[1].split()[1]
+                    receipts[label] = receipt
+                    self.assertEqual((directory / "output.log").read_text().splitlines()[-1], f"ran {label}")
+                    self.assertEqual((receipt["commit"], receipt["result"]["exitStatus"]), (commit, 0))
+                    # Each push succeeded, or lost the race for the commit's ref to the other's.
+                    for sent in receipt["preparation"]["sends"]:
+                        self.assertTrue(sent["status"] == 0 or "race" in sent, sent)
+                    self.assertIn(f"this dispatch's alone in {directory.resolve()}", outputs[label])
+                self.assertEqual(sorted(receipts), ["first", "second"])
+                # The latest is one of them, whole, and nothing staged is left.
+                self.assertIn(json.loads((base / "admit/source.json").read_text()), list(receipts.values()))
+                self.assertEqual(sorted(path.name for path in base.iterdir()),
+                                 sorted([remote.DISPATCHES, ".admit.lock", "admit"]))
+                self.assertEqual({git(self.checkout(slot), "rev-parse", "HEAD") for slot in (0, 1)}, {commit})
+
+
+class DispatchResultsTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.base = Path(self.temp.name) / "remote"
+
+    def staged(self, label):
+        staging = self.base / f".admit.{label}"
+        staging.mkdir(parents=True)
+        (staging / "output.log").write_text(f"ran {label}\n")
+        return staging
+
+    def test_dispatches_of_one_name_file_their_results_in_turn_and_each_keeps_its_own(self):
+        inside, release, copying = threading.Event(), threading.Event(), shutil.copytree
+
+        def copy(source, destination, **options):
+            # The first dispatch to copy its results holds there, inside the lock, until released.
+            if not inside.is_set():
+                inside.set()
+                release.wait(30)
+            return copying(source, destination, **options)
+        filed = {}
+        filing = lambda label: filed.__setitem__(label, remote.file_results(
+            self.base, "admit", f"20261029T120000Z-{label}", self.staged(label), {"run": label}))
+        with patch.object(remote.shutil, "copytree", side_effect=copy):
+            first = threading.Thread(target=filing, args=("first",))
+            first.start()
+            self.assertTrue(inside.wait(30))
+            second = threading.Thread(target=filing, args=("second",))
+            second.start()
+            time.sleep(0.5)
+            # The second waits for the first, whose results are not yet the latest.
+            self.assertTrue(second.is_alive())
+            self.assertNotIn("second", filed)
+            self.assertFalse((self.base / "admit").exists())
+            release.set()
+            for thread in (first, second): thread.join(30)
+        for label in ("first", "second"):
+            self.assertEqual((filed[label] / "output.log").read_text(), f"ran {label}\n")
+            self.assertEqual(json.loads((filed[label] / "source.json").read_text()), {"run": label})
+        self.assertEqual((self.base / "admit/output.log").read_text(), "ran second\n")
+        self.assertEqual(sorted(path.name for path in self.base.iterdir()),
+                         sorted([remote.DISPATCHES, ".admit.lock", "admit"]))
+        # A record of a dispatch that ran nothing leaves the latest as it was.
+        record = remote.file_results(self.base, "admit", "20261029T120001Z-third", receipt={"run": "third"}, latest=False)
+        self.assertEqual(json.loads((record / "source.json").read_text()), {"run": "third"})
+        self.assertEqual((self.base / "admit/output.log").read_text(), "ran second\n")
+
+    def test_each_name_keeps_its_newest_dispatches_and_names_each_one_removed(self):
+        with contextlib.redirect_stderr(StringIO()) as error:
+            for number in range(remote.DISPATCHES_KEPT + 2):
+                remote.file_results(self.base, "admit", f"20261029T1200{number:02d}Z-1", self.staged(str(number)))
+        kept = sorted(path.name for path in (self.base / remote.DISPATCHES / "admit").iterdir())
+        self.assertEqual(kept, [f"20261029T1200{number:02d}Z-1" for number in range(2, remote.DISPATCHES_KEPT + 2)])
+        for number in (0, 1):
+            self.assertIn(f"remote: removed {self.base / remote.DISPATCHES / 'admit' / f'20261029T1200{number:02d}Z-1'}",
+                          error.getvalue())
+        self.assertEqual((self.base / "admit/output.log").read_text(), f"ran {remote.DISPATCHES_KEPT + 1}\n")
+        # Two dispatches in one second of one process each keep their own.
+        with contextlib.redirect_stderr(StringIO()):
+            first = remote.file_results(self.base, "admit", "20261029T130000Z-1", self.staged("a"))
+            second = remote.file_results(self.base, "admit", "20261029T130000Z-1", self.staged("b"))
+        self.assertNotEqual(first, second)
+        self.assertEqual((second / "output.log").read_text(), "ran b\n")
+
+
+class PushRecordTests(unittest.TestCase):
+    def test_a_push_record_reads_each_phase_and_what_git_reports(self):
+        lines = [(0.035, "Enumerating objects: 3, done."), (0.035, "Counting objects: 100% (3/3), done."),
+                 (0.036, "Writing objects:  33% (1/3)"),
+                 (0.470, "Writing objects: 100% (3/3), 24.01 MiB | 55.24 MiB/s, done."),
+                 (0.470, "Total 3 (delta 0), reused 0 (delta 0), pack-reused 0 (from 0)"),
+                 (0.954, "To fake:Development/build-host/repositories/source.git"),
+                 (0.954, " * [new reference]   19ddd2a5 -> refs/vocaro/build-host/19ddd2a5")]
+        found = remote.pushed(lines)
+        self.assertEqual(found["phases"], {"connect": 0.035, "pack": 0.001, "transfer": 0.434, "receiver": 0.484})
+        self.assertEqual((found["objects"], found["reused"], found["written"], found["bytes"]),
+                         (3, 0, "24.01 MiB", round(24.01 * (1 << 20))))
+        self.assertEqual((found["said"], found["negotiationFailed"]), ([], False))
+        # A push that found the commit there writes no pack; one whose negotiation failed says so.
+        found = remote.pushed([(0.026, "Everything up-to-date")])
+        self.assertEqual((found["phases"], found["said"]), ({}, ["Everything up-to-date"]))
+        self.assertNotIn("bytes", found)
+        said = ["warning: --negotiate-only requires protocol v2", "fatal: the remote end hung up unexpectedly",
+                "warning: push negotiation failed; proceeding anyway with push"]
+        found = remote.pushed([(0.01 * index, line) for index, line in enumerate(said)]
+                              + [(0.05, "Writing objects: 100% (6/6), 282 bytes | 282.00 KiB/s, done."),
+                                 (0.05, "Total 6 (delta 0), reused 0 (delta 0)")])
+        self.assertEqual((found["said"], found["negotiationFailed"], found["bytes"]), (said, True, 282))
+        # The phases stop at the first mark the lines lack: a push cut off while it wrote.
+        found = remote.pushed([(0.03, "Enumerating objects: 3, done."), (0.04, "Writing objects:  33% (1/3)")])
+        self.assertEqual(found["phases"], {"connect": 0.03, "pack": 0.01})
 
 
 if __name__ == "__main__":

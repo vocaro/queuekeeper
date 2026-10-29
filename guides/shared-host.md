@@ -620,6 +620,55 @@ only a process that sets its own environment can still write one. A checkout tha
 changes stays as it is for inspection and is passed over. Once it is read, remove it with
 `git --git-dir ~/Development/build-host/repositories/NAME.git worktree remove --force PATH`.
 
+A push learns what the second Mac has only from the refs its repository advertises, and a
+checkout's detached HEAD is none of them. Placing a commit deletes the ref that carried it, so a
+repository whose checkouts alone hold its commits has a push send the commit's whole history,
+however much of it they hold. Against a stand-in second Mac on this Mac, an unchanged commit
+holding 24 MiB of random data and a one-line change on it each sent 24.01 MiB to such a
+repository (Git 2.54.0, Apple Git-157, 2026-10-29;
+[vocaro-engineering#67](https://github.com/vocaro/vocaro-engineering/issues/67)). So each
+repository there names each commit its checkouts hold as `refs/vocaro/checkouts/COMMIT`, no more
+refs than checkouts. Placing a commit names it, and the preparing connection names them all
+again before the pushes, so a repository whose checkouts an older eng placed, or that lost one, is
+current. A push then sends only what those commits lack: nothing for a commit a checkout holds,
+282 bytes for that one-line change. It is warm when this Mac has one of the commits the second
+Mac named, and cold when it has none, as for a project's first push or once its checkouts are
+gone. A cold push sends the whole history although the objects of earlier pushes may still be
+there, unreferenced.
+
+`push.negotiate=true` finds such objects too, through a fetch exchange before the push, but only
+over protocol v2, which reaches the second Mac only as the `GIT_PROTOCOL` variable that ssh sends.
+A stock macOS sshd accepts only `LANG` and `LC_*` (`AcceptEnv` in
+`/etc/ssh/sshd_config.d/100-macos.conf`, macOS 27.2). Without it, Git says `--negotiate-only
+requires protocol v2`, `fatal: the remote end hung up unexpectedly` and `push negotiation failed;
+proceeding anyway with push`, and pushes as it would without the setting, successfully (measured
+with the stand-in dropping the variable). eng sets neither it nor any other Git setting: the refs
+make a push warm over any protocol. Whether the second Mac's sshd passes `GIT_PROTOCOL` is
+unmeasured.
+
+The receipt's `preparation` records what came before the second Mac's queue: the seconds of
+staging the commits, of the preparing connection and of the pushes, both Macs' `git --version`,
+and each push. A push's record gives its status and seconds; its phases, from when each line of
+`git push --progress` arrived: `connect`, until Git starts the pack, after the second Mac's ref
+advertisement; `pack`; `transfer`, until the pack's last byte is written, which the second Mac
+indexes as it arrives; and `receiver`, until the second Mac reports the ref, which takes the rest
+of its indexing and its connectivity check. It gives the objects and bytes Git reports, the bytes
+to Git's rounding, whether the push was warm or cold, the `push.negotiate` setting it read, and
+every line it wrote beyond its progress and the ref's report, which eng also prints, such as a
+negotiation's failure. The result's `phases` give the second Mac's wait for a checkout, placing
+the commits there and each eng command, and the work's own receipt gives `queueSeconds`, its
+wait in the queue, as a receipt of a run on this Mac does. eng prints a line for each push and
+one for the preparation and the queue's wait before the result.
+
+A push that has not finished in 30 minutes is stopped, as is one that a stop interrupts: eng
+ends git and the ssh it started at once, and nothing of the push enters the second Mac's
+repository. Stopped at its bound, it stops the work for the owner, as a push that fails does:
+nothing ran there. Either way, a record of what was sent, unique to the dispatch, says how far the
+push got. receive-pack there may die of `SIGPIPE` once its connection has closed and leave its
+quarantine, `objects/tmp_objdir-incoming-*`, with what had arrived. That directory is no part of
+the repository, and Git's prune removes it once it is older than `gc.pruneExpire`, two weeks
+unless set (Git 2.54.0).
+
 Output comes back as it is written. The lane's log, the command's output and a receipt land in
 `.build/engineering/remote/LANE/` (`remote/admit/` for a command), and the exit status is the
 second Mac's. A lane group's lanes' logs and receipts follow once the run there ends, a stopped
@@ -633,6 +682,16 @@ whole lane's receipt is also kept by commit in the repository's Git directory, s
 `eng remote passed LANE` answers from any worktree whether the lane, without arguments, passed
 at exactly that commit. A later run of the lane at that commit replaces it. A push path that
 accepts it in place of running the gate again prints both Macs' macOS versions from the receipt.
+
+Each dispatch also keeps its own copy of its results, in
+`.build/engineering/remote/.dispatches/LANE/TIME-PID/` (`admit` for a command), which the line
+that gives the run's status names. `LANE/` holds the copy of the dispatch that ended last, so two
+dispatches of one lane, or two commands, at once each keep their own. Each name keeps its newest
+eight, two for each checkout there, and eng names each one it removes. Dispatches of one name file
+their results in turn. Replacing `remote/admit/` by removing it and renaming another into its
+place fails with `Directory not empty` (Errno 66) when two dispatches interleave, and left one
+dispatch's results unfiled
+([vocaro-engineering#67](https://github.com/vocaro/vocaro-engineering/issues/67)).
 
 The receipt names the commit that ran (`commit`) and the HEAD it was sent from (`head`), the same
 commit unless `snapshot` is true. A snapshot's receipt stays in `.build/engineering/remote/LANE/`:
