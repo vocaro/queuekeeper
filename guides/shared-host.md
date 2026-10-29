@@ -134,13 +134,24 @@ queue. HEAVY_SLOT_DIR is an explicit namespace override for isolated tests; a se
 directory must not multiply the host's build budget.
 
 A wait is expected. Admission prints `heavy: waiting (Ns): REASON` when it starts waiting and
-every five minutes after, naming the reason: the guaranteed slots are busy and the load, memory
-pressure or settling time refuses another; it waits behind exclusive work, named by its label;
-exclusive work needs every slot free; the on-device model is held by another run, named by its
-label; a legacy gate holds its lock; or a foreign, dead or uncertain guard owner requires
-inspection, which names `eng admissions recover`. After its timeout (5,400 s by default)
-admission fails without reclaiming any lock, and an exclusive request leaves the queue. A script
-that runs several jobs at once leaves at least one of the guaranteed HEAVY_SLOTS for other sessions.
+every five minutes after. The reason names the limit that refused the request and the limit's
+value, beside what the attempt read, so that a wait says which limit to look at:
+
+| Kind | Reason, as printed |
+| --- | --- |
+| `slots` | `all 3 guaranteed slots are busy and so is every slot up to HEAVY_SLOTS_MAX=9`, or `… and HEAVY_SLOTS_MAX=3 allows none beyond them`; for exclusive work, `exclusive work needs every slot up to HEAVY_SLOTS_MAX=9 free, and 2 are busy` |
+| `settle` | `all 3 guaranteed slots are busy and the load does not yet show the job admitted 12s ago, within HEAVY_SETTLE_SECONDS=30` |
+| `load` | `all 3 guaranteed slots are busy and load 412.3 is at or above HEAVY_LOAD_LIMIT=13.5`, or `… the load average, which HEAVY_LOAD_LIMIT=13.5 bounds, is unavailable` |
+| `memory` | `all 3 guaranteed slots are busy and memory pressure is level 2 (warning), not 1 (normal)`, or `… memory pressure, which must be level 1 (normal), cannot be read` |
+| `model` | `the on-device model, one run at a time, is held by LABEL` |
+| `exclusive` | `it waits behind exclusive work queued ahead of it: LABEL`, or `… holding the host: LABEL` |
+| `legacy` | `a legacy gate, PID 4242, holds its lock /tmp/studywright-gate-suite.lock` |
+| `guard` | `the guard entry of LABEL, PID 4242, is dead and requires inspection; …`, `uncertain` for an entry marked so, or `the guard PATH is foreign or unreadable and requires inspection; …`, where `…` names `python3 scripts/eng admissions recover` |
+
+Each kind is the one the [admission log](#admission-log) records for the refusal. After its
+timeout (5,400 s by default) admission fails without reclaiming any lock, naming the same reason,
+and an exclusive request leaves the queue. A script that runs several jobs at once leaves at least one of the guaranteed
+HEAVY_SLOTS for other sessions.
 
 A dead or uncertain entry refuses every session's heavy work until it is recovered.
 `python3 scripts/eng admissions recover` lists those entries, and
@@ -151,10 +162,11 @@ A request's label names it in waiting messages, the guard and the [admission log
 A lane run's label is its project's name, from engineering.json, a space and the lane, such as
 `EPUBLib gate`, so that the `gate` lanes of several projects, or the `tests` lanes of
 BackgroundTaskLib and FileHandoffLib, stay apart. A request waiting behind EPUBLib's gate prints
-`heavy: waiting (0s): it waits behind exclusive work: EPUBLib gate`. An `eng admit` request's label
-is its command line, and a caller that admits its own work names it, as StudyWright's push keeper
-does with `warm push REV`. A toolkit older than October 27, 2026 labels a lane run with the lane
-alone, as in `gate`; its guard entries, queued requests and log lines are read as they are.
+`heavy: waiting (0s): it waits behind exclusive work queued ahead of it: EPUBLib gate`. An
+`eng admit` request's label is its command line, and a caller that admits its own work names it,
+as StudyWright's push keeper does with `warm push REV`. A toolkit older than October 27, 2026
+labels a lane run with the lane alone, as in `gate`; its guard entries, queued requests and log
+lines are read as they are.
 
 Before a full gate, look for other sessions' runs across the host, not only under the usual
 worktree directory: sessions also test from checkouts elsewhere, such as a share under
@@ -247,8 +259,8 @@ A line holds:
     HEAVY_SETTLE_SECONDS ago, a load average at or above HEAVY_LOAD_LIMIT or one that cannot be
     read, or memory pressure that is not normal withholds another;
   - `model`: another run holds the on-device model;
-  - `exclusive`: an exclusive request is queued ahead, or exclusive work holds the host, whatever
-    the waiting message names of its slots or the model;
+  - `exclusive`: an exclusive request is queued ahead, or exclusive work holds the host, which
+    refuses the request at its slots or the model;
   - `legacy`: a legacy gate holds its lock;
   - `guard`: a foreign, dead or uncertain guard owner requires inspection.
 - `outcome`, on an `ended` line: `released` when the command finished, whatever its exit status;

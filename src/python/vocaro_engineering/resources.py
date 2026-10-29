@@ -23,6 +23,7 @@ Each admission appends a line to the host's admission log, and its end another, 
 can count admissions, waits and holds instead of guessing (#46); `eng admissions` summarizes it.
 A request that waited says why, which an audit could only infer from the holders logged beside it
 (#49): how many of its attempts each kind of refusal refused, and the load and memory pressure read.
+Its waiting message names the limit that refused it and the limit's value, beside what it read.
 
 Beside its guard entry, each admission keeps a process record: what the toolkit's supervision in
 the owner's process saw of each command, its processes with their starts and the process groups
@@ -192,6 +193,10 @@ def last_admission(directory, slots):
     return latest
 
 
+# The memory pressure levels macOS reports, by name. Only normal pressure lets an adaptive slot open.
+PRESSURE = {1: "normal", 2: "warning", 4: "critical"}
+
+
 def memory_level():
     """The memory pressure level macOS reports: 1 normal, 2 warning, 4 critical, or None when it cannot be read."""
     if sys.platform != "darwin":
@@ -199,11 +204,6 @@ def memory_level():
     result = subprocess.run(["/usr/sbin/sysctl", "-n", "kern.memorystatus_vm_pressure_level"],
         capture_output=True, text=True)
     return int(result.stdout) if result.returncode == 0 and result.stdout.strip().isdigit() else None
-
-
-def memory_normal():
-    """Whether macOS reports normal memory pressure: level 1, where 2 is warning and 4 critical."""
-    return memory_level() == 1
 
 
 def one_minute_load():
@@ -283,7 +283,8 @@ class Admission:
         self.poll = float(os.environ.get("HEAVY_POLL_SECONDS", "1"))
         if self.slots < 1 or self.maximum < self.slots or self.settle < 0 or self.poll <= 0 or timeout < 0:
             raise ValueError("Invalid resource limits")
-        # Why the latest attempt was refused: its kind, which the log counts (#49), and the waiting message.
+        # Why the latest attempt was refused: its kind, which the log counts (#49), and the waiting message,
+        # which names the limit that refused it and its value beside what the attempt read.
         # guard: a dead or uncertain guard entry needs inspection; exclusive: exclusive work holds the host
         # or is queued ahead; legacy: a legacy gate holds its lock; model: another run holds the model;
         # slots: every slot the request may take is busy; settle, load or memory: the settling time, the
@@ -320,16 +321,23 @@ class Admission:
         return value
 
     def _guard(self):
+        """The published guard, or None, with the refusal naming why, when it is foreign or unreadable or
+        records a dead or uncertain owner."""
         if not self.guard.exists():
             return {"vocaroEngineering": 1, "owners": {}}
         value = self._recorded()
         if value is None:
-            return None
-        # Never reclaim a disappeared owner: its children may still use a different session.
-        for owner in value.get("owners", {}).values():
-            if owner.get("uncertain") or not running(owner):
-                return None
-        return value
+            problem = f"the guard {self.guard} is foreign or unreadable"
+        else:
+            # Never reclaim a disappeared owner: its children may still use a different session.
+            owner = next((owner for owner in value.get("owners", {}).values()
+                          if owner.get("uncertain") or not running(owner)), None)
+            if owner is None:
+                return value
+            problem = (f"the guard entry of {str(owner.get('label') or 'an unnamed owner')[:160]}, PID {owner['pid']}, "
+                       f"is {'uncertain' if owner.get('uncertain') else 'dead'}")
+        self.refusal, self.waiting = "guard", f"{problem} and requires inspection; `python3 scripts/eng admissions recover` lists it"
+        return None
 
     def _waiters(self):
         """The live exclusive requests, first come first. The caller holds the coordination lock.
@@ -388,30 +396,46 @@ class Admission:
         self.queued = False
 
     def _legacy_lock(self):
+        """Whether this process took the legacy lock, or, with the refusal naming the lock and the PID
+        written in it, False."""
         if Path("/usr/bin/shlock").is_file():
-            return subprocess.run(["/usr/bin/shlock", "-f", str(self.legacy), "-p", str(os.getpid())],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
-        return not self.legacy.exists()
+            if subprocess.run(["/usr/bin/shlock", "-f", str(self.legacy), "-p", str(os.getpid())],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
+                return True
+        elif not self.legacy.exists():
+            return True
+        try:
+            holder = self.legacy.read_text().strip()
+        except OSError:
+            holder = ""
+        self.refusal, self.waiting = "legacy", f"a legacy gate, PID {holder or 'unrecorded'}, holds its lock {self.legacy}"
+        return False
 
     def _unlock_legacy(self):
         if self.legacy.exists() and self.legacy.read_text().strip() == str(os.getpid()):
             self.legacy.unlink()
 
     def _extra_refusal(self):
-        """Why no slot beyond the guaranteed ones may be taken now, as the refusal's kind and its reason, or None."""
+        """Why no slot beyond the guaranteed ones may be taken now, as the refusal's kind and its reason, or None.
+        The reason names the limit that refuses and its value beside what was read (#49)."""
         if self.maximum == self.slots:
-            return "slots", "no adaptive slots are configured"
+            return "slots", f"HEAVY_SLOTS_MAX={self.maximum} allows none beyond them"
         settling = time.time() - last_admission(self.directory, self.maximum)
         if settling < self.settle:
-            return "settle", f"the load does not yet show the job admitted {int(settling)}s ago"
+            return "settle", (f"the load does not yet show the job admitted {int(settling)}s ago, "
+                              f"within HEAVY_SETTLE_SECONDS={self.settle:g}")
         try:
             load = os.getloadavg()[0]
         except OSError:
-            return "load", "the load average is unavailable"
+            return "load", f"the load average, which HEAVY_LOAD_LIMIT={self.load_limit:g} bounds, is unavailable"
         if load >= self.load_limit:
-            return "load", f"load {load:.1f} is at or above {self.load_limit:g}"
-        if not memory_normal():
-            return "memory", "memory pressure is not normal"
+            return "load", f"load {load:.1f} is at or above HEAVY_LOAD_LIMIT={self.load_limit:g}"
+        level = memory_level()
+        if level is None:
+            return "memory", "memory pressure, which must be level 1 (normal), cannot be read"
+        if level != 1:
+            named = f" ({PRESSURE[level]})" if level in PRESSURE else ""
+            return "memory", f"memory pressure is level {level}{named}, not 1 (normal)"
         return None
 
     def _take_model(self):
@@ -423,7 +447,8 @@ class Admission:
         except BlockingIOError:
             holder = os.pread(fd, 4096, 0).decode(errors="replace").strip().split(" ", 2)
             os.close(fd)
-            self.refusal, self.waiting = "model", f"the on-device model is held by {holder[2] if len(holder) == 3 else 'an unnamed holder'}"
+            self.refusal, self.waiting = "model", ("the on-device model, one run at a time, is held by "
+                                                   f"{holder[2] if len(holder) == 3 else 'an unnamed holder'}")
             return None
         return fd
 
@@ -441,16 +466,18 @@ class Admission:
             taken = take_slot(self.directory, self.maximum, start=self.slots)
             if taken is not None:
                 return taken
-            refusal = "slots", f"all {self.maximum} slots are busy"
+            refusal = "slots", f"so is every slot up to HEAVY_SLOTS_MAX={self.maximum}"
         kind, reason = refusal
         self.refusal, self.waiting = kind, f"all {self.slots} guaranteed slots are busy and {reason}"
         return None
 
     def _held_back(self, state):
         """Refuse the attempt at the model or a slot. Exclusive work holds both while its guard entry stands,
-        so whatever refused the request there, it waits behind that work."""
-        if any(owner.get("exclusive") for owner in state["owners"].values()):
-            self.refusal = "exclusive"
+        so whatever refused the request there, it waits behind that work, which the message names."""
+        holder = next((owner for owner in state["owners"].values() if owner.get("exclusive")), None)
+        if holder is not None:
+            self.refusal, self.waiting = "exclusive", ("it waits behind exclusive work holding the host: "
+                                                       f"{str(holder.get('label') or 'an unnamed owner')[:160]}")
         return False
 
     def _attempt(self):
@@ -476,15 +503,12 @@ class Admission:
                 recorded = state or self._recorded()
                 self.holders = len(recorded.get("owners") or {}) if recorded else None
             if state is None:
-                self.refusal, self.waiting = "guard", ("a foreign, dead or uncertain guard owner requires inspection; "
-                                                       "`python3 scripts/eng admissions recover` lists it")
                 return False
             if waiters and waiters[0]["identity"] != self.identity:
                 # Work already admitted runs on; nothing new starts before the exclusive request.
-                self.refusal, self.waiting = "exclusive", f"it waits behind exclusive work: {waiters[0]['label']}"
+                self.refusal, self.waiting = "exclusive", f"it waits behind exclusive work queued ahead of it: {waiters[0]['label']}"
                 return False
             if not self._legacy_lock():
-                self.refusal, self.waiting = "legacy", "a legacy gate holds its lock"
                 return False
             try:
                 # The model first, so that a request it refuses names the model's holder.
@@ -498,7 +522,9 @@ class Admission:
                         taken = self._extra_slot()
                     if taken is None:
                         if self.exclusive:
-                            self.refusal, self.waiting = "slots", f"exclusive work needs all {self.maximum} slots free"
+                            busy = self.maximum - len(self.descriptors)
+                            self.refusal, self.waiting = "slots", (f"exclusive work needs every slot up to HEAVY_SLOTS_MAX="
+                                                                   f"{self.maximum} free, and {busy} {'is' if busy == 1 else 'are'} busy")
                         self._release()
                         return self._held_back(state)
                     self.descriptors.append(taken)
