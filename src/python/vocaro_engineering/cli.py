@@ -244,6 +244,23 @@ def judge(lane, result, log, extra=(), expect=None):
     return result, []
 
 
+# A lane that says "display": true waits for what the display's refresh times, such as a scroll view's
+# animation. Its command runs under a one-second caffeinate -u, which wakes a sleeping display, behind a
+# lock too, and then caffeinate -d, which keeps an awake one on but wakes none, and no other assertion
+# (guides/background-mac-testing.md, Lock screen and display sleep).
+AWAKE = ["sh", "-c", 'caffeinate -u -t 1; exec caffeinate -d -- "$@"', "sh"]
+
+
+def awake(lane, extra=()):
+    """The command a lane runs, with extra appended: under AWAKE when the lane says "display": true,
+    where the receipt's command shows the assertions. caffeinate -d execs the command in its own
+    process and holds the assertion from a child of it, which ends when the command does, so the
+    command keeps the run's PID and status and the assertion ends with it, however it ends (this Mac,
+    macOS 27.0.1, 2026-10-28)."""
+    command = [*lane["command"], *extra]
+    return [*AWAKE, *command] if lane.get("display") else command
+
+
 def lane_label(root, config, lane):
     """A lane run's admission label: its project's name, a space and the lane, such as `EPUBLib gate`,
     so that two projects' lanes of one name stay apart in waiting messages, the guard and the admission
@@ -583,7 +600,7 @@ def main(argv=None):
                 if resource != "light": github_artifacts.configured(root, config)
                 return work()
             if group is None:
-                command = [*lane["command"], *extra]
+                command = awake(lane, extra)
                 receipt.update(command=command, arguments=extra)
                 def execute(on_stop=None):
                     return record(directory, receipt, lambda: prepared(lambda: processes.run(command, cwd=root,
@@ -591,7 +608,8 @@ def main(argv=None):
             else:
                 jobs = 1 if args.serial else lane.get("jobs", len(group))
                 receipt.update(parallel=group, jobs=jobs)
-                members = [(name, config["lanes"][name]) for name in group]
+                # Each lane's receipt shows the command it ran, under the display's assertions or not.
+                members = [(name, {**config["lanes"][name], "command": awake(config["lanes"][name])}) for name in group]
                 def execute(on_stop=None):
                     return record(directory, receipt, lambda: prepared(lambda: parallel.lanes(root, members, directory / "lanes", jobs,
                                   lambda member, status, log: judge(member, status, log)[0], receipt, on_stop)))

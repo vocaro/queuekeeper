@@ -69,9 +69,9 @@ def load(root):
             group(name, lane, lanes)
             continue
         if not isinstance(lane, dict) or set(lane) - {"command", "resource", "minimumTests", "timeout", "foreground",
-                                                       "buildHost", "here", "model"}:
+                                                       "buildHost", "here", "model", "display"}:
             raise ValueError(f"Invalid lane {name}")
-        for key in ["foreground", "buildHost", "model"]:
+        for key in ["foreground", "buildHost", "model", "display"]:
             if key in lane and type(lane[key]) is not bool:
                 raise ValueError(f"{name}.{key} must be true or false")
         if lane.get("buildHost") and (lane.get("foreground") or lane.get("resource", "light") == "light"):
@@ -81,6 +81,9 @@ def load(root):
                              "runs only here already")
         place(name, lane)
         model(name, lane)
+        if lane.get("display") and lane.get("resource", "light") == "light":
+            raise ValueError(f"{name}.display needs a heavy or exclusive lane: only an admitted test run holds the "
+                             "display's assertions, and a light lane is not admitted")
         command = lane.get("command")
         if not isinstance(command, list) or not command or any(not isinstance(x, str) or not x for x in command):
             raise ValueError(f"Lane {name} needs an argv list, never shell source")
