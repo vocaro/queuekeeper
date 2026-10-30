@@ -688,6 +688,20 @@ def describe(identity):
             f"({identity.get('build')}), {', '.join(xcode)})")
 
 
+# What a lane's command writes under its results' results/ on the second Mac, such as speech transcripts, comes
+# back whole into the results' results/ here, however the run ended.
+RESULTS = "results/"
+
+
+def returned_path(path, returns):
+    """Whether a file the second Mac sends back is one the plan asked for: one of returns by its exact path, or a
+    file under one of them that ends in /, by a relative path that leaves it nowhere."""
+    if not isinstance(path, str) or not returns: return False
+    parts = Path(path).parts
+    return any(path == entry if not entry.endswith("/") else path.startswith(entry) and ".." not in parts
+               and len(parts) > len(Path(entry).parts) for entry in returns)
+
+
 def group_files(config, lane):
     """What comes back from a lane group's run beside its own output and receipt: each of its lanes'
     log and receipt, as paths relative to the group's results, lanes/LANE.log and lanes/LANE.json.
@@ -806,7 +820,8 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     admit [--exclusive | --model] -- COMMAND, which runs in the checkout's root, or in its subdirectory
     when one is named. It runs at HEAD, or at a snapshot commit of the working tree when that has
     uncommitted changes. A lane group's lanes' logs and receipts come back under the results' lanes/
-    once the run there ends, however it ended (group_files). The second Mac waits for a checkout and
+    once the run there ends, however it ended (group_files), and what a lane wrote under its results'
+    results/ comes back under the results' results/ (RESULTS). The second Mac waits for a checkout and
     for its own admission; with decline, it refuses work it cannot start now instead, and Busy says
     why, as it does when no checkout came free in time. Unreachable says that ssh could not reach the
     second Mac before the work was sent, and Misconfigured what of the second Mac's configuration kept
@@ -855,7 +870,8 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
         developer = developer_directory()
         local = offload_host.identity(developer)
     kept = store(root) / commit
-    returns = group_files(config, lane)
+    members = group_files(config, lane)
+    returns = [*(members or []), RESULTS] if lane is not None else None
     plan = {"root": ROOT, "checkouts": CHECKOUTS, "project": project, "toolkit": kit, "work": work,
             "decline": decline, "busy": BUSY,
             "provision": "provision" in config.get("lanes", {}) and lane != "provision",
@@ -976,7 +992,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
                 try: path = json.loads(data)["path"]
                 except (ValueError, TypeError, KeyError): path = None
                 # Only a file the plan asked back, by its exact path, and each once.
-                if isinstance(path, str) and path in (returns or []) and path not in returned:
+                if returned_path(path, returns) and path not in returned:
                     (staging / path).parent.mkdir(parents=True, exist_ok=True)
                     receiving = (staging / path).open("wb")
                     returned.append(path)
@@ -1017,7 +1033,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
                "toolkit": kit["commit"] if kit else commit, "lane": lane, "arguments": list(arguments),
                "expect": expect, "work": work, "local": local, "result": result, "dispatched": started,
                "preparation": preparation,
-               **({"serial": True} if serial else {}), **({"returned": returned} if returns else {}),
+               **({"serial": True} if serial else {}), **({"returned": returned} if members or returned else {}),
                **({"subdirectory": subdirectory} if subdirectory else {})}
     own = file_results(base, name, dispatch, staging, receipt)
     # A snapshot's result stays here: no branch holds it, so it is no commit's pass. Nor is a group's
@@ -1038,7 +1054,11 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     print(f"remote: {name} at {at} on {describe(remote)} in {result.get('checkout')}: "
           f"{'stopped' if result['stopped'] else f'exit {status}'}; results in {results}, and this dispatch's alone in "
           f"{own}", file=sys.stderr, flush=True)
-    if returns and result.get("stage") == "work":
+    files = [path for path in returned if path.startswith(RESULTS)]
+    if files:
+        print(f"remote: {len(files)} file{'s' if len(files) != 1 else ''} the run wrote in its {RESULTS} came back in "
+              f"{results / RESULTS}", file=sys.stderr, flush=True)
+    if members and result.get("stage") == "work":
         members = config["lanes"][lane]["parallel"]
         came = [member for member in members if f"lanes/{member}.log" in returned]
         if came:
@@ -1072,10 +1092,10 @@ def main(root, config, args):
         return 0
     host = args.host or named_host() or alias() or DEFAULT_HOST
     if args.operation == "setup": return setup(host, args.formulae, args.imports or [], args.check, args.runtimes)
+    if args.operation == "foreground": return foreground_report(host)
     if args.operation == "run":
         lane = config.get("lanes", {}).get(args.lane)
         if lane is None: raise ValueError(f"No configured lane: {args.lane}")
-        if lane.get("foreground"): raise ValueError(f"{args.lane} takes the screen; foreground lanes run only here")
         if args.expect is not None and args.expect < 1: raise ValueError("--expect needs at least 1 test")
         if args.serial and "parallel" not in lane:
             raise ValueError(f"--serial runs a lane group, and {args.lane} is not one")
@@ -1090,12 +1110,56 @@ def main(root, config, args):
                 serial=args.serial))
     # Without a leading --, argparse collected the command, and a later -- belongs to it.
     command = args.command + ([] if args.passed is None else ["--", *args.passed]) if args.command else args.passed
-    if not command: raise ValueError("Name the command: eng remote admit [--exclusive | --model] -- COMMAND")
-    kind = ["--exclusive"] if args.exclusive else ["--model"] if args.model else []
+    if not command:
+        raise ValueError("Name the command: eng remote admit [--exclusive | --model] [--foreground] -- COMMAND")
+    kind = (["--exclusive"] if args.exclusive else ["--model"] if args.model else []) + \
+        (["--foreground"] if args.foreground else [])
     held = lease(args.device or [], args.device_owner or devices.default_owner(), command, root=root)
     work = ["admit", *kind, "--", *command]
     with processes.forwarding_signals():
         return carrying(held, root, host, work, "admit", lambda: execute(root, config, host, work, lease=held))
+
+
+def foreground_lane(root, config, lane, arguments, expect):
+    """Run a foreground lane on the second Mac, as `eng remote run` does, where eng waits for its foreground and
+    holds it for the run (foreground.slot). It never falls back to this Mac, the owner's workstation, whose
+    foreground needs the owner's window first and then `eng run --here`: a second Mac that is not configured or
+    cannot be reached stops the lane."""
+    host = configured()
+    if host is None:
+        raise ValueError(f"{lane} takes a Mac's screen, and no second Mac is configured ({HOST_VARIABLE}, or the ssh "
+                         f"alias {' or '.join(ALIASES)} in ~/.ssh/config) to run it on. This Mac's foreground needs a "
+                         "window the owner agrees first (guides/shared-host.md, Attended Mac sessions), then "
+                         f"`eng run --here {lane}`")
+    print(f"eng: {lane} takes a Mac's screen, so it runs on the second Mac, under its foreground", file=sys.stderr,
+          flush=True)
+    work = ["run", "--here", *(["--expect", str(expect)] if expect else []), lane,
+            *(["--", *arguments] if arguments else [])]
+    with processes.forwarding_signals():
+        return execute(root, config, host, work, lane=lane, arguments=arguments, expect=expect)
+
+
+def foreground_report(host):
+    """Print what the second Mac lacks for foreground work started over SSH, each with the owner's fix, and who
+    holds its foreground; exit 0 when it lacks nothing, MISCONFIGURED otherwise."""
+    found = ask(host, {"foreground": True})
+    entry = found.get("entry")
+    holder = "no run holds it" if not entry or entry.get("state") == "released" else \
+        entry.get("error") or f"{entry.get('ownerChatID')} holds it for {entry.get('purpose')}, " \
+        f"expected release {entry.get('expectedReleaseBy')}"
+    print(f"{found.get('mac')}'s foreground: {holder}")
+    if found.get("voiceover") and holder == "no run holds it":
+        found.setdefault("problems", []).append(["VoiceOver is on though no run holds the foreground, left on by a "
+                                                 "run that was stopped or could not restore it",
+                                                 "turn it off there (Command-F5)"])
+    for problem, fix in found.get("problems", []):
+        print(f"- {problem}: {fix}")
+    if found.get("problems"):
+        print("These are the owner's settings to change, on the second Mac (guides/second-mac-foreground.md); "
+              "foreground work there stops until they are.")
+        return MISCONFIGURED
+    print("Ready for foreground work started over SSH.")
+    return 0
 
 
 def install_script(formulae):

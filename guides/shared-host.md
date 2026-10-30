@@ -357,9 +357,10 @@ python3 scripts/eng remote setup --runtimes [--check]     # both Macs' simulator
 Every heavy or exclusive lane in engineering.json goes to the second Mac unless it says why it
 stays on this Mac, as `"here": "REASON"`, which configuration validation requires to be a
 nonempty reason. A lane says `here` when it needs a physical device, or a measurement tied to
-this Mac's hardware, such as goldens rendered on this Mac's GPU. A foreground lane, which takes the
-screen, runs only here anyway, and a light lane runs where it starts. Simulator lanes and
-background Mac UI lanes go to the second Mac like the rest, and a lane's first run there is its
+this Mac's hardware, such as goldens rendered on this Mac's GPU. A light lane runs where it starts.
+A foreground lane, which takes the screen, goes to the second Mac and only there, where eng holds
+the second Mac's foreground for it ([second Mac foreground](second-mac-foreground.md)). Simulator
+lanes and background Mac UI lanes go to the second Mac like the rest, and a lane's first run there is its
 check (the owner's decision, 2026-10-28): counts that differ from this Mac's are a defect to fix,
 not a reason to keep the lane here. A lane group runs its lanes under its one admission on one
 Mac, so a group stays here when it, or one of its lanes, says `here`. `"buildHost"`, which once
@@ -1495,9 +1496,11 @@ device says so with `"here"`, so sending one to the second Mac is always an expl
 
 ## Attended Mac sessions
 
-Mac VoiceOver and foreground UI default to the [hosted runner](hosted-runner.md), not the
-owner's Mac. These rules are a method for an attended session on the owner's Mac that the owner
-has explicitly authorized; they grant nothing by themselves.
+Mac VoiceOver and foreground UI default to the [second Mac's foreground](second-mac-foreground.md),
+which eng reserves for each run with the owner's standing approval, not to this Mac. These rules
+are a method for a session on this Mac's foreground within a period the owner approved
+beforehand ([this Mac's foreground](second-mac-foreground.md#this-macs-foreground)); they grant
+nothing by themselves. The drivers' check below is the same on both Macs.
 
 Reserve the owner's foreground before taking it. The `mac-foreground` entry in the
 [device record](#device-reservations) stands for the screen, keyboard, pointer, focus and
@@ -1521,8 +1524,10 @@ python3 -m vocaro_engineering.devices release mac-foreground --owner SESSION --r
 A foreground driver calls `devices check`, or `devices.require_foreground(owner)` from Python,
 at the start and before each key, activation or `set frontmost`. It refuses unless the session
 named by `--owner` or `VOCARO_DEVICE_OWNER` holds the entry, the entry is neither orphaned nor
-uncertain, and the approval has not ended; on a GitHub-hosted runner it passes without one.
-`eng run` checks a lane marked `"foreground": true` the same way. A passed approval or expected
+uncertain, and the approval has not ended. `eng run --here` checks a lane marked
+`"foreground": true` the same way, and `eng admit --foreground` a command; on the second Mac eng
+holds the entry for the run itself and names it in `VOCARO_DEVICE_OWNER`
+([running foreground work](second-mac-foreground.md#running-foreground-work)). A passed approval or expected
 release releases nothing: `status` reports it, the check refuses further foreground work, and
 the session stops, restores and releases. Record each app and test runner the session launches
 with `update --own PID`: `release` and `recover` wait until those have exited, and the release

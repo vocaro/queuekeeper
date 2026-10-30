@@ -20,7 +20,8 @@ given `{"device": ...}`, what there may still use a physical device a run was gi
 `devices recover`; given `{"keychain": PATH}`, the Mac's name and whether that keychain file is
 there, for `eng keychain recover`; given `{"keepUnlocked": ...}`, at the owner's terminal, it asks for
 the login keychain's password and keeps it for runs to unlock that keychain with, for `eng keychain
-keep-unlocked`.
+keep-unlocked`; given `{"foreground": true}`, what the Mac lacks for foreground work started over
+SSH and who holds its mac-foreground, for `eng remote foreground`.
 """
 import base64
 import ctypes
@@ -321,6 +322,72 @@ def keep_unlocked(request, ask=None, unlock=security_unlock, run=subprocess.run,
             return 1
     out(f"Its settings now: {said}")
     return 0
+
+
+def console_user():
+    """The account logged in on the Mac's own screen, or None; root while the login window shows."""
+    try: return pwd.getpwuid(os.stat("/dev/console").st_uid).pw_name
+    except (OSError, KeyError): return None
+
+
+def accessibility_trusted():
+    """Whether this process, and with it the command that started it, is trusted for accessibility."""
+    try:
+        services = ctypes.CDLL("/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices")
+        services.AXIsProcessTrusted.restype = ctypes.c_bool
+        return bool(services.AXIsProcessTrusted())
+    except (OSError, AttributeError):
+        return False
+
+
+def foreground_problems():
+    """What this Mac lacks for foreground work, a Mac VoiceOver session among it, run by a command started
+    over SSH, as [problem, the owner's fix] pairs; none when it is ready. Each is a setting of the owner's
+    Mac, which the owner changes, never a run (guides/second-mac-foreground.md).
+    It reads and changes nothing else: nothing here prompts, activates or sends a key."""
+    found = []
+    user, console = pwd.getpwuid(os.getuid()).pw_name, console_user()
+    if console != user:
+        found.append([f"{console or 'nobody'} is logged in on the screen, not {user}",
+                      f"log in as {user} on the Mac's own screen; fast user switching to another account hides it"])
+    front = output(["lsappinfo", "front"])
+    name = output(["lsappinfo", "info", "-only", "name", front]) if front else None
+    if name is not None and '"loginwindow"' in name:
+        found.append(["the screen is locked, or the login window is in front",
+                      "unlock it, and keep it from locking again: in System Settings, Lock Screen, set the screen "
+                      "saver and turning the display off to Never and requiring a password after either to Never"])
+    if not accessibility_trusted():
+        found.append(["a command started over SSH is not trusted for accessibility (AXIsProcessTrusted is false), so "
+                      "it can neither send VoiceOver keys through System Events nor read speech's observer",
+                      "in System Settings, Privacy & Security, Accessibility, add /usr/libexec/sshd-keygen-wrapper, "
+                      "which runs Remote Login's commands, and turn it on"])
+    mode = output(["automationmodetool"]) or ""
+    if "DOES NOT REQUIRE" not in mode:
+        found.append(["XCTest's automation mode asks for authentication, which nobody at the screen gives",
+                      "run `sudo automationmodetool enable-automationmode-without-authentication` there"])
+    if output(["defaults", "read", "com.apple.VoiceOverTraining", "doNotShowSplashScreen"]) != "1":
+        found.append(["VoiceOver opens its welcome dialog when it starts, which takes the VoiceOver cursor",
+                      "run `defaults write com.apple.VoiceOverTraining doNotShowSplashScreen -bool true` there"])
+    if output(["defaults", "read", "com.apple.HIToolbox", "AppleDictationAutoEnable"]) != "0":
+        found.append(["after a few VoiceOver commands, each of which presses Control, macOS offers to enable "
+                      "Dictation, and the prompt takes the VoiceOver cursor",
+                      "run `defaults write com.apple.HIToolbox AppleDictationAutoEnable -int 0` there"])
+    return found
+
+
+def voiceover_running():
+    """Whether VoiceOver runs on this Mac, which is VoiceOver on."""
+    return output(["pgrep", "-x", "VoiceOver"]) is not None
+
+
+def foreground():
+    """The Mac's name, what it lacks for foreground work started over SSH (foreground_problems), whether
+    VoiceOver is on and its record's mac-foreground entry, for `eng remote foreground`."""
+    path = record_path()
+    try: entry = json.loads(path.read_text()).get("devices", {}).get("mac-foreground")
+    except FileNotFoundError: entry = None
+    except (OSError, ValueError, AttributeError) as error: entry = {"error": f"the device record cannot be read: {error}"}
+    return {"mac": mac_name(), "problems": foreground_problems(), "voiceover": voiceover_running(), "entry": entry}
 
 
 def toolchain(developer_dir):
@@ -780,10 +847,11 @@ def advertise(repository):
 
 def answer(request):
     """offload_host.py's answer to a request other than a plan, for `eng doctor`, `eng remote`,
-    `eng remote setup`, `devices recover` and `eng keychain recover`. A census before a dispatch can
+    `eng remote setup`, `eng remote foreground`, `devices recover` and `eng keychain recover`. A census before a dispatch can
     also name repositories to advertise, and then says what each advertises and which Git does so."""
     if "toolchain" in request: return toolchain(request["toolchain"])
     if "keychain" in request: return keychain(request["keychain"])
+    if "foreground" in request: return foreground()
     if "leftovers" in request or "device" in request:
         # A census that fails says why: it must never stop the work it is printed before.
         try: found = leftovers(request["leftovers"]) if "leftovers" in request else device_users(request["device"])
@@ -941,8 +1009,18 @@ def follow(path, done):
 
 def send_back(directory, paths):
     """Send each of these files under directory that exists, whole: an `F` line naming it, then `D`
-    lines of its bytes in base64, so that a file's every byte arrives and each line stays one frame."""
+    lines of its bytes in base64, so that a file's every byte arrives and each line stays one frame.
+    A path that ends in / sends every file under it, by its path under directory, links followed nowhere."""
+    files = []
     for path in paths:
+        if not path.endswith("/"):
+            files.append(path)
+            continue
+        for parent, folders, names in os.walk(directory / path):
+            folders.sort()
+            files += [Path(parent, name).relative_to(directory).as_posix() for name in sorted(names)
+                      if not Path(parent, name).is_symlink()]
+    for path in files:
         try: stream = (directory / path).open("rb")
         except OSError: continue
         with stream:
@@ -1046,7 +1124,9 @@ def main(plan):
         if returns:
             back = checkout / returns["directory"], returns["paths"]
             # The work writes them afresh, so none that an earlier run left goes back as this run's.
-            for path in back[1]: (back[0] / path).unlink(missing_ok=True)
+            for path in back[1]:
+                if path.endswith("/"): shutil.rmtree(back[0] / path, ignore_errors=True)
+                else: (back[0] / path).unlink(missing_ok=True)
         for stage, command, log, directory in steps:
             if _stop.is_set(): break
             begun, began = True, time.monotonic()
@@ -1080,6 +1160,6 @@ def main(plan):
 if __name__ == "__main__":
     request = json.loads(sys.argv[1])
     if "keepUnlocked" in request: sys.exit(keep_unlocked(request["keepUnlocked"]))
-    if {"toolchain", "images", "receive", "leftovers", "device", "keychain"} & request.keys():
+    if {"toolchain", "images", "receive", "leftovers", "device", "keychain", "foreground"} & request.keys():
         print(json.dumps(answer(request)))
     else: main(request)

@@ -11,8 +11,7 @@ The rules themselves are in the [common rules](../agents/core.md) and the
 host inventory and authorizations stay outside the generic rules.
 
 - Rules change, and a worktree keeps the copy of each instruction file its branch was cut with.
-  Before a step that uses something every session shares (the hosted runner, a device, the
-  Mac's screen), run `python3 scripts/eng policy refresh` and read the project's rule as it
+  Before a step that uses something every session shares (a device, either Mac's screen), run `python3 scripts/eng policy refresh` and read the project's rule as it
   stands on `main`: `git show origin/main:AGENTS.md`.
 - A task handed over by another session is that session's request, not the owner's. Where a rule
   says "unless the owner asks", ask the owner.
@@ -20,8 +19,9 @@ host inventory and authorizations stay outside the generic rules.
   Preserve every other session's work, including a run that looks idle.
 - Give every simulator and device command the canonical uppercase UDID of a device you own or
   have reserved; never select by name or `booted`.
-- Take no foreground input, Mac VoiceOver session or debugger on the shared Mac without the
-  explicit authorization the policy requires. Do not open a live simulator view or any tool that
+- Take no foreground input or Mac VoiceOver session on this Mac without a period the owner
+  approved beforehand, and none on the second Mac outside the foreground eng holds for a run;
+  launch no debugger. Do not open a live simulator view or any tool that
   takes control of a simulator's screen unless the owner asked to watch: such a tool asks the
   owner to approve each device, and a new pool member is new to it.
 - Before proposing a physical device, say what it would show that a simulator cannot. A check

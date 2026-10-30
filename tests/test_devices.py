@@ -532,7 +532,7 @@ class DeviceRecordTests(unittest.TestCase):
         self.assertIn("overdue, which releases nothing", output)
         self.assertIn("approval ended; foreground actions are refused", output)
 
-    def test_the_foreground_check_refuses_other_sessions_and_orphans_and_passes_on_a_hosted_runner(self):
+    def test_the_foreground_check_refuses_other_sessions_and_orphans_on_any_runner(self):
         with self.assertRaisesRegex(devices.Refused, "nobody holds"):
             devices.require_foreground("session-a")
         entry = self.foreground()
@@ -553,9 +553,10 @@ class DeviceRecordTests(unittest.TestCase):
         child.wait()
         with self.assertRaisesRegex(devices.Refused, "orphan"):
             devices.require_foreground("session-a")
-        # A hosted runner is not the owner's Mac.
-        with patch.dict(os.environ, {"RUNNER_ENVIRONMENT": "github-hosted"}):
-            self.assertIsNone(devices.require_foreground("session-b"))
+        # A GitHub-hosted runner once passed without a reservation; no runner does now.
+        with patch.dict(os.environ, {"RUNNER_ENVIRONMENT": "github-hosted"}), \
+             self.assertRaisesRegex(devices.Refused, "held by session-a"):
+            devices.require_foreground("session-b")
 
     def test_release_waits_for_owned_processes_and_records_the_frontmost_restoration(self):
         entry = self.foreground()
@@ -590,11 +591,15 @@ class DeviceRecordTests(unittest.TestCase):
         project = self.root / "project"
         project.mkdir()
         (project / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Project", "lanes": {
-            "ui": {"command": [sys.executable, "-c", "open('ran', 'a').write('ran')"], "foreground": True}}}))
+            "ui": {"command": [sys.executable, "-c", "open('ran', 'a').write('ran')"], "resource": "heavy",
+                   "foreground": True}}}))
         def run(owner):
+            # On this Mac, only with --here: otherwise a foreground lane goes to the second Mac (test_foreground).
             with patch.dict(os.environ, {devices.OWNER: owner} if owner else {}), \
-                 patch.object(cli, "source_identity", return_value={}), contextlib.redirect_stderr(StringIO()) as error:
-                return cli.main(["--project", str(project), "run", "ui"]), error.getvalue()
+                 patch.dict(os.environ, {"HEAVY_SLOT_DIR": str(self.root / "slots")}), \
+                 patch.object(cli, "source_identity", return_value={}), \
+                 patch.object(cli, "refresh_policy", return_value=None), contextlib.redirect_stderr(StringIO()) as error:
+                return cli.main(["--project", str(project), "run", "--here", "ui"]), error.getvalue()
         self.assertEqual(run("session-a"), (2, f"eng: nobody holds {devices.FOREGROUND}; reserve it with the owner's "
                                                "approval before foreground work\n"))
         self.foreground()

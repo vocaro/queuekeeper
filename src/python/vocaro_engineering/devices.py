@@ -588,9 +588,8 @@ class Record:
 def require_foreground(owner, record=None):
     """Refuse foreground work unless owner holds mac-foreground within the owner's approval.
 
-    Drivers call it before acting. A GitHub-hosted runner is not the owner's Mac and needs none."""
-    if os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted":
-        return None
+    Drivers call it before acting, on either Mac: on the second Mac, eng holds the entry for the run with the
+    owner's standing approval and names it in VOCARO_DEVICE_OWNER (foreground.slot)."""
     if not owner:
         raise Refused(f"name the session whose {FOREGROUND} reservation covers this work (--owner or {OWNER})")
     entry = (record or Record()).entry(FOREGROUND)
@@ -967,8 +966,7 @@ def main(argv=None):
                                              frontmost=args.frontmost))
         elif args.action == "check":
             entry = require_foreground(args.owner, record)
-            print(f"{FOREGROUND}: a hosted runner needs no reservation" if entry is None else
-                  f"{FOREGROUND}: held by {args.owner} for {entry.get('purpose')}, approved until "
+            print(f"{FOREGROUND}: held by {args.owner} for {entry.get('purpose')}, approved until "
                   f"{entry['approval']['until']}")
         elif args.action == "recover":
             if args.build_host_unchecked is not None:

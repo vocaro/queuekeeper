@@ -236,7 +236,12 @@ class RemoteTests(unittest.TestCase):
             "slow": {"command": [python, "-c", "import os, pathlib, time; "
                                  "pathlib.Path('.build/slow.pid').write_text(str(os.getpid())); time.sleep(60)"],
                      "resource": "heavy"},
-            "screen": {"command": [python, "-c", "pass"], "foreground": True},
+            "screen": {"command": [python, "-c", "pass"], "resource": "heavy", "foreground": True},
+            "transcripts": {"command": [python, "-c", "import pathlib, sys\nif 'skip' not in sys.argv[1:]:\n"
+                                        "    folder = pathlib.Path('.build/engineering/transcripts/results/session-1')\n"
+                                        "    folder.mkdir(parents=True, exist_ok=True)\n"
+                                        "    (folder / 'transcript.txt').write_text('VO: Next Page')\n"
+                                        "print('Ran 1 tests')"], "resource": "heavy", "minimumTests": 1},
             "linger": {"command": [python, "-c", "import os, pathlib, time; "
                                    "pathlib.Path('.build/linger.pid').write_text(str(os.getpid())); time.sleep(60)"]},
             "gate": {"command": [python, "-c", "import os; print('Ran 2 tests in', os.getcwd())"],
@@ -386,7 +391,7 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual(self.eng("remote", "passed", "check")[0], 1)
         self.assertEqual(self.eng("remote", "passed", "check", "--commit", self.commit)[0], 0)
 
-    def test_a_toolkit_with_uncommitted_changes_and_foreground_lanes_are_refused_before_anything_is_sent(self):
+    def test_a_toolkit_with_uncommitted_changes_is_refused_before_anything_is_sent(self):
         # Only the project's working tree goes as a snapshot; the toolkit runs at its commit.
         (self.toolkit / "engineering.json").write_text((self.toolkit / "engineering.json").read_text() + "\n")
         for operation in [["run", "check"], ["admit", "--", "true"]]:
@@ -396,7 +401,6 @@ class RemoteTests(unittest.TestCase):
                 self.assertIn(f"{self.toolkit.resolve()} has changes the second Mac would not run; commit them first",
                               error)
         git(self.toolkit, "checkout", "--", "engineering.json")
-        self.assertIn("foreground lanes run only here", self.eng("remote", "run", "screen")[2])
         self.assertFalse((self.home / remote.ROOT).exists())
 
     def test_a_different_xcode_on_the_second_mac_is_refused(self):
@@ -1020,6 +1024,26 @@ class RemoteTests(unittest.TestCase):
         """A lane's log and receipt among its group's results: here, or in the directory place names."""
         lanes = (place or self.project / ".build/engineering/remote" / group) / "lanes"
         return (lanes / f"{lane}.log").read_text(), json.loads((lanes / f"{lane}.json").read_text())
+
+    def test_what_a_lane_writes_in_its_results_comes_back_from_the_second_mac(self):
+        results = self.project / ".build/engineering/remote/transcripts"
+        status, output, error = self.eng("remote", "run", "transcripts")
+        self.assertEqual(status, 0, output + error)
+        self.assertEqual((results / "results/session-1/transcript.txt").read_text(), "VO: Next Page")
+        self.assertEqual(json.loads((results / "source.json").read_text())["returned"],
+                         ["results/session-1/transcript.txt"])
+        self.assertIn(f"remote: 1 file the run wrote in its results/ came back in {results.resolve()}/results", error)
+        # A later run that writes nothing there sends back nothing an earlier run left.
+        status, output, error = self.eng("remote", "run", "transcripts", "--", "skip")
+        self.assertEqual(status, 0, output + error)
+        self.assertFalse((results / "results").exists())
+        self.assertNotIn("returned", json.loads((results / "source.json").read_text()))
+        # Only a file under a returned directory, by a path that stays in it, or one named exactly.
+        for path, wanted in [("results/a.txt", True), ("results/x/b.txt", True), ("lanes/x.log", True),
+                             ("results/", False), ("results/../run.log", False), ("/results/a", False),
+                             ("other/a.txt", False), ("lanes/y.log", False), (None, False)]:
+            with self.subTest(path):
+                self.assertEqual(remote.returned_path(path, ["lanes/x.log", "results/"]), wanted)
 
     def test_a_group_on_the_second_mac_brings_each_lanes_log_and_receipt_back(self):
         results = self.project / ".build/engineering/remote/pair"
@@ -1916,7 +1940,7 @@ exec {shlex.quote(real)} "$@"
         with self.assertRaises(ValueError) as raised: config.load(self.project)
         self.assertEqual(str(raised.exception), refused.format("a, c and g", "each"))
         # The positive control: the same lanes without it load, and the heavy ones go to the second Mac.
-        for lanes, reason in zip(kinds, [None, "a light lane runs where it starts", "it takes this Mac's screen",
+        for lanes, reason in zip(kinds, [None, "a light lane runs where it starts", None,
                                          "the lane says: GPU goldens", None]):
             with self.subTest(lanes=lanes), contextlib.redirect_stderr(StringIO()) as said:
                 (self.project / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
@@ -1932,7 +1956,7 @@ exec {shlex.quote(real)} "$@"
             "a reason is words": {"lane": {**heavy, "here": True}},
             "a blank reason": {"lane": {**heavy, "here": "  "}},
             "a light lane runs here already": {"lane": {"command": ["true"], "here": "GPU goldens"}},
-            "a foreground lane runs here already": {"lane": {**heavy, "foreground": True, "here": "GPU goldens"}},
+            "a light foreground lane is not admitted": {"lane": {"command": ["true"], "foreground": True}},
             "a group's own reason": {"other": heavy, "group": {"parallel": ["other"], "resource": "heavy", "here": ""}}}
         for case, lanes in invalid.items():
             with self.subTest(case):

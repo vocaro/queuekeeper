@@ -21,8 +21,13 @@ def load(root):
     if not isinstance(value, dict) or value.get("schemaVersion") != 1:
         raise ValueError("engineering.json requires schemaVersion 1")
     allowed = {"schemaVersion", "name", "toolkit", "capabilities", "lanes", "exceptions",
-               "integration", "hostedRepositories", "voiceover", "repository", "spelling", "simulatorPool",
-               "githubArtifacts"}
+               "integration", "repository", "spelling", "simulatorPool", "githubArtifacts"}
+    hosted = [key for key in ("hostedRepositories", "voiceover") if key in value]
+    if hosted:
+        raise ValueError(f"engineering.json gives {' and '.join(hosted)}, which configured GitHub's hosted Mac runner "
+                         "until vocaro-engineering stopped running tests there: Mac VoiceOver runs on the second Mac "
+                         "as a foreground lane, so delete them, and rebase a checkout older than its project's change "
+                         "onto main (guides/second-mac-foreground.md)")
     if set(value) - allowed:
         raise ValueError(f"Unknown configuration keys: {sorted(set(value) - allowed)}")
     if not isinstance(value.get("name"), str) or not value["name"]:
@@ -36,15 +41,6 @@ def load(root):
     if not isinstance(artifacts, list) or any(not isinstance(name, str) or
             not re.fullmatch(r"\.|[A-Za-z0-9_-]+", name) for name in artifacts) or len(set(artifacts)) != len(artifacts):
         raise ValueError("githubArtifacts must list distinct package identities, or . for this package")
-    repositories = value.get("hostedRepositories", [])
-    if not isinstance(repositories, list) or any(not isinstance(r, str) or r.count("/") != 1 for r in repositories):
-        raise ValueError("hostedRepositories must be owner/repository names")
-    voiceover = value.get("voiceover", {})
-    if not isinstance(voiceover, dict) or set(voiceover) - {"workflows"}:
-        raise ValueError("voiceover supports only an explicit workflow allowlist")
-    workflows = voiceover.get("workflows", [])
-    if not isinstance(workflows, list) or any(not isinstance(w, str) or not w for w in workflows):
-        raise ValueError("VoiceOver workflows must be nonempty names")
     capabilities = value.get("capabilities", [])
     if not isinstance(capabilities, list) or any(not isinstance(c, str) for c in capabilities):
         raise ValueError("capabilities must be a list of names")
@@ -74,9 +70,9 @@ def load(root):
         for key in ["foreground", "model", "display"]:
             if key in lane and type(lane[key]) is not bool:
                 raise ValueError(f"{name}.{key} must be true or false")
-        if "here" in lane and lane.get("foreground"):
-            raise ValueError(f"{name}.here keeps a lane on this Mac, and a foreground lane, which takes the screen, "
-                             "runs only here already")
+        if lane.get("foreground") and lane.get("resource", "light") == "light":
+            raise ValueError(f"{name}.foreground needs a heavy or exclusive lane: the second Mac's foreground is held "
+                             "inside the run's admission, and a light lane is not admitted")
         place(name, lane)
         model(name, lane)
         if lane.get("display") and lane.get("resource", "light") == "light":
@@ -134,12 +130,11 @@ def place(name, lane):
 
 def stays(lanes, name):
     """Why the lane name runs only on this Mac, as its configuration says, or None for a lane that goes to the
-    second Mac: a light lane runs where it starts, a foreground lane takes this Mac's screen, and a lane, or
-    a lane of a group, says why with "here". A group runs its lanes under its one admission on one Mac, so a
-    lane of it that stays here keeps the group here."""
+    second Mac: a light lane runs where it starts, and a lane, or a lane of a group, says why with "here". A
+    group runs its lanes under its one admission on one Mac, so a lane of it that stays here keeps the group
+    here. A foreground lane goes to the second Mac too, and only there (foreground.py)."""
     lane = lanes[name]
     if lane.get("resource", "light") == "light": return "a light lane runs where it starts"
-    if lane.get("foreground"): return "it takes this Mac's screen"
     if lane.get("here"): return f"the lane says: {lane['here']}"
     for member in lane.get("parallel", []):
         if lanes[member].get("here"): return f"its lane {member} says: {lanes[member]['here']}"

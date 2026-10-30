@@ -11,8 +11,8 @@ import subprocess
 import sys
 import time
 
-from . import __version__, devices, disk, docs, evidence, github_artifacts, keychain, offload_host, parallel, \
-    processes, release, remote, resources, skills, spelling
+from . import __version__, devices, disk, docs, evidence, foreground, github_artifacts, keychain, offload_host, \
+    parallel, processes, release, remote, resources, skills, spelling
 from .config import TOOLKIT_ROOT, CAPABILITIES, DEFAULT_TOOLKIT, load, source_identity, stays
 from .resources import BUSY, FREE_WAIT
 from .simulators import matrix, pool as simulator_pool
@@ -155,7 +155,7 @@ def initialize(root, args):
             "Before work, run `python3 scripts/eng instructions` to read the common rules and enabled\n"
             "capabilities, then follow the project-specific instructions below. `engineering.json` locates\n"
             "the shared `vocaro-engineering` checkout; set `VOCARO_ENGINEERING_ROOT` for another location.\n"
-            "Before shared device, foreground or runner use, run `python3 scripts/eng policy refresh` and\n"
+            "Before shared device or foreground use, run `python3 scripts/eng policy refresh` and\n"
             "read this project's current main instructions.\n\n"
             "Record project-specific product rules and justified exceptions here.\n")
     # Claude Code loads an imported AGENTS.md at session start; it may not follow a link.
@@ -317,6 +317,13 @@ def admit(root, args, config=None):
     if not command: raise ValueError("Name the command: eng admit [--exclusive | --model] [--verify] -- COMMAND")
     config = config if config is not None else load(root)
     kind = ["--exclusive"] if args.exclusive else ["--model"] if args.model else []
+    # Foreground work holds the foreground of the Mac it runs on: the second Mac's, which eng takes for it, or this
+    # Mac's, which the session holds within the owner's window. eng remote admit --foreground sends it there.
+    second = args.foreground and foreground.second_mac()
+    if args.foreground and args.verify:
+        raise ValueError("--verify never sends foreground work: send it to the second Mac with "
+                         "eng remote admit --foreground -- COMMAND")
+    if args.foreground and not second: devices.require_foreground(os.environ.get(devices.OWNER))
     # Nested work runs inside the admission it inherits, here.
     reason = "eng admit runs here without --verify" if not args.verify else \
         "nested in the admission it inherits" if os.environ.get(resources.TOKEN) else None
@@ -329,9 +336,12 @@ def admit(root, args, config=None):
     # The policy goes to stderr so that stdout carries only the command's own output.
     receipt = {"project": source_identity(root), "toolkit": source_identity(TOOLKIT_ROOT),
                "policy": refresh_policy(root, sys.stderr), "command": command,
-               "directory": str(Path.cwd()), "exclusive": args.exclusive, "model": args.model, **placement(reason)}
+               "directory": str(Path.cwd()), "exclusive": args.exclusive, "model": args.model,
+               "foreground": args.foreground, **placement(reason)}
     with processes.forwarding_signals(), contextlib.ExitStack() as stack:
         asked = time.monotonic()
+        # The second Mac's foreground first, so that a command waiting for it holds no slot.
+        if second: stack.enter_context(foreground.slot(" ".join(command), timeout=args.timeout))
         admission = admitted_here(stack, "the command", " ".join(command), args.timeout, offered, args.if_free,
                                   args.exclusive, args.model)
         if isinstance(admission, int): return admission
@@ -401,6 +411,10 @@ def main(argv=None):
     kind.add_argument("--model", action="store_true", help="hold one slot and the host's model lock, which one "
                       "model run holds at a time: on-device generation, on this Mac or in a simulator, another local "
                       "generative model on the GPU, or Core ML whose compute units include the GPU")
+    admission.add_argument("--foreground", action="store_true", help="the command takes the screen, keyboard, "
+        "pointer, focus or speech, as Mac VoiceOver and Mac UI tests do: on the second Mac eng holds its foreground for "
+        "the command, waiting while another run holds it; on this Mac the session must hold mac-foreground within "
+        "the owner's window (guides/shared-host.md, Attended Mac sessions)")
     admission.add_argument("--verify", action="store_true", help="the command is verification, a test or build whose "
         "result is its log and exit status and whose products this Mac does not use: send it to the second Mac, as "
         "eng run sends a lane, to run in its checkout's directory that matches this one, at HEAD or a snapshot commit; "
@@ -426,8 +440,9 @@ def main(argv=None):
     logged.add_argument("logs", nargs="*", type=Path, metavar="log", help="a copy of a log, such as the second Mac's, "
                         "to read instead of this host's; name the previous generation first")
     distant = commands.add_parser("remote", help="run a lane or other heavy command on the owner's second Mac over "
-        "SSH: eng remote run LANE [-- ARGUMENTS] or eng remote admit -- COMMAND; eng remote passed "
-        "LANE says whether the whole lane passed there at a commit")
+        "SSH: eng remote run LANE [-- ARGUMENTS] or eng remote admit [--foreground] -- COMMAND; eng remote passed "
+        "LANE says whether the whole lane passed there at a commit; eng remote foreground says whether its "
+        "foreground is ready")
     operations = distant.add_subparsers(dest="operation", required=True)
     remote_run = operations.add_parser("run", usage="%(prog)s [-h] [--host HOST] [--serial] [--expect N] "
         "[--device KEY] [--device-owner SESSION] lane [-- ARGUMENTS ...]",
@@ -441,10 +456,13 @@ def main(argv=None):
     remote_setup.add_argument("--import", dest="imports", action="append", metavar="MODULE",
                               help="check that the second Mac's python3 imports MODULE (repeatable)")
     remote_setup.add_argument("--check", action="store_true", help="only check; install or copy nothing")
+    remote_foreground = operations.add_parser("foreground", help="say what the second Mac lacks for foreground work, "
+        "Mac VoiceOver and Mac UI tests, started over SSH, each with the owner's fix, and which run holds its "
+        f"foreground; exit 0 when it lacks nothing, {remote.MISCONFIGURED} otherwise")
     remote_setup.add_argument("--runtimes", action="store_true", help="instead, give this Mac and the second Mac the "
         "union of the simulator runtimes that the Xcode at this Mac's developer directory lists, copying each one's "
         "disk image over SSH to the Mac that lacks it; it deletes none, and exits 0 only when both list the same")
-    for choice in (remote_run, remote_admit, remote_setup):
+    for choice in (remote_run, remote_admit, remote_setup, remote_foreground):
         choice.add_argument("--host", help=f"the second Mac's SSH destination (default: {remote.HOST_VARIABLE}, "
                             f"else the ~/.ssh/config alias {' or '.join(remote.ALIASES)} that is defined, else "
                             f"{remote.DEFAULT_HOST})")
@@ -462,6 +480,8 @@ def main(argv=None):
     kind = remote_admit.add_mutually_exclusive_group()
     kind.add_argument("--exclusive", action="store_true", help="hold every slot of the second Mac")
     kind.add_argument("--model", action="store_true", help="hold one slot and the model lock of the second Mac")
+    remote_admit.add_argument("--foreground", action="store_true", help="hold the second Mac's foreground for the "
+        "command, as Mac VoiceOver and Mac UI tests need, waiting while another run holds it")
     remote_admit.add_argument("command", nargs=argparse.REMAINDER, help="the command and its arguments, after --")
     remote_passed = operations.add_parser("passed", help="exit 0 when the whole lane passed on the second Mac at "
         "exactly this commit; a snapshot's run never counts")
@@ -579,9 +599,16 @@ def main(argv=None):
             lane = config.get("lanes", {}).get(args.lane)
             if lane is None: raise ValueError(f"No configured lane: {args.lane}")
             if args.expect is not None and args.expect < 1: raise ValueError("--expect needs at least 1 test")
-            # A foreground lane takes the owner's screen: only the session holding mac-foreground runs it.
-            if lane.get("foreground"): devices.require_foreground(os.environ.get(devices.OWNER))
             extra = args.passed or []
+            # A foreground lane takes a Mac's screen. The second Mac's is eng's to take for the run, below; this
+            # Mac's, only the session holding mac-foreground within the owner's window runs it on, with --here.
+            # Otherwise it goes to the second Mac and waits there for its foreground, never falling back to this
+            # Mac (foreground.py).
+            second = lane.get("foreground") and foreground.second_mac()
+            if lane.get("foreground") and not second:
+                if args.offload_only or not (args.here or lane.get("here")):
+                    return remote.foreground_lane(root, config, args.lane, extra, args.expect)
+                devices.require_foreground(os.environ.get(devices.OWNER))
             group = lane.get("parallel")
             if group is not None and (extra or args.expect):
                 raise ValueError(f"{args.lane} runs a group of lanes, which takes no arguments or --expect; "
@@ -612,6 +639,8 @@ def main(argv=None):
             receipt = {"project": source_identity(root), "toolkit": source_identity(TOOLKIT_ROOT),
                        "policy": policy_commit, **placement(reason)}
             def prepared(work):
+                # What an earlier run left in results/ is not this run's, here as on the second Mac (remote.RESULTS).
+                shutil.rmtree(directory / "results", ignore_errors=True)
                 if resource != "light": github_artifacts.configured(root, config)
                 return work()
             if group is None:
@@ -634,6 +663,10 @@ def main(argv=None):
                     else:
                         with contextlib.ExitStack() as stack:
                             asked = time.monotonic()
+                            # The second Mac's foreground first, so that a run waiting for it holds no slot.
+                            if second:
+                                stack.enter_context(foreground.slot(lane_label(root, config, args.lane),
+                                    timeout=remote.OVERFLOW_TIMEOUT, expected=lane.get("timeout", foreground.EXPECTED)))
                             admission = admitted_here(stack, args.lane, lane_label(root, config, args.lane),
                                                       remote.OVERFLOW_TIMEOUT, offered, args.if_free,
                                                       resource == "exclusive", lane.get("model", False))
