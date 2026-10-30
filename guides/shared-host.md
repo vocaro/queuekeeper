@@ -2012,6 +2012,13 @@ ran to their own end through both interrupts (2026-10-23, Claude desktop app 3.6
 Claude Code 2.1.308, macOS 27.0; the interrupts were sent with the app's session stop tool, which
 it describes as pressing Stop).
 
+Pressing the Stop button stops only the turn's foreground command, as an interrupt does. The
+command and its child in its own session received SIGTERM in the same millisecond and were gone
+1.47 and 1.48 s later without exiting, killed; the shell was gone within 5 ms. The session's
+background command received nothing and ran on for 147 s, until a later action on that session,
+not identified, stopped it the same way (2026-10-29, Claude desktop app 4.29.0 running Claude Code
+2.1.309, macOS 27.2).
+
 Claude Code 2.1.308's code for stopping a shell command explains the second interrupt. It signals
 the shell's process group and each descendant that one `ps -A` scan lists, but abandons a scan
 that takes longer than 500 ms and then signals the group alone. SIGKILL follows 1.5 s after the
@@ -2028,10 +2035,14 @@ its own session receives nothing and runs on. `codex exec` ends its session with
 runs the command was killed without a logged signal, in the watched one 5 ms after the turn
 completed (2026-10-23, Codex 0.163.0-alpha.11.2 as ChatGPT's Codex Desktop bundles it, run as
 `codex exec`, macOS 27.0). An `eng admit` killed this way never marks its entry uncertain: the
-entry stays, dead, and its command runs on unsupervised. A Codex agent therefore follows an
-admitted command to its terminal result before ending its turn. How long a Codex Desktop thread
-keeps a command after its turn ends, and what quitting the Claude desktop app sends, were not
-measured.
+entry stays, dead, and its command runs on unsupervised. A Codex Desktop thread keeps the
+command past its turn: one a new local thread started and yielded on ran its full 900 s after the
+turn ended, with its child in its own session, and neither received a signal; the app listed it
+under the thread's background processes (2026-10-29, ChatGPT 26.1023.51421 with codex-cli
+0.165.0-alpha.1.2, macOS 27.2). A Codex agent therefore follows an admitted command to its
+terminal result before ending its turn under `codex exec`, and before the thread is archived or
+closed in Codex Desktop. What archiving or closing a thread sends its commands, and what quitting
+the Claude desktop app sends, were not measured.
 
 Recovery of a guard entry is attended, and `eng admissions recover` carries it out. The first
 command below lists each entry that refuses admission, dead or uncertain, with its identity, label,
