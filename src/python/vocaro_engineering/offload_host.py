@@ -370,8 +370,9 @@ def foreground_problems():
     if not accessibility_trusted():
         found.append(["a command started over SSH is not trusted for accessibility (AXIsProcessTrusted is false), so "
                       "it can neither send VoiceOver keys through System Events nor read speech's observer",
-                      "in System Settings, Privacy & Security, Accessibility, add /usr/libexec/sshd-keygen-wrapper, "
-                      "which runs Remote Login's commands, and turn it on"])
+                      "in System Settings, Privacy & Security, Device Control and Data Access (macOS 27.2's name for "
+                      "Accessibility), add /usr/libexec/sshd-keygen-wrapper, which runs Remote Login's commands, and "
+                      "turn it on"])
     if not screen_capture_allowed():
         found.append(["a command started over SSH may not capture the screen (CGPreflightScreenCaptureAccess is "
                       "false), so a run's screenshots can fail or raise a permission prompt that takes the focus",
