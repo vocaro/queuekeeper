@@ -13,6 +13,11 @@ import uuid
 # Seconds an observed descendant may outlive the root before it is stopped, and then before
 # SIGTERM becomes SIGKILL. Xcode's DTServiceHub can outlive xcodebuild by minutes, ignoring SIGTERM.
 LINGER, KILL_AFTER = 60, 10
+# Seconds a foreground run has between SIGTERM and SIGKILL instead: it restores what it changed on a Mac
+# that keeps its state, VoiceOver first, then collects what it heard (guides/second-mac-foreground.md).
+# On 2026-10-30 a stop at KILL_AFTER left VoiceOver on there. Chosen to cover a session's restoration and
+# a lane's bounded collection of its end state; not measured.
+FOREGROUND_KILL_AFTER = 120
 # Seconds a stopped command's processes have after SIGKILL before the run is uncertain.
 KILL_WAIT = 5
 # Seconds beyond KILL_AFTER that SIGKILL waits while a live admission owner is among the processes,
@@ -63,14 +68,14 @@ def survivors(spaces):
     return found
 
 
-def describe(pids, known, root):
+def describe(pids, known, root, kill_after=KILL_AFTER):
     """The processes still running after the root, with the parent and group each was first seen with."""
     pids = sorted(pids)
     listing = subprocess.run(["ps", "-o", "pid,ppid,pgid,lstart,args", "-p", ",".join(map(str, pids))],
                              capture_output=True, text=True).stdout.rstrip()
     seen = "; ".join(f"{pid} with parent {known[pid][0]}, group {known[pid][1]}" for pid in pids)
     return (f"supervise: stopping {len(pids)} process(es) still running {LINGER:g}s after the command "
-            f"(PID {root}) exited, with SIGTERM, then SIGKILL after {KILL_AFTER:g}s; first seen: {seen}\n{listing}")
+            f"(PID {root}) exited, with SIGTERM, then SIGKILL after {kill_after:g}s; first seen: {seen}\n{listing}")
 
 
 def owners(identities, environment):
@@ -162,7 +167,8 @@ def forwarding_signals():
             raise SystemExit(128 + number)
 
 
-def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None, on_start=None):
+def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None, on_start=None,
+              kill_after=KILL_AFTER):
     """Wait for the owned root and observed descendants, including separate process groups.
 
     on_start(pid) runs once the root has started; if it raises, the root is stopped.
@@ -177,9 +183,10 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
     through that grace. A command that cannot start raises NotStarted, which admission releases.
 
     A stop that forwarding_signals records calls on_stop, then goes to the root's group and to
-    each observed descendant, becoming SIGKILL after KILL_AFTER seconds. Once
-    the root and every observed descendant have ended, the run raises Interrupted, which
-    admission releases; any still running KILL_WAIT seconds after SIGKILL leave it uncertain.
+    each observed descendant, becoming SIGKILL after kill_after seconds (KILL_AFTER unless the caller
+    gives more, as a foreground run does). Once the root and every observed descendant have ended,
+    the run raises Interrupted, which admission releases; any still running KILL_WAIT seconds after
+    SIGKILL leave it uncertain.
     A timeout that expires while the root runs is carried out the same way with SIGTERM, without
     on_stop, and the run raises TimedOut, which admission also releases.
     Any SIGKILL waits up to SETTLE_WAIT seconds more while the root or an observed descendant is
@@ -291,20 +298,20 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
             if timeout is not None and exited is None and expired is None and time.monotonic() - started >= timeout:
                 expired = time.monotonic()
                 print(f"supervise: timed out after {timeout:g}s; sending SIGTERM to the command (PID {child.pid}) "
-                      f"and its observed descendants, then SIGKILL after {KILL_AFTER:g}s", file=sys.stderr, flush=True)
+                      f"and its observed descendants, then SIGKILL after {kill_after:g}s", file=sys.stderr, flush=True)
             signum = requested()
             if signum is not None and stopped is None:
                 stopped = time.monotonic()
                 # First, in case SIGKILL follows before the processes are gone.
                 if on_stop is not None: on_stop()
                 print(f"supervise: {signal.Signals(signum).name} received; forwarding it to the command "
-                      f"(PID {child.pid}) and its observed descendants, then SIGKILL after {KILL_AFTER:g}s",
+                      f"(PID {child.pid}) and its observed descendants, then SIGKILL after {kill_after:g}s",
                       file=sys.stderr, flush=True)
             ending = min(moment for moment in (expired, stopped) if moment is not None) \
                 if expired is not None or stopped is not None else None
             if ending is not None:
                 # A later signal does not hasten SIGKILL: a task stop can deliver its SIGTERM twice.
-                due = time.monotonic() - ending - KILL_AFTER
+                due = time.monotonic() - ending - kill_after
                 if killed is None and due >= 0 and not held(due, identities):
                     killed = time.monotonic()
                 kill = killed is not None
@@ -351,9 +358,9 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
                     # SIGTERM once for each process, then SIGKILL, which cannot be caught, until it is gone.
                     fresh = {pid for pid in live if (pid, known[pid][2]) not in stopping}
                     if stopping: fresh = unowned(fresh, identities)
-                    if fresh: print(describe(fresh, known, child.pid), file=sys.stderr, flush=True)
+                    if fresh: print(describe(fresh, known, child.pid, kill_after), file=sys.stderr, flush=True)
                     stopping.update((pid, known[pid][2]) for pid in fresh)
-                    kill = overdue >= KILL_AFTER and not held(overdue - KILL_AFTER, identities)
+                    kill = overdue >= kill_after and not held(overdue - kill_after, identities)
                     for pid in live if kill else fresh:
                         try: os.kill(pid, signal.SIGKILL if kill else signal.SIGTERM)
                         except (ProcessLookupError, PermissionError): pass
@@ -378,8 +385,9 @@ def stop(process):
     raise RuntimeError(f"Owned process {process.pid} has no confirmed terminal result")
 
 
-def run(command, *, cwd, log_path, timeout=None, env=None, on_stop=None):
+def run(command, *, cwd, log_path, timeout=None, env=None, on_stop=None, kill_after=KILL_AFTER):
     path = Path(log_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w") as log:
-        return supervise(command, cwd=cwd, stdout=log, timeout=timeout, env=env, on_stop=on_stop)
+        return supervise(command, cwd=cwd, stdout=log, timeout=timeout, env=env, on_stop=on_stop,
+                         kill_after=kill_after)

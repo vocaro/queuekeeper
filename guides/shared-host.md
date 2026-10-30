@@ -1712,7 +1712,9 @@ Supervise the process group you own. The toolkit's `processes.supervise`, which 
   the checkout lock stays for a check by hand.
 - Once the root exits, its observed descendants have 60 s to end. The supervisor lists any still
   running on stderr, as `ps -o pid,ppid,pgid,lstart,args` rows with the parent and group each
-  had when first seen, and stops them: SIGTERM, then SIGKILL 10 s later. The root's status counts
+  had when first seen, and stops them: SIGTERM, then SIGKILL 10 s later, or 120 s for a foreground
+  run, which restores what it changed on the Mac first
+  ([second Mac foreground](second-mac-foreground.md#waiting-for-the-foreground)). The root's status counts
   once they are gone; a process that survives SIGKILL is still awaited. A lane's `timeout` bounds
   only the root, so a root that exits in time keeps its status through the grace. Agents
   reported Xcode's `DTServiceHub` outliving an ad hoc `xcodebuild … test` on a fresh iOS

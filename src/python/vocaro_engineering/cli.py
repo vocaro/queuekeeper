@@ -349,7 +349,10 @@ def admit(root, args, config=None):
         if offered is not None: receipt["hereBecause"] = offered.status
         def work():
             github_artifacts.configured(root, config)
-            return processes.supervise(command, cwd=Path.cwd(), on_stop=admission.interrupted)
+            # A foreground command restores what it changed on the Mac before SIGKILL, VoiceOver first.
+            return processes.supervise(command, cwd=Path.cwd(), on_stop=admission.interrupted,
+                                       kill_after=processes.FOREGROUND_KILL_AFTER if args.foreground
+                                       else processes.KILL_AFTER)
         return record(root / ".build/engineering/admit", receipt,
                       work)
 
@@ -648,7 +651,9 @@ def main(argv=None):
                 receipt.update(command=command, arguments=extra)
                 def execute(on_stop=None):
                     return record(directory, receipt, lambda: prepared(lambda: processes.run(command, cwd=root,
-                                  log_path=directory / "run.log", timeout=lane.get("timeout"), on_stop=on_stop)))
+                                  log_path=directory / "run.log", timeout=lane.get("timeout"), on_stop=on_stop,
+                                  kill_after=processes.FOREGROUND_KILL_AFTER if lane.get("foreground")
+                                  else processes.KILL_AFTER)))
             else:
                 jobs = 1 if args.serial else lane.get("jobs", len(group))
                 receipt.update(parallel=group, jobs=jobs)

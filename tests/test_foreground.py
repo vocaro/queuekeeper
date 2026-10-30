@@ -218,6 +218,22 @@ class RoutingTests(unittest.TestCase):
         self.assertIn("window the owner agrees first", error)
         self.assertFalse(self.during.exists())
 
+    def test_a_foreground_lane_gets_the_longer_grace_before_sigkill_and_another_lane_does_not(self):
+        from vocaro_engineering import processes
+        self.record.defer(SECOND)
+        self.lanes["plain"] = {"command": [sys.executable, "-c", "print('Ran 1 tests')"], "resource": "heavy"}
+        (self.project / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Project",
+                                                                   "lanes": self.lanes}))
+        graces = []
+        real = processes.run
+        def run(command, **options):
+            graces.append(options.get("kill_after"))
+            return real(command, **options)
+        with patch.object(foreground, "problems", return_value=[]), patch.object(cli.processes, "run", side_effect=run):
+            self.assertEqual(self.eng("run", "--here", "voiceover-mac")[0], 0)
+            self.assertEqual(self.eng("run", "--here", "plain")[0], 0)
+        self.assertEqual(graces, [processes.FOREGROUND_KILL_AFTER, processes.KILL_AFTER])
+
     def test_on_this_mac_a_foreground_lane_runs_here_only_within_the_owner_window(self):
         self.assertIn("name the session", self.eng("run", "--here", "voiceover-mac")[1])
         with patch.dict(os.environ, {devices.OWNER: "session-a"}):
