@@ -921,14 +921,22 @@ locked keychain or a key's access control can raise one.
 
 - A result holds for the kind of session it was measured in. Signing that succeeds in the owner's
   GUI session, as an owner-local build does, does not qualify the key's use from SSH, nor an SSH
-  result a GUI session. Whether an unlock reaches another session, such as an `ssh -t` unlock the
-  next `eng remote` run, is what the check measures. Retry signing work once it passes there.
+  result a GUI session.
+- An unlock made beforehand does not reach an `eng remote` run. On the second Mac, the next run's
+  check read the login keychain `locked` and signing failed with `errSecInternalComponent`, the
+  identity present, both after the owner unlocked the keychain in its GUI session with Keychain
+  Access and after an accepted `security unlock-keychain` in an `ssh -t` session from the
+  workstation, which then ended (2026-10-29, macOS 27.2,
+  [vocaro-engineering#65](https://github.com/vocaro/vocaro-engineering/issues/65)). Signing
+  therefore runs in the owner's GUI session on the second Mac, not over SSH (the owner's decision,
+  2026-10-29). Signing over SSH would need one of the owner's decisions below; after any such
+  change, run the check, and retry signing work only once it passes where the work runs.
 - Keychain access control and partition lists (`security set-key-partition-list`), trust
   settings, certificates, where credentials are kept, TCC and host configuration stay the owner's
   decisions. Neither command changes any of them; a failed check is reported for that decision.
-- Not measured: either command against the second Mac, what `show-keychain-info` answers over
-  SSH for a locked and an unlocked keychain on macOS 27, and the corrected workflow from a shell
-  on each Mac ([vocaro-engineering#65](https://github.com/vocaro/vocaro-engineering/issues/65)).
+- Not measured: what `show-keychain-info` answers over SSH for an unlocked keychain, whether an
+  unlock lasts within the one SSH session that made it, and the second Mac's own command from a
+  shell on the second Mac.
 
 ### Earlier names
 
