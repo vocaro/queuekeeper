@@ -7,11 +7,17 @@ the last ref to its own commits, and deleting it leaves them to git gc. Evidence
 their IDs, so such a ref stays while main's tree or the project's open issues cite one of its
 commits, while an open issue names the branch, or while either could not be read.
 
+Such a ref can go once a merge that brings no content puts its commits in main's history. Every
+commit the merge brings in then reaches main with its message, and GitHub acts on each closing
+keyword in it, so retire.sh refuses the merge unless each issue those commits claim to close is
+already claimed by a commit main holds and is closed now.
+
 landed.sh adds what needs the network: a merged pull request, and the open issues, read with gh.
-`eng disk` never fetches and reads neither. landed.sh runs this file as a script:
+`eng disk` never fetches and reads neither. landed.sh and retire.sh run this file as a script:
 
     python3 -I landing.py contained BASE TIP
     python3 -I landing.py citations TIP --base REF [--base REF] [--branch NAME] [--issues]
+    python3 -I landing.py claims BASE TIP...
 
 It imports nothing from the toolkit, so it runs isolated from the checkout it examines, and it
 keeps to Python 3.9, the second Mac's /usr/bin/python3.
@@ -33,6 +39,10 @@ GH_TIMEOUT = 60
 # A file in which the sweep's first lookup leaves the open issues, or why they could not be read,
 # for every later one in the same sweep.
 ISSUES_CACHE = "CLOSEOUT_ISSUES_CACHE"
+# A closing keyword GitHub acts on when a commit reaches the default branch: close, fix or resolve,
+# in any tense, before an issue here (#N), in another repository (owner/name#N) or its URL.
+CLAIM = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\s+"
+                   r"(?:https://github\.com/([\w.-]+/[\w.-]+)/issues/|([\w.-]+/[\w.-]+)?#)(\d+)\b", re.I)
 
 
 def contained(git, base, tip):
@@ -154,6 +164,54 @@ def citations(git, tip, bases, branch=None, issues=False, cache=None):
     return lines, "; ".join(reasons) or None
 
 
+def claimed(git, *revisions):
+    """{(repository, number): [commit]} for the closing claims in those commits' messages, with
+    repository "" for this one, or None when the messages could not be read."""
+    log = git("log", "--format=%H%x00%B%x01", *revisions)
+    if log.returncode: return None
+    found = {}
+    for entry in log.stdout.split("\x01"):
+        commit, _, message = entry.strip("\n").partition("\x00")
+        for match in CLAIM.finditer(message):
+            key = ((match.group(1) or match.group(2) or "").lower(), int(match.group(3)))
+            found.setdefault(key, []).append(commit)
+    return found
+
+
+def issue_state(repository, number):
+    """(OPEN or CLOSED, None) for an issue, or (None, why gh could not tell)."""
+    command = ["gh", "issue", "view", str(number), "--json", "state", "--jq", ".state"]
+    if repository: command += ["--repo", repository]
+    try:
+        shown = subprocess.run(command, capture_output=True, text=True, timeout=GH_TIMEOUT, stdin=subprocess.DEVNULL,
+                               env={**os.environ, "GH_PROMPT_DISABLED": "1", "GH_NO_UPDATE_NOTIFIER": "1"})
+    except FileNotFoundError: return None, "gh is not installed"
+    except subprocess.TimeoutExpired: return None, f"gh issue view took over {GH_TIMEOUT}s"
+    if shown.returncode: return None, "gh issue view failed: " + (shown.stderr.strip().splitlines() or ["no message"])[0]
+    state = shown.stdout.strip()
+    return (state, None) if state else (None, "gh issue view printed no state")
+
+
+def claims(git, base, tips):
+    """(report lines, refusals) for a merge into base that brings tips' commits in with no content.
+    Each issue those commits claim to close must already be claimed by a commit base holds, so that
+    the merge claims nothing new, and must be closed now, or GitHub would close it."""
+    brought, held = claimed(git, *tips, f"^{base}"), claimed(git, base)
+    if brought is None or held is None: return [], ["the commit messages could not be read"]
+    lines, refusals = [], []
+    for key, commits in sorted(brought.items()):
+        issue = f"{key[0]}#{key[1]}"
+        if key not in held:
+            refusals.append(f"{commits[0][:12]} claims to close {issue}, and no commit {short(base)} holds does")
+            continue
+        state, why = issue_state(*key)
+        if state == "CLOSED":
+            lines.append(f"claim: {issue} by {commits[0][:12]}, and by {held[key][0][:12]} in {short(base)}; closed")
+        elif state == "OPEN": refusals.append(f"{commits[0][:12]} claims to close {issue}, which is open, so the merge would close it")
+        else: refusals.append(f"{commits[0][:12]} claims to close {issue}, whose state is unknown: {why}")
+    return lines, refusals
+
+
 def main(argv):
     if argv[:1] == ["contained"] and len(argv) == 3:
         how = contained(lambda *arguments: subprocess.run(["git", *arguments], capture_output=True, text=True),
@@ -173,8 +231,15 @@ def main(argv):
         for line in lines: print(line)
         if retain: print(f"retain: {retain}")
         return 0
+    if argv[:1] == ["claims"] and len(argv) >= 3:
+        lines, refusals = claims(lambda *words: subprocess.run(["git", *words], capture_output=True, text=True),
+                                 argv[1], argv[2:])
+        for line in lines: print(line)
+        for refusal in refusals: print(f"refuse: {refusal}")
+        return 0
     print("usage: landing.py contained BASE TIP\n"
-          "       landing.py citations TIP --base REF [--base REF] [--branch NAME] [--issues]", file=sys.stderr)
+          "       landing.py citations TIP --base REF [--base REF] [--branch NAME] [--issues]\n"
+          "       landing.py claims BASE TIP...", file=sys.stderr)
     return 2
 
 

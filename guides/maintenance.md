@@ -141,7 +141,9 @@ A closing-commit check holds this mechanically from Git alone, offline: it finds
 merge, fails one that strands a closure claim unless a recorded reconciliation names it, notes
 one that strands nothing, and passes an issue also claimed by a commit the tree holds. It
 refuses a shallow clone, which cannot show whether a merge brought content, and it cannot see an
-issue closed by hand on GitHub against a branch commit.
+issue closed by hand on GitHub against a branch commit. Closeout's `retire.sh` makes an empty merge
+on purpose, to keep in `main`'s history the commits of a landed branch that evidence cites. It
+refuses one that would strand a claim, or close an open issue ([agent skills](skills.md)).
 
 GitHub closes an issue when a `Closes` commit reaches `main` on the server, so fixes committed
 to a local `main` leave their issues open and looking untouched. Before choosing work, list the
