@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 from vocaro_engineering import cli, config, devices, foreground, offload_host, remote
+from vocaro_engineering.voiceover import state as voiceover_state
 
 SECOND = "Trevors-MacBook-Pro-715"
 
@@ -79,15 +80,28 @@ class SlotTests(unittest.TestCase):
             with self.slot(): pass
         self.assertEqual(self.record.entry(devices.FOREGROUND)["frontmost"], "not-ours")
 
-    def test_voiceover_left_on_by_an_earlier_run_stops_the_next_before_it_acts(self):
+    def test_voiceover_on_is_a_valid_baseline_after_acquiring_the_lease(self):
         self.second_mac()
-        with self.assertRaisesRegex(devices.Refused, "VoiceOver is on .* no run holds its foreground"):
-            with self.slot(voiceover=lambda: True): self.fail("ran with VoiceOver left on")
+        with patch.object(voiceover_state, "_toggle") as toggle:
+            with self.slot(voiceover=lambda: True):
+                self.assertEqual(devices.condition(self.record.entry(devices.FOREGROUND)), "active")
+            toggle.assert_not_called()
         entry = self.record.entry(devices.FOREGROUND)
-        self.assertEqual((entry["state"], entry["run"]), ("released", "refused: VoiceOver was on with no run holding "
-                                                                     "the foreground"))
+        self.assertEqual((entry["state"], entry["run"]), ("released", "the run's work ended"))
         self.assertNotIn(devices.OWNER, os.environ)
         with self.slot(): pass
+
+    def test_initial_unknown_is_untouched_and_released_but_final_unknown_is_retained(self):
+        self.second_mac()
+        with self.assertRaises(voiceover_state.UnknownState):
+            with self.slot(voiceover=lambda: None): self.fail("unknown baseline ran")
+        self.assertEqual(self.record.entry(devices.FOREGROUND)["state"], "released")
+        known = [False]
+        with self.assertRaises(voiceover_state.TransitionFailed):
+            with self.slot(voiceover=lambda: known[0]): known[0] = None
+        self.assertEqual(devices.condition(self.record.entry(devices.FOREGROUND)), "uncertain")
+        self.assertTrue(self.record.entry(devices.FOREGROUND)["activeRun"])
+
 
     def test_a_run_that_fails_still_releases_the_foreground(self):
         self.second_mac()
@@ -111,7 +125,12 @@ class SlotTests(unittest.TestCase):
         releaser = threading.Thread(target=release)
         releaser.start()
         self.addCleanup(releaser.join)
-        with self.slot() as owner:
+        def baseline():
+            entry = self.record.entry(devices.FOREGROUND)
+            self.assertNotEqual(entry["ownerChatID"], "other run")
+            self.assertEqual(devices.condition(entry), "active")
+            return False
+        with self.slot(voiceover=baseline) as owner:
             self.assertEqual(self.record.entry(devices.FOREGROUND)["ownerChatID"], owner)
         self.assertEqual(len([line for line in self.said if "held by other run" in line]), 1)
 
@@ -121,7 +140,10 @@ class SlotTests(unittest.TestCase):
                                    release_by=(time.strftime("%Y") + "-12-31T00:00:00+00:00"),
                                    approval={**foreground.STANDING, "until": "released"})
         with self.assertRaisesRegex(TimeoutError, "held by other run for 0.2s"):
-            with self.slot(timeout=0.2): self.fail("ran while another run held the foreground")
+            with patch.object(voiceover_state, "_read") as read, patch.object(voiceover_state, "_toggle") as toggle:
+                with self.slot(timeout=0.2, voiceover=read): self.fail("ran while another run held the foreground")
+        read.assert_not_called()
+        toggle.assert_not_called()
         # A run whose process is gone left an orphan, which needs attended recovery.
         self.record.update(devices.FOREGROUND, owner="other run", revision=held["revision"], activeRun=True,
                            hostProcessIdentifier=os.getpid())
@@ -166,8 +188,7 @@ class ReadinessTests(unittest.TestCase):
                    {"mac": "Second", "problems": [], "entry": {"state": "reserved", "ownerChatID": "eng 7 on Second",
                                                                 "purpose": "P lane", "expectedReleaseBy": "later"}}]
         for answer, status, words in zip(answers, [remote.MISCONFIGURED, 0],
-                                         ["no run holds it\n- the screen is locked: unlock it\n- VoiceOver is on "
-                                          "though no run holds the foreground",
+                                         ["no run holds it\n- the screen is locked: unlock it",
                                           "eng 7 on Second holds it for P lane, expected release later\nReady"]):
             with self.subTest(status), patch.object(remote, "ask", return_value=answer), \
                  contextlib.redirect_stdout(StringIO()) as output:
@@ -195,7 +216,7 @@ class RoutingTests(unittest.TestCase):
                                                 "HEAVY_SLOT_DIR": str(self.root / "slots"), "HEAVY_POLL_SECONDS": "0.01"}),
                         patch.object(cli, "source_identity", return_value={}),
                         patch.object(cli, "refresh_policy", return_value=None),
-                        patch.object(offload_host, "voiceover_running", return_value=False),
+                        patch.object(voiceover_state, "_read", return_value=False),
                         patch.object(foreground, "front", return_value=None)):
             patcher.start()
             self.addCleanup(patcher.stop)

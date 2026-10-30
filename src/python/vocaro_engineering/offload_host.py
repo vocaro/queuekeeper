@@ -392,19 +392,16 @@ def foreground_problems():
     return found
 
 
-def voiceover_running():
-    """Whether VoiceOver runs on this Mac, which is VoiceOver on."""
-    return output(["pgrep", "-x", "VoiceOver"]) is not None
-
-
 def foreground():
-    """The Mac's name, what it lacks for foreground work started over SSH (foreground_problems), whether
-    VoiceOver is on and its record's mac-foreground entry, for `eng remote foreground`."""
+    """The Mac's name, foreground readiness and mac-foreground entry, for `eng remote foreground`.
+    VoiceOver is read under the lease only."""
     path = record_path()
     try: entry = json.loads(path.read_text()).get("devices", {}).get("mac-foreground")
     except FileNotFoundError: entry = None
     except (OSError, ValueError, AttributeError) as error: entry = {"error": f"the device record cannot be read: {error}"}
-    return {"mac": mac_name(), "problems": foreground_problems(), "voiceover": voiceover_running(), "entry": entry}
+    # VoiceOver may belong to the current holder. Even its baseline is read only after a
+    # run acquires the lease; on is a valid baseline, preserved by the foreground state guard.
+    return {"mac": mac_name(), "problems": foreground_problems(), "voiceoverManagedUnderLease": True, "entry": entry}
 
 
 def toolchain(developer_dir):

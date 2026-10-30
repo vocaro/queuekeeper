@@ -1148,10 +1148,6 @@ def foreground_report(host):
         entry.get("error") or f"{entry.get('ownerChatID')} holds it for {entry.get('purpose')}, " \
         f"expected release {entry.get('expectedReleaseBy')}"
     print(f"{found.get('mac')}'s foreground: {holder}")
-    if found.get("voiceover") and holder == "no run holds it":
-        found.setdefault("problems", []).append(["VoiceOver is on though no run holds the foreground, left on by a "
-                                                 "run that was stopped or could not restore it",
-                                                 "turn it off there (Command-F5)"])
     for problem, fix in found.get("problems", []):
         print(f"- {problem}: {fix}")
     if found.get("problems"):

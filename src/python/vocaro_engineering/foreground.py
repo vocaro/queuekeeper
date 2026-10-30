@@ -20,6 +20,7 @@ import sys
 import time
 
 from . import devices, offload_host
+from .voiceover import state as voiceover_state
 
 # The owner's standing approval of the second Mac's foreground, in the owner's words.
 STANDING = {"by": "owner", "at": "2026-10-30T16:53:26Z",
@@ -69,9 +70,9 @@ def slot(purpose, *, timeout, expected=EXPECTED, record=None, poll=POLL, ready=N
     It refuses on any other Mac, and, before taking anything, on a second Mac that problems() finds not
     ready, which is a configuration problem for the owner. While another run holds the entry it waits,
     up to timeout seconds, then raises TimeoutError; an orphaned or uncertain entry needs attended
-    recovery. VoiceOver on once the run holds the foreground was left on by an earlier run that was stopped
-    or could not restore it, which a session would take for the Mac's own state: the run releases the entry
-    and stops for the owner. The entry records this process as its active run, so that the entry outlives a run that
+    recovery. Only after acquisition, the run captures and preserves the actual VoiceOver state.
+    A passive driver explicitly opts into voiceover.state.preserved(target=False) inside this lease.
+    The entry records this process as its active run, so that the entry outlives a run that
     dies only as an orphan, and VOCARO_DEVICE_OWNER names it for the block. The release records the
     block's outcome and whether the application in front before the run is in front after it."""
     record = record or devices.Record()
@@ -107,34 +108,39 @@ def slot(purpose, *, timeout, expected=EXPECTED, record=None, poll=POLL, ready=N
         if time.monotonic() >= deadline:
             raise TimeoutError(f"the second Mac's foreground stayed held by {holder} for {timeout:g}s")
         time.sleep(poll)
-    before = front()
-    if (voiceover or offload_host.voiceover_running)():
-        record.release(devices.FOREGROUND, owner=owner, revision=entry["revision"], frontmost="restored",
-                       outcome="refused: VoiceOver was on with no run holding the foreground",
-                       restoration="the run acted on nothing")
-        raise devices.Refused(f"VoiceOver is on on the second Mac, though no run holds its foreground: an earlier run "
-                              "that was stopped or could not restore it left it on, and a session would take it for the "
-                              "Mac's own state. The owner turns it off there (Command-F5), then the work runs again")
     entry = record.update(devices.FOREGROUND, owner=owner, revision=entry["revision"], activeRun=True,
                           hostProcessIdentifier=os.getpid())
+    identity = voiceover_state._Lease._identity(entry)
+    before = front()
     said(f"eng: holding the second Mac's foreground as {owner} for {purpose}; {before or 'no application'} is in front")
     previous = os.environ.get(devices.OWNER)
     os.environ[devices.OWNER] = owner
     outcome = "ended by an exception"
+    uncertain = False
     try:
-        yield owner
+        with voiceover_state.preserved(owner, record=record, read_state=voiceover, said=said):
+            yield owner
         outcome = "the run's work ended"
+    except voiceover_state.TransitionFailed:
+        uncertain = True
+        raise
     finally:
         if previous is None: os.environ.pop(devices.OWNER, None)
         else: os.environ[devices.OWNER] = previous
         after = front()
-        entry = record.update(devices.FOREGROUND, owner=owner, revision=record.entry(devices.FOREGROUND)["revision"],
-                              activeRun=False)
-        restored = before is not None and before == after
-        record.release(devices.FOREGROUND, owner=owner, revision=entry["revision"], outcome=outcome,
-                       restoration=f"in front before the run: {before or 'unread'}; after it: {after or 'unread'}",
-                       frontmost="restored" if restored else "not-ours")
-        said(f"eng: released the second Mac's foreground; {after or 'no application'} is in front")
+        current = record.entry(devices.FOREGROUND)
+        same_lease = current is not None and current.get("ownerChatID") == owner \
+            and voiceover_state._Lease._identity(current) == identity
+        if uncertain or not same_lease or devices.condition(current) in ("orphan", "uncertain", "released"):
+            said("eng: foreground retained: VoiceOver restoration or owned-process state is unverified")
+        else:
+            entry = record.update(devices.FOREGROUND, owner=owner, revision=current["revision"], activeRun=False)
+            restored = before is not None and before == after
+            record.release(devices.FOREGROUND, owner=owner, revision=entry["revision"], outcome=outcome,
+                           restoration=f"in front before the run: {before or 'unread'}; after it: {after or 'unread'}; "
+                                       "VoiceOver was preserved by the lease guard, or untouched after an initial read refusal",
+                           frontmost="restored" if restored else "not-ours")
+            said(f"eng: released the second Mac's foreground; {after or 'no application'} is in front")
 
 
 def main(argv=None):

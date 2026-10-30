@@ -11,6 +11,7 @@ runner runs each session through run_again, which runs it again while the banner
 """
 import contextlib
 import signal
+import threading
 
 # XCTest's banner, a window of its own that can take the VoiceOver cursor.
 BANNER = "Automation Running"
@@ -44,20 +45,57 @@ def check_banner(phrases, moment):
 
 
 @contextlib.contextmanager
-def stop_signals():
+def stop_signals(*, only_unhandled=False):
     """Within the block a stop signal raises Stopped, once: later ones are ignored, so the restoration that
     follows runs to its end. Without it a stop ends the driver at once with VoiceOver on, which a Mac that keeps
-    its state then keeps, as the second Mac did on 2026-10-30. The previous handlers come back after the block."""
+    its state then keeps, as the second Mac did on 2026-10-30. The previous handlers come back after the block.
+    only_unhandled preserves an existing supervisor/driver handler and ignored signals; this lets an outer
+    state guard wait for a supervised child to end before restoration instead of interrupting its supervisor."""
+    if only_unhandled and threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    numbers = [number for number in STOP_SIGNALS if not only_unhandled or
+               signal.getsignal(number) in (signal.SIG_DFL, signal.default_int_handler)]
     def stopped(number, frame):
-        for later in STOP_SIGNALS:
+        for later in numbers:
             signal.signal(later, signal.SIG_IGN)
         raise Stopped(f"Stopped by {signal.Signals(number).name}")
-    handlers = {number: signal.signal(number, stopped) for number in STOP_SIGNALS}
+    handlers = {number: signal.signal(number, stopped) for number in numbers}
     try:
         yield
     finally:
         for number, handler in handlers.items():
             signal.signal(number, handler)
+
+
+@contextlib.contextmanager
+def restoring_signals():
+    """Defer stops during bounded restoration, then deliver one to its previous handler.
+
+    Enter only after the body (including a supervised child) has ended. A first stop during
+    cleanup must not abandon the restoration. Already ignored signals stay ignored. A cleanup
+    failure propagates instead of a pending stop, so its unverified-restoration result survives.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    pending = []
+    def defer(number, frame):
+        if not pending: pending.append((number, frame))
+    handlers = {number: signal.getsignal(number) for number in STOP_SIGNALS}
+    for number, handler in handlers.items():
+        if handler != signal.SIG_IGN: signal.signal(number, defer)
+    completed = False
+    try:
+        yield
+        completed = True
+    finally:
+        for number, handler in handlers.items(): signal.signal(number, handler)
+        if completed and pending:
+            number, frame = pending[0]
+            handler = handlers[number]
+            if callable(handler): handler(number, frame)
+            else: raise Stopped(f"Stopped by {signal.Signals(number).name} after restoration")
 
 
 def run_again(session, may_run_again=lambda: True, attempts=BANNER_ATTEMPTS):
