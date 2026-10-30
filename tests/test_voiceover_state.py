@@ -172,6 +172,24 @@ class StateTests(unittest.TestCase):
         self.assertEqual(self.toggles(), [False, True])
         self.assert_uncertain()
 
+    def test_public_setter_applied_error_uses_local_preserved_restoration_provenance(self):
+        self.enabled = False
+        def applied_then_error():
+            self.toggle()
+            if self.enabled: raise OSError("reply lost after enable")
+        with patch.object(state, "_read", self.read), patch.object(state, "_toggle", applied_then_error):
+            with self.assertRaises(state.TransitionFailed):
+                with self.scope(): state.set_enabled(True, self.owner, record=self.record)
+        self.assertFalse(self.enabled)
+        self.assertEqual(self.toggles(), [True, False])
+        self.assert_uncertain()
+        # Leaving the scope drops its restoration provenance: a new client cannot adopt it.
+        self.actions.clear()
+        with self.assertRaises(devices.Refused):
+            with self.scope(): self.fail("uncertainty adopted by a later scope")
+        self.assertEqual(self.actions, [])
+
+
     def test_unverified_transition_times_out_and_keeps_real_uncertainty(self):
         attempts = []
         lease = state._Lease(self.owner, self.record)

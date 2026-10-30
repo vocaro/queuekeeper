@@ -6,6 +6,7 @@ VoiceOver inside either context; its inner restoration finishes before the outer
 No preference is written: a checked Command-F5 is sent only when a known state differs.
 """
 import contextlib
+import contextvars
 import json
 import os
 import subprocess
@@ -16,6 +17,7 @@ from . import guard
 
 WAIT = 5
 POLL = 0.1
+_CURRENT = contextvars.ContextVar("voiceover_lease", default=None)
 READ = """ObjC.import('AppKit');
 var enabled = $.NSWorkspace.sharedWorkspace.isVoiceOverEnabled;
 if (typeof enabled !== 'boolean') { throw new Error('VoiceOver state is not a boolean'); }
@@ -96,6 +98,18 @@ class _Lease:
             return
 
 
+def _lease(owner, record):
+    owner = owner or os.environ.get(devices.OWNER)
+    record = record or devices.Record()
+    current = _CURRENT.get()
+    if current is not None and current.owner == owner and current.record.path.resolve() == record.path.resolve():
+        # Share restoration provenance only within this process/context's active scope.
+        # A replaced reservation or uncertain entry still refuses all new work.
+        current.check()
+        return current
+    return _Lease(owner, record)
+
+
 def _known(lease, reader, *, restoring=False):
     lease.check(restoring=restoring)
     value = reader()
@@ -107,7 +121,7 @@ def _known(lease, reader, *, restoring=False):
 
 def read(owner=None, *, record=None):
     """Known on/off under this owner's exact foreground lease; nothing is changed."""
-    return _known(_Lease(owner or os.environ.get(devices.OWNER), record), _read)
+    return _known(_lease(owner, record), _read)
 
 
 def _set(lease, desired, reader, toggle, *, restoring=False, wait=WAIT, poll=POLL):
@@ -132,8 +146,10 @@ def _set(lease, desired, reader, toggle, *, restoring=False, wait=WAIT, poll=POL
 
 
 def set_enabled(desired, owner=None, *, record=None):
-    """Choose a known state while holding the lease, normally inside preserved()."""
-    _set(_Lease(owner or os.environ.get(devices.OWNER), record), desired, _read, _toggle)
+    """Choose a known state inside this process's preserved() scope for failure restoration.
+    The outer eng process is a separate guard; it does not share a child driver's context.
+    """
+    _set(_lease(owner, record), desired, _read, _toggle)
 
 
 @contextlib.contextmanager
@@ -147,23 +163,27 @@ def preserved(owner=None, *, target=None, record=None, read_state=None, toggle=N
     Existing eng/driver signal handlers keep ownership; otherwise stop_signals handles stops.
     """
     if target is not None and type(target) is not bool: raise ValueError("VoiceOver target must be on or off")
-    lease = _Lease(owner or os.environ.get(devices.OWNER), record)
+    lease = _lease(owner, record)
     reader, toggle = read_state or _read, toggle or _toggle
     said = said or (lambda text: None)
     # Nothing has been changed if this strict initial read fails.
     original = _known(lease, reader)
-    with guard.stop_signals(only_unhandled=True):
-        try:
-            said(f"VoiceOver original {'on' if original else 'off'}")
-            if target is not None: _set(lease, target, reader, toggle)
-            yield original
-        finally:
-            # The body and its supervised children have ended. A first stop arriving during
-            # bounded restoration is delivered only after the original state is verified.
-            with guard.restoring_signals():
-                try:
-                    _set(lease, original, reader, toggle, restoring=True)
-                    said(f"VoiceOver restored to original {'on' if original else 'off'}")
-                except BaseException as error:
-                    lease.uncertain(f"VoiceOver original state restoration was not verified: {error}")
-                    raise TransitionFailed(f"VoiceOver original state was not restored; foreground lease retained: {error}") from error
+    token = _CURRENT.set(lease)
+    try:
+        with guard.stop_signals(only_unhandled=True):
+            try:
+                said(f"VoiceOver original {'on' if original else 'off'}")
+                if target is not None: _set(lease, target, reader, toggle)
+                yield original
+            finally:
+                # The body and its supervised children have ended. A first stop arriving during
+                # bounded restoration is delivered only after the original state is verified.
+                with guard.restoring_signals():
+                    try:
+                        _set(lease, original, reader, toggle, restoring=True)
+                        said(f"VoiceOver restored to original {'on' if original else 'off'}")
+                    except BaseException as error:
+                        lease.uncertain(f"VoiceOver original state restoration was not verified: {error}")
+                        raise TransitionFailed(f"VoiceOver original state was not restored; foreground lease retained: {error}") from error
+    finally:
+        _CURRENT.reset(token)

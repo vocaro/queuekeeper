@@ -313,6 +313,7 @@ class DeviceRecordTests(unittest.TestCase):
 
     def test_foreground_finally_retains_explicit_unknown_launch_uncertainty(self):
         from vocaro_engineering import foreground
+        from vocaro_engineering.voiceover import state
         with patch.object(foreground, "second_mac", return_value=True), \
              patch.object(foreground, "front", return_value="owned control"), \
              patch.object(foreground.offload_host, "mac_name", return_value="test Mac"):
@@ -321,7 +322,8 @@ class DeviceRecordTests(unittest.TestCase):
                                  ready=lambda: [], voiceover=lambda: False, said=lambda _: None):
                 pass
             self.assertEqual(self.record.entry(devices.FOREGROUND)["state"], "released")
-            with self.assertRaisesRegex(devices.Refused, "unresolved uncertainty"):
+            with self.assertRaisesRegex(state.TransitionFailed, "original state was not restored"):
+                # The state guard refuses restoration over unrelated process uncertainty.
                 with foreground.slot("unknown launch", timeout=1, record=self.record,
                                      ready=lambda: [], voiceover=lambda: False, said=lambda _: None) as owner:
                     entry = self.record.entry(devices.FOREGROUND)
@@ -329,7 +331,7 @@ class DeviceRecordTests(unittest.TestCase):
                                        uncertain=True, run={"uncertainty": "launch completion is unknown"})
             retained = self.record.entry(devices.FOREGROUND)
             self.assertEqual(devices.condition(retained), "uncertain")
-            self.assertFalse(retained["activeRun"])
+            self.assertTrue(retained["activeRun"])
             self.assertTrue(retained["uncertain"])
             self.assertIsNotNone(retained["ownerChatID"])
 
