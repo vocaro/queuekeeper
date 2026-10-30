@@ -18,12 +18,15 @@ and with `"advertise"` names as refs the commits the named repositories' checkou
 the push that follows sends only what they lack;
 given `{"device": ...}`, what there may still use a physical device a run was given, for
 `devices recover`; given `{"keychain": PATH}`, the Mac's name and whether that keychain file is
-there, for `eng keychain recover`.
+there, for `eng keychain recover`; given `{"keepUnlocked": ...}`, at the owner's terminal, it asks for
+the login keychain's password and keeps it for runs to unlock that keychain with, for `eng keychain
+keep-unlocked`.
 """
 import base64
 import ctypes
 from datetime import datetime
 import fcntl
+import getpass
 import json
 import os
 from pathlib import Path
@@ -63,8 +66,17 @@ DEVICE = re.compile(r"[0-9A-F]{8}-(?:[0-9A-F]{4}-){3}[0-9A-F]{12}", re.IGNORECAS
 DEVICE_RECORD = "Library/Application Support/vocaro-engineering/device-handoff.json"
 DEFERRED = "physicalDevicesRecordedOn"
 PHYSICAL = re.compile(r"[0-9A-F]{8}-[0-9A-F]{16}|[0-9A-F]{40}")
-# Where a Mac keeps its users' keychain files, relative to the home.
+# Where a Mac keeps its users' keychain files, relative to the home, and its login keychain's file there.
 KEYCHAINS = "Library/Keychains"
+LOGIN_KEYCHAIN = "login.keychain-db"
+# The file in eng remote's root that holds the login keychain's password, once the owner has run
+# `eng keychain keep-unlocked`, from which each run unlocks that keychain in its own session.
+KEYCHAIN_PASSWORD = "keychain-password"
+# What SecKeychainGetStatus sets for an unlocked keychain (kSecUnlockStateStatus), and the OSStatus of
+# a wrong password (errSecAuthFailed) and of a missing keychain file (errSecNoSuchKeychain).
+UNLOCK_STATE, AUTH_FAILED, NO_SUCH_KEYCHAIN = 1, -25293, -25294
+# How many passwords keep_unlocked asks for before it gives up, as sudo does.
+PASSWORD_TRIES = 3
 # The process that holds a simulator pool member's reservation, {"pid", "start"}, as
 # simulators/pool.py records it when it reserves the member.
 HOLDER = "holderProcess"
@@ -178,6 +190,137 @@ def keychain(path):
         names = []
     return {"mac": mac_name(), "home": str(home), "path": str(given), "exists": given.is_file(),
             "keychains": [str(folder / name) for name in names]}
+
+
+def security_unlock(path, password):
+    """Unlock the keychain file at path with password, bytes, in this process's security session,
+    which the processes it starts share: SecKeychainUnlock's OSStatus, and whether SecKeychainGetStatus
+    then reads the keychain unlocked. The password goes to Security alone, never into a command's
+    arguments or environment, and with a password given Security shows no dialog."""
+    security = ctypes.CDLL("/System/Library/Frameworks/Security.framework/Security")
+    release = ctypes.CDLL("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation").CFRelease
+    security.SecKeychainOpen.argtypes = [ctypes.c_char_p, ctypes.POINTER(ctypes.c_void_p)]
+    security.SecKeychainUnlock.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_char_p, ctypes.c_ubyte]
+    security.SecKeychainGetStatus.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
+    for function in (security.SecKeychainOpen, security.SecKeychainUnlock, security.SecKeychainGetStatus):
+        function.restype = ctypes.c_int32
+    release.argtypes = [ctypes.c_void_p]
+    reference = ctypes.c_void_p()
+    status = security.SecKeychainOpen(str(path).encode(), ctypes.byref(reference))
+    if status: return status, False
+    try:
+        status = security.SecKeychainUnlock(reference, len(password), password, 1)
+        if status: return status, False
+        state = ctypes.c_uint32()
+        status = security.SecKeychainGetStatus(reference, ctypes.byref(state))
+        return status, not status and bool(state.value & UNLOCK_STATE)
+    finally:
+        release(reference)
+
+
+def unlock_for_run(root, unlock=security_unlock):
+    """Unlock the login keychain in this run's own SSH session, when the owner has kept its password
+    in root (keep_unlocked): an unlock in another session, the owner's desktop or an earlier SSH login,
+    does not reach this one (guides/shared-host.md, Keychains on the right Mac). The path it unlocked,
+    or None when no password is kept. A kept password that does not unlock it is the owner's to fix,
+    and the run does not start: work that signs would fail later, and less plainly."""
+    kept = root / KEYCHAIN_PASSWORD
+    if not kept.is_file(): return None
+    path = Path.home() / KEYCHAINS / LOGIN_KEYCHAIN
+    fix = (f"on the Mac that sends work here, run `python3 scripts/eng keychain keep-unlocked` and type this Mac's "
+           f"login password at its prompt, or delete {kept} to send work without the unlock "
+           "(guides/shared-host.md, Keychains on the right Mac)")
+    if not path.is_file(): raise Refusal(f"{kept} holds the password of {path}, which is not there", fix)
+    try:
+        password = kept.read_bytes()
+    except OSError as error:
+        raise Refusal(f"{kept} cannot be read: {error}", fix) from None
+    # A file the owner wrote by hand may end in a newline, which no typed password does.
+    if password.endswith(b"\n"): password = password[:-1]
+    try:
+        status, unlocked = unlock(path, password)
+    except (OSError, AttributeError) as error:
+        raise Refusal(f"Security could not be called to unlock {path}: {error}", fix) from None
+    if status == AUTH_FAILED:
+        raise Refusal(f"the password in {kept} does not unlock {path} (errSecAuthFailed): this Mac's login password "
+                      "may have changed since it was kept", fix)
+    if status or not unlocked:
+        raise Refusal(f"{path} is not unlocked with the password in {kept}: OSStatus {status}", fix)
+    return str(path)
+
+
+def keep(path, password):
+    """Write password to path whole, readable and writable only by this account, replacing any file there."""
+    temporary = path.with_name(f".{path.name}.{os.getpid()}")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(password)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
+def keep_unlocked(request, ask=None, unlock=security_unlock, run=subprocess.run, out=print, terminal=None):
+    """`eng keychain keep-unlocked` on the second Mac, in the owner's Terminal there or through the
+    `ssh -t` the sending Mac runs: ask for this Mac's login password, and once it has unlocked the login
+    keychain, keep it in request["root"], under the home, readable only by this account, for each eng
+    remote run to unlock that keychain in its own session (unlock_for_run). Then set the keychain to
+    lock neither after a time nor on sleep, so that the owner's own session keeps it unlocked too. The
+    password goes only to Security and that file. Exit 0 when both are done, 1 when no password given
+    unlocked the keychain, which changes nothing, or the settings were not changed, and 2 when it
+    refused, having asked for nothing."""
+    ask = ask or getpass.getpass
+    terminal = sys.stdin.isatty() if terminal is None else terminal
+    here, expected = mac_name(), request.get("mac")
+    root, path = Path.home() / request["root"], Path.home() / KEYCHAINS / LOGIN_KEYCHAIN
+    refusal = None
+    if expected and here != expected:
+        refusal = f"this is {here}, not {expected}, the Mac whose login keychain the request was for"
+    elif not path.is_file():
+        refusal = f"{path} is not on {here}"
+    elif not root.is_dir():
+        refusal = (f"{root} is not on {here}: set up the second Mac first, and run eng remote there once "
+                   "(guides/shared-host.md, Setting up the second Mac)")
+    elif not terminal:
+        refusal = "it asks for the password at a terminal, and this has none: run it in your own Terminal"
+    if refusal:
+        out(f"Refused: {refusal}. Nothing was asked for or changed.")
+        return 2
+    for _ in range(PASSWORD_TRIES):
+        password = ask(f"Login password of {here}, for its login keychain (not shown): ").encode()
+        status, unlocked = unlock(path, password)
+        if not status and unlocked: break
+        out("That password did not unlock it." if status == AUTH_FAILED else
+            f"{path} is not unlocked with that password: OSStatus {status}.")
+    else:
+        out(f"No password unlocked {path}; nothing was kept or changed.")
+        return 1
+    kept = root / KEYCHAIN_PASSWORD
+    try:
+        keep(kept, password)
+    except OSError as error:
+        out(f"It unlocked the keychain, but {kept} could not be written: {error}. Nothing was kept or changed.")
+        return 1
+    out(f"Kept it in {kept}, readable only by {pwd.getpwuid(os.getuid()).pw_name}: each eng remote run here now "
+        "unlocks the login keychain in its own session.")
+    # The keychain is unlocked in this session, so neither command needs a dialog; without -l, -u and -t,
+    # set-keychain-settings sets no timeout and no lock on sleep.
+    for command in (["security", "set-keychain-settings", str(path)], ["security", "show-keychain-info", str(path)]):
+        try:
+            done = run(command, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30)
+        except (OSError, subprocess.SubprocessError) as error:
+            done = subprocess.CompletedProcess(command, 1, "", str(error))
+        said = " ".join(((done.stderr or "") + " " + (done.stdout or "")).split())
+        if done.returncode:
+            out(f"`{shlex.join(command)}` failed, exit {done.returncode}: {said}. The password is kept; the keychain's "
+                "lock settings may still lock it in the owner's own session.")
+            return 1
+    out(f"Its settings now: {said}")
+    return 0
 
 
 def toolchain(developer_dir):
@@ -865,6 +1008,8 @@ def main(plan):
                           "(guides/shared-host.md, Setting up the second Mac), or select with DEVELOPER_DIR an Xcode "
                           "both Macs have at the same path")
         root, project, toolkit = Path.home() / plan["root"], plan["project"], plan.get("toolkit")
+        unlocked = unlock_for_run(root)
+        if unlocked: say(f"unlocked {unlocked} for this run's session, with the password keep-unlocked kept")
         base = root / "checkouts" / project["directory"]
         began = time.monotonic()
         claimed = claim(base, plan["checkouts"], project["directory"], wait=not plan.get("decline"))
@@ -934,6 +1079,7 @@ def main(plan):
 
 if __name__ == "__main__":
     request = json.loads(sys.argv[1])
+    if "keepUnlocked" in request: sys.exit(keep_unlocked(request["keepUnlocked"]))
     if {"toolchain", "images", "receive", "leftovers", "device", "keychain"} & request.keys():
         print(json.dumps(answer(request)))
     else: main(request)

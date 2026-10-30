@@ -1,4 +1,4 @@
-"""Keychain recovery on the right Mac, and a check of key access where the automation runs.
+"""Keychains on the right Mac: recovery, the second Mac's kept unlocked, and a check of key use where it runs.
 
 `eng keychain recover` is for the owner, and unlocks nothing. It says which Mac it runs on and
 which Mac's keychain the work needs (host_context.locate), checks that the exact keychain file is
@@ -7,6 +7,12 @@ LocalHostName` reads it, and otherwise says where it is and stops. The command t
 an SSH alias is printed only on the Mac whose ~/.ssh/config defines the alias, and on the target
 itself only the local command is. `security unlock-keychain` then asks for the password in the
 owner's own Terminal, and nothing of the toolkit reads it, stores it or passes it on.
+
+`eng keychain keep-unlocked` is the owner's too, once, for the second Mac, whose keychain the owner
+keeps unlocked for its automation (the owner's decision, 2026-10-30). An unlock reaches only the
+session that made it, and each eng remote run is an SSH login of its own, so every run unlocks the
+login keychain itself (offload_host.unlock_for_run), with the password this command asks for once, at
+the second Mac's own prompt, and keeps there readable only by its account.
 
 `eng keychain check` runs where the automation that uses the key runs, such as on the second Mac
 through `eng remote admit`. It records the session it ran in, the keychain's status, whether the
@@ -100,10 +106,11 @@ def missing(info, path):
     return text
 
 
-def recover(path=DEFAULT, target=None, identity=None, out=print, ask=None):
-    """Say where the keychain the work needs is and print the owner's commands, or refuse: exit 0
-    when it printed them, 2 when it refused. It unlocks nothing and reads no password. ask, given a
-    destination and a request, asks the second Mac, as remote.ask does."""
+def find(path, target, ask, out):
+    """This Mac, its view of the second Mac, where the target is and the keychain file there, said in
+    the This Mac, Target and Keychain lines: here, the view, the location and the file's information,
+    the last two None after it said why it refused. ask, given a destination and a request, asks the
+    second Mac, as remote.ask does."""
     ask = ask or (lambda destination, request: remote.ask(destination, request, ASK_TIMEOUT))
     here, view, session = host_context.this_mac(), host_context.second_mac(), host_context.session()
     there = unreached = info = None
@@ -121,14 +128,22 @@ def recover(path=DEFAULT, target=None, identity=None, out=print, ask=None):
     out(f"This Mac: {here}, in a session of kind {session['kind']}")
     if location.refusal:
         out(f"Refused: {location.refusal}. Nothing was unlocked.")
-        return 2
+        return here, view, None, None
     out(f"Target: {location.mac}" + (f" ({location.note})" if location.note else ""))
     if location.where == "here": info = offload_host.keychain(path)
     if not info.get("exists"):
         out(f"Refused: {missing(info, path)}. Nothing was unlocked.")
-        return 2
+        return here, view, None, None
+    out(f"Keychain: {info['path']}, present on {location.mac}")
+    return here, view, location, info
+
+
+def recover(path=DEFAULT, target=None, identity=None, out=print, ask=None):
+    """Say where the keychain the work needs is and print the owner's commands, or refuse: exit 0
+    when it printed them, 2 when it refused. It unlocks nothing and reads no password."""
+    here, view, location, info = find(path, target, ask, out)
+    if location is None: return 2
     exact = info["path"]
-    out(f"Keychain: {exact}, present on {location.mac}")
     out("Unlock it in your own Terminal, on the Mac each command names; security asks for the password there, and "
         "nothing else reads it. Each command refuses on any other Mac.")
     for mac, command in unlock_commands(here, location, exact):
@@ -137,6 +152,49 @@ def recover(path=DEFAULT, target=None, identity=None, out=print, ask=None):
         "does not count:")
     sender = view["deferredTo"] if location.where == "here" else None
     for where, command in check_commands(location, exact, identity, sender):
+        out(f"  {where}:\n    {command}")
+    if location.where == "second Mac" or sender:
+        out(f"An unlock in a Terminal reaches that Terminal's session only, never an eng remote run. For every run on "
+            f"{location.mac} to unlock its login keychain itself, run `python3 scripts/eng keychain keep-unlocked` "
+            "once instead.")
+    return 0
+
+
+def keep_command(location):
+    """The command that runs offload_host.keep_unlocked on the second Mac through location's alias, in
+    its login shell as a run is run, with a terminal for its prompt. It passes no password, and its
+    remote half refuses on any Mac but location's."""
+    request = {"keepUnlocked": {"root": remote.ROOT, "mac": location.mac}}
+    script = shlex.join(["python3", "-c", Path(offload_host.__file__).read_text(), json.dumps(request)])
+    return ["ssh", "-t", "-o", "BatchMode=yes", "-o", f"ConnectTimeout={remote.CONNECT_TIMEOUT}",
+            location.destination, remote.login(script)]
+
+
+def keep_unlocked(identity=None, out=print, ask=None, interact=None, keep=None):
+    """eng keychain keep-unlocked, the owner's, once: on the second Mac, ask for its login password at
+    the second Mac's own prompt in this Terminal, keep it there for each eng remote run to unlock the
+    login keychain in its own session, and stop that keychain locking on a timer or on sleep
+    (offload_host.keep_unlocked). From the Mac that sends work there it goes through the alias with
+    `ssh -t`; on the second Mac it runs in this process. Exit as offload_host.keep_unlocked does, or 2
+    when it refused before anything was asked. interact runs a command at this terminal and keep runs
+    offload_host.keep_unlocked here; both are for tests."""
+    interact = interact or (lambda command: subprocess.run(command, env=remote.environment()).returncode)
+    keep = keep or (lambda request: offload_host.keep_unlocked(request, out=out))
+    here, view, location, info = find(DEFAULT, None, ask, out)
+    if location is None: return 2
+    if location.where == "here" and not view["deferredTo"]:
+        # The owner's decision covers the second Mac only, which holds no sensitive data.
+        out(f"Refused: {here} is not a second Mac, as its device record would say once eng remote has sent work "
+            "to it: only the second Mac's login password is kept. Nothing was asked for or changed.")
+        return 2
+    if location.where == "second Mac":
+        status = interact(keep_command(location))
+    else:
+        status = keep({"root": remote.ROOT, "mac": here})
+    if status: return status
+    out("Then check signing where the automation runs:")
+    sender = view["deferredTo"] if location.where == "here" else None
+    for where, command in check_commands(location, info["path"], identity, sender):
         out(f"  {where}:\n    {command}")
     return 0
 
@@ -249,9 +307,11 @@ def check(path=DEFAULT, identity=None, timeout=CHECK_TIMEOUT, run=subprocess.run
 
 
 def execute(args, out=print):
-    """eng keychain recover or check."""
+    """eng keychain recover, keep-unlocked or check."""
     if args.operation == "recover":
         return recover(args.keychain, args.target, args.identity, out)
+    if args.operation == "keep-unlocked":
+        return keep_unlocked(args.identity, out)
     record = check(args.keychain, args.identity, args.timeout)
     out(json.dumps(record, indent=2))
     return {PASSED: 0, FAILED: 1}.get(record["outcome"], evidence.UNMEASURED)
@@ -265,6 +325,10 @@ def add_arguments(parser):
     recover_parser.add_argument("--target", metavar="MAC", help="the Mac whose keychain the work needs, by its "
         "LocalHostName (default: the second Mac, as eng remote reaches it from this Mac)")
     recover_parser.add_argument("--identity", help="the signing identity the check is to use; only printed")
+    keep_parser = operations.add_parser("keep-unlocked", help="once, on the second Mac: ask for its login password "
+        "at its own prompt in this Terminal, keep it there, readable only by its account, for every eng remote run to "
+        "unlock the login keychain in its own session, and stop that keychain locking on a timer or on sleep")
+    keep_parser.add_argument("--identity", help="the signing identity the check is to use; only printed")
     check_parser = operations.add_parser("check", help="where the automation runs, record the session, the "
         "keychain's status, whether the identity is there and whether signing with it succeeds, without anything "
         "that could show a dialog: exit 0 when signing passed, 1 when key use failed, 3 when unmeasured")

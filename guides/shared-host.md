@@ -829,6 +829,11 @@ The owner prepares the second Mac once:
    unset token
    ```
 
+8. For work that signs, keep the second Mac's login keychain unlocked for `eng remote`'s runs:
+   from this Mac, in your own Terminal, run `python3 scripts/eng keychain keep-unlocked` once and
+   type the second Mac's login password at its prompt
+   ([keeping it unlocked](#keeping-the-second-macs-keychain-unlocked)).
+
 The project's commits reach the second Mac over SSH without a GitHub credential. A heavy lane's
 policy refresh fetches the private toolkit over HTTPS and needs read access to it through the
 credential file above, even when the project has no private package dependencies. SwiftPM
@@ -927,16 +932,67 @@ locked keychain or a key's access control can raise one.
   identity present, both after the owner unlocked the keychain in its GUI session with Keychain
   Access and after an accepted `security unlock-keychain` in an `ssh -t` session from the
   workstation, which then ended (2026-10-29, macOS 27.2,
-  [vocaro-engineering#65](https://github.com/vocaro/vocaro-engineering/issues/65)). Signing
-  therefore runs in the owner's GUI session on the second Mac, not over SSH (the owner's decision,
-  2026-10-29). Signing over SSH would need one of the owner's decisions below; after any such
-  change, run the check, and retry signing work only once it passes where the work runs.
+  [vocaro-engineering#65](https://github.com/vocaro/vocaro-engineering/issues/65)). So each run
+  unlocks the second Mac's login keychain itself ([below](#keeping-the-second-macs-keychain-unlocked)).
+  After any change to how a key is reached, run the check, and retry signing work only once it
+  passes where the work runs.
 - Keychain access control and partition lists (`security set-key-partition-list`), trust
-  settings, certificates, where credentials are kept, TCC and host configuration stay the owner's
-  decisions. Neither command changes any of them; a failed check is reported for that decision.
-- Not measured: what `show-keychain-info` answers over SSH for an unlocked keychain, whether an
-  unlock lasts within the one SSH session that made it, and the second Mac's own command from a
-  shell on the second Mac.
+  settings, certificates, TCC and host configuration stay the owner's decisions, and so does where
+  credentials are kept, apart from the second Mac's login password, below. Neither `recover` nor
+  `check` changes any of them; a failed check is reported for that decision.
+- Not measured: the second Mac's own `recover` command from a shell on the second Mac.
+
+### Keeping the second Mac's keychain unlocked
+
+The owner keeps the second Mac's login keychain unlocked for its automation: the second Mac holds
+no sensitive data and stays in a secure place (the owner's decision, 2026-10-30, which replaces
+that of 2026-10-29 to sign only in the owner's GUI session there). Since an unlock reaches only the
+session that made it, and every `eng remote` connection is an SSH login of its own, no unlock made
+once can serve the runs: each run unlocks the keychain itself, in its own session, with the second
+Mac's login password, which the owner gives once.
+
+```sh
+python3 scripts/eng keychain keep-unlocked [--identity NAME]
+```
+
+The owner runs it in their own Terminal, on the Mac that sends work to the second Mac or in a shell
+on the second Mac. It establishes the Mac and the target as `recover` does and refuses as
+`recover` does, then, on the second Mac, through `ssh -t` and the alias from the sending Mac or
+directly there:
+
+- refuses, having asked for nothing, on any Mac but the one the sending Mac reached, without a
+  terminal to ask at, or before `eng remote` has made its root, `~/Development/build-host`;
+- asks for the login password at the second Mac's own prompt, which shows nothing typed, and
+  tries it with `SecKeychainUnlock` on `~/Library/Keychains/login.keychain-db`, three times at most;
+  a password that does not unlock it is not kept;
+- keeps the one that does in `~/Development/build-host/keychain-password`, written whole and
+  readable and writable only by the owner's account, beside `git-credentials`;
+- sets that keychain to lock neither after a time nor on sleep (`security set-keychain-settings`
+  with no options), so that the owner's own sessions there keep it unlocked too, and prints its
+  settings as `show-keychain-info` reads them;
+- prints the check to run next. It exits 0 when it kept the password and set the settings, 1 when
+  no password unlocked the keychain, which changes nothing, or the settings were not set, and 2
+  when it refused.
+
+Each `eng remote run` and `eng remote admit` then reads the file on the second Mac and unlocks the
+login keychain with `SecKeychainUnlock` before it claims a checkout, in the run's own session,
+which the work it starts shares; the run says so in one line. The password goes to Security only:
+never into a command's arguments, an environment variable, a log, a receipt or chat. Without the
+file a run unlocks nothing, as before. A file whose password no longer unlocks the keychain, such
+as after the second Mac's login password changed, refuses the run before anything of it starts,
+with the fix: run `keep-unlocked` again. The refusal is configuration, so the work does not move to
+this Mac.
+
+Measured on the second Mac (2026-10-30, macOS 27.2 26B123), after the owner ran `keep-unlocked`
+from the workstation: in the next `eng remote admit` run, the run unlocked the login keychain, and
+`eng keychain check` in that run's SSH session read it `unlocked` (`show-keychain-info` answered
+`no-timeout`), found the Apple Development identity (1 valid) and signed with it: outcome `passed`,
+with no partition-list or access-control change. A plain `ssh build-host` session a minute later
+still read it locked ("User interaction is not allowed").
+
+So it reaches `eng remote`'s runs only: a plain `ssh build-host` session, or a process started in
+one, still finds the login keychain locked. To undo it, delete the file on the second Mac, and set
+the lock settings the owner wants with `security set-keychain-settings`.
 
 ### Earlier names
 

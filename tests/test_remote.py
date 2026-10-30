@@ -896,6 +896,22 @@ class RemoteTests(unittest.TestCase):
         self.assertIn(f"'', 'store --file={credentials}']", text)
         self.assertIn("['username=someone']", text)
 
+    def test_a_kept_keychain_password_that_cannot_unlock_the_login_keychain_refuses_the_run(self):
+        # Without a kept password a run unlocks nothing, as before keep-unlocked.
+        status, output, error = self.eng("remote", "admit", "--", sys.executable, "-c", "print('the work ran')")
+        self.assertEqual(status, 0, output + error)
+        self.assertIn("the work ran", output)
+        self.assertNotIn("unlocked", output + error)
+        # A kept password for a login keychain this second Mac does not have: the run does not start.
+        kept = self.home / remote.ROOT / offload_host.KEYCHAIN_PASSWORD
+        kept.write_text("not a real password\n")
+        status, output, error = self.eng("remote", "admit", "--", sys.executable, "-c", "print('the work ran')")
+        self.assertEqual(status, 2, output + error)
+        login = self.home / offload_host.KEYCHAINS / offload_host.LOGIN_KEYCHAIN
+        self.assertIn(f"{kept} holds the password of {login}, which is not there", error)
+        self.assertIn("`python3 scripts/eng keychain keep-unlocked`", error)
+        self.assertNotIn("the work ran", output)
+
     def run_here(self, *arguments):
         """eng run, with this Mac's policy refresh, which would fetch GitHub, left out."""
         with patch.object(cli, "refresh_policy", return_value="policy"):

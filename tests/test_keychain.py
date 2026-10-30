@@ -7,7 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 from vocaro_engineering import cli, evidence, host_context, keychain, offload_host, remote
@@ -297,7 +297,9 @@ class RecoverTests(unittest.TestCase):
         for words in [f"This Mac: {WORKSTATION}", f"Target: {SECOND}", f"Keychain: {LOGIN}, present on {SECOND}",
                       f"On {WORKSTATION}, this Mac:", f"On {SECOND}:", "ssh -t build-host",
                       shlex.join(["python3", "scripts/eng", "remote", "admit", "--", "python3", "scripts/eng", "keychain",
-                                  "check", "--keychain", LOGIN, "--identity", NAME])]:
+                                  "check", "--keychain", LOGIN, "--identity", NAME]),
+                      # An unlock in a Terminal does not reach a run, so it says what does.
+                      "never an eng remote run", "`python3 scripts/eng keychain keep-unlocked`"]:
             self.assertIn(words, said)
 
     def test_on_the_second_mac_it_gives_the_local_command_and_never_the_alias(self):
@@ -462,6 +464,197 @@ class CheckTests(unittest.TestCase):
         self.assertNotEqual(ssh["session"]["note"], gui["session"]["note"])
 
 
+class Unlocks:
+    """A stand-in for offload_host.security_unlock that unlocks with one password, recording each call."""
+
+    def __init__(self, password=b"the right one", unlocked=True):
+        self.password, self.unlocked, self.calls = password, unlocked, []
+
+    def __call__(self, path, password):
+        self.calls.append((str(path), password))
+        return (0, self.unlocked) if password == self.password else (offload_host.AUTH_FAILED, False)
+
+
+class KeepUnlockedTests(unittest.TestCase):
+    """The second Mac's login keychain, which the owner keeps unlocked for eng remote's runs: each run
+    unlocks it in its own session with the password keep-unlocked kept."""
+
+    def setUp(self):
+        self.home = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: subprocess.run(["rm", "-rf", str(self.home)]))
+        self.root = self.home / remote.ROOT
+        self.root.mkdir(parents=True)
+        self.login = self.home / offload_host.KEYCHAINS / offload_host.LOGIN_KEYCHAIN
+        self.login.parent.mkdir(parents=True)
+        self.login.write_bytes(b"kych")
+        self.kept = self.root / offload_host.KEYCHAIN_PASSWORD
+        for patcher in (patch.dict(os.environ, {"HOME": str(self.home)}),
+                        patch.object(offload_host, "mac_name", return_value=SECOND)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def keep(self, answers, request=None, unlock=None, run=None, terminal=True):
+        """offload_host.keep_unlocked, given the passwords typed in turn: its status, what it said, and
+        the passwords it asked for."""
+        lines, typed = [], iter(answers)
+        asked = []
+
+        def ask(prompt):
+            asked.append(prompt)
+            return next(typed)
+        run = run or Commands(security__set_keychain_settings=(0,), security__show_keychain_info=(
+            0, "", f'Keychain "{self.login}" no-timeout\n'))
+        status = offload_host.keep_unlocked(request or {"root": remote.ROOT, "mac": SECOND}, ask,
+                                            unlock or Unlocks(), run, lines.append, terminal)
+        return status, "\n".join(lines), asked
+
+    def test_a_run_unlocks_the_login_keychain_in_its_own_session_only_when_its_password_is_kept(self):
+        unlock = Unlocks()
+        self.assertIsNone(offload_host.unlock_for_run(self.root, unlock))
+        self.assertEqual(unlock.calls, [])
+        # Kept by keep-unlocked, or written by hand with a newline the password does not hold.
+        for written in [b"the right one", b"the right one\n"]:
+            with self.subTest(written):
+                self.kept.write_bytes(written)
+                unlock = Unlocks()
+                self.assertEqual(offload_host.unlock_for_run(self.root, unlock), str(self.login))
+                self.assertEqual(unlock.calls, [(str(self.login), b"the right one")])
+
+    def test_a_kept_password_that_does_not_unlock_the_keychain_refuses_the_run_with_the_owner_s_fix(self):
+        self.kept.write_bytes(b"an old one")
+        for unlock, said in [(Unlocks(), "does not unlock"), (Unlocks(b"an old one", unlocked=False), "OSStatus 0"),
+                             (Mock(side_effect=OSError("no Security")), "Security could not be called")]:
+            with self.subTest(said), self.assertRaises(offload_host.Refusal) as refused:
+                offload_host.unlock_for_run(self.root, unlock)
+            self.assertIn(said, str(refused.exception))
+            self.assertIn("`python3 scripts/eng keychain keep-unlocked`", refused.exception.fix)
+            self.assertFalse(refused.exception.busy)
+        self.login.unlink()
+        unlock = Unlocks()
+        with self.assertRaises(offload_host.Refusal) as refused:
+            offload_host.unlock_for_run(self.root, unlock)
+        self.assertIn(f"{self.login}, which is not there", str(refused.exception))
+        self.assertEqual(unlock.calls, [])
+
+    def test_security_reports_a_missing_keychain_and_unlocks_nothing(self):
+        # Security itself, as a run calls it, on a keychain file that is not there: no keychain is touched.
+        if sys.platform != "darwin": self.skipTest("Security.framework is macOS's")
+        absent = self.home / "absent.keychain-db"
+        self.assertEqual(offload_host.security_unlock(absent, b"not a password"), (offload_host.NO_SUCH_KEYCHAIN, False))
+        self.assertFalse(absent.exists())
+
+    def test_it_keeps_only_a_password_that_unlocks_the_keychain_readable_only_by_this_account(self):
+        self.kept.write_bytes(b"an old one")
+        unlock, run = Unlocks(), Commands(security__set_keychain_settings=(0,), security__show_keychain_info=(
+            0, "", f'Keychain "{self.login}" no-timeout\n'))
+        status, said, asked = self.keep(["a wrong one", "the right one"], unlock=unlock, run=run)
+        self.assertEqual(status, 0, said)
+        self.assertEqual(len(asked), 2)
+        self.assertIn(f"Login password of {SECOND}", asked[0])
+        self.assertEqual(unlock.calls, [(str(self.login), b"a wrong one"), (str(self.login), b"the right one")])
+        self.assertEqual(self.kept.read_bytes(), b"the right one")
+        self.assertEqual(self.kept.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(sorted(path.name for path in self.root.iterdir()), [offload_host.KEYCHAIN_PASSWORD])
+        # Without -l, -u or -t, no timeout and no lock on sleep; no command is given the password.
+        self.assertEqual([command for command, _ in run.calls],
+                         [["security", "set-keychain-settings", str(self.login)],
+                          ["security", "show-keychain-info", str(self.login)]])
+        self.assertIn("That password did not unlock it.", said)
+        self.assertIn("no-timeout", said)
+        self.assertNotIn("the right one", said)
+        # Each run then unlocks with it.
+        self.assertEqual(offload_host.unlock_for_run(self.root, Unlocks()), str(self.login))
+
+    def test_it_changes_nothing_when_no_password_unlocks_or_it_cannot_ask(self):
+        run = Commands()
+        status, said, asked = self.keep(["one", "two", "three"], run=run)
+        self.assertEqual((status, len(asked), run.calls), (1, offload_host.PASSWORD_TRIES, []))
+        self.assertIn("nothing was kept or changed", said)
+        self.assertFalse(self.kept.exists())
+        for request, terminal, why in [({"root": remote.ROOT, "mac": THIRD}, True, f"this is {SECOND}, not {THIRD}"),
+                                       (None, False, "this has none"),
+                                       ({"root": "Development/elsewhere", "mac": SECOND}, True, "set up the second Mac")]:
+            with self.subTest(why):
+                status, said, asked = self.keep([], request, run=run, terminal=terminal)
+                self.assertEqual((status, asked, run.calls), (2, [], []))
+                self.assertIn(why, said)
+                self.assertFalse(self.kept.exists())
+        self.login.unlink()
+        status, said, asked = self.keep([])
+        self.assertEqual((status, asked), (2, []))
+        self.assertIn(f"{self.login} is not on {SECOND}", said)
+
+    def test_a_password_file_it_cannot_write_is_reported_and_nothing_else_changes(self):
+        run = Commands()
+        self.root.chmod(0o500)
+        self.addCleanup(self.root.chmod, 0o700)
+        status, said, _ = self.keep(["the right one"], run=run)
+        self.assertEqual((status, run.calls), (1, []))
+        self.assertIn("could not be written", said)
+        self.assertEqual(list(self.root.iterdir()), [])
+
+    def test_settings_it_could_not_change_are_reported_with_the_password_kept(self):
+        run = Commands(security__set_keychain_settings=(1, "", "security: SecKeychainSetSettings: failed"))
+        status, said, _ = self.keep(["the right one"], run=run)
+        self.assertEqual(status, 1)
+        self.assertIn("SecKeychainSetSettings: failed. The password is kept", said)
+        self.assertEqual(self.kept.read_bytes(), b"the right one")
+
+    def from_mac(self, here, seen, answer=None, local=None, interacted=0):
+        """keychain.keep_unlocked on here: its status, what it said, the commands it ran at this terminal
+        and the requests it ran here."""
+        lines, commands, requests = [], [], []
+
+        def interact(command):
+            commands.append(command)
+            return interacted
+
+        def keep(request):
+            requests.append(request)
+            return interacted
+        with patch.object(host_context, "this_mac", return_value=here), \
+                patch.object(host_context, "second_mac", return_value=seen), \
+                patch.object(host_context, "session", return_value=GUI), \
+                patch.object(remote, "reachable"), \
+                patch.object(offload_host, "keychain", return_value=local):
+            status = keychain.keep_unlocked(NAME, lines.append, lambda destination, request: answer, interact, keep)
+        return status, "\n".join(lines), commands, requests
+
+    def test_from_the_workstation_it_asks_at_the_second_mac_s_own_prompt_through_the_alias(self):
+        present = {"mac": SECOND, "home": HOME, "path": LOGIN, "exists": True, "keychains": [LOGIN]}
+        status, said, commands, requests = self.from_mac(WORKSTATION, WORKSTATION_VIEW, answer=present)
+        self.assertEqual((status, requests, len(commands)), (0, [], 1), said)
+        command = commands[0]
+        # A terminal for the second Mac's prompt, the alias, and the second Mac's login shell, as a run has.
+        self.assertEqual((command[:2], command[-2]), (["ssh", "-t"], "build-host"))
+        self.assertIn("BatchMode=yes", command)
+        script = shlex.split(shlex.split(command[-1])[-1])
+        self.assertEqual(script[:2], ["python3", "-c"])
+        self.assertEqual(json.loads(script[-1]), {"keepUnlocked": {"root": remote.ROOT, "mac": SECOND}})
+        self.assertIn(shlex.join(["python3", "scripts/eng", "remote", "admit", "--", "python3", "scripts/eng", "keychain",
+                                  "check", "--keychain", LOGIN, "--identity", NAME]), said)
+        # When the second Mac's half did not keep it, nothing more is said.
+        status, said, *_ = self.from_mac(WORKSTATION, WORKSTATION_VIEW, answer=present, interacted=1)
+        self.assertEqual(status, 1)
+        self.assertNotIn("check", said)
+
+    def test_on_the_second_mac_it_runs_here_and_never_through_an_alias(self):
+        present = {"mac": SECOND, "home": HOME, "path": LOGIN, "exists": True, "keychains": [LOGIN]}
+        status, said, commands, requests = self.from_mac(SECOND, SECOND_VIEW, local=present)
+        self.assertEqual((status, commands, requests), (0, [], [{"root": remote.ROOT, "mac": SECOND}]), said)
+        self.assertIn(f"from {WORKSTATION}, as eng remote runs work on {SECOND}", said)
+
+    def test_a_wrong_host_or_an_alias_this_mac_does_not_define_is_refused_before_anything_is_asked(self):
+        # The last: an alias that reaches the workstation itself, which is no second Mac.
+        present = {"mac": WORKSTATION, "home": HOME, "path": LOGIN, "exists": True, "keychains": [LOGIN]}
+        for here, seen in [(SECOND, view("build-host", "build-host", True, WORKSTATION)), (THIRD, view()),
+                           (WORKSTATION, view("build-host", f"{WORKSTATION}.local"))]:
+            with self.subTest(here):
+                status, said, commands, requests = self.from_mac(here, seen, local=present)
+                self.assertEqual((status, commands, requests), (2, [], []))
+                self.assertIn("Refused:", said)
+
+
 class CommandLineTests(unittest.TestCase):
     def test_eng_keychain_needs_no_project_and_exits_by_the_check_s_outcome(self):
         empty = Path(tempfile.mkdtemp())
@@ -476,6 +669,9 @@ class CommandLineTests(unittest.TestCase):
         with patch.object(keychain, "recover", return_value=2) as recovering:
             self.assertEqual(cli.main(["--project", str(empty), "keychain", "recover", "--target", SECOND]), 2)
             self.assertEqual(recovering.call_args.args[:3], (keychain.DEFAULT, SECOND, None))
+        with patch.object(keychain, "keep_unlocked", return_value=1) as keeping:
+            self.assertEqual(cli.main(["--project", str(empty), "keychain", "keep-unlocked", "--identity", NAME]), 1)
+            self.assertEqual(keeping.call_args.args[:1], (NAME,))
 
     def test_a_check_in_this_session_runs_nothing_that_could_prompt_when_it_can_show_a_dialog(self):
         # This Mac's own session, read for real: a session with graphic access runs no security command.

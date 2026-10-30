@@ -491,8 +491,9 @@ def main(argv=None):
                                         "duo-pose-helper.c"])
     disk.add_arguments(commands.add_parser("disk", help="inventory reclaimable disk space; changes nothing without --delete"))
     keychain.add_arguments(commands.add_parser("keychain", help="before the owner unlocks a keychain, say which Mac's "
-        "keychain the work needs and print commands that run only there (recover); where the automation runs, check "
-        "the keychain, the signing identity and signing with it, without a prompt (check)"))
+        "keychain the work needs and print commands that run only there (recover); keep the second Mac's login "
+        "keychain unlocked for every eng remote run (keep-unlocked); where the automation runs, check the keychain, "
+        "the signing identity and signing with it, without a prompt (check)"))
     linking = commands.add_parser("skills", help="check that Claude Code and Codex load the toolkit's agent skills "
         "through links to its main checkout; changes nothing without --link")
     linking.add_argument("--link", action="store_true", help="link each installed host's missing skills, and those "
