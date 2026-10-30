@@ -17,6 +17,8 @@ from . import guard
 
 WAIT = 5
 POLL = 0.1
+QUIT_WAIT = 20  # Existing Mac speech-runner contract: a quitting VoiceOver ignores Command-F5.
+VOICEOVER = "/System/Library/CoreServices/VoiceOver.app/Contents/MacOS/VoiceOver"
 _CURRENT = contextvars.ContextVar("voiceover_lease", default=None)
 READ = """ObjC.import('AppKit');
 var enabled = $.NSWorkspace.sharedWorkspace.isVoiceOverEnabled;
@@ -26,6 +28,10 @@ JSON.stringify(enabled);"""
 
 class UnknownState(RuntimeError):
     """Neither on nor off is established; no toggle may be inferred from it."""
+
+
+class NotReady(UnknownState):
+    """VoiceOver is off, but its previous process has not finished quitting; no enable key is safe."""
 
 
 class TransitionFailed(RuntimeError):
@@ -119,14 +125,66 @@ def _known(lease, reader, *, restoring=False):
     return value
 
 
+def _ready_to_enable(lease, *, restoring=False, timeout=WAIT):
+    """Process absence is readiness to enable, never an inference of VoiceOver's on/off state.
+
+    The public getter remains the state authority. Check only this user's exact system
+    VoiceOver executable, and recheck the lease around every bounded lifecycle query.
+    """
+    deadline = time.monotonic() + timeout
+    def query(command):
+        lease.check(restoring=restoring)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0: raise NotReady("VoiceOver enable-readiness query exceeded its bound")
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, timeout=remaining)
+        except (OSError, subprocess.SubprocessError) as error:
+            lease.check(restoring=restoring)
+            raise UnknownState(f"VoiceOver enable readiness could not be read: {error}") from error
+        lease.check(restoring=restoring)
+        if result.stderr: raise UnknownState("VoiceOver enable-readiness query reported an error")
+        return result
+    found = query(["pgrep", "-u", str(os.getuid()), "-x", "VoiceOver"])
+    if found.returncode == 1 and found.stdout == "": return True
+    pids = found.stdout.split()
+    if found.returncode != 0 or not pids or any(not pid.isdigit() or int(pid) <= 0 for pid in pids):
+        raise UnknownState("VoiceOver enable-readiness process query is unknown")
+    for pid in pids:
+        process = query(["ps", "-p", pid, "-o", "comm="])
+        if process.returncode == 1 and process.stdout == "":
+            # It ended after pgrep. A fresh pgrep, in the next bounded poll, proves absence.
+            continue
+        if process.returncode != 0 or process.stdout.strip() != VOICEOVER:
+            raise UnknownState("VoiceOver enable readiness found an unrecognized process")
+    return False
+
+
+def _wait_to_enable(lease, ready, *, restoring=False, wait=QUIT_WAIT, poll=POLL):
+    deadline = time.monotonic() + wait
+    while True:
+        lease.check(restoring=restoring)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise NotReady(f"VoiceOver is off but has not finished quitting within {wait:g}s; no enable key sent")
+        value = ready(lease, restoring=restoring, timeout=min(WAIT, remaining))
+        lease.check(restoring=restoring)
+        if type(value) is not bool: raise UnknownState("VoiceOver enable readiness is not a known boolean")
+        if value: return
+        time.sleep(min(poll, max(0, deadline - time.monotonic())))
+
+
 def read(owner=None, *, record=None):
     """Known on/off under this owner's exact foreground lease; nothing is changed."""
     return _known(_lease(owner, record), _read)
 
 
-def _set(lease, desired, reader, toggle, *, restoring=False, wait=WAIT, poll=POLL):
+def _set(lease, desired, reader, toggle, *, restoring=False, wait=WAIT, poll=POLL, ready=None, ready_wait=QUIT_WAIT):
     if type(desired) is not bool: raise ValueError("VoiceOver target must be on or off")
     if _known(lease, reader, restoring=restoring) == desired: return
+    if desired:
+        _wait_to_enable(lease, ready or _ready_to_enable, restoring=restoring, wait=ready_wait, poll=poll)
+        # The state can change while the previous process quits. Never toggle an already-on state.
+        if _known(lease, reader, restoring=restoring): return
     lease.check(restoring=restoring)
     try:
         toggle()

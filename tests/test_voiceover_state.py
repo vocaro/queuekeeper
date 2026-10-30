@@ -34,6 +34,80 @@ class PublicReadTests(unittest.TestCase):
                 self.assertRaises(state.UnknownState): state._read()
 
 
+class ReadinessQueryTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.record = devices.Record(Path(temporary.name) / "record.json")
+        self.owner = "offline readiness query"
+        self.entry = self.record.reserve(devices.FOREGROUND, owner=self.owner, revision=0, purpose="offline test",
+            release_by=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+            approval={**foreground.STANDING, "until": "released"})
+        self.lease = state._Lease(self.owner, self.record)
+
+    def test_absence_is_readiness_only_for_current_user_and_exact_empty_success(self):
+        result = subprocess.CompletedProcess([], 1, "", "")
+        with patch.object(state.os, "getuid", return_value=501), \
+             patch.object(state.subprocess, "run", return_value=result) as command:
+            self.assertIs(state._ready_to_enable(self.lease), True)
+        self.assertEqual(command.call_args.args[0], ["pgrep", "-u", "501", "-x", "VoiceOver"])
+        self.assertGreater(command.call_args.kwargs["timeout"], 0)
+        self.assertLessEqual(command.call_args.kwargs["timeout"], state.WAIT)
+
+    def test_recognized_process_means_not_ready_and_every_query_checks_the_lease(self):
+        results = [subprocess.CompletedProcess([], 0, "123\n", ""),
+                   subprocess.CompletedProcess([], 0, state.VOICEOVER + "\n", "")]
+        with patch.object(state.subprocess, "run", side_effect=results) as command, \
+             patch.object(self.lease, "check", wraps=self.lease.check) as checked:
+            self.assertIs(state._ready_to_enable(self.lease), False)
+        self.assertEqual(command.call_count, 2)
+        self.assertEqual(command.call_args.args[0], ["ps", "-p", "123", "-o", "comm="])
+        self.assertEqual(checked.call_count, 4)
+
+    def test_query_errors_and_unrecognized_processes_are_unknown_not_absent(self):
+        for result in [subprocess.CompletedProcess([], 1, "", "query error"),
+                       subprocess.CompletedProcess([], 1, "\n", ""),
+                       subprocess.CompletedProcess([], 0, "", ""),
+                       subprocess.CompletedProcess([], 0, "not-a-pid", ""),
+                       subprocess.CompletedProcess([], 2, "", "")]:
+            with self.subTest(result), patch.object(state.subprocess, "run", return_value=result), \
+                    self.assertRaises(state.UnknownState): state._ready_to_enable(self.lease)
+        for process in [subprocess.CompletedProcess([], 0, "/tmp/VoiceOver", ""),
+                        subprocess.CompletedProcess([], 0, state.VOICEOVER, "query error")]:
+            with self.subTest(process), patch.object(state.subprocess, "run", side_effect=[
+                    subprocess.CompletedProcess([], 0, "123", ""), process]), \
+                    self.assertRaises(state.UnknownState): state._ready_to_enable(self.lease)
+        with patch.object(state.subprocess, "run", side_effect=subprocess.TimeoutExpired("pgrep", 5)), \
+                self.assertRaises(state.UnknownState): state._ready_to_enable(self.lease)
+
+    def test_a_process_ending_between_queries_needs_fresh_absence_confirmation(self):
+        with patch.object(state.subprocess, "run", side_effect=[
+                subprocess.CompletedProcess([], 0, "123", ""), subprocess.CompletedProcess([], 1, "", "")]):
+            self.assertIs(state._ready_to_enable(self.lease), False)
+        with patch.object(state.subprocess, "run", return_value=subprocess.CompletedProcess([], 1, "", "")):
+            self.assertIs(state._ready_to_enable(self.lease), True)
+
+    def test_readiness_allows_only_the_same_scope_to_restore_its_own_exact_uncertainty(self):
+        self.lease.uncertain("owned transition failure")
+        with patch.object(state.subprocess, "run", return_value=subprocess.CompletedProcess([], 1, "", "")) as query:
+            self.assertIs(state._ready_to_enable(self.lease, restoring=True), True)
+            with self.assertRaises(devices.Refused): state._ready_to_enable(self.lease)
+        self.assertEqual(query.call_count, 1)
+
+
+    def test_replacement_during_pgrep_stops_before_process_identity_or_any_further_query(self):
+        def replaced(*args, **options):
+            entry = self.record.entry(devices.FOREGROUND)
+            self.record.release(devices.FOREGROUND, owner=self.owner, revision=entry["revision"],
+                                outcome="test replacement", restoration="test", frontmost="not-ours")
+            self.record.reserve(devices.FOREGROUND, owner="other", revision=entry["revision"] + 1,
+                                purpose="new holder", release_by=entry["expectedReleaseBy"], approval=entry["approval"])
+            return subprocess.CompletedProcess([], 0, "123", "")
+        with patch.object(state.subprocess, "run", side_effect=replaced) as command, \
+                self.assertRaises(devices.Refused): state._ready_to_enable(self.lease)
+        self.assertEqual(command.call_count, 1)
+
+
 class StateTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
@@ -43,6 +117,9 @@ class StateTests(unittest.TestCase):
         self.entry = self.record.reserve(devices.FOREGROUND, owner=self.owner, revision=0, purpose="offline test",
             release_by=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
             approval={**foreground.STANDING, "until": "released"})
+        readiness = patch.object(state, "_ready_to_enable", return_value=True, create=True)
+        readiness.start()
+        self.addCleanup(readiness.stop)
         self.enabled = False
         self.actions = []
 
@@ -187,6 +264,67 @@ class StateTests(unittest.TestCase):
         self.actions.clear()
         with self.assertRaises(devices.Refused):
             with self.scope(): self.fail("uncertainty adopted by a later scope")
+        self.assertEqual(self.actions, [])
+
+
+    def test_restore_on_waits_for_quitting_to_finish_instead_of_using_public_false_as_readiness(self):
+        self.enabled = True
+        quitting = [False]
+        keys = []
+        polls = []
+        def toggle():
+            keys.append((not self.enabled, quitting[0]))
+            self.enabled = not self.enabled
+            if not self.enabled: quitting[0] = True
+        def ready(*args, **options):
+            polls.append(quitting[0])
+            return not quitting[0]
+        def settled(_seconds): quitting[0] = False
+        with patch.object(state, "_ready_to_enable", side_effect=ready, create=True), \
+             patch.object(state.time, "sleep", side_effect=settled):
+            with self.scope(target=False, toggle=toggle): self.assertFalse(self.enabled)
+        self.assertTrue(self.enabled)
+        self.assertEqual(keys, [(False, False), (True, False)])
+        self.assertEqual(polls, [True, False])
+
+    def test_permanently_quitting_refuses_without_an_enable_key_at_the_twenty_second_bound(self):
+        clock = [0.0]
+        lease = state._Lease(self.owner, self.record)
+        def sleep(seconds): clock[0] += seconds
+        with patch.object(state.time, "monotonic", side_effect=lambda: clock[0]), \
+             patch.object(state.time, "sleep", side_effect=sleep), self.assertRaises(state.NotReady):
+            state._set(lease, True, self.read, self.toggle, ready=lambda *a, **kw: False)
+        self.assertEqual(clock[0], 20)
+        self.assertEqual(self.toggles(), [])
+        self.assertNotEqual(devices.condition(self.record.entry(devices.FOREGROUND)), "uncertain")
+
+    def test_unknown_readiness_does_not_send_an_enable_key(self):
+        lease = state._Lease(self.owner, self.record)
+        for ready in (lambda *a, **kw: None, lambda *a, **kw: (_ for _ in ()).throw(state.UnknownState("query failed"))):
+            with self.subTest(ready), self.assertRaises(state.UnknownState):
+                state._set(lease, True, self.read, self.toggle, ready=ready)
+        self.assertEqual(self.toggles(), [])
+
+    def test_state_is_rechecked_after_readiness_and_an_already_on_state_is_never_toggled(self):
+        lease = state._Lease(self.owner, self.record)
+        def ready(*args, **options):
+            self.enabled = True
+            return True
+        state._set(lease, True, self.read, self.toggle, ready=ready)
+        self.assertTrue(self.enabled)
+        self.assertEqual(self.toggles(), [])
+
+    def test_lost_lease_while_quitting_forbids_any_further_read_or_enable(self):
+        lease = state._Lease(self.owner, self.record)
+        def replaced(*args, **options):
+            entry = self.record.entry(devices.FOREGROUND)
+            self.record.release(devices.FOREGROUND, owner=self.owner, revision=entry["revision"],
+                                outcome="test replacement", restoration="test", frontmost="not-ours")
+            self.record.reserve(devices.FOREGROUND, owner="other", revision=entry["revision"] + 1,
+                                purpose="new test holder", release_by=entry["expectedReleaseBy"], approval=entry["approval"])
+            self.actions.clear()
+            return True
+        with self.assertRaises(devices.Refused): state._set(lease, True, self.read, self.toggle, ready=replaced)
         self.assertEqual(self.actions, [])
 
 
