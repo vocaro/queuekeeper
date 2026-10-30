@@ -1894,16 +1894,24 @@ appears, stop your processes, leave the dialog for the owner and say so. Samplin
 
 Three kinds of marker coexist, and they are reclaimed differently:
 
-- Admission's guard records each owner's PID, process start, label, admission time and an
-  uncertainty flag; beside it, each entry's process record lists what supervision saw of that
-  owner's commands. It is `/tmp/studywright-gate-suite.lock.warm-push-guard`, named after
-  StudyWright's former host gate lock, or `SW_GATE_LOCK_FILE` with `.warm-push-guard` appended:
-  StudyWright's gate checks an inherited admission against that path, and tests isolate
-  admission by redirecting it. Admission takes no lock at the gate lock's own path, and a file
+- Admission's guard records each owner's PID, process start, label, whether it is exclusive or
+  holds the model, its admission time and an uncertainty flag; beside it, each entry's process
+  record lists what supervision saw of that owner's commands. It is
+  `/tmp/studywright-gate-suite.lock.warm-push-guard`, named after StudyWright's former host gate
+  lock, or `SW_GATE_LOCK_FILE` with `.warm-push-guard` appended: StudyWright's gate checks an
+  inherited admission against that path, and tests isolate admission by redirecting it. Admission takes no lock at the gate lock's own path, and a file
   left there holds nothing back. The guard is never reclaimed by PID or by time, because a dead
   owner's compilers or simulator children can outlive it. Admission refuses to proceed while any
   owner is dead or uncertain, or while the guard is unreadable or not in admission's format,
-  which it never overwrites.
+  which it never overwrites. Admission's format is JSON with `"vocaroEngineering": 1` and
+  `owners`, an object of entries by identity, each with a positive integer `pid`, a `start`
+  string, a `label` string and an `exclusive` flag, which every toolkit has written, and any
+  `model` or `uncertain` flag or `admitted` string it has; other fields, which a newer toolkit
+  may add, are read past. A guard is out of that format as a whole when one entry is, or when
+  `owners` is missing or anything but an object, an empty list among them
+  ([vocaro-engineering#72](https://github.com/vocaro/vocaro-engineering/issues/72)): admission
+  and `eng admissions recover` refuse it, and nested work inside an admission it records fails
+  rather than reusing that admission.
 - The exclusive queue (`exclusive-queue.json` in the slot directory, changed only under its
   `coordination.lock`) records each waiting exclusive request's PID, process start and label, in
   arrival order. A queued request holds no slot and has started nothing, so admission drops one
@@ -1917,10 +1925,11 @@ Three kinds of marker coexist, and they are reclaimed differently:
 A job leaving admission changes only its own guard entry, whatever state the other owners are
 in: a clean exit, or a stop or timeout that saw all of its processes end, removes the entry,
 and the guard with its last one; any other exception marks it uncertain. It never changes or
-drops another owner's entry. Until 2026-10-22 a job that left while another owner was dead
-changed nothing, so its own entry died with its process: one lane killed by its agent stranded
-a run that finished normally beside it, and the host admitted no heavy work for 80 minutes,
-until the guard was recovered by hand.
+drops another owner's entry. A guard that is unreadable or not in admission's format it leaves
+as it is, its own entry in it, for inspection with the rest. Until 2026-10-22 a job that left
+while another owner was dead changed nothing, so its own entry died with its process: one lane
+killed by its agent stranded a run that finished normally beside it, and the host admitted no
+heavy work for 80 minutes, until the guard was recovered by hand.
 
 `eng admit`, `eng run` and the resource CLI carry out SIGTERM, SIGINT and SIGHUP as a stop. A
 stop while queued leaves nothing to release. Once admitted, the job first marks its entry

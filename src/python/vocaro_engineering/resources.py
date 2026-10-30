@@ -87,10 +87,34 @@ def guard_path(environment):
     return Path(environment.get("SW_GATE_LOCK_FILE", GATE_LOCK) + ".warm-push-guard")
 
 
+# The fields of a guard entry as admission writes it, each with its type. Every toolkit has written the first
+# four; an entry may lack the others, which later toolkits added or which mark it. A field named in neither,
+# such as a newer toolkit may add, is read past.
+FIELDS, LATER = {"pid": int, "start": str, "label": str, "exclusive": bool}, {"model": bool, "admitted": str, "uncertain": bool}
+
+
+def entries(state):
+    """A guard's entries by identity, or None when the guard, parsed, is not in admission's format: the marker
+    {"vocaroEngineering": 1}, and owners an object whose every entry has a positive PID, its start, its label
+    and whether it is exclusive, and each field FIELDS and LATER name of its type. Admission refuses a guard
+    not in that format and never overwrites it, as with one it cannot parse (#72)."""
+    owners = state.get("owners") if isinstance(state, dict) and state.get("vocaroEngineering") == 1 else None
+    if not isinstance(owners, dict):
+        return None
+    for entry in owners.values():
+        if not (isinstance(entry, dict) and all(field in entry for field in FIELDS)
+                and all(type(entry[field]) is kind for field, kind in {**FIELDS, **LATER}.items() if field in entry)
+                and entry["pid"] > 0):
+            return None
+    return owners
+
+
 def guard_owners(environment):
     """Each owner the guard in this environment records, as (PID, process start with its spacing
     collapsed), read as other readers read it, without the coordination lock. A missing or unreadable
-    guard, or one not in admission's format, records none."""
+    guard, or one without admission's marker and owners object, records none. An entry that names no
+    PID and start records no owner, and those beside it still do, even where admission refuses the
+    guard (#72): supervision that missed a live owner would signal its children, its samples among them."""
     try:
         state = json.loads(guard_path(environment).read_text())
     except (OSError, ValueError):
@@ -241,9 +265,11 @@ def inherited(exclusive=False, model=False):
         if len(nonces) != 1:
             raise ValueError("Admission descriptors have different owners")
         guard = Path(token.get("guard", guard_path(os.environ)))
-        state = json.loads(guard.read_text())
-        owner = state.get("owners", {}).get(next(iter(nonces)))
-        if state.get("vocaroEngineering") != 1 or not owner or owner.get("uncertain"):
+        owners = entries(json.loads(guard.read_text()))
+        if owners is None:
+            raise ValueError(f"the guard {guard} is unreadable or not in admission's format")
+        owner = owners.get(next(iter(nonces)))
+        if not owner or owner.get("uncertain"):
             raise ValueError("Admission owner has no active guard")
         if process_start(owner["pid"]) != owner.get("start"):
             raise ValueError("Admission owner identity changed")
@@ -321,14 +347,13 @@ class Admission:
         self.queued = False
 
     def _recorded(self):
-        """The published guard with its owners unvalidated, or None if it is unreadable or not in admission's format."""
+        """The published guard, whether or not its owners run, or None if it is unreadable or not in admission's
+        format (entries)."""
         try:
             value = json.loads(self.guard.read_text())
         except (OSError, ValueError):
             return None
-        if not isinstance(value, dict) or value.get("vocaroEngineering") != 1:
-            return None
-        return value
+        return value if entries(value) is not None else None
 
     def _guard(self):
         """The published guard, or None, with the refusal naming why, when it is unreadable or not in admission's
@@ -341,7 +366,7 @@ class Admission:
             problem = f"the guard {self.guard} is unreadable or not in admission's format"
         else:
             # Never reclaim a disappeared owner: its children may still use a different session.
-            owner = next((owner for owner in value.get("owners", {}).values()
+            owner = next((owner for owner in value["owners"].values()
                           if owner.get("uncertain") or not running(owner)), None)
             if owner is None:
                 return value
@@ -492,7 +517,7 @@ class Admission:
             if self.holders is None:
                 # The admissions the guard records when the request asks, a dead or uncertain one among them.
                 recorded = state or self._recorded()
-                self.holders = len(recorded.get("owners") or {}) if recorded else None
+                self.holders = len(recorded["owners"]) if recorded else None
             if state is None:
                 return False
             if waiters and waiters[0]["identity"] != self.identity:
@@ -609,11 +634,13 @@ class Admission:
         """Remove this job's entry, or mark it uncertain. The caller holds the coordination lock.
 
         Only this job's entry changes, whatever the other owners' state: a release that waited
-        for a dead owner's recovery would leave this entry dead once this process ends.
+        for a dead owner's recovery would leave this entry dead once this process ends. A guard
+        that is unreadable or not in admission's format is never overwritten, so this entry stays
+        in it, for inspection with the rest.
         """
         state = self._recorded()
-        owners = state.get("owners") if state is not None else None
-        if not isinstance(owners, dict) or self.identity not in owners:
+        owners = state["owners"] if state is not None else None
+        if owners is None or self.identity not in owners:
             return
         if release:
             del owners[self.identity]
@@ -905,19 +932,16 @@ def recover(owner=None, out=print):
 
     A live owner's entry is never touched: the owner removes it, or leaves it, itself. An entry without a
     process record, written by an older toolkit or by a caller that runs its own commands without
-    recording them, is left for a check by hand, as is a guard that is unreadable or not in admission's format.
+    recording them, is left for a check by hand, as is a guard that is unreadable or not in admission's format,
+    as admission refuses it: one whose owners are not all entries in admission's format among them (#72).
     """
     guard = guard_path(os.environ)
     directory = slot_directory()
     directory.mkdir(parents=True, exist_ok=True)
 
-    def whole(entry):
-        return (isinstance(entry, dict) and type(entry.get("pid")) is int and entry["pid"] > 0
-                and isinstance(entry.get("start"), str) and isinstance(entry.get("label", ""), str))
-
     def shown(entry):
         """An entry's label on one line: an eng admit label is its command line, which can span several."""
-        return " ".join(entry.get("label", "?").split())[:160]
+        return " ".join(entry["label"].split())[:160]
 
     def recorded(identity):
         """The entry's process record, or None: an identity that is not admission's names none."""
@@ -929,24 +953,21 @@ def recover(owner=None, out=print):
         try: state = json.loads(guard.read_text())
         except FileNotFoundError: state = {"vocaroEngineering": 1, "owners": {}}
         except (OSError, ValueError): state = None
-        owners = state.get("owners") if isinstance(state, dict) and state.get("vocaroEngineering") == 1 else None
-        if not isinstance(owners, dict):
+        owners = entries(state)
+        if owners is None:
             out(f"{guard} is unreadable or not in admission's format. Recovery leaves it alone; inspect it by hand "
                 "(guides/shared-host.md, Lock reclamation).")
             return 1
         if owner is None:
             # The entries that refuse admission, as admission reads them.
             stranded = [(identity, entry) for identity, entry in owners.items()
-                        if not whole(entry) or entry.get("uncertain") or not running(entry)]
+                        if entry.get("uncertain") or not running(entry)]
             if not stranded:
                 out(f"No entry of {guard} is dead or uncertain.")
                 return 0
             out(f"{len(stranded)} entr{'y' if len(stranded) == 1 else 'ies'} of {guard} "
                 f"{'is' if len(stranded) == 1 else 'are'} dead or uncertain:")
             for identity, entry in stranded:
-                if not whole(entry):
-                    out(f"  {identity}: an entry recovery cannot read; {BY_HAND}")
-                    continue
                 condition = ("uncertain, and its owner still runs" if running(entry) else
                              "uncertain, and its owner has ended" if entry.get("uncertain") else "its owner has ended")
                 out(f"  {identity} {shown(entry)}: PID {entry['pid']}, {entry_age(entry)}, {condition}; "
@@ -954,16 +975,13 @@ def recover(owner=None, out=print):
             out("Recover one with `python3 scripts/eng admissions recover OWNER`, OWNER its PID or identity.")
             return 0
         named = [identity for identity, entry in owners.items()
-                 if identity == owner or (whole(entry) and str(entry["pid"]) == owner)]
+                 if identity == owner or str(entry["pid"]) == owner]
         if len(named) != 1:
             out(f"No entry of {guard} has the PID or identity {owner}; nothing was changed." if not named else
                 f"PID {owner} owns {len(named)} entries of {guard}; name one by its identity: {', '.join(named)}. "
                 "Nothing was changed.")
             return 1
         identity, entry = named[0], owners[named[0]]
-        if not whole(entry):
-            out(f"{identity} is an entry recovery cannot read, so it stays; {BY_HAND}.")
-            return 1
         name = f"{shown(entry)} (PID {entry['pid']})"
         if not ended(entry):
             out(f"{name} still runs, so its entry stays: its owner removes the entry, or leaves it for recovery, "
@@ -994,7 +1012,7 @@ def recover(owner=None, out=print):
         with contextlib.suppress(OSError): path.unlink(missing_ok=True)
         append_log({"event": "recovered", "identity": identity, "pid": entry["pid"],
                     "kind": "exclusive" if entry.get("exclusive") else "model" if entry.get("model") else "heavy",
-                    "label": entry.get("label", "")[:160], "uncertain": bool(entry.get("uncertain")),
+                    "label": entry["label"][:160], "uncertain": bool(entry.get("uncertain")),
                     "commands": commands, "processes": processes, "spaces": spaces})
         out(f"Recovered {name}: " + (f"nothing of its {commands} unsettled command(s) still runs, among {processes} "
             f"recorded processes and {spaces} process groups and sessions" if commands else
