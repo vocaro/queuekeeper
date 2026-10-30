@@ -132,7 +132,7 @@ class SlotTests(unittest.TestCase):
 
 
 class ReadinessTests(unittest.TestCase):
-    def problems(self, console="trevor", trusted=True, settings=None):
+    def problems(self, console="trevor", trusted=True, capture=True, settings=None):
         settings = {"lsappinfo front": "ASN:0x0-0x2:", "lsappinfo info -only name ASN:0x0-0x2:": '"Safari" ASN',
                     "automationmodetool": "This device DOES NOT REQUIRE user authentication",
                     "defaults read com.apple.VoiceOverTraining doNotShowSplashScreen": "1",
@@ -140,6 +140,7 @@ class ReadinessTests(unittest.TestCase):
         user = type("User", (), {"pw_name": "trevor"})
         with patch.object(offload_host, "console_user", return_value=console), \
              patch.object(offload_host, "accessibility_trusted", return_value=trusted), \
+             patch.object(offload_host, "screen_capture_allowed", return_value=capture), \
              patch.object(offload_host.pwd, "getpwuid", return_value=user), \
              patch.object(offload_host, "output", side_effect=lambda command, *_: settings.get(" ".join(command))):
             return [problem for problem, _fix in offload_host.foreground_problems()]
@@ -149,6 +150,7 @@ class ReadinessTests(unittest.TestCase):
         cases = {"logged in on the screen": dict(console="root"),
                  "screen is locked": dict(settings={"lsappinfo info -only name ASN:0x0-0x2:": '"loginwindow" ASN'}),
                  "not trusted for accessibility": dict(trusted=False),
+                 "may not capture the screen": dict(capture=False),
                  "automation mode asks for authentication": dict(settings={"automationmodetool": "REQUIRES"}),
                  "welcome dialog": dict(settings={"defaults read com.apple.VoiceOverTraining doNotShowSplashScreen": None}),
                  "enable Dictation": dict(settings={"defaults read com.apple.HIToolbox AppleDictationAutoEnable": "1"})}

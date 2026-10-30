@@ -340,6 +340,17 @@ def accessibility_trusted():
         return False
 
 
+def screen_capture_allowed():
+    """Whether this process, and with it the command that started it, may capture the screen, asked without a
+    prompt (CGPreflightScreenCaptureAccess)."""
+    try:
+        graphics = ctypes.CDLL("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
+        graphics.CGPreflightScreenCaptureAccess.restype = ctypes.c_bool
+        return bool(graphics.CGPreflightScreenCaptureAccess())
+    except (OSError, AttributeError):
+        return False
+
+
 def foreground_problems():
     """What this Mac lacks for foreground work, a Mac VoiceOver session among it, run by a command started
     over SSH, as [problem, the owner's fix] pairs; none when it is ready. Each is a setting of the owner's
@@ -361,6 +372,11 @@ def foreground_problems():
                       "it can neither send VoiceOver keys through System Events nor read speech's observer",
                       "in System Settings, Privacy & Security, Accessibility, add /usr/libexec/sshd-keygen-wrapper, "
                       "which runs Remote Login's commands, and turn it on"])
+    if not screen_capture_allowed():
+        found.append(["a command started over SSH may not capture the screen (CGPreflightScreenCaptureAccess is "
+                      "false), so a run's screenshots can fail or raise a permission prompt that takes the focus",
+                      "in System Settings, Privacy & Security, Screen & System Audio Recording, add "
+                      "/usr/libexec/sshd-keygen-wrapper and turn it on"])
     mode = output(["automationmodetool"]) or ""
     if "DOES NOT REQUIRE" not in mode:
         found.append(["XCTest's automation mode asks for authentication, which nobody at the screen gives",
