@@ -418,7 +418,8 @@ class Record:
         """Release the caller's own entry with its terminal outcome and restoration checks.
 
         It waits for the processes the entry records as its own. Releasing mac-foreground also says
-        whether the previous frontmost app was restored or the foreground was no longer the session's."""
+        whether the previous frontmost app was restored or the foreground was no longer the session's.
+        Explicit unresolved uncertainty requires attended recover(), even when no live PID is known."""
         if not outcome or not restoration:
             raise ValueError("a release records the terminal outcome and the restoration checks")
         if key == FOREGROUND and frontmost not in FRONTMOST:
@@ -432,6 +433,10 @@ class Record:
             if current.get("activeRun"):
                 raise Refused(f"{key} has an active run; record its confirmed terminal result first. "
                               "Nothing was changed")
+            if current.get("uncertain"):
+                raise Refused(f"{key} has unresolved uncertainty: "
+                              f"{current.get('uncertainReason') or 'termination is not verified'}. "
+                              "Use attended recovery after verifying the work stopped. Nothing was changed")
             alive = running(current)
             if alive:
                 raise Refused(f"{key}'s own processes {', '.join(str(item['pid']) for item in alive)} are still "

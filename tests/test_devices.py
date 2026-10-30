@@ -296,6 +296,43 @@ class DeviceRecordTests(unittest.TestCase):
         self.assertEqual(json.loads(output)["entry"]["recovery"]["offload"], {"host": "build-host",
                                                                               "unchecked": "it is gone"})
 
+    def test_explicit_uncertainty_without_a_known_pid_cannot_be_auto_released(self):
+        entry = self.reserve()
+        entry = self.record.update("iPhone", owner="session-a", revision=entry["revision"],
+                                   uncertain=True, run={"uncertainty": "launch may have completed without its PID"})
+        before = self.path.read_bytes()
+        with self.assertRaisesRegex(devices.Refused, "unresolved uncertainty"):
+            self.record.release("iPhone", owner="session-a", revision=entry["revision"],
+                                outcome="caller ended", restoration="no PID was observed")
+        self.assertEqual(self.path.read_bytes(), before)
+        recovered = self.record.recover("iPhone", by="owner", revision=entry["revision"],
+                                        verified="exact executable census is empty and request ended")
+        self.assertEqual(recovered["state"], "released")
+        self.assertNotIn("uncertain", recovered)
+        self.assertIn("without its PID", recovered["run"]["uncertainty"])
+
+    def test_foreground_finally_retains_explicit_unknown_launch_uncertainty(self):
+        from vocaro_engineering import foreground
+        with patch.object(foreground, "second_mac", return_value=True), \
+             patch.object(foreground, "front", return_value="owned control"), \
+             patch.object(foreground.offload_host, "mac_name", return_value="test Mac"):
+            # Independent positive control: the normal context still releases.
+            with foreground.slot("positive", timeout=1, record=self.record,
+                                 ready=lambda: [], voiceover=lambda: False, said=lambda _: None):
+                pass
+            self.assertEqual(self.record.entry(devices.FOREGROUND)["state"], "released")
+            with self.assertRaisesRegex(devices.Refused, "unresolved uncertainty"):
+                with foreground.slot("unknown launch", timeout=1, record=self.record,
+                                     ready=lambda: [], voiceover=lambda: False, said=lambda _: None) as owner:
+                    entry = self.record.entry(devices.FOREGROUND)
+                    self.record.update(devices.FOREGROUND, owner=owner, revision=entry["revision"],
+                                       uncertain=True, run={"uncertainty": "launch completion is unknown"})
+            retained = self.record.entry(devices.FOREGROUND)
+            self.assertEqual(devices.condition(retained), "uncertain")
+            self.assertFalse(retained["activeRun"])
+            self.assertTrue(retained["uncertain"])
+            self.assertIsNotNone(retained["ownerChatID"])
+
     def test_unverified_restoration_keeps_the_device_until_its_owner_releases_it(self):
         entry = self.reserve()
         entry = self.record.update("iPhone", owner="session-a", revision=entry["revision"], state="restoration-unverified")
