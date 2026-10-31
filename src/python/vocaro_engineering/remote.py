@@ -383,6 +383,20 @@ def snapshot(root):
     return commit, head
 
 
+def changed_since(root, offered):
+    """Why work this Mac admitted after offering it to the second Mac would not run what it sent, or
+    None: a run here reads the checkout's working tree as it is when the run starts, and that tree is
+    no longer the commit sent (vocaro-engineering#79). Work for which nothing was sent runs the tree
+    as it is."""
+    commit = offered.sent.get("commit") if offered is not None else None
+    if commit is None: return None
+    now, _head = snapshot(root)
+    if git(root, "rev-parse", f"{now}^{{tree}}") == git(root, "rev-parse", f"{commit}^{{tree}}"): return None
+    changes = git(root, "diff", "--name-status", "--no-renames", commit, now)
+    return (f"the working tree changed after {commit[:12]} was sent to the second Mac, and a run here would read "
+            f"the changed tree, not what was sent:\n{changes}")
+
+
 def common_directory(root):
     return Path(git(root, "rev-parse", "--path-format=absolute", "--git-common-dir"))
 

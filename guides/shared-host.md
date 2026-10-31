@@ -411,6 +411,15 @@ the second Mac is at capacity, until it is too (the owner's decision, 2026-10-28
    ([heavy-work admission](#heavy-work-admission)). A lane that neither admits within 5,400 s ends
    with exit 75 (`BUSY`) and runs nowhere.
 
+A lane this Mac takes runs in this checkout, over its working tree as it is once admitted, not over
+the commit sent to the second Mac. So when a commit was sent, this Mac runs the lane only while the
+working tree is still that commit's tree: once admitted it snapshots the tree again, and when the
+two differ it exits 2 without running, `eng: LANE not run on this Mac: the working tree changed
+after COMMIT was sent` with the changed paths, rather than run a tree other than the one sent
+([vocaro-engineering#79](https://github.com/vocaro/vocaro-engineering/issues/79)). Restore the tree
+or run the lane again. Its receipt's `sent` names the commit, and `project` the tree as it stood
+once admitted. `eng admit --verify` does the same for its command.
+
 Each of this Mac's waits that ends unadmitted leaves its queue and is logged as withdrawn, as each
 declined offer is on the second Mac ([admission log](#admission-log)); an exclusive lane rejoins
 this Mac's exclusive queue at each wait, behind requests that came meanwhile. `eng run --if-free`

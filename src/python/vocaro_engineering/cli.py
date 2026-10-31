@@ -308,6 +308,21 @@ def admitted_here(stack, name, label, timeout, offered=None, once=False, exclusi
     return admission
 
 
+def admitted_tree(root, name, offered, receipt):
+    """None when work this Mac admitted may run, after recording in receipt the tree it reads, or 2 after
+    saying why not. A run here reads the working tree as it is once admitted, not as it was when the
+    work was offered or queued: work this Mac takes after sending the second Mac a commit runs only
+    while the tree is still that commit's (remote.changed_since), and receipt's sent names that commit."""
+    changed = remote.changed_since(root, offered)
+    if changed is not None:
+        print(f"eng: {name} not run on this Mac: {changed}\neng: restore the tree that was sent, or run it again to "
+              "send the tree as it is now", file=sys.stderr, flush=True)
+        return 2
+    receipt["project"] = source_identity(root)
+    if offered is not None and offered.sent.get("commit"): receipt["sent"] = offered.sent["commit"]
+    return None
+
+
 def admit(root, args, config=None):
     # A command runs here, in the current directory: its paths, devices and products are this Mac's
     # (guides/shared-host.md, Which Mac runs a lane). Only --verify, which says that its result is its
@@ -348,6 +363,8 @@ def admit(root, args, config=None):
         admission = admitted_here(stack, "the command", " ".join(command), args.timeout, offered, args.if_free,
                                   args.exclusive, args.model)
         if isinstance(admission, int): return admission
+        stopped = admitted_tree(root, "the command", offered, receipt)
+        if stopped is not None: return stopped
         receipt["queueSeconds"] = round(time.monotonic() - asked, 3)
         if offered is not None: receipt["hereBecause"] = offered.status
         def work():
@@ -699,6 +716,8 @@ def main(argv=None):
                                                       remote.OVERFLOW_TIMEOUT, offered, args.if_free,
                                                       resource == "exclusive", lane.get("model", False))
                             if isinstance(admission, int): return admission
+                            stopped = admitted_tree(root, args.lane, offered, receipt)
+                            if stopped is not None: return stopped
                             # The wait in the queue, apart from what came before it (remote.execute).
                             receipt["queueSeconds"] = round(time.monotonic() - asked, 3)
                             if offered is not None: receipt["hereBecause"] = offered.status

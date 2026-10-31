@@ -1316,6 +1316,34 @@ class RemoteTests(unittest.TestCase):
             self.assertTrue(receipt["hereBecause"].startswith("the second Mac is busy: "), receipt)
             self.assertFalse((self.project / ".build/engineering/remote/gate").exists())
 
+    def test_a_lane_this_mac_takes_after_sending_a_snapshot_runs_only_the_tree_it_sent(self):
+        # vocaro-engineering#79: a session removed a file after the snapshot went, and this Mac then ran
+        # the lane over the tree without it.
+        self.work_in_progress()
+        waiting, lane = "waits for whichever Mac admits it first", self.project / ".build/engineering/gate"
+        with self.subTest("unchanged"), contextlib.ExitStack() as here, contextlib.ExitStack() as there:
+            here.enter_context(self.busy_here())
+            there.enter_context(self.busy_second_mac())
+            status, output = self.waits_there("gate", waiting, here.close)
+            self.assertEqual(status, 0, output)
+            receipt = self.ran_here()
+            sent = re.search(r"remote: sending (\w+), a snapshot of the working tree", output).group(1)
+            self.assertTrue(receipt["sent"].startswith(sent), receipt)
+            # The tree the run read, as it stood once admitted.
+            self.assertEqual(receipt["project"], config.source_identity(self.project))
+        shutil.rmtree(lane)
+        with self.subTest("changed"), contextlib.ExitStack() as here, contextlib.ExitStack() as there:
+            here.enter_context(self.busy_here())
+            there.enter_context(self.busy_second_mac())
+            def change():
+                (self.project / "new.txt").unlink()
+                here.close()
+            status, output = self.waits_there("gate", waiting, change)
+            self.assertEqual(status, 2, output)
+            self.assertIn("eng: gate not run on this Mac: the working tree changed after ", output)
+            self.assertIn("D\tnew.txt", output)
+            self.assertFalse(lane.exists(), output)
+
     @patch.object(remote, "OVERFLOW_TIMEOUT", 8)
     def test_a_lane_that_neither_mac_admits_in_time_runs_nowhere_and_if_free_asks_each_once(self):
         with self.busy_here(), self.busy_second_mac():
