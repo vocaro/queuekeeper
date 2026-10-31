@@ -211,13 +211,19 @@ queue, with every entry waiting, as it also does for a push refused for any reas
 hold stays until the owner, or a session the owner told to, has dealt with its cause and run
 `eng queue resume`. Nothing fails over to another route.
 
-**Main moving under a passed batch.** A session may still push directly, as for a record on its
-own, and the queue takes that as it comes. If `main` moved only by Markdown documents the batch
+**Pushing by hand is the exception.** A session pushes to `main` by hand only when `eng land` cannot
+be used, when it must be bypassed, each for a reason it can state, such as a broken queue or a fix
+that cannot wait for it, or with the owner's approval. A record or a document lands by the queue
+like anything else. A hand push follows [push only onto the `main` you tested](#concurrent-git-integration)
+and is reported to the owner with its reason. No check enforces this.
+
+**Main moving under a passed batch.** The queue takes a hand push as it comes. If `main` moved only by Markdown documents the batch
 does not touch, or by paths in `queue.carryOver`, each with why no queue lane reads it, the worker
 checks that the batch's patch is unchanged on the new `main`, runs `eng docs check` when a document
 moved, and pushes. A carried-over result is no gate of the pushed commit: `eng release` will not
-take it. Any other move gates again, with no blame. List a project's records and evidence
-directories in `queue.carryOver`, so that they restart nothing.
+take it. Any other move gates again, with no blame. List in `queue.carryOver` only
+records no queue lane reads, and check first: studywright's gate compiles sources under
+`measurements/audits`, and BreezEPUB's script tests read parts of `evidence/`.
 
 **State and recovery.** Each repository's state is under `eng-queue` in its common Git directory,
 so every worktree sees one queue. A worker starts by itself with `eng land`, apart from the session,
