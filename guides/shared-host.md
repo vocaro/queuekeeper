@@ -1994,6 +1994,13 @@ ran to their own end through both interrupts (2026-10-23, Claude desktop app 3.6
 Claude Code 2.1.308, macOS 27.0; the interrupts were sent with the app's session stop tool, which
 it describes as pressing Stop).
 
+Quitting the Claude desktop app stops each session's background commands as a task stop does: a
+background command and its child in its own session received SIGTERM in the same millisecond and
+were killed 1.49 and 1.50 s later, and the shell was gone at +0.006 s. The relaunched app reported
+the command as not finished before its session ended (2026-10-31, Claude desktop app 4.4212.0,
+Claude Code 2.1.309, macOS 27.2). Ask the owner to quit the app only once no admitted command is
+running.
+
 Pressing the Stop button stops only the turn's foreground command, as an interrupt does. The
 command and its child in its own session received SIGTERM in the same millisecond and were gone
 1.47 and 1.48 s later without exiting, killed; the shell was gone within 5 ms. The session's
@@ -2028,7 +2035,7 @@ stops nothing: 20 s after the window closed, the shell, still a child of Codex's
 both probe processes ran on unsignaled (2026-10-31, ChatGPT 26.1027.30824 with codex-cli
 0.166.0-alpha.5.1, macOS 27.2). A Codex agent therefore follows an admitted command to its
 terminal result before ending its turn under `codex exec`, and before the thread is archived in
-Codex Desktop. What quitting the Claude desktop app sends was not measured.
+Codex Desktop.
 
 Recovery of a guard entry is attended, and `eng admissions recover` carries it out. The first
 command below lists each entry that refuses admission, dead or uncertain, with its identity, label,
