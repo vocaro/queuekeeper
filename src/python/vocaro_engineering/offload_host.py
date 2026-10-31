@@ -814,14 +814,19 @@ def device_users(request, listed=listing, written=disk_writes):
     """What here may still use the physical device a run was given, for `devices recover`: each of
     the account's processes whose command line names its UDID, live or left over, among them the
     run's own offload_host.py, whose plan names it while the run lasts; and each leftover that started
-    since the run did. It reads and reports, and stops nothing."""
+    since the run did. Another recovery's census of the device, whose request names it too, only reads,
+    so it is not one: two recoveries checking at once would otherwise each hold the other's (#80).
+    It reads and reports, and stops nothing."""
     udid = request["udid"].upper()
     table = process_table(listed(["ps", "-axww", "-o", "pid=,ppid=,uid=,lstart=,args="]))
     if not table: return {"error": "ps listed no processes"}
     own, uid = set(lineage(table, os.getpid())), os.getuid()
+    # The start of the request remote.device_users sends for this device.
+    census = json.dumps({"device": {"udid": udid}})[:-2]
     naming = [{"pid": pid, "start": process["start"], "command": process["args"][:COMMAND_LIMIT]}
               for pid, process in table.items()
-              if process["uid"] == uid and pid not in own and udid in process["args"].upper()]
+              if process["uid"] == uid and pid not in own and udid in process["args"].upper()
+              and census not in process["args"]]
     census = leftovers(request["root"], listed, written)
     if "error" in census: return census
     since = request.get("since")

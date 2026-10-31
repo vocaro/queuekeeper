@@ -16,6 +16,7 @@ import tempfile
 import threading
 import time
 import unittest
+import uuid
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
@@ -571,8 +572,8 @@ class RemoteTests(unittest.TestCase):
         self.assertIn(f"named {' '.join(named)}", output)
 
     def test_recovering_a_run_sent_here_waits_for_what_on_the_second_mac_names_its_device(self):
-        # Its own device, which no other test's processes name.
-        udid = PHONE.replace("1", "7")
+        # Its own device, which no other test's processes name, nor another run's of this suite (#80).
+        udid = f"00008730-{uuid.uuid4().hex[:16].upper()}"
         held = self.hold(device=udid)
         record = devices.Record(self.record_here)
         dispatcher = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
@@ -601,6 +602,11 @@ class RemoteTests(unittest.TestCase):
             record.recover("iPhone", by="owner", revision=entry["revision"], verified="nothing on the device")
         left.kill()
         left.wait()
+        # Another recovery's census of the device names it but only reads, so it holds nothing (#80).
+        census = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)",
+                                   json.dumps({"device": {"udid": udid, "root": remote.ROOT, "since": None}})])
+        self.addCleanup(census.wait)
+        self.addCleanup(census.kill)
         recovered = record.recover("iPhone", by="owner", revision=entry["revision"], verified="nothing on the device")
         self.assertEqual((recovered["state"], recovered["recovery"]["offload"]["host"]), ("released", "fake"))
 
