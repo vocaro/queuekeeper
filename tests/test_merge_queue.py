@@ -293,6 +293,29 @@ class Refusals(Fixture):
         self.assertEqual(self.state(identifier)["state"], "queued")
         self.assertIn("refused", mq.Queue(self.repo).held())
 
+    def test_a_push_whose_connection_dropped_is_pushed_again_once(self):
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        count = self.origin / "attempts"
+        hook = self.origin / "hooks/pre-receive"
+        hook.write_text(f'#!/bin/sh\n[ -e "{count}" ] && exit 0\ntouch "{count}"\n'
+                        'echo "fatal: the remote end hung up unexpectedly" >&2\nexit 1\n')
+        hook.chmod(0o755)
+        self.work()
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertIn("a", self.main_files())
+        self.assertEqual(self.gates(), 1)
+
+    def test_a_push_that_keeps_dropping_holds(self):
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        hook = self.origin / "hooks/pre-receive"
+        hook.write_text('#!/bin/sh\necho "fatal: the remote end hung up unexpectedly" >&2\nexit 1\n')
+        hook.chmod(0o755)
+        self.assertEqual(self.work(), 1)
+        self.assertEqual(self.state(identifier)["state"], "queued")
+        self.assertIn("refused", mq.Queue(self.repo).held())
+
     def test_a_removed_entry_does_not_land(self):
         self.commit("a", "a"); self.commit("b", "b")
         ids = self.add("a", "b")

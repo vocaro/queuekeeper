@@ -170,6 +170,10 @@ DOWNLOADABLE = {"iOS", "watchOS", "tvOS", "visionOS"}
 RUNTIME = re.compile(r"^(.*) \(([^()]+)\)$")
 
 
+class Lost(RuntimeError):
+    """The second Mac took the work and the connection ended with no result: unmeasured, not failed."""
+
+
 class Unavailable(RuntimeError):
     """The second Mac did not take the work, and nothing of it ran there."""
 
@@ -1039,7 +1043,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
                             result.get("fix") or f"repair on {host} what that names")
     if result is None:
         own = file_results(base, name, dispatch, staging)
-        raise RuntimeError(lost(host, channel.returncode, stray, started, slept, own / "output.log"))
+        raise Lost(lost(host, channel.returncode, stray, started, slept, own / "output.log"))
     # commit is what ran there: HEAD, or a snapshot of the working tree on it. ranOn and mac say where, as
     # a run on this Mac's receipt does, so that the share of each Mac's work can be counted.
     receipt = {"ranOn": "second Mac", "mac": (result.get("host") or {}).get("name"), "host": host,

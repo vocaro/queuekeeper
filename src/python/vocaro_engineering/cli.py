@@ -753,6 +753,9 @@ def main(argv=None):
             conclude(directory, receipt, status, **({"unmeasured": unmeasured} if status == evidence.UNMEASURED else {}))
             return status
         return 0
+    except remote.Lost as error:
+        print(f"eng: {error}", file=sys.stderr)
+        return evidence.UNMEASURED
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
         print(f"eng: {error}", file=sys.stderr)
         return 2

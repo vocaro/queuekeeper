@@ -813,7 +813,7 @@ class RemoteTests(unittest.TestCase):
                     patch.object(remote, "asleep", side_effect=[1000.0, 1000.0, 1300.0]):
                 status, output, error = self.eng("remote", "run", "linger")
             lane = int(marker.read_text())
-            self.assertEqual(status, 2, output + error)
+            self.assertEqual(status, evidence.UNMEASURED, output + error)
             self.assertRegex(error, r"eng: No result from fake \(ssh exited 255: Timeout, server fake not responding\.\); "
                                     r"dispatched at \d{4}-\d\d-\d\d \d\d:\d\d:\d\d UTC and lost at \d{4}-\d\d-\d\d "
                                     r"\d\d:\d\d:\d\d UTC, and this Mac slept for 300 s of that\. The run is unmeasured, "
@@ -1440,7 +1440,7 @@ class RemoteTests(unittest.TestCase):
             lane = int(marker.read_text())
             # offload_host.py, which claimed the checkout and ends once the run there has left its admission.
             runner = json.loads((self.home / remote.ROOT / "checkouts/example/0.lock").read_text())["pid"]
-            self.assertEqual(status, 2, output + error)
+            self.assertEqual(status, evidence.UNMEASURED, output + error)
             self.assertIn("eng: No result from fake (ssh exited 255: Timeout, server fake not responding.)", error)
             self.assertIn("The run is unmeasured", error)
             self.assertNotIn("running slow on this Mac", error)

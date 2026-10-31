@@ -20,6 +20,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import subprocess
 import sys
@@ -42,6 +43,8 @@ LANE_LIMIT = 3 * processes.DEFAULT_LIMIT
 RETRIES = 1
 # Times main may move past a passed batch, in carried-over steps, before the batch is gated again.
 CARRIES = 3
+# What git says when the connection to the remote ended, which says nothing of the commits.
+DROPPED = re.compile(r"hung up unexpectedly|Could not read from remote|send disconnect|Connection (reset|closed|timed out)")
 POLL = 5
 BEFORE_GATE = ["spelling", "provision"]
 WAIT_LIMIT = 6 * 3600
@@ -446,6 +449,7 @@ class Worker:
     def push(self, config, batch, base):
         """Push HEAD to main. True on a push, False to gate again; a refusal that is no race holds."""
         head = self.head()
+        dropped = False
         for _ in range(CARRIES):
             git(self.checkout, *FETCH, check=True)
             if git(self.checkout, "merge-base", "--is-ancestor", MAIN, head).returncode:
@@ -460,6 +464,10 @@ class Worker:
                 return True
             said = pushed.stderr.strip()
             if "rejected" in said and ("fetch first" in said or "non-fast-forward" in said): continue
+            if DROPPED.search(said) and not dropped:
+                dropped = True
+                self.say(f"the connection dropped during the push of {head[:12]}: pushing again")
+                continue
             raise ValueError(f"the push of {head[:12]} was refused: {said or 'no output'}")
         return False
 
