@@ -66,9 +66,10 @@ class UnittestRunnerTests(unittest.TestCase):
             (root / f"{name}.py").write_text(source)
         return root
 
-    def run_suite(self, root, *arguments, limit=60):
+    def run_suite(self, root, *arguments, limit=60, cwd=None):
         finished = subprocess.run([sys.executable, str(ENG), "unittest", "-s", str(root), *arguments],
-                                  capture_output=True, text=True, env={"MEET_LIMIT": str(limit), "PATH": "/usr/bin:/bin"})
+                                  capture_output=True, text=True, cwd=cwd,
+                                  env={"MEET_LIMIT": str(limit), "PATH": "/usr/bin:/bin"})
         return finished.returncode, finished.stdout + finished.stderr
 
     def test_modules_run_side_by_side_and_one_job_runs_them_one_after_another(self):
@@ -144,6 +145,51 @@ class UnittestRunnerTests(unittest.TestCase):
         self.assertNotEqual(one, three)
         self.assertEqual(self.run_suite(root, "--split", "test")[0], 0)
         self.assertEqual(len(set(pids())), 3)
+
+    def test_a_module_loaded_under_a_name_no_process_can_import_runs_whole_in_its_loaders_process(self):
+        root = self.suite(module("test_loader", """
+            import importlib.util
+            class Own(unittest.TestCase):
+                def test_own(self): (HERE / "own").write_text(str(os.getpid()))
+            def load_tests(loader, tests, pattern):
+                spec = importlib.util.spec_from_file_location("loaded_tests", HERE / "probes" / "check.py")
+                loaded = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(loaded)
+                tests.addTests(loader.loadTestsFromModule(loaded))
+                return tests
+        """), module("test_other", "class Other(unittest.TestCase):\n    def test_other(self): pass\n"))
+        (root / "probes").mkdir()
+        (root / "probes/check.py").write_text(module("check", """
+            class Loaded(unittest.TestCase):
+                def test_one(self): (HERE.parent / "one").write_text(str(os.getpid()))
+                def test_two(self): pass
+        """)[1])
+        # Every split runs the loader module's tests, its loaded module's among them, in one process.
+        for split in ("module", "class", "test"):
+            status, output = self.run_suite(root, "--split", split)
+            self.assertEqual(status, 0, output)
+            self.assertIn("== test_loader: OK (3 tests", output)
+            self.assertIn("eng unittest: 4 tests (0 skipped) in 2 processes", output)
+            self.assertEqual((root / "own").read_text(), (root / "one").read_text())
+
+    def test_a_module_imports_from_and_runs_in_the_directory_eng_runs_in(self):
+        root = self.suite(module("test_invoked", """
+            from helpers import VALUE
+            class Invoked(unittest.TestCase):
+                def test_value(self): self.assertEqual(VALUE, 7)
+                def test_directory(self): self.assertTrue(pathlib.Path("marker").exists())
+        """))
+        invoked = root / "project"
+        (invoked / "helpers").mkdir(parents=True)
+        (invoked / "helpers/__init__.py").write_text("VALUE = 7\n")
+        (invoked / "marker").touch()
+        status, output = self.run_suite(root, cwd=invoked)
+        self.assertEqual(status, 0, output)
+        self.assertIn("eng unittest: 2 tests (0 skipped) in 1 processes", output)
+        # The negative control: from another directory the package is not there to import.
+        status, output = self.run_suite(root, cwd=root)
+        self.assertEqual(status, 1, output)
+        self.assertIn("No module named 'helpers'", output)
 
     def test_a_suite_without_tests_is_not_a_pass(self):
         root = self.suite(module("helper", "VALUE = 1\n"))

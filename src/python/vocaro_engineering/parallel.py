@@ -121,19 +121,50 @@ def flattened(suite):
         else: yield test
 
 
-def shards(suite, split):
+class OriginLoader(unittest.TestLoader):
+    """A TestLoader that records, by each test's id(), the module discovery loaded it from: the
+    test's own module, or the one whose load_tests loaded the test's module itself."""
+    def __init__(self):
+        super().__init__()
+        self.origins, self.depth = {}, 0
+
+    def loadTestsFromModule(self, module, *args, **kwargs):
+        self.depth += 1
+        try: suite = super().loadTestsFromModule(module, *args, **kwargs)
+        finally: self.depth -= 1
+        if not self.depth:
+            for test in flattened(suite): self.origins.setdefault(id(test), module.__name__)
+        return suite
+
+
+def addressable(test):
+    """Whether a fresh process can import the test's module by its name, as `python3 -m unittest`
+    does with the test's id. A module that a load_tests loaded from its file is not in sys.modules."""
+    return sys.modules.get(type(test).__module__) is not None
+
+
+def shards(suite, split, origins=None):
     """{shard name: [test ids]}, in discovery order. A shard is a module, class or test, as split
     says. Tests whose class or module sets serial_group share one shard, so they run one after
     another in one process. A module that failed to import is a shard of its own, which reports
-    the import error when it runs."""
+    the import error when it runs. A module whose load_tests loads a module that a fresh process
+    cannot import by name cannot be split: it runs whole in one shard, addressed by its own name,
+    which stands in for each of its tests."""
+    tests, origins = list(flattened(suite)), origins or {}
+    whole = {origins[id(test)] for test in tests if id(test) in origins and not addressable(test)}
     found = {}
-    for test in flattened(suite):
+    for test in tests:
         cls = type(test)
         module = sys.modules.get(cls.__module__)
         if cls.__module__ == "unittest.loader":
             # A _FailedTest's name is the module or package that failed to load.
             name = test.id().rsplit(".", 1)[-1]
             found.setdefault(name, []).append(name)
+            continue
+        origin = origins.get(id(test))
+        if origin in whole:
+            group = getattr(sys.modules.get(origin), "serial_group", None)
+            found.setdefault(f"group:{group}" if group else origin, []).append(origin)
             continue
         group = getattr(module, "serial_group", None) if split == "module" else \
             getattr(cls, "serial_group", getattr(module, "serial_group", None))
@@ -146,11 +177,18 @@ RAN = re.compile(r"^Ran (\d+) tests? in ", re.M)
 RESULT = re.compile(r"^(OK|FAILED)\b.*$", re.M)
 
 
+# `python3 -m unittest` with its first argument, the top-level directory, first on sys.path.
+SHARD = "import sys, unittest; sys.path.insert(0, sys.argv.pop(1)); sys.argv[0] = 'python -m unittest'; " \
+    "unittest.main(module=None)"
+
+
 def run_shard(name, tests, top, verbose, descriptors=()):
-    """Run a shard's tests in a process of its own, which inherits descriptors and no other."""
-    command = [sys.executable, "-m", "unittest", *(["-v"] if verbose else []), *tests]
+    """Run a shard's tests in a process of its own, which inherits descriptors and no other. It runs
+    in this process's directory, with top and then that directory on its sys.path, as `python3 -m
+    unittest discover` does. A name listed more than once runs once."""
+    command = [sys.executable, "-c", SHARD, str(top), *(["-v"] if verbose else []), *dict.fromkeys(tests)]
     began = time.monotonic()
-    finished = subprocess.run(command, cwd=top, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+    finished = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                               errors="replace", pass_fds=descriptors)
     output = finished.stdout
     summary = RESULT.search(output)
@@ -175,10 +213,12 @@ def unittest_main(argv):
     if args.jobs < 1: parser.error("--jobs needs at least 1")
     start = Path(args.start_directory).resolve()
     top = Path(args.top_level_directory).resolve() if args.top_level_directory else start
-    # Discovery imports every module here, as unittest's own would, and each shard imports its own again.
-    sys.path.insert(0, str(top))
-    loader = unittest.TestLoader()
-    found = shards(loader.discover(str(start), args.pattern, str(top)), args.split)
+    # Discovery imports every module here, as unittest's own would, and each shard imports its own
+    # again: from the top-level directory, then the directory eng runs in (#74).
+    for directory in (os.getcwd(), str(top)):
+        if directory not in sys.path: sys.path.insert(0, directory)
+    loader = OriginLoader()
+    found = shards(loader.discover(str(start), args.pattern, str(top)), args.split, loader.origins)
     if not found:
         print(f"eng unittest: no tests found in {start} matching {args.pattern}", file=sys.stderr)
         return NO_TESTS
