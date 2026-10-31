@@ -141,18 +141,28 @@ raise SystemExit(resources.main(sys.argv[2:]))
 """
 
 
+def stretched(seconds):
+    """These seconds stretched by the host's one-minute load per core, as a bound on a stall is."""
+    return seconds * max(1, os.getloadavg()[0] / (os.cpu_count() or 1))
+
+
 class ProcessTests(unittest.TestCase):
-    def outlive_the_root(self, directory, *descendants, root=ROOT, timeout=None, **limits):
+    # supervise takes its kill_after when it is defined, so a test passes the grace it needs:
+    # patching KILL_AFTER changes nothing, and with 10 s a loaded host failed these tests (#81).
+    def outlive_the_root(self, directory, *descendants, root=ROOT, timeout=None, kill_after=processes.KILL_AFTER, **limits):
         """Supervise ROOT with these descendants; return its result or timeout, stderr and their start identities."""
-        real, births, begun = processes.snapshot, {}, time.monotonic()
+        real, births, cue = processes.snapshot, {}, {"at": time.monotonic()}
         def observed():
-            # Bound a stall here: a timeout bounds only the root, so a lingering descendant must
-            # not hold the run until the test is stopped.
-            if time.monotonic() - begun > 30: self.fail("supervision was still waiting after 30 s")
+            # Bound a stall here, from the latest cue: the start, the root's listing of its
+            # descendants, their adoption. A timeout bounds only the root, so a lingering
+            # descendant must not hold the run until the test is stopped.
+            if time.monotonic() - cue["at"] > stretched(30): self.fail("supervision stalled for 30 s, stretched by load")
             current = real()
             try: root, *children = map(int, (Path(directory) / "children").read_text().split())
             except FileNotFoundError: return current
+            if "listed" not in cue: cue.update(listed=True, at=time.monotonic())
             if all(current.get(pid, (None,))[0] == root for pid in children):
+                if not births: cue["at"] = time.monotonic()
                 births.update({pid: current[pid][2] for pid in children})
                 (Path(directory) / "adopted").touch()
             return current
@@ -161,8 +171,9 @@ class ProcessTests(unittest.TestCase):
                 if real().get(pid, (0, 0, None))[2] == birth: os.kill(pid, signal.SIGKILL)
         self.addCleanup(cleanup)
         with patch.object(processes, "snapshot", observed), contextlib.redirect_stderr(StringIO()) as error, \
-             patch.multiple(processes, create=True, **limits):
-            try: result = processes.supervise([sys.executable, "-c", root, directory, *descendants], cwd=directory, timeout=timeout)
+             patch.dict(processes.__dict__, limits):
+            try: result = processes.supervise([sys.executable, "-c", root, directory, *descendants], cwd=directory, timeout=timeout,
+                                                kill_after=kill_after)
             except TimeoutError as expired: result = expired
         current = real()
         self.assertEqual({pid for pid, birth in births.items() if current.get(pid, (0, 0, None))[2] == birth}, set())
@@ -194,7 +205,7 @@ class ProcessTests(unittest.TestCase):
 
     def test_descendants_that_outlive_the_root_are_reported_then_stopped_keeping_its_status(self):
         with tempfile.TemporaryDirectory() as directory:
-            result, error, births = self.outlive_the_root(directory, IGNORES_TERM, HANDLES_TERM, LINGER=0.2, KILL_AFTER=0.5)
+            result, error, births = self.outlive_the_root(directory, IGNORES_TERM, HANDLES_TERM, LINGER=0.2, kill_after=0.5)
             self.assertEqual(result, 3)
             # SIGTERM came first, so a process that handles it can end cleanly.
             self.assertTrue((Path(directory) / "terminated").exists())
@@ -210,7 +221,7 @@ class ProcessTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             # The root exits at once; its timeout expires before the grace stops the descendant. The
             # root starts two interpreters first, which on a busy host took more than 2 s.
-            result, error, _births = self.outlive_the_root(directory, IGNORES_TERM, timeout=8, LINGER=10, KILL_AFTER=0.5)
+            result, error, _births = self.outlive_the_root(directory, IGNORES_TERM, timeout=8, LINGER=10, kill_after=0.5)
             self.assertEqual(result, 3)
             self.assertIn("stopping 1 process(es)", error)
 
@@ -251,15 +262,15 @@ class ProcessTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             # The root stays until the timeout ends it; one descendant handles SIGTERM, one ignores it.
             result, error, _births = self.outlive_the_root(directory, IGNORES_TERM, HANDLES_TERM, root=STAYS,
-                                                           timeout=2, KILL_AFTER=0.5)
+                                                           timeout=2, kill_after=0.5)
             self.assertIsInstance(result, processes.TimedOut)
             self.assertTrue((Path(directory) / "terminated").exists())
             self.assertIn("timed out after 2s; sending SIGTERM", error)
 
     def test_a_timeout_gives_a_command_that_handles_sigterm_one_signal(self):
         with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stderr(StringIO()):
-            with patch.object(processes, "KILL_AFTER", 30), self.assertRaises(processes.TimedOut):
-                processes.supervise([sys.executable, "-c", COUNTS_TERM, directory], cwd=directory, timeout=1.5)
+            with self.assertRaises(processes.TimedOut):
+                processes.supervise([sys.executable, "-c", COUNTS_TERM, directory], cwd=directory, timeout=1.5, kill_after=30)
             self.assertEqual((Path(directory) / "terms").read_text(), "TERM\n")
 
     def test_a_stop_reaches_descendants_in_other_sessions_then_raises_interrupted(self):
@@ -271,7 +282,7 @@ class ProcessTests(unittest.TestCase):
                 processes._stops.clear()
                 here, real, births, begun, marks = Path(directory), processes.snapshot, {}, time.monotonic(), []
                 def observed():
-                    if time.monotonic() - begun > 30: self.fail("supervision was still waiting after 30 s")
+                    if time.monotonic() - begun > stretched(30): self.fail("supervision was still waiting after 30 s, stretched by load")
                     current = real()
                     try: root, *children = map(int, (here / "children").read_text().split())
                     except FileNotFoundError: return current
@@ -285,10 +296,10 @@ class ProcessTests(unittest.TestCase):
                     for pid, birth in births.items():
                         if real().get(pid, (0, 0, None))[2] == birth: os.kill(pid, signal.SIGKILL)
                 self.addCleanup(cleanup)
-                with patch.object(processes, "snapshot", observed), patch.object(processes, "KILL_AFTER", 0.3), \
-                     contextlib.redirect_stderr(StringIO()) as error, self.assertRaises(processes.Interrupted) as raised:
+                with patch.object(processes, "snapshot", observed), contextlib.redirect_stderr(StringIO()) as error, \
+                     self.assertRaises(processes.Interrupted) as raised:
                     processes.supervise([sys.executable, "-c", ROOT, directory, IGNORES_TERM, HANDLES_TERM], cwd=directory,
-                                        on_stop=lambda: marks.append((here / "terminated").exists()))
+                                        on_stop=lambda: marks.append((here / "terminated").exists()), kill_after=0.3)
                 self.assertEqual(raised.exception.signum, signal.SIGTERM)
                 # on_stop ran once, before any process had the signal, and SIGTERM came first.
                 self.assertEqual(marks, [False])
@@ -300,14 +311,19 @@ class ProcessTests(unittest.TestCase):
     def test_sigkill_waits_a_bounded_time_for_an_admission_owner_that_never_settles(self):
         # An owner that never settles, as one behind a hung coordination lock would not, still ends:
         # SIGKILL reaches it SETTLE_WAIT seconds after it was due, after a stop and after the grace.
+        # supervise sees the owner only at its first sample once SIGKILL is due, and waits only if that
+        # comes within SETTLE_WAIT: a loaded host's samples can come seconds apart, so it is stretched.
         self.addCleanup(processes._stops.clear)
-        limits = {"LINGER": 0.2, "KILL_AFTER": 0.5, "SETTLE_WAIT": 2}
+        kill_after = 0.5
         for how in ["stop", "linger"]:
             with self.subTest(how=how), tempfile.TemporaryDirectory() as directory:
                 processes._stops.clear()
+                limits = {"LINGER": 0.2, "SETTLE_WAIT": stretched(2)}
                 here, real, births, begun, moments = Path(directory), processes.snapshot, {}, time.monotonic(), {}
                 def observed():
-                    if time.monotonic() - begun > 60: self.fail("supervision was still waiting after 60 s")
+                    # Bound a stall from the latest cue: the start, then the stop under test.
+                    if time.monotonic() - moments.get("started", begun) > stretched(60):
+                        self.fail("supervision stalled for 60 s, stretched by load")
                     current = real()
                     try: root, owner = map(int, (here / "children").read_text().split())
                     except FileNotFoundError: return current
@@ -329,13 +345,15 @@ class ProcessTests(unittest.TestCase):
                      contextlib.redirect_stderr(StringIO()) as error:
                     command = [sys.executable, "-c", ROOT, directory, STUCK_OWNER]
                     if how == "stop":
-                        with self.assertRaises(processes.Interrupted): processes.supervise(command, cwd=directory)
+                        with self.assertRaises(processes.Interrupted):
+                            processes.supervise(command, cwd=directory, kill_after=kill_after)
                     else:
-                        self.assertEqual(processes.supervise(command, cwd=directory), 3)
+                        self.assertEqual(processes.supervise(command, cwd=directory, kill_after=kill_after), 3)
                 (owner, _birth), = births.items()
+                self.assertIn(f"then SIGKILL after {kill_after:g}s", error.getvalue())
                 self.assertIn(f"admission owner(s) PID {owner} still running; SIGKILL waits", error.getvalue())
                 # A lower bound only, which a busy host cannot break.
-                due = (limits["LINGER"] if how == "linger" else 0) + limits["KILL_AFTER"]
+                due = (limits["LINGER"] if how == "linger" else 0) + kill_after
                 self.assertGreaterEqual(moments["ended"] - moments["started"], due + limits["SETTLE_WAIT"])
 
     def test_a_stop_leaves_an_admission_owners_new_children_to_it(self):
@@ -369,12 +387,12 @@ class ProcessTests(unittest.TestCase):
             def recorded(pid, number):
                 sent.append((pid, number))
                 kill(pid, number)
-            with patch.object(processes, "snapshot", observed), patch.object(processes, "KILL_AFTER", 0.5), \
+            with patch.object(processes, "snapshot", observed), \
                  patch.object(processes, "SETTLE_WAIT", 60, create=True), patch.object(processes.os, "kill", recorded), \
                  patch.dict(os.environ, {"SW_GATE_LOCK_FILE": str(here / "gate")}), contextlib.redirect_stderr(StringIO()):
                 with self.assertRaises(processes.Interrupted):
                     processes.supervise([sys.executable, "-c", ROOT, directory, *(SAMPLES.replace("ROLE", role)
-                                         for role in ["owner", "plain"])], cwd=directory)
+                                         for role in ["owner", "plain"])], cwd=directory, kill_after=0.5)
             owner, plain = (int((here / f"sample-{role}").read_text()) for role in ["owner", "plain"])
             self.assertIn((plain, signal.SIGTERM), sent, "a new child of another process was not sent the stop")
             self.assertNotIn((owner, signal.SIGTERM), sent, "a new child of an admission owner was sent the stop")
@@ -481,9 +499,9 @@ class NestedAdmissionTests(unittest.TestCase):
         self.addCleanup(processes._stops.clear)
         # This supervisor's KILL_AFTER is shorter than the admitted command takes to end, and than
         # the nested admission's own. SETTLE_WAIT is long, so that a busy host cannot reach it.
-        with patch.object(processes, "snapshot", observed), patch.object(processes, "KILL_AFTER", 1), \
+        with patch.object(processes, "snapshot", observed), \
              patch.object(processes, "SETTLE_WAIT", 300, create=True), contextlib.redirect_stderr(error):
-            try: outcome = processes.run(command, cwd=here, log_path=here / "lane.log", env=environment)
+            try: outcome = processes.run(command, cwd=here, log_path=here / "lane.log", env=environment, kill_after=1)
             except (processes.Interrupted, RuntimeError) as raised: outcome = raised
         status = (here / "status").read_text() if (here / "status").exists() else None
         owners = json.loads(guard.read_text())["owners"] if guard.exists() else {}
