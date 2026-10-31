@@ -2139,6 +2139,16 @@ a `session-child` that ran to its own end while its `child` was signaled was mis
 running to their own end with no signal logged means the action stopped nothing. A parent that
 outlives the probe, such as an agent's long-running process, keeps the watcher until SECONDS.
 
+Computer use drives Codex Desktop (ChatGPT, `com.openai.codex`) for these probes, under a
+`mac-foreground` reservation. Its background tools reach the composer: type into the focused field
+and press Return, since the Send button ignores the accessibility press. A thread row's archive
+button and File > Close ignore background presses too, so archiving a thread or closing its window
+takes one full-screen click each (2026-10-31, ChatGPT 26.1027.30824). Computer use grants the
+Claude desktop app only read access, and quitting it ends the driving session, so a stop or quit
+in that app is the owner's to perform: the session starts the watcher and the probe, the owner
+acts, and the session reads the report afterwards. A thread a probe started is left in the app;
+archive it once its probe has ended.
+
 ## Ending a coordinated command
 
 Use the supplied `eng run` or resource CLI for commands. They return the child's status after
