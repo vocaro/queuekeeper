@@ -22,11 +22,12 @@ SWIFT = textwrap.dedent("""
     import json, os, pathlib, sys
     here = pathlib.Path(os.environ["FAKE_ROOT"])
     arguments = sys.argv[1:]
-    with open(here / "calls.jsonl", "a") as calls: calls.write(json.dumps(["swift", *arguments]) + "\\n")
+    with open(here / "calls.jsonl", "a") as calls: calls.write(json.dumps(["swift", *arguments, pathlib.Path.cwd().name]) + "\\n")
     if arguments[:2] == ["build", "--show-bin-path"]: print(here / "bin")
     elif arguments[:1] == ["build"]: sys.exit(int(os.environ.get("FAKE_BUILD_STATUS", "0")))
     elif arguments[:2] == ["test", "list"]:
         tests = json.loads(os.environ["FAKE_TESTS"])
+        if isinstance(tests, dict): tests = tests[pathlib.Path.cwd().name]
         if "--disable-swift-testing" not in arguments: tests += json.loads(os.environ["FAKE_SWIFT_TESTING"])
         print("\\n".join(tests))
     elif arguments[:1] == ["test"]:
@@ -39,7 +40,9 @@ XCRUN = textwrap.dedent("""
     _, _, _, selectors, bundle = sys.argv
     with open(here / "calls.jsonl", "a") as calls: calls.write(json.dumps(["xcrun", selectors, bundle]) + "\\n")
     module = pathlib.Path(bundle).stem
-    tests = [test for test in json.loads(os.environ["FAKE_TESTS"]) if test.startswith(module + ".")
+    every = json.loads(os.environ["FAKE_TESTS"])
+    every = [test for tests in every.values() for test in tests] if isinstance(every, dict) else every
+    tests = [test for test in every if test.startswith(module + ".")
              and any(test == s or test.split("/")[0] == s for s in selectors.split(","))]
     tests = tests[:len(tests) - int(os.environ.get("FAKE_DROP", "0"))]
     if os.environ.get("FAKE_HANG") == module: __import__("time").sleep(60)
@@ -49,7 +52,8 @@ XCRUN = textwrap.dedent("""
         name = "-[" + test.replace("/", " ") + "]"
         if "Skip" in test:
             skipped += 1
-            print(f"x.swift:1: {name} : Test skipped - Unmeasured: planted")
+            reason = "Unmeasured: the 80 s backstop passed" if os.environ.get("FAKE_UNMEASURED") else "planted"
+            print(f"x.swift:1: {name} : Test skipped - {reason}")
             print(f"Test Case '{name}' skipped (0.001 seconds).")
         elif "Fail" in test and os.environ.get("FAKE_FAIL"):
             failed += 1
@@ -100,7 +104,7 @@ class RunnerTests(unittest.TestCase):
             path = tools / name
             path.write_text(f"#!{sys.executable}\n{body}")
             path.chmod(path.stat().st_mode | stat.S_IEXEC)
-        for module in ("Alpha", "Beta"): (self.root / "bin" / f"{module}.xctest").mkdir(parents=True)
+        for module in ("Alpha", "Beta", "Gamma"): (self.root / "bin" / f"{module}.xctest").mkdir(parents=True)
         self.package = self.root / "package"
         self.package.mkdir()
         self.environment = {"PATH": f"{tools}{os.pathsep}{os.environ['PATH']}", "FAKE_ROOT": str(self.root),
@@ -128,6 +132,46 @@ class RunnerTests(unittest.TestCase):
         for _, chosen, bundle in xctest:
             self.assertTrue(all(s.startswith(Path(bundle).stem + ".") for s in chosen.split(",")), (chosen, bundle))
         self.assertEqual(self.calls()[0][:3], ["swift", "build", "--build-tests"])
+
+    def test_options_reach_every_swift_command(self):
+        status, output = self.run_eng("-c", "release", "--scratch-path", ".build/optimized",
+                                      "--swift-option=-Xswiftc", "--swift-option=-warnings-as-errors", "--build-jobs", "2")
+        self.assertEqual(status, 0, output)
+        swift = [call for call in self.calls() if call[0] == "swift"]
+        self.assertEqual({tuple(call[:2]) for call in swift},
+                         {("swift", "build"), ("swift", "test")})
+        for call in swift:
+            self.assertEqual(call[-7:-1], ["-c", "release", "--scratch-path", ".build/optimized", "-Xswiftc",
+                                           "-warnings-as-errors"], call)
+        self.assertIn("--jobs", self.calls()[0])
+        self.assertTrue((self.package / xctest_shards.TIMINGS.format(configuration="release")).exists())
+
+    def test_a_test_the_host_decided_leaves_the_run_unmeasured_not_passed(self):
+        status, output = self.run_eng("--skip-build", FAKE_UNMEASURED="1")
+        self.assertEqual(status, evidence.UNMEASURED, output)
+        self.assertIn("UNMEASURED: 1 tests the host decided", output)
+        self.assertTrue(output.rstrip().endswith("Test skipped - Unmeasured: the 80 s backstop passed"), output)
+
+    def test_a_failure_outranks_an_unmeasured_test(self):
+        status, output = self.run_eng("--skip-build", FAKE_UNMEASURED="1", FAKE_FAIL="1")
+        self.assertEqual(status, 1, output)
+
+    def test_several_packages_build_in_turn_and_share_the_processes(self):
+        second = self.root / "second"
+        second.mkdir()
+        tests = {"package": TESTS, "second": ["Gamma.LongTests/testLong", "Gamma.LongTests/testLonger"]}
+        (second / xctest_shards.TIMINGS.format(configuration="debug")).parent.mkdir(parents=True)
+        (second / xctest_shards.TIMINGS.format(configuration="debug")).write_text(json.dumps({"Gamma.LongTests": 500}))
+        status, output = self.run_eng("-C", str(second), "-j", "1", FAKE_TESTS=json.dumps(tests))
+        self.assertEqual(status, 0, output)
+        # Five XCTest tests and two, and each package's one Swift Testing test.
+        self.assertEqual(evidence.counted(output), (9, 1))
+        builds = [call[-1] for call in self.calls() if call[:3] == ["swift", "build", "--build-tests"]]
+        self.assertEqual(builds, ["package", "second"])
+        xctest = [call[1] for call in self.calls() if call[0] == "xcrun"]
+        # The longest shard of either package runs first.
+        self.assertEqual(xctest[0], "Gamma.LongTests")
+        self.assertIn("== second: shard 1 of 1, Gamma", output)
 
     def test_a_failed_test_fails_the_run(self):
         status, output = self.run_eng("--skip-build", FAKE_FAIL="1")
@@ -166,9 +210,9 @@ class RunnerTests(unittest.TestCase):
 
     def test_the_last_run_orders_the_next(self):
         self.run_eng("--skip-build")
-        timings = json.loads((self.package / xctest_shards.TIMINGS).read_text())
+        timings = json.loads((self.package / xctest_shards.TIMINGS.format(configuration="debug")).read_text())
         self.assertEqual(timings["Alpha.DoublingTests"], 3.0)
-        (self.package / xctest_shards.TIMINGS).write_text(json.dumps(
+        (self.package / xctest_shards.TIMINGS.format(configuration="debug")).write_text(json.dumps(
             {"Alpha.DoublingTests": 1, "Alpha.SkippingTests": 1, "Beta.FailingTests": 1, "Beta.ZeroTests": 99}))
         (self.root / "calls.jsonl").unlink()
         self.run_eng("--skip-build", "-j", "1")

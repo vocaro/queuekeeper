@@ -5,7 +5,9 @@ an unmeasured result among them, would read as a pass (Swift 6.4, Xcode 27.2, Oc
 process here runs `xcrun xctest -XCTest CLASSES BUNDLE`, one test at a time, and prints XCTest's
 own lines whole: every skip, failure and suite total, which evidence.counted reads. Swift Testing
 tests run once beside them, in `swift test --skip-build --disable-xctest`, which runs them
-concurrently itself. guides/parallel-tests.md says when this is safe and how to bound it.
+concurrently itself. Several packages build one after another and share one pool of processes.
+A project passes what its run needs as options: a scratch path, a configuration, other swift
+options. guides/parallel-tests.md says when this is safe and how to bound it.
 """
 import argparse
 from concurrent.futures import ThreadPoolExecutor
@@ -23,27 +25,34 @@ DEFAULT_JOBS = parallel.DEFAULT_JOBS
 # Shards per process: enough that a shard's misjudged length evens out, few enough that the
 # bundle's load in each shard costs little.
 SHARDS_PER_JOB = 3
-# Each class's seconds in the last run, which orders and packs the next one's shards.
-TIMINGS = ".build/engineering/xctest/timings.json"
+# Each class's seconds in the last run of a configuration, which orders and packs the next one's
+# shards, relative to the package.
+TIMINGS = ".build/engineering/xctest/timings-{configuration}.json"
 CASE = re.compile(r"^Test Case '-\[(\S+) (\S+)\]' (?:passed|failed|skipped) \((\d+(?:\.\d+)?) seconds\)", re.M)
 
 
-def listed(directory, *options):
+def swift(directory, options, *arguments):
+    """A swift command in the package, with the options every one of its commands takes."""
+    return ["swift", *arguments, *options], directory
+
+
+def listed(directory, options, *more):
     """The ids `swift test list` prints: Module.Class/test for XCTest, Module.function() or
     Module.Suite/function() for Swift Testing."""
-    found = subprocess.run(["swift", "test", "list", "--skip-build", *options], cwd=directory,
-                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors="replace")
+    command, cwd = swift(directory, options, "test", "list", "--skip-build", *more)
+    found = subprocess.run(command, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                           errors="replace")
     if found.returncode != 0:
-        raise RuntimeError(f"swift test list exited {found.returncode}: {found.stderr.strip()[-2000:]}")
+        raise RuntimeError(f"swift test list in {directory} exited {found.returncode}: {found.stderr.strip()[-2000:]}")
     return [line.strip() for line in found.stdout.splitlines() if line.strip() and not line.startswith("warning:")]
 
 
-def bundles(directory):
+def bundles(directory, options):
     """{module: xctest bundle}. A build that makes one bundle for every test target, as SwiftPM's
     native build system does, names it PACKAGEPackageTests and runs every module's tests; one that
     makes a bundle per target names each after its module."""
-    shown = subprocess.run(["swift", "build", "--show-bin-path"], cwd=directory, stdout=subprocess.PIPE,
-                           stderr=subprocess.PIPE, text=True, check=True)
+    command, cwd = swift(directory, options, "build", "--show-bin-path")
+    shown = subprocess.run(command, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
     found = sorted(Path(shown.stdout.strip()).glob("*.xctest"))
     if not found: raise RuntimeError(f"no .xctest bundle in {shown.stdout.strip()}")
     return {bundle.stem: bundle for bundle in found}
@@ -86,56 +95,31 @@ def run(name, command, directory, expected, timeout=parallel.PROCESS_LIMIT):
     began = time.monotonic()
     status, output = processes.bounded(command, cwd=directory, timeout=timeout)
     found = evidence.counted(output)
-    return {"name": name, "status": status, "output": output, "expected": expected,
+    return {"name": name, "status": status, "output": output, "expected": expected, "directory": directory,
             "ran": found[0] if found else 0, "skipped": found[1] if found else 0,
             "seconds": time.monotonic() - began}
 
 
-def main(argv):
-    parser = argparse.ArgumentParser(prog="eng xctest", description="Build a Swift package's tests once and run its "
-        "XCTest classes in xctest processes of their own, JOBS at a time, and its Swift Testing tests beside them.")
-    parser.add_argument("-C", "--package-path", default=".")
-    parser.add_argument("-j", "--jobs", type=int, default=DEFAULT_JOBS,
-                        help=f"xctest processes at a time (default {DEFAULT_JOBS}); 1 runs them one after another")
-    parser.add_argument("--build-jobs", type=int, help="the build's jobs, as swift build --jobs")
-    parser.add_argument("--skip-build", action="store_true", help="run the tests the last build built")
-    parser.add_argument("--filter", action="append", default=[], help="a regular expression a test's id, "
-                        "Module.Class/test, must match, as swift test's; repeat for any of several")
-    parser.add_argument("--timeout", type=float, default=parallel.PROCESS_LIMIT, metavar="SECONDS",
-                        help=f"seconds one test process may run before it is stopped and left unmeasured "
-                        f"(default {parallel.PROCESS_LIMIT})")
-    args = parser.parse_args(argv)
-    if args.jobs < 1: parser.error("--jobs needs at least 1")
-    if args.timeout <= 0: parser.error("--timeout needs a positive number of seconds")
-    directory = Path(args.package_path).resolve()
-    if not args.skip_build:
-        build = ["swift", "build", "--build-tests", *(["--jobs", str(args.build_jobs)] if args.build_jobs else [])]
-        status = subprocess.run(build, cwd=directory).returncode
-        if status != 0: return status
-    try:
-        xctests = listed(directory, "--disable-swift-testing")
-        everything = listed(directory)
-        found = bundles(directory) if xctests else {}
-    except (RuntimeError, subprocess.CalledProcessError) as error:
-        print(f"eng xctest: {error}", flush=True)
-        return 1
-    patterns = [re.compile(pattern) for pattern in args.filter]
+def planned(directory, options, filters, jobs, timings, label):
+    """[(name, command, expected tests)] for one built package: its Swift Testing run first, as its
+    length is unknown and it runs its tests concurrently itself, then its XCTest shards, longest
+    first; and the classes' recorded seconds."""
+    xctests = listed(directory, options, "--disable-swift-testing")
+    everything = listed(directory, options)
+    found = bundles(directory, options) if xctests else {}
+    patterns = [re.compile(pattern) for pattern in filters]
     chosen = lambda test: not patterns or any(pattern.search(test) for pattern in patterns)
     selected = [test for test in xctests if chosen(test)]
     known = set(xctests)
     swift_testing = [test for test in everything if test not in known and chosen(test)]
-    if not selected and not swift_testing:
-        print(f"eng xctest: no tests in {directory} match {' or '.join(args.filter)}", flush=True)
-        return parallel.NO_TESTS
-    timings = directory / TIMINGS
     try: seconds = json.loads(timings.read_text())
     except (OSError, ValueError): seconds = {}
-    packed, classes = shards(selected, seconds, args.jobs * SHARDS_PER_JOB)
+    packed, classes = shards(selected, seconds, jobs * SHARDS_PER_JOB)
     work = []
     if swift_testing:
-        # Started first: its length is unknown, and it runs its tests concurrently itself.
-        command = ["swift", "test", "--skip-build", "--disable-xctest", *[f"--filter={p}" for p in args.filter]]
-        work.append(("Swift Testing", command, len(swift_testing)))
+        command, _ = swift(directory, options, "test", "--skip-build", "--disable-xctest",
+                           *[f"--filter={pattern}" for pattern in filters])
+        work.append((f"{label}Swift Testing", command, len(swift_testing), None))
     sizes = {}
     for test in xctests: sizes[test.split("/", 1)[0]] = sizes.get(test.split("/", 1)[0], 0) + 1
     for number, (estimate, names) in enumerate(packed, 1):
@@ -147,11 +131,64 @@ def main(argv):
             entry[1] += len(classes[name])
         for bundle, (selectors, count) in by_bundle.items():
             command = ["xcrun", "xctest", "-XCTest", ",".join(selectors), str(bundle)]
-            work.append((f"shard {number} of {len(packed)}, {bundle.stem} (about {estimate:.0f}s)", command, count))
+            work.append((f"{label}shard {number} of {len(packed)}, {bundle.stem} (about {estimate:.0f}s)",
+                         command, count, estimate))
+    return work, seconds
+
+
+def main(argv):
+    parser = argparse.ArgumentParser(prog="eng xctest", description="Build Swift packages' tests once and run their "
+        "XCTest classes in xctest processes of their own, JOBS at a time, and their Swift Testing tests beside them.")
+    parser.add_argument("-C", "--package-path", action="append", default=[],
+                        help="a package to test (default: this directory); repeat for several, which build in turn "
+                        "and share the processes")
+    parser.add_argument("-j", "--jobs", type=int, default=DEFAULT_JOBS,
+                        help=f"xctest processes at a time (default {DEFAULT_JOBS}); 1 runs them one after another")
+    parser.add_argument("--build-jobs", type=int, help="the build's jobs, as swift build --jobs")
+    parser.add_argument("-c", "--configuration", choices=["debug", "release"], default="debug",
+                        help="the build configuration, as swift build -c (default debug)")
+    parser.add_argument("--scratch-path", help="the build directory, as swift build --scratch-path; with several "
+                        "packages, relative to each")
+    parser.add_argument("--swift-option", action="append", default=[], metavar="OPTION",
+                        help="an option every swift command of the run takes, such as --swift-option=-Xswiftc; "
+                        "repeat for each")
+    parser.add_argument("--skip-build", action="store_true", help="run the tests the last build built")
+    parser.add_argument("--filter", action="append", default=[], help="a regular expression a test's id, "
+                        "Module.Class/test, must match, as swift test's; repeat for any of several")
+    parser.add_argument("--timeout", type=float, default=parallel.PROCESS_LIMIT, metavar="SECONDS",
+                        help=f"seconds one test process may run before it is stopped and left unmeasured "
+                        f"(default {parallel.PROCESS_LIMIT})")
+    args = parser.parse_args(argv)
+    if args.jobs < 1: parser.error("--jobs needs at least 1")
+    if args.timeout <= 0: parser.error("--timeout needs a positive number of seconds")
+    directories = [Path(path).resolve() for path in args.package_path or ["."]]
+    options = ["-c", args.configuration, *(["--scratch-path", args.scratch_path] if args.scratch_path else []),
+               *args.swift_option]
+    work, recorded = [], {}
+    for directory in directories:
+        label = f"{directory.name}: " if len(directories) > 1 else ""
+        if not args.skip_build:
+            command, cwd = swift(directory, options, "build", "--build-tests",
+                                 *(["--jobs", str(args.build_jobs)] if args.build_jobs else []))
+            status = subprocess.run(command, cwd=cwd).returncode
+            if status != 0:
+                print(f"eng xctest: {label}the build exited {status}", flush=True)
+                return status
+        timings = directory / TIMINGS.format(configuration=args.configuration)
+        try: planned_work, recorded[directory] = planned(directory, options, args.filter, args.jobs, timings, label)
+        except (RuntimeError, subprocess.CalledProcessError) as error:
+            print(f"eng xctest: {error}", flush=True)
+            return 1
+        work.extend((name, command, expected, estimate, directory) for name, command, expected, estimate in planned_work)
+    if not work:
+        print(f"eng xctest: no tests in {', '.join(map(str, directories))} match {' or '.join(args.filter)}", flush=True)
+        return parallel.NO_TESTS
+    # Each package's Swift Testing run first, then every package's shards together, longest first.
+    work.sort(key=lambda entry: (entry[3] is not None, -(entry[3] or 0)))
     began = time.monotonic()
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
         futures = [pool.submit(run, name, command, directory, expected, args.timeout)
-                   for name, command, expected in work]
+                   for name, command, expected, _, directory in work]
         results = []
         for future in futures:
             result = future.result()
@@ -169,16 +206,23 @@ def main(argv):
         elif result["ran"] != result["expected"]:
             # A process that ran other than the tests it was given did not run what it was given.
             failed.append(f"{result['name']} (ran {result['ran']} of {result['expected']} tests)")
-    recorded = dict(seconds)
-    for result in results: recorded.update(class_seconds(result["output"]))
-    try:
-        timings.parent.mkdir(parents=True, exist_ok=True)
-        timings.write_text(json.dumps(recorded, indent=1, sort_keys=True) + "\n")
-    except OSError as error:
-        print(f"eng xctest: the classes' times were not kept: {error}", flush=True)
+    for directory in directories:
+        kept = dict(recorded[directory])
+        for result in results:
+            if result["directory"] == directory: kept.update(class_seconds(result["output"]))
+        timings = directory / TIMINGS.format(configuration=args.configuration)
+        try:
+            timings.parent.mkdir(parents=True, exist_ok=True)
+            timings.write_text(json.dumps(kept, indent=1, sort_keys=True) + "\n")
+        except OSError as error:
+            print(f"eng xctest: the classes' times were not kept: {error}", flush=True)
+    # A test the host decided skips with a reason that begins "Unmeasured:"; its process still passes.
+    decided = evidence.unmeasured_tests("\n".join(result["output"] for result in results))
+    if decided: unmeasured.append(f"{len(decided)} tests the host decided, listed below")
     total = sum(result["ran"] for result in results)
     skipped = sum(result["skipped"] for result in results)
     # Not XCTest's or Swift Testing's own total: the processes' lines already count every test once.
     print(f"eng xctest: {total} tests ({skipped} skipped) in {len(results)} processes, {args.jobs} at a time, "
           f"{time.monotonic() - began:.1f}s: " + parallel.verdict(failed, unmeasured), flush=True)
+    if decided and not failed: print("\n".join(decided), flush=True)
     return 1 if failed else evidence.UNMEASURED if unmeasured else 0
