@@ -213,7 +213,8 @@ class RoutingTests(unittest.TestCase):
         (self.project / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Project",
                                                                    "lanes": self.lanes}))
         for patcher in (patch.dict(os.environ, {devices.OVERRIDE: str(self.record.path),
-                                                "HEAVY_SLOT_DIR": str(self.root / "slots"), "HEAVY_POLL_SECONDS": "0.01"}),
+                                                "HEAVY_SLOT_DIR": str(self.root / "slots"), "HEAVY_POLL_SECONDS": "0.01",
+                                                "SW_GATE_LOCK_FILE": str(self.root / "gate")}),
                         patch.object(cli, "source_identity", return_value={}),
                         patch.object(cli, "refresh_policy", return_value=None),
                         patch.object(voiceover_state, "_read", return_value=False),
