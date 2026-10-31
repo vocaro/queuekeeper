@@ -1975,8 +1975,12 @@ owner approved removing the guard. The same subagents ending at the account's us
 (HTTP 429) left nothing behind three times, as a subagent's end stops nothing. To wind subagents
 down, ask each to start nothing new, stop only its commands still waiting for admission, which
 hold no entry, and let its admitted commands finish. On 2026-10-23 that left the guard empty, and
-a gate already running released normally. Whether a person stopping a subagent, rather than a
-coordinator's TaskStop, sends the same was not measured.
+a gate already running released normally. A person stopping a subagent from the app sends the
+same. A subagent stopped while its foreground command ran: that command and its background one,
+each with its child in its own session, got SIGTERM within 6 ms and were killed 1.49 s later. A
+subagent that had ended its turn and waited on its own background command was still listed, under
+the title it gave itself, and stopping it 115 s later did the same to that command (2026-10-31,
+Claude desktop app 4.4212.0, Claude Code 2.1.309, macOS 27.2).
 
 Interrupting a turn, and archiving or deleting a session, stop commands as a task stop does. An
 interrupt reaches only the turn's foreground command; the session's background commands run on.
