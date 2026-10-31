@@ -2017,10 +2017,14 @@ entry stays, dead, and its command runs on unsupervised. A Codex Desktop thread 
 command past its turn: one a new local thread started and yielded on ran its full 900 s after the
 turn ended, with its child in its own session, and neither received a signal; the app listed it
 under the thread's background processes (2026-10-29, ChatGPT 26.1023.51421 with codex-cli
-0.165.0-alpha.1.2, macOS 27.2). A Codex agent therefore follows an admitted command to its
-terminal result before ending its turn under `codex exec`, and before the thread is archived or
-closed in Codex Desktop. What archiving or closing a thread sends its commands, and what quitting
-the Claude desktop app sends, were not measured.
+0.165.0-alpha.1.2, macOS 27.2). Archiving the thread ends its session: the command's shell and
+the command were killed with SIGKILL and no SIGTERM within 2.3 s of the click on the row's archive
+button, and the child in its own session ran on, reparented to launchd. Closing the app's window
+stops nothing: 20 s after the window closed, the shell, still a child of Codex's app server, and
+both probe processes ran on unsignaled (2026-10-31, ChatGPT 26.1027.30824 with codex-cli
+0.166.0-alpha.5.1, macOS 27.2). A Codex agent therefore follows an admitted command to its
+terminal result before ending its turn under `codex exec`, and before the thread is archived in
+Codex Desktop. What quitting the Claude desktop app sends was not measured.
 
 Recovery of a guard entry is attended, and `eng admissions recover` carries it out. The first
 command below lists each entry that refuses admission, dead or uncertain, with its identity, label,
