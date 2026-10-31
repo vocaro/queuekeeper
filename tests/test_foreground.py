@@ -239,6 +239,44 @@ class RoutingTests(unittest.TestCase):
         self.assertIn("window the owner agrees first", error)
         self.assertFalse(self.during.exists())
 
+    def test_an_unreachable_second_mac_offers_a_window_here_for_foreground_work_alone(self):
+        self.lanes["plain"] = {"command": [sys.executable, "-c", "print('Ran 1 tests')"], "resource": "heavy"}
+        (self.project / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Project",
+                                                                   "lanes": self.lanes}))
+        away = remote.Unreachable("build-host cannot be reached: ssh: connect to host mac.local port 22: Host is down",
+                                  "wake build-host and connect it to the network")
+        with patch.object(remote, "configured", return_value="build-host"), \
+                patch.object(remote, "named_host", return_value="build-host"), \
+                patch.object(remote, "execute", side_effect=away):
+            ran = {"lane": self.eng("run", "voiceover-mac"), "remote lane": self.eng("remote", "run", "voiceover-mac"),
+                   "admit": self.eng("remote", "admit", "--foreground", "--", "true")}
+            plain = {"lane": self.eng("remote", "run", "plain"), "admit": self.eng("remote", "admit", "--", "true")}
+        for name, here in (("lane", "eng run --here voiceover-mac"), ("remote lane", "eng run --here voiceover-mac"),
+                           ("admit", "eng admit --foreground -- COMMAND")):
+            with self.subTest(name):
+                status, error = ran[name]
+                self.assertEqual(status, 2)
+                self.assertIn("Host is down; to fix it, wake build-host", error)
+                self.assertIn("ask the owner for a window on this Mac's foreground", error)
+                self.assertIn(f"`{here}`", error)
+        # Work that does not take the screen is told nothing of a window.
+        for name, (status, error) in plain.items():
+            with self.subTest(f"plain {name}"):
+                self.assertEqual(status, 2)
+                self.assertIn("Host is down", error)
+                self.assertNotIn("window", error)
+        self.assertFalse(self.during.exists())
+
+    def test_a_misconfigured_second_mac_offers_no_window_here(self):
+        stop = remote.Misconfigured("build-host could not run the toolkit", "give it a python3")
+        with patch.object(remote, "configured", return_value="build-host"), \
+                patch.object(remote, "named_host", return_value="build-host"), \
+                patch.object(remote, "execute", side_effect=stop):
+            status, error = self.eng("remote", "admit", "--foreground", "--", "true")
+        self.assertEqual(status, 2)
+        self.assertIn("could not run the toolkit", error)
+        self.assertNotIn("window", error)
+
     def test_a_foreground_lane_gets_the_longer_grace_before_sigkill_and_another_lane_does_not(self):
         from vocaro_engineering import processes
         self.record.defer(SECOND)

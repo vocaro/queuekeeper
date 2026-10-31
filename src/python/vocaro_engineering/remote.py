@@ -1104,10 +1104,11 @@ def main(root, config, args):
         work = ["run", "--here", *(["--serial"] if args.serial else []),
                 *(["--expect", str(args.expect)] if args.expect else []), args.lane, *(["--", *extra] if extra else [])]
         held = lease(args.device or [], args.device_owner or devices.default_owner(), extra, root=root)
+        send = lambda: execute(root, config, host, work, lane=args.lane, arguments=extra, expect=args.expect,
+                               lease=held, serial=args.serial)
         with processes.forwarding_signals():
-            return carrying(held, root, host, work, args.lane, lambda: execute(
-                root, config, host, work, lane=args.lane, arguments=extra, expect=args.expect, lease=held,
-                serial=args.serial))
+            return carrying(held, root, host, work, args.lane, lambda: offering_here(
+                f"eng run --here {args.lane}", send) if lane.get("foreground") else send())
     # Without a leading --, argparse collected the command, and a later -- belongs to it.
     command = args.command + ([] if args.passed is None else ["--", *args.passed]) if args.command else args.passed
     if not command:
@@ -1116,8 +1117,10 @@ def main(root, config, args):
         (["--foreground"] if args.foreground else [])
     held = lease(args.device or [], args.device_owner or devices.default_owner(), command, root=root)
     work = ["admit", *kind, "--", *command]
+    send = lambda: execute(root, config, host, work, lease=held)
     with processes.forwarding_signals():
-        return carrying(held, root, host, work, "admit", lambda: execute(root, config, host, work, lease=held))
+        return carrying(held, root, host, work, "admit", lambda: offering_here(
+            "eng admit --foreground -- COMMAND", send) if args.foreground else send())
 
 
 def foreground_lane(root, config, lane, arguments, expect):
@@ -1136,7 +1139,22 @@ def foreground_lane(root, config, lane, arguments, expect):
     work = ["run", "--here", *(["--expect", str(expect)] if expect else []), lane,
             *(["--", *arguments] if arguments else [])]
     with processes.forwarding_signals():
-        return execute(root, config, host, work, lane=lane, arguments=arguments, expect=expect)
+        return offering_here(f"eng run --here {lane}",
+                             lambda: execute(root, config, host, work, lane=lane, arguments=arguments, expect=expect))
+
+
+def offering_here(here, send):
+    """send()'s status, for foreground work bound for the second Mac. When the second Mac cannot be reached,
+    the Unreachable it raises also says that the owner can approve a window on this Mac's foreground, within
+    which here runs the work, since foreground work never moves to this Mac by itself: without that, a
+    session read waking the second Mac as the only fix and stopped without asking (2026-10-31)."""
+    try:
+        return send()
+    except Unreachable as away:
+        raise Unreachable(away.problem, f"{away.fix}; or ask the owner for a window on this Mac's foreground, "
+                                        "saying what would run there and for how long, since foreground work never "
+                                        "moves to this Mac without one, and within it reserve mac-foreground and run "
+                                        f"`{here}` (guides/second-mac-foreground.md, This Mac's foreground)") from None
 
 
 def foreground_report(host):
