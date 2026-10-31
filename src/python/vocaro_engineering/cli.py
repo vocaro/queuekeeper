@@ -12,7 +12,7 @@ import sys
 import time
 
 from . import __version__, devices, disk, docs, evidence, foreground, github_artifacts, keychain, offload_host, \
-    parallel, processes, release, remote, resources, skills, spelling
+    parallel, processes, release, remote, resources, skills, spelling, xctest_shards
 from .config import TOOLKIT_ROOT, CAPABILITIES, DEFAULT_TOOLKIT, load, source_identity, stays
 from .resources import BUSY, FREE_WAIT
 from .simulators import matrix, pool as simulator_pool
@@ -403,6 +403,9 @@ def main(argv=None):
         "pool under device-record reservations: eng simulator-pool list|take|release|prune; -h for the rest")
     commands.add_parser("unittest", help="run a unittest suite's modules in processes of their own, side by side: "
         "eng unittest [-s START] [-p PATTERN] [-j JOBS] [-v]; eng unittest -h for the rest")
+    commands.add_parser("xctest", help="build a Swift package's tests once and run its XCTest classes in xctest "
+        "processes of their own, side by side, each reporting its skips: eng xctest [-j JOBS] [--filter REGEX]; "
+        "eng xctest -h for the rest")
     admission =commands.add_parser("admit", help="run any other heavy command (a build, swift test, xcodebuild "
         "test, a simulator run, a gate suite) through the host's heavy-work admission: eng admit -- COMMAND; add "
         "--model for a generative-model run, --exclusive only for work that needs the host to itself, and --verify "
@@ -527,6 +530,7 @@ def main(argv=None):
     # unittest's options are its own runner's, which this parser would refuse. It reads no project.
     first = 2 if argv[:1] == ["--project"] else 1 if argv[:1] and argv[0].startswith("--project=") else 0
     if argv[first:first + 1] == ["unittest"]: return parallel.unittest_main(argv[first + 1:])
+    if argv[first:first + 1] == ["xctest"]: return xctest_shards.main(argv[first + 1:])
     project = argv[1] if first == 2 else argv[0].split("=", 1)[1] if first == 1 else None
     if argv[first:first + 1] == ["simulator-tests"]: return matrix.main(argv[first + 1:], project)
     if argv[first:first + 1] == ["simulator-pool"]: return simulator_pool.main(argv[first + 1:], project)
