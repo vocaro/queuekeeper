@@ -28,6 +28,13 @@ XCRUN = textwrap.dedent("""\
     devices = state / "devices"
     devices.mkdir(parents=True, exist_ok=True)
     tool, action, *rest = sys.argv[1:]
+    if tool == "xcresulttool":
+        # The record the fake xcodebuild left in the bundle, as xcresulttool prints it; none, a failure.
+        what, bundle = rest[1], pathlib.Path(rest[rest.index("--path") + 1])
+        record = bundle / f"{what}.json"
+        if not record.exists(): sys.exit(f"Error: {bundle} is not a result bundle")
+        print(record.read_text())
+        sys.exit(0)
     with (state / "simctl.log").open("a") as log: log.write(" ".join([action, *rest]) + "\\n")
     def device(udid): return json.loads((devices / udid).read_text())
     def change(udid, **values): (devices / udid).write_text(json.dumps({**device(udid), **values}))
@@ -89,7 +96,23 @@ XCODEBUILD = textwrap.dedent("""\
         time.sleep(0.05)
     if kind in os.environ.get("FAKE_NO_TESTS", ""): sys.exit(0)
     skipped = os.environ.get("FAKE_SKIPPED", "0") if kind in os.environ.get("FAKE_SKIPPED_ON", "") else "0"
-    if kind in os.environ.get("FAKE_UNMEASURED", ""):
+    unmeasured = kind in os.environ.get("FAKE_UNMEASURED", "")
+    if os.environ.get("FAKE_BUNDLE"):
+        # The bundle's own record: three tests, testA skipped, unmeasured when asked.
+        skip = {"name": "Test skipped - Unmeasured: the host was busy" if unmeasured else "Test skipped - planted",
+                "nodeType": "Skip Message"}
+        case = {"name": "testA()", "nodeIdentifier": "T/testA()", "nodeType": "Test Case", "result": "Skipped",
+                "children": [skip]}
+        (bundle / "summary.json").write_text(json.dumps({"result": "Passed", "totalTestCount": 3, "passedTests": 2,
+                                                         "failedTests": 0, "skippedTests": 1}))
+        (bundle / "tests.json").write_text(json.dumps({"testNodes": [{"name": "P", "nodeType": "Test Plan",
+            "children": [{"name": "T", "nodeType": "Test Suite", "children": [case]}]}]}))
+    if "YES" in arguments[arguments.index("-parallel-testing-enabled") + 1:][:1]:
+        # Parallel testing: each test's outcome on a clone, no totals and no skip reason.
+        for name, result in (("T.testA()", "skipped"), ("T.testB()", "passed"), ("T.testC()", "passed")):
+            print(f"Test case '{name}' {result} on 'Clone 1 of {kind} - xctest (1)' (0.001 seconds)")
+        sys.exit(65 if kind in os.environ.get("FAKE_TEST_FAIL", "") else 0)
+    if unmeasured:
         print("/p/T.swift:5: -[P.T testA] : Test skipped - Unmeasured: the host was busy")
     print("Test Suite 'All tests' passed at 2026-10-24 01:00:00.000.")
     print(f"\\t Executed 3 tests, with {skipped} tests skipped and 0 failures (0 unexpected) in 0.1 (0.1) seconds")
@@ -325,9 +348,34 @@ class SimulatorMatrixTests(unittest.TestCase):
         self.assertFalse(any("-default-test-execution-time-allowance" in call for call in tests))
 
     def test_parallel_workers_on_each_device_are_opt_in(self):
-        self.assertEqual(self.run_matrix("--workers", "2")[0], 0)
+        self.assertEqual(self.run_matrix("--workers", "2", FAKE_BUNDLE="1")[0], 0)
         tests = [call for call in self.calls() if call[0] == "test-without-building"]
         self.assertTrue(all(call[call.index("-parallel-testing-worker-count") + 1] == "2" for call in tests))
+
+    def test_with_parallel_workers_the_result_bundle_counts_each_skip_as_one(self):
+        status, output = self.run_matrix("--workers", "2", FAKE_BUNDLE="1")
+        self.assertEqual(status, 0, output)
+        self.assertIn("PASS iPhone-17-Pro: Executed 2 tests, 1 skipped", output)
+        self.assertEqual(evidence.executed_tests(output), 4, output)
+
+    def test_with_parallel_workers_an_unmeasured_skip_the_console_does_not_name_leaves_the_run_unmeasured(self):
+        status, output = self.run_matrix("--workers", "2", FAKE_BUNDLE="1", FAKE_UNMEASURED="iPad-Air-13-inch-M4")
+        self.assertEqual(status, evidence.UNMEASURED, output)
+        self.assertEqual(evidence.unmeasured_tests(output),
+                         ["iPad-Air-13-inch-M4: -[T/testA()] : Test skipped - Unmeasured: the host was busy"])
+        self.assertIn("PASS iPhone-17-Pro", output)
+
+    def test_with_parallel_workers_and_no_readable_bundle_no_test_counts(self):
+        # The console's per-test lines are not a count: a run whose bundle cannot be read establishes nothing.
+        status, output = self.run_matrix("--workers", "2")
+        self.assertEqual(status, 1, output)
+        self.assertIn("FAIL iPhone-17-Pro: no tests ran (Executed 0 tests)", output)
+
+    def test_a_skip_both_the_console_and_the_bundle_name_is_listed_once(self):
+        status, output = self.run_matrix(FAKE_BUNDLE="1", FAKE_UNMEASURED="iPhone-17-Pro")
+        self.assertEqual(status, evidence.UNMEASURED, output)
+        self.assertEqual(evidence.unmeasured_tests(output),
+                         ["iPhone-17-Pro: -[T/testA()] : Test skipped - Unmeasured: the host was busy"])
 
     def test_a_lane_that_ends_with_its_separator_takes_a_filter_from_eng_run(self):
         matrix = [sys.executable, str(ENG), "simulator-tests", "--scheme", "Package-Tests", "--runtime", "iOS-27-0",

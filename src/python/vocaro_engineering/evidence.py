@@ -83,6 +83,8 @@ UNMEASURED = 3
 # reason that begins "Unmeasured:", and swift test and xcodebuild still exit 0. unittest prints the
 # reason only when verbose.
 UNMEASURED_TEST = re.compile(r"^.*:\d+: -\[[^\]\n]+\] : Test skipped - Unmeasured: .*$"
+                             # eng simulator-tests' line for one a result bundle records: DEVICE: -[TEST] : ...
+                             r"|^\S+: -\[[^\]\n]+\] : Test skipped - Unmeasured: .*$"
                              r"|^\S+ Test .* was cancelled after [^:\n]*: \"Unmeasured: .*\"$"
                              r"|^.* \.\.\. skipped 'Unmeasured: .*'$", re.M)
 

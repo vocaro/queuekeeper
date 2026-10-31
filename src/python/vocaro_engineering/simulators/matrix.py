@@ -16,9 +16,11 @@ any device was. guides/parallel-tests.md says how to bound it.
 import argparse
 import contextlib
 from concurrent.futures import ThreadPoolExecutor
+import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -162,15 +164,21 @@ class Run:
             return self.finish(kind, evidence.UNMEASURED, f"the tests exceeded {args.test_timeout}s", log)
         seconds = round(time.monotonic() - started)
         text = log.read_text(errors="replace")
-        # Tests that skipped ran nothing, so they are reported beside the count, not in it.
-        executed, skipped = evidence.executed_tests(text) or 0, evidence.skipped_tests(text)
+        # Tests that skipped ran nothing, so they are reported beside the count, not in it. The result
+        # bundle's record counts them; the console, with no bundle to read, is the fallback.
+        recorded = bundle_results(bundle, kind)
+        if recorded is not None: executed, skipped, from_bundle = recorded
+        else: executed, skipped, from_bundle = evidence.executed_tests(text) or 0, evidence.skipped_tests(text), []
         counted = f"Executed {executed} tests" + (f", {skipped} skipped" if skipped else "")
         if status != 0:
             return self.finish(kind, 1, f"the tests failed with status {status}, {counted}", log, seconds)
         if executed == 0:
             # A filter that selects nothing, or only tests that skip, passes xcodebuild and establishes nothing.
             return self.finish(kind, 1, f"no tests ran ({counted})", log, seconds)
-        unmeasured = evidence.unmeasured_tests(text)
+        console = evidence.unmeasured_tests(text)
+        # The bundle names each skipped XCTest test once, so the console's lines for them would repeat it.
+        if recorded is not None: console = [line for line in console if "Test skipped - Unmeasured:" not in line]
+        unmeasured = [*console, *from_bundle]
         # The wrapper's "Executed N tests" is what a lane counts: the device's own totals are in its log.
         self.finish(kind, evidence.UNMEASURED if unmeasured else 0, counted, log, seconds)
         if unmeasured: self.say(*unmeasured)
@@ -181,6 +189,30 @@ class Run:
         if xctestrun is None:
             return self.finish(kind, 1, "not tested: the build failed")
         self.test(kind, device, xctestrun)
+
+
+def bundle_results(bundle, kind):
+    """(executed, skipped, unmeasured lines) as a result bundle records them, or None when xcresulttool
+    cannot read it. Once parallel testing is on, xcodebuild's console prints each test's outcome but
+    no totals and no skip reason (Xcode 27.2, 2026-10-31), so the bundle is what counts, either way.
+    Each skip whose message begins "Test skipped - Unmeasured:" is a line evidence.UNMEASURED_TEST
+    reads, naming the device and the test."""
+    def read(what):
+        found = subprocess.run(["xcrun", "xcresulttool", "get", "test-results", what, "--path", str(bundle)],
+                               capture_output=True, text=True, timeout=300, check=True)
+        return json.loads(found.stdout)
+    try: summary, tests = read("summary"), read("tests")
+    except (OSError, ValueError, subprocess.SubprocessError): return None
+    unmeasured = []
+    def walk(node, test=None):
+        if node.get("nodeType") == "Test Case": test = node.get("nodeIdentifier") or node.get("name")
+        if node.get("nodeType") == "Skip Message" and "Test skipped - Unmeasured:" in node.get("name", ""):
+            unmeasured.append(f"{kind}: -[{test}] : {node['name'][node['name'].index('Test skipped'):]}")
+        for child in node.get("children", []): walk(child, test)
+    for node in tests.get("testNodes", []): walk(node)
+    try: total, skipped = int(summary["totalTestCount"]), int(summary["skippedTests"])
+    except (KeyError, TypeError, ValueError): return None
+    return total - skipped, skipped, list(dict.fromkeys(unmeasured))
 
 
 @contextlib.contextmanager
