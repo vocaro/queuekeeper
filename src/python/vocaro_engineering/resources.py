@@ -67,8 +67,44 @@ _held = {}
 
 
 def process_start(pid):
-    result = subprocess.run(["ps", "-p", str(pid), "-o", "lstart="], capture_output=True, text=True)
+    """When pid started, as `ps -o lstart=` prints it, or None when no such process runs.
+
+    A process in an app's sandbox, such as an XCTest runner checking the foreground reservation that
+    eng holds on the second Mac, may not start ps; the kernel's record gives it the same text."""
+    try:
+        result = subprocess.run(["ps", "-p", str(pid), "-o", "lstart="], capture_output=True, text=True)
+    except OSError:
+        if sys.platform != "darwin":
+            raise
+        return kernel_start(pid)
     return result.stdout.strip() if result.returncode == 0 else None
+
+
+def kernel_start(pid):
+    """process_start from sysctl's KERN_PROC_PID, with no process started: None when no such process
+    runs, and OSError when the kernel refuses the question."""
+    import ctypes
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return None
+    if pid <= 0:
+        return None
+    libc = ctypes.CDLL(None, use_errno=True)
+    mib = (ctypes.c_int * 4)(1, 14, 1, pid)  # CTL_KERN, KERN_PROC, KERN_PROC_PID
+    found = ctypes.create_string_buffer(1024)
+    size = ctypes.c_size_t(len(found))
+    if libc.sysctl(mib, 4, found, ctypes.byref(size), None, 0) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, f"sysctl KERN_PROC_PID {pid}: {os.strerror(error)}")
+    if size.value == 0:
+        return None
+    # A kinfo_proc begins with its extern_proc, whose first field is p_starttime (a timeval, seconds
+    # first) and whose p_pid is at byte 40.
+    if int.from_bytes(found.raw[40:44], sys.byteorder, signed=True) != pid:
+        raise OSError(f"sysctl KERN_PROC_PID {pid} described another process")
+    started = int.from_bytes(found.raw[0:8], sys.byteorder, signed=True)
+    return time.strftime("%a %b %e %H:%M:%S %Y", time.localtime(started))
 
 
 def running(record):

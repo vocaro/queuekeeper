@@ -17,13 +17,16 @@ from unittest.mock import patch
 
 SOURCE = Path(__file__).resolve().parents[1] / "src/python"
 sys.path.insert(0, str(SOURCE))
-from vocaro_engineering import cli, devices
+from vocaro_engineering import cli, devices, resources
 from vocaro_engineering.resources import process_start
 
 # Well-formed, invented identifiers: hardware UDIDs and a simulator UUID.
 PHONE = "00008130-001A2C3E0C38001C"
 TABLET = "00008103-000E4C1A3E90801E"
 DUO = "5B0E6C51-2D3A-4F7B-9C1E-0A4B8D2F6E13"
+# A sandbox that refuses to start ps, as an app's sandbox does, and allows the rest.
+SANDBOX_EXEC = "/usr/bin/sandbox-exec"
+DENY_PS = '(version 1)(allow default)(deny process-exec (literal "/bin/ps"))'
 # Writes the entry it is given, as the record shows it during the run, to a file.
 PROBE = ("import json, sys; entry = json.load(open(sys.argv[1]))['devices'][sys.argv[2]]; "
          "open(sys.argv[3], 'w').write(json.dumps(entry))")
@@ -597,6 +600,37 @@ class DeviceRecordTests(unittest.TestCase):
              self.assertRaisesRegex(devices.Refused, "held by session-a"):
             devices.require_foreground("session-b")
 
+    @unittest.skipUnless(Path(SANDBOX_EXEC).exists(), "no sandbox-exec to deny ps with")
+    def test_a_sandboxed_runner_that_may_not_start_ps_still_checks_an_active_runs_foreground(self):
+        # As eng holds the second Mac's foreground: the entry's active run is a live process. A
+        # sandboxed XCTest runner then checks it, and its sandbox refuses to start ps.
+        entry = self.foreground()
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        self.addCleanup(child.wait)
+        self.addCleanup(child.kill)
+        self.record.update(devices.FOREGROUND, owner="session-a", revision=entry["revision"], state="testing",
+                           activeRun=True, hostProcessIdentifier=child.pid)
+        check = ("import subprocess\nfrom vocaro_engineering import devices\n"
+                 "try:\n    subprocess.run(['ps', '-p', '1'], capture_output=True)\n    print('ps ran')\n"
+                 "except PermissionError:\n    print('ps refused')\n"
+                 "try:\n    print(devices.require_foreground('session-a')['state'])\n"
+                 "except devices.Refused as refused:\n    print('refused:', refused)\n")
+
+        def sandboxed():
+            environment = {**os.environ, "PYTHONPATH": str(SOURCE), devices.OVERRIDE: str(self.path)}
+            return subprocess.run([SANDBOX_EXEC, "-p", DENY_PS, sys.executable, "-c", check], env=environment,
+                                  capture_output=True, text=True, timeout=60)
+
+        found = sandboxed()
+        self.assertEqual(found.returncode, 0, found.stderr)
+        self.assertEqual(found.stdout.splitlines(), ["ps refused", "testing"])
+        child.kill()
+        child.wait()
+        found = sandboxed()
+        self.assertEqual(found.returncode, 0, found.stderr)
+        self.assertEqual(found.stdout.splitlines()[0], "ps refused")
+        self.assertRegex(found.stdout.splitlines()[1], "^refused: .*orphan")
+
     def test_release_waits_for_owned_processes_and_records_the_frontmost_restoration(self):
         entry = self.foreground()
         child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
@@ -911,6 +945,32 @@ class BoundedRunTests(unittest.TestCase):
         self.assertEqual(code, 0, error)
         self.assertTrue(self.marker.exists())
         self.assertEqual(self.path.read_bytes(), before)
+
+
+class ProcessStartTests(unittest.TestCase):
+    """process_start reads a start as ps prints it, and from the kernel where ps cannot be started."""
+
+    def test_the_kernel_gives_each_process_the_start_ps_gives_it(self):
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        self.addCleanup(child.wait)
+        self.addCleanup(child.kill)
+        for pid in (os.getpid(), os.getppid(), 1, child.pid):
+            with self.subTest(pid=pid):
+                self.assertIsNotNone(process_start(pid))
+                self.assertEqual(resources.kernel_start(pid), process_start(pid))
+        child.kill()
+        child.wait()
+        for pid in (child.pid, 0, -1, "x", None):
+            with self.subTest(pid=pid):
+                self.assertIsNone(resources.kernel_start(pid))
+
+    def test_a_process_that_may_not_start_ps_reads_the_start_from_the_kernel(self):
+        expected = process_start(os.getpid())
+        refused = PermissionError(1, "Operation not permitted")
+        with patch.object(resources.subprocess, "run", side_effect=refused) as run:
+            self.assertEqual(process_start(os.getpid()), expected)
+            self.assertIsNone(process_start(99999999))
+        self.assertEqual(run.call_count, 2)
 
 
 if __name__ == "__main__":
