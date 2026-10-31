@@ -31,6 +31,10 @@ from .pool import DEVICE_TYPE, RUNTIME, qualified
 
 # Seconds simctl boot itself may take; bootstatus has --boot-timeout.
 BOOT_COMMAND = 120
+# Seconds one test may run before XCTest fails it, records a spindump and goes on to the next, unless
+# --test-allowance or the test's own executionTimeAllowance says otherwise: XCTest's own default once
+# -test-timeouts-enabled is on, which it rounds up to whole minutes.
+TEST_ALLOWANCE = 600
 
 
 def parse(argv):
@@ -50,8 +54,13 @@ def parse(argv):
     parser.add_argument("--workers", type=int, help="xcodebuild's parallel test workers on each device, each a "
                         "clone of it; without this each device runs one test process")
     parser.add_argument("--boot-timeout", type=int, default=600, help="seconds a boot may take (default 600)")
-    parser.add_argument("--test-timeout", type=int, help="seconds after which a device's test run is stopped "
-                        "and left unmeasured, a backstop for a hang")
+    parser.add_argument("--test-timeout", type=int, default=processes.DEFAULT_LIMIT, help="seconds after which a "
+                        "device's test run is stopped and left unmeasured, a backstop for a hang (default "
+                        f"{processes.DEFAULT_LIMIT})")
+    parser.add_argument("--test-allowance", type=int, default=TEST_ALLOWANCE, help="seconds one test may run "
+                        "before XCTest fails it with a spindump and runs the rest, as xcodebuild's "
+                        f"-default-test-execution-time-allowance (default {TEST_ALLOWANCE}); test arguments "
+                        "that set -test-timeouts-enabled themselves replace it")
     parser.add_argument("--derived-data", type=Path, default=Path(".build/simulator-tests/derived"))
     parser.add_argument("--logs", type=Path, default=Path(".build/simulator-tests/logs"))
     parser.add_argument("--pool", help="the simulator pool, the start of every member's name (default: the "
@@ -65,7 +74,7 @@ def parse(argv):
         parser.error(f"unrecognized arguments: {' '.join(unknown)}. Test arguments such as -only-testing go after "
                      "--, so a lane whose command runs simulator-tests ends with \"--\"")
     args.passed = argv[split + 1:]
-    for name in ("jobs", "build_jobs", "workers", "boot_timeout", "test_timeout"):
+    for name in ("jobs", "build_jobs", "workers", "boot_timeout", "test_timeout", "test_allowance"):
         if getattr(args, name) is not None and getattr(args, name) < 1:
             parser.error(f"--{name.replace('_', '-')} needs at least 1")
     if len(set(args.device)) != len(args.device): parser.error("name each device type once")
@@ -138,9 +147,13 @@ class Run:
         shutil.rmtree(bundle, ignore_errors=True)
         workers = ["-parallel-testing-enabled", "YES", "-parallel-testing-worker-count", str(args.workers)] \
             if args.workers else ["-parallel-testing-enabled", "NO"]
+        # A hung test fails by itself, named, and the rest still run, well before the run's own backstop.
+        allowance = [] if "-test-timeouts-enabled" in args.passed else \
+            ["-test-timeouts-enabled", "YES", "-default-test-execution-time-allowance", str(args.test_allowance)]
         command = ["xcodebuild", "test-without-building", "-xctestrun", str(xctestrun),
                    "-destination", f"platform=iOS Simulator,id={device.udid}", "-destination-timeout", "600",
-                   *workers, "-collect-test-diagnostics", "never", "-resultBundlePath", str(bundle), *args.passed]
+                   *workers, *allowance, "-collect-test-diagnostics", "never", "-resultBundlePath", str(bundle),
+                   *args.passed]
         self.say(f"TEST {kind} ({device.udid}); log: {log}")
         started = time.monotonic()
         try:

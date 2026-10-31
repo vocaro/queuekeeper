@@ -315,8 +315,11 @@ def admit(root, args, config=None):
     # Without a leading --, argparse collected the command, and a later -- belongs to it.
     command = args.command + ([] if args.passed is None else ["--", *args.passed]) if args.command else args.passed
     if not command: raise ValueError("Name the command: eng admit [--exclusive | --model] [--verify] -- COMMAND")
+    if args.time_limit <= 0: raise ValueError("--time-limit needs a positive number of seconds")
     config = config if config is not None else load(root)
     kind = ["--exclusive"] if args.exclusive else ["--model"] if args.model else []
+    # Only a limit of its own goes to the second Mac, whose toolkit may not take the option.
+    if args.time_limit != processes.DEFAULT_LIMIT: kind += ["--time-limit", f"{args.time_limit:g}"]
     # Foreground work holds the foreground of the Mac it runs on: the second Mac's, which eng takes for it, or this
     # Mac's, which the session holds within the owner's window. eng remote admit --foreground sends it there.
     second = args.foreground and foreground.second_mac()
@@ -337,7 +340,7 @@ def admit(root, args, config=None):
     receipt = {"project": source_identity(root), "toolkit": source_identity(TOOLKIT_ROOT),
                "policy": refresh_policy(root, sys.stderr), "command": command,
                "directory": str(Path.cwd()), "exclusive": args.exclusive, "model": args.model,
-               "foreground": args.foreground, **placement(reason)}
+               "foreground": args.foreground, "timeLimit": args.time_limit, **placement(reason)}
     with processes.forwarding_signals(), contextlib.ExitStack() as stack:
         asked = time.monotonic()
         # The second Mac's foreground first, so that a command waiting for it holds no slot.
@@ -350,11 +353,15 @@ def admit(root, args, config=None):
         def work():
             github_artifacts.configured(root, config)
             # A foreground command restores what it changed on the Mac before SIGKILL, VoiceOver first.
-            return processes.supervise(command, cwd=Path.cwd(), on_stop=admission.interrupted,
+            return processes.supervise(command, cwd=Path.cwd(), on_stop=admission.interrupted, timeout=args.time_limit,
                                        kill_after=processes.FOREGROUND_KILL_AFTER if args.foreground
                                        else processes.KILL_AFTER)
-        return record(root / ".build/engineering/admit", receipt,
-                      work)
+        try:
+            return record(root / ".build/engineering/admit", receipt, work)
+        except processes.TimedOut as error:
+            # A backstop for a hang that a busy host can also reach, so the command is unmeasured.
+            print(f"eng: unmeasured: {error}", file=sys.stderr)
+            return evidence.UNMEASURED
 
 
 def main(argv=None):
@@ -428,6 +435,9 @@ def main(argv=None):
     admission.add_argument("--if-free", action="store_true", help=f"run only if heavy-work admission admits the "
         f"command within {FREE_WAIT}s, on the second Mac or here with --verify; otherwise exit {BUSY} without running it")
     admission.add_argument("--timeout", type=float, default=5400, help="seconds to wait for admission (default 5400)")
+    admission.add_argument("--time-limit", type=float, default=processes.DEFAULT_LIMIT, metavar="SECONDS",
+        help=f"seconds the command may run once admitted before it and its processes are stopped and it exits "
+        f"{evidence.UNMEASURED}, unmeasured (default {processes.DEFAULT_LIMIT}); a backstop for a hang")
     admission.add_argument("command", nargs=argparse.REMAINDER, help="the command and its arguments, after --; "
         "it runs in the current directory")
     logged = commands.add_parser("admissions", usage="%(prog)s [-h] [--since WHEN] [--until WHEN] [log ...]\n"
@@ -488,6 +498,8 @@ def main(argv=None):
     kind.add_argument("--model", action="store_true", help="hold one slot and the model lock of the second Mac")
     remote_admit.add_argument("--foreground", action="store_true", help="hold the second Mac's foreground for the "
         "command, as Mac VoiceOver and Mac UI tests need, waiting while another run holds it")
+    remote_admit.add_argument("--time-limit", type=float, metavar="SECONDS", help="seconds the command may run "
+        f"there once admitted, as eng admit's (default {processes.DEFAULT_LIMIT})")
     remote_admit.add_argument("command", nargs=argparse.REMAINDER, help="the command and its arguments, after --")
     remote_passed = operations.add_parser("passed", help="exit 0 when the whole lane passed on the second Mac at "
         "exactly this commit; a snapshot's run never counts")
@@ -570,6 +582,12 @@ def main(argv=None):
             if "integration" not in config:
                 warnings.append("engineering.json declares no integration: add \"integration\": \"direct-main\", "
                                 "or \"pull-request\" for a project that takes changes only by pull request (agents/core.md)")
+            unbounded = sorted(name for name, lane in config.get("lanes", {}).items()
+                               if "command" in lane and "timeout" not in lane)
+            if unbounded:
+                warnings.append(f"{len(unbounded)} lane(s) declare no timeout and are stopped, unmeasured, after "
+                                f"eng's default {processes.DEFAULT_LIMIT}s: {', '.join(unbounded)}; give each a timeout "
+                                "chosen from its measured time (guides/parallel-tests.md, Bound every run)")
             warnings += temporary_model_storage(root, config)
             warnings += unlinked_packages(root, config)
             warnings += stale_copies(root)
@@ -652,10 +670,11 @@ def main(argv=None):
                 return work()
             if group is None:
                 command = awake(lane, extra)
-                receipt.update(command=command, arguments=extra)
+                receipt.update(command=command, arguments=extra, timeout=lane.get("timeout", processes.DEFAULT_LIMIT))
                 def execute(on_stop=None):
                     return record(directory, receipt, lambda: prepared(lambda: processes.run(command, cwd=root,
-                                  log_path=directory / "run.log", timeout=lane.get("timeout"), on_stop=on_stop,
+                                  log_path=directory / "run.log", timeout=lane.get("timeout", processes.DEFAULT_LIMIT),
+                                  on_stop=on_stop,
                                   kill_after=processes.FOREGROUND_KILL_AFTER if lane.get("foreground")
                                   else processes.KILL_AFTER)))
             else:

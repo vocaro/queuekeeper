@@ -310,6 +310,20 @@ class SimulatorMatrixTests(unittest.TestCase):
         self.assertIn("FAIL iPad-Air-13-inch-M4: no tests ran (Executed 0 tests, 3 skipped)", output)
         self.assert_every_device_returned()
 
+    def test_each_test_has_xctests_time_allowance(self):
+        self.assertEqual(self.run_matrix("--test-allowance", "120")[0], 0)
+        tests = [call for call in self.calls() if call[0] == "test-without-building"]
+        self.assertEqual(len(tests), 2)
+        for call in tests:
+            self.assertEqual(call[call.index("-test-timeouts-enabled") + 1], "YES")
+            self.assertEqual(call[call.index("-default-test-execution-time-allowance") + 1], "120")
+
+    def test_test_arguments_that_set_their_own_time_allowance_replace_engs(self):
+        self.assertEqual(self.run_matrix("--", "-test-timeouts-enabled", "NO")[0], 0)
+        tests = [call for call in self.calls() if call[0] == "test-without-building"]
+        self.assertTrue(all(call.count("-test-timeouts-enabled") == 1 and call[-1] == "NO" for call in tests))
+        self.assertFalse(any("-default-test-execution-time-allowance" in call for call in tests))
+
     def test_parallel_workers_on_each_device_are_opt_in(self):
         self.assertEqual(self.run_matrix("--workers", "2")[0], 0)
         tests = [call for call in self.calls() if call[0] == "test-without-building"]

@@ -1113,8 +1113,11 @@ def main(root, config, args):
     command = args.command + ([] if args.passed is None else ["--", *args.passed]) if args.command else args.passed
     if not command:
         raise ValueError("Name the command: eng remote admit [--exclusive | --model] [--foreground] -- COMMAND")
+    if args.time_limit is not None and args.time_limit <= 0:
+        raise ValueError("--time-limit needs a positive number of seconds")
     kind = (["--exclusive"] if args.exclusive else ["--model"] if args.model else []) + \
-        (["--foreground"] if args.foreground else [])
+        (["--foreground"] if args.foreground else []) + \
+        (["--time-limit", f"{args.time_limit:g}"] if args.time_limit is not None else [])
     held = lease(args.device or [], args.device_owner or devices.default_owner(), command, root=root)
     work = ["admit", *kind, "--", *command]
     send = lambda: execute(root, config, host, work, lease=held)
@@ -1595,7 +1598,7 @@ def first_command(root, config, command, kind):
     ignores, which the commit sent lacks, or when its words name this checkout's path, a simulator by
     its identifier, or a hardware UDID (devices.named), all of which are this Mac's; a device goes
     to the second Mac only under a reservation `eng remote admit --device` carries. kind is
-    --exclusive or --model, if either."""
+    --exclusive or --model, if either, and --time-limit when the command has a limit of its own."""
     top, directory, words = Path(root).resolve(), Path.cwd().resolve(), " ".join(command)
     try:
         relative = directory.relative_to(top).as_posix()

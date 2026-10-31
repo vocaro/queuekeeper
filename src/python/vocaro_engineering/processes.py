@@ -6,6 +6,7 @@ from pathlib import Path
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -20,6 +21,11 @@ LINGER, KILL_AFTER = 60, 10
 FOREGROUND_KILL_AFTER = 120
 # Seconds a stopped command's processes have after SIGKILL before the run is uncertain.
 KILL_WAIT = 5
+# Seconds eng lets a lane or an `eng admit` command run that declares no limit of its own, so that no run
+# waits forever on a hang: BreezEPUB's tests waited on a thumbnail request from 08:13 on 2026-10-31 with
+# none. More than twice the longest admission the log held from 2026-10-27 to 2026-10-31, 53 min of
+# Pagepour's tests; a lane that runs longer says so with its own timeout.
+DEFAULT_LIMIT = 7200
 # Seconds beyond KILL_AFTER that SIGKILL waits while a live admission owner is among the processes,
 # as a nested eng admit in a light lane's script is: it stops its own command, with a KILL_AFTER
 # and KILL_WAIT of its own, then settles its guard entry, which SIGKILL would strand. It also
@@ -384,6 +390,30 @@ def stop(process):
         except subprocess.TimeoutExpired:
             pass
     raise RuntimeError(f"Owned process {process.pid} has no confirmed terminal result")
+
+
+def bounded(command, *, cwd=None, timeout, pass_fds=(), kill_after=KILL_AFTER):
+    """Run command in a session of its own, its output in a file, and return (status, output): status
+    is None once it ran past timeout seconds, after which its process group had SIGTERM, then SIGKILL
+    after kill_after seconds. For many short commands side by side, such as test processes, where
+    supervise's sampling would cost too much; a descendant that leaves the group is not followed."""
+    with tempfile.TemporaryFile("w+", errors="replace") as output:
+        child = subprocess.Popen(command, cwd=cwd, stdout=output, stderr=subprocess.STDOUT,
+                                 start_new_session=True, pass_fds=pass_fds)
+        try:
+            status = child.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            status = None
+            with contextlib.suppress(ProcessLookupError): os.killpg(child.pid, signal.SIGTERM)
+            with contextlib.suppress(subprocess.TimeoutExpired): child.wait(timeout=kill_after)
+            # The root may have gone on SIGTERM and left the rest of its group running.
+            with contextlib.suppress(ProcessLookupError, PermissionError): os.killpg(child.pid, signal.SIGKILL)
+            child.wait(timeout=KILL_WAIT)
+        except BaseException:
+            stop(child)
+            raise
+        output.seek(0)
+        return status, output.read()
 
 
 def run(command, *, cwd, log_path, timeout=None, env=None, on_stop=None, kill_after=KILL_AFTER):

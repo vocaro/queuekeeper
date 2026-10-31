@@ -42,6 +42,7 @@ XCRUN = textwrap.dedent("""
     tests = [test for test in json.loads(os.environ["FAKE_TESTS"]) if test.startswith(module + ".")
              and any(test == s or test.split("/")[0] == s for s in selectors.split(","))]
     tests = tests[:len(tests) - int(os.environ.get("FAKE_DROP", "0"))]
+    if os.environ.get("FAKE_HANG") == module: __import__("time").sleep(60)
     failed = skipped = 0
     print("Test Suite 'Selected tests' started at 2026-10-31 09:20:16.490.")
     for test in tests:
@@ -133,6 +134,13 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertIn("planted failure", output)
         self.assertRegex(output, r"eng xctest: .*FAILED: shard \d+ of \d+, Beta")
+
+    def test_a_process_past_its_timeout_is_stopped_and_leaves_the_run_unmeasured(self):
+        status, output = self.run_eng("--skip-build", "--timeout", "5", FAKE_HANG="Beta")
+        self.assertEqual(status, evidence.UNMEASURED, output)
+        self.assertRegex(output, r"== shard \d+ of \d+, Beta .*: timed out after 5s")
+        self.assertRegex(output, r"eng xctest: .*UNMEASURED: shard \d+ of \d+, Beta .*\(timed out after 5s\)")
+        self.assertNotIn("FAILED", output)
 
     def test_a_process_that_runs_fewer_tests_than_it_was_given_fails(self):
         status, output = self.run_eng("--skip-build", "--filter", "Doubling", FAKE_DROP="1")

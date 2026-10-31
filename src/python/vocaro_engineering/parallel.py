@@ -11,7 +11,6 @@ import json
 import os
 from pathlib import Path
 import re
-import subprocess
 import sys
 import threading
 import time
@@ -25,6 +24,11 @@ TAIL = 40
 DEFAULT_JOBS = 4
 # unittest's own exit status for a run that found no tests (Python 3.12 and later).
 NO_TESTS = 5
+# Seconds one test process of `eng unittest` or `eng xctest` may run before it is stopped and left
+# unmeasured, unless --timeout says otherwise: a backstop for a hang, which would otherwise hold the
+# whole run until its lane's limit. More than twice the slowest of the toolkit's own, test_remote's
+# 817 s at one-minute load averages of 100 to 280 on this Mac (2026-10-31).
+PROCESS_LIMIT = 1800
 
 
 def outcome(status):
@@ -73,7 +77,8 @@ def lanes(root, members, directory, jobs, judge, receipt, on_stop=None):
         say(f"RUN {name}")
         began = time.monotonic()
         try:
-            status = processes.run(lane["command"], cwd=root, log_path=log, timeout=lane.get("timeout"),
+            status = processes.run(lane["command"], cwd=root, log_path=log,
+                                   timeout=lane.get("timeout", processes.DEFAULT_LIMIT),
                                    on_stop=on_stop)
             status = judge(lane, status, log.read_text(errors="replace"))
         except processes.TimedOut as error:
@@ -182,19 +187,19 @@ SHARD = "import sys, unittest; sys.path.insert(0, sys.argv.pop(1)); sys.argv[0] 
     "unittest.main(module=None)"
 
 
-def run_shard(name, tests, top, verbose, descriptors=()):
+def run_shard(name, tests, top, verbose, descriptors=(), timeout=PROCESS_LIMIT):
     """Run a shard's tests in a process of its own, which inherits descriptors and no other. It runs
     in this process's directory, with top and then that directory on its sys.path, as `python3 -m
-    unittest discover` does. A name listed more than once runs once."""
+    unittest discover` does. A name listed more than once runs once. One still running after timeout
+    seconds is stopped, and its status is None."""
     command = [sys.executable, "-c", SHARD, str(top), *(["-v"] if verbose else []), *dict.fromkeys(tests)]
     began = time.monotonic()
-    finished = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                              errors="replace", pass_fds=descriptors)
-    output = finished.stdout
+    status, output = processes.bounded(command, timeout=timeout, pass_fds=descriptors)
     summary = RESULT.search(output)
-    return {"name": name, "status": finished.returncode, "output": output,
+    return {"name": name, "status": status, "output": output,
             "ran": sum(int(count) for count in RAN.findall(output)),
-            "result": summary.group(0) if summary else "no result",
+            "result": f"timed out after {timeout:g}s" if status is None
+                      else summary.group(0) if summary else "no result",
             "seconds": time.monotonic() - began}
 
 
@@ -208,9 +213,13 @@ def unittest_main(argv):
                         help=f"processes at a time (default {DEFAULT_JOBS}); 1 runs them one after another")
     parser.add_argument("--split", choices=["module", "class", "test"], default="module",
                         help="what one process runs (default: one module)")
+    parser.add_argument("--timeout", type=float, default=PROCESS_LIMIT, metavar="SECONDS",
+                        help=f"seconds one process may run before it is stopped and left unmeasured "
+                        f"(default {PROCESS_LIMIT})")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args(argv)
     if args.jobs < 1: parser.error("--jobs needs at least 1")
+    if args.timeout <= 0: parser.error("--timeout needs a positive number of seconds")
     start = Path(args.start_directory).resolve()
     top = Path(args.top_level_directory).resolve() if args.top_level_directory else start
     # Discovery imports every module here, as unittest's own would, and each shard imports its own
@@ -229,7 +238,8 @@ def unittest_main(argv):
     descriptors = processes.held_locks(os.environ)
     began = time.monotonic()
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
-        futures = [pool.submit(run_shard, name, tests, top, args.verbose, descriptors) for name, tests in found.items()]
+        futures = [pool.submit(run_shard, name, tests, top, args.verbose, descriptors, args.timeout)
+                   for name, tests in found.items()]
         results = []
         for future in futures:
             result = future.result()
@@ -237,9 +247,10 @@ def unittest_main(argv):
             # Each shard's own output, whole and in discovery order, under one line that names it.
             print(f"== {result['name']}: {result['result']} ({result['ran']} tests, {result['seconds']:.1f}s)",
                   result["output"].rstrip("\n"), sep="\n", flush=True)
-    failed = []
+    failed, unmeasured = [], []
     for result in results:
-        if result["status"] != 0: failed.append(f"{result['name']} ({result['result']}, status {result['status']})")
+        if result["status"] is None: unmeasured.append(f"{result['name']} ({result['result']})")
+        elif result["status"] != 0: failed.append(f"{result['name']} ({result['result']}, status {result['status']})")
         elif result["ran"] != expected[result["name"]]:
             # A shard that ran other than the tests discovery found for it did not run what it was given.
             failed.append(f"{result['name']} (ran {result['ran']} of {expected[result['name']]} tests)")
@@ -247,5 +258,12 @@ def unittest_main(argv):
     skipped = sum(evidence.skipped_tests(result["output"]) for result in results)
     # Not "Ran N tests": the shards' own lines already count every test once.
     print(f"eng unittest: {total} tests ({skipped} skipped) in {len(results)} processes, {args.jobs} at a time, "
-          f"{time.monotonic() - began:.1f}s: " + (f"FAILED: {', '.join(failed)}" if failed else "OK"), flush=True)
-    return 1 if failed else 0
+          f"{time.monotonic() - began:.1f}s: " + verdict(failed, unmeasured), flush=True)
+    return 1 if failed else evidence.UNMEASURED if unmeasured else 0
+
+
+def verdict(failed, unmeasured):
+    """A runner's last words: OK, or what failed and what a timeout left unmeasured."""
+    words = ([f"FAILED: {', '.join(failed)}"] if failed else []) + \
+        ([f"UNMEASURED: {', '.join(unmeasured)}"] if unmeasured else [])
+    return "; ".join(words) or "OK"

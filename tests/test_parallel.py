@@ -84,6 +84,21 @@ class UnittestRunnerTests(unittest.TestCase):
         self.assertEqual(status, 1, output)
         self.assertIn("right never appeared", output)
 
+    def test_a_process_past_its_timeout_is_stopped_and_leaves_the_run_unmeasured(self):
+        root = self.suite(module("test_hung", "class H(unittest.TestCase):\n    def test_hung(self): time.sleep(60)\n"),
+                          module("test_quick", "class Q(unittest.TestCase):\n    def test_quick(self): pass\n"))
+        status, output = self.run_suite(root, "--timeout", "5")
+        self.assertEqual(status, evidence.UNMEASURED, output)
+        self.assertIn("== test_hung: timed out after 5s (0 tests", output)
+        self.assertIn("== test_quick: OK (1 tests", output)
+        self.assertIn("UNMEASURED: test_hung (timed out after 5s)", output)
+        # A failure beside it still fails the run.
+        (root / "test_fail.py").write_text("import unittest\nclass F(unittest.TestCase):\n    def test_f(self): self.fail('planted')\n")
+        status, output = self.run_suite(root, "--timeout", "5")
+        self.assertEqual(status, 1, output)
+        self.assertRegex(output, r"FAILED: test_fail .*; UNMEASURED: test_hung")
+        self.assertEqual(self.run_suite(root, "--timeout", "0")[0], 2)
+
     def test_a_serial_group_runs_its_modules_in_one_process(self):
         root = self.suite(module("test_left", meeting("left", "right", group="shared")),
                           module("test_right", meeting("right", "left", group="shared")),

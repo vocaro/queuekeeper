@@ -16,7 +16,7 @@ import statistics
 import subprocess
 import time
 
-from . import evidence, parallel
+from . import evidence, parallel, processes
 
 # Processes at a time unless --jobs says otherwise, as eng unittest's.
 DEFAULT_JOBS = parallel.DEFAULT_JOBS
@@ -81,12 +81,12 @@ def shards(selected, seconds, count):
     return sorted(((total, names) for total, names in bins if names), key=lambda entry: -entry[0]), classes
 
 
-def run(name, command, directory, expected):
+def run(name, command, directory, expected, timeout=parallel.PROCESS_LIMIT):
+    """Run one process's tests; one still running after timeout seconds is stopped, and its status is None."""
     began = time.monotonic()
-    finished = subprocess.run(command, cwd=directory, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                              text=True, errors="replace")
-    found = evidence.counted(finished.stdout)
-    return {"name": name, "status": finished.returncode, "output": finished.stdout, "expected": expected,
+    status, output = processes.bounded(command, cwd=directory, timeout=timeout)
+    found = evidence.counted(output)
+    return {"name": name, "status": status, "output": output, "expected": expected,
             "ran": found[0] if found else 0, "skipped": found[1] if found else 0,
             "seconds": time.monotonic() - began}
 
@@ -101,8 +101,12 @@ def main(argv):
     parser.add_argument("--skip-build", action="store_true", help="run the tests the last build built")
     parser.add_argument("--filter", action="append", default=[], help="a regular expression a test's id, "
                         "Module.Class/test, must match, as swift test's; repeat for any of several")
+    parser.add_argument("--timeout", type=float, default=parallel.PROCESS_LIMIT, metavar="SECONDS",
+                        help=f"seconds one test process may run before it is stopped and left unmeasured "
+                        f"(default {parallel.PROCESS_LIMIT})")
     args = parser.parse_args(argv)
     if args.jobs < 1: parser.error("--jobs needs at least 1")
+    if args.timeout <= 0: parser.error("--timeout needs a positive number of seconds")
     directory = Path(args.package_path).resolve()
     if not args.skip_build:
         build = ["swift", "build", "--build-tests", *(["--jobs", str(args.build_jobs)] if args.build_jobs else [])]
@@ -146,18 +150,22 @@ def main(argv):
             work.append((f"shard {number} of {len(packed)}, {bundle.stem} (about {estimate:.0f}s)", command, count))
     began = time.monotonic()
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
-        futures = [pool.submit(run, name, command, directory, expected) for name, command, expected in work]
+        futures = [pool.submit(run, name, command, directory, expected, args.timeout)
+                   for name, command, expected in work]
         results = []
         for future in futures:
             result = future.result()
             results.append(result)
             # Each process's own output, whole, under one line that names it.
-            print(f"== {result['name']}: {parallel.outcome(result['status'])} ({result['ran']} tests, "
+            shown = f"timed out after {args.timeout:g}s" if result["status"] is None \
+                else parallel.outcome(result["status"])
+            print(f"== {result['name']}: {shown} ({result['ran']} tests, "
                   f"{result['skipped']} skipped, {result['seconds']:.1f}s)", result["output"].rstrip("\n"),
                   sep="\n", flush=True)
-    failed = []
+    failed, unmeasured = [], []
     for result in results:
-        if result["status"] != 0: failed.append(f"{result['name']} (status {result['status']})")
+        if result["status"] is None: unmeasured.append(f"{result['name']} (timed out after {args.timeout:g}s)")
+        elif result["status"] != 0: failed.append(f"{result['name']} (status {result['status']})")
         elif result["ran"] != result["expected"]:
             # A process that ran other than the tests it was given did not run what it was given.
             failed.append(f"{result['name']} (ran {result['ran']} of {result['expected']} tests)")
@@ -172,5 +180,5 @@ def main(argv):
     skipped = sum(result["skipped"] for result in results)
     # Not XCTest's or Swift Testing's own total: the processes' lines already count every test once.
     print(f"eng xctest: {total} tests ({skipped} skipped) in {len(results)} processes, {args.jobs} at a time, "
-          f"{time.monotonic() - began:.1f}s: " + (f"FAILED: {', '.join(failed)}" if failed else "OK"), flush=True)
-    return 1 if failed else 0
+          f"{time.monotonic() - began:.1f}s: " + parallel.verdict(failed, unmeasured), flush=True)
+    return 1 if failed else evidence.UNMEASURED if unmeasured else 0

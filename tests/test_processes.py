@@ -168,6 +168,30 @@ class ProcessTests(unittest.TestCase):
         self.assertEqual({pid for pid, birth in births.items() if current.get(pid, (0, 0, None))[2] == birth}, set())
         return result, error.getvalue(), births
 
+    def test_bounded_stops_its_whole_group_at_its_timeout_and_otherwise_keeps_the_status_and_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "child.pid"
+            # A descendant that ignores SIGTERM, so that only the group's SIGKILL ends it.
+            stubborn = "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)"
+            script = (f"import pathlib, subprocess, sys, time\nchild = subprocess.Popen([sys.executable, '-c', {stubborn!r}])\n"
+                      f"pathlib.Path({str(marker)!r}).write_text(str(child.pid))\nprint('started', flush=True)\ntime.sleep(60)")
+            began = time.monotonic()
+            status, output = processes.bounded([sys.executable, "-c", script], timeout=10, kill_after=1)
+            self.assertIsNone(status)
+            self.assertLess(time.monotonic() - began, 30)
+            self.assertIn("started", output)
+            child = int(marker.read_text())
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                try: os.kill(child, 0)
+                except ProcessLookupError: break
+                time.sleep(0.05)
+            else:
+                self.fail(f"descendant {child} outlived the group's SIGKILL")
+        # The positive control: a command that ends in time keeps its status and output.
+        self.assertEqual(processes.bounded([sys.executable, "-c", "print('done'); raise SystemExit(4)"], timeout=60),
+                         (4, "done\n"))
+
     def test_descendants_that_outlive_the_root_are_reported_then_stopped_keeping_its_status(self):
         with tempfile.TemporaryDirectory() as directory:
             result, error, births = self.outlive_the_root(directory, IGNORES_TERM, HANDLES_TERM, LINGER=0.2, KILL_AFTER=0.5)
