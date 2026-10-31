@@ -366,8 +366,6 @@ class Admission:
         # pressure level read beside its refusals.
         self.refusals, self.holders, self.loads, self.memory = Counter(), None, None, None
         self.guard = guard_path(os.environ)
-        # Read by StudyWright's scripts/warm_push.py for a PID holding the retired gate lock; a directory holds none.
-        self.legacy = self.guard.parent
         # Exclusive requests waiting for admission, first come first.
         self.queue = self.directory / "exclusive-queue.json"
         self.identity = uuid.uuid4().hex
