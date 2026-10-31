@@ -27,7 +27,7 @@ import subprocess
 import sys
 import time
 
-from . import devices as device_record, landing
+from . import devices as device_record, ignored, landing
 from .config import TOOLKIT_ROOT
 from .simulators import pool as simulator_pool
 
@@ -41,12 +41,9 @@ UUID = re.compile(r"[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}
 SEPARATORS = re.compile(r"[\s=,;\"']+")
 # Xcode names a workspace's DerivedData folder NAME-<28 letters>; other folders are shared caches.
 WORKSPACE_FOLDER = re.compile(r".+-[a-z]{28}")
-# Ignored files under a directory of one of these names may be evidence; their worktree is kept.
-# Caches a tool writes beside the files are not.
-EVIDENCE_NAMES = {"measurements", "evidence"}
-CACHE_NAMES = {"__pycache__", ".pytest_cache", ".ruff_cache", ".mypy_cache", ".build", ".swiftpm", ".DS_Store"}
-# Inside .build, eng's results: lane logs, receipts and remote results, which nothing rebuilds.
-RESULTS = (".build", "engineering")
+# Ignored files under a directory of one of these names may be evidence; ignored.py, which Closeout
+# reads too, says which ignored files are caches a tool rebuilds and keeps a worktree for any other.
+EVIDENCE_NAMES = ignored.EVIDENCE_NAMES
 DATA_VOLUME = "/System/Volumes/Data"
 
 
@@ -356,18 +353,6 @@ def landed(run, main, head, base, name):
     return False, f"{len(pending)} commits on {short} are not in {name} {base[:10]}", how
 
 
-def possible_evidence(path, root):
-    """Whether an ignored path in the worktree at root may be evidence. A .build folder is a cache,
-    except for .build/engineering, where eng writes lane logs, receipts and remote results."""
-    parts = Path(path).parts
-    if any(parts[index:index + 2] == RESULTS for index in range(len(parts))): return True
-    if parts and parts[-1] == RESULTS[0]:
-        results = Path(root, path, RESULTS[1])
-        return results.is_dir() and any(child.is_file() for child in results.rglob("*"))
-    if not parts or parts[-1] in CACHE_NAMES or parts[-1].endswith(".pyc"): return False
-    return bool(EVIDENCE_NAMES & {part.lower() for part in parts})
-
-
 def session_root(host, main, path):
     for root in (Path(main) / ".claude/worktrees", Path(main) / ".codex/worktrees", host.home / ".codex/worktrees"):
         if within(path, root) and canonical(path) != canonical(root): return root
@@ -384,15 +369,12 @@ def worktree(host, usage, sizes, main, entry, base, name):
     if "locked" in entry: return item(KEPT, "locked" + (f": {entry['locked']}" if entry["locked"] else ""))
     use = usage.of(path)
     if use: return item(KEPT, "in use: " + described(use))
-    # "matching" names each ignored path; "traditional" folds a directory holding only ignored
-    # files into one line, which hides whether evidence is inside it.
-    status = git(host.run, path, "status", "--porcelain", "--ignored=matching", "--untracked-files=normal")
+    status = git(host.run, path, "status", "--porcelain", "--untracked-files=normal")
     if status.returncode: return item(KEPT, "git status failed: " + status.stderr.strip()[:200])
-    lines = status.stdout.splitlines()
-    changed = [line for line in lines if not line.startswith("!! ")]
+    changed = status.stdout.splitlines()
     if changed: return item(KEPT, f"dirty: {len(changed)} modified or untracked paths")
-    evidence = [line[3:] + ("engineering/" if Path(line[3:]).name == RESULTS[0] else "")
-                for line in lines if line.startswith("!! ") and possible_evidence(line[3:], path)]
+    try: evidence = ignored.keeps(path)
+    except (ignored.Refusal, OSError) as error: return item(KEPT, f"could not list its ignored files: {error}")
     if evidence: return item(KEPT, "ignored files that may be evidence: " + ", ".join(evidence[:3]))
     if not entry.get("HEAD") or not base: return item(KEPT, "no HEAD or no origin/main to compare it with")
     done, why, how = landed(host.run, main, entry["HEAD"], base, name)
