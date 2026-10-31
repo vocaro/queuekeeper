@@ -610,6 +610,10 @@ def main(argv=None):
                 warnings.append(f"{len(unbounded)} lane(s) declare no timeout and are stopped, unmeasured, after "
                                 f"eng's default {processes.DEFAULT_LIMIT}s: {', '.join(unbounded)}; give each a timeout "
                                 "chosen from its measured time (guides/parallel-tests.md, Bound every run)")
+            if config.get("lanes") and "gate" not in config["lanes"] and not config.get("queue", {}).get("lanes") \
+                    and config.get("integration", "direct-main") == "direct-main":
+                warnings.append("no lane is named gate, which eng land and eng release run: name the lane holding "
+                                "what a commit must pass before it lands gate (guides/adoption.md, Lane names)")
             warnings += temporary_model_storage(root, config)
             warnings += unlinked_packages(root, config)
             warnings += stale_copies(root)

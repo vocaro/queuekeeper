@@ -274,6 +274,8 @@ class Refusals(Fixture):
     def test_named_lanes_come_first_and_gate_is_the_default(self):
         self.assertEqual(mq.lanes_of({"queue": {"lanes": ["a"]}, "lanes": {"a": {}, "gate": {}}}), ["a"])
         self.assertEqual(mq.lanes_of({"lanes": {"gate": {}}}), ["gate"])
+        self.assertEqual(mq.lanes_of({"lanes": {"gate": {}, "provision": {}, "spelling": {}, "docs": {}}}),
+                         ["spelling", "provision", "gate"])
 
     def test_configuration_is_checked(self):
         config = json.loads((self.repo / "engineering.json").read_text())

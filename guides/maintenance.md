@@ -192,8 +192,9 @@ queue.
 
 **A round.** The worker fetches, takes everything waiting, oldest first, cherry-picks each entry
 onto `origin/main` in its own checkout, `../NAME-queue`, and runs the project's queue lanes through
-`eng run`: `queue.lanes` in engineering.json, or else the lane named `gate`, read from `main`, or
-from the batch until `main` names any, so that the commit naming them can land. The
+`eng run`: its `spelling` and `provision` lanes when it has them, and then its `gate` lane, or
+`queue.lanes` in engineering.json for a project that needs others, read from `main`, or from the
+batch until `main` has any, so that the commit naming them can land. The
 lanes therefore go where every lane goes, and one gate serves the whole batch. On a pass it pushes
 exactly the commits it tested, as ordinary commits with their own messages and closing lines, so
 Closeout finds each branch landed by equal patches. The gate receipt is of the pushed commit, which

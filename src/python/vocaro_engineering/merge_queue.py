@@ -43,6 +43,7 @@ RETRIES = 1
 # Times main may move past a passed batch, in carried-over steps, before the batch is gated again.
 CARRIES = 3
 POLL = 5
+BEFORE_GATE = ["spelling", "provision"]
 WAIT_LIMIT = 6 * 3600
 KEPT_LOGS = 200
 GIT_TIMEOUT = 600
@@ -75,13 +76,15 @@ def text(directory, *arguments):
 
 
 def lanes_of(config):
-    """The lanes a batch must pass, in order: `queue.lanes`, or a project's lane named gate."""
-    named = config.get("queue", {}).get("lanes")
-    if named: return named
-    if "gate" in config.get("lanes", {}): return ["gate"]
-    raise ValueError(f"{config.get('name')} has no gate lane and no queue.lanes in engineering.json, so the queue "
-                     "has nothing to run: name the lanes a commit must pass before it lands "
-                     "(guides/maintenance.md, The merge queue)")
+    """The lanes a batch must pass, in order: the project's spelling and provision lanes when it has
+    them, the cheap checks and setup that a gate assumes, and then `queue.lanes` or its gate lane."""
+    lanes = config.get("lanes", {})
+    named = config.get("queue", {}).get("lanes") or (["gate"] if "gate" in lanes else None)
+    if not named:
+        raise ValueError(f"{config.get('name')} has no gate lane, so the queue has nothing to run: name the lane "
+                         "holding what a commit must pass before it lands gate (guides/maintenance.md, "
+                         "The merge queue)")
+    return [name for name in BEFORE_GATE if name in lanes and name not in named] + named
 
 
 def carried_over(path, config, batch_files):
