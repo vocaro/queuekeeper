@@ -11,8 +11,8 @@ import subprocess
 import sys
 import time
 
-from . import __version__, devices, disk, docs, evidence, foreground, github_artifacts, keychain, offload_host, \
-    parallel, processes, release, remote, resources, skills, spelling, xctest_shards
+from . import __version__, devices, disk, docs, evidence, foreground, github_artifacts, keychain, merge_queue, \
+    offload_host, parallel, processes, release, remote, resources, skills, spelling, xctest_shards
 from .config import TOOLKIT_ROOT, CAPABILITIES, DEFAULT_TOOLKIT, load, source_identity, stays
 from .resources import BUSY, FREE_WAIT
 from .simulators import matrix, pool as simulator_pool
@@ -522,6 +522,11 @@ def main(argv=None):
         "exactly this commit; a snapshot's run never counts")
     remote_passed.add_argument("lane")
     remote_passed.add_argument("--commit", default="HEAD")
+    merge_queue.add_arguments(commands.add_parser("queue", help="land finished commits through the repository's one "
+        "merge queue, which gates batches on origin/main and pushes them; a session adds its commit and moves on "
+        "(guides/maintenance.md, The merge queue)"))
+    merge_queue.land_arguments(commands.add_parser("land", help="land a finished commit through the merge queue of this "
+        "repository, or with --repo of another, and return at once: the queue gates it on origin/main and pushes it"))
     publication = commands.add_parser("release", help="tag a library's release and publish it on GitHub once its "
         "gate passed at the commit and origin/main holds it: eng release X.Y.Z COMMIT --notes NOTES.md; each step "
         "stops the rest when it fails, and a run that stopped part way can run again (guides/releasing.md)")
@@ -620,6 +625,8 @@ def main(argv=None):
         elif args.action == "admit": return admit(root, args, config)
         elif args.action == "remote": return remote.main(root, config, args)
         elif args.action == "release": return release.main(root, config, args)
+        elif args.action == "land": return merge_queue.land(root, args)
+        elif args.action == "queue": return merge_queue.main(root, config, args)
         elif args.action == "source":
             from .support import source_path
             print(source_path(args.name))

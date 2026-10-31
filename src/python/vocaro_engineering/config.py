@@ -21,7 +21,7 @@ def load(root):
     if not isinstance(value, dict) or value.get("schemaVersion") != 1:
         raise ValueError("engineering.json requires schemaVersion 1")
     allowed = {"schemaVersion", "name", "toolkit", "capabilities", "lanes", "exceptions",
-               "integration", "repository", "spelling", "simulatorPool", "githubArtifacts"}
+               "integration", "repository", "spelling", "simulatorPool", "githubArtifacts", "queue"}
     hosted = [key for key in ("hostedRepositories", "voiceover") if key in value]
     if hosted:
         raise ValueError(f"engineering.json gives {' and '.join(hosted)}, which configured GitHub's hosted Mac runner "
@@ -86,6 +86,7 @@ def load(root):
         for key in ["minimumTests", "timeout"]:
             if key in lane and (type(lane[key]) is not int or lane[key] <= 0):
                 raise ValueError(f"{name}.{key} must be a positive integer")
+    merge_queue(value.get("queue", {}), lanes)
     spelling = value.get("spelling", {})
     if not isinstance(spelling, dict) or set(spelling) - {"skip", "exemptPhrases", "exemptRuns", "exemptTokens"}:
         raise ValueError("spelling supports only skip, exemptPhrases, exemptRuns and exemptTokens")
@@ -100,6 +101,20 @@ def load(root):
 
 
 RESOURCES = ["light", "heavy", "exclusive"]
+
+
+def merge_queue(queue, lanes):
+    """The lanes a commit passes in the merge queue, and what main may change under a passed result,
+    each path with why no such lane reads it (guides/maintenance.md, The merge queue)."""
+    if not isinstance(queue, dict) or set(queue) - {"lanes", "carryOver"}:
+        raise ValueError("queue supports only lanes and carryOver")
+    named = queue.get("lanes", [])
+    if not isinstance(named, list) or len(set(map(str, named))) != len(named) or any(name not in lanes for name in named):
+        raise ValueError("queue.lanes must list distinct configured lanes")
+    carried = queue.get("carryOver", {})
+    if not isinstance(carried, dict) or any(not key.strip() or not isinstance(why, str) or not why.strip()
+                                            for key, why in carried.items()):
+        raise ValueError("queue.carryOver maps each path, a directory ending in /, to why no queue lane reads it")
 
 
 def retired(lanes):

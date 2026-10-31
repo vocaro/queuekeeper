@@ -52,9 +52,11 @@ has since reversed; hold it against the decision recorded on the issue before ch
 or your code.
 
 **Fetch before the last verification, and do not chase `main`.** When `main` moves faster than a
-full verification runs, verifying again after each rebase never ends. Land, or open the pull
-request, once the tests pass on a commit that holds `main`; merge `main` again when it
-conflicts; and say which commit each run used.
+full verification runs, verifying again after each rebase never ends. On a direct-main repository
+the [merge queue](#the-merge-queue) ends that: a session runs its smallest relevant checks and
+lands with `eng land`. On a pull-request repository, open the pull request once the tests pass on
+a commit that holds `main`, merge `main` again when it conflicts, and say which commit each run
+used.
 
 **Keep evidence off branches.** What a probe or spike found goes on the issue or in the subject
 document it bears on. Code worth having again goes on the issue as a patch, with the commit it
@@ -92,8 +94,8 @@ hooks as usual. A worktree outside `~/Development` also loses the toolkit's sibl
 too. studywright's `app/project.yml` names `../../vocaro-engineering`, so its `check-app.sh`, which
 its pre-push hook runs, fails from a worktree that has no toolkit checkout beside it.
 
-**Push only onto the `main` you tested.** Immediately before pushing to a direct-main
-repository:
+**Push only onto the `main` you tested.** The merge queue does this for every commit it lands.
+Immediately before pushing to a direct-main repository by hand:
 
 ```sh
 git fetch origin
@@ -161,6 +163,71 @@ Read an issue's body before its comments. `gh issue view N` prints the title and
 (gh 2.102.0). A session that read an issue that way once closed it having done only what a
 comment added (2026-10-27).
 
+## The merge queue
+
+Six of the owner's repositories landed 8 to 14 times a day in the two weeks to 2026-10-31, so a
+45-minute gate that restarts whenever `main` moves is usually beaten by the next landing: in the
+busiest, 82% of landings were followed by another within 45 minutes. The queue makes one process
+per repository the route to `main`, as GitHub's merge queue does, on the owner's Macs:
+
+```sh
+python3 scripts/eng land                        # HEAD; returns at once, and the commit lands by itself
+python3 scripts/eng land BRANCH --wait          # follow it: 0 landed, 1 came back, 75 held or still waiting
+python3 scripts/eng land --repo EPUBLib BRANCH  # from any project: land a fix in another repository
+python3 scripts/eng queue status
+```
+
+**A session does not run the full gate.** It runs the smallest relevant checks, commits and adds
+the commit. Adding is the decision to land: the owner approves that once, and no later step asks.
+What is added is the range the ref has and `origin/main` lacks, held by a ref of its own, so the
+session may end and its branch may move or go. A merge in the range is refused. Adding a branch
+again replaces what it added before.
+
+**A fix in another repository lands there the same way.** Commit it in a worktree of that
+repository, then `eng land --repo NAME BRANCH --wait`, from wherever the session is. It joins that
+repository's queue beside its own sessions' commits and so stops none of their work. A commit must
+be named, because HEAD there is another session's. `--wait` prints `landed: COMMIT` in full. Move
+the dependent project's pin to that commit in a commit of its own, and land that in the dependent's
+queue.
+
+**A round.** The worker fetches, takes everything waiting, oldest first, cherry-picks each entry
+onto `origin/main` in its own checkout, `../NAME-queue`, and runs the project's queue lanes through
+`eng run`: `queue.lanes` in engineering.json, or else the lane named `gate`, read from `main`, or
+from the batch until `main` names any, so that the commit naming them can land. The
+lanes therefore go where every lane goes, and one gate serves the whole batch. On a pass it pushes
+exactly the commits it tested, as ordinary commits with their own messages and closing lines, so
+Closeout finds each branch landed by equal patches. The gate receipt is of the pushed commit, which
+`eng release` accepts, unless the result was carried over.
+
+**What comes back to the author.** `eng queue status` and `eng queue wait` name each entry's state,
+reason and log. An entry that conflicts with what is ahead of it comes back at once and costs the
+others nothing. When a batch fails, the oldest half runs next, and so on until one entry fails
+alone; every entry that passes along the way lands. An entry that comes back keeps its ref until
+`eng queue remove ID`. Fix it, rebase and land it again.
+
+**A run with no verdict blames nobody.** Exit 3 (unmeasured), 75 (no admission) and 78 (a
+misconfigured host) say nothing about the commits. The worker tries once more and then holds the
+queue, with every entry waiting, as it also does for a push refused for any reason but a race. A
+hold stays until the owner, or a session the owner told to, has dealt with its cause and run
+`eng queue resume`. Nothing fails over to another route.
+
+**Main moving under a passed batch.** A session may still push directly, as for a record on its
+own, and the queue takes that as it comes. If `main` moved only by Markdown documents the batch
+does not touch, or by paths in `queue.carryOver`, each with why no queue lane reads it, the worker
+checks that the batch's patch is unchanged on the new `main`, runs `eng docs check` when a document
+moved, and pushes. A carried-over result is no gate of the pushed commit: `eng release` will not
+take it. Any other move gates again, with no blame. List a project's records and evidence
+directories in `queue.carryOver`, so that they restart nothing.
+
+**State and recovery.** Each repository's state is under `eng-queue` in its common Git directory,
+so every worktree sees one queue. A worker starts by itself with `eng land`, apart from the session,
+and exits when nothing waits; `eng queue wait` and `eng queue resume` start one after a reboot.
+Whatever a dead worker left testing was never pushed, so the next worker tests it again. A lane may
+take `LANE_LIMIT` (6 h, three times eng's default limit: the default for the lane and two more for
+its wait for admission). The worker's checkout is locked, so that no sweep removes it, and keeps
+ignored inputs a provisioning lane made between rounds. A project with no gate lane, or one with
+`"integration": "pull-request"`, is refused, and the command says what to add.
+
 ## Working through a backlog
 
 Asked to close as many issues as possible, triage before fixing.
@@ -184,7 +251,7 @@ Asked to close as many issues as possible, triage before fixing.
 - Budget disk as [scratch and result directories](shared-host.md#scratch-and-result-directories)
   says. Give each agent a scratch folder of its own, and have it delete its build folder once its
   commit is pushed.
-- Gate the finished branches in batches ([verify the integrated tree](#concurrent-git-integration)).
+- Land the finished branches through the [merge queue](#the-merge-queue), which gates them in batches.
 
 On 2026-10-23 this closed 67 of a library's 205 open issues in one day: 20 by evidence comments
 and the owner's decisions, and 47 by changes landed in four batches.
