@@ -21,9 +21,10 @@ host inventory and authorizations stay outside the generic rules.
   have reserved; never select by name or `booted`.
 - Take no foreground input or Mac VoiceOver session on this Mac without a period the owner
   approved beforehand, and none on the second Mac outside the foreground eng holds for a run;
-  launch no debugger. Do not open a live simulator view or any tool that
-  takes control of a simulator's screen unless the owner asked to watch: such a tool asks the
-  owner to approve each device, and a new pool member is new to it.
+  launch no debugger. Do not open a live simulator view or use any tool that
+  controls a simulator's screen, even for a screenshot or a tap, unless the owner asked to
+  watch: such a tool asks the owner to approve each device on its first use, and a new pool
+  member is new to it.
 - Before proposing a physical device, say what it would show that a simulator cannot. A check
   said to need a finger usually needs a timing or an input that a UI test can make.
 - Record what automation cannot reach as not verified, and leave it to the owner.
