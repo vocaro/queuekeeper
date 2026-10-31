@@ -857,7 +857,7 @@ gives each run's git that file through the store helper and no other helper, by
 `GIT_CONFIG_COUNT` variables that reach only the run, so the owner's own git configuration on
 the second Mac is unchanged. A token reaches only the repositories it names, read-only, and it
 expires: renew it before then. Check the second Mac with a light lane first, such as this
-toolkit's `python3 scripts/eng remote run python-tests`.
+toolkit's `python3 scripts/eng remote run gate`.
 
 Private GitHub release assets need the authenticated API as well as Git source access.
 Declare their packages in `githubArtifacts`; admitted builds use the shared
