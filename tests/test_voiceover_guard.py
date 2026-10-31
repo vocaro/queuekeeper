@@ -55,6 +55,30 @@ class GuardTests(unittest.TestCase):
         self.assertEqual(runs([stop, 0], may=lambda: False), ((stop, "transcript-1", []), [1]))
         self.assertEqual(runs([stop, 0], attempts=1), ((stop, "transcript-1", []), [1]))
 
+    def test_before_again_sets_each_stopped_attempt_aside_before_the_next_and_only_then(self):
+        stop = guard.BANNER_STOP
+        def runs(statuses, may=lambda: True, attempts=guard.BANNER_ATTEMPTS):
+            events = []
+            def session(attempt):
+                events.append(("session", attempt))
+                return statuses[attempt - 1], f"session-01/{attempt}"
+            def before_again(transcript, attempt):
+                events.append(("aside", transcript, attempt))
+                return f"session-01-stopped-{attempt - 1}"
+            return guard.run_again(session, may, attempts, before_again=before_again), events
+        self.assertEqual(runs([stop, stop, 0]), (
+            (0, "session-01/3", ["session-01-stopped-1", "session-01-stopped-2"]),
+            [("session", 1), ("aside", "session-01/1", 2), ("session", 2), ("aside", "session-01/2", 3),
+             ("session", 3)]))
+        # An attempt that will not run again is the session's own, never set aside.
+        self.assertEqual(runs([0]), ((0, "session-01/1", []), [("session", 1)]))
+        self.assertEqual(runs([stop, stop, stop]), (
+            (stop, "session-01/3", ["session-01-stopped-1", "session-01-stopped-2"]),
+            [("session", 1), ("aside", "session-01/1", 2), ("session", 2), ("aside", "session-01/2", 3),
+             ("session", 3)]))
+        self.assertEqual(runs([stop, 0], may=lambda: False), ((stop, "session-01/1", []), [("session", 1)]))
+        self.assertEqual(runs([125, 0]), ((125, "session-01/1", []), [("session", 1)]))
+
     def test_a_foreground_run_has_longer_than_any_other_between_sigterm_and_sigkill(self):
         self.assertGreater(processes.FOREGROUND_KILL_AFTER, processes.KILL_AFTER)
 

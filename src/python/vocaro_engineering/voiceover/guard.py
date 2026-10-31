@@ -98,14 +98,18 @@ def restoring_signals():
             else: raise Stopped(f"Stopped by {signal.Signals(number).name} after restoration")
 
 
-def run_again(session, may_run_again=lambda: True, attempts=BANNER_ATTEMPTS):
+def run_again(session, may_run_again=lambda: True, attempts=BANNER_ATTEMPTS, before_again=None):
     """Run session(attempt), which returns its exit status and transcript, until it ends otherwise than
     BANNER_STOP, at most attempts times, and again only while may_run_again() allows, as the run's time does.
-    Return the last status and transcript, and the transcripts of the earlier attempts the banner stopped,
-    which are unmeasured and kept."""
+    Once an attempt will run again, before_again(stopped_transcript, next_attempt), when given, can set the
+    stopped attempt aside, as a runner that keeps one folder per session must; whatever it returns is kept in
+    that attempt's place. Return the last status and transcript, and the transcripts of the earlier attempts
+    the banner stopped, which are unmeasured and kept."""
     stopped = []
     while True:
         status, transcript = session(len(stopped) + 1)
         if status != BANNER_STOP or len(stopped) + 1 >= attempts or not may_run_again():
             return status, transcript, stopped
+        if before_again is not None:
+            transcript = before_again(transcript, len(stopped) + 2)
         stopped.append(transcript)
