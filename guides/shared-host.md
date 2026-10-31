@@ -120,12 +120,14 @@ admission is refused, as is a model request inside admission that does not hold 
 that needs the whole machine asks for exclusive admission.
 
 The toolkit's process supervisor passes a command only those of the token's descriptors that its
-own process holds, each open on the lock file the token names, which names the owner. A process
-started without them, as `eng unittest` starts each module's process and as a plain `subprocess`
-call starts its child, keeps the token but not the admission. A nested admission there is
-refused rather than given a slot, and the supervisor passes on none of the numbers the token
-names: there each is closed, which would stop the command from starting with EBADF, or open on
-another file, which the command would get.
+own process holds, each open on the lock file the token names, which names the owner.
+`eng unittest` passes each module's process the same descriptors and no others, so a nested
+admission in a test reuses the run's admission, as it does under `python3 -m unittest discover`.
+A process started without them, as a plain `subprocess` call starts its child, keeps the token but
+not the admission. A nested admission there is refused rather than given a slot, and the
+supervisor and `eng unittest` pass on none of the numbers the token names: there each is closed,
+which would stop the command from starting with EBADF, or open on another file, which the command
+would get.
 
 The default macOS pool lives in the system's canonical user temporary directory, as reported by
 `getconf DARWIN_USER_TEMP_DIR`, under the legacy `pdfreflow-heavy-slots` name, independently of

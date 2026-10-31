@@ -517,7 +517,7 @@ def is_open(fd):
 
 class InheritedDescriptorTests(unittest.TestCase):
     """A command inherits the admission lock descriptors that the token names only while this process
-    holds them. eng unittest under eng admit starts each module's process with the token and without
+    holds them. eng unittest under eng admit started each module's process with the token and without
     its descriptor, and a lane group's lane in one failed to start with EBADF (#70)."""
 
     def setUp(self):
@@ -555,8 +555,9 @@ class InheritedDescriptorTests(unittest.TestCase):
         unrelated.write_text("not a lock\n")
         token = lambda nonce="forged": json.dumps({"schemaVersion": 1, "exclusive": False, "model": False,
             "guard": str(self.here / "gate.warm-push-guard"), "locks": [{"fd": number, "path": str(lock), "nonce": nonce}]})
-        # Closed here, as the token's descriptor is in a module's process: passing it stopped the
-        # command from starting with EBADF. A token that is not JSON names nothing to pass.
+        # Closed here, as the token's descriptor was in each module's process eng unittest started:
+        # passing it stopped the command from starting with EBADF. A token that is not JSON names
+        # nothing to pass.
         for case, value in {"closed": token(), "not JSON": "{"}.items():
             with self.subTest(case):
                 self.assertEqual(self.run_with(value, DESCRIPTOR, str(number)), (0, "closed\n"))

@@ -8,6 +8,7 @@ group fails when any lane failed, and is otherwise unmeasured when any lane was.
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -145,11 +146,12 @@ RAN = re.compile(r"^Ran (\d+) tests? in ", re.M)
 RESULT = re.compile(r"^(OK|FAILED)\b.*$", re.M)
 
 
-def run_shard(name, tests, top, verbose):
+def run_shard(name, tests, top, verbose, descriptors=()):
+    """Run a shard's tests in a process of its own, which inherits descriptors and no other."""
     command = [sys.executable, "-m", "unittest", *(["-v"] if verbose else []), *tests]
     began = time.monotonic()
     finished = subprocess.run(command, cwd=top, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                              errors="replace")
+                              errors="replace", pass_fds=descriptors)
     output = finished.stdout
     summary = RESULT.search(output)
     return {"name": name, "status": finished.returncode, "output": output,
@@ -181,9 +183,13 @@ def unittest_main(argv):
         print(f"eng unittest: no tests found in {start} matching {args.pattern}", file=sys.stderr)
         return NO_TESTS
     expected = {name: len(tests) for name, tests in found.items()}
+    # Each shard holds the admission lock descriptors this process holds and no others, as a test in
+    # `python3 -m unittest discover` does, so a nested admission in it reuses the admission; given
+    # the token alone, one was refused (#70).
+    descriptors = processes.held_locks(os.environ)
     began = time.monotonic()
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
-        futures = [pool.submit(run_shard, name, tests, top, args.verbose) for name, tests in found.items()]
+        futures = [pool.submit(run_shard, name, tests, top, args.verbose, descriptors) for name, tests in found.items()]
         results = []
         for future in futures:
             result = future.result()

@@ -9,8 +9,9 @@ import tempfile
 import textwrap
 import unittest
 from unittest.mock import patch
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
-from vocaro_engineering import cli, evidence
+SOURCE = Path(__file__).resolve().parents[1] / "src/python"
+sys.path.insert(0, str(SOURCE))
+from vocaro_engineering import cli, evidence, resources
 
 ENG = Path(__file__).resolve().parents[1] / "scripts/eng"
 
@@ -155,6 +156,114 @@ class UnittestRunnerTests(unittest.TestCase):
         self.assertEqual(self.run_suite(root, "-j", "0")[0], 2)
 
 
+# A unittest module that records the file its process holds at each number PROBE_FDS names, by
+# inode or None for none, and whether it inherits an admission: True, False or why it is refused.
+PROBE = textwrap.dedent("""
+    import json, os, pathlib, unittest
+    from vocaro_engineering import resources
+
+    class Probe(unittest.TestCase):
+        def test_probe(self):
+            held = {}
+            for number in os.environ["PROBE_FDS"].split(","):
+                try: held[number] = os.fstat(int(number)).st_ino
+                except OSError: held[number] = None
+            try: admission = resources.inherited()
+            except RuntimeError as error: admission = str(error)
+            found = {"held": held, "inherited": admission}
+            (pathlib.Path(__file__).resolve().parent / "probe.json").write_text(json.dumps(found))
+""")
+
+
+class ShardAdmissionTests(unittest.TestCase):
+    """eng unittest passes each module's process the admission lock descriptors that it holds itself
+    and no other descriptor, so a nested admission in a test reuses the admission, as it does under
+    `python3 -m unittest discover`. Each module's process used to have the token without its
+    descriptor, and a nested admission there was refused (#70)."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.here = Path(temporary.name)
+        (self.here / "suite").mkdir()
+        (self.here / "suite/test_probe.py").write_text(PROBE)
+        # Admission here and in the module's process uses these slots and this guard, never the host's.
+        self.isolated = {"HEAVY_SLOT_DIR": str(self.here / "slots"), "SW_GATE_LOCK_FILE": str(self.here / "gate")}
+        variables = patch.dict(os.environ, self.isolated)
+        variables.start()
+        self.addCleanup(variables.stop)
+        # The caller's own token is restored afterward.
+        os.environ.pop(resources.TOKEN, None)
+        (self.here / "unrelated").write_text("not a lock\n")
+        self.unrelated = self.held_at(self.here / "unrelated")
+
+    def held_at(self, path):
+        """A number above those Popen's own pipes take, open here on path until the test ends."""
+        number = next(fd for fd in range(200, 1000) if not is_open(fd))
+        opened = os.open(path, os.O_RDWR)
+        os.dup2(opened, number)
+        os.close(opened)
+        self.addCleanup(os.close, number)
+        return number
+
+    def run_suite(self, token, held, probed):
+        """Run eng unittest holding these descriptors, as eng admit starts a command, under this token
+        or none. Returns its status, its output and what its module's process found."""
+        environment = {"PATH": "/usr/bin:/bin", "PYTHONPATH": str(SOURCE), **self.isolated,
+                       "PROBE_FDS": ",".join(str(fd) for fd in probed), **({resources.TOKEN: token} if token else {})}
+        finished = subprocess.run([sys.executable, str(ENG), "unittest", "-s", str(self.here / "suite")],
+                                  capture_output=True, text=True, env=environment, pass_fds=held)
+        output, probe = finished.stdout + finished.stderr, self.here / "suite/probe.json"
+        found = json.loads(probe.read_text()) if probe.exists() else None
+        probe.unlink(missing_ok=True)
+        # Nothing fails to start: the module's process ran its one test.
+        self.assertIn("eng unittest: 1 tests (0 skipped) in 1 processes", output)
+        return finished.returncode, output, found
+
+    def test_a_module_holds_the_admission_eng_unittest_holds_and_reuses_it(self):
+        with contextlib.redirect_stderr(StringIO()), resources.Admission("outer", timeout=0):
+            token = os.environ[resources.TOKEN]
+            (item,) = json.loads(token)["locks"]
+            fd, lock = item["fd"], os.stat(item["path"]).st_ino
+            # The lock reaches the module's process as the lock file itself, and a nested admission
+            # there reuses it; another descriptor eng unittest holds does not.
+            status, output, found = self.run_suite(token, (fd, self.unrelated), (fd, self.unrelated))
+            self.assertEqual(status, 0, output)
+            self.assertEqual(found, {"held": {str(fd): lock, str(self.unrelated): None}, "inherited": True})
+            # Started without the descriptor, as a plain subprocess call starts its child, eng unittest
+            # has the token alone and passes on nothing: a nested admission is refused, not given a slot.
+            status, output, found = self.run_suite(token, (), (fd,))
+            self.assertEqual(status, 0, output)
+            self.assertNotEqual(found["held"][str(fd)], lock)
+            self.assertRegex(found["inherited"], "^Invalid inherited resource admission: ")
+            # With no token, eng unittest holds the lock and passes on nothing.
+            status, output, found = self.run_suite(None, (fd, self.unrelated), (fd, self.unrelated))
+            self.assertEqual(status, 0, output)
+            self.assertNotEqual(found["held"][str(fd)], lock)
+            self.assertEqual((found["held"][str(self.unrelated)], found["inherited"]), (None, False))
+
+    def test_a_module_gets_no_descriptor_that_is_not_the_lock_of_the_tokens_owner(self):
+        lock = self.here / "lock"
+        lock.write_text(f"{os.getpid()} forged label\n")
+        number = self.held_at(lock)
+        token = lambda fd, nonce: json.dumps({"schemaVersion": 1, "exclusive": False, "model": False,
+            "guard": str(self.here / "gate.warm-push-guard"), "locks": [{"fd": fd, "path": str(lock), "nonce": nonce}]})
+        closed = next(fd for fd in range(200, 1000) if not is_open(fd))
+        # Closed in eng unittest's process, open there on another file, or open on the lock without
+        # the token's owner in it, the token's number is not passed on: passed, a closed one stops
+        # the module's process from starting with EBADF. The positive control: open on the lock that
+        # names the owner, it is passed.
+        cases = [("closed", closed, "forged", None), ("another file", self.unrelated, "forged", None),
+                 ("another owner", number, "another", None), ("the owner's lock", number, "forged", os.stat(lock).st_ino)]
+        for case, fd, nonce, expected in cases:
+            with self.subTest(case):
+                status, output, found = self.run_suite(token(fd, nonce), (self.unrelated, number), (fd,))
+                self.assertEqual(status, 0, output)
+                self.assertEqual(found["held"], {str(fd): expected})
+                # This guard records no such owner, so even the passed lock admits nothing.
+                self.assertRegex(found["inherited"], "^Invalid inherited resource admission: ")
+
+
 class LaneGroupTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
@@ -231,8 +340,9 @@ class LaneGroupTests(unittest.TestCase):
         self.assertIn("timed out after 1s", slow["error"])
 
     def test_lanes_start_under_an_admission_token_whose_descriptor_this_process_does_not_hold(self):
-        # eng unittest under eng admit starts this module's process with the admission's token and
-        # without its descriptor. Passed on, that closed descriptor stopped a lane from starting.
+        # A process can hold the admission's token without its descriptor, as each module's process
+        # eng unittest started under eng admit did. Passed on, that closed descriptor stopped a lane
+        # from starting.
         closed = next(fd for fd in range(200, 1000) if not is_open(fd))
         token = json.dumps({"schemaVersion": 1, "locks": [{"fd": closed, "path": str(self.root / "slot0"), "nonce": "outer"}]})
         self.configure({"one": {"command": [sys.executable, "-c", "print('Ran 1 test')"], "minimumTests": 1},

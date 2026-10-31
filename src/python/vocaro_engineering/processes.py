@@ -90,10 +90,11 @@ def held_locks(environment):
     holds, for the command to inherit: each open on the lock file its entry names, which names the
     entry's owner.
 
-    A token can reach a process without its descriptors, as `eng unittest` starts each module's
-    process, and its numbers then name nothing or another file. Passed on, a closed one stopped a
-    lane from starting with EBADF, and an open one gave the command that file (#70). The command
-    keeps the token, so a nested admission in it refuses the token rather than taking a slot.
+    A token can reach a process without its descriptors, as a plain subprocess call starts its
+    child, and its numbers then name nothing or another file; `eng unittest` started each module's
+    process so until it passed these on too. Passed on, a closed one stopped a lane from starting
+    with EBADF, and an open one gave the command that file (#70). The command keeps the token, so a
+    nested admission in it refuses the token rather than taking a slot.
     """
     try:
         locks = json.loads(environment.get("VOCARO_RESOURCE_TOKEN") or "{}").get("locks", [])
