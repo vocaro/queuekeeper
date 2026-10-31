@@ -11,6 +11,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -703,6 +704,120 @@ class DeviceRecordTests(unittest.TestCase):
         self.assertIn("iPhone: released; last owner session-a", self.cli("status")[1])
         self.assertEqual(json.loads(self.cli("show", "iPad")[1])["revision"], 0)
         self.assertEqual(self.cli("path")[1].strip(), str(self.path))
+
+    def waiter(self):
+        """A running process to wait in line as, stopped at the test's end."""
+        process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        self.addCleanup(process.wait)
+        self.addCleanup(process.kill)
+        return process
+
+    def released_tablet(self):
+        entry = self.reserve("iPad", device=TABLET)
+        return self.record.release("iPad", owner="session-a", revision=entry["revision"], outcome="o", restoration="r")
+
+    def test_a_device_with_standing_approval_is_taken_in_turn_without_asking(self):
+        held = self.reserve("iPad", device=TABLET)
+        said = []
+        result = {}
+
+        def take():
+            try:
+                result["entry"] = self.record.take("iPad", owner="session-b", purpose="UI tests", release_by=later(),
+                                                   timeout=30, poll=0.01, said=said.append)
+            except BaseException as error:
+                result["error"] = error
+        thread = threading.Thread(target=take)
+        thread.start()
+        deadline = time.monotonic() + 10
+        while not devices.waiting(self.record.load(), "iPad") and time.monotonic() < deadline:
+            time.sleep(0.01)
+        # Joining the line leaves the holder's entry, and so its next change, alone.
+        self.assertEqual(self.record.entry("iPad")["revision"], held["revision"])
+        self.assertIn("waiting: session-b (UI tests)", self.cli("status")[1])
+        with self.assertRaisesRegex(devices.Refused, "held by session-a"):
+            self.reserve("iPad", owner="session-c", revision=held["revision"])
+        self.record.release("iPad", owner="session-a", revision=held["revision"], outcome="o", restoration="r")
+        thread.join(10)
+        self.assertNotIn("error", result)
+        entry = result["entry"]
+        self.assertEqual((entry["ownerChatID"], entry["device"]), ("session-b", TABLET))
+        self.assertEqual(entry["approval"], {**devices.STANDING["iPad"], "until": "released"})
+        self.assertIs(devices.require_window("iPad", entry), entry)
+        self.assertTrue(any("held by session-a" in line for line in said))
+        self.assertEqual(devices.waiting(self.record.load(), "iPad"), [])
+
+    def test_while_sessions_wait_only_the_first_in_line_may_reserve(self):
+        entry = self.released_tablet()
+        first, second = self.waiter(), self.waiter()
+        self.assertEqual(self.record.join("iPad", owner="session-b", purpose="first", pid=first.pid), 1)
+        self.assertEqual(self.record.join("iPad", owner="session-c", purpose="second", pid=second.pid), 2)
+        with self.assertRaisesRegex(devices.Refused, "already waits"):
+            self.record.join("iPad", owner="session-c", purpose="again", pid=second.pid)
+        # Even a window the owner agreed waits its turn.
+        for owner in ("session-a", "session-c"):
+            with self.assertRaisesRegex(devices.Refused, "2 waiting for iPad, first session-b"):
+                self.reserve("iPad", owner=owner, revision=entry["revision"], device=TABLET)
+        # A waiter whose process is gone drops out of line.
+        first.kill()
+        first.wait()
+        self.assertEqual([item["owner"] for item in devices.waiting(self.record.load(), "iPad")], ["session-c"])
+        taken = self.reserve("iPad", owner="session-c", revision=entry["revision"], device=TABLET)
+        self.assertEqual(taken["ownerChatID"], "session-c")
+        self.assertEqual(devices.waiting(self.record.load(), "iPad"), [])
+        self.assertEqual(self.record.load()[devices.QUEUES]["iPad"], [])
+
+    def test_only_standing_devices_that_record_their_device_are_taken(self):
+        with self.assertRaisesRegex(ValueError, "standing approval"):
+            self.record.take("Example Duo 1", owner="s", purpose="p", release_by=later(), timeout=1)
+        with self.assertRaisesRegex(devices.Refused, "records no physical device yet"):
+            self.record.take("iPhone", owner="s", purpose="p", release_by=later(), timeout=1, poll=0.01,
+                             said=lambda _text: None)
+        self.assertEqual(devices.waiting(self.record.load(), "iPhone"), [])
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(StringIO()) as error:
+            devices.main(["take", "Example Duo 1", "--owner", "s", "--purpose", "p", "--release-by", later()])
+        self.assertIn("invalid choice", error.getvalue())
+
+    def test_a_take_that_waits_too_long_leaves_the_line_and_reserves_nothing(self):
+        held = self.reserve("iPad", device=TABLET)
+        with self.assertRaisesRegex(TimeoutError, "nothing was reserved"):
+            self.record.take("iPad", owner="session-b", purpose="p", release_by=later(), timeout=0.05, poll=0.01,
+                             said=lambda _text: None)
+        self.assertEqual(devices.waiting(self.record.load(), "iPad"), [])
+        self.assertEqual(self.record.entry("iPad")["revision"], held["revision"])
+        self.assertEqual(self.record.entry("iPad")["ownerChatID"], "session-a")
+
+    def test_an_orphaned_device_is_not_taken(self):
+        held = self.reserve("iPad", device=TABLET)
+        gone = self.waiter()
+        self.record.update("iPad", owner="session-a", revision=held["revision"], activeRun=True,
+                           hostProcessIdentifier=gone.pid)
+        gone.kill()
+        gone.wait()
+        with self.assertRaisesRegex(devices.Refused, "orphan.*attended recovery"):
+            self.record.take("iPad", owner="session-b", purpose="p", release_by=later(), timeout=5, poll=0.01,
+                             said=lambda _text: None)
+        self.assertEqual(devices.waiting(self.record.load(), "iPad"), [])
+
+    def test_a_release_says_how_the_apps_the_session_launched_were_quit(self):
+        entry = self.reserve("iPad", device=TABLET)
+        code, output, _error = self.cli("update", "iPad", "--owner", "session-a", "--revision", str(entry["revision"]),
+                                        "--launched", "com.example.Host", "--launched", "com.example.Host")
+        self.assertEqual(code, 0)
+        entry = json.loads(output)["entry"]
+        self.assertEqual(entry["launchedApps"], ["com.example.Host"])
+        self.assertIn("launched apps: com.example.Host", self.cli("status")[1])
+        with self.assertRaisesRegex(ValueError, "writes launchedApps itself"):
+            self.record.update("iPad", owner="session-a", revision=entry["revision"], launchedApps=[])
+        with self.assertRaisesRegex(devices.Refused, "launched apps com.example.Host.*--apps-quit"):
+            self.record.release("iPad", owner="session-a", revision=entry["revision"], outcome="o", restoration="r")
+        released = self.record.release("iPad", owner="session-a", revision=entry["revision"], outcome="o",
+                                       restoration="r", apps_quit="devicectl terminated com.example.Host")
+        self.assertEqual(released["appsQuit"], "devicectl terminated com.example.Host")
+        # The next holder's entry starts without them, and keeps them in its previous lease.
+        taken = self.reserve("iPad", owner="session-b", revision=released["revision"], approval=approval())
+        self.assertNotIn("launchedApps", taken)
+        self.assertEqual(taken["previousLease"]["launchedApps"], ["com.example.Host"])
 
 
 class BoundedRunTests(unittest.TestCase):

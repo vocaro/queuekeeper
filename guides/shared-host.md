@@ -1350,12 +1350,44 @@ Give every command the device's explicit identifier: the canonical uppercase UDI
 you own or have reserved, never a name or `booted`. [Simulator testing](simulator-testing.md)
 covers the pool's take, use and release steps.
 
-Agree a window with the owner before any session on a paired iPhone or iPad. A real reservation
-and handoff are still required inside that window, and approval of a run covers installing and
-launching there, not operating the device by hand. [Device testing](device-testing.md) has the
-window, preflight, UI-automation authorization and restoration steps for physical devices.
+A physical device's reservation records the owner's approval, and approval of a run covers
+installing and launching there, not operating the device by hand. [Device testing](device-testing.md)
+has the preflight, UI-automation authorization and restoration steps for physical devices.
 
-The reservation records that window as `mac-foreground`'s records the owner's: who approved it,
+### Taking the iPad or iPhone in turn
+
+The paired iPad and iPhone carry the owner's standing approval (owner's decision, 2026-10-31,
+kept in `devices.STANDING` with the owner's words), so a session takes either without asking:
+
+```sh
+python3 -m vocaro_engineering.devices take iPad --purpose "…" --release-by 2026-10-31T09:00:00Z \
+  --set 'originalSettings={"voiceoverEnabled": false}' --set 'preservation=…'
+```
+
+`take` joins the entry's line, waits while another session holds the device or is ahead of it,
+saying who holds it and until when, and reserves it with the standing approval, until released.
+It prints the entry, whose revision the session's next change names. Start it in the background
+when the wait may outlast the tool's; `--wait SECONDS`, an hour by default, bounds it, after which
+it leaves the line and reserves nothing. The line is kept beside the entries, in the record's
+`queues`, so joining it never changes the holder's revision. Each place in it records the waiting
+`take` process and its start time, and a place whose process is gone drops out. While anyone waits,
+`reserve` refuses everyone but the first in line, a reservation within an owner's window included.
+`take` refuses an entry that has never recorded its device, since the standing approval names the
+device by the entry an owner's window first recorded, and an orphaned or uncertain entry, which
+needs attended recovery. Nothing hurries the holder: an overdue expected release still releases
+nothing, so a wait behind a session that never releases ends at `--wait`, and `status` shows the
+holder and the line.
+
+Record each app the session launches on the device with `devices update KEY --launched BUNDLE`.
+Releasing an entry that records any requires `--apps-quit "…"`, saying how they were quit (for
+example `devicectl device process terminate`), so the next holder does not find them running. The
+next entry starts without them; its `previousLease` keeps them. An app running on a device a
+session holds is not another session's work, since the record shows nobody else holds the device:
+a leftover the holder may quit, but never uninstall or clear beyond the agreed cleanup.
+
+### Owner windows
+
+Any other physical device needs a window agreed with the owner. The reservation records that window as `mac-foreground`'s records the owner's: who approved it,
 when, and until a time or `released` (`--approved-by`, `--approved-at`, `--approved-until`, and
 `--approval-words` for the owner's words), never past the expected release. The record refuses
 to reserve a physical device, a hardware UDID of 8 and 16 hex digits or 40, without one, or to

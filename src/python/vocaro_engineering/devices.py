@@ -29,6 +29,14 @@ session holds within the owner's approval, refusing a command that names any oth
 stops it before the reservation ends, keeping time for its termination and the session's
 restoration. It records the run in the entry and never releases the device. `eng remote --device`
 bounds a run on the second Mac the same way, and there a bounded run takes its reservation from the lease.
+
+The owner gave the paired iPad and iPhone a standing approval (owner's decision, 2026-10-31), so a
+session takes either in turn without asking: `devices take KEY` joins KEY's queue, waits while another
+session holds it or waits ahead, and reserves it with that approval. The queue lives beside the
+entries, so joining it never changes a holder's revision, and a waiter whose process is gone drops
+out. While anyone waits, only the first in line may reserve the entry. A session records each app it
+launches on its device (`update --launched BUNDLE`), and releasing an entry that records any says how
+they were quit.
 """
 import argparse
 import contextlib
@@ -79,7 +87,19 @@ MINIMUM = 30
 TIMED_OUT = 124
 # Written only by the record's own operations, which say who changed ownership and why.
 MANAGED = {"revision", "ownerChatID", "lastOwnerChatID", "previousLease", "recovery", "importedFrom",
-           "importedVersions", "uncertainReason", "hostProcessStart", "approval", "ownedProcesses", "frontmost"}
+           "importedVersions", "uncertainReason", "hostProcessStart", "approval", "ownedProcesses", "frontmost",
+           "launchedApps", "appsQuit"}
+# The owner's standing approval of each paired device, by its entry's key, in the owner's words. It
+# covers what a window does: installing, launching and automated runs, not operating the device.
+STANDING = {
+    "iPad": {"by": "owner", "at": "2026-10-31T06:14:00Z",
+             "words": "Also add iPad queue"},
+    "iPhone": {"by": "owner", "at": "2026-10-31T06:16:00Z", "words": "so the same for the iphone"},
+}
+# Sessions waiting in line for an entry, by its key, kept beside the entries.
+QUEUES = "queues"
+# Seconds between looks at an entry while `take` waits for it.
+POLL = 10
 # The owner's screen, keyboard, pointer, focus and speech, held like a device.
 FOREGROUND = "mac-foreground"
 # The session a foreground driver acts for, as its reservation names it.
@@ -212,6 +232,12 @@ def require_window(key, entry):
 def running(entry):
     """The processes an entry records as its own that still run with their recorded start."""
     return [item for item in entry.get("ownedProcesses", [])
+            if isinstance(item, dict) and item.get("start") and process_start(item.get("pid")) == item["start"]]
+
+
+def waiting(record, key):
+    """The sessions in line for key whose waiting process still runs, first first."""
+    return [item for item in record.get(QUEUES, {}).get(key, [])
             if isinstance(item, dict) and item.get("start") and process_start(item.get("pid")) == item["start"]]
 
 
@@ -366,6 +392,12 @@ class Record:
                 raise deferred_refusal(record[DEFERRED], key)
             if physical(identifier) and approval is None:
                 raise window_refusal(key)
+            line = waiting(record, key)
+            if line and line[0]["owner"] != owner:
+                raise Refused(f"{len(line)} waiting for {key}, first {line[0]['owner']} for {line[0].get('purpose')}; "
+                              f"wait your turn with `devices take {key}`. Nothing was changed")
+            if line:
+                record[QUEUES][key] = line[1:]
             for other, entry in record["devices"].items():
                 same = isinstance(entry.get("device"), str) and identifier and entry["device"].upper() == identifier.upper()
                 if other != key and same and condition(entry) != "released":
@@ -378,10 +410,86 @@ class Record:
             return {name: value for name, value in entry.items() if value is not None}
         return self._change(key, revision, change)
 
-    def update(self, key, *, owner, revision, own=(), **changes):
+    def _line(self, key, change):
+        """Change key's queue under the lock, writing the record only when it changed."""
+        with self._exclusive():
+            record = self.load()
+            before = record.get(QUEUES, {}).get(key, [])
+            after = change(waiting(record, key))
+            if after != before:
+                queues = record.setdefault(QUEUES, {})
+                if after: queues[key] = after
+                else: queues.pop(key, None)
+                self._replace(record)
+            return after
+
+    def join(self, key, *, owner, purpose, pid=None):
+        """Put owner at the end of key's line, waiting as pid, by default this process; its place."""
+        pid = os.getpid() if pid is None else pid
+        start = process_start(pid)
+        if start is None:
+            raise Refused(f"process {pid} is not running; nothing was changed")
+
+        def change(line):
+            if any(item["owner"] == owner for item in line):
+                raise Refused(f"{owner} already waits for {key}; nothing was changed")
+            return [*line, {"owner": owner, "purpose": purpose, "pid": pid, "start": start, "joinedAt": now()}]
+        return len(self._line(key, change))
+
+    def leave(self, key, *, owner):
+        """Take owner out of key's line, if it is there."""
+        self._line(key, lambda line: [item for item in line if item["owner"] != owner])
+
+    def take(self, key, *, owner, purpose, release_by, timeout, title=None, details=None, poll=POLL, said=None):
+        """Reserve key in turn with the owner's standing approval, waiting up to timeout seconds in its line.
+
+        The entry already records the device, from a reservation the owner agreed, so the standing approval
+        names no other. An orphaned or uncertain entry needs attended recovery; waiting leaves the line on
+        any end."""
+        standing = STANDING.get(key)
+        if standing is None:
+            raise ValueError(f"only {', '.join(STANDING)} have the owner's standing approval; reserve {key} "
+                             "within a window the owner agreed")
+        said = said or (lambda text: print(text, file=sys.stderr, flush=True))
+        place = self.join(key, owner=owner, purpose=purpose)
+        said(f"devices: {owner} waits for {key}, place {place} in line")
+        deadline, announced = time.monotonic() + timeout, None
+        try:
+            while True:
+                value = self.load()
+                entry = value["devices"].get(key)
+                if entry is None or not physical(entry.get("device")):
+                    raise Refused(f"{key} records no physical device yet; its first reservation is within a window "
+                                  "the owner agreed, which records the device. Nothing was changed")
+                state = condition(entry)
+                line = waiting(value, key)
+                if state == "released" and line and line[0]["owner"] == owner:
+                    try:
+                        return self.reserve(key, owner=owner, revision=entry["revision"], purpose=purpose,
+                                            release_by=release_by, title=title, details=details,
+                                            approval={**standing, "until": "released"})
+                    except Stale:
+                        continue
+                if state in ("orphan", "uncertain"):
+                    raise Refused(f"{key} is {state}, held by {entry.get('ownerChatID')} for {entry.get('purpose')}; "
+                                  "it needs attended recovery (`devices recover`) first")
+                ahead = entry.get("ownerChatID") if state != "released" else line[0]["owner"] if line else None
+                if ahead != announced:
+                    said(f"devices: waiting for {key}, " + (
+                        f"held by {ahead} for {entry.get('purpose')}, expected release {entry.get('expectedReleaseBy')}"
+                        if state != "released" else f"next in line {ahead}"))
+                    announced = ahead
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(f"{key} stayed held or claimed by {ahead} for {timeout:g}s; nothing was reserved")
+                time.sleep(poll)
+        finally:
+            self.leave(key, owner=owner)
+
+    def update(self, key, *, owner, revision, own=(), launched=(), **changes):
         """Change the caller's own held entry. An active run names the process whose end ends it.
 
-        own adds running processes, by PID, that the entry's release then waits for."""
+        own adds running processes, by PID, that the entry's release then waits for; launched adds the
+        bundle identifiers of apps the session launched on its device, which its release says it quit."""
         if MANAGED & changes.keys():
             raise ValueError(f"the record writes {', '.join(sorted(MANAGED & changes.keys()))} itself")
         if changes.get("state") == "released":
@@ -411,14 +519,17 @@ class Record:
             entry = {**current, **changes}
             if owned:
                 entry["ownedProcesses"] = [*current.get("ownedProcesses", []), *owned]
+            if launched:
+                entry["launchedApps"] = list(dict.fromkeys([*current.get("launchedApps", []), *launched]))
             return entry
         return self._change(key, revision, change)
 
-    def release(self, key, *, owner, revision, outcome, restoration, frontmost=None):
+    def release(self, key, *, owner, revision, outcome, restoration, frontmost=None, apps_quit=None):
         """Release the caller's own entry with its terminal outcome and restoration checks.
 
         It waits for the processes the entry records as its own. Releasing mac-foreground also says
         whether the previous frontmost app was restored or the foreground was no longer the session's.
+        An entry that records launched apps says how they were quit (apps_quit).
         Explicit unresolved uncertainty requires attended recover(), even when no live PID is known."""
         if not outcome or not restoration:
             raise ValueError("a release records the terminal outcome and the restoration checks")
@@ -441,12 +552,17 @@ class Record:
             if alive:
                 raise Refused(f"{key}'s own processes {', '.join(str(item['pid']) for item in alive)} are still "
                               "running; quit them first. Nothing was changed")
+            if current.get("launchedApps") and not apps_quit:
+                raise Refused(f"{key} records launched apps {', '.join(current['launchedApps'])}: quit them on the "
+                              "device and say how (--apps-quit). Nothing was changed")
             entry = {name: value for name, value in current.items() if name not in ("uncertain", "uncertainReason")}
             entry.update({"state": "released", "activeRun": False, "ownerChatID": None,
                           "lastOwnerChatID": owner, "releasedAt": now(), "run": outcome,
                           "restoration": restoration})
             if frontmost is not None:
                 entry["frontmost"] = frontmost
+            if apps_quit:
+                entry["appsQuit"] = apps_quit
             return entry
         return self._change(key, revision, change)
 
@@ -797,7 +913,7 @@ class BoundedRun:
         return status
 
 
-def _describe(key, entry):
+def _describe(key, entry, line=()):
     state = condition(entry)
     parts = [f"{key}: {state}"]
     if state == "released":
@@ -824,6 +940,12 @@ def _describe(key, entry):
         if state == "uncertain":
             parts.append((entry.get("uncertainReason") or "termination or restoration is unverified")
                          + "; kept for attended recovery")
+        if entry.get("launchedApps"):
+            parts.append(f"launched apps: {', '.join(entry['launchedApps'])}")
+    if line:
+        parts.append("waiting: " + ", ".join(f"{item['owner']} ({item.get('purpose')})" for item in line))
+    if key in STANDING:
+        parts.append("standing approval: take it in turn with `devices take`")
     parts.append(f"revision {entry.get('revision', 0)}")
     return "; ".join(parts)
 
@@ -839,7 +961,7 @@ def status(record):
     print(_describe(FOREGROUND, foreground) if foreground is not None else
           f"{FOREGROUND}: free; reserve it with the owner's approval before foreground work")
     for key, entry in value["devices"].items():
-        if key != FOREGROUND: print(_describe(key, entry))
+        if key != FOREGROUND: print(_describe(key, entry, waiting(value, key)))
     imported = {item.get("sha256") for item in value.get("imports", [])}
     for legacy in sorted(glob.glob(LEGACY)):
         try:
@@ -897,6 +1019,18 @@ def main(argv=None):
     update.add_argument("--set", action="append", metavar="FIELD=JSON")
     update.add_argument("--own", action="append", type=int, metavar="PID", default=[],
                         help="a process this session launched, which release waits for")
+    update.add_argument("--launched", action="append", metavar="BUNDLE", default=[],
+                        help="an app this session launched on the device, which release says it quit")
+    take = commands.add_parser("take", help=f"wait in line for {' or '.join(STANDING)} and reserve it with the "
+                               "owner's standing approval; prints the entry")
+    take.add_argument("key", choices=sorted(STANDING))
+    take.add_argument("--owner", default=default_owner(), help=f"the session (default: {OWNER}, else the agent session)")
+    take.add_argument("--purpose", required=True)
+    take.add_argument("--release-by", required=True)
+    take.add_argument("--title")
+    take.add_argument("--set", action="append", metavar="FIELD=JSON")
+    take.add_argument("--wait", type=float, metavar="SECONDS", default=3600,
+                      help="give up after waiting this long (default 3600)")
     release = commands.add_parser("release", help="release your own entry")
     release.add_argument("key")
     release.add_argument("--owner", required=True)
@@ -905,6 +1039,7 @@ def main(argv=None):
     release.add_argument("--restoration", required=True)
     release.add_argument("--frontmost", choices=FRONTMOST, help=f"required for {FOREGROUND}: whether the previous "
                          "frontmost app was restored, or the session no longer owned the foreground")
+    release.add_argument("--apps-quit", help="required when the entry records launched apps: how they were quit")
     check = commands.add_parser("check", help=f"refuse unless OWNER holds {FOREGROUND} within the owner's approval")
     check.add_argument("--owner", default=os.environ.get(OWNER), help=f"the session; default ${OWNER}")
     recover = commands.add_parser("recover", help="attended release of an entry its owner cannot release")
@@ -961,14 +1096,20 @@ def main(argv=None):
                 purpose=args.purpose, release_by=args.release_by, device=args.device, title=args.title,
                 details=_fields(args.set), approval=approval))
         elif args.action == "update":
-            if not args.set and not args.own:
-                raise ValueError("update takes --set FIELD=JSON or --own PID")
+            if not args.set and not args.own and not args.launched:
+                raise ValueError("update takes --set FIELD=JSON, --own PID or --launched BUNDLE")
             _report(args.key, record.update(args.key, owner=args.owner, revision=args.revision, own=args.own,
-                                            **_fields(args.set)))
+                                            launched=args.launched, **_fields(args.set)))
+        elif args.action == "take":
+            if not args.owner:
+                raise ValueError(f"name the session: --owner, or {OWNER}")
+            _report(args.key, record.take(args.key, owner=args.owner, purpose=args.purpose,
+                                          release_by=args.release_by, timeout=args.wait, title=args.title,
+                                          details=_fields(args.set)))
         elif args.action == "release":
             _report(args.key, record.release(args.key, owner=args.owner, revision=args.revision,
                                              outcome=args.outcome, restoration=args.restoration,
-                                             frontmost=args.frontmost))
+                                             frontmost=args.frontmost, apps_quit=args.apps_quit))
         elif args.action == "check":
             entry = require_foreground(args.owner, record)
             print(f"{FOREGROUND}: held by {args.owner} for {entry.get('purpose')}, approved until "
