@@ -777,6 +777,14 @@ The owner prepares the second Mac once:
    reports first addresses that keep every connection waiting as an error
    ([which Mac runs a lane](#which-mac-runs-a-lane)).
 
+   macOS renames a Mac whose `.local` name another machine on the network claims, adding or
+   raising a `-N` suffix (`-3` became `-4` on 2026-11-01). The old `HostName` then does not
+   resolve, which eng takes for the second Mac being away, so lanes quietly run on this Mac.
+   `scutil --get LocalHostName` on the second Mac gives the new name: put it in `HostName`, and
+   add it to `known_hosts` (`ssh-keyscan -4 -t ed25519 NAME.local >> ~/.ssh/known_hosts`, after
+   checking that the key is the one already recorded), since ssh checks the key by name and in
+   batch mode refuses one it has not seen. Nothing else in eng depends on the old name.
+
 3. Install the Xcode this Mac uses at the same path. Accept its license and run its first launch
    (`sudo xcodebuild -license accept`, then `xcodebuild -runFirstLaunch`).
 4. Install Homebrew there (https://brew.sh); its installer asks for the second Mac's password.
