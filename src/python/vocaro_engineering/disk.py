@@ -36,7 +36,8 @@ STATUS_ORDER = {CANDIDATE: 0, OWNER: 1, KEPT: 2}
 CATEGORIES = {"worktree": "Linked worktrees", "simulator": "Simulators", "runtime": "Simulator runtimes",
               "derived-data": "Xcode DerivedData", "scratch": "Scratch builds outside checkouts",
               "swiftpm-cache": "SwiftPM shared cache", "archive": "Xcode archives",
-              "results": "Result directories", "other": "Other large directories (never candidates)"}
+              "results": "Result directories", "evidence": "Evidence archives (offload to the second Mac)",
+              "other": "Other large directories (never candidates)"}
 UUID = re.compile(r"[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}", re.IGNORECASE)
 SEPARATORS = re.compile(r"[\s=,;\"']+")
 # Xcode names a workspace's DerivedData folder NAME-<28 letters>; other folders are shared caches.
@@ -44,6 +45,9 @@ WORKSPACE_FOLDER = re.compile(r".+-[a-z]{28}")
 # Ignored files under a directory of one of these names may be evidence; ignored.py, which Closeout
 # reads too, says which ignored files are caches a tool rebuilds and keeps a worktree for any other.
 EVIDENCE_NAMES = ignored.EVIDENCE_NAMES
+# A durable evidence archive in the projects directory, such as pdfreflowlib-measurements, or the
+# archive Closeout used to keep in a main checkout; each belongs on the second Mac.
+EVIDENCE_ARCHIVE = re.compile(r".+-(evidence|measurements)|session-evidence")
 DATA_VOLUME = "/System/Volumes/Data"
 
 
@@ -199,6 +203,7 @@ class Host:
     session_scratch: Path = None
     map_roots: list = field(default_factory=list)
     pools: frozenset = frozenset()
+    offload_host: str = None  # the second Mac, when this Mac sends work to one
     run: object = subprocess.run
 
     @classmethod
@@ -213,7 +218,8 @@ class Host:
                    runtimes=_json(run, "runtime", "list", "-j"), default_devices=default_devices(devices),
                    device_directory=devices, records=device_records(), temp_roots=temp,
                    session_scratch=Path(f"/private/tmp/claude-{os.getuid()}"),
-                   map_roots=expanded_roots(home, user_temp), pools=pools(development or home / "Development", run), run=run)
+                   map_roots=expanded_roots(home, user_temp), pools=pools(development or home / "Development", run),
+                   offload_host=second_mac(), run=run)
 
 
 def _json(run, *arguments):
@@ -649,6 +655,31 @@ def archives(host, sizes):
             for archive in sorted(root.glob("*/*.xcarchive"))] if root.is_dir() else []
 
 
+def evidence_archives(host, sizes):
+    """Durable evidence kept here when a second Mac could hold it. Offloading only copies and verifies;
+    deleting the local copy afterwards stays the owner's."""
+    if not host.offload_host or not host.development.is_dir(): return []
+    command = ["python3", "scripts/eng", "evidence", "offload"]
+    folders = [(path, [*command, str(path)]) for path in sorted(host.development.iterdir())
+               if path.is_dir() and not path.is_symlink() and EVIDENCE_ARCHIVE.fullmatch(path.name)
+               and not (path / ".git").exists()]
+    # A main checkout's archive goes to the shared session-evidence folder there, not into that
+    # project's checkout on the second Mac.
+    folders += [(path, [*command, str(path), "--to", f"Development/session-evidence/{main.name}"])
+                for main in main_checkouts(host) for path in [main / ".build/session-evidence"]
+                if path.is_dir() and not path.is_symlink()]
+    return [Item("evidence", str(path), OWNER, f"durable evidence; it belongs on {host.offload_host} "
+                 "(guides/evidence.md): offload it, then the owner deletes this copy",
+                 sizes.of(path), offload, host.now - last_activity(path)) for path, offload in folders]
+
+
+def second_mac():
+    """The second Mac this Mac offloads to, or None: here alone, or on the second Mac itself."""
+    from . import remote  # remote imports this module
+    try: return remote.configured()
+    except ValueError: return None
+
+
 def shape(names):
     if "workspace-state.json" in names: return "SwiftPM scratch"
     if "Build" in names and names & {"info.plist", "Logs", "SourcePackages", "Index.noindex", "ModuleCache.noindex"}:
@@ -758,6 +789,7 @@ def inventory(host, sizes, categories=None):
     if "derived-data" in wanted: items += derived_data(host, usage, sizes)
     if "swiftpm-cache" in wanted: items += swiftpm_cache(host, usage, sizes)
     if "archive" in wanted: items += archives(host, sizes)
+    if "evidence" in wanted: items += evidence_archives(host, sizes)
     if wanted & {"scratch", "results"}: items += [item for item in temp_items(host, usage, sizes) if item.category in wanted]
     return items
 

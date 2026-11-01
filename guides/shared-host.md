@@ -1197,6 +1197,12 @@ not measure.
 - **Results.** Result bundles, and run directories whose `owner` file records a finished run's
   PID and start time, are owner items; a run whose recorded process still has that start time is
   kept.
+- **Evidence archives**, on a Mac that offloads to a second one. A folder in `~/Development` named
+  `*-evidence`, `*-measurements` or `session-evidence` that is not a Git checkout, and a main
+  checkout's `.build/session-evidence`, are owner items. Their command is
+  `eng evidence offload`, which copies and verifies but deletes nothing
+  ([evidence](evidence.md#public-and-private-destinations)). A main checkout's archive goes to
+  `Development/session-evidence/<project>` there.
 
 `eng disk --delete` runs only on a terminal and asks once per category. Immediately before each
 removal it takes a fresh census and checks that candidate again, refuses an `rm` inside any

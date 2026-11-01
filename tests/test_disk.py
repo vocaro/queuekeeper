@@ -457,6 +457,31 @@ class DeletionTests(Fixture):
         self.assertEqual(calls, [["xcrun", "simctl", "delete", disposable["udid"]]])
 
 
+class EvidenceArchiveTests(Fixture):
+    def test_durable_evidence_is_listed_for_offload_and_never_a_candidate(self):
+        measurements = self.development / "project-measurements"
+        session = self.development / "session-evidence"
+        kept = self.main / ".build/session-evidence"
+        for folder in (measurements, session, kept):
+            folder.mkdir(parents=True)
+        (self.development / "notes").mkdir()
+        private = self.development / "apple-engineering-evidence"
+        private.mkdir()
+        git(private, "init", "-q")
+        items = self.items(self.host(offload_host="build-host"), ["evidence"])
+        self.assertEqual(set(items), {str(measurements), str(session), str(kept)})
+        for item in items.values():
+            self.assertEqual(item.status, disk.OWNER)
+            self.assertIn("build-host", item.reason)
+        self.assertEqual(items[str(measurements)].command,
+                         ["python3", "scripts/eng", "evidence", "offload", str(measurements)])
+        self.assertEqual(items[str(kept)].command[-2:], ["--to", "Development/session-evidence/Project"])
+
+    def test_nothing_is_listed_without_a_second_mac(self):
+        (self.development / "project-measurements").mkdir()
+        self.assertEqual(self.items(self.host(), ["evidence"]), {})
+
+
 class CommandTests(Fixture):
     def test_eng_disk_reports_and_changes_nothing(self):
         landed = self.worktree("landed")

@@ -11,7 +11,7 @@ import subprocess
 import sys
 import time
 
-from . import __version__, devices, disk, docs, evidence, foreground, github_artifacts, keychain, merge_queue, \
+from . import __version__, devices, disk, docs, evidence, evidence_offload, foreground, github_artifacts, keychain, merge_queue, \
     offload_host, parallel, processes, release, remote, resources, skills, spelling, xctest_shards
 from .config import TOOLKIT_ROOT, CAPABILITIES, DEFAULT_TOOLKIT, load, source_identity, stays
 from .resources import BUSY, FREE_WAIT
@@ -541,9 +541,12 @@ def main(argv=None):
     publication.add_argument("commit", metavar="COMMIT")
     publication.add_argument("--notes", required=True, type=Path, help="the release notes, in a file in the checkout "
                              "that Git does not ignore, which eng spelling must pass")
-    evid = commands.add_parser("evidence")
-    evid.add_argument("operation", choices=["verify"])
+    evid = commands.add_parser("evidence", help="verify an evidence receipt, or offload a durable evidence folder "
+                               "to the second Mac, verified there and never deleted here (guides/evidence.md)")
+    evid.add_argument("operation", choices=["verify", "offload"])
     evid.add_argument("directory", type=Path)
+    evid.add_argument("--to", help="offload: the path on the second Mac, relative to its home directory "
+                      "(default: the folder's path relative to this Mac's home)")
     documentation = commands.add_parser("docs")
     documentation.add_argument("operation", choices=["check"])
     documentation.add_argument("paths", nargs="*")
@@ -595,6 +598,9 @@ def main(argv=None):
         if args.action == "keychain": return keychain.execute(args)
         if args.action == "skills": return skills.main(named_checkout(TOOLKIT_ROOT), args.link)
         if args.action == "admissions": return resources.report(args.logs or None, args.since, args.until)
+        # Offloaded evidence goes to the host's second Mac, whatever project holds it.
+        if args.action == "evidence" and args.operation == "offload":
+            return evidence_offload.offload(args.directory, to=args.to)
         config = load(root)
         if args.action == "instructions": instructions(config)
         elif args.action == "doctor":
