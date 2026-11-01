@@ -151,18 +151,50 @@ def initialize(root, args):
         shutil.copyfile(TOOLKIT_ROOT / "integrations/shared.py", adapter)
     agents = root / "AGENTS.md"
     if not agents.exists():
-        agents.write_text("# Contributor instructions\n\n## Shared engineering guidance\n\n"
-            "Before work, run `python3 scripts/eng instructions` to read the common rules and enabled\n"
-            "capabilities, then follow the project-specific instructions below. `engineering.json` locates\n"
-            "the shared `vocaro-engineering` checkout; set `VOCARO_ENGINEERING_ROOT` for another location.\n"
-            "Before shared device or foreground use, run `python3 scripts/eng policy refresh` and\n"
-            "read this project's current main instructions.\n\n"
-            "Record project-specific product rules and justified exceptions here.\n")
+        agents.write_text("# Contributor instructions\n\n" + (TOOLKIT_ROOT / SHARED_GUIDANCE).read_text()
+                          + "\nRecord project-specific product rules and justified exceptions here.\n")
     # Claude Code loads an imported AGENTS.md at session start; it may not follow a link.
     bridge = root / "CLAUDE.md"
-    if not bridge.exists(): bridge.write_text("@AGENTS.md\n")
+    if not bridge.exists(): bridge.write_text("".join(f"{line}\n" for line in claude_imports(load(root))))
     load(root)
     print(f"Initialized {root}; existing instructions and commands were preserved")
+
+
+# The section every direct-main project's AGENTS.md holds word for word, so that an agent that
+# reads only AGENTS.md, as a subagent may, still lands by the queue (agents/core.md).
+SHARED_GUIDANCE = "agents/shared-guidance.md"
+
+
+def claude_imports(config):
+    """The lines a project's CLAUDE.md imports: AGENTS.md, then the common rules and each enabled
+    capability's, so every Claude Code agent, a subagent included, has them without running
+    eng instructions. The toolkit is named from the home folder, which both Macs share, because
+    a path relative to the project does not reach it from a worktree under .claude/worktrees."""
+    toolkit = named_checkout(TOOLKIT_ROOT)
+    home = Path.home()
+    shown = f"~/{toolkit.relative_to(home)}" if toolkit.is_relative_to(home) else str(toolkit)
+    return ["@AGENTS.md", f"@{shown}/agents/core.md",
+            *(f"@{shown}/agents/capabilities/{name}.md" for name in config.get("capabilities", []))]
+
+
+def agent_entry(root, config):
+    """Problems with a direct-main project's AGENTS.md and CLAUDE.md: the shared section copied
+    other than word for word, or an import of the common rules missing. The toolkit's own
+    checkout, which has integrations/, keeps instructions of its own."""
+    if (root / "integrations/shared.py").is_file() or config.get("integration", "direct-main") != "direct-main":
+        return []
+    problems = []
+    agents = root / "AGENTS.md"
+    if not agents.is_file() or (TOOLKIT_ROOT / SHARED_GUIDANCE).read_text() not in agents.read_text():
+        problems.append(f"AGENTS.md does not hold the toolkit's {SHARED_GUIDANCE} word for word: put that section "
+                        "in place of its own, and keep this project's rules after it (guides/adoption.md)")
+    claude = root / "CLAUDE.md"
+    lines = claude.read_text().splitlines() if claude.is_file() else []
+    missing = [line for line in claude_imports(config) if line not in lines]
+    if missing:
+        problems.append(f"CLAUDE.md does not import {', '.join(missing)}: add each on a line of its own "
+                        "(guides/adoption.md)")
+    return problems
 
 
 def behind_main(root):
@@ -631,6 +663,7 @@ def main(argv=None):
             warnings += temporary_model_storage(root, config)
             warnings += unlinked_packages(root, config)
             warnings += stale_copies(root)
+            warnings += agent_entry(root, config)
             warnings += skills.warnings(named_checkout(TOOLKIT_ROOT))
             # A difference between the two Macs is an error; a second Mac that cannot be reached is unchecked.
             hosts = remote.compare_hosts()
