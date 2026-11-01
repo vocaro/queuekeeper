@@ -712,6 +712,8 @@ def main(argv=None):
             print(source_path(args.name))
         elif args.action == "docs":
             failures = docs.check(root, args.paths or None)
+            if not args.paths or {"AGENTS.md", "CLAUDE.md"} & {Path(path).name for path in args.paths}:
+                failures += agent_entry(root, config)
             print("\n".join(failures) if failures else "Documentation checks passed")
             return int(bool(failures))
         elif args.action == "spelling": return spelling.check(root, config, args.paths)

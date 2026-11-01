@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src/python"))
-from vocaro_engineering import config as configuration, merge_queue as mq
+from vocaro_engineering import cli, config as configuration, merge_queue as mq
 import host_isolation
 
 # Fails when any tracked file is named bad*, passes otherwise; touches a counter so a test can count gates.
@@ -49,6 +49,10 @@ class Fixture(unittest.TestCase):
         (self.repo / "scripts").mkdir()
         shutil.copy(ROOT / "scripts/eng", self.repo / "scripts/eng")
         (self.repo / "lane.py").write_text(LANE)
+        # The agent entry a direct-main project keeps, which `eng docs check` reads.
+        (self.repo / "AGENTS.md").write_text("# Fixture\n\n" + (ROOT / cli.SHARED_GUIDANCE).read_text() + "\n"
+                                             + "".join(f"{line}\n" for line in cli.claude_imports({})))
+        (self.repo / "CLAUDE.md").write_text(f"{cli.CLAUDE_ENTRY}\n")
         (self.repo / "engineering.json").write_text(json.dumps({
             "schemaVersion": 1, "name": "fixture", "integration": "direct-main",
             "queue": {"carryOver": {"records/": "no lane reads it"}},
