@@ -38,6 +38,8 @@ def named_checkout(toolkit):
 # Where pinned model weights and other verified downloads live, outside every checkout and outside
 # /private/tmp, which a reboot empties (guides/shared-host.md, Scratch and result directories).
 MODEL_STORAGE = "~/Development/models"
+# Commands that start a background retry of evidence offloads that found the second Mac unreachable.
+OFFLOAD_RETRIES = {"run", "admit", "remote", "land", "queue", "disk"}
 # A path under /tmp or /private/tmp, and the variable it is assigned to when that variable names a model.
 TEMPORARY_PATH = re.compile(r"(\b[A-Z][A-Z0-9_]*MODEL[A-Z0-9_]*=)?(?<![\w.~/-])((?:/private)?/tmp/[^\s`'\"<>()\[\]{},;|]+)")
 MODEL_WORDS = re.compile(r"(?<![a-z])(?:models|weights)(?![a-z])", re.IGNORECASE)
@@ -576,7 +578,8 @@ def main(argv=None):
     evid = commands.add_parser("evidence", help="verify an evidence receipt, or move a durable evidence folder "
                                "to the second Mac, deleting it here once every file verified there (guides/evidence.md)")
     evid.add_argument("operation", choices=["verify", "offload"])
-    evid.add_argument("directory", type=Path)
+    evid.add_argument("directory", type=Path, nargs="?", help="offload: with no folder, offer every folder that an "
+                      "offload found the second Mac unreachable for to it again")
     evid.add_argument("--to", help="offload: the path on the second Mac, relative to its home directory "
                       "(default: the folder's path relative to this Mac's home)")
     evid.add_argument("--keep", action="store_true", help="offload: keep the folder here after it verified there")
@@ -619,6 +622,11 @@ def main(argv=None):
     if args.passed is not None and (args.action, getattr(args, "operation", None)) not in {
             ("run", None), ("admit", None), ("remote", "run"), ("remote", "admit")}:
         parser.error("only run and admit take arguments after --")
+    if args.action == "evidence" and args.operation == "verify" and args.directory is None:
+        parser.error("evidence verify needs a directory")
+    # The commands that check the second Mac again on every run offer it the evidence that an offload
+    # found it unreachable for, in the background (guides/evidence.md).
+    if args.action in OFFLOAD_RETRIES: evidence_offload.retry_soon()
     root = args.project.resolve()
     try:
         if args.action == "init":
@@ -633,6 +641,9 @@ def main(argv=None):
         if args.action == "admissions": return resources.report(args.logs or None, args.since, args.until)
         # Offloaded evidence goes to the host's second Mac, whatever project holds it.
         if args.action == "evidence" and args.operation == "offload":
+            if args.directory is None:
+                if args.to or args.keep: raise ValueError("--to and --keep name a folder's offload; name the folder")
+                return evidence_offload.retry()
             return evidence_offload.offload(args.directory, to=args.to, keep=args.keep)
         config = load(root)
         if args.action == "instructions": instructions(config)

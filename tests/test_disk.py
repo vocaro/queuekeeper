@@ -489,6 +489,29 @@ class EvidenceArchiveTests(Fixture):
                          ["python3", "scripts/eng", "evidence", "offload", str(measurements)])
         self.assertEqual(items[str(kept)].command[-2:], ["--to", "Development/session-evidence/Project"])
 
+    def test_a_folder_waiting_for_the_second_mac_says_so_wherever_it_is(self):
+        from vocaro_engineering import evidence_offload
+        measurements = self.development / "project-measurements"
+        elsewhere = self.home / "results/run-7"
+        failed = self.development / "other-evidence"
+        for folder in (measurements, elsewhere, failed): folder.mkdir(parents=True)
+        queue = evidence_offload.Queue(self.home)
+        queue.add(measurements, None, False, "second cannot be reached")
+        queue.add(elsewhere, "Development/kept", True, "second cannot be reached")
+        queue.add(failed, None, False, "second cannot be reached")
+        queue.fail(failed, "FAILED: 1 files did not verify")
+        queue.add(self.home / "gone", None, False, "second cannot be reached")
+        items = self.items(self.host(offload_host="build-host"), ["evidence"])
+        self.assertEqual(set(items), {str(measurements), str(elsewhere), str(failed)})
+        self.assertIn("found the second Mac unreachable", items[str(measurements)].reason)
+        self.assertIn("eng retries it", items[str(elsewhere)].reason)
+        self.assertEqual(items[str(elsewhere)].command,
+                         ["python3", "scripts/eng", "evidence", "offload", str(elsewhere), "--to", "Development/kept",
+                          "--keep"])
+        self.assertIn("waits for a person", items[str(failed)].reason)
+        self.assertIn("FAILED", items[str(failed)].reason)
+        for item in items.values(): self.assertEqual(item.status, disk.OWNER)
+
     def test_nothing_is_listed_without_a_second_mac(self):
         (self.development / "project-measurements").mkdir()
         self.assertEqual(self.items(self.host(), ["evidence"]), {})

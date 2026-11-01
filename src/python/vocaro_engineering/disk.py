@@ -658,9 +658,25 @@ def evidence_archives(host, sizes):
     folders += [(path, [*command, str(path), "--to", f"Development/session-evidence/{main.name}"])
                 for main in main_checkouts(host) for path in [main / ".build/session-evidence"]
                 if path.is_dir() and not path.is_symlink()]
-    return [Item("evidence", str(path), OWNER, f"durable evidence; it belongs on {host.offload_host} "
-                 "(guides/evidence.md): offloading moves it, deleting it here once it verified there",
-                 sizes.of(path), offload, host.now - last_activity(path)) for path, offload in folders]
+    # A folder whose offload found the second Mac unreachable is listed wherever it is, with what eng does next.
+    from . import evidence_offload  # it imports remote, which imports this module
+    try: queued = evidence_offload.Queue(host.home).read()["folders"]
+    except (OSError, ValueError): queued = {}
+    listed = {canonical(path) for path, _ in folders}
+    folders += [(Path(path), [*command, path, *(["--to", entry["to"]] if entry.get("to") else []),
+                              *(["--keep"] if entry.get("keep") else [])])
+                for path, entry in sorted(queued.items()) if canonical(path) not in listed and Path(path).is_dir()]
+    queued = {canonical(path): entry for path, entry in queued.items()}
+
+    def reason(path):
+        said = (f"durable evidence; it belongs on {host.offload_host} (guides/evidence.md): offloading moves it, "
+                "deleting it here once it verified there")
+        entry = queued.get(canonical(path))
+        if not entry: return said
+        if entry.get("failed"): return f"{said}; a retry of its offload failed, so it waits for a person: {entry['failed']}"
+        return f"{said}; its offload found the second Mac unreachable on {entry.get('queued')}, and eng retries it"
+    return [Item("evidence", str(path), OWNER, reason(path), sizes.of(path), offload, host.now - last_activity(path))
+            for path, offload in folders]
 
 
 def second_mac():
