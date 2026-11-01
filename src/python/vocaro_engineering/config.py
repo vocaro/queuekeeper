@@ -104,10 +104,11 @@ RESOURCES = ["light", "heavy", "exclusive"]
 
 
 def merge_queue(queue, lanes):
-    """The lanes a commit passes in the merge queue, and what main may change under a passed result,
-    each path with why no such lane reads it (guides/maintenance.md, The merge queue)."""
-    if not isinstance(queue, dict) or set(queue) - {"lanes", "carryOver"}:
-        raise ValueError("queue supports only lanes and carryOver")
+    """The lanes a commit passes in the merge queue, what main may change under a passed result,
+    each path with why no such lane reads it, and which of those lanes cover the pre-push hook, each
+    with what of the hook it runs (guides/maintenance.md, The merge queue)."""
+    if not isinstance(queue, dict) or set(queue) - {"lanes", "carryOver", "hookCoveredBy"}:
+        raise ValueError("queue supports only lanes, carryOver and hookCoveredBy")
     named = queue.get("lanes", [])
     if not isinstance(named, list) or len(set(map(str, named))) != len(named) or any(name not in lanes for name in named):
         raise ValueError("queue.lanes must list distinct configured lanes")
@@ -115,6 +116,13 @@ def merge_queue(queue, lanes):
     if not isinstance(carried, dict) or any(not key.strip() or not isinstance(why, str) or not why.strip()
                                             for key, why in carried.items()):
         raise ValueError("queue.carryOver maps each path, a directory ending in /, to why no queue lane reads it")
+    if "hookCoveredBy" in queue:
+        covering = queue["hookCoveredBy"]
+        passed = {"spelling", "provision", *(named or ["gate"])} & set(lanes)
+        if not isinstance(covering, dict) or not covering or any(lane not in passed or not isinstance(what, str)
+                                                                 or not what.strip() for lane, what in covering.items()):
+            raise ValueError("queue.hookCoveredBy maps each lane the queue runs that covers the pre-push hook to what "
+                             "of the hook it runs")
 
 
 def retired(lanes):

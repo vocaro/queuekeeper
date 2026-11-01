@@ -447,16 +447,31 @@ class Worker:
         return new_base, self.head()
 
     def push(self, config, batch, base):
-        """Push HEAD to main. True on a push, False to gate again; a refusal that is no race holds."""
+        """Push HEAD to main. True on a push, False to gate again; a refusal that is no race holds.
+        The project's pre-push hook runs here rather than inside the push, unless main's queue.hookCoveredBy
+        says which passed lanes cover it: a long hook then holds no connection open, and its refusal is its own."""
         head = self.head()
-        dropped = False
+        dropped = unsure = False
+        checked = None
+        covered = config.get("queue", {}).get("hookCoveredBy")
         for _ in range(CARRIES):
             git(self.checkout, *FETCH, check=True)
             if git(self.checkout, "merge-base", "--is-ancestor", MAIN, head).returncode:
                 carried = self.carry(config, batch, base, head)
                 if carried is None: return False
                 base, head = carried
-            pushed = git(self.checkout, "push", "origin", "HEAD:refs/heads/main", timeout=LANE_LIMIT)
+            if covered: self.say(f"no pre-push hook: main's queue.hookCoveredBy says {', '.join(covered)} cover it")
+            elif checked != head:
+                result, log = self.pre_push(head)
+                if result in NO_VERDICT and not unsure:
+                    unsure = True
+                    self.say(f"the pre-push hook gave no verdict (exit {result}): trying it again")
+                    continue
+                if result in NO_VERDICT:
+                    raise ValueError(f"the pre-push hook gave no verdict, exit {result}, twice on {head[:12]}; see {log}")
+                if result: raise ValueError(f"the pre-push hook refused {head[:12]}, exit {result}; see {log}")
+                checked = head
+            pushed = git(self.checkout, "push", "--no-verify", "origin", "HEAD:refs/heads/main")
             if pushed.returncode == 0:
                 git(self.checkout, *FETCH)
                 self.say(f"pushed {head[:12]}")
@@ -470,6 +485,23 @@ class Worker:
                 continue
             raise ValueError(f"the push of {head[:12]} was refused: {said or 'no output'}")
         return False
+
+    def pre_push(self, head):
+        """(status, log) of the project's pre-push hook for pushing head to main, called as Git would
+        call it, before any connection to the remote. Status 0 when the project has none."""
+        log = self.queue.logs / f"{time.strftime('%Y%m%d-%H%M%S')}-{head[:8]}-pre-push.log"
+        told = self.queue.directory / "pre-push.stdin"
+        told.write_text(f"HEAD {head} refs/heads/main {text(self.checkout, 'rev-parse', MAIN)}\n")
+        url = text(self.checkout, "remote", "get-url", "--push", "origin")
+        self.say(f"pre-push hook on {head[:12]}")
+        try:
+            result = processes.run(["git", "hook", "run", "--ignore-missing", f"--to-stdin={told}", "pre-push", "--",
+                                    "origin", url], cwd=self.checkout, log_path=log, timeout=LANE_LIMIT, env=environment())
+        except processes.TimedOut as error:
+            self.say(f"pre-push hook: unmeasured: {error}")
+            return evidence.UNMEASURED, log
+        self.say(f"pre-push hook exited {result}")
+        return result, log
 
     def failed(self, applied, log):
         """Bisect: the oldest half next. A lone entry that fails is the one to send back."""
@@ -507,7 +539,10 @@ class Worker:
             if self.pick(entry): raise ValueError(f"{entry['id']} applied a moment ago and no longer does")
         # Until main names any, the batch's: the commit that first names a project's lanes has to land.
         try: lanes_of(config)
-        except ValueError: config = load(self.checkout)
+        except ValueError:
+            config = load(self.checkout)
+            # The batch may name its lanes, but only main may say the hook need not run.
+            config.get("queue", {}).pop("hookCoveredBy", None)
         queue.mark(applied, TESTING)
         head = self.head()
         self.say(f"testing {len(applied)} entr{'y' if len(applied) == 1 else 'ies'} at {head[:12]} on {base[:12]}")

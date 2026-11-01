@@ -212,6 +212,30 @@ queue, with every entry waiting, as it also does for a push refused for any reas
 hold stays until the owner, or a session the owner told to, has dealt with its cause and run
 `eng queue resume`. Nothing fails over to another route.
 
+**A pre-push hook runs ahead of the push.** `git push` connects before it runs the hook, so a hook's
+long wait held an SSH connection open until GitHub dropped it. After a gate passes, the worker runs
+the project's hook itself with `git hook run`, as Git would call it for pushing to `main`, with its
+log in `eng-queue/logs`, and then pushes with `--no-verify`. A dropped connection or a race that
+leaves the commit unchanged pushes again without running the hook again; a carried-over commit is a
+new commit and runs it again. A hook's exit 3, 75 or 78 is no verdict, as a lane's is: it is tried
+once more and then holds. Git passes the hook's status through, so a hook that waits for admission
+should exit with the status it got rather than 1. Any other refusal holds at once, since the gate
+passed and the hook disagrees, which is for the owner to read; it blames no commit.
+
+**A hook that repeats the queue's lanes may be covered by them.** A project opts in on `main`, naming
+each lane that covers the hook and what of the hook it runs. A branch cannot opt itself in, since the
+setting is read from `main`:
+
+```json
+"queue": {"lanes": ["gate", "app-gate"],
+          "hookCoveredBy": {"gate": "check-all.sh, the hook's first step", "app-gate": "check-app.sh, its second"}}
+```
+
+The lanes must be ones the queue runs, so their passing is what the worker just saw, and a wait for
+admission there is a lane's no verdict. The worker then does not run the hook, and its log says so.
+Keep the opt-in only while it is true: a hook that checks something no lane does, as mpm's coverage guard does,
+stays a hook. A person's own `git push` still runs the hook.
+
 **Pushing by hand is the exception.** A session pushes to `main` by hand only when `eng land` cannot
 be used, when it must be bypassed, each for a reason it can state, such as a broken queue or a fix
 that cannot wait for it, or with the owner's approval. A record or a document lands by the queue

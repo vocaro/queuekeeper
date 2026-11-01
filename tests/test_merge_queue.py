@@ -262,6 +262,211 @@ class MainMoves(Fixture):
         self.assertEqual(self.gates(), 1)
 
 
+class PrePushHooks(Fixture):
+    def setUp(self):
+        super().setUp()
+        self.ran = self.base / "hook-runs"
+
+    def hook(self, body, directory=None):
+        """A pre-push hook that records each run's arguments and stdin, then runs body."""
+        path = (directory or self.repo / ".git/hooks") / "pre-push"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f'#!/bin/sh\nread -r told\necho "$1 $2 $told" >> "{self.ran}"\n{body}\n')
+        path.chmod(0o755)
+
+    def runs(self):
+        return self.ran.read_text().splitlines() if self.ran.exists() else []
+
+    def opt_in(self, covering, branch=None):
+        """Name covering in engineering.json, directly on main or on a branch of its own."""
+        config = json.loads((self.repo / "engineering.json").read_text())
+        config["queue"]["hookCoveredBy"] = covering
+        run(self.repo, "git", "fetch", "-q", "origin")
+        run(self.repo, "git", "checkout", "-q", "-B", branch or "opt-in", "origin/main")
+        (self.repo / "engineering.json").write_text(json.dumps(config))
+        run(self.repo, "git", "add", "engineering.json")
+        run(self.repo, "git", "commit", "-qm", "Opt in")
+        if not branch: run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+
+    def test_a_passing_hook_lands_and_was_told_what_git_tells_it(self):
+        tip = self.commit("a", "a")
+        before = run(self.repo, "git", "rev-parse", "origin/main")
+        [identifier] = self.add("a")
+        self.hook("exit 0")
+        self.work()
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual(self.gates(), 1)
+        landed = self.state(identifier)["landedAs"]
+        self.assertEqual(run(self.repo, "git", "log", "-1", "--format=%T", landed),
+                         run(self.repo, "git", "log", "-1", "--format=%T", tip))
+        self.assertEqual(self.runs(), [f"origin {self.origin} HEAD {landed} refs/heads/main {before}"])
+
+    def test_no_hook_lands(self):
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        self.work()
+        self.assertEqual(self.state(identifier)["state"], "landed")
+
+    def test_a_hook_tracked_under_a_relative_hooks_path_runs_from_the_tested_commit(self):
+        self.hook(f'grep -q marker hooks/pre-push && touch "{self.base}/saw-tree"', self.repo / "hooks")
+        with (self.repo / "hooks/pre-push").open("a") as file: file.write("# marker\n")
+        run(self.repo, "git", "add", "hooks")
+        run(self.repo, "git", "commit", "-qm", "Track the hook")
+        run(self.repo, "git", "push", "-q", "--no-verify", "origin", "HEAD:main")
+        run(self.repo, "git", "config", "core.hooksPath", "hooks")
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        self.work()
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual(len(self.runs()), 1)
+        self.assertTrue((self.base / "saw-tree").exists())
+
+    def test_the_hook_runs_before_any_connection(self):
+        """The drop on 2026-10-31 came from a connection held open through the hook's wait."""
+        order = self.base / "order"
+        wrapper = self.base / "receive-pack"
+        wrapper.write_text(f'#!/bin/sh\necho connect >> "{order}"\nexec git-receive-pack "$@"\n')
+        wrapper.chmod(0o755)
+        run(self.repo, "git", "config", "remote.origin.receivepack", str(wrapper))
+        self.hook(f'echo hook >> "{order}"')
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        self.work()
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual(order.read_text().split(), ["hook", "connect"])
+
+    def test_a_hook_refusal_holds_after_one_run_and_names_its_log(self):
+        self.hook("echo the reason >&2\nexit 1")
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        self.assertEqual(self.work(), 1)
+        self.assertEqual(self.state(identifier)["state"], "queued")
+        self.assertNotIn("a", self.main_files())
+        self.assertEqual(len(self.runs()), 1)
+        held = mq.Queue(self.repo).held()
+        self.assertIn("refused", held)
+        self.assertNotIn("the reason", held)
+        self.assertIn("the reason", Path(held.split("see ")[1].split(";")[0]).read_text())
+
+    def test_no_verdict_from_the_hook_tries_it_again_without_another_gate(self):
+        for status in (3, 75, 78):
+            with self.subTest(status=status):
+                self.ran.unlink(missing_ok=True)
+                self.hook(f'[ "$(wc -l < "{self.ran}")" -gt 1 ] && exit 0\nexit {status}')
+                gates = self.gates()
+                self.commit(f"a{status}", f"a{status}")
+                [identifier] = self.add(f"a{status}")
+                self.assertEqual(self.work(), 0)
+                self.assertEqual(self.state(identifier)["state"], "landed")
+                self.assertEqual(len(self.runs()), 2)
+                self.assertEqual(self.gates(), gates + 1)
+
+    def test_a_hook_that_keeps_giving_no_verdict_holds_and_blames_nobody(self):
+        self.hook("exit 75")
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        self.assertEqual(self.work(), 1)
+        self.assertEqual(self.state(identifier)["state"], "queued")
+        self.assertEqual(len(self.runs()), 2)
+        self.assertEqual(self.gates(), 1)
+        self.assertIn("no verdict, exit 75", mq.Queue(self.repo).held())
+
+    def test_a_dropped_connection_does_not_run_the_hook_again(self):
+        self.hook("exit 0")
+        count = self.origin / "attempts"
+        receive = self.origin / "hooks/pre-receive"
+        receive.write_text(f'#!/bin/sh\n[ -e "{count}" ] && exit 0\ntouch "{count}"\n'
+                           'echo "fatal: the remote end hung up unexpectedly" >&2\nexit 1\n')
+        receive.chmod(0o755)
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        self.work()
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual(len(self.runs()), 1)
+
+    def test_a_carried_over_commit_is_a_new_commit_and_runs_the_hook_again(self):
+        outside = self.base / "outside"
+        run(self.base, "git", "clone", "-q", str(self.origin), str(outside))
+        (outside / "records").mkdir()
+        (outside / "records/one.json").write_text("{}")
+        run(outside, "git", "add", "records")
+        run(outside, "git", "commit", "-qm", "A record")
+        self.hook(f'[ "$(wc -l < "{self.ran}")" -gt 1 ] && exit 0\n'
+                  f'unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE\ngit -C "{outside}" push -q origin HEAD:main\nexit 0')
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        self.work()
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual(self.gates(), 1)
+        first, second = [line.split()[3] for line in self.runs()]
+        self.assertNotEqual(first, second)
+        self.assertEqual(second, self.state(identifier)["landedAs"])
+        self.assertLessEqual({"a", "records"}, self.main_files())
+
+    def test_main_opting_in_replaces_the_hook_and_says_so(self):
+        self.opt_in({"gate": "all the hook runs"})
+        self.hook("exit 1")
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        said = []
+        with patch.object(mq.Worker, "say", lambda worker, words: said.append(words)): self.work()
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual(self.runs(), [])
+        self.assertTrue(any("hookCoveredBy says gate" in words for words in said), said)
+
+    def test_a_covering_lane_that_fails_still_stops_the_commit(self):
+        self.opt_in({"gate": "all the hook runs"})
+        self.hook("exit 0")
+        self.commit("bad", "bad")
+        [identifier] = self.add("bad")
+        self.work()
+        self.assertEqual(self.state(identifier)["state"], "failed")
+        self.assertNotIn("bad", self.main_files())
+
+    def test_a_branch_cannot_opt_itself_out_of_the_hook(self):
+        self.opt_in({"gate": "all the hook runs"}, branch="sneaks")
+        self.hook("exit 1")
+        [identifier] = self.add("sneaks")
+        self.assertEqual(self.work(), 1)
+        self.assertEqual(self.state(identifier)["state"], "queued")
+        self.assertEqual(len(self.runs()), 1)
+
+    def test_the_commit_that_first_names_the_lanes_cannot_opt_out_either(self):
+        config = json.loads((self.repo / "engineering.json").read_text())
+        config["lanes"]["checks"] = config["lanes"].pop("gate")
+        (self.repo / "engineering.json").write_text(json.dumps(config))
+        run(self.repo, "git", "add", "engineering.json")
+        run(self.repo, "git", "commit", "-qm", "No gate lane yet")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        run(self.repo, "git", "checkout", "-q", "-B", "name", "origin/main")
+        config["queue"].update(lanes=["checks"], hookCoveredBy={"checks": "all the hook runs"})
+        (self.repo / "engineering.json").write_text(json.dumps(config))
+        run(self.repo, "git", "add", "engineering.json")
+        run(self.repo, "git", "commit", "-qm", "Name the lanes")
+        self.hook("exit 1")
+        [identifier] = self.add("name")
+        self.assertEqual(self.work(), 1)
+        self.assertEqual(self.state(identifier)["state"], "queued")
+        self.assertEqual(len(self.runs()), 1)
+
+    def test_the_opt_in_must_name_lanes_the_queue_runs_and_what_they_cover(self):
+        config = json.loads((self.repo / "engineering.json").read_text())
+        config["lanes"]["other"] = {"command": ["true"]}
+        for bad in ({"other": "not a queue lane"}, {"absent": "no such lane"}, {"gate": ""}, {"gate": "  "}, {"gate": 1},
+                    {}, ["gate"], "gate"):
+            with self.subTest(bad=bad):
+                (self.repo / "engineering.json").write_text(json.dumps({**config, "queue": {"hookCoveredBy": bad}}))
+                with self.assertRaisesRegex(ValueError, "hookCoveredBy"): self.config()
+        for queue in ({"hookCoveredBy": {"gate": "the default lane"}},
+                      {"lanes": ["other"], "hookCoveredBy": {"other": "a named lane"}}):
+            (self.repo / "engineering.json").write_text(json.dumps({**config, "queue": queue}))
+            self.assertEqual(self.config()["queue"], queue)
+        # A named list replaces the default gate lane.
+        (self.repo / "engineering.json").write_text(json.dumps(
+            {**config, "queue": {"lanes": ["other"], "hookCoveredBy": {"gate": "not run"}}}))
+        with self.assertRaisesRegex(ValueError, "hookCoveredBy"): self.config()
+
+
 class Refusals(Fixture):
     def test_pull_request_projects_are_refused(self):
         with self.assertRaisesRegex(ValueError, "pull request"):
