@@ -430,8 +430,8 @@ def main(argv=None):
     commands.add_parser("simulator-tests", help="build a scheme's tests once and run them on several members of the "
         "project's simulator pool side by side: eng simulator-tests --scheme S --runtime R --device T --device T; "
         "-h for the rest")
-    commands.add_parser("simulator-pool", help="list, take, release or prune members of the project's simulator "
-        "pool under device-record reservations: eng simulator-pool list|take|release|prune; -h for the rest")
+    commands.add_parser("simulator-pool", help="list, take, release, prune or reap members of the project's simulator "
+        "pool under device-record reservations: eng simulator-pool list|take|release|prune|reap; -h for the rest")
     commands.add_parser("unittest", help="run a unittest suite's modules in processes of their own, side by side: "
         "eng unittest [-s START] [-p PATTERN] [-j JOBS] [-v]; eng unittest -h for the rest")
     commands.add_parser("xctest", help="build a Swift package's tests once and run its XCTest classes in xctest "

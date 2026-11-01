@@ -52,6 +52,7 @@ import time
 from . import devices, disk, offload_host, processes
 from .config import TOOLKIT_ROOT
 from .resources import BUSY, FREE_WAIT
+from .simulators import pool as simulator_pool
 
 # The SSH destinations tried in turn when neither --host nor VOCARO_OFFLOAD_HOST names one: aliases the
 # owner defines in ~/.ssh/config, so no machine's name is written here. build-host, which the owner
@@ -1037,8 +1038,8 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
         # before any work is sent: a connection to the second Mac can take seconds of its own. It has
         # each repository name the commits its checkouts hold, which the pushes then need not send.
         attempt, moment = asleep(), time.monotonic()
-        prepared = ssh(host, f"{prepare} || exit $?\n{census_command(repositories)} || true", stdin=subprocess.DEVNULL,
-                       capture_output=True, text=True)
+        prepared = ssh(host, f"{prepare} || exit $?\n{census_command(repositories, reap_request(root))} || true",
+                       stdin=subprocess.DEVNULL, capture_output=True, text=True)
         preparation["seconds"]["connection"] = round(time.monotonic() - moment, 3)
         # ssh's own failures, a name that does not resolve among them, exit 255. Nothing is sent yet.
         if prepared.returncode == 255: raise ssh_failure(host, prepared.stderr, attempt)
@@ -1047,6 +1048,8 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
                                 f"{last_line(prepared.stderr) or 'no output'}",
                                 f"make ~/{ROOT} writable there and install the Xcode this Mac uses, with its license "
                                 "accepted and its first launch run (guides/shared-host.md, Setting up the second Mac)")
+        for line in reap_lines(host, final_object(prepared).get("reap"), listing=False):
+            print(f"remote: {line}", file=sys.stderr, flush=True)
         for line in leftover_lines(host, *read_census(prepared)):
             print(f"remote: {line}", file=sys.stderr, flush=True)
         answered = final_object(prepared)
@@ -1914,12 +1917,21 @@ def survey(host, developer):
     return ask(host, {"toolchain": developer})
 
 
-def census_command(advertise=None):
+def reap_request(root):
+    """What a dispatch from root asks of offload_host.reap: the project's pool, besides those the second
+    Mac's checkouts name."""
+    pool = simulator_pool.configured(root)
+    return {"pools": [pool] if isinstance(pool, str) and pool else []}
+
+
+def census_command(advertise=None, reap=None):
     """The second Mac's command that prints offload_host.leftovers, the census of what runs left
     running there, as its last line; with advertise, paths of repositories relative to the home
     there, it has each name the commits its checkouts hold, and says which, and its Git's version
-    (offload_host.advertise)."""
-    request = {"leftovers": ROOT, **({"advertise": list(advertise)} if advertise else {})}
+    (offload_host.advertise); with reap, offload_host.reap's arguments, it first shuts down the stale pool
+    simulators the census finds, and says which."""
+    request = {"leftovers": ROOT, **({"advertise": list(advertise)} if advertise else {}),
+               **({"reap": reap} if reap is not None else {})}
     return shlex.join(["python3", "-c", Path(offload_host.__file__).read_text(), json.dumps(request)])
 
 
@@ -1950,6 +1962,40 @@ def leftover_census(host):
     return read_census(found)
 
 
+def reap_there(host, request):
+    """offload_host.reap's report from the second Mac, by the census's connection. A failure of any kind is
+    the report's problem: nothing there was stopped that it does not name."""
+    empty = {"stopped": [], "failed": [], "skipped": [], "eligible": [], "kept": [], "dryRun": request.get("dry_run")}
+    try:
+        found = ssh(host, census_command(reap=request), stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                    timeout=CENSUS_TIMEOUT + offload_host.REAP_SECONDS)
+    except subprocess.TimeoutExpired:
+        return {**empty, "problem": f"it did not answer in {CENSUS_TIMEOUT + offload_host.REAP_SECONDS}s"}
+    except OSError as error:
+        return {**empty, "problem": str(error)}
+    report = final_object(found).get("reap")
+    if isinstance(report, dict): return report
+    return {**empty, "problem": f"exit {found.returncode}: {last_line(found.stderr) or 'no output'}"}
+
+
+def reap_lines(where, report, listing=True):
+    """What is said of offload_host.reap's report for a Mac: each stop, failure and problem, and with
+    listing, what it found and left running, as `eng simulator-pool reap` prints them. Nothing when it found nothing."""
+    if not isinstance(report, dict): return []
+    item_line = lambda item: f"{item['name']} ({item['udid']}), PID {item['pid']}"
+    lines = [f"on {where}, stopped {item_line(item)}: {item['reason']} ({offload_host.REAP_LOG}; "
+             f"{LEFTOVER_GUIDE})" for item in report.get("stopped", [])]
+    lines += [f"on {where}, failed to stop {item_line(item)}, which is not tried again in this run: {item['error']}"
+              for item in report.get("failed", [])]
+    lines += [f"on {where}, did not stop {item_line(item)}: {item['hold']}" for item in report.get("skipped", [])]
+    if report.get("problem"):
+        lines.append(f"on {where}, stopped no further simulator: {report['problem']}")
+    if listing:
+        lines += [f"on {where}, would stop {item_line(item)}: {item['reason']}" for item in report.get("eligible", [])]
+        lines += [f"on {where}, keeps {item_line(item)}: {item['hold']}" for item in report.get("kept", [])]
+    return lines
+
+
 def device_users(host, udid, since):
     """What on the second Mac may still use the physical device a run there was given, since the
     epoch time since, as lines to show; none when nothing does (offload_host.device_users). A second
@@ -1978,7 +2024,8 @@ def leftover_lines(host, census, missing):
     rows = census["leftovers"]
     if rows:
         lines.append(f"{host} runs {len(rows)} process{'es' if len(rows) > 1 else ''} left over from runs, which no "
-                     f"live run or admission there accounts for. Nothing was stopped; tell the owner ({LEFTOVER_GUIDE}):")
+                     f"live run or admission there accounts for. These were not stopped; tell the owner, unless a stale pool "
+                     f"simulator among them is `eng simulator-pool reap`'s to stop ({LEFTOVER_GUIDE}):")
     for row in rows:
         written = row.get("written")
         rate = f", {disk.human(written / row['seconds'])}/s since it started" if written and row.get("seconds") else ""

@@ -15,7 +15,8 @@ instead of a plan, it prints the Mac's Xcodes, simulator runtimes and device rec
 adds one read from standard input, for `eng remote setup --runtimes`; given `{"leftovers": ROOT}`,
 it lists the processes left over from runs there, which `eng remote` prints before it sends work,
 and with `"advertise"` names as refs the commits the named repositories' checkouts hold, so that
-the push that follows sends only what they lack;
+the push that follows sends only what they lack, and with `"reap"` first shuts down the stale pool
+simulators that census finds (reap);
 given `{"device": ...}`, what there may still use a physical device a run was given, for
 `devices recover`; given `{"keychain": PATH}`, the Mac's name and whether that keychain file is
 there, for `eng keychain recover`; given `{"keepUnlocked": ...}`, at the owner's terminal, it asks for
@@ -24,8 +25,9 @@ keep-unlocked`; given `{"foreground": true}`, what the Mac lacks for foreground 
 SSH and who holds its mac-foreground, for `eng remote foreground`.
 """
 import base64
+import contextlib
 import ctypes
-from datetime import datetime
+from datetime import datetime, timezone
 import fcntl
 import getpass
 import json
@@ -96,6 +98,20 @@ NO_BYTECODE = {"PYTHONDONTWRITEBYTECODE": "1"}
 # these a push sends the commit's whole history (vocaro-engineering#67).
 CACHE = "refs/vocaro/checkouts/"
 COMMIT = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
+
+# Seconds a pool simulator's launchd_sim must have run before reap may shut it down.
+REAP_AFTER = 2 * 60 * 60
+# Seconds one reap may take, which bounds what it adds to a dispatch; seconds it must have left to start
+# another stop; seconds the check before a stop may hold the device record's lock, under the 30 another
+# session's change waits for it (devices.Record); and seconds it waits for that lock.
+REAP_SECONDS, REAP_STOP_SECONDS, REAP_CHECK_SECONDS, REAP_LOCK_SECONDS = 60, 20, 20, 5
+# The durable log of its stops, beside the admission log, whose audit reads only admissions.
+REAP_LOG = "simulator-reaps.jsonl"
+# A simulator's own launchd_sim, as ps prints it.
+LAUNCHD_SIM = re.compile(r"(?:\S*/)?launchd_sim\s")
+# What follows a pool's name in a member's: LABEL N, as simulators/pool.py names one.
+MEMBER = re.compile(r".+ [1-9][0-9]*")
+SIMULATORS = ("xcrun", "simctl", "list", "devices", "-j")
 
 _output = threading.Lock()
 _stop = threading.Event()
@@ -537,11 +553,11 @@ def disk_writes(pid):
     return usage.logicalWrites
 
 
-def listing(command):
+def listing(command, timeout=60):
     """A command's standard output whatever its status, or None when it cannot run: lsof exits 1
     when it finds nothing, or when a process it looked at has ended."""
     try:
-        return subprocess.run(command, capture_output=True, text=True, timeout=60).stdout
+        return subprocess.run(command, capture_output=True, text=True, timeout=timeout).stdout
     except (OSError, subprocess.SubprocessError):
         return None
 
@@ -592,11 +608,16 @@ def guard_owners():
                        if isinstance(owner, dict) and isinstance(owner.get("start"), str)])
 
 
+def admission_directory():
+    """Where the admission log is: a HEAVY_SLOT_DIR namespace's own, else in the account's durable state."""
+    return Path(os.environ["HEAVY_SLOT_DIR"]) if os.environ.get("HEAVY_SLOT_DIR") else \
+        Path(pwd.getpwuid(os.getuid()).pw_dir) / ADMISSION_STATE
+
+
 def unended():
     """(PID, when it was admitted, in seconds since the epoch) of each admission the admission log
     records without an end: one still held, or one SIGKILL ended."""
-    directory = Path(os.environ["HEAVY_SLOT_DIR"]) if os.environ.get("HEAVY_SLOT_DIR") else \
-        Path(pwd.getpwuid(os.getuid()).pw_dir) / ADMISSION_STATE
+    directory = admission_directory()
     admitted, ended = {}, set()
     for name in ADMISSION_LOGS:
         try: lines = (directory / name).read_bytes().splitlines()
@@ -834,6 +855,257 @@ def device_users(request, listed=listing, written=disk_writes):
     return {**census, "leftovers": later, "naming": naming}
 
 
+class ReapProblem(RuntimeError):
+    """What reap could not read or do, which leaves the simulator running."""
+
+
+def start_shutdown(udid):
+    """`xcrun simctl shutdown UDID` started: the only change reap makes to a simulator."""
+    return subprocess.Popen(["xcrun", "simctl", "shutdown", udid], stdin=subprocess.DEVNULL,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+
+
+def known_pools(root):
+    """The simulator pools that the projects' checkouts under root name in engineering.json."""
+    found = set()
+    for path in (Path.home() / root / "checkouts").glob("*/*/*/engineering.json"):
+        try: name = json.loads(path.read_text()).get("simulatorPool")
+        except (OSError, ValueError, AttributeError): continue
+        if isinstance(name, str) and name: found.add(name)
+    return found
+
+
+def pool_of(name, pools):
+    """The pool whose member a simulator's name makes it, or None."""
+    return next((pool for pool in sorted(pools) if name.startswith(pool + " ") and MEMBER.fullmatch(name[len(pool) + 1:])), None)
+
+
+def device_entries():
+    """The device record's entries by key. A record that cannot be read as a whole raises, because
+    any entry in it may hold the simulator; none yet holds nothing."""
+    path = record_path()
+    try:
+        record = json.loads(path.read_text())
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as error:
+        raise ReapProblem(f"the device record {path} could not be read ({error})") from None
+    entries = record.get("devices") if isinstance(record, dict) and record.get("vocaroDeviceHandoff") == 1 else None
+    if not isinstance(entries, dict) or not all(isinstance(entry, dict) for entry in entries.values()):
+        raise ReapProblem(f"{path} is no version 1 device record")
+    return entries
+
+
+def require_admissions():
+    """Raise unless the guard and the admission log can be read, which the census otherwise reads as
+    no admission at all. Neither exists until something is admitted."""
+    guard = Path(os.environ.get("SW_GATE_LOCK_FILE", GATE_LOCK) + ".warm-push-guard")
+    try:
+        state = json.loads(guard.read_text())
+        if not isinstance(state, dict) or state.get("vocaroEngineering") != 1 or not isinstance(state.get("owners"), dict):
+            raise ValueError("it is no guard")
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError) as error:
+        raise ReapProblem(f"the admission guard {guard} could not be read ({error})") from None
+    for name in ADMISSION_LOGS:
+        try: (admission_directory() / name).read_bytes()
+        except FileNotFoundError: continue
+        except OSError as error:
+            raise ReapProblem(f"the admission log could not be read ({error})") from None
+
+
+def reservation_hold(key, entry, table):
+    """Why a record entry keeps its simulator running, or None, and what a reservation that does not
+    says of itself. A recorded process is live while its PID runs with its recorded start. An entry
+    that records none, or none that can be read, or that is marked uncertain, may be live: only a
+    process known to be gone, or a PID with another start, shows that it is not."""
+    if entry.get("uncertain") or entry.get("state") == "restoration-unverified":
+        return f"its reservation {key} is uncertain, kept for recovery", None
+    if entry.get("state") == "released" and not entry.get("activeRun"): return None, None
+    due = entry.get("expectedReleaseBy")
+    if due is not None:
+        # A session's `simulator-pool take` ends when it prints the UDID, so until its release is due
+        # the session's word holds the member, whatever became of that process.
+        try: ends = datetime.fromisoformat(str(due).replace("Z", "+00:00")).timestamp()
+        except (ValueError, OverflowError, OSError):
+            return f"its reservation {key} records an expected release that cannot be read", None
+        if ends > time.time(): return f"its reservation {key} is not due for release until {due}", None
+    recorded = ([entry[HOLDER]] if HOLDER in entry else [])
+    if entry.get("activeRun"):
+        recorded.append({"pid": entry.get("hostProcessIdentifier"), "start": entry.get("hostProcessStart")})
+    owned = entry.get("ownedProcesses") or []
+    recorded += owned if isinstance(owned, list) else [owned]
+    if not recorded: return f"its reservation {key} records no process, so it may be live", None
+    for item in recorded:
+        pid = item.get("pid") if isinstance(item, dict) else None
+        if type(pid) is not int or pid <= 0:
+            return f"its reservation {key} records a process that cannot be read", None
+        if pid not in table: continue
+        start = item.get("start")
+        if not isinstance(start, str):
+            return f"its reservation {key} records PID {pid}, which runs, with no start to compare", None
+        if " ".join(start.split()) == table[pid]["start"]:
+            return f"its reservation {key} is live: PID {pid} still runs", None
+    return None, f"reservation {key}'s recorded process is gone, and its entry stays for its owner or recovery"
+
+
+def observe(root, pools, listed):
+    """One look at the simulators the census lists as left over: for each launchd_sim by UDID, its
+    PID, start, age, name and reason, and hold, why it must keep running, or None. Nothing here
+    lists simctl's devices unless the census finds a simulator. Anything unread raises."""
+    answers = {}
+
+    def seen(command):
+        # One listing of each kind per look, so that every condition reads the same moment.
+        key = tuple(command)
+        if key not in answers: answers[key] = listed(command)
+        return answers[key]
+
+    census = leftovers(root, seen, lambda pid: None)
+    if "error" in census: raise ReapProblem(census["error"])
+    if census["unchecked"]: raise ReapProblem("the census could not read " + "; ".join(census["unchecked"]))
+    require_admissions()
+    rows = [row for row in census["leftovers"] if row.get("simulator") and LAUNCHD_SIM.match(row["command"])]
+    if not rows: return {}
+    table = process_table(seen(["ps", "-axww", "-o", "pid=,ppid=,uid=,lstart=,args="]))
+    try:
+        groups = json.loads(seen(list(SIMULATORS)))["devices"]
+        simulators = {device["udid"].upper(): device for group in groups.values() for device in group}
+    except (TypeError, ValueError, KeyError, AttributeError) as error:
+        raise ReapProblem(f"simctl did not list its devices ({error!r})") from None
+    entries = device_entries()
+    own, uid, found = set(lineage(table, os.getpid())), os.getuid(), {}
+    for row in rows:
+        udid, pid = row["simulator"], row["pid"]
+        device, seconds = simulators.get(udid) or {}, row.get("seconds")
+        name = device.get("name") or "unnamed"
+        reason, hold = None, None
+        keys = [key for key, entry in entries.items() if key == name or str(entry.get("device") or "").upper() == udid]
+        holds = [reservation_hold(key, entries[key], table) for key in keys]
+        naming = [other for other, process in table.items() if process["uid"] == uid and other not in own
+                  and pid not in lineage(table, other) and udid in process["args"].upper()]
+        pool = pool_of(name, pools)
+        if sum(other["simulator"] == udid for other in rows) > 1: hold = "more than one launchd_sim runs for it"
+        elif device.get("state") != "Booted": hold = f"simctl shows it {device.get('state') or 'unlisted'}, not Booted"
+        elif pool is None: hold = "it is no member of a simulator pool"
+        elif naming: hold = f"PID {naming[0]} names its UDID"
+        elif any(item[0] for item in holds): hold = next(item[0] for item in holds if item[0])
+        elif seconds is None: hold = "its launchd_sim's start cannot be read"
+        elif seconds < REAP_AFTER: hold = f"it has run {seconds / 3600:.1f} h, under {REAP_AFTER / 3600:g} h"
+        if hold is None:
+            note = next((item[1] for item in holds if item[1]), None)
+            reason = (f"member of pool {pool}, left over: no live run, admission or process accounts for it, no live "
+                      f"reservation holds it, and it has run {seconds / 3600:.1f} h") + (f"; {note}" if note else "")
+        found[udid] = {"udid": udid, "name": name, "pid": pid, "start": row["start"], "seconds": seconds,
+                       "hold": hold, "reason": reason}
+    return found
+
+
+@contextlib.contextmanager
+def record_lock():
+    """The lock each change of the device record takes (devices.Record), held only for the last check
+    and the start of a stop, so that no reservation lands between them."""
+    path = record_path()
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    descriptor = os.open(path.with_name(path.name + ".lock"), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        began = time.monotonic()
+        while True:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() - began >= REAP_LOCK_SECONDS:
+                    raise ReapProblem(f"the device record stayed locked for {REAP_LOCK_SECONDS}s") from None
+                time.sleep(0.02)
+        yield
+    finally:
+        os.close(descriptor)
+
+
+def log_reap(event, item, **more):
+    """Append one line to the log of stops, which stays small: one stop writes two lines of about 400 bytes."""
+    line = {"time": datetime.now(timezone.utc).isoformat(timespec="seconds"), "event": event,
+            **{key: item[key] for key in ("udid", "name", "pid", "start", "seconds", "reason")}, **more}
+    path = admission_directory() / REAP_LOG
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NONBLOCK, 0o644)
+    try: os.write(descriptor, (json.dumps(line) + "\n").encode())
+    finally: os.close(descriptor)
+
+
+def stop_simulator(item, reader, budget, begin, report):
+    """Check item once more under the device record's lock, and if it is still the same stale simulator,
+    log it and start its one shutdown; then report how that ended. Nothing retries it."""
+    with record_lock():
+        again = observe(report["root"], report["pools"], reader(min(budget(), REAP_CHECK_SECONDS))).get(item["udid"])
+        if again is None or again["hold"] or (again["pid"], again["start"]) != (item["pid"], item["start"]):
+            why = "the census no longer lists it" if again is None else again["hold"] or "another launchd_sim runs for it"
+            report["skipped"].append({**item, "hold": f"it changed before the second check passed: {why}"})
+            return
+        item = again
+        log_reap("stopping", item)
+        process = begin(item["udid"])
+    try:
+        # At least long enough to say something of a stop that started late in the budget.
+        said = process.communicate(timeout=max(budget(), 10))[1]
+    except subprocess.TimeoutExpired:
+        # This ends only xcrun, which this file started, and asks nothing of the simulator.
+        process.kill()
+        with contextlib.suppress(subprocess.TimeoutExpired): process.communicate(timeout=1)
+        report["failed"].append({**item, "error": "simctl shutdown did not finish in time, so its state is unknown"})
+        log_reap("failed", item, error=report["failed"][-1]["error"])
+        return
+    if process.returncode:
+        error = f"simctl shutdown exited {process.returncode}: {(said or '').strip()}"
+        report["failed"].append({**item, "error": error})
+        log_reap("failed", item, error=error)
+        return
+    report["stopped"].append(item)
+    log_reap("stopped", item)
+
+
+def reap(root, pools, dry_run=False, scan=True, listed=None, begin=None, clock=time.monotonic):
+    """Shut down the simulators that are stale: `eng simulator-pool reap`, and before work is sent to the
+    second Mac. One goes only when it is a member of a pool, among pools or, with scan, those the
+    checkouts name; the census lists it left over; nothing naming its UDID runs outside its own processes;
+    the device record holds no live reservation of it; and its launchd_sim has run REAP_AFTER; all
+    checked again immediately before the stop, under the record's lock. It reads and logs, and never
+    erases, deletes or kills. It never raises: whatever it cannot read or do, it says in problem and
+    stops nothing further. It takes about REAP_SECONDS at most; listed and begin are for tests.
+    It answers with stopped, failed, skipped (stale at first, then changed or out of time), eligible
+    (for a dry run) and kept, each with why."""
+    report = {"root": root, "pools": sorted(set(pools)), "dryRun": dry_run, "stopped": [], "failed": [], "skipped": [],
+              "eligible": [], "kept": [], "problem": None}
+    try:
+        deadline = clock() + REAP_SECONDS
+        budget = lambda: max(1, deadline - clock())
+
+        def reader(seconds):
+            # What one look may spend across its commands.
+            if listed: return listed
+            end = clock() + seconds
+            return lambda command: listing(command, max(1, end - clock()))
+
+        if scan: report["pools"] = sorted({*pools, *known_pools(root)})
+        if not report["pools"]: return report
+        found = observe(root, report["pools"], reader(min(budget(), 60)))
+        report["kept"] = [item for item in found.values() if item["hold"]]
+        stale = [item for item in found.values() if not item["hold"]]
+        if dry_run:
+            report["eligible"] = stale
+            return report
+        for item in stale:
+            if deadline - clock() < REAP_STOP_SECONDS:
+                report["skipped"].append({**item, "hold": f"this reap's {REAP_SECONDS}s were used up"})
+                continue
+            stop_simulator(item, reader, budget, begin or start_shutdown, report)
+    except Exception as error:
+        report["problem"] = f"{type(error).__name__}: {error}" if not isinstance(error, ReapProblem) else str(error)
+    return report
+
+
 def advertise(repository):
     """Name each commit that a checkout of repository holds as CACHE + COMMIT, and remove every other
     ref under CACHE, so that the next push to repository sends only what its checkouts lack. The refs
@@ -872,9 +1144,11 @@ def answer(request):
     if "keychain" in request: return keychain(request["keychain"])
     if "foreground" in request: return foreground()
     if "leftovers" in request or "device" in request:
+        reaped = reap(request["leftovers"], **request["reap"]) if "reap" in request else None
         # A census that fails says why: it must never stop the work it is printed before.
         try: found = leftovers(request["leftovers"]) if "leftovers" in request else device_users(request["device"])
         except Exception as error: found = {"error": f"{type(error).__name__}: {error}"}
+        if reaped is not None: found["reap"] = reaped
         if request.get("advertise"):
             found.update(git=output(["git", "--version"]),
                          advertised={path: advertise(Path.home() / path) for path in request["advertise"]})

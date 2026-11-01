@@ -1310,10 +1310,63 @@ flushed or not, and one to a file deleted since, but none to a pipe or `/dev/nul
 call's disk I/O count left out a buffered 4 MiB that the process never flushed itself (macOS
 27.0, October 2026). The search took 0.3 s for 1,174 processes on the build host (2026-10-27).
 
-The search only reports. A search that fails says why, and the work is sent all the same. Tell
-the owner what it lists, with its PIDs and their writes: whether to stop a process is the
+The search itself only reports. A search that fails says why, and the work is sent all the same.
+Tell the owner what it lists, with its PIDs and their writes: whether to stop a process is the
 owner's decision, as is any other change to a shared host
-([shared resources](../agents/core.md#shared-resources)).
+([shared resources](../agents/core.md#shared-resources)). The one exception is a stale pool
+simulator, below.
+
+### Stale pool simulators
+
+On 2026-10-31 a `Pagepour Duo 1` simulator, a `launchd_sim` with about 320 descendants, sat booted
+on the second Mac for 22 hours waiting for that decision. The owner has decided it for this one
+case: any session may run `python3 scripts/eng simulator-pool reap`, without asking, and eng runs it
+in the connection that lists leftovers before work is sent to the second Mac. It runs
+`xcrun simctl shutdown UDID` on a simulator only when all of these hold:
+
+1. It is a member of a project's pool: named `POOL LABEL N`, for a pool named by the project, or by a
+   project's main checkout here or its checkout on the second Mac.
+2. The search above lists its `launchd_sim` as left over, and no process of the account outside that
+   simulator's own names its UDID.
+3. The device record holds no live reservation of it, by its name or its UDID. A reservation whose
+   recorded process (`holderProcess`, an active run's process, `--own` processes) is gone, or whose
+   PID now has another start, is not live, and its entry stays for its owner or
+   [recovery](#device-reservations). One that records no process, is marked uncertain, or has not
+   reached its expected release counts as live.
+4. Its `launchd_sim` has run for 2 hours (`offload_host.REAP_AFTER`), and all of this is still so at
+   a second check immediately before the stop.
+
+**A pool member with no live reservation goes after 2 hours, whoever booted it.** That includes one the
+owner booted by hand. To keep one running, boot a simulator outside the pool, or reserve it with
+`python3 -m vocaro_engineering.devices reserve`, which records no process and so counts as live. A
+session that took a member with `eng simulator-pool take`, whose process ends when it prints the
+UDID, holds a reservation whose process is gone, which counts as live until its expected release;
+to work past that, it records a running process of its own (`devices update KEY --own PID`).
+
+It erases, deletes and kills nothing, and other leftovers, such as `DTServiceHub`, stay report-only.
+It stops only what it is sure of: a census with anything unread, an unreadable device record or
+admission guard, or a `simctl` that does not list its devices stops nothing and says so. A failed shutdown is
+reported and not tried again in that run; the next run may try it once more. Each stop
+is printed, for the session to report, and logged in the Mac's own
+`~/Library/Application Support/vocaro-engineering/simulator-reaps.jsonl` as a `stopping` line written
+first, then `stopped` or `failed`, with its UDID, name, `launchd_sim` PID and start, age in seconds, and
+reason. A log that cannot be written stops nothing. The log is a sibling of the
+[admission log](#admission-log), whose audit reads only admissions.
+
+With no options the command acts on this Mac and then, over the search's connection, on the second
+Mac. `--dry-run` only says what it would stop and what it keeps, and why; `--here` leaves out the
+second Mac; `--pool NAME` looks at that pool alone. It exits 1 when anything failed, a second Mac that
+cannot be reached among them. Before a dispatch it is bounded: one reap spends at most 60 seconds
+(`REAP_SECONDS`), starts no stop with under 20 left, and leaves the rest for the next one; every problem
+is printed and the work is sent all the same. With nothing listed it adds only `ps` and `lsof`.
+
+A reap cannot race a run that takes the device, by three things. `Pool.take` only takes a member that
+`simctl` shows shut down, and reserves it, under the record's lock, before it erases and boots it, so a
+reap never finds a take's fresh boot unreserved. A stale simulator has run for 2 hours, which a booting
+member has not, and `take` passes over a booted one. And the second check runs holding the device
+record's lock, which every reservation takes, until the shutdown has started, so no reservation lands
+between the check and the stop. It holds that lock for at most 20 seconds, under the 30 another change
+waits, and gives up with nothing stopped when it cannot have the lock in 5.
 
 ## Device reservations
 

@@ -6,9 +6,10 @@ still shut down and erases it, which keeps its UDID and the simulator tool's app
 member of the kind is free, the next one is created under the naming scheme, taking the lowest free
 number, and stays in the pool. Pruning deletes a member unused for 14 days, never the
 lowest-numbered of its kind, and records the deletion (guides/simulator-testing.md, Reserved
-simulator pool). Nothing else here deletes or renames a simulator.
+simulator pool). Nothing else here deletes or renames a simulator. Reaping shuts down a member left
+booted past its time (offload_host.reap; guides/shared-host.md, Processes left over from runs).
 
-    eng simulator-pool list|take|release|prune [--pool NAME] ...; eng simulator-pool -h for the rest
+    eng simulator-pool list|take|release|prune|reap [--pool NAME] ...; eng simulator-pool -h for the rest
 """
 import argparse
 import contextlib
@@ -403,6 +404,24 @@ def stopped(number, _frame):
     raise Stopped(number)
 
 
+def reap_command(pool, project, *, dry_run, here):
+    """`eng simulator-pool reap`: on this Mac and, unless here, on the second Mac. pool alone when it is named,
+    otherwise every pool the project and the checkouts each Mac can see name. It exits 1 when anything failed."""
+    # remote and disk import this module.
+    from .. import disk, offload_host, remote
+    if pool: pools = [pool]
+    else:
+        pools = sorted({*disk.pools(Path.home() / "Development"), *filter(None, [configured(project or Path.cwd())])})
+    request = {"pools": pools, "dry_run": dry_run, "scan": not pool}
+    reports = [("this Mac", offload_host.reap(remote.ROOT, **request))]
+    host = None if here else remote.configured()
+    if host: reports.append((host, remote.reap_there(host, request)))
+    for where, report in reports:
+        lines = remote.reap_lines(where, report)
+        print("\n".join(lines) if lines else f"on {where}, no stale pool simulator")
+    return 1 if any(report.get("problem") or report.get("failed") for _, report in reports) else 0
+
+
 def main(argv, project=None):
     parser = argparse.ArgumentParser(prog="eng simulator-pool", description=__doc__.split("\n\n")[0])
     parser.add_argument("--pool", help="the pool's name, the start of every member's (default: the project's "
@@ -424,7 +443,17 @@ def main(argv, project=None):
     release.add_argument("--outcome", default="Released")
     prune = commands.add_parser("prune", help="delete members unused for 14 days, never the lowest of a kind")
     prune.add_argument("udids", nargs="*", metavar="UDID", help="only these members")
+    reap = commands.add_parser("reap", help="shut down members left booted for 2 hours that nothing accounts for, on "
+                               "this Mac and the second Mac (guides/shared-host.md, Processes left over from runs)")
+    reap.add_argument("--dry-run", action="store_true", help="say what it would stop and keep, and stop nothing")
+    reap.add_argument("--here", action="store_true", help="only this Mac")
     args = parser.parse_args(argv)
+    if args.action == "reap":
+        try:
+            return reap_command(args.pool, project, dry_run=args.dry_run, here=args.here)
+        except (OSError, ValueError, RuntimeError) as error:
+            print(f"eng simulator-pool: {error}; nothing further was stopped", file=sys.stderr)
+            return 1
     name = args.pool or configured(project or Path.cwd()) or configured(Path.cwd())
     owner = args.owner or default_owner()
     if not name:

@@ -788,7 +788,7 @@ class RemoteTests(unittest.TestCase):
             status, output, error = self.eng("remote", "run", "check")
             self.assertEqual(status, 0, output + error)
             self.assertIn("remote: fake runs 1 process left over from runs, which no live run or admission there "
-                          "accounts for. Nothing was stopped; tell the owner", error)
+                          "accounts for. These were not stopped; tell the owner", error)
             self.assertIn(f"remote:   PID {left[0]}, parent 1, started {row['start']}, has written", error)
             self.assertLess(error.index("left over from runs"), error.index("check at"))
             self.assertEqual(git(self.checkout(1), "rev-parse", "HEAD"), self.commit)
@@ -896,6 +896,19 @@ class RemoteTests(unittest.TestCase):
         status, output, error = self.eng("remote", "run", "check")
         self.assertEqual(status, 0, output + error)
         self.assertNotIn("left over", error)
+
+    def test_a_reap_before_a_dispatch_is_printed_and_its_problem_stops_no_run(self):
+        item = {"name": "Example Duo 1", "udid": "U", "pid": 7, "reason": "it has run 3.0 h"}
+        for report, said in [({"stopped": [item], "problem": None}, "remote: on fake, stopped Example Duo 1 (U), PID 7: it has run 3.0 h"),
+                             ({"stopped": [], "problem": "the device record could not be read"},
+                              "remote: on fake, stopped no further simulator: the device record could not be read")]:
+            answer = shlex.quote(json.dumps({"leftovers": [], "reap": report}))
+            with self.subTest(said), patch.object(remote, "census_command", return_value=f"echo {answer}") as census:
+                status, output, error = self.eng("remote", "run", "check")
+            self.assertEqual(status, 0, output + error)
+            self.assertIn(said, error)
+            self.assertEqual(census.call_args[0][1], {"pools": []})
+            self.assertIn(f"check at {self.commit[:12]}", error)
 
     def test_the_second_macs_credential_file_is_the_runs_only_git_credential_helper(self):
         log = self.project / ".build/engineering/remote/helpers/run.log"
