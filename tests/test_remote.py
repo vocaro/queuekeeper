@@ -21,6 +21,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 from vocaro_engineering import cli, config, devices, evidence, offload_host, processes, release, remote, resources
+import host_isolation
 
 # remote.advertised as it is, before any test patches it.
 ADVERTISED = remote.advertised

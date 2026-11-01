@@ -12,6 +12,7 @@ from unittest import mock
 import uuid
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 from vocaro_engineering import devices, evidence, offload_host, resources
+import host_isolation
 from vocaro_engineering.simulators import pool as simulator_pool
 
 IPHONE = "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro"

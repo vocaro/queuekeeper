@@ -13,6 +13,7 @@ from unittest import mock
 import uuid
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 from vocaro_engineering import devices, evidence
+import host_isolation
 
 ENG = Path(__file__).resolve().parents[1] / "scripts/eng"
 

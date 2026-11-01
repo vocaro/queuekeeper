@@ -19,6 +19,7 @@ from unittest.mock import patch
 SOURCE = Path(__file__).resolve().parents[1] / "src/python"
 sys.path.insert(0, str(SOURCE))
 from vocaro_engineering import cli, devices, resources
+import host_isolation
 from vocaro_engineering.resources import process_start
 
 # Well-formed, invented identifiers: hardware UDIDs and a simulator UUID.

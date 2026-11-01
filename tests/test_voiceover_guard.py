@@ -6,6 +6,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 from vocaro_engineering import processes
+import host_isolation
 from vocaro_engineering.voiceover import guard
 
 

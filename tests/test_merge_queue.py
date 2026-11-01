@@ -12,6 +12,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src/python"))
 from vocaro_engineering import config as configuration, merge_queue as mq
+import host_isolation
 
 # Fails when any tracked file is named bad*, passes otherwise; touches a counter so a test can count gates.
 LANE = """import pathlib, sys

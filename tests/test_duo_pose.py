@@ -9,6 +9,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src/python"))
 from vocaro_engineering.simulators import duo_pose
+import host_isolation
 
 UDID = "0C1F2E3D-4B5A-6978-8796-A5B4C3D2E1F0"
 # Stands in for xcrun: the SDK queries, clang writing its -o file, and simctl spawn, which refuses

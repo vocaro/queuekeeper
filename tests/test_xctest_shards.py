@@ -12,6 +12,7 @@ from unittest.mock import patch
 SOURCE = Path(__file__).resolve().parents[1] / "src/python"
 sys.path.insert(0, str(SOURCE))
 from vocaro_engineering import cli, evidence, xctest_shards
+import host_isolation
 
 # Stand-ins for swift and xcrun that answer as the toolchain does (Swift 6.4, Xcode 27.2), so these
 # tests build nothing. tests/fixtures/XCTestShards is the real toolchain's positive control.

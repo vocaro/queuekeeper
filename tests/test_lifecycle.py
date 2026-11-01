@@ -4,6 +4,7 @@ import unittest
 import uuid
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 from vocaro_engineering.simulators.lifecycle import reserved
+import host_isolation
 
 
 class LifecycleTests(unittest.TestCase):

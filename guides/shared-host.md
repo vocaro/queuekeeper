@@ -2010,7 +2010,11 @@ Three kinds of marker coexist, and they are reclaimed differently:
   record lists what supervision saw of that owner's commands. It is
   `/tmp/studywright-gate-suite.lock.warm-push-guard`, named after StudyWright's former host gate
   lock, or `SW_GATE_LOCK_FILE` with `.warm-push-guard` appended: StudyWright's gate checks an
-  inherited admission against that path, and tests isolate admission by redirecting it. Admission takes no lock at the gate lock's own path, and a file
+  inherited admission against that path, and tests isolate admission by redirecting it. This
+  repository's test modules each import `tests/host_isolation.py`, which redirects it and
+  `HEAVY_SLOT_DIR` for the whole process, and `test_host_isolation` fails a module that does not
+  ([vocaro-engineering#88](https://github.com/vocaro/vocaro-engineering/issues/88)): an entry a
+  test leaked had no process record, and it blocked the host's heavy work until removed by hand. Admission takes no lock at the gate lock's own path, and a file
   left there holds nothing back. The guard is never reclaimed by PID or by time, because a dead
   owner's compilers or simulator children can outlive it. Admission refuses to proceed while any
   owner is dead or uncertain, or while the guard is unreadable or not in admission's format,

@@ -11,6 +11,7 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 from vocaro_engineering import cli, evidence, host_context, keychain, offload_host, remote
+import host_isolation
 
 # Invented Mac names: the workstation that sends work, the second Mac, and a third Mac neither knows.
 WORKSTATION, SECOND, THIRD = "workstation-mac", "second-mac-host", "third-mac"

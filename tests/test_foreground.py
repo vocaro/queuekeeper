@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 from vocaro_engineering import cli, config, devices, foreground, offload_host, remote
+import host_isolation
 from vocaro_engineering.voiceover import state as voiceover_state
 
 SECOND = "Trevors-MacBook-Pro-715"

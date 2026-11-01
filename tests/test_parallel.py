@@ -12,6 +12,7 @@ from unittest.mock import patch
 SOURCE = Path(__file__).resolve().parents[1] / "src/python"
 sys.path.insert(0, str(SOURCE))
 from vocaro_engineering import cli, evidence, resources
+import host_isolation
 
 ENG = Path(__file__).resolve().parents[1] / "scripts/eng"
 

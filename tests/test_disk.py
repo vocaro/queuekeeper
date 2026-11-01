@@ -14,6 +14,7 @@ import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 from vocaro_engineering import cli, devices, disk, landing
+import host_isolation
 
 LATER = time.time() + 10 * 86400  # every fixture looks idle from here
 
