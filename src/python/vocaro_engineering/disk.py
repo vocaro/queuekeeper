@@ -656,8 +656,8 @@ def archives(host, sizes):
 
 
 def evidence_archives(host, sizes):
-    """Durable evidence kept here when a second Mac could hold it. Offloading only copies and verifies;
-    deleting the local copy afterwards stays the owner's."""
+    """Durable evidence kept here when a second Mac could hold it. Offloading deletes it here only once
+    every file verified there."""
     if not host.offload_host or not host.development.is_dir(): return []
     command = ["python3", "scripts/eng", "evidence", "offload"]
     folders = [(path, [*command, str(path)]) for path in sorted(host.development.iterdir())
@@ -669,7 +669,7 @@ def evidence_archives(host, sizes):
                 for main in main_checkouts(host) for path in [main / ".build/session-evidence"]
                 if path.is_dir() and not path.is_symlink()]
     return [Item("evidence", str(path), OWNER, f"durable evidence; it belongs on {host.offload_host} "
-                 "(guides/evidence.md): offload it, then the owner deletes this copy",
+                 "(guides/evidence.md): offloading moves it, deleting it here once it verified there",
                  sizes.of(path), offload, host.now - last_activity(path)) for path, offload in folders]
 
 

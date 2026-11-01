@@ -1200,7 +1200,7 @@ not measure.
 - **Evidence archives**, on a Mac that offloads to a second one. A folder in `~/Development` named
   `*-evidence`, `*-measurements` or `session-evidence` that is not a Git checkout, and a main
   checkout's `.build/session-evidence`, are owner items. Their command is
-  `eng evidence offload`, which copies and verifies but deletes nothing
+  `eng evidence offload`, which deletes a folder here only once every file verified there
   ([evidence](evidence.md#public-and-private-destinations)). A main checkout's archive goes to
   `Development/session-evidence/<project>` there.
 
