@@ -1151,16 +1151,18 @@ nothing:
 python3 scripts/eng disk
 ```
 
-It covers the whole host, whichever project runs it, and measures only the items it lists. It
-prints each item's size, the reason for its status and the exact command that would remove it.
+It covers every project in `~/Development`, whichever project runs it, and reads only what those
+projects leave on the host: their worktrees, the simulators and runtimes their tests use, the
+DerivedData and SwiftPM caches their builds fill, and the scratch builds and results their
+sessions leave in `/private/tmp` and the user temporary directory. It never surveys the home
+directory or the rest of the volume. It prints each item's size, the reason for its status and
+the exact command that would remove it.
 A **candidate** is proven unowned by the rules below. An **owner** item shows no sign of a
 session using it, but only the owner can say whether it is still wanted: Xcode's default
-simulators, a runtime no device uses, archives, test results, a directory no repository has
-registered and a worktree outside the session directories. Everything else is **kept**: in use,
-owned, of unclear ownership, or holding work or evidence. `--map` also reads the whole home
-directory, `/private/tmp` and `/Applications` with `du`, which takes several minutes, to list
-the largest other directories, never candidates, and to say how much of the used space it could
-not measure.
+simulators, a runtime no device uses, test results, a directory no repository has registered and
+a worktree outside the session directories. Everything else is **kept**: in use, owned, of
+unclear ownership, or holding work or evidence. `eng disk --dry-run` lists only the candidates,
+with their commands: exactly what `--delete` would offer to remove.
 
 - **In use.** One `lsof` and `ps` census of the account's processes is taken first. A path is in
   use when a process's working directory, an open file or a path in its arguments lies inside
@@ -1199,8 +1201,9 @@ not measure.
   hand and is kept. A runtime no device uses is an owner item: a pool may create its members on
   it next.
 - **Build caches.** A DerivedData folder in `~/Library/Developer/Xcode` (named
-  `NAME-<28 letters>`) is a candidate when its `info.plist` names a workspace that no longer
-  exists; one without `info.plist` is an owner item, and the folders every build shares
+  `NAME-<28 letters>`) whose `info.plist` names a workspace in `~/Development` or a temporary
+  directory is a candidate when that workspace no longer exists; a folder for any other
+  workspace is not the projects' and is not listed. One without `info.plist` is an owner item, and the folders every build shares
   (`ModuleCache.noindex`, `SDKExplicitPrecompiledModules`) are kept. A SwiftPM scratch (a
   directory holding `workspace-state.json`) or an Xcode `-derivedDataPath` directory under
   `/private/tmp` or the user temporary directory is a candidate when it lies outside every
@@ -1234,9 +1237,9 @@ archive held 314 GiB, linked worktrees 150 GiB (nearly all in use or unlanded), 
 simulators 79 GiB (one default iPhone 23 GiB), simulator runtimes 38 GiB, and applications,
 another account and a virtual machine about 300 GiB together. About 600 GiB lay in folders the
 shell cannot read, which macOS privacy protection hides (`~/.Trash`, Mail, Messages, app
-containers), and in system data; `--map` reports that remainder rather than guessing at
-it. The inventory found 37 GiB of candidates, almost all derived data in finished sessions'
-scratchpads, and 76 GiB of owner items, 48 GiB of them Xcode's default simulators.
+containers), and in system data. The inventory found 37 GiB of candidates, almost all derived
+data in finished sessions' scratchpads, and 76 GiB of owner items, 48 GiB of them Xcode's
+default simulators.
 
 A free-space reading taken after a write failed with `ENOSPC` says nothing about the moment it
 failed. From 2026-10-24 to 2026-10-26 the build host's data volume filled completely ten times,

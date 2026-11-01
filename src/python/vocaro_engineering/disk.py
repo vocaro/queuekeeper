@@ -1,7 +1,8 @@
 """Inventory of disk space on the shared host, and removal only of what nobody owns.
 
-`eng disk` measures linked worktrees, simulators and their runtimes, build caches, results and
-the other large directories, and classifies each item:
+`eng disk` measures what the projects in ~/Development leave on the host: their linked worktrees,
+simulators and runtimes, the build caches their builds fill, and the scratch builds and results
+their sessions leave in the temporary directories. It reads nothing else, and classifies each item:
 
 - candidate: the rules prove that no session's live work is in it. `--delete` removes it after
   the owner confirms its category on a terminal, checking it again first.
@@ -9,7 +10,8 @@ the other large directories, and classifies each item:
   wanted. The command that would remove it is printed; `--delete` never runs it.
 - kept: it is in use, owned, of unclear ownership, or holds work or evidence.
 
-Without --delete nothing is changed. guides/shared-host.md § Reclaiming disk space has the rules.
+`--dry-run` lists what `--delete` would remove. Without --delete nothing is changed.
+guides/shared-host.md § Reclaiming disk space has the rules.
 """
 import argparse
 from dataclasses import asdict, dataclass, field
@@ -35,9 +37,8 @@ CANDIDATE, OWNER, KEPT = "candidate", "owner", "kept"
 STATUS_ORDER = {CANDIDATE: 0, OWNER: 1, KEPT: 2}
 CATEGORIES = {"worktree": "Linked worktrees", "simulator": "Simulators", "runtime": "Simulator runtimes",
               "derived-data": "Xcode DerivedData", "scratch": "Scratch builds outside checkouts",
-              "swiftpm-cache": "SwiftPM shared cache", "archive": "Xcode archives",
-              "results": "Result directories", "evidence": "Evidence archives (offload to the second Mac)",
-              "other": "Other large directories (never candidates)"}
+              "swiftpm-cache": "SwiftPM shared cache", "results": "Result directories",
+              "evidence": "Evidence archives (offload to the second Mac)"}
 UUID = re.compile(r"[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}", re.IGNORECASE)
 SEPARATORS = re.compile(r"[\s=,;\"']+")
 # Xcode names a workspace's DerivedData folder NAME-<28 letters>; other folders are shared caches.
@@ -201,7 +202,6 @@ class Host:
     records: dict = field(default_factory=dict)
     temp_roots: list = field(default_factory=list)
     session_scratch: Path = None
-    map_roots: list = field(default_factory=list)
     pools: frozenset = frozenset()
     offload_host: str = None  # the second Mac, when this Mac sends work to one
     run: object = subprocess.run
@@ -218,7 +218,7 @@ class Host:
                    runtimes=_json(run, "runtime", "list", "-j"), default_devices=default_devices(devices),
                    device_directory=devices, records=device_records(), temp_roots=temp,
                    session_scratch=Path(f"/private/tmp/claude-{os.getuid()}"),
-                   map_roots=expanded_roots(home, user_temp), pools=pools(development or home / "Development", run),
+                   pools=pools(development or home / "Development", run),
                    offload_host=second_mac(), run=run)
 
 
@@ -273,15 +273,6 @@ def device_records():
         try: records[str(path)] = path.read_text(errors="replace")
         except OSError: records[str(path)] = None
     return records
-
-
-def expanded_roots(home, user_temp):
-    """Directories whose children the map of large directories lists separately."""
-    roots = [home, home / "Development", home / "Library", home / "Library/Developer", home / "Library/Caches",
-             home / "Library/Application Support", Path("/private/tmp"), Path(f"/private/tmp/claude-{os.getuid()}"),
-             Path("/Users"), Path("/Applications")]
-    leaves = [Path("/Library"), Path("/opt")] + ([Path(os.path.realpath(user_temp))] if user_temp else [])
-    return [(root, None) for root in roots] + [(leaf, "leaf") for leaf in leaves]
 
 
 def git_environment():
@@ -609,6 +600,11 @@ def cache_item(host, usage, sizes, category, path, reason):
                 ["rm", "-rf", "--", str(path)], idle)
 
 
+def project_workspace(host, workspace):
+    """Whether a workspace lies where the projects build: their checkouts or the temporary roots."""
+    return any(within(workspace, root) for root in [host.development, *(root for root, _ in host.temp_roots)])
+
+
 def derived_data(host, usage, sizes):
     root = host.home / "Library/Developer/Xcode/DerivedData"
     if not root.is_dir(): return []
@@ -623,6 +619,7 @@ def derived_data(host, usage, sizes):
                 workspace = plistlib.load(handle).get("WorkspacePath")
         except (OSError, plistlib.InvalidFileException, ValueError):
             workspace = None
+        if workspace and not project_workspace(host, workspace): continue  # another workspace's build
         if not workspace:
             use = usage.of(child)
             held = ", ".join(sorted(entry.name for entry in child.iterdir())[:5]) or "nothing"
@@ -646,13 +643,6 @@ def swiftpm_cache(host, usage, sizes):
             items += [cache_item(host, usage, sizes, "swiftpm-cache", child, what + " SwiftPM fetches again when needed")
                       for child in sorted(directory.iterdir()) if child.is_dir() and not child.is_symlink()]
     return items
-
-
-def archives(host, sizes):
-    root = host.home / "Library/Developer/Xcode/Archives"
-    return [Item("archive", str(archive), OWNER, "an archived build; its dSYMs symbolicate that build's crash reports",
-                 sizes.of(archive), ["rm", "-rf", "--", str(archive)], host.now - last_activity(archive))
-            for archive in sorted(root.glob("*/*.xcarchive"))] if root.is_dir() else []
 
 
 def evidence_archives(host, sizes):
@@ -756,29 +746,6 @@ def temp_items(host, usage, sizes):
     return items
 
 
-def large_directories(host, sizes, items, limit=25):
-    """The largest directories besides the items above, from the primed sizes. Never candidates."""
-    expanded = {canonical(root) for root, kind in host.map_roots if kind is None}
-    leaves = []
-    for root, kind in host.map_roots:
-        if kind == "leaf": leaves.append(str(root))
-        elif os.path.isdir(root):
-            try: leaves += [str(child) for child in Path(root).iterdir() if child.is_dir() and not child.is_symlink()
-                            and canonical(child) not in expanded]
-            except OSError: pass
-    measured, entries = 0, []
-    for leaf in leaves:
-        size = sizes.known.get(canonical(leaf))
-        if size is None: continue
-        measured += size
-        inner = sum(item.size for item in items if item.category != "runtime" and within(item.location or item.path, leaf))
-        note = "another account's home" if within(leaf, "/Users") and not within(leaf, host.home) else ""
-        if (Path(leaf) / ".git").is_dir(): note = "a project's main checkout, without the worktrees above"
-        entries.append(Item("other", leaf, KEPT, note or "reported for the owner", max(size - inner, 0)))
-    entries.sort(key=lambda item: -item.size)
-    return entries[:limit], measured
-
-
 def inventory(host, sizes, categories=None):
     usage = Usage(host.processes)
     wanted = set(categories or CATEGORIES)
@@ -788,7 +755,6 @@ def inventory(host, sizes, categories=None):
     if "runtime" in wanted: items += runtimes(host)
     if "derived-data" in wanted: items += derived_data(host, usage, sizes)
     if "swiftpm-cache" in wanted: items += swiftpm_cache(host, usage, sizes)
-    if "archive" in wanted: items += archives(host, sizes)
     if "evidence" in wanted: items += evidence_archives(host, sizes)
     if wanted & {"scratch", "results"}: items += [item for item in temp_items(host, usage, sizes) if item.category in wanted]
     return items
@@ -796,20 +762,20 @@ def inventory(host, sizes, categories=None):
 
 # Reporting
 
-def report(items, others, volume, measured, unreadable, min_size, out=print):
+def report(items, volume, unreadable, min_size, out=print):
     if volume:
         total, used, free = volume
         out(f"Data volume {DATA_VOLUME}: {human(used)} used of {human(total)}, {human(free)} free.")
     out("This inventory changed nothing. Sizes are allocated sizes from du; APFS clones share blocks, "
         "so removing one can free less.\n")
     for category, title in CATEGORIES.items():
-        group = sorted((item for item in (others if category == "other" else items) if item.category == category),
+        group = sorted((item for item in items if item.category == category),
                        key=lambda item: (STATUS_ORDER[item.status], -item.size))
         if not group: continue
         out(title)
         hidden = {}
         for item in group:
-            if item.size < min_size and category != "other":
+            if item.size < min_size:
                 count, size = hidden.get(item.status, (0, 0))
                 hidden[item.status] = (count + 1, size + item.size)
                 continue
@@ -819,14 +785,6 @@ def report(items, others, volume, measured, unreadable, min_size, out=print):
         for status, (count, size) in hidden.items():
             out(f"  {status:9} {human(size):>10}  and {count} smaller items")
         out("")
-    if volume and measured is None:
-        out("Run with --map to list the largest other directories and account for the rest of the volume.")
-    elif volume:
-        missing = volume[1] - measured
-        out(f"Measured {human(measured)} of the {human(volume[1])} used. The other {human(max(missing, 0))} is in "
-            "places this account cannot read or that were not scanned: folders macOS privacy protection "
-            "hides from the shell (such as ~/.Trash, ~/Library/Mail and Messages), other accounts' private "
-            "folders, system data and files deleted while still open.")
     if unreadable:
         roots = {}
         for path in unreadable:
@@ -837,6 +795,22 @@ def report(items, others, volume, measured, unreadable, min_size, out=print):
     for status, label in ((CANDIDATE, "Candidates"), (OWNER, "Owner decisions"), (KEPT, "Kept")):
         chosen = [item for item in items if item.status == status]
         out(f"{label}: {len(chosen)} items, {human(sum(item.size for item in chosen))}.")
+
+
+def plan(items, out=print):
+    """What --delete would remove, category by category: every candidate and its command."""
+    chosen = [item for item in items if item.status == CANDIDATE]
+    out("Dry run: nothing was removed. `eng disk --delete` would offer to remove these, asking once for each "
+        "category and checking each item again first.\n")
+    for category, title in CATEGORIES.items():
+        group = sorted((item for item in chosen if item.category == category), key=lambda item: -item.size)
+        if not group: continue
+        out(f"{title}: {len(group)} items, {human(sum(item.size for item in group))}")
+        for item in group:
+            out(f"  {human(item.size):>10}  {item.path}")
+            out(f"            $ {shlex.join(item.command)}")
+        out("")
+    out(f"In all: {len(chosen)} items, {human(sum(item.size for item in chosen))}.")
 
 
 # Removal
@@ -885,15 +859,14 @@ def delete(items, fresh, ledger, ask=input, out=print, run=subprocess.run, termi
 
 
 def add_arguments(parser):
-    parser.add_argument("--delete", action="store_true", help="remove candidates after confirming each category")
+    action = parser.add_mutually_exclusive_group()
+    action.add_argument("--dry-run", action="store_true", help="list only what --delete would remove, and remove nothing")
+    action.add_argument("--delete", action="store_true", help="remove candidates after confirming each category")
     parser.add_argument("--json", action="store_true", help="print the items as JSON")
     parser.add_argument("--min-idle-hours", type=float, default=24.0,
                         help="how long a candidate must have been unchanged (default 24)")
     parser.add_argument("--min-size-mb", type=float, default=100.0, help="list smaller items only as totals")
     parser.add_argument("--development", type=Path, help="directory holding the projects (default ~/Development)")
-    parser.add_argument("--map", action="store_true",
-                        help="also scan the whole home directory, /private/tmp and /Applications for the largest "
-                             "other directories and an account of the volume (several minutes)")
 
 
 def prime_items(host, sizes):
@@ -903,40 +876,27 @@ def prime_items(host, sizes):
         if root: sizes.prime(root, depth)
 
 
-def prime_map(host, sizes):
-    """One du pass over the home directory and the other large roots, for the map of the volume."""
-    for root, depth in ((host.home, 5), (Path("/private/tmp"), 5), (Path("/Applications"), 1)):
-        sizes.prime(root, depth)
-    for root, kind in host.map_roots:
-        if kind == "leaf": sizes.prime(root, 1)
-    if Path("/Users").is_dir():
-        for other in Path("/Users").iterdir():
-            if other.is_dir() and not within(other, host.home): sizes.prime(other, 0)
-
-
 def execute(args, run=subprocess.run, out=print):
     def collect(categories=None, measure=True):
         host = Host.current(args.min_idle_hours * 3600, args.development, run)
         sizes = Sizes(run, measure)
-        if measure and args.map:
-            print("Measuring sizes; --map reads the whole home directory and can take several minutes.", file=sys.stderr)
-            prime_map(host, sizes)
-        elif measure:
-            print("Measuring the items listed; --map also maps the rest of the volume.", file=sys.stderr)
+        if measure:
+            print("Measuring the items listed.", file=sys.stderr)
             prime_items(host, sizes)
         return host, sizes, inventory(host, sizes, categories)
     host, sizes, items = collect()
-    others, measured = large_directories(host, sizes, items) if args.map else ([], None)
-    if measured is not None: measured += sum(item.size for item in items if item.category == "runtime")
     try:
         usage = shutil.disk_usage(DATA_VOLUME)
         volume = (usage.total, usage.used, usage.free)
     except OSError:
         volume = None
+    if args.dry_run: items = [item for item in items if item.status == CANDIDATE]
     if args.json:
-        out(json.dumps({"volume": volume, "measured": measured, "items": [asdict(item) for item in items + others]}, indent=2))
+        out(json.dumps({"volume": volume, "items": [asdict(item) for item in items]}, indent=2))
+    elif args.dry_run:
+        plan(items, out)
     else:
-        report(items, others, volume, measured, sizes.unreadable, args.min_size_mb * 1024 * 1024, out)
+        report(items, volume, sizes.unreadable, args.min_size_mb * 1024 * 1024, out)
     if args.delete:
         delete(items, lambda category: collect([category], measure=False)[2], ledger_path(host.home), out=out, run=run)
     return 0

@@ -330,13 +330,15 @@ class CacheTests(Fixture):
 
     def test_derived_data_is_a_candidate_only_when_its_workspace_is_gone_and_nothing_uses_it(self):
         present = self.derived("Present-" + "a" * 28, self.main)
-        gone = self.derived("Gone-" + "b" * 28, self.root / "removed/Project.xcodeproj")
-        used = self.derived("Used-" + "c" * 28, self.root / "removed/Other.xcodeproj")
+        gone = self.derived("Gone-" + "b" * 28, self.main / ".claude/worktrees/removed/Project.xcodeproj")
+        used = self.derived("Used-" + "c" * 28, self.main / ".claude/worktrees/removed/Other.xcodeproj")
         unknown = self.derived("Unknown-" + "d" * 28)
         shared = self.derived("ModuleCache.noindex")
         explicit = self.derived("SDKExplicitPrecompiledModules")
+        session = self.derived("Session-" + "e" * 28, self.root / "tmp/claude-501/session/App.xcodeproj")
         process = disk.Process(5, "XCBBuildService", paths=(str(used / "Build/Products/x.o"),))
-        items = self.items(self.host([process]), ["derived-data"])
+        items = self.items(self.host([process], temp_roots=[(self.root / "tmp", 6)]), ["derived-data"])
+        self.assertEqual(items[str(session)].status, disk.CANDIDATE)
         self.assertEqual(items[str(gone)].status, disk.CANDIDATE)
         self.assertEqual(items[str(gone)].command, ["rm", "-rf", "--", str(gone)])
         self.assertEqual(items[str(present)].status, disk.KEPT)
@@ -345,6 +347,15 @@ class CacheTests(Fixture):
         self.assertIn("holds Build", items[str(unknown)].reason)
         self.assertEqual(items[str(shared)].status, disk.KEPT)
         self.assertEqual(items[str(explicit)].status, disk.KEPT)
+
+    def test_derived_data_of_a_workspace_outside_the_projects_is_not_listed(self):
+        mine = self.derived("Mine-" + "a" * 28, self.root / "Desktop/Personal.xcodeproj")
+        gone = self.derived("Gone-" + "b" * 28, self.root / "removed/Personal.xcodeproj")
+        project = self.derived("Project-" + "c" * 28, self.development / "Removed/Project.xcodeproj")
+        items = self.items(self.host(temp_roots=[(self.root / "tmp", 6)]), ["derived-data"])
+        self.assertNotIn(str(mine), items)
+        self.assertNotIn(str(gone), items)
+        self.assertEqual(items[str(project)].status, disk.CANDIDATE)
 
     def test_scratch_outside_checkouts_is_a_candidate_and_results_are_owner_decisions(self):
         temp = self.root / "tmp"
@@ -504,15 +515,28 @@ class CommandTests(Fixture):
             self.assertEqual(cli.main(["--project", str(self.root), "disk", *arguments]), 0)
         return {(str(call.args[1]), call.args[2]) for call in prime.call_args_list}, output.getvalue()
 
-    def test_only_map_scans_the_whole_home_directory(self):
+    def test_eng_disk_reads_only_the_projects_locations(self):
         scanned, text = self.run_disk()
-        self.assertNotIn((str(self.home), 5), scanned)
-        self.assertIn((str(self.home / "Library/Developer/Xcode/DerivedData"), 1), scanned)
-        self.assertIn("Run with --map", text)
-        self.assertNotIn("Measured", text)
-        scanned, text = self.run_disk("--map")
-        self.assertIn((str(self.home), 5), scanned)
-        self.assertIn("Measured", text)
+        self.assertEqual(scanned, {(str(self.home / "Library/Developer/Xcode/DerivedData"), 1),
+                                   (str(self.home / "Library/Caches/org.swift.swiftpm"), 2)})
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(StringIO()):
+            self.run_disk("--map")
+
+    def test_a_dry_run_lists_only_what_delete_would_remove(self):
+        landed, unlanded = self.worktree("landed"), self.worktree("unlanded")
+        commit(unlanded, "work", "unlanded\n")
+        outside = self.worktree("outside", parent=self.root / "elsewhere")
+        _, text = self.run_disk("--dry-run")
+        self.assertIn("Dry run: nothing was removed", text)
+        self.assertIn(f"$ git -C {self.main} worktree remove {landed}", text)
+        self.assertNotIn(str(unlanded), text)
+        self.assertNotIn(str(outside), text)  # an owner decision --delete never runs
+        self.assertIn("In all: 1 items", text)
+        self.assertTrue(landed.exists())
+        _, text = self.run_disk("--dry-run", "--json")
+        self.assertEqual([item["path"] for item in json.loads(text)["items"]], [str(landed)])
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(StringIO()):
+            self.run_disk("--dry-run", "--delete")
 
 
 if __name__ == "__main__":
