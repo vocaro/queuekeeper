@@ -72,6 +72,10 @@ DEFERRED = "physicalDevicesRecordedOn"
 NAMED_PHYSICAL = re.compile(rf"(?<![0-9A-F])(?:{PHYSICAL.pattern})(?![0-9A-F])")
 # Seconds Git has to say whether forty hex digits name one of its objects, such as a commit.
 OBJECT_TIMEOUT = 10
+# What comes, in uppercased text, right before forty hex digits that name a code-signing identity by its
+# SHA-1, as codesign, xcodebuild and security take one: a setting or option whose name ends in IDENTITY,
+# such as CODE_SIGN_IDENTITY=, SIGN_IDENTITY= or --identity, or codesign's -s or --sign (#86).
+SIGNING = re.compile(r"""(?:IDENTITY=|--IDENTITY\s+|\bCODESIGN\b[^;&|\n]*?\s(?:-S|--SIGN)(?:=|\s+))["']?\Z""")
 # The reservations a run on the second Mac may use, held in the sending Mac's record, as JSON:
 # {"record": MAC, "devices": {KEY: UDID}, "until": the reservations' end}. offload_host.py sets it for the run.
 LEASE = "VOCARO_DEVICE_LEASE"
@@ -739,10 +743,12 @@ def git_object(word, root=None):
 def named(words, known=(), root=None):
     """The device identifiers words name, uppercased: every hardware UDID, and each of known that appears.
 
-    Forty hex digits are an older device's UDID or a commit's whole SHA-1, so such a word that the
-    Git of root's checkout knows as an object (git_object) names no device."""
+    Forty hex digits are an older device's UDID, a commit's whole SHA-1 or a code-signing identity's,
+    so such a word that a signing identity's setting or option takes (SIGNING), or that the Git of
+    root's checkout knows as an object (git_object), names no device."""
     text = " ".join(map(str, words)).upper()
-    found = {udid for udid in NAMED_PHYSICAL.findall(text) if len(udid) != 40 or not git_object(udid, root)}
+    found = {match.group() for match in NAMED_PHYSICAL.finditer(text) if len(match.group()) != 40 or not (
+        SIGNING.search(text, 0, match.start()) or git_object(match.group(), root))}
     found.update(udid.upper() for udid in known if isinstance(udid, str) and udid and udid.upper() in text)
     return found
 

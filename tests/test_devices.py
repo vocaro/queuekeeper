@@ -904,6 +904,28 @@ class BoundedRunTests(unittest.TestCase):
         self.assertEqual(code, 0, error)
         self.assertEqual(self.marker.read_text(), "ran")
 
+    def test_a_code_signing_identity_is_no_device_where_a_signing_setting_or_option_takes_it(self):
+        # Invented: a signing identity's SHA-1 and an older device's UDID, both forty hex digits (#86).
+        identity, older = "96DAB4C8A3D308C37BCC5C7E987AB6FE05F16008", "AB12" * 10
+        for words in [["env", f"SIGN_IDENTITY={identity}", "bash", "probe.sh"],
+                      ["xcodebuild", f'CODE_SIGN_IDENTITY="{identity.lower()}"'],
+                      ["codesign", "--force", "-s", identity, "App.app"], ["codesign", f"--sign={identity}"],
+                      ["bash", "-c", f"codesign -f -s '{identity}' App.app"],
+                      ["security", "find-certificate", "--identity", identity]]:
+            with self.subTest(words):
+                self.assertEqual(devices.named(words), set())
+        # Negative controls: the same digits anywhere else, -s outside codesign's command, a shorter
+        # UDID a signing setting names, and a UDID beside a signing identity.
+        for words, udid in [(["echo", identity], identity), (["adb", "-s", identity], identity),
+                            (["echo", "codesign;", "tool", "-s", identity], identity),
+                            ([f"platform=iOS,id={identity}"], identity), (["IDENTITY", identity], identity),
+                            ([f"SIGN_IDENTITY={PHONE}"], PHONE),
+                            (["env", f"SIGN_IDENTITY={identity}", "probe", f"id={older}"], older)]:
+            with self.subTest(words):
+                self.assertEqual(devices.named(words), {udid})
+        # A device the record knows is named wherever it appears.
+        self.assertEqual(devices.named([f"SIGN_IDENTITY={identity}"], [identity.lower()]), {identity})
+
     def test_only_the_holder_with_no_run_active_within_the_owners_approval_may_run(self):
         command = ["--", *self.mark()]
         def refused(message, *arguments, key="iPad", owner="session-a"):

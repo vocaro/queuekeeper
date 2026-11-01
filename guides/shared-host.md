@@ -1517,7 +1517,10 @@ The launcher:
   any case, though not a longer run of hex digits such as a SHA-256, or any device the record
   holds under another key, a simulator among them. Forty hex digits are an older device's UDID
   or a commit's whole SHA-1, so 40 that the current directory's Git knows as an object
-  (`git cat-file -e`) name no device; a device's UDID never is one. It cannot recognize a
+  (`git cat-file -e`) name no device; a device's UDID never is one. Nor do 40 that name a
+  code-signing identity's SHA-1 where a signing setting or option takes them: right after a
+  name ending in `IDENTITY=`, such as `CODE_SIGN_IDENTITY=` or `SIGN_IDENTITY=`, after
+  `--identity`, or after `-s` or `--sign` in a `codesign` command. It cannot recognize a
   device's name or its CoreDevice identifier, so name the device by its UDID;
 - runs the command, supervised, under a bound: the reservation's remaining time, to the earlier
   of its expected release and the approval's end, less 105 seconds for the run's own end
@@ -1612,7 +1615,8 @@ python3 scripts/eng remote run --device iPhone LANE -- ARGUMENTS
   whether or not this record holds its device, so a run on a device goes through a reservation:
   reserve the device here and add `--device KEY`. As in a bounded run, a simulator's UUID, a
   longer run of hex digits such as a SHA-256, and 40 hex digits that the Git of the project's
-  checkout knows as an object, such as a commit's whole hash, name no device, with `--device` or
+  checkout knows as an object, such as a commit's whole hash, or that a signing setting or
+  option takes as a code-signing identity's SHA-1, name no device, with `--device` or
   without it. `eng run` keeps a lane whose arguments name a physical device of this record on
   this Mac, and `eng admit --verify` a command that names any hardware UDID.
 

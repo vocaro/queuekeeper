@@ -77,6 +77,8 @@ exec /bin/sh "$@"
 # Well-formed, invented identifiers: a hardware UDID and a simulator UUID.
 PHONE = "00008130-001A2C3E0C38001C"
 DUO = "5B0E6C51-2D3A-4F7B-9C1E-0A4B8D2F6E13"
+# An invented code-signing identity's SHA-1, forty hex digits as an older device's UDID is.
+IDENTITY = "96DAB4C8A3D308C37BCC5C7E987AB6FE05F16008"
 # A lane that says it has started, then puts its PID in .build/NAME.pid, whole, and waits to be stopped.
 NAP = ("import os, pathlib, sys, time; name = sys.argv[1]; print(name, 'started', flush=True); "
        "partial = pathlib.Path('.build', name + '.partial'); partial.write_text(str(os.getpid())); "
@@ -557,7 +559,10 @@ class RemoteTests(unittest.TestCase):
         for words, udid in [(["admit", "--", sys.executable, "-c", "pass", "id=00008020-0011223344556677"],
                              "00008020-0011223344556677"),
                             (["run", "check", "--", f"platform=iOS,id={older}"], older.upper()),
-                            (["admit", "--", "git", "show", elsewhere], elsewhere.upper())]:
+                            (["admit", "--", "git", "show", elsewhere], elsewhere.upper()),
+                            # A signing identity's setting covers only the digits it takes (#86).
+                            (["admit", "--", "env", f"SIGN_IDENTITY={IDENTITY}", sys.executable, "-c", "pass", older],
+                             older.upper())]:
             with self.subTest(words):
                 status, _output, error = self.eng("remote", *words)
                 self.assertEqual(status, 2)
@@ -573,6 +578,14 @@ class RemoteTests(unittest.TestCase):
                                          "import sys; print('named', *sys.argv[1:])", *named)
         self.assertEqual(status, 0, error)
         self.assertIn(f"named {' '.join(named)}", output)
+        # A code-signing identity's SHA-1, which has an older UDID's shape, where a signing setting or
+        # codesign's option takes it (#86).
+        status, output, error = self.eng(
+            "remote", "admit", "--", "env", f"SIGN_IDENTITY={IDENTITY}", sys.executable, "-c",
+            "import os, sys; print('signed', os.environ['SIGN_IDENTITY'], *sys.argv[1:])",
+            f"CODE_SIGN_IDENTITY={IDENTITY.lower()}", "codesign -f -s", IDENTITY)
+        self.assertEqual(status, 0, error)
+        self.assertIn(f"signed {IDENTITY} CODE_SIGN_IDENTITY={IDENTITY.lower()} codesign -f -s {IDENTITY}", output)
 
     def test_recovering_a_run_sent_here_waits_for_what_on_the_second_mac_names_its_device(self):
         # Its own device, which no other test's processes name, nor another run's of this suite (#80).
