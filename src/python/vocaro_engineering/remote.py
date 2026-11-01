@@ -127,6 +127,19 @@ OFFLINE = re.compile(r"Could not resolve hostname|connect to host \S+ port \d+:|
 # ssh's own lines when it connected and the second Mac, or this Mac's ssh configuration, refused the login.
 LOGIN = re.compile(r"Permission denied|Host key verification failed|Too many authentication failures|"
                    r"REMOTE HOST IDENTIFICATION HAS CHANGED|no matching host key type")
+# ssh's own lines when the name it reached presented another key than the one known_hosts records for it,
+# as when another machine took the second Mac's old .local name.
+OTHER_KEY = re.compile(r"Host key verification failed|REMOTE HOST IDENTIFICATION HAS CHANGED")
+# Seconds the search for a renamed second Mac browses Bonjour for Macs that offer ssh, then gives each
+# one's name to resolve, and at most how many it tries. Answers this Mac's mDNSResponder holds come in
+# under 0.1 s (macOS 27.0.1, 2026-11-01).
+BROWSE_SECONDS, RESOLVE_SECONDS, CANDIDATES = 2, 2, 8
+# What `dns-sd -B _ssh._tcp local.` prints of a Mac that offers ssh, and `dns-sd -L` of where it is.
+BROWSED = re.compile(r"^\S+\s+Add\s+\d+\s+\d+\s+(\S+)\s+_ssh\._tcp\.\s+(.+?)\s*$")
+RESOLVED = re.compile(r"can be reached at (\S+?)\.?:(\d+)\b")
+# The second Mac found under a new .local name in this process, by destination: what it was renamed
+# from and to, and the name its key is known by (rediscover).
+RENAMED = {}
 # Set by offload_host.py for the work it runs: the name of the Mac that sent it, which a receipt records.
 DISPATCHER = "VOCARO_DISPATCHED_FROM"
 # Seconds `eng doctor` waits for the second Mac to report its Xcodes and runtimes.
@@ -230,7 +243,21 @@ def reachable(host, found=None):
     and `ssh HOST true` finishes in its login shell within REACH_SECONDS. found is connection()'s
     measurement, when one was taken already. A host ssh reaches through a proxy is checked by ssh
     alone. Raise Unreachable when it cannot be reached, and Misconfigured when it answers but refuses
-    the login or its login shell fails."""
+    the login or its login shell fails.
+
+    A .local name that does not resolve, or that answers with another key, may be a second Mac that
+    macOS renamed (rediscover): one found under a new name is checked there, and every connection of
+    this process to host then goes to that name."""
+    try:
+        check(host, found)
+    except (Unreachable, Misconfigured) as stop:
+        if isinstance(stop, Misconfigured) and not OTHER_KEY.search(stop.problem): raise
+        RENAMED.pop(host, None)
+        if rediscover(host) is None: raise
+        check(host)
+
+
+def check(host, found=None):
     found = found if found is not None else connection(host, REACH_TIMEOUT)
     if "unresolved" in found:
         # In ssh's own words, so that unreachable() says what a .local name that does not resolve means.
@@ -251,6 +278,99 @@ def reachable(host, found=None):
                             f"{last_line(checked.stderr) or 'no output'}",
                             f"repair the login shell there, which every run uses, until `ssh {host} true` succeeds "
                             "(guides/shared-host.md, Setting up the second Mac)")
+
+
+def moved(host):
+    """The ssh options that reach host under the name rediscover found it renamed to, checking the key
+    known_hosts holds for its old name; none while it keeps its name."""
+    found = RENAMED.get(host)
+    return ["-o", f"HostName={found['to']}", "-o", f"HostKeyAlias={found['keyAlias']}"] if found else []
+
+
+def rediscover(host):
+    """The new .local name of a second Mac that macOS renamed, or None, after saying what it found.
+
+    macOS renames a Mac whose .local name another machine on the network claims, adding or raising a
+    -N suffix, and the old name then resolves to nothing, or to that other machine. The second Mac
+    still offers ssh over Bonjour, under its computer name, so each Mac that does is resolved to its
+    current name and asked, as ssh would ask the old name, to run `true` while presenting the key
+    known_hosts holds for the old name. That key is the second Mac's identity, not the name of either:
+    exactly one Mac presenting it is the second Mac, and RENAMED records it for every later connection
+    of this process. None found, or more than one, leaves the name as it is: a second Mac that is away."""
+    settings = ssh_settings(host)
+    old = (settings.get("hostname") or host).rstrip(".").lower()
+    port = settings.get("port") or "22"
+    if not old.endswith(".local"): return None
+    alias = settings.get("hostkeyalias") or old
+    here = offload_host.mac_name().lower()
+    names = [name for name, offered in advertised() if offered == port and name not in {old, f"{here}.local"}]
+    matches = [name for name in names[:CANDIDATES] if presents(host, name, alias)]
+    if len(matches) != 1:
+        if len(matches) > 1:
+            print(f"eng: {old} does not reach {host}, and {', '.join(matches)} all present its key, so eng chose none",
+                  file=sys.stderr, flush=True)
+        return None
+    RENAMED[host] = {"from": old, "to": matches[0], "keyAlias": alias}
+    print(f"eng: {host} was renamed: {old} no longer reaches it, and {matches[0]}, which presents the key known_hosts "
+          f"holds for {alias}, does, so this run uses {matches[0]}; {renamed_fix(host)}", file=sys.stderr, flush=True)
+    return matches[0]
+
+
+def renamed_fix(host):
+    found = RENAMED[host]
+    return (f"to keep it, set `HostName {found['to']}` under `Host {host}` in ~/.ssh/config, and `HostKeyAlias "
+            f"{found['keyAlias']}` too, so a later rename needs no new known_hosts entry (guides/shared-host.md, "
+            "Setting up the second Mac)")
+
+
+def presents(host, name, alias):
+    """Whether name, reached as host is, logs in while presenting the key known_hosts holds for alias:
+    ssh refuses any other key, and adds none."""
+    command = ["ssh", "-o", f"ConnectTimeout={REACH_TIMEOUT}", "-o", f"HostName={name}", "-o", f"HostKeyAlias={alias}",
+               "-o", "StrictHostKeyChecking=yes", "-o", "UpdateHostKeys=no", "-o", "CheckHostIP=no", *SSH[1:], host,
+               "true"]
+    try:
+        return subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True, env=environment(),
+                              timeout=REACH_SECONDS).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def advertised():
+    """Each name and port that a Mac offering ssh over Bonjour resolves to, in the order browsed."""
+    instances = []
+    for line in watch(["dns-sd", "-B", "_ssh._tcp", "local."], BROWSE_SECONDS):
+        found = BROWSED.match(line)
+        if found and (found.group(2), found.group(1)) not in instances: instances.append((found.group(2), found.group(1)))
+    names = []
+    for instance, domain in instances:
+        for line in watch(["dns-sd", "-L", instance, "_ssh._tcp", domain], RESOLVE_SECONDS, RESOLVED.search):
+            found = RESOLVED.search(line)
+            entry = (found.group(1).lower(), found.group(2)) if found else None
+            if entry and entry not in names: names.append(entry)
+    return names
+
+
+def watch(command, seconds, until=None):
+    """The lines command prints in seconds, or until one of them satisfies until; then it is stopped,
+    since dns-sd browses and resolves until it is."""
+    try:
+        watching = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                    stderr=subprocess.DEVNULL, text=True, errors="replace")
+    except OSError:
+        return []
+    lines, found = queue.Queue(), []
+    threading.Thread(target=lambda: [lines.put(line) for line in watching.stdout], daemon=True).start()
+    deadline = time.monotonic() + seconds
+    try:
+        while (left := deadline - time.monotonic()) > 0:
+            try: found.append(lines.get(timeout=left))
+            except queue.Empty: break
+            if until is not None and until(found[-1]): break
+    finally:
+        watching.kill()
+        watching.wait()
+    return found
 
 
 def last_line(text):
@@ -429,7 +549,7 @@ def login(script):
 
 
 def ssh(host, script, **options):
-    return subprocess.run([*SSH, host, login(script)], env=environment(), **options)
+    return subprocess.run([*SSH, *moved(host), host, login(script)], env=environment(), **options)
 
 
 def send(root, host, repository, commit, advertised=None, sends=None):
@@ -449,7 +569,7 @@ def send(root, host, repository, commit, advertised=None, sends=None):
     "reference already exists". The commit is then there all the same, so that push has sent it.
     A push still running after SEND_TIMEOUT seconds, or when a stop is requested, ends with
     everything it started, and nothing of it enters the second Mac's repository."""
-    variables = {**environment(), "GIT_SSH_COMMAND": shlex.join(SSH)}
+    variables = {**environment(), "GIT_SSH_COMMAND": shlex.join([*SSH, *moved(host)])}
     known = advertised is not None and "commits" in advertised
     have = held(root, advertised["commits"]) if known and advertised["commits"] else []
     record = {"repository": repository, "commit": commit, "pushNegotiate": setting(root, "push.negotiate"),
@@ -962,7 +1082,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     staging.mkdir(parents=True)
     started, slept = time.time(), asleep()
     source = Path(offload_host.__file__).read_text()
-    command = [*SSH, host, login(shlex.join(["python3", "-c", source, json.dumps(plan)]))]
+    command = [*SSH, *moved(host), host, login(shlex.join(["python3", "-c", source, json.dumps(plan)]))]
     lines, result, stopping = queue.Queue(), None, None
     # Whether offload_host.py started there, and the last line of anything else, such as the shell's.
     framed, stray = False, None
@@ -1272,7 +1392,7 @@ def setup(host, formulae, modules, check, runtimes=False):
     wanted = list(dict.fromkeys([*SETUP_FORMULAE, *formulae]))
     if not check:
         # Line by line through this process, so a long brew install shows as it goes.
-        with subprocess.Popen([*SSH, host, login(install_script(wanted))], env=environment(), text=True,
+        with subprocess.Popen([*SSH, *moved(host), host, login(install_script(wanted))], env=environment(), text=True,
                               errors="replace", stdout=subprocess.PIPE, stderr=subprocess.STDOUT) as running:
             for line in running.stdout: print(line, end="", flush=True)
         installed = running.returncode
@@ -1388,7 +1508,7 @@ def send_runtime(host, image, developer, report):
     it. Return None once it is added there, else why not."""
     request = {"receive": {"staging": RUNTIME_STAGING, "build": image["build"], "size": image["sizeBytes"],
                            "developerDir": developer}}
-    command = [*SSH, host, login(shlex.join(["python3", "-c", Path(offload_host.__file__).read_text(),
+    command = [*SSH, *moved(host), host, login(shlex.join(["python3", "-c", Path(offload_host.__file__).read_text(),
                                              json.dumps(request)]))]
     failure = None
     with subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -1422,7 +1542,7 @@ def fetch_runtime(host, image, developer, report):
     """Fetch host's image of a runtime over SSH, then stage and add it here as offload_host.receive does
     there. Return None once it is added here, else why not."""
     # cat needs no login shell, whose profile could write into the image.
-    command = [*SSH, host, shlex.join(["cat", image["file"]])]
+    command = [*SSH, *moved(host), host, shlex.join(["cat", image["file"]])]
     with subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                           env=environment()) as channel:
         try:
@@ -1451,7 +1571,7 @@ def download_runtime(host, step, developer):
     if step["target"] == HERE:
         command, variables = arguments, {**os.environ, "DEVELOPER_DIR": developer}
     else:
-        command = [*SSH, host, login(f"DEVELOPER_DIR={shlex.quote(developer)} {shlex.join(arguments)}")]
+        command = [*SSH, *moved(host), host, login(f"DEVELOPER_DIR={shlex.quote(developer)} {shlex.join(arguments)}")]
         variables = environment()
     with subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                           text=True, errors="replace", env=variables) as running:
@@ -1656,7 +1776,7 @@ class Offer:
 
     def __init__(self, name, instead, send, refused=None):
         self.name, self.instead, self.send, self.refused = name, instead, send, refused
-        self.sent, self.host, self.status, self.busy = {}, None, None, None
+        self.sent, self.host, self.status, self.busy, self.away = {}, None, None, None, None
 
     def attempt(self):
         """Offer the work once: its status there, or Busy, Unreachable or Unavailable raised."""
@@ -1704,18 +1824,25 @@ class Offer:
     def again(self):
         """Offer the work to the second Mac once more, while it was busy: its status when it ran there,
         MISCONFIGURED when the second Mac's configuration stopped it, or None while the second Mac is
-        still busy, and from then on when it can no longer be reached."""
+        still busy or cannot be reached, and from then on when it can no longer take the work. A second
+        Mac that cannot be reached is asked again at the next offer, since one that went offline during a
+        long wait may come back before it ends; away says why it could not be reached, while it cannot."""
         if self.busy is None: return None
         try:
             self.status = self.attempt()
-            self.busy = None
+            self.busy = self.away = None
             return self.status
         except Misconfigured as stop:
             return self.stopped(stop)
         except Busy as busy:
-            self.busy = str(busy)
+            self.busy, self.away = str(busy), None
+        except Unreachable as away:
+            if away.problem != self.away:
+                print(f"eng: {self.name} waits for this Mac, and asks the second Mac again at the next offer: "
+                      f"{away.problem}", file=sys.stderr, flush=True)
+            self.away = self.status = away.problem
         except Unavailable as reason:
-            said = reason.problem if isinstance(reason, Unreachable) else str(reason)
+            said = str(reason)
             print(f"eng: {self.name} waits for this Mac alone: {said}", file=sys.stderr, flush=True)
             self.busy, self.status = None, said
         return None
@@ -1752,9 +1879,10 @@ def overflow(offered, admit, timeout=OVERFLOW_TIMEOUT, once=False):
         if admission is not None: return admission
         if once or time.monotonic() >= deadline:
             print(f"eng: {offered.name} not run: neither Mac admitted it {'now' if once else f'in {timeout:g}s'}"
-                  + (f"; the second Mac is busy: {offered.busy}" if offered.busy else ""), file=sys.stderr, flush=True)
+                  + (f"; the second Mac cannot be reached: {offered.away}" if offered.away
+                     else f"; the second Mac is busy: {offered.busy}" if offered.busy else ""), file=sys.stderr, flush=True)
             return BUSY
-        if offered.busy is not None and offered.busy != said:
+        if offered.busy is not None and offered.away is None and offered.busy != said:
             print(f"eng: {offered.name} waits for whichever Mac admits it first, the second Mac asked again every "
                   f"{OVERFLOW_WAIT_MAX}s or sooner: the second Mac is busy ({offered.busy}), and so is this Mac",
                   file=sys.stderr, flush=True)
@@ -1910,9 +2038,11 @@ def connection(host, timeout=CONNECT_TIMEOUT):
     addresses that name resolves to under its AddressFamily, in the order ssh tries them. Each is
     connected to in turn, as ssh does, for at most timeout seconds, until one answers; ssh tries none
     after that one. A host reached through a proxy is not measured, and unchecked says so; a name that
-    does not resolve is reported in unresolved."""
+    does not resolve is reported in unresolved. A second Mac found renamed is measured under its new
+    name (rediscover)."""
     settings = ssh_settings(host)
-    name, family = settings.get("hostname") or host, settings.get("addressfamily") or "any"
+    name = RENAMED[host]["to"] if host in RENAMED else settings.get("hostname") or host
+    family = settings.get("addressfamily") or "any"
     port = int(settings["port"]) if settings.get("port", "").isdigit() else 22
     found = {"hostname": name, "port": port, "addressFamily": family}
     proxy = next((settings[key] for key in ("proxyjump", "proxycommand") if settings.get(key, "none") != "none"), None)
@@ -2012,6 +2142,9 @@ def compare_hosts():
     here = report["local"] = offload_host.toolchain(developer)
     try:
         reachable(host, reached)
+        if host in RENAMED: report["errors"].append(f"{host} was renamed from {RENAMED[host]['from']} to "
+                                                    f"{RENAMED[host]['to']}, which eng finds again in each run; "
+                                                    f"{renamed_fix(host)}")
     except Unreachable as away:
         report["unchecked"].append(f"{host}, which cannot be reached, so work runs on this Mac until it can: "
                                    f"{away.problem}")

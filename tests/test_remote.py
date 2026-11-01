@@ -22,6 +22,9 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 from vocaro_engineering import cli, config, devices, evidence, offload_host, processes, release, remote, resources
 
+# remote.advertised as it is, before any test patches it.
+ADVERTISED = remote.advertised
+
 # Stands in for ssh: the second Mac is a home directory on this Mac. Like sshd, it runs the
 # command in that home through a shell, and git's own ssh transport reaches it the same way.
 # `ssh -G fake` names this Mac's loopback address and FAKE_PORT, where the test listens as the
@@ -3703,6 +3706,165 @@ class RemoteRuntimeTests(unittest.TestCase):
             file, why = offload_host.image_file(record)
             self.assertIsNone(file, record)
             self.assertTrue(why, record)
+
+
+class RenamedSecondMacTests(unittest.TestCase):
+    """A second Mac that macOS renamed is found again by the key known_hosts holds for its old name."""
+
+    BROWSED = ["Browsing for _ssh._tcp.local.\n",
+               "Timestamp     A/R    Flags  if Domain               Service Type         Instance Name\n",
+               "11:02:14.905  Add        3  30 local.               _ssh._tcp.           Media’s MacBook Pro\n",
+               "11:02:14.906  Add        3  14 local.               _ssh._tcp.           Media’s MacBook Pro\n",
+               "11:02:14.907  Add        2  30 local.               _ssh._tcp.           Studio\n"]
+
+    def setUp(self):
+        remote.RENAMED.clear()
+        self.addCleanup(remote.RENAMED.clear)
+        self.settings = {"hostname": "mac-3.local", "port": "22"}
+        stack = contextlib.ExitStack()
+        self.addCleanup(stack.close)
+        stack.enter_context(patch.object(remote, "ssh_settings", side_effect=lambda host: dict(self.settings)))
+        stack.enter_context(patch.object(offload_host, "mac_name", return_value="Here"))
+        self.error = stack.enter_context(patch("sys.stderr", new_callable=StringIO))
+
+    def test_advertised_resolves_each_browsed_mac_once(self):
+        def watch(command, seconds, until=None):
+            if command[1] == "-B": return self.BROWSED
+            name = {"Media’s MacBook Pro": "Mac-4", "Studio": "Here"}[command[2]]
+            return [f"11:02:22.628  x._ssh._tcp.local. can be reached at {name}.local.:22 (interface 30)\n"]
+        with patch.object(remote, "watch", side_effect=watch) as watched:
+            self.assertEqual(ADVERTISED(), [("mac-4.local", "22"), ("here.local", "22")])
+        # One instance seen on two interfaces is resolved once.
+        self.assertEqual([call.args[0][2] for call in watched.call_args_list[1:]], ["Media’s MacBook Pro", "Studio"])
+        with patch.object(remote, "watch", return_value=[]):
+            self.assertEqual(ADVERTISED(), [])
+
+    def test_watch_stops_the_command_at_its_line_or_its_time(self):
+        started = time.monotonic()
+        found = remote.watch([sys.executable, "-c", "import time\nprint('one', flush=True)\nprint('two', flush=True)\n"
+                                                    "time.sleep(60)"], 10, lambda line: line.startswith("two"))
+        self.assertEqual(found, ["one\n", "two\n"])
+        self.assertEqual(remote.watch([sys.executable, "-c", "import time; time.sleep(60)"], 0.5), [])
+        self.assertLess(time.monotonic() - started, 10)
+        self.assertEqual(remote.watch(["/nonexistent/dns-sd"], 1), [])
+
+    def test_the_one_mac_presenting_the_old_key_is_the_second_mac_under_its_new_name(self):
+        names = [("here.local", "22"), ("mac-3.local", "22"), ("other.local", "22"), ("mac-4.local", "22"),
+                 ("mac-5.local", "2222")]
+        with patch.object(remote, "advertised", return_value=names), \
+                patch.object(remote, "presents", side_effect=lambda host, name, alias: name == "mac-4.local") as asked:
+            self.assertEqual(remote.rediscover("fake"), "mac-4.local")
+        # Neither this Mac, the old name nor another port is asked, and each is asked for the old name's key.
+        self.assertEqual([call.args for call in asked.call_args_list],
+                         [("fake", "other.local", "mac-3.local"), ("fake", "mac-4.local", "mac-3.local")])
+        self.assertEqual(remote.moved("fake"), ["-o", "HostName=mac-4.local", "-o", "HostKeyAlias=mac-3.local"])
+        self.assertEqual(remote.moved("another"), [])
+        self.assertIn("fake was renamed: mac-3.local no longer reaches it, and mac-4.local", self.error.getvalue())
+        self.assertIn("set `HostName mac-4.local` under `Host fake`", self.error.getvalue())
+        # Every connection of this process then goes there: ssh, git's ssh and the measurement.
+        with patch.object(remote.subprocess, "run") as run:
+            remote.ssh("fake", "true")
+        self.assertEqual(run.call_args.args[0][len(remote.SSH):len(remote.SSH) + 5],
+                         ["-o", "HostName=mac-4.local", "-o", "HostKeyAlias=mac-3.local", "fake"])
+        with patch.object(remote.socket, "getaddrinfo", side_effect=OSError("no")):
+            self.assertEqual(remote.connection("fake")["hostname"], "mac-4.local")
+
+    def test_a_key_set_by_host_key_alias_is_the_one_asked_for(self):
+        self.settings["hostkeyalias"] = "build-host"
+        with patch.object(remote, "advertised", return_value=[("mac-4.local", "22")]), \
+                patch.object(remote, "presents", return_value=True) as asked:
+            self.assertEqual(remote.rediscover("fake"), "mac-4.local")
+        self.assertEqual(asked.call_args.args, ("fake", "mac-4.local", "build-host"))
+
+    def test_none_or_several_macs_presenting_the_key_leave_the_name_as_it_is(self):
+        names = [("a.local", "22"), ("b.local", "22")]
+        for presenting, said in [(set(), ""), ({"a.local", "b.local"}, "a.local, b.local all present its key")]:
+            with self.subTest(presenting=presenting), patch.object(remote, "advertised", return_value=names), \
+                    patch.object(remote, "presents", side_effect=lambda host, name, alias: name in presenting):
+                self.assertIsNone(remote.rediscover("fake"))
+                self.assertEqual(remote.RENAMED, {})
+                self.assertIn(said, self.error.getvalue())
+        # A name that is not multicast DNS is never searched for.
+        self.settings["hostname"] = "mac.example.com"
+        with patch.object(remote, "advertised") as browsed:
+            self.assertIsNone(remote.rediscover("fake"))
+        browsed.assert_not_called()
+
+    def test_presents_asks_ssh_to_refuse_any_other_key_and_add_none(self):
+        with patch.object(remote.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as run:
+            self.assertTrue(remote.presents("fake", "mac-4.local", "mac-3.local"))
+        command = run.call_args.args[0]
+        for option in ["HostName=mac-4.local", "HostKeyAlias=mac-3.local", "StrictHostKeyChecking=yes",
+                       "UpdateHostKeys=no", "CheckHostIP=no", f"ConnectTimeout={remote.REACH_TIMEOUT}"]:
+            self.assertIn(option, command)
+        # ssh takes the first value of an option, so the short timeout comes before SSH's own.
+        self.assertLess(command.index(f"ConnectTimeout={remote.REACH_TIMEOUT}"),
+                        command.index(f"ConnectTimeout={remote.CONNECT_TIMEOUT}"))
+        self.assertEqual(command[-2:], ["fake", "true"])
+        for outcome in [subprocess.CompletedProcess([], 255), subprocess.TimeoutExpired(["ssh"], 1), OSError("no")]:
+            with self.subTest(outcome=outcome), patch.object(remote.subprocess, "run", side_effect=[outcome]):
+                self.assertFalse(remote.presents("fake", "mac-4.local", "mac-3.local"))
+
+    def test_the_check_before_a_dispatch_finds_a_renamed_second_mac_and_only_on_a_failure_a_rename_explains(self):
+        away = remote.Unreachable("fake cannot be reached: ssh: Could not resolve hostname mac-3.local", "wake it")
+        other_key = remote.Misconfigured("ssh reached fake but could not log in: Host key verification failed.", "fix")
+        refused = remote.Misconfigured("ssh reached fake but could not log in: Permission denied (publickey).", "fix")
+        cases = [([away, None], "mac-4.local", None), ([other_key, None], "mac-4.local", None),
+                 ([away], None, remote.Unreachable), ([other_key], None, remote.Misconfigured),
+                 # A refused login and a working name are never taken for a rename.
+                 ([refused], "unused", remote.Misconfigured), ([None], "unused", None)]
+        for outcomes, found, kind in cases:
+            with self.subTest(outcomes=outcomes, found=found), \
+                    patch.object(remote, "check", side_effect=outcomes) as checked, \
+                    patch.object(remote, "rediscover", return_value=found) as searched:
+                if kind is None:
+                    remote.reachable("fake")
+                else:
+                    with self.assertRaises(kind) as raised:
+                        remote.reachable("fake")
+                    self.assertIs(raised.exception, outcomes[0])
+                self.assertEqual(checked.call_count, len(outcomes) if found != "unused" or kind is None else 1)
+                self.assertEqual(searched.called, outcomes[0] in (away, other_key))
+
+
+class OfferAgainTests(unittest.TestCase):
+    """While both Macs are busy, a second Mac that cannot be reached at one offer is asked at the next."""
+
+    def offer(self):
+        offered = remote.Offer("gate", "`eng run --here gate`", lambda host, sent: 0)
+        offered.host, offered.busy = "fake", "every checkout is in use"
+        return offered
+
+    def test_a_second_mac_away_at_one_offer_is_asked_again_and_runs_the_work_once_back(self):
+        away = remote.Unreachable("fake cannot be reached: ssh: Could not resolve hostname fake.local", "wake it")
+        offered = self.offer()
+        with patch.object(remote, "reachable", side_effect=[away, away, None]), \
+                patch("sys.stderr", new_callable=StringIO) as error:
+            self.assertIsNone(offered.again())
+            self.assertIsNone(offered.again())
+            self.assertEqual((offered.busy, offered.away, offered.status),
+                             ("every checkout is in use", away.problem, away.problem))
+            self.assertEqual(offered.again(), 0)
+        self.assertEqual(error.getvalue().count("asks the second Mac again at the next offer"), 1, error.getvalue())
+        self.assertEqual((offered.busy, offered.away), (None, None))
+
+    def test_a_second_mac_that_can_no_longer_take_the_work_is_not_asked_again(self):
+        # The negative control: what is no unreachable second Mac still ends the offers.
+        offered = self.offer()
+        with patch.object(remote, "reachable", side_effect=[remote.Unavailable("the lane names a physical device")]), \
+                patch("sys.stderr", new_callable=StringIO) as error:
+            self.assertIsNone(offered.again())
+            self.assertIsNone(offered.again())
+        self.assertIsNone(offered.busy)
+        self.assertIn("waits for this Mac alone: the lane names a physical device", error.getvalue())
+
+    def test_neither_mac_admitting_says_the_second_mac_was_away(self):
+        offered = self.offer()
+        offered.away = "fake cannot be reached: it is asleep"
+        with patch("sys.stderr", new_callable=StringIO) as error:
+            self.assertEqual(remote.overflow(offered, lambda seconds: None, once=True), remote.BUSY)
+        self.assertIn("neither Mac admitted it now; the second Mac cannot be reached: fake cannot be reached: it is asleep",
+                      error.getvalue())
 
 
 class EarlierNameTests(unittest.TestCase):

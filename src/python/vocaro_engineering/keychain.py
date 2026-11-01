@@ -167,7 +167,7 @@ def keep_command(location):
     request = {"keepUnlocked": {"root": remote.ROOT, "mac": location.mac}}
     script = shlex.join(["python3", "-c", Path(offload_host.__file__).read_text(), json.dumps(request)])
     return ["ssh", "-t", "-o", "BatchMode=yes", "-o", f"ConnectTimeout={remote.CONNECT_TIMEOUT}",
-            location.destination, remote.login(script)]
+            *remote.moved(location.destination), location.destination, remote.login(script)]
 
 
 def keep_unlocked(identity=None, out=print, ask=None, interact=None, keep=None):

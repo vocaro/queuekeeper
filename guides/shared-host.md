@@ -410,8 +410,11 @@ the second Mac is at capacity, until it is too (the owner's decision, 2026-10-28
    refresh. An offer made again sends nothing a second time: the second Mac holds the commits
    after the first. `eng: LANE waits for whichever Mac admits it first:` says so, with what the
    second Mac declined it for, and this Mac's admission prints what it waits behind
-   ([heavy-work admission](#heavy-work-admission)). A lane that neither admits within 5,400 s ends
-   with exit 75 (`BUSY`) and runs nowhere.
+   ([heavy-work admission](#heavy-work-admission)). A second Mac that cannot be reached at one of
+   these offers is asked again at the next, since one that went offline during the wait may come
+   back before it ends: `eng: LANE waits for this Mac, and asks the second Mac again at the next
+   offer:` says why, once for each reason. A lane that neither admits within 5,400 s ends with
+   exit 75 (`BUSY`) and runs nowhere.
 
 A lane this Mac takes runs in this checkout, over its working tree as it is once admitted, not over
 the commit sent to the second Mac. So when a commit was sent, this Mac runs the lane only while the
@@ -781,11 +784,24 @@ The owner prepares the second Mac once:
 
    macOS renames a Mac whose `.local` name another machine on the network claims, adding or
    raising a `-N` suffix (`-3` became `-4` on 2026-11-01). The old `HostName` then does not
-   resolve, which eng takes for the second Mac being away, so lanes quietly run on this Mac.
-   `scutil --get LocalHostName` on the second Mac gives the new name: put it in `HostName`, and
-   add it to `known_hosts` (`ssh-keyscan -4 -t ed25519 NAME.local >> ~/.ssh/known_hosts`, after
-   checking that the key is the one already recorded), since ssh checks the key by name and in
-   batch mode refuses one it has not seen. Nothing else in eng depends on the old name.
+   resolve, or resolves to the other machine, which presents another host key. eng finds the
+   second Mac again in either case: Remote Login still offers ssh over Bonjour, under the
+   computer name, so eng resolves each Mac that `dns-sd -B _ssh._tcp` lists to its current name
+   and asks it, as ssh would ask the old name, to run `true` while presenting the key
+   `known_hosts` holds for the old name (or for `HostKeyAlias`). That key is the second Mac's
+   identity: when exactly one Mac presents it, eng uses that Mac's name for every connection of the
+   run, says so in one line, `eng: build-host was renamed: …`, and `eng doctor` reports the rename
+   as an error until `~/.ssh/config` names it. None, or more than one, is a second Mac that cannot
+   be reached. The search costs about 2 s more when this Mac is away from the second Mac's
+   network, after the 5 s the name's lookup already waits; finding a renamed Mac took 7.4 s in
+   all (macOS 27.0.1, 2026-11-01).
+
+   To keep the new name, put it in `HostName`, and add `HostKeyAlias` with the name its key is
+   recorded under, the old `HostName`. ssh then checks the key by that alias, whatever the
+   `HostName`, so a later rename needs only the new `HostName`, not a new `known_hosts` entry.
+   Giving the second Mac a `LocalHostName` no other machine is likely to claim (`sudo scutil
+   --set LocalHostName NAME` there) makes renames rarer, though macOS can still rename it.
+   Nothing else in eng depends on the old name.
 
 3. Install the Xcode this Mac uses at the same path. Accept its license and run its first launch
    (`sudo xcodebuild -license accept`, then `xcodebuild -runFirstLaunch`).
