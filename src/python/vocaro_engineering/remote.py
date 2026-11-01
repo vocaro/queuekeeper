@@ -111,6 +111,8 @@ UNITS = {"bytes": 1, "KiB": 1 << 10, "MiB": 1 << 20, "GiB": 1 << 30}
 NEGOTIATION_FAILED = "push negotiation failed"
 # Seconds a stopped run has to end on the second Mac before the connection is closed.
 STOP_WAIT = 120
+# The toolkit's repository, which its origin names for the second Mac's policy refresh.
+UPSTREAM = "https://github.com/vocaro/vocaro-engineering.git"
 # What a Git hook exports for its own repository must not reach another.
 GIT_LOCATION = {"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
                 "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_PREFIX"}
@@ -533,9 +535,24 @@ def checkout_name(root):
 
 
 def origin(root):
-    """The toolkit's origin for policy refresh, with GitHub SSH URLs normalized to HTTPS."""
+    """The toolkit's origin for policy refresh, with GitHub SSH URLs normalized to HTTPS.
+
+    The second Mac writes it into the repository that every checkout of the toolkit there shares,
+    so a path, such as a clone's origin naming the checkout it was cloned from, is refused: there it
+    names another checkout, and every session's policy refresh fails until a dispatch sends a URL
+    again (vocaro-engineering#78). The fix names that checkout's own origin, when it has a URL, or
+    UPSTREAM. The refusal is a RuntimeError, which send makes Unavailable."""
     try: url = git(root, "config", "--get", "remote.origin.url")
     except RuntimeError: return None
+    if offload_host.local_url(url):
+        source = Path(url[len("file://"):] if url.lower().startswith("file://") else url)
+        if not source.is_absolute(): source = Path(root) / source
+        try: upstream = git(source, "config", "--get", "remote.origin.url")
+        except (RuntimeError, OSError): upstream = None
+        if not upstream or offload_host.local_url(upstream): upstream = UPSTREAM
+        raise RuntimeError(f"{root}'s origin is {url}, a path on this Mac, from which the second Mac cannot fetch the "
+                           f"policy; set it with `git -C {shlex.quote(str(root))} remote set-url origin {upstream}` "
+                           "and send the work again (guides/adoption.md, Locating the toolkit from a worktree)")
     return "https://github.com/" + url[len("git@github.com:"):] if url.startswith("git@github.com:") else url
 
 

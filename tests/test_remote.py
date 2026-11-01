@@ -341,7 +341,8 @@ class RemoteTests(unittest.TestCase):
         self.temp.cleanup()
 
     def make_toolkit(self, root):
-        """A committed copy of this toolkit, whose origin is itself, as the second Mac receives it."""
+        """A committed copy of this toolkit, as the second Mac receives it. Its origin is the toolkit's
+        upstream URL, which Git on both Macs reads as the copy itself, so no test fetches the network."""
         for part in ["bin", "integrations", "policies", "agents", "src/python"]:
             shutil.copytree(config.TOOLKIT_ROOT / part, root / part, ignore=shutil.ignore_patterns("__pycache__"))
         # Its .gitignore keeps out the bytecode that running it writes beside its source.
@@ -350,8 +351,51 @@ class RemoteTests(unittest.TestCase):
                                                            "toolkit": {"path": "."}}))
         subprocess.run(["git", "init", "-q", "-b", "main", str(root)], check=True)
         commit_all(root)
-        git(root, "remote", "add", "origin", str(root))
+        git(root, "remote", "add", "origin", remote.UPSTREAM)
+        # Here in the copy's own configuration, and there in the second Mac's home's.
+        git(root, "config", f"url.{root}.insteadOf", remote.UPSTREAM)
+        (self.home / ".gitconfig").write_text(f'[url "{root}"]\n\tinsteadOf = {remote.UPSTREAM}\n')
         return root
+
+    def test_a_toolkit_origin_naming_a_path_here_is_refused_before_anything_is_sent(self):
+        settings = json.loads((self.toolkit / "engineering.json").read_text())
+        settings["lanes"] = {"check": {"command": [sys.executable, "-c", "print('Ran 1 tests')"], "minimumTests": 1,
+                                       "resource": "heavy"}}
+        (self.toolkit / "engineering.json").write_text(json.dumps(settings))
+        commit_all(self.toolkit)
+        # A clone of a checkout here, as VOCARO_ENGINEERING_ROOT may name: its origin is that checkout's path.
+        clone = Path(self.temp.name) / "clone/vocaro-engineering"
+        subprocess.run(["git", "clone", "-q", str(self.toolkit), str(clone)], check=True)
+        for url, upstream in [(str(self.toolkit), remote.UPSTREAM), (f"file://{self.toolkit}", remote.UPSTREAM),
+                              ("../../vocaro-engineering", remote.UPSTREAM)]:
+            with self.subTest(url=url):
+                git(clone, "remote", "set-url", "origin", url)
+                with patch.object(remote, "TOOLKIT_ROOT", clone), contextlib.redirect_stdout(StringIO()), \
+                        contextlib.redirect_stderr(StringIO()) as error:
+                    status = cli.main(["--project", str(clone), "remote", "run", "check"])
+                self.assertNotEqual(status, 0)
+                said = " ".join(error.getvalue().split())
+                self.assertIn(f"origin is {url}, a path on this Mac", said)
+                self.assertIn(f"remote set-url origin {upstream}`", said)
+                # Nothing reached the second Mac, so its shared origin is as it was: never written.
+                self.assertFalse((self.home / remote.ROOT / "repositories").exists())
+        # A checkout whose own origin is another path, or none, is pointed at the upstream.
+        bare = Path(self.temp.name) / "bare.git"
+        subprocess.run(["git", "clone", "-q", "--bare", str(clone), str(bare)], check=True)
+        git(clone, "remote", "set-url", "origin", str(bare))
+        with self.assertRaisesRegex(RuntimeError, f"set-url origin {re.escape(remote.UPSTREAM)}`"):
+            remote.origin(clone)
+        # The positive control: a checkout's network origin is named in the fix, and URLs pass.
+        git(bare, "config", "remote.origin.url", "https://example.com/fork/vocaro-engineering.git")
+        with self.assertRaisesRegex(RuntimeError, "set-url origin https://example.com/fork/vocaro-engineering.git`"):
+            remote.origin(clone)
+        for url, sent in [(remote.UPSTREAM, remote.UPSTREAM),
+                          ("git@github.com:vocaro/vocaro-engineering.git", remote.UPSTREAM),
+                          ("ssh://git@github.com/vocaro/vocaro-engineering.git",
+                           "ssh://git@github.com/vocaro/vocaro-engineering.git"),
+                          ("build-host:repositories/vocaro-engineering.git", "build-host:repositories/vocaro-engineering.git")]:
+            git(clone, "remote", "set-url", "origin", url)
+            self.assertEqual(remote.origin(clone), sent)
 
     def eng(self, *arguments):
         with contextlib.redirect_stdout(StringIO()) as output, contextlib.redirect_stderr(StringIO()) as error:
@@ -3851,6 +3895,41 @@ class RenamedSecondMacTests(unittest.TestCase):
                     self.assertIs(raised.exception, outcomes[0])
                 self.assertEqual(checked.call_count, len(outcomes) if found != "unused" or kind is None else 1)
                 self.assertEqual(searched.called, outcomes[0] in (away, other_key))
+
+
+class SharedOriginTests(unittest.TestCase):
+    """The second Mac keeps the toolkit's shared origin when a plan names a path (vocaro-engineering#78)."""
+
+    def test_a_local_url_is_told_from_a_network_one(self):
+        for url in ["/Users/someone/Development/vocaro-engineering", "../vocaro-engineering", "vocaro-engineering",
+                    "file:///Users/someone/Development/vocaro-engineering", "FILE:///tmp/kit", "./a:b"]:
+            self.assertTrue(offload_host.local_url(url), url)
+        for url in [remote.UPSTREAM, "http://example.com/kit.git", "ssh://git@github.com/vocaro/vocaro-engineering.git",
+                    "git://example.com/kit.git", "git@github.com:vocaro/vocaro-engineering.git", "build-host:kit.git"]:
+            self.assertFalse(offload_host.local_url(url), url)
+
+    def test_place_refuses_a_path_origin_and_leaves_the_shared_one(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            source = base / "source"
+            subprocess.run(["git", "init", "-q", "-b", "main", str(source)], check=True)
+            (source / "README.md").write_text("kit\n")
+            commit = commit_all(source)
+            repository = base / "vocaro-engineering.git"
+            subprocess.run(["git", "clone", "-q", "--bare", str(source), str(repository)], check=True)
+            git(repository, "config", "remote.origin.url", remote.UPSTREAM)
+            with self.assertRaises(offload_host.Refusal) as refused:
+                offload_host.place(repository, base / "0/vocaro-engineering", commit, "refs/heads/main",
+                                   "/Users/someone/Development/vocaro-engineering")
+            self.assertIn("a path on the sending Mac", str(refused.exception))
+            self.assertIn(remote.UPSTREAM, refused.exception.fix)
+            self.assertEqual(git(repository, "config", "--get", "remote.origin.url"), remote.UPSTREAM)
+            self.assertFalse((base / "0").exists())
+            # The positive control: a URL is written, and the commit placed.
+            fork = "https://example.com/fork/vocaro-engineering.git"
+            offload_host.place(repository, base / "0/vocaro-engineering", commit, "refs/heads/main", fork)
+            self.assertEqual(git(repository, "config", "--get", "remote.origin.url"), fork)
+            self.assertEqual(git(base / "0/vocaro-engineering", "rev-parse", "HEAD"), commit)
 
 
 class OfferAgainTests(unittest.TestCase):

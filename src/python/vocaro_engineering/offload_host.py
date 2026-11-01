@@ -1223,10 +1223,25 @@ def claim(base, count, directory, wait=True):
     return None
 
 
+def local_url(url):
+    """Whether a Git remote URL names files on its own Mac, as a path or file:// does, and so names
+    another checkout, or nothing, on the other Mac. Git reads a URL with no scheme as a path unless a
+    colon comes before any slash, as in scp's host:path (vocaro-engineering#78)."""
+    if "://" in url: return url.lower().startswith("file://")
+    return ":" not in url.split("/", 1)[0]
+
+
 def place(repository, checkout, commit, ref, origin=None):
     """Check commit out, detached, in a persistent worktree whose ignored inputs and builds stay.
 
-    Only the toolkit names an origin: a heavy lane's policy refresh fetches it."""
+    Only the toolkit names an origin: a heavy lane's policy refresh fetches it. Every checkout of the
+    repository shares its origin, so one naming a path on the sending Mac is refused before it is
+    written: here it names another checkout, or nothing, and every run's refresh would fail."""
+    if origin and local_url(origin):
+        raise Refusal(f"the toolkit's origin is {origin}, a path on the sending Mac, from which no checkout here "
+                      "can fetch the policy",
+                      "set the sending checkout's origin to https://github.com/vocaro/vocaro-engineering.git and "
+                      "send the work again (guides/adoption.md, Locating the toolkit from a worktree)")
     if origin and output(["git", "--git-dir", str(repository), "config", "--get", "remote.origin.url"]) != origin:
         git("--git-dir", str(repository), "config", "remote.origin.url", origin)
     if checkout.exists():
