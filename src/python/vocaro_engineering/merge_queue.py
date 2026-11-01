@@ -90,13 +90,30 @@ def lanes_of(config):
     return [name for name in BEFORE_GATE if name in lanes and name not in named] + named
 
 
+def named(path, key):
+    """Whether a queue setting's key names path: a directory ending in /, or the file itself."""
+    return path.startswith(key) if key.endswith("/") else path == key
+
+
 def carried_over(path, config, batch_files):
     """Whether main changing path leaves a passed batch's result standing: a path the project lists
     in queue.carryOver as read by none of its queue lanes, or a Markdown document, and in either
     case one the batch does not touch."""
     if path in batch_files: return False
     listed = config.get("queue", {}).get("carryOver", {})
-    return path.endswith(".md") or any(path.startswith(key) if key.endswith("/") else path == key for key in listed)
+    return path.endswith(".md") or any(named(path, key) for key in listed)
+
+
+def carry_checks(config, moved, base):
+    """The commands a carry-over over moved must pass on the rebased tree: `eng docs check` when a document
+    moved, then each of queue.carryOverChecks whose paths include a moved file, or that has none. {base} in
+    a command is the commit the result passed on, so a check that compares with origin/main, which the
+    batch now sits on, can read what main's new commits added."""
+    commands = [["python3", "scripts/eng", "docs", "check"]] if any(path.endswith(".md") for path in moved) else []
+    for check in config.get("queue", {}).get("carryOverChecks", []):
+        if "paths" not in check or any(named(path, key) for path in moved for key in check["paths"]):
+            commands.append([word.replace("{base}", base) for word in check["command"]])
+    return commands
 
 
 class Queue:
@@ -418,10 +435,24 @@ class Worker:
     def changed(self, old, new):
         return text(self.checkout, "diff", "--name-only", old, new).split("\n")
 
+    def carry_passes(self, commands):
+        """Whether every command exits 0 in the checkout, each bounded and with a log of its own. One that
+        fails, times out or cannot start says nothing of the commits: it only ends the carry-over."""
+        for number, command in enumerate(commands):
+            log = self.queue.logs / f"{time.strftime('%Y%m%d-%H%M%S')}-{self.head()[:8]}-carry-{number}.log"
+            self.say(f"carry-over check: {shlex.join(command)}")
+            try: status_ = processes.run(command, cwd=self.checkout, log_path=log, timeout=LANE_LIMIT, env=environment())
+            except OSError as error: status_ = error
+            if status_:
+                self.say(f"carry-over check {shlex.join(command)} ended with {status_}: gating again; see {log}")
+                return False
+        return True
+
     def carry(self, config, batch, base, head):
         """(new base, new head) with the batch on origin/main, when main moved past base only by files the
         lanes do not read and the batch does not touch, else None: guides/maintenance.md, Push only onto
-        the main you tested. The patch must be the one that passed, and the documents must still check."""
+        the main you tested. The patch must be the one that passed, and the documents and the project's
+        carry-over checks must pass on the rebased tree."""
         new_base = text(self.checkout, "rev-parse", MAIN)
         batch_files = set(self.changed(base, head))
         moved = [path for path in self.changed(base, new_base) if path]
@@ -437,12 +468,7 @@ class Worker:
         if text(self.checkout, "diff", new_base, "HEAD") != patch:
             self.say("the batch's patch changed on main: gating again")
             return None
-        if any(path.endswith(".md") for path in moved):
-            checked = subprocess.run(["python3", "scripts/eng", "docs", "check"], cwd=self.checkout, capture_output=True,
-                                     text=True, env=environment(), stdin=subprocess.DEVNULL)
-            if checked.returncode:
-                self.say(f"documents fail on main's new commits: gating again: {checked.stdout.strip()}")
-                return None
+        if not self.carry_passes(carry_checks(config, moved, base)): return None
         self.say(f"carried the result over {len(moved)} file(s) on main: {', '.join(moved[:5])}")
         return new_base, self.head()
 

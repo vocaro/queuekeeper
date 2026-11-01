@@ -245,10 +245,30 @@ and is reported to the owner with its reason. No check enforces this.
 **Main moving under a passed batch.** The queue takes a hand push as it comes. If `main` moved only by Markdown documents the batch
 does not touch, or by paths in `queue.carryOver`, each with why no queue lane reads it, the worker
 checks that the batch's patch is unchanged on the new `main`, runs `eng docs check` when a document
-moved, and pushes. A carried-over result is no gate of the pushed commit: `eng release` will not
+moved, then the project's `queue.carryOverChecks`, and pushes. A carried-over result is no gate of the pushed commit: `eng release` will not
 take it. Any other move gates again, with no blame. List in `queue.carryOver` only
 records no queue lane reads, and check first: studywright's gate compiles sources under
 `measurements/audits`, and BreezEPUB's script tests read parts of `evidence/`.
+
+**Checks before a carry-over.** A project whose rule asks for more than the docs lane names the
+commands in `queue.carryOverChecks`, in order, on the batch rebased onto the new `main`:
+
+```json
+"carryOverChecks": [
+  {"command": ["python3", "tools/check_records.py", "--base", "{base}"], "paths": ["records/"]},
+  {"command": ["python3", "scripts/eng", "docs", "check"]}
+]
+```
+
+`command` is an argv list. `paths`, optional, limits a check to moves of those paths, each a file or
+a directory ending in `/`, for a check too costly to run on every carry-over. Each runs through
+eng's supervision, with `LANE_LIMIT` as its limit and a log of its own under `eng-queue/logs`, so
+heavy work inside one goes through `eng admit` or `eng run` as anywhere else. A check that fails,
+times out, cannot start, or finds no admission ends the carry-over: the batch gates again, with no
+blame and no hold. A check is judged only by its exit status, so it must read what main's move
+changed. Git diffs against `origin/main` read nothing of it, since by then the batch sits on that
+`main`: `{base}`, anywhere in a word, is the commit the result passed on, and such a check takes it
+as its base. Prove each check fails on a bad move before relying on it.
 
 **State and recovery.** Each repository's state is under `eng-queue` in its common Git directory,
 so every worktree sees one queue. A worker starts by itself with `eng land`, apart from the session,

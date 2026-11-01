@@ -105,10 +105,11 @@ RESOURCES = ["light", "heavy", "exclusive"]
 
 def merge_queue(queue, lanes):
     """The lanes a commit passes in the merge queue, what main may change under a passed result,
-    each path with why no such lane reads it, and which of those lanes cover the pre-push hook, each
-    with what of the hook it runs (guides/maintenance.md, The merge queue)."""
-    if not isinstance(queue, dict) or set(queue) - {"lanes", "carryOver", "hookCoveredBy"}:
-        raise ValueError("queue supports only lanes, carryOver and hookCoveredBy")
+    each path with why no such lane reads it, the commands that main's change must pass first, and
+    which of the lanes cover the pre-push hook, each with what of the hook it runs
+    (guides/maintenance.md, The merge queue)."""
+    if not isinstance(queue, dict) or set(queue) - {"lanes", "carryOver", "carryOverChecks", "hookCoveredBy"}:
+        raise ValueError("queue supports only lanes, carryOver, carryOverChecks and hookCoveredBy")
     named = queue.get("lanes", [])
     if not isinstance(named, list) or len(set(map(str, named))) != len(named) or any(name not in lanes for name in named):
         raise ValueError("queue.lanes must list distinct configured lanes")
@@ -123,6 +124,16 @@ def merge_queue(queue, lanes):
                                                                  or not what.strip() for lane, what in covering.items()):
             raise ValueError("queue.hookCoveredBy maps each lane the queue runs that covers the pre-push hook to what "
                              "of the hook it runs")
+    checks = queue.get("carryOverChecks", [])
+    if not isinstance(checks, list) or any(not carry_over_check(check) for check in checks):
+        raise ValueError("queue.carryOverChecks lists objects with a command, an argv list and never shell source, and "
+                         "optional paths, a nonempty list limiting it to moves of those paths, a directory ending in /")
+
+
+def carry_over_check(check):
+    def words(value): return isinstance(value, list) and value and all(isinstance(x, str) and x.strip() for x in value)
+    return isinstance(check, dict) and not set(check) - {"command", "paths"} and words(check.get("command")) \
+        and ("paths" not in check or words(check["paths"]))
 
 
 def retired(lanes):

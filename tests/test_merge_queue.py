@@ -466,6 +466,166 @@ class PrePushHooks(Fixture):
             {**config, "queue": {"lanes": ["other"], "hookCoveredBy": {"gate": "not run"}}}))
         with self.assertRaisesRegex(ValueError, "hookCoveredBy"): self.config()
 
+# What each check saw, a line a run, and it fails while the file its first argument names is in the tree.
+CHECK = """import pathlib, subprocess, sys
+seen = subprocess.run(["git", "diff", "--name-only", sys.argv[3], "HEAD"], capture_output=True, text=True).stdout.split()
+with open(sys.argv[2], "a") as log: log.write(" ".join(seen) + "\\n")
+sys.exit(1 if pathlib.Path(sys.argv[1]).exists() else 0)
+"""
+
+
+class CarryOverChecks(Fixture):
+    during_gate = MainMoves.during_gate
+
+    def setUp(self):
+        super().setUp()
+        self.seen = self.base / "seen"
+        (self.repo / "check.py").write_text(CHECK)
+        run(self.repo, "git", "add", "check.py")
+        run(self.repo, "git", "commit", "-qm", "Add a check")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+
+    def name_checks(self, *checks):
+        """Put queue.carryOverChecks on main, as a project does, and return that commit."""
+        config = json.loads((self.repo / "engineering.json").read_text())
+        config["queue"]["carryOverChecks"] = list(checks)
+        (self.repo / "engineering.json").write_text(json.dumps(config))
+        run(self.repo, "git", "add", "engineering.json")
+        run(self.repo, "git", "commit", "-qm", "Name the carry-over checks")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        return run(self.repo, "git", "rev-parse", "HEAD")
+
+    def check(self, fails_on="absent", base="origin/main", **more):
+        return {"command": ["python3", "check.py", fails_on, str(self.seen), base], **more}
+
+    def runs(self):
+        return self.seen.read_text().splitlines() if self.seen.exists() else []
+
+    def test_a_passing_check_carries_on_the_rebased_tree(self):
+        self.name_checks(self.check(base="{base}"))
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        with self.during_gate("records/one.json"): self.work()
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual(self.gates(), 1)
+        # {base} reached the check, which then saw main's move and the batch together.
+        self.assertEqual(self.runs(), ["a records/one.json"])
+
+    def test_a_check_against_origin_main_does_not_see_the_move(self):
+        """Why {base} exists: origin/main is already the new main when a check runs."""
+        self.name_checks(self.check())
+        self.commit("a", "a")
+        self.add("a")
+        with self.during_gate("records/one.json"): self.work()
+        self.assertEqual(self.runs(), ["a"])
+
+    def test_a_failing_check_gates_again_with_no_blame(self):
+        self.name_checks(self.check(fails_on="records/one.json"))
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        with self.during_gate("records/one.json"), patch("builtins.print") as said: self.work()
+        self.assertEqual(self.gates(), 2)
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertNotIn("why", self.state(identifier))
+        self.assertIsNone(mq.Queue(self.repo).held())
+        self.assertIn("gating again", " ".join(str(call) for call in said.call_args_list))
+
+    def test_checks_stop_at_the_first_failure(self):
+        self.name_checks(self.check(fails_on="records/one.json"), self.check())
+        self.commit("a", "a")
+        self.add("a")
+        with self.during_gate("records/one.json"): self.work()
+        self.assertEqual(len(self.runs()), 1)
+
+    def test_a_check_is_not_run_without_a_carry_over(self):
+        self.name_checks(self.check())
+        self.commit("a", "a")
+        self.add("a")
+        self.work()
+        self.assertEqual(self.runs(), [])
+        self.commit("b", "b")
+        self.add("b")
+        with self.during_gate("code"): self.work()
+        self.assertEqual(self.runs(), [])
+        self.assertEqual(self.gates(), 3)
+
+    def test_paths_limit_a_check_to_moves_of_them(self):
+        self.name_checks(self.check(paths=["records/"]))
+        self.commit("a", "a")
+        self.add("a")
+        with self.during_gate("other.md"): self.work()
+        self.assertEqual(self.runs(), [])
+        self.assertEqual(self.gates(), 1)
+
+    def test_paths_name_a_directory(self):
+        self.name_checks(self.check(paths=["records/"]))
+        self.commit("a", "a")
+        self.add("a")
+        with self.during_gate("records/one.json"): self.work()
+        self.assertEqual(len(self.runs()), 1)
+
+    def test_paths_name_a_file(self):
+        self.name_checks(self.check(paths=["guide.md"]))
+        self.commit("a", "a")
+        self.add("a")
+        with self.during_gate("guide.md"): self.work()
+        self.assertEqual(len(self.runs()), 1)
+
+    def test_a_check_that_cannot_start_gates_again(self):
+        self.name_checks({"command": ["/nonexistent/check"]})
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        with self.during_gate("records/one.json"): self.work()
+        self.assertEqual(self.gates(), 2)
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertIsNone(mq.Queue(self.repo).held())
+
+    def test_a_check_past_its_limit_gates_again(self):
+        self.name_checks({"command": ["python3", "hangs.py"]})
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        real = mq.processes.run
+        def bounded(command, **options):
+            if "hangs.py" in command: raise mq.processes.TimedOut("past its limit")
+            return real(command, **options)
+        with self.during_gate("records/one.json"), patch.object(mq.processes, "run", bounded): self.work()
+        self.assertEqual(self.gates(), 2)
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertIsNone(mq.Queue(self.repo).held())
+
+    def test_a_document_that_fails_the_docs_check_gates_again(self):
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        with self.during_gate("README.md", "[gone](missing.md)\n"): self.work()
+        self.assertEqual(self.gates(), 2)
+        self.assertEqual(self.state(identifier)["state"], "landed")
+
+    def test_a_document_that_passes_the_docs_check_carries(self):
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        with self.during_gate("README.md", "fine\n"): self.work()
+        self.assertEqual(self.gates(), 1)
+        self.assertEqual(self.state(identifier)["state"], "landed")
+
+    def test_the_configuration_is_checked(self):
+        config = json.loads((self.repo / "engineering.json").read_text())
+        good = {"command": ["python3", "x.py"]}
+        for checks in ([], [good], [{**good, "paths": ["records/", "guide.md"]}]):
+            (self.repo / "engineering.json").write_text(json.dumps({**config, "queue": {"carryOverChecks": checks}}))
+            self.assertEqual(self.config()["queue"]["carryOverChecks"], checks)
+        for bad in ("python3 x.py", {"command": ["x"]}, ["python3 x.py"], [["python3", "x.py"]], [{}], [{"command": []}],
+                    [{"command": "python3 x.py"}], [{"command": ["python3", ""]}], [{"command": ["x"], "other": 1}],
+                    [{"command": ["x"], "paths": []}], [{"command": ["x"], "paths": "records/"}],
+                    [{"command": ["x"], "paths": [""]}]):
+            with self.subTest(bad=bad):
+                (self.repo / "engineering.json").write_text(json.dumps({**config, "queue": {"carryOverChecks": bad}}))
+                with self.assertRaisesRegex(ValueError, "carryOverChecks"): self.config()
+
+    def test_the_schema_knows_the_setting(self):
+        schema = json.loads((ROOT / "schemas/engineering.schema.json").read_text())
+        check = schema["properties"]["queue"]["properties"]["carryOverChecks"]["items"]
+        self.assertEqual(set(check["properties"]), {"command", "paths"})
+
 
 class Refusals(Fixture):
     def test_pull_request_projects_are_refused(self):
