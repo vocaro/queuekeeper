@@ -233,6 +233,8 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
     note(root=child.pid, spaces=[child.pid])
     # Each observed descendant's (parent, group, start) when first seen, for its identity and report.
     known, born, exited, stopping = {}, None, None, set()
+    # When the first SIGTERM went to descendants that outlived the root, which starts their kill_after.
+    lingered = None
     # The process groups and sessions the command was seen using, for the census at its end. The
     # root's own are its PID. Never every observed PID: the PID space can wrap during a long run.
     spaces = {child.pid}
@@ -367,7 +369,11 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
                     if stopping: fresh = unowned(fresh, identities)
                     if fresh: print(describe(fresh, known, child.pid, kill_after), file=sys.stderr, flush=True)
                     stopping.update((pid, known[pid][2]) for pid in fresh)
-                    kill = overdue >= kill_after and not held(overdue - kill_after, identities)
+                    # Timed from that SIGTERM, not from LINGER: a sample a busy host delays past
+                    # LINGER and kill_after together must still send SIGTERM first (#90).
+                    if lingered is None: lingered = time.monotonic()
+                    due = time.monotonic() - lingered - kill_after
+                    kill = due >= 0 and not held(due, identities)
                     for pid in live if kill else fresh:
                         try: os.kill(pid, signal.SIGKILL if kill else signal.SIGTERM)
                         except (ProcessLookupError, PermissionError): pass

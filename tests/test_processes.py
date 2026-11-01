@@ -149,17 +149,30 @@ def stretched(seconds):
 class ProcessTests(unittest.TestCase):
     # supervise takes its kill_after when it is defined, so a test passes the grace it needs:
     # patching KILL_AFTER changes nothing, and with 10 s a loaded host failed these tests (#81).
-    def outlive_the_root(self, directory, *descendants, root=ROOT, timeout=None, kill_after=processes.KILL_AFTER, **limits):
-        """Supervise ROOT with these descendants; return its result or timeout, stderr and their start identities."""
+    def outlive_the_root(self, directory, *descendants, root=ROOT, timeout=None, kill_after=processes.KILL_AFTER,
+                         late=0, awaits=None, **limits):
+        """Supervise ROOT with these descendants; return its result or timeout, stderr and their start identities.
+
+        late delays the first sample after the root is reaped by that many seconds, as a busy host
+        can. With awaits, each sample after the stop's report waits for that file in directory, so
+        that a descendant's SIGTERM handler runs however long the host takes to schedule it."""
         real, births, cue = processes.snapshot, {}, {"at": time.monotonic()}
         def observed():
             # Bound a stall here, from the latest cue: the start, the root's listing of its
             # descendants, their adoption. A timeout bounds only the root, so a lingering
             # descendant must not hold the run until the test is stopped.
             if time.monotonic() - cue["at"] > stretched(30): self.fail("supervision stalled for 30 s, stretched by load")
+            if awaits is not None and "stopping" in error.getvalue():
+                while not (Path(directory) / awaits).exists():
+                    if time.monotonic() - cue["at"] > stretched(30):
+                        self.fail(f"no {awaits} within 30 s, stretched by load, of the stop")
+                    time.sleep(0.01)
             current = real()
             try: root, *children = map(int, (Path(directory) / "children").read_text().split())
             except FileNotFoundError: return current
+            if late and births and root not in current and "late" not in cue:
+                cue["late"] = True
+                time.sleep(late)
             if "listed" not in cue: cue.update(listed=True, at=time.monotonic())
             if all(current.get(pid, (None,))[0] == root for pid in children):
                 if not births: cue["at"] = time.monotonic()
@@ -205,7 +218,11 @@ class ProcessTests(unittest.TestCase):
 
     def test_descendants_that_outlive_the_root_are_reported_then_stopped_keeping_its_status(self):
         with tempfile.TemporaryDirectory() as directory:
-            result, error, births = self.outlive_the_root(directory, IGNORES_TERM, HANDLES_TERM, LINGER=0.2, kill_after=0.5)
+            # The first sample after the root ends comes past LINGER and kill_after together, as a
+            # busy host's can; SIGTERM must still come first. The sample after it waits for the
+            # handler to run, so that how soon the host schedules it does not matter (#90).
+            result, error, births = self.outlive_the_root(directory, IGNORES_TERM, HANDLES_TERM, LINGER=0.2, kill_after=0.5,
+                                                          late=1, awaits="terminated")
             self.assertEqual(result, 3)
             # SIGTERM came first, so a process that handles it can end cleanly.
             self.assertTrue((Path(directory) / "terminated").exists())
