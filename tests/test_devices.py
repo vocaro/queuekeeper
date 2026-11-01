@@ -770,12 +770,12 @@ class DeviceRecordTests(unittest.TestCase):
         self.assertEqual(self.record.load()[devices.QUEUES]["iPad"], [])
 
     def test_only_standing_devices_that_record_their_device_are_taken(self):
-        with self.assertRaisesRegex(ValueError, "standing approval"):
+        with self.assertRaisesRegex(ValueError, "take waits only for iPad or iPhone"):
             self.record.take("Example Duo 1", owner="s", purpose="p", release_by=later(), timeout=1)
         with self.assertRaisesRegex(devices.Refused, "records no physical device yet"):
-            self.record.take("iPhone", owner="s", purpose="p", release_by=later(), timeout=1, poll=0.01,
+            self.record.take("iPad", owner="s", purpose="p", release_by=later(), timeout=1, poll=0.01,
                              said=lambda _text: None)
-        self.assertEqual(devices.waiting(self.record.load(), "iPhone"), [])
+        self.assertEqual(devices.waiting(self.record.load(), "iPad"), [])
         with self.assertRaises(SystemExit), contextlib.redirect_stderr(StringIO()) as error:
             devices.main(["take", "Example Duo 1", "--owner", "s", "--purpose", "p", "--release-by", later()])
         self.assertIn("invalid choice", error.getvalue())
@@ -788,6 +788,74 @@ class DeviceRecordTests(unittest.TestCase):
         self.assertEqual(devices.waiting(self.record.load(), "iPad"), [])
         self.assertEqual(self.record.entry("iPad")["revision"], held["revision"])
         self.assertEqual(self.record.entry("iPad")["ownerChatID"], "session-a")
+
+    def released_phone(self):
+        entry = self.reserve("iPhone", device=PHONE)
+        return self.record.release("iPhone", owner="session-a", revision=entry["revision"], outcome="o",
+                                   restoration="r")
+
+    def test_the_ipad_is_taken_with_no_window_and_the_iphone_is_not(self):
+        # The owner's decision of 2026-11-01: the iPhone, the owner's personal phone, has no standing approval.
+        self.assertEqual(set(devices.STANDING), {"iPad"})
+        self.assertEqual(set(devices.WINDOWED), {"iPhone"})
+        self.released_tablet()
+        phone = self.released_phone()
+        taken = self.record.take("iPad", owner="session-b", purpose="p", release_by=later(), timeout=5, poll=0.01,
+                                 said=lambda _text: None)
+        self.assertEqual(taken["approval"], {**devices.STANDING["iPad"], "until": "released"})
+        with self.assertRaisesRegex(devices.Refused, r"iPhone has no standing approval\. Ask the owner for a window "
+                                    r"first.*devices reserve iPhone --approved-by.*Nothing was changed"):
+            self.record.take("iPhone", owner="session-b", purpose="p", release_by=later(), timeout=5, poll=0.01,
+                             said=lambda _text: None)
+        self.assertEqual(self.record.entry("iPhone"), phone)
+        self.assertEqual(devices.waiting(self.record.load(), "iPhone"), [])
+        code, output, error = self.cli("take", "iPhone", "--owner", "session-b", "--purpose", "p",
+                                       "--release-by", later())
+        self.assertEqual((code, output), (2, ""))
+        self.assertIn("Ask the owner for a window first", error)
+        self.assertEqual(self.record.entry("iPhone"), phone)
+        self.assertIn("iPhone: released", self.cli("status")[1])
+        self.assertIn("no standing approval: ask the owner for a window", self.cli("status")[1])
+
+    def test_the_iphone_is_reserved_or_taken_within_the_owners_window(self):
+        phone = self.released_phone()
+        # A window that has ended, or ends before the expected release, is no window.
+        for window, release_by in ((approval(at=later(-90), until=later(-30)), later()),
+                                   (approval(until=later(10)), later(30))):
+            with self.assertRaises(ValueError):
+                self.record.take("iPhone", owner="session-b", purpose="p", release_by=release_by, timeout=5,
+                                 poll=0.01, said=lambda _text: None, approval=window)
+        self.assertEqual(self.record.entry("iPhone"), phone)
+        self.assertEqual(devices.waiting(self.record.load(), "iPhone"), [])
+        window = approval(words="ok, the iphone is yours for the next hour")
+        taken = self.record.take("iPhone", owner="session-b", purpose="p", release_by=later(), timeout=5, poll=0.01,
+                                 said=lambda _text: None, approval=window)
+        self.assertEqual((taken["ownerChatID"], taken["device"], taken["approval"]), ("session-b", PHONE, window))
+        self.assertIs(devices.require_window("iPhone", taken), taken)
+        released = self.record.release("iPhone", owner="session-b", revision=taken["revision"], outcome="o",
+                                       restoration="r")
+        reserved = self.record.reserve("iPhone", owner="session-c", revision=released["revision"], purpose="p",
+                                       release_by=later(), approval=window)
+        self.assertEqual((reserved["ownerChatID"], reserved["approval"]), ("session-c", window))
+        released = self.record.release("iPhone", owner="session-c", revision=reserved["revision"], outcome="o",
+                                       restoration="r")
+        code, output, _error = self.cli("take", "iPhone", "--owner", "session-d", "--purpose", "p",
+                                        "--release-by", later(), "--approved-by", "owner", "--approved-at", later(-1),
+                                        "--approved-until", later(60))
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(output)["entry"]["ownerChatID"], "session-d")
+
+    def test_either_device_has_one_holder_at_a_time(self):
+        for key, device, window in (("iPad", TABLET, None), ("iPhone", PHONE, approval())):
+            held = self.reserve(key, device=device)
+            with self.assertRaisesRegex(devices.Refused, "held by session-a"):
+                self.record.reserve(key, owner="session-b", revision=held["revision"], purpose="p",
+                                    release_by=later(), approval=approval())
+            with self.assertRaisesRegex(TimeoutError, "nothing was reserved"):
+                self.record.take(key, owner="session-b", purpose="p", release_by=later(), timeout=0.05, poll=0.01,
+                                 said=lambda _text: None, approval=window)
+            self.assertEqual(self.record.entry(key), held)
+            self.assertEqual(devices.waiting(self.record.load(), key), [])
 
     def test_an_orphaned_device_is_not_taken(self):
         held = self.reserve("iPad", device=TABLET)

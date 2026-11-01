@@ -1453,16 +1453,32 @@ has the preflight, UI-automation authorization and restoration steps for physica
 
 ### Taking the iPad or iPhone in turn
 
-The paired iPad and iPhone carry the owner's standing approval (owner's decision, 2026-10-31,
-kept in `devices.STANDING` with the owner's words), so a session takes either without asking:
+The paired iPad carries the owner's standing approval (owner's decision, 2026-10-31, kept in
+`devices.STANDING` with the owner's words), so a session takes it whenever it is free, without
+asking:
 
 ```sh
 python3 -m vocaro_engineering.devices take iPad --purpose "…" --release-by 2026-10-31T09:00:00Z \
   --set 'originalSettings={"voiceoverEnabled": false}' --set 'preservation=…'
 ```
 
+The paired iPhone is the owner's personal phone and has no standing approval (owner's decision,
+2026-11-01, kept in `devices.WINDOWED` with the owner's words). A session asks the owner for a
+window first, then reserves it within that window, with `reserve` as in
+[device reservations](#device-reservations) or, to wait in line, with `take` and the same options:
+
+```sh
+python3 -m vocaro_engineering.devices take iPhone --purpose "…" --release-by 2026-11-02T10:00:00Z \
+  --approved-by owner --approved-at 2026-11-02T08:55:00Z --approved-until 2026-11-02T10:00:00Z
+```
+
+`take iPhone` without `--approved-*` refuses and changes nothing, saying to ask the owner for a
+window. The window is the one an [owner window](#owner-windows) records, so its end stops work
+on the device.
+
 `take` joins the entry's line, waits while another session holds the device or is ahead of it,
-saying who holds it and until when, and reserves it with the standing approval, until released.
+saying who holds it and until when, and reserves it with the standing approval, until released,
+or within the owner's window.
 It prints the entry, whose revision the session's next change names. Start it in the background
 when the wait may outlast the tool's; `--wait SECONDS`, an hour by default, bounds it, after which
 it leaves the line and reserves nothing. The line is kept beside the entries, in the record's
@@ -1484,7 +1500,8 @@ a leftover the holder may quit, but never uninstall or clear beyond the agreed c
 
 ### Owner windows
 
-Any other physical device needs a window agreed with the owner. The reservation records that window as `mac-foreground`'s records the owner's: who approved it,
+The iPhone, and any physical device but the iPad, needs a window agreed with the owner. The
+reservation records that window as `mac-foreground`'s records the owner's: who approved it,
 when, and until a time or `released` (`--approved-by`, `--approved-at`, `--approved-until`, and
 `--approval-words` for the owner's words), never past the expected release. The record refuses
 to reserve a physical device, a hardware UDID of 8 and 16 hex digits or 40, without one, or to
