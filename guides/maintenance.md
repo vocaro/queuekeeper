@@ -233,8 +233,7 @@ setting is read from `main`:
 
 The lanes must be ones the queue runs, so their passing is what the worker just saw, and a wait for
 admission there is a lane's no verdict. The worker then does not run the hook, and its log says so.
-Keep the opt-in only while it is true: a hook that checks something no lane does, as mpm's coverage guard does,
-stays a hook. A person's own `git push` still runs the hook.
+Keep the opt-in only while it is true: a hook that checks something no lane does stays a hook. A person's own `git push` still runs the hook.
 
 **Pushing by hand is the exception.** A session pushes to `main` by hand only when `eng land` cannot
 be used, when it must be bypassed, each for a reason it can state, such as a broken queue or a fix
