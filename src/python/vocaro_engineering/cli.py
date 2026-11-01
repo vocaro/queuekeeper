@@ -188,9 +188,16 @@ def instructions(config):
         print(f"Project exception — {exception['rule']}: {exception['reason']}")
 
 
+class PolicyUnavailable(RuntimeError):
+    """The toolkit's main could not be fetched, which says nothing of the work: unmeasured, not failed."""
+
+
 def refresh_policy(root, stream=None):
-    subprocess.run(["git", "-C", str(TOOLKIT_ROOT), "fetch", "origin",
-                    "refs/heads/main:refs/remotes/origin/main"], check=True, timeout=120)
+    try:
+        subprocess.run(["git", "-C", str(TOOLKIT_ROOT), "fetch", "origin",
+                        "refs/heads/main:refs/remotes/origin/main"], check=True, timeout=120)
+    except subprocess.SubprocessError as error:
+        raise PolicyUnavailable(f"the current policy could not be fetched, so nothing ran: {error}") from error
     commit = subprocess.check_output(["git", "-C", str(TOOLKIT_ROOT), "rev-parse", "origin/main"], text=True).strip()
     text = subprocess.check_output(["git", "-C", str(TOOLKIT_ROOT), "show", f"{commit}:policies/shared-host.md"], text=True)
     print(f"Policy source: {commit}\n\n{text}", file=stream)
@@ -753,7 +760,7 @@ def main(argv=None):
             conclude(directory, receipt, status, **({"unmeasured": unmeasured} if status == evidence.UNMEASURED else {}))
             return status
         return 0
-    except remote.Lost as error:
+    except (remote.Lost, PolicyUnavailable) as error:
         print(f"eng: {error}", file=sys.stderr)
         return evidence.UNMEASURED
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
