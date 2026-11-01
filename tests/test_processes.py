@@ -12,6 +12,7 @@ from unittest.mock import patch
 SOURCE = Path(__file__).resolve().parents[1] / "src/python"
 sys.path.insert(0, str(SOURCE))
 from vocaro_engineering import processes, resources
+import host_isolation
 
 # Starts each descendant in its own session, as Xcode starts DTServiceHub apart from xcodebuild's
 # group, and exits 3 once each is ready and the supervisor has seen it under this root.

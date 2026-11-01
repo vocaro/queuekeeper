@@ -13,9 +13,6 @@ from vocaro_engineering import offload_host, resources
 import host_isolation
 
 TESTS = Path(__file__).resolve().parent
-# Modules whose import of host_isolation waits for #90, which edits them, to land. In `python3 -m
-# unittest discover` the other modules' import isolates them as well; `eng unittest` runs each alone.
-PENDING = {"test_closeout.py", "test_processes.py"}
 
 # Admits a heavy job with whatever namespace the environment names, after importing host_isolation
 # when the first argument says so, and prints the guard and slot directory the admission used.
@@ -45,9 +42,7 @@ class HostIsolationTests(unittest.TestCase):
     def test_every_test_module_imports_host_isolation(self):
         modules = sorted(TESTS.glob("test*.py"))
         self.assertGreater(len(modules), 20)
-        self.assertEqual(sorted(set(unisolated(modules)) - PENDING), [])
-        # A pending module that already imports it leaves PENDING.
-        self.assertEqual(sorted(PENDING - set(unisolated(path for path in modules if path.name in PENDING))), [])
+        self.assertEqual(unisolated(modules), [])
 
     def test_the_check_finds_a_module_that_does_not_import_host_isolation(self):
         with tempfile.TemporaryDirectory() as directory:
