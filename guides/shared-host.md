@@ -147,17 +147,18 @@ value, beside what the attempt read, so that a wait says which limit to look at:
 | `memory` | `all 3 guaranteed slots are busy and memory pressure is level 2 (warning), not 1 (normal)`, or `… memory pressure, which must be level 1 (normal), cannot be read` |
 | `model` | `the on-device model, one run at a time, is held by LABEL` |
 | `exclusive` | `it waits behind exclusive work queued ahead of it: LABEL`, or `… holding the host: LABEL` |
-| `guard` | `the guard entry of LABEL, PID 4242, is dead and requires inspection; …`, `uncertain` for an entry marked so, or `the guard PATH is unreadable or not in admission's format and requires inspection; …`, where `…` names `python3 scripts/eng admissions recover` |
+| `guard` | `the guard entry of LABEL, PID 4242, is dead and requires inspection (it has no process record); …`, `uncertain` for an entry marked so, with why [recovery](#lock-reclamation) left it in parentheses (`its owner still runs`, `it has no process record`, `its process record cannot vouch for every command` or `2 of its processes still run: PID 4250, 4251`), or `the guard PATH is unreadable or not in admission's format and requires inspection; …`, where `…` names `python3 scripts/eng admissions recover` |
 
 Each kind is the one the [admission log](#admission-log) records for the refusal. After its
 timeout (5,400 s by default) admission fails without reclaiming any lock, naming the same reason,
 and an exclusive request leaves the queue. A script that runs several jobs at once leaves at least one of the guaranteed
 HEAVY_SLOTS for other sessions.
 
-A dead or uncertain entry refuses every session's heavy work until it is recovered.
-`python3 scripts/eng admissions recover` lists those entries, and
-`eng admissions recover OWNER` removes one once its owner has ended and a census against its
-process record finds nothing it ran still running ([lock reclamation](#lock-reclamation)).
+Admission recovers each dead or uncertain entry it meets, as `eng admissions recover OWNER`
+would: it removes one once its owner has ended and a census against its process record finds
+nothing it ran still running ([lock reclamation](#lock-reclamation)). An entry recovery leaves
+refuses every session's heavy work until it is recovered, and admission checks it again every
+HEAVY_RECOVER_SECONDS (60). `python3 scripts/eng admissions recover` lists those entries.
 
 A request's label names it in waiting messages, the guard and the [admission log](#admission-log).
 A lane run's label is its project's name, from engineering.json, a space and the lane, such as
@@ -263,16 +264,17 @@ A line holds:
   - `exclusive`: an exclusive request is queued ahead, or exclusive work holds the host, which
     refuses the request at its slots or the model;
   - `guard`: the guard is unreadable or not in admission's format, or an owner is dead or
-    uncertain, and requires inspection.
+    uncertain and recovery left its entry, and requires inspection.
 - `outcome`, on an `ended` line: `released` when the command finished, whatever its exit status;
   `not-started`; `stopped` or `timed-out` when a stop or the command's timeout saw it and every
   observed descendant end; or `uncertain` when the guard entry was kept for inspection
   ([lock reclamation](#lock-reclamation)). On a `withdrawn` line: `timed-out`, which includes
   `eng run --if-free` declining; `stopped`; or `failed`.
-- On a `recovered` line, which `eng admissions recover` writes when it removes an entry: `pid` is
-  the entry's owner; `uncertain`, whether the entry was marked so; `commands`, `processes` and
-  `spaces`, how many unsettled commands, recorded processes and process groups or sessions its
-  census checked.
+- On a `recovered` line, which `eng admissions recover`, or admission itself, writes when it
+  removes an entry: `pid` is the entry's owner; `uncertain`, whether the entry was marked so;
+  `commands`, `processes` and `spaces`, how many unsettled commands, recorded processes and
+  process groups or sessions its census checked; and `automatic`, true when admission recovered
+  it, absent when a person did.
 
 An `admitted` line with no `ended` line is still held, or SIGKILL ended its admitting process,
 which leaves its guard entry for recovery as well, and a `recovered` line follows once it is
@@ -1711,7 +1713,7 @@ Supervise the process group you own. The toolkit's `processes.supervise`, which 
   entry of its own. It has received the signal too, so it stops its own command, with its own
   10 s to SIGKILL and 5 s after, and then removes its entry, or keeps it uncertain if a process
   of its command is left. Then SIGKILL reaches what remains, an owner that never settled
-  included, which leaves its entry for attended recovery; a stopped or timed-out run is
+  included, which leaves its entry for recovery; a stopped or timed-out run is
   uncertain if any process is still running 5 s after that SIGKILL. Until 2026-10-27 SIGKILL
   came 10 s after the stop whatever ran, so a light lane whose script admits its own work, as
   BreezEPUB's book-opening lane does, could end its `eng admit` while Xcode's tools were still
@@ -1964,9 +1966,9 @@ uncertain, in case SIGKILL follows, then stops its command
 ([process supervision](#process-supervision)). When the command and every observed descendant
 have ended, and the final census finds nothing left in their process groups and sessions,
 admission removes the entry and the process ends by the signal it received; if any is still
-running 5 s after SIGKILL, or the census finds one, the entry stays uncertain for attended
-recovery. SIGKILL itself cannot be caught: a killed job's entry stays, dead, for attended
-recovery. Until 2026-10-22 none of these signals was handled. SIGTERM and SIGHUP ended the
+running 5 s after SIGKILL, or the census finds one, the entry stays uncertain for
+[recovery](#lock-reclamation). SIGKILL itself cannot be caught: a killed job's entry stays, dead,
+for recovery. Until 2026-10-22 none of these signals was handled. SIGTERM and SIGHUP ended the
 admitting process at once, leaving its entry dead and its command, in its own session, running
 unsupervised; SIGINT stopped only the command's process group and left the entry uncertain.
 
@@ -2086,8 +2088,15 @@ both probe processes ran on unsignaled (2026-10-31, ChatGPT 26.1027.30824 with c
 terminal result before ending its turn under `codex exec`, and before the thread is archived in
 Codex Desktop.
 
-Recovery of a guard entry is attended, and `eng admissions recover` carries it out. The first
-command below lists each entry that refuses admission, dead or uncertain, with its identity, label,
+Admission recovers a dead or uncertain guard entry itself, by the checks below, before it
+refuses a request for it: it prints `heavy: Recovered LABEL (PID …): …`, logs a `recovered` line
+marked `automatic` ([admission log](#admission-log)) and goes on. An entry those checks leave is
+checked again after HEAVY_RECOVER_SECONDS (60), since a census reads every process on the host,
+and its waiting message says why it stayed. Until 2026-11-01 recovery was attended only, and a
+task stop's SIGKILL left entries whose commands had all ended refusing heavy work on both Macs
+until the owner removed them; agents could not always run the command themselves.
+
+`eng admissions recover` carries out the same recovery by hand. The first command below lists each entry that refuses admission, dead or uncertain, with its identity, label,
 PID and how long ago it was admitted (for an entry an older toolkit wrote, how long ago its owner
 started), whether its owner still runs, and whether it has a process record. The second recovers
 one entry, named by its owner's PID or by its identity:
