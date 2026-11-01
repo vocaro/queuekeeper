@@ -30,11 +30,13 @@ stops it before the reservation ends, keeping time for its termination and the s
 restoration. It records the run in the entry and never releases the device. `eng remote --device`
 bounds a run on the second Mac the same way, and there a bounded run takes its reservation from the lease.
 
-The owner gave the paired iPad and iPhone a standing approval (owner's decision, 2026-10-31), so a
-session takes either in turn without asking: `devices take KEY` joins KEY's queue, waits while another
-session holds it or waits ahead, and reserves it with that approval. The queue lives beside the
-entries, so joining it never changes a holder's revision, and a waiter whose process is gone drops
-out. While anyone waits, only the first in line may reserve the entry. A session records each app it
+The owner gave the paired iPad a standing approval (owner's decision, 2026-10-31), so a session
+takes it in turn without asking: `devices take iPad` joins its queue, waits while another session
+holds it or waits ahead, and reserves it with that approval. The iPhone, the owner's personal phone,
+has none (owner's decision, 2026-11-01): a session asks the owner for a window first, and `take
+iPhone` refuses unless it names that window (--approved-*), as `reserve` does. The queue lives
+beside the entries, so joining it never changes a holder's revision, and a waiter whose process is
+gone drops out. While anyone waits, only the first in line may reserve the entry. A session records each app it
 launches on its device (`update --launched BUNDLE`), and releasing an entry that records any says how
 they were quit.
 """
@@ -93,12 +95,20 @@ TIMED_OUT = 124
 MANAGED = {"revision", "ownerChatID", "lastOwnerChatID", "previousLease", "recovery", "importedFrom",
            "importedVersions", "uncertainReason", "hostProcessStart", "approval", "ownedProcesses", "frontmost",
            "launchedApps", "appsQuit"}
+# The paired devices `take` waits in line for, by their entries' keys.
+PAIRED = ("iPad", "iPhone")
 # The owner's standing approval of each paired device, by its entry's key, in the owner's words. It
 # covers what a window does: installing, launching and automated runs, not operating the device.
 STANDING = {
     "iPad": {"by": "owner", "at": "2026-10-31T06:14:00Z",
              "words": "Also add iPad queue"},
-    "iPhone": {"by": "owner", "at": "2026-10-31T06:16:00Z", "words": "so the same for the iphone"},
+}
+# Paired devices without standing approval, by the owner's decision in the owner's words: each is
+# taken only within a window the owner agreed.
+WINDOWED = {
+    "iPhone": {"by": "owner", "at": "2026-11-01T23:37:06Z",
+               "words": "because it is my personal phone agents need to get approval from me first for a "
+                        "window of time in which the iphone is reserved for their use"},
 }
 # Sessions waiting in line for an entry, by its key, kept beside the entries.
 QUEUES = "queues"
@@ -444,16 +454,29 @@ class Record:
         """Take owner out of key's line, if it is there."""
         self._line(key, lambda line: [item for item in line if item["owner"] != owner])
 
-    def take(self, key, *, owner, purpose, release_by, timeout, title=None, details=None, poll=POLL, said=None):
-        """Reserve key in turn with the owner's standing approval, waiting up to timeout seconds in its line.
+    def take(self, key, *, owner, purpose, release_by, timeout, title=None, details=None, poll=POLL, said=None,
+             approval=None):
+        """Reserve key in turn, waiting up to timeout seconds in its line, within approval, the window the
+        owner agreed, or else with the owner's standing approval of key.
 
         The entry already records the device, from a reservation the owner agreed, so the standing approval
         names no other. An orphaned or uncertain entry needs attended recovery; waiting leaves the line on
         any end."""
-        standing = STANDING.get(key)
-        if standing is None:
-            raise ValueError(f"only {', '.join(STANDING)} have the owner's standing approval; reserve {key} "
-                             "within a window the owner agreed")
+        if key not in PAIRED:
+            raise ValueError(f"take waits only for {' or '.join(PAIRED)}; reserve {key} within a window the "
+                             "owner agreed")
+        if approval is None and key not in STANDING:
+            raise Refused(f"{key} has no standing approval. Ask the owner for a window first, then "
+                          f"reserve it within that window with `devices reserve {key} "
+                          "--approved-by … --approved-at … --approved-until …`, or wait in line for it with the "
+                          "same options on `devices take`. Nothing was changed")
+        if approval is None:
+            approval = {**STANDING[key], "until": "released"}
+        else:
+            ends = moment(release_by)
+            if ends is None:
+                raise ValueError("the expected release must be a future ISO 8601 time with a time zone")
+            approval = _approval(approval, ends)
         said = said or (lambda text: print(text, file=sys.stderr, flush=True))
         place = self.join(key, owner=owner, purpose=purpose)
         said(f"devices: {owner} waits for {key}, place {place} in line")
@@ -471,7 +494,7 @@ class Record:
                     try:
                         return self.reserve(key, owner=owner, revision=entry["revision"], purpose=purpose,
                                             release_by=release_by, title=title, details=details,
-                                            approval={**standing, "until": "released"})
+                                            approval=approval)
                     except Stale:
                         continue
                 if state in ("orphan", "uncertain"):
@@ -952,6 +975,8 @@ def _describe(key, entry, line=()):
         parts.append("waiting: " + ", ".join(f"{item['owner']} ({item.get('purpose')})" for item in line))
     if key in STANDING:
         parts.append("standing approval: take it in turn with `devices take`")
+    elif key in WINDOWED:
+        parts.append("no standing approval: ask the owner for a window, then reserve it with --approved-*")
     parts.append(f"revision {entry.get('revision', 0)}")
     return "; ".join(parts)
 
@@ -991,6 +1016,13 @@ def _fields(pairs):
     return result
 
 
+def _given_approval(args):
+    """The owner's window the --approved-* options name, or None."""
+    given = {"by": args.approved_by, "at": args.approved_at, "until": args.approved_until,
+             "words": args.approval_words}
+    return {name: value for name, value in given.items() if value is not None} or None
+
+
 def _report(key, entry):
     print(json.dumps({"key": key, "revision": (entry or {}).get("revision", 0),
                       "condition": condition(entry) if entry else None, "entry": entry}, indent=2))
@@ -1027,9 +1059,10 @@ def main(argv=None):
                         help="a process this session launched, which release waits for")
     update.add_argument("--launched", action="append", metavar="BUNDLE", default=[],
                         help="an app this session launched on the device, which release says it quit")
-    take = commands.add_parser("take", help=f"wait in line for {' or '.join(STANDING)} and reserve it with the "
-                               "owner's standing approval; prints the entry")
-    take.add_argument("key", choices=sorted(STANDING))
+    take = commands.add_parser("take", help=f"wait in line for {' or '.join(PAIRED)} and reserve it with the "
+                               f"owner's standing approval ({', '.join(STANDING)}) or within the window the owner "
+                               "agreed (--approved-*); prints the entry")
+    take.add_argument("key", choices=sorted(PAIRED))
     take.add_argument("--owner", default=default_owner(), help=f"the session (default: {OWNER}, else the agent session)")
     take.add_argument("--purpose", required=True)
     take.add_argument("--release-by", required=True)
@@ -1037,6 +1070,10 @@ def main(argv=None):
     take.add_argument("--set", action="append", metavar="FIELD=JSON")
     take.add_argument("--wait", type=float, metavar="SECONDS", default=3600,
                       help="give up after waiting this long (default 3600)")
+    take.add_argument("--approved-by", help=f"who approved the window; required for {', '.join(WINDOWED)}")
+    take.add_argument("--approved-at", help="when the owner approved, ISO 8601 with a time zone")
+    take.add_argument("--approved-until", help="when the approval ends, ISO 8601 with a time zone, or released")
+    take.add_argument("--approval-words", help="the owner's words, quoted")
     release = commands.add_parser("release", help="release your own entry")
     release.add_argument("key")
     release.add_argument("--owner", required=True)
@@ -1095,12 +1132,9 @@ def main(argv=None):
         elif args.action == "show":
             _report(args.key, record.entry(args.key))
         elif args.action == "reserve":
-            given = {"by": args.approved_by, "at": args.approved_at, "until": args.approved_until,
-                     "words": args.approval_words}
-            approval = {name: value for name, value in given.items() if value is not None} or None
             _report(args.key, record.reserve(args.key, owner=args.owner, revision=args.revision,
                 purpose=args.purpose, release_by=args.release_by, device=args.device, title=args.title,
-                details=_fields(args.set), approval=approval))
+                details=_fields(args.set), approval=_given_approval(args)))
         elif args.action == "update":
             if not args.set and not args.own and not args.launched:
                 raise ValueError("update takes --set FIELD=JSON, --own PID or --launched BUNDLE")
@@ -1111,7 +1145,7 @@ def main(argv=None):
                 raise ValueError(f"name the session: --owner, or {OWNER}")
             _report(args.key, record.take(args.key, owner=args.owner, purpose=args.purpose,
                                           release_by=args.release_by, timeout=args.wait, title=args.title,
-                                          details=_fields(args.set)))
+                                          details=_fields(args.set), approval=_given_approval(args)))
         elif args.action == "release":
             _report(args.key, record.release(args.key, owner=args.owner, revision=args.revision,
                                              outcome=args.outcome, restoration=args.restoration,
