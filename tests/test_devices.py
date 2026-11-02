@@ -949,6 +949,45 @@ class BoundedRunTests(unittest.TestCase):
         entry = self.record.entry("iPad")
         self.assertEqual((devices.condition(entry), entry["run"]["outcome"]), ("held", "exit 3"))
 
+    def test_a_command_finds_its_process_recorded_however_late_the_record_comes(self):
+        self.hold()
+        during = self.root / "during.json"
+        real = devices.BoundedRun.own
+        def late(bounded, pid):
+            # As a busy host can delay it: the record waits for the command to have read the entry,
+            # which it must not get to do before the record names it (#94).
+            deadline = time.monotonic() + 2
+            while not during.exists() and time.monotonic() < deadline: time.sleep(0.01)
+            real(bounded, pid)
+        with patch.object(devices.BoundedRun, "own", late):
+            code, _output, error = self.cli("run", "iPad", "--owner", "session-a", "--", sys.executable, "-c", PROBE,
+                                            str(self.path), "iPad", str(during))
+        self.assertEqual(code, 0, error)
+        [command] = json.loads(during.read_text())["ownedProcesses"]
+        self.assertNotEqual(command["pid"], os.getpid())
+
+    def test_a_launcher_that_dies_before_recording_its_command_leaves_it_unrun(self):
+        # Recovery trusts ownedProcesses to know what still runs, so a command nothing records must not run.
+        self.hold()
+        started = self.root / "root"
+        script = ("import os, signal, sys; from vocaro_engineering import devices\n"
+                  "def own(_bounded, pid):\n"
+                  f"    open({str(started)!r}, 'w').write(str(pid)); os.kill(os.getpid(), signal.SIGKILL)\n"
+                  "devices.BoundedRun.own = own\n"
+                  "devices.main(sys.argv[1:])\n")
+        launcher = subprocess.run([sys.executable, "-c", script, "run", "iPad", "--owner", "session-a", "--", *self.mark()],
+                                  env={**os.environ, "PYTHONPATH": str(SOURCE)}, capture_output=True, text=True, timeout=60)
+        self.assertEqual(launcher.returncode, -signal.SIGKILL, launcher.stderr)
+        root = int(started.read_text())
+        for _ in range(600):
+            if process_start(root) is None: break
+            time.sleep(0.05)
+        self.assertIsNone(process_start(root))
+        self.assertFalse(self.marker.exists())
+        entry = self.record.entry("iPad")
+        self.assertNotIn("ownedProcesses", entry)
+        self.assertEqual(devices.condition(entry), "orphan")
+
     def test_a_command_that_names_another_device_is_refused_and_runs_nothing(self):
         self.hold()
         self.hold("iPhone", device=PHONE, owner="session-b")

@@ -270,6 +270,51 @@ class ProcessTests(unittest.TestCase):
                         processes.supervise(command, cwd=cwd)
                     self.assertIsInstance(raised.exception, OSError)
 
+    def test_on_start_runs_before_the_command_and_the_command_is_otherwise_the_same(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ran = Path(directory) / "ran"
+            seen = []
+            script = f"(/usr/bin/yes; echo $? >{directory}/pipe) | /usr/bin/head -n 1 >/dev/null; " \
+                     f"/usr/bin/env >{directory}/env; /bin/ls /dev/fd >{directory}/fds; echo \"$0 $*\" >{ran}"
+            command = ["sh", "-c", script, "zero", "one two"]
+            environment = {"PATH": "/bin:/usr/bin", "VOCARO_TEST": "kept"}
+            def run(**options):
+                self.assertEqual(processes.supervise(command, cwd=directory, env=environment, **options), 0)
+                return {name: (Path(directory) / name).read_text() for name in ("pipe", "env", "fds", "ran")}
+            bare = run()
+            ran.unlink()
+            def on_start(pid):
+                # Long enough for a command that was not held to have written its file.
+                time.sleep(1)
+                seen.append((pid, ran.exists()))
+            self.assertEqual(run(on_start=on_start), bare)
+            [(pid, early)] = seen
+            self.assertFalse(early)
+            self.assertGreater(pid, 0)
+            # sh keeps an ignored SIGPIPE from its children, so yes shows the disposition it got.
+            self.assertEqual(bare["pipe"].strip(), str(128 + signal.SIGPIPE))
+            self.assertEqual(bare["ran"].strip(), "zero one two")
+
+    def test_a_command_that_cannot_start_after_on_start_is_not_started(self):
+        with tempfile.TemporaryDirectory() as directory:
+            unexecutable = Path(directory) / "script.sh"
+            unexecutable.write_text("#!/bin/sh\nexit 0\n")
+            for command in [str(Path(directory) / "missing")], [str(unexecutable)]:
+                with self.subTest(command=command), self.assertRaises(processes.NotStarted) as raised:
+                    processes.supervise(command, cwd=directory, on_start=lambda pid: None)
+                self.assertIn("did not start", str(raised.exception))
+
+    def test_an_on_start_that_raises_runs_nothing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ran = Path(directory) / "ran"
+            def on_start(pid):
+                # Long enough for a command that was not held to have written its file.
+                time.sleep(1)
+                raise ValueError("refused")
+            with self.assertRaisesRegex(ValueError, "refused"):
+                processes.supervise([sys.executable, "-c", f"open({str(ran)!r}, 'w')"], cwd=directory, on_start=on_start)
+            self.assertFalse(ran.exists())
+
     def test_a_timeout_is_not_a_successful_terminal_result(self):
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(TimeoutError):

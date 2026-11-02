@@ -3,6 +3,7 @@ import contextlib
 import os
 import json
 from pathlib import Path
+import select
 import signal
 import subprocess
 import sys
@@ -34,6 +35,29 @@ SETTLE_WAIT = 30
 # The signals forwarding_signals carries out as a supervised stop. SIGKILL cannot be caught.
 STOP_SIGNALS = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
 _stops = []
+# Seconds supervise waits for a held command's exec once on_start has released it, which covers an
+# interpreter start on a busy host; not measured. Past it the run goes on, and a failed exec then shows
+# only as status 127, not NotStarted.
+GATE_WAIT = 30
+# What a command with an on_start starts as: it keeps the PID and start time through the exec, and runs
+# nothing unless on_start returns, which a launcher's death prevents by closing the gate. The release is
+# the command's environment, since macOS's framework Python adds to its own. An exec failure goes back
+# on the second descriptor, which a successful exec closes. Python ignores these two signals at its
+# start, and the command must not inherit that, as it does not from subprocess.
+GATE = """
+import json, os, signal, sys
+gate, told = int(sys.argv[1]), int(sys.argv[2])
+release = b""
+while part := os.read(gate, 65536): release += part
+if not release.endswith(b"\\n"): os._exit(1)
+os.close(gate)
+os.set_inheritable(told, False)
+for name in ("SIGPIPE", "SIGXFSZ"): signal.signal(getattr(signal, name), signal.SIG_DFL)
+try: os.execvpe(sys.argv[3], sys.argv[3:], json.loads(release))
+except Exception as error:
+    os.write(told, f"{sys.argv[3]}: {error}".encode())
+    os._exit(127)
+"""
 
 
 def snapshot():
@@ -174,11 +198,29 @@ def forwarding_signals():
             raise SystemExit(128 + number)
 
 
+def released(on_start, pid, environment, go, told):
+    """Run on_start for the held process, then release it through GATE; why its exec failed, or nothing."""
+    try:
+        try:
+            on_start(pid)
+            # A stop can have ended it already, which the supervision sees.
+            with contextlib.suppress(BrokenPipeError), os.fdopen(os.dup(go), "wb") as gate:
+                gate.write(json.dumps(environment).encode() + b"\n")
+        finally:
+            os.close(go)
+        ready, _, _ = select.select([told], [], [], GATE_WAIT)
+        return os.read(told, 4096).decode(errors="replace") if ready else ""
+    finally:
+        os.close(told)
+
+
 def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None, on_start=None,
               kill_after=KILL_AFTER):
     """Wait for the owned root and observed descendants, including separate process groups.
 
-    on_start(pid) runs once the root has started; if it raises, the root is stopped.
+    on_start(pid) runs once the root's process exists and before its command does, so the command
+    finds whatever on_start records (#94); if it raises, or this process dies first, the command
+    never runs.
 
     PID start identities prevent signaling a reused PID. An uncertain run raises so admission
     retains its orphan guard. A confirmed terminal exit keeps its status. A run that fails, is
@@ -222,14 +264,23 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
 
     # First, so that a record without this command's root says it may have started.
     note(argv=[str(part) for part in command])
+    launch, passed, held_gate, go, told, tell = command, descriptors, None, None, None, None
+    if on_start is not None:
+        held_gate, go = os.pipe()
+        told, tell = os.pipe()
+        launch = [sys.executable, "-I", "-S", "-c", GATE, str(held_gate), str(tell), *command]
+        passed = (*descriptors, held_gate, tell)
     try:
-        child = subprocess.Popen(command, cwd=cwd, env=environment, stdout=stdout,
+        child = subprocess.Popen(launch, cwd=cwd, env=environment, stdout=stdout,
             stderr=subprocess.STDOUT if stdout is not None else None, start_new_session=True,
-            pass_fds=descriptors)
+            pass_fds=passed)
     except (OSError, ValueError) as error:
         # Popen reaps a child whose exec failed before it raises; nothing else ran.
+        if on_start is not None: os.close(go); os.close(told)
         note(settled="not-started")
         raise NotStarted(f"Command did not start: {error}") from error
+    finally:
+        if on_start is not None: os.close(held_gate); os.close(tell)
     note(root=child.pid, spaces=[child.pid])
     # Each observed descendant's (parent, group, start) when first seen, for its identity and report.
     known, born, exited, stopping = {}, None, None, set()
@@ -275,7 +326,11 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
         return bool(found)
 
     try:
-        if on_start is not None: on_start(child.pid)
+        if on_start is not None:
+            failure = released(on_start, child.pid, environment, go, told)
+            if failure:
+                note(settled="not-started")
+                raise NotStarted(f"Command did not start: {failure}")
         while True:
             current = snapshot()
             row = current.get(child.pid)
@@ -388,7 +443,8 @@ def stop(process):
     for sig, limit in [(signal.SIGINT, 10), (signal.SIGTERM, 5), (signal.SIGKILL, 5)]:
         try:
             os.killpg(process.pid, sig)
-        except ProcessLookupError:
+        # macOS says EPERM for a group whose only member has ended and is not yet reaped.
+        except (ProcessLookupError, PermissionError):
             pass
         try:
             process.wait(timeout=limit)
