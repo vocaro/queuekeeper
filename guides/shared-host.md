@@ -1371,6 +1371,39 @@ record's lock, which every reservation takes, until the shutdown has started, so
 between the check and the stop. It holds that lock for at most 20 seconds, under the 30 another change
 waits, and gives up with nothing stopped when it cannot have the lock in 5.
 
+### Registered Mac builds
+
+Xcode registers a Mac app when it builds it, and macOS registers one when it launches, and neither is
+undone. On 2026-10-31 the second Mac had 22 registered builds of one app, whose Quick Look extensions
+shared their bundle identifiers and version; the system ran an old copy's extension, and a new build's
+never ran ([vocaro-engineering#87](https://github.com/vocaro/vocaro-engineering/issues/87)). The same
+holds for document types, URL schemes, Spotlight importers, services and Share extensions.
+
+So when an `eng run` or `eng admit` ends, by a pass, a failure, its time limit or a stop, eng runs
+`pluginkit -r` on each `Contents/PlugIns/*.appex` and `lsregister -u` on each Mac app under the derived
+data its xcodebuilds named (`app_registrations`). A lane needs no option: eng reads the `-derivedDataPath`,
+or the folder of `-xctestrun …/Build/Products/…`, of each xcodebuild among the run's descendants, however
+deep in its scripts, every 0.5 seconds. Nested runs leave this to the outermost, so a run keeps its
+registrations until it ends.
+
+- **What counts as built.** Whatever lies in a folder the run's own xcodebuild named, up to date or not:
+  launching an app that an incremental build or `test-without-building` left unchanged registers it again.
+  Give each lane its own folder, as parallel runs need anyway.
+- **What is never touched.** Anything outside the folder, through a symbolic link included; an iOS app,
+  which has no `Contents`; a folder another live run names, or whose path a process outside this run's
+  lineage names, which waits; and a path that cannot be derived data: one holding the home folder or the
+  run's directory, a checkout, or Xcode's default folder, which every session shares.
+- **SIGKILL.** It runs no cleanup. The run's journal, in `app-registrations` beside the admission log,
+  stays and its builds stay registered, until the next outermost run on that Mac, in any project, finds
+  that the journal's PID is gone or has another start, and sweeps it. Until that run, the system can still
+  pick the killed run's extension. A folder that had to wait, or a tool that failed, is swept the same way.
+- **Not covered.** An xcodebuild with no `-derivedDataPath` (the run says so); a copy of a build outside
+  its folder, such as one in an evidence folder; a folder removed before the run ends, since nothing is
+  left to name to `lsregister`; an xcodebuild that a script starts and ends between two samples; and
+  registrations from before this existed, in a folder no later run uses.
+
+A problem here is printed on stderr and never changes the run's result.
+
 ## Device reservations
 
 Physical devices, and the members of a project's simulator pool, are

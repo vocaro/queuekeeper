@@ -11,7 +11,7 @@ import subprocess
 import sys
 import time
 
-from . import __version__, devices, disk, docs, evidence, evidence_offload, foreground, github_artifacts, keychain, merge_queue, \
+from . import __version__, app_registrations, devices, disk, docs, evidence, evidence_offload, foreground, github_artifacts, keychain, merge_queue, \
     offload_host, parallel, processes, release, remote, resources, skills, spelling, xctest_shards
 from .config import TOOLKIT_ROOT, CAPABILITIES, DEFAULT_TOOLKIT, load, source_identity, stays
 from .resources import BUSY, FREE_WAIT
@@ -411,9 +411,11 @@ def admit(root, args, config=None):
         def work():
             github_artifacts.configured(root, config)
             # A foreground command restores what it changed on the Mac before SIGKILL, VoiceOver first.
-            return processes.supervise(command, cwd=Path.cwd(), on_stop=admission.interrupted, timeout=args.time_limit,
-                                       kill_after=processes.FOREGROUND_KILL_AFTER if args.foreground
-                                       else processes.KILL_AFTER)
+            with app_registrations.around_run([command], Path.cwd()):
+                return processes.supervise(command, cwd=Path.cwd(), on_stop=admission.interrupted,
+                                           timeout=args.time_limit,
+                                           kill_after=processes.FOREGROUND_KILL_AFTER if args.foreground
+                                           else processes.KILL_AFTER)
         try:
             return record(root / ".build/engineering/admit", receipt, work)
         except processes.TimedOut as error:
@@ -753,7 +755,8 @@ def main(argv=None):
                 # What an earlier run left in results/ is not this run's, here as on the second Mac (remote.RESULTS).
                 shutil.rmtree(directory / "results", ignore_errors=True)
                 if resource != "light": github_artifacts.configured(root, config)
-                return work()
+                commands = [config["lanes"][name]["command"] for name in group] if group is not None else [lane["command"]]
+                with app_registrations.around_run(commands, root): return work()
             if group is None:
                 command = awake(lane, extra)
                 receipt.update(command=command, arguments=extra, timeout=lane.get("timeout", processes.DEFAULT_LIMIT))
