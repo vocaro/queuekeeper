@@ -476,15 +476,6 @@ def git(root, *arguments, variables=None):
     return result.stdout.strip()
 
 
-def committed(root, untracked):
-    """HEAD of a checkout with nothing uncommitted, as the toolkit's must be: only the project's
-    working tree goes as a snapshot."""
-    status = git(root, "status", "--porcelain", f"--untracked-files={'normal' if untracked else 'no'}")
-    if status:
-        raise Unavailable(f"{root} has changes the second Mac would not run; commit them first:\n{status}")
-    return git(root, "rev-parse", "HEAD")
-
-
 def snapshot(root):
     """The commit that holds the checkout's working tree, and HEAD: HEAD itself when the tree is
     HEAD's, otherwise a snapshot commit with HEAD as its parent, which no branch holds.
@@ -510,18 +501,36 @@ def snapshot(root):
     return commit, head
 
 
+def kit_snapshot(kit):
+    """Whether the toolkit sent is a snapshot of its checkout's working tree rather than its HEAD."""
+    return bool(kit) and kit["commit"] != kit.get("head", kit["commit"])
+
+
+def toolkit_identity(kit, commit):
+    """A receipt's toolkit: the commit that ran, a snapshot when its checkout had changes, and the HEAD it
+    was made on. The toolkit's own project runs as its own commit."""
+    if not kit: return {"toolkit": commit}
+    return {"toolkit": kit["commit"], "toolkitHead": kit.get("head", kit["commit"]),
+            "toolkitSnapshot": kit_snapshot(kit)}
+
+
 def changed_since(root, offered):
     """Why work this Mac admitted after offering it to the second Mac would not run what it sent, or
     None: a run here reads the checkout's working tree as it is when the run starts, and that tree is
     no longer the commit sent (vocaro-engineering#79). Work for which nothing was sent runs the tree
     as it is."""
-    commit = offered.sent.get("commit") if offered is not None else None
-    if commit is None: return None
-    now, _head = snapshot(root)
-    if git(root, "rev-parse", f"{now}^{{tree}}") == git(root, "rev-parse", f"{commit}^{{tree}}"): return None
-    changes = git(root, "diff", "--name-status", "--no-renames", commit, now)
-    return (f"the working tree changed after {commit[:12]} was sent to the second Mac, and a run here would read "
-            f"the changed tree, not what was sent:\n{changes}")
+    sent = offered.sent if offered is not None else {}
+    if sent.get("commit") is None: return None
+    # The toolkit's tree too, which goes as a snapshot of its own when its checkout has changes.
+    kit = sent.get("kit") or {}
+    for checkout, commit, what in [(root, sent["commit"], "working tree"),
+                                   *([(TOOLKIT_ROOT, kit["commit"], "toolkit's working tree")] if kit else [])]:
+        now, _head = snapshot(checkout)
+        if git(checkout, "rev-parse", f"{now}^{{tree}}") == git(checkout, "rev-parse", f"{commit}^{{tree}}"): continue
+        changes = git(checkout, "diff", "--name-status", "--no-renames", commit, now)
+        return (f"the {what} changed after {commit[:12]} was sent to the second Mac, and a run here would read "
+                f"the changed tree, not what was sent:\n{changes}")
+    return None
 
 
 def common_directory(root):
@@ -820,7 +829,7 @@ def passed(root, lane, revision="HEAD"):
     written before vocaro-engineering#58, is not read.
 
     A snapshot's run never counts, for HEAD or for the snapshot itself: no branch holds it. Nor
-    does a group's serial reference."""
+    does a run on a snapshot of the toolkit's working tree, nor a group's serial reference."""
     commit = git(root, "rev-parse", "--verify", f"{revision}^{{commit}}")
     try:
         receipt = json.loads((store(root) / commit / f"{lane}.json").read_text())
@@ -828,7 +837,7 @@ def passed(root, lane, revision="HEAD"):
         return None
     result = receipt.get("result", {})
     whole = receipt.get("commit") == commit and receipt.get("lane") == lane and not receipt.get("arguments") \
-        and not receipt.get("snapshot") and not receipt.get("serial")
+        and not receipt.get("snapshot") and not receipt.get("toolkitSnapshot") and not receipt.get("serial")
     return receipt if whole and result.get("exitStatus") == 0 and not result.get("stopped") else None
 
 
@@ -1016,10 +1025,12 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
             if toolkit == Path(root).resolve():
                 project["origin"] = origin(root)
             else:
-                kit_commit = committed(toolkit, untracked=False)
+                # The toolkit's working tree goes as the project's does, a snapshot when it has changes: a
+                # run here would read that same tree (owner's decision, vocaro-engineering#104).
+                kit_commit, kit_head = snapshot(toolkit)
                 kit_directory = checkout_name(toolkit)
                 kit = {"directory": kit_directory, "repository": f"repositories/{kit_directory}.git",
-                       "commit": kit_commit, "ref": f"{REF}{kit_commit}", "origin": origin(toolkit)}
+                       "commit": kit_commit, "head": kit_head, "ref": f"{REF}{kit_commit}", "origin": origin(toolkit)}
         except RuntimeError as error:  # Git cannot name a commit to send, so nothing is sent.
             raise Unavailable(str(error)) from error
         preparation["seconds"]["staging"] = round(time.monotonic() - began, 3)
@@ -1039,6 +1050,8 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
             "dispatcher": local["name"], "subdirectory": subdirectory}
 
     at = commit[:12] if commit == head else f"{commit[:12]}, a snapshot of the working tree on {head[:12]},"
+    if kit_snapshot(kit):
+        at += f" with the toolkit at {kit['commit'][:12]}, a snapshot of its working tree on {kit['head'][:12]},"
     if sent:
         print(f"remote: offering {at} to {host} again", file=sys.stderr, flush=True)
     else:
@@ -1081,7 +1094,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
         except (Misconfigured, processes.Interrupted) as error:
             # What the preparation cost and how it ended stay, unique to this dispatch; the latest results stay whole.
             receipt = {"host": host, "commit": commit, "head": head, "snapshot": commit != head,
-                       "toolkit": kit["commit"] if kit else commit, "lane": lane, "arguments": list(arguments),
+                       **toolkit_identity(kit, commit), "lane": lane, "arguments": list(arguments),
                        "work": work, "local": local, "preparation": preparation, "stage": "preparation",
                        "outcome": "failed-or-interrupted", "error": str(error)}
             own = file_results(base, name, dispatch, receipt=receipt, latest=False)
@@ -1188,7 +1201,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     # a run on this Mac's receipt does, so that the share of each Mac's work can be counted.
     receipt = {"ranOn": "second Mac", "mac": (result.get("host") or {}).get("name"), "host": host,
                "commit": commit, "head": head, "snapshot": commit != head,
-               "toolkit": kit["commit"] if kit else commit, "lane": lane, "arguments": list(arguments),
+               **toolkit_identity(kit, commit), "lane": lane, "arguments": list(arguments),
                "expect": expect, "work": work, "local": local, "result": result, "dispatched": started,
                "preparation": preparation,
                **({"serial": True} if serial else {}), **({"returned": returned} if members or returned else {}),
@@ -1196,7 +1209,8 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     own = file_results(base, name, dispatch, staging, receipt)
     # A snapshot's result stays here: no branch holds it, so it is no commit's pass. Nor is a group's
     # serial reference: the group's pass is its lanes' side by side.
-    if lane is not None and not arguments and expect is None and commit == head and not serial:
+    if lane is not None and not arguments and expect is None and commit == head and not serial \
+            and not kit_snapshot(kit):
         kept.mkdir(parents=True, exist_ok=True)
         # Whole or not at all, for a reader beside a run of the lane at this commit that ends at once.
         partial = kept / f".{lane}.json.{os.getpid()}"
@@ -1729,9 +1743,9 @@ def first(root, config, lane, arguments, expect, fallback=True):
 
     The second Mac runs the lane only if it can start it now: its queue admits the lane within
     FREE_WAIT (`eng run --if-free` there) and one of the project's checkouts there is free. A tree with
-    uncommitted changes goes as a snapshot commit (execute). The second Mac cannot run a lane whose
-    arguments name a physical device of this Mac's record, nor any lane when Git cannot name the
-    commits to send, as when the toolkit's checkout has changes to tracked files.
+    uncommitted changes goes as a snapshot commit (execute), and so does the toolkit's. The second Mac
+    cannot run a lane whose arguments name a physical device of this Mac's record, nor any lane when Git
+    cannot name the commits to send.
     """
     work = ["run", "--here", "--if-free", *(["--expect", str(expect)] if expect else []), lane,
             *(["--", *arguments] if arguments else [])]

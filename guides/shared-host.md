@@ -444,8 +444,9 @@ the commit sent to the second Mac. So when a commit was sent, this Mac runs the 
 working tree is still that commit's tree: once admitted it snapshots the tree again, and when the
 two differ it exits 2 without running, `eng: LANE not run on this Mac: the working tree changed
 after COMMIT was sent` with the changed paths, rather than run a tree other than the one sent
-([vocaro-engineering#79](https://github.com/vocaro/vocaro-engineering/issues/79)). Restore the tree
-or run the lane again. Its receipt's `sent` names the commit, and `project` the tree as it stood
+([vocaro-engineering#79](https://github.com/vocaro/vocaro-engineering/issues/79)). It holds a
+toolkit snapshot it sent to the same rule: `the toolkit's working tree changed after COMMIT was
+sent`. Restore the tree or run the lane again. Its receipt's `sent` names the commit, and `project` the tree as it stood
 once admitted. `eng admit --verify` does the same for its command.
 
 Each of this Mac's waits that ends unadmitted leaves its queue and is logged as withdrawn, as each
@@ -467,8 +468,8 @@ answers, or when ssh cannot connect, the second Mac cannot be reached, which is 
 problem: `eng run` prints one line, `eng: running LANE on this Mac:`, with why, and runs the lane
 here, under this Mac's admission, at once (the owner's decision, 2026-10-27). It does the same
 when the second Mac could not run the lane as it runs here: when the lane's arguments name a
-physical device ([physical devices and the second Mac](#physical-devices-and-the-second-mac)), or
-when the toolkit's checkout has changes to tracked files, since the toolkit goes only as a commit.
+physical device ([physical devices and the second Mac](#physical-devices-and-the-second-mac)).
+A toolkit checkout with changes keeps no lane here: its working tree goes as a snapshot too.
 
 A second Mac that answers but is misconfigured stops the lane instead, for the owner's decision
 ([shared resources](../agents/core.md#shared-resources)): when it refuses the login, as for a key
@@ -538,8 +539,8 @@ under the push's one admission, offers the lane with `eng run --offload-only LAN
 then run it a second time. The second Mac takes it only if it can start it now, a tree with
 uncommitted changes as a snapshot, so the status is that of the working tree the caller would
 otherwise run; but it never runs here. The command exits 75 (`BUSY`) when the second Mac declines
-the lane because none is configured, it cannot be reached or it is busy, or when the toolkit's
-checkout has changes to tracked files, and the caller then runs the lane itself. It exits 78 when
+the lane because none is configured, it cannot be reached or it is busy, and the caller then runs
+the lane itself. It exits 78 when
 the second Mac is misconfigured, which stops the caller too, and otherwise with the lane's status
 there.
 
@@ -640,9 +641,13 @@ its own. A large untracked file that no `.gitignore` names is sent too, and its 
 the repository's objects until Git's garbage collection prunes the snapshot, so ignore what the
 second Mac does not need.
 `eng run`, `eng admit --verify`, `eng remote run` and `eng remote admit` all send work this way.
-The toolkit goes only as a commit: a toolkit checkout with changes to tracked files is refused, and
-the work runs here, as a session's own `eng run` still does. A queue's gate uses a clean copy of the
-toolkit instead, so this never moves it ([which toolkit a gate runs](maintenance.md#the-merge-queue)).
+The toolkit's checkout goes the same way, as a snapshot of its working tree when it has changes,
+untracked files included, rather than keep the work here (owner's decision, 2026-11-02,
+[vocaro-engineering#104](https://github.com/vocaro/vocaro-engineering/issues/104)). A run here
+would read that same tree, so this changes where the work runs, not what it runs; admission
+chooses the Mac. Nothing the second Mac does needs a toolkit commit a branch holds: the policy
+refresh there reads the toolkit's `origin/main`, not the commit checked out. A queue's gate uses a
+clean copy of the toolkit instead ([which toolkit a gate runs](maintenance.md#the-merge-queue)).
 
 `eng remote` takes no slot here. It pushes the commit, and the toolkit commit that runs it, by git
 over SSH and without hooks to bare repositories under
@@ -736,7 +741,8 @@ dispatch's results unfiled
 ([vocaro-engineering#67](https://github.com/vocaro/vocaro-engineering/issues/67)).
 
 The receipt names the commit that ran (`commit`) and the HEAD it was sent from (`head`), the same
-commit unless `snapshot` is true. A snapshot's receipt stays in `.build/engineering/remote/LANE/`:
+commit unless `snapshot` is true, and likewise the toolkit's: `toolkit`, `toolkitHead` and
+`toolkitSnapshot`. A snapshot's receipt, of either, stays in `.build/engineering/remote/LANE/`:
 no branch holds the snapshot, so its result is no commit's pass, and `eng remote passed` never
 counts it, for HEAD or for the snapshot itself. Commit the work and run the lane again for a pass
 that counts. `eng remote run --serial GROUP` runs a group's lanes one after another there, under

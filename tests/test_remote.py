@@ -442,17 +442,41 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual(self.eng("remote", "passed", "check")[0], 1)
         self.assertEqual(self.eng("remote", "passed", "check", "--commit", self.commit)[0], 0)
 
-    def test_a_toolkit_with_uncommitted_changes_is_refused_before_anything_is_sent(self):
-        # Only the project's working tree goes as a snapshot; the toolkit runs at its commit.
-        (self.toolkit / "engineering.json").write_text((self.toolkit / "engineering.json").read_text() + "\n")
-        for operation in [["run", "check"], ["admit", "--", "true"]]:
-            with self.subTest(operation):
-                status, _output, error = self.eng("remote", *operation)
-                self.assertEqual(status, 2)
-                self.assertIn(f"{self.toolkit.resolve()} has changes the second Mac would not run; commit them first",
-                              error)
+    def test_a_toolkit_with_uncommitted_changes_goes_as_a_snapshot_and_counts_for_no_commit(self):
+        # vocaro-engineering#104: the toolkit's working tree goes as the project's does, where it used to
+        # be refused and the work kept on this Mac, which reads that same tree.
+        head = git(self.toolkit, "rev-parse", "HEAD")
+        settings = self.toolkit / "engineering.json"
+        settings.write_text(settings.read_text() + "\n")
+        (self.toolkit / "untracked.txt").write_text("new\n")
+        status, output, error = self.eng("remote", "run", "check")
+        self.assertEqual(status, 0, output + error)
+        receipt = json.loads((self.project / ".build/engineering/remote/check/source.json").read_text())
+        self.assertEqual((receipt["commit"], receipt["snapshot"]), (self.commit, False))
+        self.assertEqual((receipt["toolkitHead"], receipt["toolkitSnapshot"]), (head, True))
+        self.assertEqual(git(self.toolkit, "rev-parse", f"{receipt['toolkit']}^"), head)
+        self.assertIn(f"with the toolkit at {receipt['toolkit'][:12]}, a snapshot of its working tree on {head[:12]}",
+                      error)
+        # The second Mac ran the snapshot, untracked file included.
+        kit = self.checkout(0).parent / "vocaro-engineering"
+        self.assertEqual(git(kit, "rev-parse", "HEAD"), receipt["toolkit"])
+        self.assertEqual((kit / "engineering.json").read_text(), settings.read_text())
+        self.assertTrue((kit / "untracked.txt").is_file())
+        # The toolkit checkout's own HEAD, index and working tree are as they were.
+        self.assertEqual(git(self.toolkit, "rev-parse", "HEAD"), head)
+        self.assertEqual(git(self.toolkit, "status", "--porcelain"), "M engineering.json\n?? untracked.txt")
+        # A run on a toolkit no branch holds is no pass of the project's commit.
+        self.assertEqual(self.eng("remote", "passed", "check")[0], 1)
+        status, _output, error = self.eng("remote", "admit", "--", "true")
+        self.assertEqual(status, 0, error)
+        # The positive control: with the toolkit committed, the same commit's run is a pass.
         git(self.toolkit, "checkout", "--", "engineering.json")
-        self.assertFalse((self.home / remote.ROOT).exists())
+        (self.toolkit / "untracked.txt").unlink()
+        status, output, error = self.eng("remote", "run", "check")
+        self.assertEqual(status, 0, output + error)
+        receipt = json.loads((self.project / ".build/engineering/remote/check/source.json").read_text())
+        self.assertEqual((receipt["toolkit"], receipt["toolkitHead"], receipt["toolkitSnapshot"]), (head, head, False))
+        self.assertEqual(self.eng("remote", "passed", "check")[0], 0)
 
     def test_a_different_xcode_on_the_second_mac_is_refused(self):
         local = {**offload_host.identity(None), "xcode": "Xcode 99.0\nBuild version 99A1"}
@@ -1423,6 +1447,21 @@ class RemoteTests(unittest.TestCase):
             self.assertIn("eng: gate not run on this Mac: the working tree changed after ", output)
             self.assertIn("D\tnew.txt", output)
             self.assertFalse(lane.exists(), output)
+        (self.project / "new.txt").write_text("new\n")
+        # The toolkit's snapshot is held to what was sent the same way (vocaro-engineering#104).
+        settings = self.toolkit / "engineering.json"
+        settings.write_text(settings.read_text() + "\n")
+        with self.subTest("toolkit changed"), contextlib.ExitStack() as here, contextlib.ExitStack() as there:
+            here.enter_context(self.busy_here())
+            there.enter_context(self.busy_second_mac())
+            def change():
+                settings.write_text(settings.read_text() + "\n")
+                here.close()
+            status, output = self.waits_there("gate", waiting, change)
+            self.assertEqual(status, 2, output)
+            self.assertIn("eng: gate not run on this Mac: the toolkit's working tree changed after ", output)
+            self.assertIn("M\tengineering.json", output)
+            self.assertFalse(lane.exists(), output)
 
     @patch.object(remote, "OVERFLOW_TIMEOUT", 8)
     def test_a_lane_that_neither_mac_admits_in_time_runs_nowhere_and_if_free_asks_each_once(self):
@@ -1693,14 +1732,18 @@ exec {shlex.quote(real)} "$@"
             status, output, error = self.run_here("--offload-only", "gate")
         self.assertEqual(status, remote.MISCONFIGURED, output + error)
         self.assertIn("ssh reached fake but could not log in", error)
-        (self.toolkit / "engineering.json").write_text((self.toolkit / "engineering.json").read_text() + "\n")
-        status, output, error = self.run_here("--offload-only", "gate")
-        self.assertEqual(status, resources.BUSY, output + error)
-        self.assertIn("eng: gate not run: ", error)
-        self.assertIn("commit them first", error)
         # Never here, and no result of the second Mac's either.
         self.assertFalse((self.project / ".build/engineering/gate").exists())
         self.assertFalse((self.project / ".build/engineering/remote/gate").exists())
+        # A toolkit checkout with changes no longer declines: it goes as a snapshot (vocaro-engineering#104).
+        (self.toolkit / "engineering.json").write_text((self.toolkit / "engineering.json").read_text() + "\n")
+        status, output, error = self.run_here("--offload-only", "gate")
+        self.assertEqual(status, 0, output + error)
+        self.assertTrue(json.loads((self.project / ".build/engineering/remote/gate/source.json").read_text())
+                        ["toolkitSnapshot"])
+        self.assertFalse((self.project / ".build/engineering/gate").exists())
+        git(self.toolkit, "checkout", "--", "engineering.json")
+        shutil.rmtree(self.project / ".build/engineering/remote/gate")
         # A lane the second Mac never takes, and --here, contradict the mode.
         for lane, because in [("build", "the lane says: its goldens"), ("local-pair", "its lane build says"),
                               ("fail", "a light lane runs where it starts")]:
@@ -1805,7 +1848,7 @@ exec {shlex.quote(real)} "$@"
         self.assertEqual(json.loads((self.project / ".build/engineering/remote/check/source.json").read_text())["host"],
                          "build-host")
 
-    def test_a_lane_stays_here_when_asked_when_it_says_why_without_a_second_mac_or_with_a_changed_toolkit(self):
+    def test_a_lane_stays_here_when_asked_or_when_it_says_why_or_without_a_second_mac(self):
         # Uncommitted work would go as a snapshot, so none of these stays here for want of a commit.
         (self.project / "notes.txt").write_text("uncommitted\n")
         receipt = lambda: json.loads((self.project / ".build/engineering/gate/source.json").read_text())
@@ -1820,13 +1863,16 @@ exec {shlex.quote(real)} "$@"
                 self.assertEqual(self.run_here("gate")[0], 0)
                 self.assertEqual(receipt()["hereBecause"], "no second Mac is configured")
         self.assertFalse((self.home / remote.ROOT).exists())
+        # A toolkit checkout with changes no longer keeps the lane here: its tree goes as a snapshot
+        # (vocaro-engineering#104).
+        (self.project / ".build/engineering/gate/source.json").unlink()
         (self.toolkit / "engineering.json").write_text((self.toolkit / "engineering.json").read_text() + "\n")
-        status, _output, error = self.run_here("gate")
-        self.assertEqual(status, 0)
-        self.assertIn(f"running gate on this Mac: {self.toolkit.resolve()} has changes", error)
-        self.assertIn("commit them first", error)
-        self.assertIn("commit them first", receipt()["hereBecause"])
-        self.assertFalse((self.home / remote.ROOT / "checkouts").exists())
+        status, output, error = self.run_here("gate")
+        self.assertEqual(status, 0, output + error)
+        self.assertNotIn("on this Mac", error)
+        self.assertFalse((self.project / ".build/engineering/gate/source.json").exists())
+        sent = json.loads((self.project / ".build/engineering/remote/gate/source.json").read_text())
+        self.assertEqual((sent["ranOn"], sent["toolkitSnapshot"]), ("second Mac", True))
 
     def work_in_progress(self, checkout=None):
         """Uncommitted work of every kind on a new commit: a tracked edit beyond what is staged, a
