@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -771,6 +772,26 @@ class Refusals(Fixture):
         identifier = mq.Queue(self.repo).all()[0]["id"]
         with patch("builtins.print"): self.assertEqual(mq.wait(self.repo, identifier, 120), 0)
         self.assertIn("a", self.main_files())
+
+    def test_a_worker_that_ended_leaves_no_child_of_this_process(self):
+        # Unreaped, it stayed a zombie, with its own process group and this process as its parent,
+        # for test_core to take for the command it supervises when one process ran both (#99).
+        def children():
+            listing = subprocess.Popen(["ps", "-axo", "pid=,ppid=,stat="], stdout=subprocess.PIPE, text=True)
+            listed = listing.communicate()[0]
+            # Without ps itself, a child of this process while it lists.
+            return {pid: stat for pid, parent, stat in map(str.split, listed.splitlines())
+                    if int(parent) == os.getpid() and int(pid) != listing.pid}
+        before = set(children())
+        self.commit("a", "a")
+        with patch("builtins.print"): mq.add(self.repo, self.config(), "a")
+        identifier = mq.Queue(self.repo).all()[0]["id"]
+        with patch("builtins.print"): self.assertEqual(mq.wait(self.repo, identifier, 120), 0)
+        self.assertIn("a", self.main_files())
+        deadline = time.monotonic() + 30
+        while (left := {pid: stat for pid, stat in children().items() if pid not in before}) and time.monotonic() < deadline:
+            time.sleep(0.1)
+        self.assertEqual(left, {})
 
 
 if __name__ == "__main__":

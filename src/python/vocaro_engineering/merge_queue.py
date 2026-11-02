@@ -24,6 +24,7 @@ import re
 import shlex
 import subprocess
 import sys
+import threading
 import time
 
 from . import evidence, landing, processes, remote, resources
@@ -208,7 +209,9 @@ class Queue:
             started = subprocess.Popen([sys.executable, "-c", script, source, str(self.main_checkout)], cwd=self.main_checkout,
                              stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, env=environment(),
                              start_new_session=True)
-            started.returncode = 0  # never waited for: it is meant to outlive this process
+            # It is meant to outlive this process, which must not wait for it, but one that ends first
+            # stays a zombie child until reaped: a long-lived caller, `eng land --wait` or a test run, sees it.
+            threading.Thread(target=started.wait, daemon=True).start()
 
 
 def repository(root, named):
