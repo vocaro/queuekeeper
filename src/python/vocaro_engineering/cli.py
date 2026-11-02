@@ -168,19 +168,20 @@ def initialize(root, args):
 SHARED_GUIDANCE = "agents/shared-guidance.md"
 # A project's CLAUDE.md holds this line alone, beside any comment lines (owner's decision, 2026-11-01).
 CLAUDE_ENTRY = "@AGENTS.md"
+# The toolkit's main checkout, under the home path both Macs share, which AGENTS.md imports from.
+SHARED_TOOLKIT = "~/Development/vocaro-engineering"
 
 
 def claude_imports(config):
     """The lines a project's AGENTS.md imports: the common rules and each enabled capability's.
     Claude Code follows them through CLAUDE.md's import of AGENTS.md, so every Claude Code agent, a
     subagent included, has them without running eng instructions; other agents read them as text
-    beside the pointer. The toolkit is named from the home folder, which both Macs share, because
-    a path relative to the project does not reach it from a worktree under .claude/worktrees."""
-    toolkit = named_checkout(TOOLKIT_ROOT)
-    home = Path.home()
-    shown = f"~/{toolkit.relative_to(home)}" if toolkit.is_relative_to(home) else str(toolkit)
-    return [f"@{shown}/agents/core.md",
-            *(f"@{shown}/agents/capabilities/{name}.md" for name in config.get("capabilities", []))]
+    beside the pointer. The toolkit is named at SHARED_TOOLKIT, under the home folder both Macs share,
+    because a path relative to the project does not reach it from a worktree under .claude/worktrees.
+    It is never the checkout running eng: a queue gate on the second Mac runs from a toolkit checkout
+    of its own, which no project names (#106)."""
+    return [f"@{SHARED_TOOLKIT}/agents/core.md",
+            *(f"@{SHARED_TOOLKIT}/agents/capabilities/{name}.md" for name in config.get("capabilities", []))]
 
 
 def claude_entry_lines(text):
