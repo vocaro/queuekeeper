@@ -12,7 +12,8 @@ build is one `xcodebuild build-for-testing` for the first device's destination; 
 then runs `xcodebuild test-without-building` on the same .xctestrun, with its own log and
 result bundle. Each device's outcome stands apart: a boot that reached its limit leaves that
 device unmeasured, and the run fails when any device failed, and is otherwise unmeasured when
-any device was. guides/parallel-tests.md says how to bound it.
+any device was. guides/parallel-tests.md says how to bound it. A build that fails on a module older
+than a header it was built from clears that module cache and builds once more, and says so.
 """
 import argparse
 import contextlib
@@ -38,6 +39,10 @@ BOOT_COMMAND = 120
 # --test-allowance or the test's own executionTimeAllowance says otherwise: XCTest's own default once
 # -test-timeouts-enabled is on, which it rounds up to whole minutes.
 TEST_ALLOWANCE = 600
+# What clang says of an explicit module built before a dependency changed a header, and the folder of
+# derived data whose removal let the next build pass (vocaro/vocaro-engineering#85).
+STALE_MODULE = "has been modified since the module file"
+EXPLICIT_MODULES = "Build/Intermediates.noindex/SwiftExplicitPrecompiledModules"
 
 
 def parse(argv):
@@ -145,6 +150,22 @@ class Run:
         self.say(f"BUILD {args.scheme} for {destination}; log: {log}")
         started = time.time()
         status = processes.run(command, cwd=Path.cwd(), log_path=log)
+        stale = self.logs / "build-stale-modules.log"
+        stale.unlink(missing_ok=True)
+        if status != 0 and STALE_MODULE in log.read_text(errors="replace"):
+            # Reused derived data can outlive a dependency change, and only the modules are out of date.
+            # One rebuild, not a loop: a second occurrence is a failure the cache does not explain.
+            log.replace(stale)
+            modules = args.derived_data / EXPLICIT_MODULES
+            removed = modules.exists()
+            if removed: shutil.rmtree(modules)
+            self.say(f"STALE MODULES: the build failed with \"{STALE_MODULE}\"; "
+                     f"{'removed' if removed else 'found no'} {modules}, rebuilding once; first log: {stale}")
+            started = time.time()
+            status = processes.run(command, cwd=Path.cwd(), log_path=log)
+            self.say(f"STALE MODULES: the rebuild ended with status {status}" +
+                     (f", the same error again, so it is not rebuilt again" if status != 0 and STALE_MODULE in
+                      log.read_text(errors="replace") else ""))
         products = args.derived_data / "Build/Products"
         written = sorted((path for path in products.glob(f"{args.scheme}_*.xctestrun")
                           if path.stat().st_mtime >= started - 1), key=lambda path: path.stat().st_mtime)

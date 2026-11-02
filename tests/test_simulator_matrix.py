@@ -83,6 +83,19 @@ XCODEBUILD = textwrap.dedent("""\
                                                    if "PROJECT_" in name}}) + "\\n")
     if action == "build-for-testing":
         if os.environ.get("FAKE_BUILD_FAIL"): sys.exit("** TEST BUILD FAILED **")
+        # FAKE_STALE_BUILDS builds report a stale module, each after recording the module folder it found,
+        # and FAKE_STALE_THEN_FAIL makes the build after them fail on something else.
+        modules = pathlib.Path(value("-derivedDataPath")) / "Build/Intermediates.noindex/SwiftExplicitPrecompiledModules"
+        builds = state / "builds"
+        count = int(builds.read_text()) + 1 if builds.exists() else 1
+        builds.write_text(str(count))
+        with (state / "modules.log").open("a") as log: log.write(f"{modules.exists()}\\n")
+        if count <= int(os.environ.get("FAKE_STALE_BUILDS", "0")):
+            print("error: file 'include/resvg.h' has been modified since the module file 'm.pcm' was built")
+            sys.exit("** TEST BUILD FAILED **")
+        if os.environ.get("FAKE_STALE_THEN_FAIL"):
+            print("error: cannot find 'resvg_options_load_font_faces' in scope")
+            sys.exit("** TEST BUILD FAILED **")
         products = pathlib.Path(value("-derivedDataPath")) / "Build/Products"
         products.mkdir(parents=True, exist_ok=True)
         (products / f"{value('-scheme')}_iphonesimulator27.0-arm64.xctestrun").write_text("{}")
@@ -212,6 +225,78 @@ class SimulatorMatrixTests(unittest.TestCase):
                          sorted(member["udid"] for member in members.values()))
         self.assertIn("TOOK Project iPhone 17 Pro 1", output)
         self.assert_every_device_returned()
+
+    def planted_modules(self):
+        derived = self.root / ".build/simulator-tests/derived"
+        modules = derived / "Build/Intermediates.noindex/SwiftExplicitPrecompiledModules"
+        modules.mkdir(parents=True)
+        (modules / "resvg.pcm").write_text("old")
+        kept = derived / "Build/Intermediates.noindex/Other.build"
+        kept.mkdir()
+        return modules, kept
+
+    def build_calls(self):
+        return [call for call in self.calls() if call[0] == "build-for-testing"]
+
+    def module_folders_seen(self):
+        return (self.state / "modules.log").read_text().split()
+
+    def test_a_stale_module_clears_that_cache_and_rebuilds_once_then_passes(self):
+        modules, kept = self.planted_modules()
+        status, output = self.run_matrix(FAKE_MEET="2", FAKE_STALE_BUILDS="1")
+        self.assertEqual(status, 0, output)
+        self.assertEqual(len(self.build_calls()), 2, output)
+        self.assertEqual(self.build_calls()[0], self.build_calls()[1])
+        # The first build found the old modules, the rebuild none, and nothing else in derived data went.
+        self.assertEqual(self.module_folders_seen(), ["True", "False"])
+        self.assertFalse(modules.exists())
+        self.assertTrue(kept.exists())
+        # The log records that it happened, and the first build's log is kept beside the rebuild's.
+        self.assertIn("STALE MODULES: the build failed", output)
+        self.assertIn("removed", output)
+        self.assertIn("the rebuild ended with status 0", output)
+        logs = self.root / ".build/simulator-tests/logs"
+        self.assertIn("has been modified since the module file", (logs / "build-stale-modules.log").read_text())
+        self.assertNotIn("has been modified", (logs / "build.log").read_text())
+        self.assertEqual(evidence.executed_tests(output), 6, output)
+        self.assert_every_device_returned()
+
+    def test_a_stale_module_rebuild_that_fails_otherwise_is_that_failure(self):
+        self.planted_modules()
+        status, output = self.run_matrix(FAKE_STALE_BUILDS="1", FAKE_STALE_THEN_FAIL="1")
+        self.assertEqual(status, 1, output)
+        self.assertEqual(len(self.build_calls()), 2, output)
+        self.assertIn("the rebuild ended with status 1", output)
+        self.assertNotIn("the same error again", output)
+        self.assertIn("cannot find 'resvg_options_load_font_faces' in scope", output)
+        self.assertIn("not tested: the build failed", output)
+        self.assert_every_device_returned()
+
+    def test_a_stale_module_that_comes_back_does_not_loop(self):
+        self.planted_modules()
+        status, output = self.run_matrix(FAKE_STALE_BUILDS="99")
+        self.assertEqual(status, 1, output)
+        self.assertEqual(len(self.build_calls()), 2, output)
+        self.assertIn("the same error again, so it is not rebuilt again", output)
+        self.assert_every_device_returned()
+
+    def test_another_build_failure_does_not_rebuild_or_touch_the_modules(self):
+        modules, _ = self.planted_modules()
+        status, output = self.run_matrix(FAKE_BUILD_FAIL="1")
+        self.assertEqual(status, 1, output)
+        self.assertEqual(len(self.build_calls()), 1, output)
+        self.assertTrue((modules / "resvg.pcm").exists())
+        self.assertNotIn("STALE MODULES", output)
+
+    def test_a_passing_build_that_mentions_a_stale_module_does_not_rebuild(self):
+        modules, _ = self.planted_modules()
+        (self.root / "bin/xcodebuild").write_text((self.root / "bin/xcodebuild").read_text().replace(
+            'print("** TEST BUILD SUCCEEDED **")',
+            'print("warning: has been modified since the module file"); print("** TEST BUILD SUCCEEDED **")'))
+        status, output = self.run_matrix(FAKE_MEET="2")
+        self.assertEqual(status, 0, output)
+        self.assertEqual(len(self.build_calls()), 1, output)
+        self.assertTrue(modules.exists())
 
     def test_a_forwarded_variable_reaches_each_test_run_unless_already_set(self):
         status, output = self.run_matrix("--forward-env", "PROJECT_", FAKE_MEET="2", PROJECT_CORPUS="/corpus",
