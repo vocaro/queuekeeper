@@ -716,6 +716,150 @@ class LaggingCheckout(Fixture):
         self.assertIn("fix", self.main_files())
 
 
+class Changelogs(Fixture):
+    """Branches that each add a line at the top of a section conflict in turn (#101)."""
+    START = "# Release notes\n\n## Unreleased\n\n- old\n\n## 1.0\n\n- first\n"
+
+    def setUp(self):
+        super().setUp()
+        self.commit("CHANGELOG.md", "start", self.START)
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+
+    def changelog(self):
+        run(self.repo, "git", "fetch", "-q", "origin")
+        return run(self.repo, "git", "show", "origin/main:CHANGELOG.md") + "\n"
+
+    def top(self, line):
+        return self.START.replace("- old\n", f"{line}\n- old\n", 1)
+
+    def outcome(self, *contents, name="CHANGELOG.md"):
+        """Land each content of name, on a branch of its own from the same commit, oldest first."""
+        for number, content in enumerate(contents): self.commit(name, f"b{number}", content)
+        ids = self.add(*(f"b{number}" for number in range(len(contents))))
+        self.work()
+        return [self.state(identifier)["state"] for identifier in ids]
+
+    def test_each_branch_lands_with_its_line_first_after_one_gate(self):
+        self.assertEqual(self.outcome(self.top("- a"), self.top("- b"), self.top("- c")), ["landed"] * 3)
+        self.assertEqual(self.changelog(), self.START.replace("- old\n", "- c\n- b\n- a\n- old\n", 1))
+        self.assertEqual(self.gates(), 1)
+        self.assertIsNone(mq.Queue(self.repo).held())
+        # What guides/maintenance.md warns of: the first went in as it was, and a settled one proves nothing.
+        contained = lambda branch: mq.landing.contained(lambda *words: mq.git(self.repo, *words), "origin/main", branch)
+        self.assertIsNotNone(contained("b0"))
+        self.assertIsNone(contained("b1"))
+
+    def test_a_settled_commit_keeps_its_message_and_author(self):
+        for name, start in (("b0", self.top("- a")), ("b1", self.top("- b"))):
+            self.commit("CHANGELOG.md", name, start)
+        run(self.repo, "git", "commit", "-q", "--amend", "--author", "Other <other@example.com>", "-m",
+            "Say b\n\n# Not a comment\n\nCloses #1.")
+        self.add("b0", "b1")
+        self.work()
+        run(self.repo, "git", "fetch", "-q", "origin")
+        self.assertEqual(run(self.repo, "git", "log", "-1", "--format=%an|%B", "origin/main"),
+                         "Other|Say b\n\n# Not a comment\n\nCloses #1.")
+
+    def test_a_branch_of_two_commits_settles_each(self):
+        self.commit("CHANGELOG.md", "b0", self.top("- a"))
+        self.commit("CHANGELOG.md", "b1", self.top("- b"))
+        (self.repo / "other").write_text("x")
+        run(self.repo, "git", "add", "other")
+        run(self.repo, "git", "commit", "-qm", "Add other")
+        (self.repo / "CHANGELOG.md").write_text(self.top("- c\n- b"))
+        run(self.repo, "git", "add", "CHANGELOG.md")
+        run(self.repo, "git", "commit", "-qm", "Add c")
+        ids = self.add("b0", "b1")
+        self.work()
+        self.assertEqual([self.state(i)["state"] for i in ids], ["landed"] * 2)
+        self.assertEqual(self.changelog(), self.START.replace("- old\n", "- c\n- b\n- a\n- old\n", 1))
+
+    def test_a_section_with_no_entries_yet(self):
+        start = "# Release notes\n\n## Unreleased\n\n## 1.0\n\n- first\n"
+        self.commit("CHANGELOG.md", "empty", start)
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        self.assertEqual(self.outcome(*(start.replace("## 1.0", f"{line}\n\n## 1.0") for line in ("- a", "- b"))),
+                         ["landed"] * 2)
+        self.assertEqual(self.changelog(), start.replace("## 1.0", "- b\n- a\n\n## 1.0"))
+
+    def test_a_real_conflict_in_the_changelog_comes_back(self):
+        states = self.outcome(self.START.replace("- old", "- one"), self.START.replace("- old", "- two"))
+        self.assertEqual(states, ["landed", "conflict"])
+        self.assertEqual(self.changelog(), self.START.replace("- old", "- one"))
+
+    def test_a_real_conflict_beside_an_added_line_comes_back_whole(self):
+        ahead = self.top("- a").replace("- first", "- one")
+        states = self.outcome(ahead, self.top("- b").replace("- first", "- two"))
+        self.assertEqual(states, ["landed", "conflict"])
+        self.assertEqual(self.changelog(), ahead)
+
+    def test_lines_added_below_the_top_of_a_section_come_back(self):
+        start = self.START.replace("- old\n", "- old\n- older\n", 1)
+        self.commit("CHANGELOG.md", "longer", start)
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        states = self.outcome(*(start.replace("- older", f"{line}\n- older") for line in ("- a", "- b")))
+        self.assertEqual(states, ["landed", "conflict"])
+
+    def test_a_new_section_ahead_comes_back(self):
+        """Keeping both would put the line in the section just released."""
+        states = self.outcome(self.START.replace("- old", "## 1.1\n\n- old"), self.top("- b"))
+        self.assertEqual(states, ["landed", "conflict"])
+
+    def test_the_same_shape_in_another_file_comes_back(self):
+        self.commit("NOTES.md", "notes", self.START)
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        states = self.outcome(self.top("- a"), self.top("- b"), name="NOTES.md")
+        self.assertEqual(states, ["landed", "conflict"])
+
+    def test_a_changelog_conflict_beside_another_files_comes_back_whole(self):
+        self.commit("same", "same", "start")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        for number, line in enumerate(("- a", "- b")):
+            self.commit("CHANGELOG.md", f"b{number}", self.top(line))
+            (self.repo / "same").write_text(line)
+            run(self.repo, "git", "add", "same")
+            run(self.repo, "git", "commit", "-q", "--amend", "--no-edit")
+        ids = self.add("b0", "b1")
+        self.work()
+        self.assertEqual([self.state(i)["state"] for i in ids], ["landed", "conflict"])
+        self.assertEqual(self.changelog(), self.top("- a"))
+
+    def test_a_line_on_both_sides_is_not_doubled(self):
+        states = self.outcome(self.top("- shared\n- a"), self.top("- shared\n- b"))
+        self.assertEqual(states, ["landed", "conflict"])
+        self.assertEqual(self.changelog().count("- shared"), 1)
+
+    def test_a_line_main_has_elsewhere_is_not_doubled(self):
+        states = self.outcome(self.top("- a"), self.top("- first"))
+        self.assertEqual(states, ["landed", "conflict"])
+        self.assertEqual(self.changelog().count("- first"), 1)
+
+    def test_a_line_written_twice_in_the_commit_is_not_doubled(self):
+        states = self.outcome(self.top("- a"), self.top("- b\n- b"))
+        self.assertEqual(states, ["landed", "conflict"])
+        self.assertNotIn("- b", self.changelog())
+
+    def test_a_branch_landed_already_is_not_doubled(self):
+        self.assertEqual(self.outcome(self.top("- a"), self.top("- b")), ["landed"] * 2)
+        run(self.repo, "git", "checkout", "-q", "-B", "again", "origin/main~2")
+        (self.repo / "CHANGELOG.md").write_text(self.top("- a"))
+        run(self.repo, "git", "add", "CHANGELOG.md")
+        run(self.repo, "git", "commit", "-qm", "Add a again")
+        self.add("again")
+        self.work()
+        self.assertEqual(self.changelog().count("- a\n"), 1)
+
+    def test_line_endings_stay_as_they_are(self):
+        start, ahead, new = (text.encode().replace(b"\n", b"\r\n") for text in
+                             (self.START, self.top("- a"), self.top("- b")))
+        self.assertEqual(mq.keep_both(start, ahead, new), self.START.replace("- old\n", "- b\n- a\n- old\n", 1)
+                         .encode().replace(b"\n", b"\r\n"))
+
+    def test_keep_both_needs_a_conflict(self):
+        start = self.START.encode()
+        self.assertIsNone(mq.keep_both(start, start, self.top("- a").encode()))
+
+
 class Refusals(Fixture):
     def test_pull_request_projects_are_refused(self):
         self.publish({"schemaVersion": 1, "name": "x", "integration": "pull-request",

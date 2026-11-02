@@ -201,6 +201,16 @@ exactly the commits it tested, as ordinary commits with their own messages and c
 Closeout finds each branch landed by equal patches. The gate receipt is of the pushed commit, which
 `eng release` accepts, unless the result was carried over.
 
+**Lines added at the top of a changelog section need no author.** Branches that each add a line at
+the top of a section of `CHANGELOG.md`, in any directory and any case, conflict in turn, since each
+line sits where the one before it just went. The worker settles such a conflict by keeping both, the
+new lines first, and gates the result as usual. It does so only when every conflict in the commit is
+in a changelog and each is lines both sides only added directly below a Markdown `#` heading, as
+whole lines, with no heading and no blank line among them, and with none of the commit's lines already in the file, since
+keeping both would double it. Anything else comes back, a change to an existing line or a conflict in
+another file above all. The commit keeps its message and author. Its patch is then not the branch's,
+so `landed.sh` proves no such branch landed, and it stays until its author removes it.
+
 **What comes back to the author.** `eng queue status` and `eng queue wait` name each entry's state,
 reason and log. An entry that conflicts with what is ahead of it comes back at once and costs the
 others nothing. When a batch fails, the oldest half runs next, and so on until one entry fails

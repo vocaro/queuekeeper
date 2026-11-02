@@ -24,6 +24,7 @@ import re
 import shlex
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 
@@ -51,6 +52,11 @@ BEFORE_GATE = ["spelling", "provision"]
 WAIT_LIMIT = 6 * 3600
 KEPT_LOGS = 200
 GIT_TIMEOUT = 600
+# The file whose conflicts the queue may settle, by its name in any directory and in any case.
+CHANGELOG = "changelog.md"
+HEADING = re.compile(rb"#{1,6}\s")
+# Long enough that no line of a changelog reads as one of `git merge-file`'s markers.
+MARKER_SIZE = 32
 
 
 def environment():
@@ -97,6 +103,56 @@ def config_at(root, commit):
     shown = git(root, "show", f"{commit}:engineering.json")
     if shown.returncode: raise ValueError(f"{commit} has no engineering.json: {shown.stderr.strip() or 'no output'}")
     return parse(shown.stdout)
+
+
+def blank(line):
+    return not line.strip()
+
+
+def both_added(before, ours, base, theirs, held):
+    """What one conflict block becomes, or None unless each side only adds whole lines at the top of a
+    section, with none of the commit's lines already in the file: the new lines, then those ahead of them.
+    A blank line both sides add around their lines stays where it is; any other blank line, or a heading,
+    is no longer a list of entries, and keeping both could put them under the wrong section."""
+    if base or not ours or not theirs or not all(line.endswith(b"\n") for line in ours + theirs): return None
+    start = end = 0
+    shortest = min(len(ours), len(theirs))
+    while start < shortest and blank(ours[start]) and blank(theirs[start]): start += 1
+    while end < shortest - start and blank(ours[-1 - end]) and blank(theirs[-1 - end]): end += 1
+    new, old = theirs[start:len(theirs) - end], ours[start:len(ours) - end]
+    if not new or not old or any(blank(line) or HEADING.match(line) for line in new + old): return None
+    above = next((line for line in reversed(before + ours[:start]) if not blank(line)), b"")
+    if not HEADING.match(above): return None
+    stripped = [line.strip() for line in new]
+    if len(set(stripped)) != len(stripped) or set(stripped) & held: return None
+    return ours[:start] + new + old + ours[len(ours) - end:]
+
+
+def keep_both(base, ours, theirs):
+    """The file, as bytes, with each of its conflicts settled by both_added, or None when it has none or
+    both_added refuses any: theirs is the commit being applied, and ours what is ahead of it."""
+    with tempfile.TemporaryDirectory() as directory:
+        paths = [Path(directory) / name for name in ("ours", "base", "theirs")]
+        for path, content in zip(paths, (ours, base, theirs)): path.write_bytes(content)
+        merged = subprocess.run(["git", "merge-file", "-p", "--diff3", f"--marker-size={MARKER_SIZE}", *map(str, paths)],
+                                capture_output=True, stdin=subprocess.DEVNULL, env=environment(), timeout=GIT_TIMEOUT)
+    # Its status is how many conflicts it left, and above 127 an error.
+    if not 0 < merged.returncode <= 127: return None
+    open_, middle, split, close = (mark * MARKER_SIZE for mark in (b"<", b"|", b"=", b">"))
+    held = {line.strip() for line in ours.splitlines()}
+    kept, block = [], None
+    for line in merged.stdout.splitlines(keepends=True):
+        if line.startswith(open_): block = current = [[], [], []]; side = 0
+        elif block is None: kept.append(line)
+        elif line.startswith(middle): side = 1
+        elif line.startswith(split): side = 2
+        elif line.startswith(close):
+            settled = both_added(kept, current[0], current[1], current[2], held)
+            if settled is None: return None
+            kept += settled
+            block = None
+        else: current[side].append(line)
+    return b"".join(kept)
 
 
 def named(path, key):
@@ -402,10 +458,40 @@ class Worker:
                 # main already has this commit's change, as another route may have landed it.
                 git(self.checkout, "cherry-pick", "--skip", hooks=False, check=True)
                 continue
+            if conflicted and self.keep_changelogs(conflicted):
+                # -C, for the commit's own message and author, without Git's note of the conflict.
+                git(self.checkout, "commit", "--no-verify", "-C", commit, hooks=False, check=True)
+                self.say(f"{commit[:12]}: kept both sides of {', '.join(conflicted)}, the new lines first")
+                continue
             self.reset(before)
             files = ", ".join(conflicted) or picked.stderr.strip()
             return f"{commit[:12]} conflicts with what is ahead of it, in {files}: rebase onto origin/main and add it again"
         return None
+
+    def blob(self, identifier):
+        return subprocess.run(["git", "-C", str(self.checkout), "cat-file", "blob", identifier], capture_output=True,
+                              check=True, stdin=subprocess.DEVNULL, env=environment(), timeout=GIT_TIMEOUT).stdout
+
+    def keep_changelogs(self, conflicted):
+        """Settle the cherry-pick in progress when every file in conflict is a changelog whose conflicts
+        keep_both settles, and say whether it did; otherwise change nothing."""
+        settled = {}
+        for path in conflicted:
+            if Path(path).name.lower() != CHANGELOG: return False
+            stages = {}
+            for line in text(self.checkout, "ls-files", "-u", "--", path).splitlines():
+                mode, identifier, stage = line.split("\t")[0].split()
+                stages[stage] = (mode, identifier)
+            # Three stages of one ordinary file: a rename, a deletion or a change of mode is no added line.
+            if set(stages) != {"1", "2", "3"} or len({mode for mode, _ in stages.values()}) != 1 \
+                    or not stages["1"][0].startswith("100"):
+                return False
+            settled[path] = keep_both(*(self.blob(stages[stage][1]) for stage in "123"))
+            if settled[path] is None: return False
+        for path, content in settled.items():
+            (self.checkout / path).write_bytes(content)
+            git(self.checkout, "add", "--", path, hooks=False, check=True)
+        return True
 
     def integrate(self, batch, base):
         """The entries of batch that are now on top of base, in order; the rest are settled."""
