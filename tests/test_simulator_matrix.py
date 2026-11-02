@@ -78,6 +78,9 @@ XCODEBUILD = textwrap.dedent("""\
     action, arguments = sys.argv[1], sys.argv[2:]
     value = lambda flag: arguments[arguments.index(flag) + 1]
     with (state / "xcodebuild.log").open("a") as log: log.write(json.dumps(sys.argv[1:]) + "\\n")
+    with (state / "xcodebuild-env.log").open("a") as log:
+        log.write(json.dumps({"action": action, **{name: value for name, value in os.environ.items()
+                                                   if "PROJECT_" in name}}) + "\\n")
     if action == "build-for-testing":
         if os.environ.get("FAKE_BUILD_FAIL"): sys.exit("** TEST BUILD FAILED **")
         products = pathlib.Path(value("-derivedDataPath")) / "Build/Products"
@@ -209,6 +212,34 @@ class SimulatorMatrixTests(unittest.TestCase):
                          sorted(member["udid"] for member in members.values()))
         self.assertIn("TOOK Project iPhone 17 Pro 1", output)
         self.assert_every_device_returned()
+
+    def test_a_forwarded_variable_reaches_each_test_run_unless_already_set(self):
+        status, output = self.run_matrix("--forward-env", "PROJECT_", FAKE_MEET="2", PROJECT_CORPUS="/corpus",
+                                         PROJECT_KEPT="from-prefix", TEST_RUNNER_PROJECT_KEPT="already-set",
+                                         OTHER_PROJECT_VALUE="left-alone")
+        self.assertEqual(status, 0, output)
+        seen = [json.loads(line) for line in (self.state / "xcodebuild-env.log").read_text().splitlines()]
+        tests = [entry for entry in seen if entry["action"] == "test-without-building"]
+        self.assertEqual(len(tests), 2, seen)
+        for entry in tests:
+            self.assertEqual(entry["TEST_RUNNER_PROJECT_CORPUS"], "/corpus")
+            self.assertEqual(entry["TEST_RUNNER_PROJECT_KEPT"], "already-set")
+            # Negative control: a variable that merely contains the prefix does not start with it.
+            self.assertNotIn("TEST_RUNNER_OTHER_PROJECT_VALUE", entry)
+        # The log names what went on, and no value.
+        self.assertIn("FORWARD PROJECT_: TEST_RUNNER_PROJECT_CORPUS", output)
+        self.assertNotIn("/corpus", output)
+
+    def test_without_forward_env_nothing_is_forwarded(self):
+        status, output = self.run_matrix(FAKE_MEET="2", PROJECT_CORPUS="/corpus")
+        self.assertEqual(status, 0, output)
+        seen = [json.loads(line) for line in (self.state / "xcodebuild-env.log").read_text().splitlines()]
+        self.assertFalse([entry for entry in seen if "TEST_RUNNER_PROJECT_CORPUS" in entry], seen)
+
+    def test_an_empty_forward_prefix_is_refused(self):
+        status, output = self.run_matrix("--forward-env", "")
+        self.assertEqual(status, 2, output)
+        self.assertIn("--forward-env needs a prefix", output)
 
     def test_a_booted_or_held_member_is_another_sessions_so_the_next_is_created(self):
         booted = self.add("Project iPhone 17 Pro 1", state="Booted")

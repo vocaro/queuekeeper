@@ -1,7 +1,8 @@
 """Build a scheme's tests once and run them on several members of the project's simulator pool side by side.
 
     eng simulator-tests --scheme SCHEME --runtime iOS-27-0 --device iPhone-17-Pro \\
-        --device iPad-Air-13-inch-M4 [--pool NAME] [--build-jobs 4] [-- TEST-ARGUMENTS such as -only-testing:T/C]
+        --device iPad-Air-13-inch-M4 [--pool NAME] [--build-jobs 4] [--forward-env PREFIX] \\
+        [-- TEST-ARGUMENTS such as -only-testing:T/C]
 
 Each device is a member of the pool, `POOL LABEL N`: a free one of its kind is reserved in the
 host's device record and erased, or, when none is free, the next is created and kept in the pool,
@@ -69,6 +70,9 @@ def parse(argv):
                         "project's simulatorPool in engineering.json)")
     parser.add_argument("--setting", action="append", default=[], metavar="NAME=VALUE",
                         help="a build setting for the build, after CODE_SIGNING_ALLOWED=NO")
+    parser.add_argument("--forward-env", action="append", default=[], metavar="PREFIX",
+                        help="give the test process each variable starting with PREFIX: it goes to xcodebuild as "
+                        "TEST_RUNNER_ + its name, unless that is already set; repeat for each prefix")
     args, unknown = parser.parse_known_args(argv[:split])
     if unknown:
         # eng run LANE -- ARGUMENTS appends them to the lane's command, which reach the tests only
@@ -80,7 +84,17 @@ def parse(argv):
         if getattr(args, name) is not None and getattr(args, name) < 1:
             parser.error(f"--{name.replace('_', '-')} needs at least 1")
     if len(set(args.device)) != len(args.device): parser.error("name each device type once")
+    if not all(args.forward_env): parser.error("--forward-env needs a prefix: an empty one would forward everything")
     return args
+
+
+def forwarded(prefixes, environment):
+    """The TEST_RUNNER_ variables that give the test process each variable starting with a prefix. A test
+    process in a simulator sees only what xcodebuild is given that way (guides/simulator-testing.md, Test
+    environment), and a TEST_RUNNER_ variable already set is the caller's and stays."""
+    if not prefixes: return {}
+    return {f"TEST_RUNNER_{name}": value for name, value in environment.items()
+            if name.startswith(tuple(prefixes)) and f"TEST_RUNNER_{name}" not in environment}
 
 
 class Run:
@@ -159,7 +173,8 @@ class Run:
         self.say(f"TEST {kind} ({device.udid}); log: {log}")
         started = time.monotonic()
         try:
-            status = processes.run(command, cwd=Path.cwd(), log_path=log, timeout=args.test_timeout)
+            status = processes.run(command, cwd=Path.cwd(), log_path=log, timeout=args.test_timeout,
+                                   env={**os.environ, **forwarded(args.forward_env, os.environ)})
         except processes.TimedOut:
             return self.finish(kind, evidence.UNMEASURED, f"the tests exceeded {args.test_timeout}s", log)
         seconds = round(time.monotonic() - started)
@@ -237,6 +252,10 @@ def main(argv, project=None):
         return 2
     run = Run(args)
     run.logs.mkdir(parents=True, exist_ok=True)
+    # Names only: a value can be private, and the log travels.
+    if args.forward_env:
+        names = sorted(forwarded(args.forward_env, os.environ))
+        run.say(f"FORWARD {', '.join(args.forward_env)}: {', '.join(names) if names else 'nothing to forward'}")
     kinds = args.device
     started = time.monotonic()
     pool = simulator_pool.Pool(name, owner=simulator_pool.default_owner() or f"simulator-tests-{uuid.uuid4()}",
