@@ -35,7 +35,8 @@ the owner has ended, `eng admissions recover` runs the end-of-run census against
 removes the entry only when nothing of an unsettled command still runs (#61). An entry without a
 record is left for a check by hand. Admission runs the same recovery itself on each dead or uncertain
 entry it meets, so that an entry a task stop's SIGKILL stranded, whose commands have all ended, no
-longer holds every session's heavy work until a person removes it.
+longer holds every session's heavy work until a person removes it. An entry recovery leaves counts as
+the slots it held, every slot for exclusive work, so that only work beyond them waits (#89).
 """
 import argparse
 from collections import Counter
@@ -238,9 +239,11 @@ def ending(kind):
     return "uncertain"
 
 
-def take_slot(directory, slots, start=0):
-    """Compatibility API: one old-style slot descriptor, or None."""
+def take_slot(directory, slots, start=0, skip=()):
+    """Compatibility API: one old-style slot descriptor, or None. Admission skips the slots it counts for a
+    stranded guard entry, whose lock its ended owner no longer holds."""
     for slot in range(start, slots):
+        if slot in skip: continue
         fd = os.open(Path(directory) / f"slot{slot}", os.O_RDWR | os.O_CREAT, 0o644)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -360,14 +363,17 @@ class Admission:
             raise ValueError("Invalid resource limits")
         # Why the latest attempt was refused: its kind, which the log counts (#49), and the waiting message,
         # which names the limit that refused it and its value beside what the attempt read.
-        # guard: the guard is unreadable or not in admission's format, or a dead or uncertain entry, and needs
-        # inspection; exclusive: exclusive work holds the host or is queued ahead; model: another run holds the
-        # model; slots: every slot the request may take is busy; settle, load or memory: the settling time, the
+        # guard: the guard is unreadable or not in admission's format and needs inspection; stranded: a dead or
+        # uncertain entry recovery left is counted among the busy slots, or as the model's holder (#89);
+        # exclusive: exclusive work holds the host or is queued ahead; model: another run holds the model; slots: every slot the request may take is busy; settle, load or memory: the settling time, the
         # load average or memory pressure withholds a slot beyond the guaranteed ones. An older toolkit's log
         # lines also count legacy, a gate holding StudyWright's former host lock, which no longer refuses (#25).
         self.refusal = self.waiting = None
         # The dead or uncertain entries recovery left, by identity: when they were checked, and why they stayed.
         self.unrecovered = {}
+        # The latest attempt's stranded entries, those recovery left: by identity, the entry and why it stayed;
+        # then, as counted, each one's identity, entry, why, the slots it is counted as and whether the model.
+        self.stranded, self.counted = {}, []
         # For the log line: the refused attempts by kind, in the order the kinds first refused it; the holders
         # when it asked; the first, last and highest one-minute load its attempts read; and the highest memory
         # pressure level read beside its refusals.
@@ -398,33 +404,74 @@ class Admission:
 
     def _guard(self):
         """The published guard, or None, with the refusal naming why, when it is unreadable or not in admission's
-        format or records a dead or uncertain owner that recovery cannot remove. A guard admission cannot read is
-        never overwritten: whatever wrote it may still run what it records.
+        format. A guard admission cannot read is never overwritten: whatever wrote it may still run what it records.
 
         Each dead or uncertain entry is recovered here, as `eng admissions recover` would recover it, so that a
         stranded entry whose commands have all ended no longer holds every session's heavy work until a person
-        removes it. An entry recovery leaves is checked again after HEAVY_RECOVER_SECONDS."""
+        removes it. An entry recovery leaves is checked again after HEAVY_RECOVER_SECONDS. Until then it stays in
+        self.stranded, and the attempt counts it as the slots it held (#89)."""
+        self.stranded = {}
         if not self.guard.exists():
             return {"vocaroEngineering": 1, "owners": {}}
         value = self._recorded()
         if value is None:
-            problem = f"the guard {self.guard} is unreadable or not in admission's format and requires inspection"
-        else:
-            problem = None
-            # Never reclaim a disappeared owner without a census: its children may still use a different session.
-            for identity, owner in list(value["owners"].items()):
-                if not (owner.get("uncertain") or not running(owner)):
-                    continue
-                why = self._reclaim(value, identity)
-                if why is None:
-                    continue
-                problem = (f"the guard entry of {str(owner.get('label') or 'an unnamed owner')[:160]}, PID {owner['pid']}, "
-                           f"is {'uncertain' if owner.get('uncertain') else 'dead'} and requires inspection ({why})")
-                break
-            if problem is None:
-                return value
-        self.refusal, self.waiting = "guard", f"{problem}; `python3 scripts/eng admissions recover` lists it"
-        return None
+            self.refusal, self.waiting = "guard", (f"the guard {self.guard} is unreadable or not in admission's format "
+                                                   "and requires inspection; `python3 scripts/eng admissions recover` lists it")
+            return None
+        # Never reclaim a disappeared owner without a census: its children may still use a different session.
+        for identity, owner in list(value["owners"].items()):
+            if not (owner.get("uncertain") or not running(owner)):
+                continue
+            why = self._reclaim(value, identity)
+            if why is not None:
+                self.stranded[identity] = (owner, why)
+        return value
+
+    def _count_stranded(self):
+        """Count each stranded entry as the slots it held: every slot up to HEAVY_SLOTS_MAX for exclusive work, and
+        otherwise the slots whose files name its identity, as every admission writes them. An entry whose slot
+        files no longer name it is counted as the lowest slot not already counted. An entry that held the model
+        is counted as its holder. Returns the slots counted and whether the model is."""
+        self.counted, reserved, unnamed = [], set(), []
+        for identity, (owner, why) in self.stranded.items():
+            if owner.get("exclusive"):
+                slots = list(range(self.maximum))
+            else:
+                slots = [slot for slot in range(self.maximum) if self._names(f"slot{slot}", identity)]
+                if not slots: unnamed.append(len(self.counted))
+            reserved.update(slots)
+            self.counted.append([identity, owner, why, slots, bool(owner.get("model") or owner.get("exclusive"))])
+        for index in unnamed:
+            free = [slot for slot in range(self.maximum) if slot not in reserved]
+            if free:
+                self.counted[index][3] = free[:1]
+                reserved.add(free[0])
+        return reserved, any(model for *_rest, model in self.counted)
+
+    def _names(self, name, identity):
+        """Whether the lock file of that name in the slot directory names this identity as its last holder."""
+        try:
+            written = (self.directory / name).read_text(errors="replace").split(" ", 2)
+        except OSError:
+            return False
+        return len(written) > 1 and written[1] == identity
+
+    def _stranded_text(self):
+        """The stranded entries counted, for a waiting message: each with why recovery left it and what it is
+        counted as, and the command that lists them."""
+        def held(slots, model):
+            named = f"slot{'s' if len(slots) > 1 else ''} {', '.join(map(str, slots))}" if slots else ""
+            return " and ".join(part for part in [named, "the model" if model else ""] if part) or "nothing"
+        described = [f"the guard entry of {str(owner.get('label') or 'an unnamed owner')[:160]}, PID {owner['pid']}, is "
+                     f"{'uncertain' if owner.get('uncertain') else 'dead'} and requires inspection ({why}), and is "
+                     f"counted as {held(slots, model)}" for _identity, owner, why, slots, model in self.counted]
+        return "; ".join(described) + (f"; `python3 scripts/eng admissions recover` lists "
+                                       f"{'it' if len(described) == 1 else 'them'}")
+
+    def _refused_beside_stranded(self):
+        """Name the stranded entries counted in the refusal the attempt just made, which they then count as."""
+        if self.counted:
+            self.refusal, self.waiting = "stranded", f"{self.waiting}; {self._stranded_text()}"
 
     def _reclaim(self, state, identity):
         """Recover a dead or uncertain entry: None once it is removed, or why it stays. An entry that stays is
@@ -473,6 +520,11 @@ class Admission:
         """What the request saw, for its admitted or withdrawn line (#49): the holders and the one-minute load
         when it asked, and, once an attempt was refused, why it waited."""
         fields = {"holders": self.holders, "load": self.loads[0] if self.loads else None}
+        if self.counted:
+            # The stranded entries recovery left, which the latest attempt counted as the slots they held (#89).
+            fields["stranded"] = [{"identity": identity, "pid": owner["pid"], "label": str(owner.get("label"))[:160],
+                                   "uncertain": bool(owner.get("uncertain")), "why": why, "slots": slots, "model": model}
+                                  for identity, owner, why, slots, model in self.counted]
         if self.refusals:
             last, peak = self.loads[1:] if self.loads else (None, None)
             fields["wait"] = {"refusals": dict(self.refusals), "first": next(iter(self.refusals)), "last": self.refusal,
@@ -541,11 +593,11 @@ class Admission:
             os.close(self.held_model)
         self.descriptors, self.held_model = [], None
 
-    def _extra_slot(self):
+    def _extra_slot(self, reserved=()):
         """A slot beyond the guaranteed ones while the host shows spare capacity, or None."""
         refusal = self._extra_refusal()
         if refusal is None:
-            taken = take_slot(self.directory, self.maximum, start=self.slots)
+            taken = take_slot(self.directory, self.maximum, start=self.slots, skip=reserved)
             if taken is not None:
                 return taken
             refusal = "slots", f"so is every slot up to HEAVY_SLOTS_MAX={self.maximum}"
@@ -556,10 +608,13 @@ class Admission:
     def _held_back(self, state):
         """Refuse the attempt at the model or a slot. Exclusive work holds both while its guard entry stands,
         so whatever refused the request there, it waits behind that work, which the message names."""
-        holder = next((owner for owner in state["owners"].values() if owner.get("exclusive")), None)
+        holder = next((owner for identity, owner in state["owners"].items()
+                       if owner.get("exclusive") and identity not in self.stranded), None)
         if holder is not None:
             self.refusal, self.waiting = "exclusive", ("it waits behind exclusive work holding the host: "
                                                        f"{str(holder.get('label') or 'an unnamed owner')[:160]}")
+        else:
+            self._refused_beside_stranded()
         return False
 
     def _attempt(self):
@@ -586,19 +641,25 @@ class Admission:
                 self.holders = len(recorded["owners"]) if recorded else None
             if state is None:
                 return False
-            if waiters and waiters[0]["identity"] != self.identity:
+            reserved, model_counted = self._count_stranded()
+            # An exclusive request cannot be admitted while a stranded entry is counted as any slot, so one queued
+            # ahead then holds nothing back: work within the free slots goes on beside the stranded entry (#89).
+            if waiters and waiters[0]["identity"] != self.identity and not reserved:
                 # Work already admitted runs on; nothing new starts before the exclusive request.
                 self.refusal, self.waiting = "exclusive", f"it waits behind exclusive work queued ahead of it: {waiters[0]['label']}"
                 return False
             # The model first, so that a request it refuses names the model's holder.
             if self.model:
+                if model_counted:
+                    self.refusal, self.waiting = "stranded", "the on-device model, one run at a time, is counted as held"
+                    return self._held_back(state)
                 self.held_model = self._take_model()
                 if self.held_model is None:
                     return self._held_back(state)
             for _ in range(self.maximum if self.exclusive else 1):
-                taken = take_slot(self.directory, self.maximum if self.exclusive else self.slots)
+                taken = take_slot(self.directory, self.maximum if self.exclusive else self.slots, skip=reserved)
                 if taken is None and not self.exclusive:
-                    taken = self._extra_slot()
+                    taken = self._extra_slot(reserved)
                 if taken is None:
                     if self.exclusive:
                         busy = self.maximum - len(self.descriptors)
@@ -669,6 +730,8 @@ class Admission:
         print(f"heavy: slot {','.join(str(slot) for slot, _fd in self.descriptors)}"
               f"{' and the model' if self.held_model is not None else ''} after {int(time.monotonic() - started)}s: "
               f"{self.label[:160]}", file=sys.stderr, flush=True)
+        if self.counted:
+            print(f"heavy: admitted beside a stranded entry: {self._stranded_text()}", file=sys.stderr, flush=True)
         return self
 
     def observe(self, line):

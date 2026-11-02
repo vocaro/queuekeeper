@@ -147,7 +147,10 @@ value, beside what the attempt read, so that a wait says which limit to look at:
 | `memory` | `all 3 guaranteed slots are busy and memory pressure is level 2 (warning), not 1 (normal)`, or `… memory pressure, which must be level 1 (normal), cannot be read` |
 | `model` | `the on-device model, one run at a time, is held by LABEL` |
 | `exclusive` | `it waits behind exclusive work queued ahead of it: LABEL`, or `… holding the host: LABEL` |
-| `guard` | `the guard entry of LABEL, PID 4242, is dead and requires inspection (it has no process record); …`, `uncertain` for an entry marked so, with why [recovery](#lock-reclamation) left it in parentheses (`its owner still runs`, `it has no process record`, `its process record cannot vouch for every command` or `2 of its processes still run: PID 4250, 4251`), or `the guard PATH is unreadable or not in admission's format and requires inspection; …`, where `…` names `python3 scripts/eng admissions recover` |
+| `stranded` | another reason above, then `; the guard entry of LABEL, PID 4242, is dead and requires inspection (it has no process record), and is counted as slot 1; …`, `uncertain` for an entry marked so, with why [recovery](#lock-reclamation) left it in parentheses (`its owner still runs`, `it has no process record`, `its process record cannot vouch for every command` or `2 of its processes still run: PID 4250, 4251`) and what it is counted as (`slots 0, 1, 2 and the model` for exclusive work); a model request's reason is `the on-device model, one run at a time, is counted as held` |
+| `guard` | `the guard PATH is unreadable or not in admission's format and requires inspection; …` |
+
+In both rows `…` names `python3 scripts/eng admissions recover`.
 
 Each kind is the one the [admission log](#admission-log) records for the refusal. After its
 timeout (5,400 s by default) admission fails without reclaiming any lock, naming the same reason,
@@ -156,9 +159,24 @@ HEAVY_SLOTS for other sessions.
 
 Admission recovers each dead or uncertain entry it meets, as `eng admissions recover OWNER`
 would: it removes one once its owner has ended and a census against its process record finds
-nothing it ran still running ([lock reclamation](#lock-reclamation)). An entry recovery leaves
-refuses every session's heavy work until it is recovered, and admission checks it again every
+nothing it ran still running ([lock reclamation](#lock-reclamation)). An entry recovery leaves,
+stranded, is never removed: it counts as the slots it held until it is recovered, so that only
+work beyond those slots waits. A stranded entry of exclusive work counts as every slot up to
+HEAVY_SLOTS_MAX, so all heavy work waits behind it; any other counts as the slots whose files
+name its identity, as each admission writes them, or, where none does, as the lowest slot not
+already counted; one that held the model counts as its holder. Exclusive work waits behind any
+stranded entry, since it needs every slot. A queued exclusive request holds back no work while a
+stranded entry is counted, since it cannot be admitted until the entry is recovered; once it
+is, the queue's order applies again. Work admitted beside a stranded entry prints `heavy:
+admitted beside a stranded entry: …` with the entry, its slots and the recover command, and its
+log line names them ([admission log](#admission-log)). Admission checks the entry again every
 HEAVY_RECOVER_SECONDS (60). `python3 scripts/eng admissions recover` lists those entries.
+
+The rule: a disappeared owner's children may still be running, and they keep what its entry
+held, its slots and the model if it held it, and nothing more. The rest of the host stays open
+to other sessions' work. Until 2026-11-01 the rule was that those children might still use the
+whole host, so a stranded entry refused every session's heavy work on it until it was recovered
+([vocaro-engineering#89](https://github.com/vocaro/vocaro-engineering/issues/89)).
 
 A request's label names it in waiting messages, the guard and the [admission log](#admission-log).
 A lane run's label is its project's name, from engineering.json, a space and the lane, such as
@@ -263,8 +281,13 @@ A line holds:
   - `model`: another run holds the on-device model;
   - `exclusive`: an exclusive request is queued ahead, or exclusive work holds the host, which
     refuses the request at its slots or the model;
-  - `guard`: the guard is unreadable or not in admission's format, or an owner is dead or
-    uncertain and recovery left its entry, and requires inspection.
+  - `stranded`: the request was refused at its slots or the model while a stranded entry, dead or
+    uncertain and left by recovery, was counted as some of them;
+  - `guard`: the guard is unreadable or not in admission's format, and requires inspection.
+    Until 2026-11-01 this kind also counted a stranded entry, which refused every request.
+- `stranded`, on the `admitted` or `withdrawn` line of a request whose latest attempt counted a
+  stranded entry: each such entry's `identity`, `pid`, `label`, `uncertain`, `why` recovery left
+  it, as the waiting message gives it, the `slots` it is counted as and whether the `model`.
 - `outcome`, on an `ended` line: `released` when the command finished, whatever its exit status;
   `not-started`; `stopped` or `timed-out` when a stop or the command's timeout saw it and every
   observed descendant end; or `uncertain` when the guard entry was kept for inspection
@@ -2079,9 +2102,10 @@ Three kinds of marker coexist, and they are reclaimed differently:
   ([vocaro-engineering#88](https://github.com/vocaro/vocaro-engineering/issues/88)): an entry a
   test leaked had no process record, and it blocked the host's heavy work until removed by hand. Admission takes no lock at the gate lock's own path, and a file
   left there holds nothing back. The guard is never reclaimed by PID or by time, because a dead
-  owner's compilers or simulator children can outlive it. Admission refuses to proceed while any
-  owner is dead or uncertain, or while the guard is unreadable or not in admission's format,
-  which it never overwrites. Admission's format is JSON with `"vocaroEngineering": 1` and
+  owner's compilers or simulator children can outlive it. A dead or uncertain owner's entry that
+  recovery leaves counts as the slots it held, every slot for exclusive work, and the model if it
+  held it ([heavy-work admission](#heavy-work-admission)). Admission refuses to proceed while the
+  guard is unreadable or not in admission's format, which it never overwrites. Admission's format is JSON with `"vocaroEngineering": 1` and
   `owners`, an object of entries by identity, each with a positive integer `pid`, a `start`
   string, a `label` string and an `exclusive` flag, which every toolkit has written, and any
   `model` or `uncertain` flag or `admitted` string it has; other fields, which a newer toolkit
@@ -2238,14 +2262,15 @@ terminal result before ending its turn under `codex exec`, and before the thread
 Codex Desktop.
 
 Admission recovers a dead or uncertain guard entry itself, by the checks below, before it
-refuses a request for it: it prints `heavy: Recovered LABEL (PID …): …`, logs a `recovered` line
+counts the entry against a request: it prints `heavy: Recovered LABEL (PID …): …`, logs a `recovered` line
 marked `automatic` ([admission log](#admission-log)) and goes on. An entry those checks leave is
-checked again after HEAVY_RECOVER_SECONDS (60), since a census reads every process on the host,
-and its waiting message says why it stayed. Until 2026-11-01 recovery was attended only, and a
+checked again after HEAVY_RECOVER_SECONDS (60), since a census reads every process on the host;
+meanwhile it counts as the slots it held, and a waiting message that counts it says why it
+stayed ([heavy-work admission](#heavy-work-admission)). Until 2026-11-01 recovery was attended only, and a
 task stop's SIGKILL left entries whose commands had all ended refusing heavy work on both Macs
 until the owner removed them; agents could not always run the command themselves.
 
-`eng admissions recover` carries out the same recovery by hand. The first command below lists each entry that refuses admission, dead or uncertain, with its identity, label,
+`eng admissions recover` carries out the same recovery by hand. The first command below lists each entry that is dead or uncertain, with its identity, label,
 PID and how long ago it was admitted (for an entry an older toolkit wrote, how long ago its owner
 started), whether its owner still runs, and whether it has a process record. The second recovers
 one entry, named by its owner's PID or by its identity:
