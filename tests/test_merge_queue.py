@@ -1058,6 +1058,93 @@ class ToolkitCopy(Fixture):
         self.assertFalse(self.copy.exists())
 
 
+class SharedCheckout(Fixture):
+    """The toolkit's own queue keeping its main checkout, the shared checkout, at origin/main
+    (vocaro-engineering#104). The fixture's clone stands for that checkout."""
+    def setUp(self):
+        super().setUp()
+        toolkit = patch.object(mq, "TOOLKIT_ROOT", self.repo)
+        toolkit.start()
+        self.addCleanup(toolkit.stop)
+
+    def land(self, prepare=lambda: None):
+        """Land one commit while the shared checkout is on main at the old origin/main, as prepare leaves it,
+        and return (its HEAD before, after, origin/main, what the worker said)."""
+        self.landings = getattr(self, "landings", 0) + 1
+        name = f"landed-{self.landings}"
+        self.commit(name, name)
+        self.add(name)
+        run(self.repo, "git", "checkout", "-q", "-B", "main", "origin/main")
+        prepare()
+        before = run(self.repo, "git", "rev-parse", "HEAD")
+        with contextlib.redirect_stdout(io.StringIO()) as said:
+            self.assertEqual(self.work(), 0)
+        return before, run(self.repo, "git", "rev-parse", "HEAD"), run(self.repo, "git", "rev-parse", "origin/main"), \
+            said.getvalue()
+
+    def test_a_clean_shared_checkout_on_main_follows_each_landing(self):
+        # A session working in a worktree inside it does not hold it back: that is not its tree.
+        nested = self.repo / ".claude/worktrees/agent"
+        run(self.repo, "git", "worktree", "add", "-q", "--detach", str(nested), "origin/main")
+        (self.repo / ".git/info/exclude").write_text(".claude/worktrees/\n")
+        held = subprocess.Popen(["sleep", "300"], cwd=nested)
+        self.addCleanup(held.wait)
+        self.addCleanup(held.kill)
+        before, after, main, said = self.land()
+        self.assertNotEqual(before, main)
+        self.assertEqual(after, main)
+        self.assertIn(f"fast-forwarded {self.repo} from {before[:12]} to {main[:12]}", said)
+        self.assertTrue((self.repo / "landed-1").is_file())
+
+    def test_a_shared_checkout_that_is_not_plainly_behind_is_left_as_it_is(self):
+        def edit(): (self.repo / "AGENTS.md").write_text("a session's edit\n")
+        def untracked(): (self.repo / "notes.txt").write_text("a session's file\n")
+        def other_branch(): run(self.repo, "git", "checkout", "-q", "-B", "elsewhere", "origin/main")
+        def own_commit():
+            (self.repo / "own").write_text("x")
+            run(self.repo, "git", "add", "own")
+            run(self.repo, "git", "commit", "-qm", "A commit of its own")
+        cases = {"changed": (edit, "changed or untracked path(s), such as AGENTS.md"),
+                 "untracked": (untracked, "changed or untracked path(s), such as notes.txt"),
+                 "branch": (other_branch, "it is on elsewhere, not main"),
+                 "commit": (own_commit, "has commits origin/main lacks")}
+        for name, (prepare, why) in cases.items():
+            with self.subTest(name):
+                run(self.repo, "git", "checkout", "-q", "-f", "-B", "main", "origin/main")
+                run(self.repo, "git", "clean", "-fdq")
+                before, after, main, said = self.land(prepare)
+                self.assertNotEqual(after, main)
+                self.assertEqual(after, before)
+                self.assertIn(f"left {self.repo} as it is: ", said)
+                self.assertIn(why, said)
+                if name == "changed": self.assertEqual((self.repo / "AGENTS.md").read_text(), "a session's edit\n")
+                if name == "untracked": self.assertTrue((self.repo / "notes.txt").is_file())
+
+    def test_a_process_started_from_the_shared_checkout_holds_it_back(self):
+        def started(): self.held = subprocess.Popen(["sleep", "300"], cwd=self.repo / "scripts")
+        before, after, main, said = self.land(started)
+        self.addCleanup(self.held.wait)
+        self.addCleanup(self.held.kill)
+        self.assertEqual(after, before)
+        self.assertIn(f"a process started from it may still run its toolkit: PID {self.held.pid} (sleep)", said)
+        # A census that fails says nothing of what runs there, so it holds the checkout back too.
+        self.held.kill()
+        with patch.object(mq.disk, "census", side_effect=RuntimeError("could not list processes")):
+            before, after, main, said = self.land()
+        self.assertEqual(after, before)
+        self.assertIn("whether a process started from it still runs is unknown", said)
+        # The positive control: with the process gone, the next landing moves it.
+        before, after, main, said = self.land()
+        self.assertEqual(after, main)
+
+    def test_a_projects_queue_leaves_the_toolkits_checkout_alone(self):
+        with patch.object(mq, "TOOLKIT_ROOT", ROOT):
+            before, after, main, said = self.land()
+        self.assertEqual(after, before)
+        self.assertNotIn("fast-forwarded", said)
+        self.assertNotIn("as it is:", said)
+
+
 class Refusals(Fixture):
     def test_pull_request_projects_are_refused(self):
         self.publish({"schemaVersion": 1, "name": "x", "integration": "pull-request",

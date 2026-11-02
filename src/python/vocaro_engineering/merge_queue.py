@@ -499,6 +499,56 @@ class Worker:
         self.say(f"toolkit {text(copy, 'rev-parse', 'HEAD')[:12]} in {copy}")
         self.environment = {**environment(), TOOLKIT_VARIABLE: str(copy)}
 
+    def toolkits_own(self):
+        """Whether this is the toolkit's own queue: the toolkit running the worker is a checkout of its repository."""
+        common = git(TOOLKIT_ROOT, "rev-parse", "--path-format=absolute", "--git-common-dir")
+        return common.returncode == 0 and common.stdout.strip() == \
+            text(self.queue.main_checkout, "rev-parse", "--path-format=absolute", "--git-common-dir")
+
+    def follow(self):
+        """After a landing in the toolkit's own queue, fast-forward the shared checkout, the toolkit's main
+        checkout, which every session's eng and the next worker read, to origin/main. Only when it is on main,
+        clean, holds no commit of its own, is behind, and no process started from it still runs there, since
+        such a run would mix two toolkits (owner's decision, vocaro-engineering#104). Otherwise it is left as it
+        is, and the log says why; nothing of this holds the queue."""
+        shared = self.queue.main_checkout
+        try:
+            why = self.stays(shared)
+            if why is None:
+                before = text(shared, "rev-parse", "HEAD")
+                merged = git(shared, "merge", "--ff-only", "--quiet", MAIN, hooks=False)
+                why = None if merged.returncode == 0 else \
+                    f"`git merge --ff-only` failed: {merged.stderr.strip() or 'no output'}"
+                if why is None:
+                    self.say(f"fast-forwarded {shared} from {before[:12]} to {text(shared, 'rev-parse', 'HEAD')[:12]}")
+                    return
+        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+            why = str(error)
+        if why: self.say(f"left {shared} as it is: {why}")
+
+    def stays(self, shared):
+        """Why the shared checkout is not fast-forwarded now, '' when it is current, or None."""
+        branch = git(shared, "symbolic-ref", "--short", "-q", "HEAD").stdout.strip()
+        if branch != "main": return f"it is on {branch or 'a detached HEAD'}, not main"
+        changed = git(shared, "status", "--porcelain", "--untracked-files=normal", check=True).stdout.splitlines()
+        if changed: return f"it has {len(changed)} changed or untracked path(s), such as {changed[0][3:]}"
+        head, target = text(shared, "rev-parse", "HEAD"), text(shared, "rev-parse", MAIN)
+        if head == target: return ""
+        if git(shared, "merge-base", "--is-ancestor", head, target).returncode:
+            return f"its HEAD {head[:12]} has commits origin/main lacks"
+        # What runs in a session's worktree inside it, or opens Git's own files, is not running from its tree.
+        listed = text(shared, "worktree", "list", "--porcelain").splitlines()
+        apart = [Path(line[len("worktree "):]) for line in listed[1:] if line.startswith("worktree ")]
+        apart.append(Path(text(shared, "rev-parse", "--path-format=absolute", "--git-common-dir")))
+        try: users = disk.users(disk.census(), shared, apart)
+        except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+            return f"whether a process started from it still runs is unknown: {error}"
+        if users:
+            more = f", and {len(users) - 1} more" if len(users) > 1 else ""
+            return (f"a process started from it may still run its toolkit: "
+                    f"{disk.described((users[0], 'working directory, an open file or an argument'))}{more}")
+        return None
+
     def reset(self, commit):
         """Exactly commit's tracked files. Ignored inputs a lane provisioned stay for the next round."""
         git(self.checkout, "cherry-pick", "--abort", hooks=False)
@@ -662,6 +712,7 @@ class Worker:
                 git(self.checkout, *FETCH)
                 self.say(f"pushed {head[:12]}")
                 for entry in batch: self.queue.settle(entry, LANDED, landedAs=head)
+                if self.toolkits_own(): self.follow()
                 return True
             said = pushed.stderr.strip()
             if "rejected" in said and ("fetch first" in said or "non-fast-forward" in said): continue

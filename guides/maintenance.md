@@ -221,7 +221,23 @@ other project's running gate. The toolkit's own queue tests its batch instead, a
 `VOCARO_ENGINEERING_ROOT` set where the worker started stands. A copy that cannot be fetched or moved
 holds the queue and blames no commit. Anything else still reads the shared checkout: a session's own
 `eng`. So a project commit that needs a new toolkit option lands after the toolkit's commit, and runs
-by hand only once that checkout is pulled.
+by hand only once that checkout has it.
+
+**The shared checkout follows each toolkit landing.** After each push, the toolkit's own worker
+fast-forwards its main checkout, `~/Development/vocaro-engineering`, to `origin/main`, without hooks,
+but only when that checkout is on `main`, clean (no changed or untracked path), holds no commit of its
+own, is behind, and no process started from it still runs: one whose working directory, an open file
+or an argument is in its tree, outside the session worktrees inside it and Git's own directory (owner's
+decision, 2026-11-02, [vocaro-engineering#104](https://github.com/vocaro/vocaro-engineering/issues/104)).
+A running `eng` keeps the modules it loaded at its start but reads six others when first used, and a
+lane that starts another `eng` reads the tree as it is then, so a run spanning the move could mix two
+toolkits. Otherwise the worker leaves the checkout as it is and its log says why, such as
+`left ~/Development/vocaro-engineering as it is: it is on BRANCH, not main`; nothing of this holds
+the queue, and the next landing tries again. A project worker whose code came from that checkout is
+such a process while it runs. A process that loaded the toolkit from it without keeping a path there,
+as a project's launcher does, cannot be seen, and a process that starts between the check and the
+fast-forward is not either. A session never stashes, resets or edits that checkout by hand to make it
+follow.
 
 **Where the queue's checkouts are.** Each queue's pair is in one folder beside the main checkouts and
 outside every repository, laid out as the second Mac lays out a run's (`checkouts/NAME/N/...`):
