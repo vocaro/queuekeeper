@@ -8,8 +8,10 @@ number, and stays in the pool. Pruning deletes a member unused for 14 days, neve
 lowest-numbered of its kind, and records the deletion (guides/simulator-testing.md, Reserved
 simulator pool). Nothing else here deletes or renames a simulator. Reaping shuts down a member left
 booted past its time (offload_host.reap; guides/shared-host.md, Processes left over from runs).
+Checking a UDID refuses any device outside the pool, such as one of Xcode's default devices, which a
+script that picks a device by name finds instead of a member (vocaro-engineering#91).
 
-    eng simulator-pool list|take|release|prune|reap [--pool NAME] ...; eng simulator-pool -h for the rest
+    eng simulator-pool list|take|release|prune|reap|check [--pool NAME] ...; eng simulator-pool -h for the rest
 """
 import argparse
 import contextlib
@@ -18,6 +20,7 @@ from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
+import plistlib
 import re
 import signal
 import subprocess
@@ -50,6 +53,37 @@ def simctl(*arguments, timeout=600):
 
 
 default_owner = device_record.default_owner
+
+
+def default_devices(directory=None):
+    """The UDIDs CoreSimulator's device set names as Xcode's default device for each runtime.
+
+    The set keeps naming a default after it is deleted, so only a device simctl lists is one."""
+    directory = Path(directory) if directory else Path.home() / "Library/Developer/CoreSimulator/Devices"
+    try:
+        with open(directory / "device_set.plist", "rb") as handle:
+            defaults = plistlib.load(handle).get("DefaultDevices", {})
+    except (OSError, plistlib.InvalidFileException, ValueError, AttributeError):
+        return frozenset()
+    return frozenset(udid.upper() for types in defaults.values() if isinstance(types, dict)
+                     for udid in types.values() if isinstance(udid, str))
+
+
+def listed_defaults(listing, defaults=None):
+    """Xcode's default devices a `simctl list devices -j` listing holds, as `NAME (RUNTIME, UDID)`."""
+    defaults = default_devices() if defaults is None else defaults
+    return sorted(f"{entry.get('name')} ({runtime.rsplit('.', 1)[-1]}, {entry['udid'].upper()})"
+                  for runtime, entries in listing.get("devices", {}).items() for entry in entries
+                  if str(entry.get("udid", "")).upper() in defaults)
+
+
+def canonical(udid):
+    """A simulator's canonical uppercase UDID; ValueError for a name, `booted` or anything else."""
+    try:
+        return str(uuid.UUID(udid)).upper()
+    except (ValueError, TypeError, AttributeError):
+        raise ValueError(f"{udid!r} is not a simulator UDID: pass a pool member's UDID, never a name or `booted`, "
+                         "which can select one of Xcode's default devices instead") from None
 
 
 def configured(root):
@@ -149,6 +183,23 @@ class Pool:
 
     def members(self, listing=None):
         return members(self.name, listing or self.listing())
+
+    def check(self, udid, listing=None, defaults=None):
+        """The member this UDID names. Any other device's UDID, or anything but a UDID, is refused."""
+        udid = canonical(udid)
+        listing = listing or self.listing()
+        member = next((member for member in self.members(listing) if member.udid == udid), None)
+        if member is not None:
+            return member
+        entry = next((entry for entries in listing.get("devices", {}).values() for entry in entries
+                      if str(entry.get("udid", "")).upper() == udid), None)
+        if entry is None:
+            raise RuntimeError(f"simctl lists no simulator {udid}")
+        kind = "one of Xcode's default devices" if udid in (default_devices() if defaults is None else defaults) \
+            else "a device"
+        raise RuntimeError(f"{entry.get('name')} ({udid}) is {kind} outside the {self.name} simulator pool: take a "
+                           "member with `eng simulator-pool take --device TYPE --runtime RUNTIME` and pass its UDID "
+                           "(guides/simulator-testing.md, Reserved simulator pool)")
 
     def state(self, udid):
         """A fresh observation of this exact device, or None when simctl no longer lists it."""
@@ -447,6 +498,9 @@ def main(argv, project=None):
                                "this Mac and the second Mac (guides/shared-host.md, Processes left over from runs)")
     reap.add_argument("--dry-run", action="store_true", help="say what it would stop and keep, and stop nothing")
     reap.add_argument("--here", action="store_true", help="only this Mac")
+    check = commands.add_parser("check", help="print a pool member's canonical UDID; exit 1 for any other device, "
+                                "such as one of Xcode's default devices, a name or `booted`")
+    check.add_argument("udid")
     args = parser.parse_args(argv)
     if args.action == "reap":
         try:
@@ -458,7 +512,7 @@ def main(argv, project=None):
     owner = args.owner or default_owner()
     if not name:
         parser.error("name the pool with --pool, or in engineering.json's simulatorPool")
-    if not owner and args.action != "list":
+    if not owner and args.action not in {"list", "check"}:
         parser.error(f"name the owner with --owner or ${device_record.OWNER}")
     try:
         pool = Pool(name, owner=owner)
@@ -481,6 +535,8 @@ def main(argv, project=None):
                 print(f"eng simulator-pool: {lease.key} did not finish booting (status {status})", file=sys.stderr)
                 return status if status != 124 else evidence.UNMEASURED
             print(lease.udid)
+        elif args.action == "check":
+            print(pool.check(args.udid).udid)
         elif args.action == "release":
             return 0 if pool.release(pool.held(args.udid), outcome=args.outcome) else 1
         elif args.action == "prune":

@@ -251,13 +251,7 @@ def pools(development, run=subprocess.run):
 
 def default_devices(directory):
     """The devices CoreSimulator made for each runtime, which any session may use."""
-    try:
-        with open(Path(directory) / "device_set.plist", "rb") as handle:
-            defaults = plistlib.load(handle).get("DefaultDevices", {})
-    except (OSError, plistlib.InvalidFileException, ValueError):
-        return frozenset()
-    return frozenset(udid.upper() for types in defaults.values() if isinstance(types, dict)
-                     for udid in types.values() if isinstance(udid, str))
+    return simulator_pool.default_devices(directory)
 
 
 def device_records():

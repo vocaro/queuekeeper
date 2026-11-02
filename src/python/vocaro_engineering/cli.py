@@ -124,6 +124,28 @@ def stale_copies(root):
             if (root / copy).is_file() and (root / copy).read_bytes() != (TOOLKIT_ROOT / source).read_bytes()]
 
 
+def default_simulators(config):
+    """A warning when Xcode's default simulators exist on this Mac and the project uses simulators.
+
+    A script or Xcode run that picks a device by name, or `booted`, finds one of them instead of a
+    pool member and fills it with the project's apps (vocaro-engineering#91). Xcode makes them again
+    when it installs a runtime. Deleting them is the owner's call, so this only says so."""
+    if not any(capability.startswith("simulator") for capability in config.get("capabilities", [])):
+        return []
+    try:
+        result = simulator_pool.simctl("list", "devices", "-j", timeout=120)
+        found = simulator_pool.listed_defaults(json.loads(result.stdout)) if result.returncode == 0 else []
+    except (OSError, subprocess.SubprocessError, ValueError, AttributeError):
+        return []
+    if not found:
+        return []
+    shown = ", ".join(found[:5]) + (f" and {len(found) - 5} more" if len(found) > 5 else "")
+    return [f"{len(found)} of Xcode's default simulators exist on this Mac: {shown}. A script or Xcode run that "
+            "picks a device by name or `booted` installs on one instead of a pool member; `eng disk` lists them "
+            "with their delete commands, which are the owner's call (guides/simulator-testing.md, Reserved "
+            "simulator pool)"]
+
+
 def initialize(root, args):
     root.mkdir(parents=True, exist_ok=True)
     config_path = root / "engineering.json"
@@ -481,8 +503,9 @@ def main(argv=None):
     commands.add_parser("simulator-tests", help="build a scheme's tests once and run them on several members of the "
         "project's simulator pool side by side: eng simulator-tests --scheme S --runtime R --device T --device T; "
         "-h for the rest")
-    commands.add_parser("simulator-pool", help="list, take, release, prune or reap members of the project's simulator "
-        "pool under device-record reservations: eng simulator-pool list|take|release|prune|reap; -h for the rest")
+    commands.add_parser("simulator-pool", help="list, take, release, prune, reap or check members of the project's "
+        "simulator pool under device-record reservations: eng simulator-pool list|take|release|prune|reap|check; "
+        "-h for the rest")
     commands.add_parser("unittest", help="run a unittest suite's modules in processes of their own, side by side: "
         "eng unittest [-s START] [-p PATTERN] [-j JOBS] [-v]; eng unittest -h for the rest")
     commands.add_parser("xctest", help="build a Swift package's tests once and run its XCTest classes in xctest "
@@ -696,6 +719,7 @@ def main(argv=None):
             warnings += unlinked_packages(root, config)
             warnings += stale_copies(root)
             warnings += agent_entry(root, config)
+            warnings += default_simulators(config)
             warnings += skills.warnings(named_checkout(TOOLKIT_ROOT))
             # A difference between the two Macs is an error; a second Mac that cannot be reached is unchecked.
             hosts = remote.compare_hosts()

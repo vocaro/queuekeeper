@@ -4,6 +4,7 @@ from io import StringIO
 import json
 import os
 from pathlib import Path
+import plistlib
 import subprocess
 import sys
 import tempfile
@@ -272,6 +273,53 @@ class PoolTests(unittest.TestCase):
         self.assertEqual(status, 143, error.getvalue())
         self.assertEqual(devices.Record(self.path).entry("Project Duo 1")["state"], "released")
         self.assertEqual(self.simctl.devices[udid]["state"], "Shutdown")
+
+    def test_check_passes_only_a_pool_member_by_its_udid(self):
+        member = self.simctl.add("Project Duo 1")
+        default = self.simctl.add("iPhone Duo")
+        other = self.simctl.add("Other Duo 1")
+        def command(*arguments, defaults=frozenset({default})):
+            out, err = StringIO(), StringIO()
+            # check needs no owner: a script checks a UDID before it takes anything.
+            with mock.patch.object(simulator_pool, "simctl", self.simctl), \
+                    mock.patch.object(simulator_pool, "default_devices", return_value=defaults), \
+                    mock.patch.object(simulator_pool, "default_owner", return_value=None), \
+                    redirect_stdout(out), redirect_stderr(err):
+                status = simulator_pool.main(["--pool", "Project", "check", *arguments])
+            return status, out.getvalue(), err.getvalue()
+        self.assertEqual(command(member), (0, member + "\n", ""))
+        self.assertEqual(command(member.lower())[:2], (0, member + "\n"))
+        status, output, error = command(default)
+        self.assertEqual((status, output), (1, ""))
+        self.assertIn(f"iPhone Duo ({default}) is one of Xcode's default devices outside the Project simulator pool",
+                      error)
+        status, _, error = command(other)
+        self.assertEqual(status, 1)
+        self.assertIn(f"Other Duo 1 ({other}) is a device outside the Project simulator pool", error)
+        for refused in ("iPhone Duo", "booted", "Project Duo 1"):
+            with self.subTest(refused=refused):
+                status, _, error = command(refused)
+                self.assertEqual(status, 1)
+                self.assertIn("is not a simulator UDID", error)
+        status, _, error = command(str(uuid.uuid4()))
+        self.assertEqual(status, 1)
+        self.assertIn("simctl lists no simulator", error)
+        # Nothing but listings: a check boots, reserves and erases nothing.
+        self.assertEqual({call[0] for call in self.simctl.calls}, {"list"})
+        self.assertFalse(self.path.exists())
+
+    def test_default_devices_come_from_the_device_set(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertEqual(simulator_pool.default_devices(directory), frozenset())
+            udid = str(uuid.uuid4())
+            with open(Path(directory) / "device_set.plist", "wb") as handle:
+                plistlib.dump({"DefaultDevices": {RUNTIME: {DUO: udid}, "version": 0}}, handle)
+            self.assertEqual(simulator_pool.default_devices(directory), frozenset({udid.upper()}))
+        listing = {"devices": {RUNTIME: [{"udid": udid.lower(), "name": "iPhone Duo"},
+                                         {"udid": str(uuid.uuid4()), "name": "Project Duo 1"}]}}
+        self.assertEqual(simulator_pool.listed_defaults(listing, frozenset({udid.upper()})),
+                         [f"iPhone Duo (iOS-27-1, {udid.upper()})"])
+        self.assertEqual(simulator_pool.listed_defaults(listing, frozenset()), [])
 
     def test_the_command_takes_releases_lists_and_prunes(self):
         self.simctl.add("Project Duo 1", days=30)
