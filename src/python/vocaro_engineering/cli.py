@@ -162,8 +162,8 @@ def initialize(root, args):
     print(f"Initialized {root}; existing instructions and commands were preserved")
 
 
-# The section every direct-main project's AGENTS.md holds word for word, so that an agent that
-# reads only AGENTS.md, as a subagent may, still lands by the queue (agents/core.md).
+# The pointer every direct-main project's AGENTS.md holds word for word. The rules stay in the
+# toolkit: CLAUDE.md imports them, and the pointer sends any other agent to eng instructions.
 SHARED_GUIDANCE = "agents/shared-guidance.md"
 
 
