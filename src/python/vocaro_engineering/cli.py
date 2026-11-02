@@ -153,49 +153,63 @@ def initialize(root, args):
         shutil.copyfile(TOOLKIT_ROOT / "integrations/shared.py", adapter)
     agents = root / "AGENTS.md"
     if not agents.exists():
-        agents.write_text("# Contributor instructions\n\n" + (TOOLKIT_ROOT / SHARED_GUIDANCE).read_text()
+        agents.write_text("# Contributor instructions\n\n" + (TOOLKIT_ROOT / SHARED_GUIDANCE).read_text() + "\n"
+                          + "".join(f"{line}\n" for line in claude_imports(load(root)))
                           + "\nRecord project-specific product rules and justified exceptions here.\n")
-    # Claude Code loads an imported AGENTS.md at session start; it may not follow a link.
+    # Claude Code loads an imported AGENTS.md at session start, and the imports in it; it may not follow a link.
     bridge = root / "CLAUDE.md"
-    if not bridge.exists(): bridge.write_text("".join(f"{line}\n" for line in claude_imports(load(root))))
+    if not bridge.exists(): bridge.write_text(f"{CLAUDE_ENTRY}\n")
     load(root)
     print(f"Initialized {root}; existing instructions and commands were preserved")
 
 
 # The pointer every direct-main project's AGENTS.md holds word for word. The rules stay in the
-# toolkit: CLAUDE.md imports them, and the pointer sends any other agent to eng instructions.
+# toolkit: AGENTS.md imports them for Claude Code, and the pointer sends any other agent to eng instructions.
 SHARED_GUIDANCE = "agents/shared-guidance.md"
+# A project's CLAUDE.md holds this line alone, beside any comment lines (owner's decision, 2026-11-01).
+CLAUDE_ENTRY = "@AGENTS.md"
 
 
 def claude_imports(config):
-    """The lines a project's CLAUDE.md imports: AGENTS.md, then the common rules and each enabled
-    capability's, so every Claude Code agent, a subagent included, has them without running
-    eng instructions. The toolkit is named from the home folder, which both Macs share, because
+    """The lines a project's AGENTS.md imports: the common rules and each enabled capability's.
+    Claude Code follows them through CLAUDE.md's import of AGENTS.md, so every Claude Code agent, a
+    subagent included, has them without running eng instructions; other agents read them as text
+    beside the pointer. The toolkit is named from the home folder, which both Macs share, because
     a path relative to the project does not reach it from a worktree under .claude/worktrees."""
     toolkit = named_checkout(TOOLKIT_ROOT)
     home = Path.home()
     shown = f"~/{toolkit.relative_to(home)}" if toolkit.is_relative_to(home) else str(toolkit)
-    return ["@AGENTS.md", f"@{shown}/agents/core.md",
+    return [f"@{shown}/agents/core.md",
             *(f"@{shown}/agents/capabilities/{name}.md" for name in config.get("capabilities", []))]
+
+
+def claude_entry_lines(text):
+    """CLAUDE.md's lines other than blank lines and HTML comments, which may span lines."""
+    return [line.strip() for line in re.sub(r"<!--.*?-->", "", text, flags=re.S).splitlines() if line.strip()]
 
 
 def agent_entry(root, config):
     """Problems with a direct-main project's AGENTS.md and CLAUDE.md: the shared section copied
-    other than word for word, or an import of the common rules missing. The toolkit's own
-    checkout, which has integrations/, keeps instructions of its own."""
+    other than word for word, an import of the common rules missing from AGENTS.md, or a CLAUDE.md
+    that holds more than `@AGENTS.md`. The toolkit's own checkout, which has integrations/, keeps
+    instructions of its own."""
     if (root / "integrations/shared.py").is_file() or config.get("integration", "direct-main") != "direct-main":
         return []
     problems = []
     agents = root / "AGENTS.md"
-    if not agents.is_file() or (TOOLKIT_ROOT / SHARED_GUIDANCE).read_text() not in agents.read_text():
+    text = agents.read_text() if agents.is_file() else ""
+    if (TOOLKIT_ROOT / SHARED_GUIDANCE).read_text() not in text:
         problems.append(f"AGENTS.md does not hold the toolkit's {SHARED_GUIDANCE} word for word: put that section "
                         "in place of its own, and keep this project's rules after it (guides/adoption.md)")
-    claude = root / "CLAUDE.md"
-    lines = claude.read_text().splitlines() if claude.is_file() else []
+    lines = text.splitlines()
     missing = [line for line in claude_imports(config) if line not in lines]
     if missing:
-        problems.append(f"CLAUDE.md does not import {', '.join(missing)}: add each on a line of its own "
-                        "(guides/adoption.md)")
+        problems.append(f"AGENTS.md does not import {', '.join(missing)}: add each on a line of its own after the "
+                        "shared section (guides/adoption.md)")
+    claude = root / "CLAUDE.md"
+    if claude_entry_lines(claude.read_text() if claude.is_file() else "") != [CLAUDE_ENTRY]:
+        problems.append(f"CLAUDE.md does not hold {CLAUDE_ENTRY} alone: make it that line, keeping any comment "
+                        "lines, and move any other import into AGENTS.md (guides/adoption.md)")
     return problems
 
 
