@@ -56,7 +56,7 @@ import sys
 import tempfile
 import time
 
-from . import processes
+from . import offload_host, processes
 from .resources import process_start
 
 SCHEMA = 1
@@ -981,6 +981,15 @@ def _describe(key, entry, line=()):
     return "; ".join(parts)
 
 
+def recoverable_lines(entries):
+    """What to say of each held entry whose process is gone and whose release has passed. When the
+    processes cannot be listed, nothing can be said of any entry, and it says that."""
+    listed = offload_host.listing(["ps", "-axww", "-o", "pid=,ppid=,uid=,lstart=,args="])
+    if listed is None: return ["The processes could not be listed, so no held entry that nothing keeps can be named"]
+    return [f"Recoverable: {offload_host.recoverable_line(item)}"
+            for item in offload_host.recoverable(entries, offload_host.process_table(listed))]
+
+
 def status(record):
     value = record.load()
     source = f" (from {OVERRIDE})" if os.environ.get(OVERRIDE) else ""
@@ -993,6 +1002,7 @@ def status(record):
           f"{FOREGROUND}: free; reserve it with the owner's approval before foreground work")
     for key, entry in value["devices"].items():
         if key != FOREGROUND: print(_describe(key, entry, waiting(value, key)))
+    for line in recoverable_lines(value["devices"]): print(line)
     imported = {item.get("sha256") for item in value.get("imports", [])}
     for legacy in sorted(glob.glob(LEGACY)):
         try:

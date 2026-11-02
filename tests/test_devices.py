@@ -536,6 +536,42 @@ class DeviceRecordTests(unittest.TestCase):
         self.assertIn(f"{devices.FOREGROUND}: held; owner session-a, state reserved", output)
         self.assertIn(f"approved by owner at {entry['approval']['at']} until {entry['approval']['until']}", output)
 
+    def held_by(self, pid, start, due):
+        """A reserved simulator whose holder and expected release are these."""
+        entry = devices.Record(self.path).reserve("Pool iPhone 1", owner="session-a", revision=0, purpose="tests",
+                                                  release_by=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(), device=DUO)
+        record = json.loads(self.path.read_text())
+        record["devices"]["Pool iPhone 1"].update(holderProcess={"pid": pid, "start": start}, expectedReleaseBy=due)
+        self.path.write_text(json.dumps(record))
+        return entry
+
+    def test_status_names_a_held_entry_whose_process_is_gone_and_whose_release_has_passed(self):
+        gone = subprocess.Popen(["/usr/bin/true"])
+        gone.wait()
+        entry = self.held_by(gone.pid, "Thu Jan  1 00:00:00 2026", "2026-01-01T00:00:00+00:00")
+        before = self.path.read_bytes()
+        output = self.cli("status")[1]
+        self.assertIn(f"Recoverable: Pool iPhone 1 stays held for owner session-a, though its process {gone.pid} is gone",
+                      output)
+        self.assertIn("python3 -m vocaro_engineering.devices recover 'Pool iPhone 1' --by SESSION "
+                      f"--revision {entry['revision']} --verified 'WHAT YOU CHECKED'", output)
+        self.assertEqual(self.path.read_bytes(), before, "status changes nothing")
+
+    def test_status_does_not_name_a_live_holder_or_a_release_not_yet_due(self):
+        start = process_start(os.getpid())
+        self.held_by(os.getpid(), start, "2026-01-01T00:00:00+00:00")
+        self.assertNotIn("Recoverable", self.cli("status")[1])
+        self.path.unlink()
+        gone = subprocess.Popen(["/usr/bin/true"])
+        gone.wait()
+        due = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        self.held_by(gone.pid, "Thu Jan  1 00:00:00 2026", due)
+        self.assertNotIn("Recoverable", self.cli("status")[1])
+
+    def test_status_says_when_it_cannot_tell(self):
+        with patch.object(devices.offload_host, "listing", return_value=None):
+            self.assertIn("could not be listed", self.cli("status")[1])
+
     def test_a_second_foreground_reservation_is_refused(self):
         entry = self.foreground()
         before = self.path.read_bytes()

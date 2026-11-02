@@ -1371,6 +1371,17 @@ record's lock, which every reservation takes, until the shutdown has started, so
 between the check and the stop. It holds that lock for at most 20 seconds, under the 30 another change
 waits, and gives up with nothing stopped when it cannot have the lock in 5.
 
+Reap leaves a stopped simulator's record entry held, for its owner or
+[recovery](#device-reservations), and releases nothing itself: a process being gone does not show that
+the device's state was restored. But it names what would otherwise wait unseen
+([vocaro-engineering#97](https://github.com/vocaro/vocaro-engineering/issues/97)). `eng simulator-pool
+reap`, with or without `--dry-run`, and `devices status` end with each held entry that records a process
+known to be gone (a PID with another start counts) and an expected release that has passed, with its exact
+`devices recover` command. A live holder, a release not yet due or unreadable, an entry that records no
+process and an uncertain entry are not named. The reap before a dispatch names only the entries of
+simulators it just stopped, so that other runs' sends do not repeat the rest. Releasing automatically is
+left as the owner's choice.
+
 ### Registered Mac builds
 
 Xcode registers a Mac app when it builds it, and macOS registers one when it launches, and neither is

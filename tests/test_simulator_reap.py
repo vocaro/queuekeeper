@@ -116,6 +116,74 @@ class ReapTests(unittest.TestCase):
         self.assertEqual(self.stops, [UDID], report)
         self.assertEqual([item["udid"] for item in report["stopped"]], [UDID])
 
+    DUE = "2026-01-01T00:00:00+00:00"
+
+    def held_entry(self, pid=HOLDER, start="Thu Jan  1 00:00:00 2026", due=DUE, **more):
+        return {"holderProcess": {"pid": pid, "start": start}, "expectedReleaseBy": due, "revision": 7, **more}
+
+    def assertNamed(self, report, key=NAME):
+        self.assertEqual([item["key"] for item in report["recoverable"]], [key], report)
+        line = next(line for line in remote.reap_lines("fake", report) if "stays held" in line)
+        self.assertIn(f"owner session", line)
+        self.assertIn(f"due {self.DUE}", line)
+        self.assertIn(f"python3 -m vocaro_engineering.devices recover '{key}' --by SESSION --revision 7 "
+                      "--verified 'WHAT YOU CHECKED'", line)
+
+    def test_reap_names_a_held_entry_whose_process_is_gone_and_whose_release_has_passed_and_leaves_it(self):
+        self.reserve(**self.held_entry())
+        before = self.record.read_bytes()
+        report = self.reap()
+        self.assertStopped(report)
+        self.assertNamed(report)
+        self.assertEqual(self.record.read_bytes(), before, "reap releases nothing")
+        # It stopped this entry's simulator, so a dispatch's reap says so too.
+        self.assertIn("stays held", "\n".join(remote.reap_lines("fake", report, listing=False)))
+
+    def test_reap_names_one_with_nothing_booted_but_a_dispatch_says_only_what_it_stopped(self):
+        self.table.clear()
+        self.process(5000, 1, "/usr/bin/other")
+        self.reserve(**self.held_entry())
+        report = self.reap()
+        self.assertEqual(self.stops, [])
+        self.assertNamed(report)
+        self.assertEqual(remote.reap_lines("fake", report, listing=False), [])
+
+    def test_a_dry_run_names_it_too(self):
+        self.reserve(**self.held_entry())
+        self.assertNamed(self.reap(dry_run=True))
+
+    def test_a_reused_pid_with_another_start_is_a_process_that_has_gone(self):
+        self.process(HOLDER, 1, "/usr/bin/other", start="Mon Feb  2 00:00:00 2026")
+        self.reserve(**self.held_entry())
+        self.assertNamed(self.reap())
+
+    def test_a_live_holder_is_not_named(self):
+        self.process(HOLDER, 1, "/usr/bin/holder", start="Thu Jan  1 00:00:00 2026")
+        self.reserve(**self.held_entry())
+        report = self.reap()
+        self.assertEqual(report["recoverable"], [])
+        self.assertNotIn("stays held", "\n".join(remote.reap_lines("fake", report)))
+
+    def test_what_may_still_be_held_is_not_named(self):
+        future = time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(time.time() + 3600))
+        for name, entry in (("release not due", self.held_entry(due=future)),
+                            ("no release", self.held_entry(due=None)),
+                            ("unreadable release", self.held_entry(due="soon")),
+                            ("no process", {"expectedReleaseBy": self.DUE, "revision": 7}),
+                            ("no start for a running PID", self.held_entry(pid=LAUNCHD, start=None)),
+                            ("uncertain", self.held_entry(uncertain=True)),
+                            ("released", self.held_entry(state="released", ownerChatID=None))):
+            with self.subTest(name):
+                self.reserve(**entry)
+                self.assertEqual(self.reap(dry_run=True)["recoverable"], [])
+
+    def test_an_unlistable_host_names_nothing_and_says_so(self):
+        self.reserve(**self.held_entry())
+        listed = lambda command: None if command[0] == "ps" else self.listed(command)
+        report = offload_host.reap(remote.ROOT, [], listed=listed, scan=False)
+        self.assertEqual(report["recoverable"], [])
+        self.assertIn("could not be listed", report["problem"])
+
     def test_a_stale_member_is_stopped_once_and_logged_with_its_udid_name_age_and_reason(self):
         report = self.reap()
         self.assertStopped(report)

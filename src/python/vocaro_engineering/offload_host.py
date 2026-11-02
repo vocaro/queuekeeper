@@ -950,6 +950,31 @@ def reservation_hold(key, entry, table):
     return None, f"reservation {key}'s recorded process is gone, and its entry stays for its owner or recovery"
 
 
+def recoverable(entries, table):
+    """The record's held entries that nothing keeps: each records a process, known to be gone, and an
+    expected release that has passed (reservation_hold says the rest). Reap leaves them, for their owner or
+    recovery, and only says so, with the command that recovers each (vocaro-engineering#97)."""
+    found = []
+    for key, entry in entries.items():
+        hold, gone = reservation_hold(key, entry, table)
+        if hold is not None or gone is None or entry.get("expectedReleaseBy") is None: continue
+        owned = entry.get("ownedProcesses") or []
+        run = [{"pid": entry.get("hostProcessIdentifier")}] if entry.get("activeRun") else []
+        recorded = [entry.get(HOLDER), *run, *(owned if isinstance(owned, list) else [owned])]
+        found.append({"key": key, "device": entry.get("device"), "owner": entry.get("ownerChatID"),
+                      "due": entry.get("expectedReleaseBy"), "pids": [item[0] for item in identities(recorded)],
+                      "command": f"python3 -m vocaro_engineering.devices recover {shlex.quote(key)} --by SESSION "
+                                 f"--revision {entry.get('revision', 0)} --verified 'WHAT YOU CHECKED'"})
+    return found
+
+
+def recoverable_line(item):
+    """What is said of one entry recoverable found."""
+    return (f"{item['key']} stays held for owner {item['owner']}, though its process "
+            f"{', '.join(map(str, item['pids']))} is gone and its release was due {item['due']}. Once its work has "
+            f"stopped, its owner or a session they agreed recovers it: {item['command']}")
+
+
 def observe(root, pools, listed):
     """One look at the simulators the census lists as left over: for each launchd_sim by UDID, its
     PID, start, age, name and reason, and hold, why it must keep running, or None. Nothing here
@@ -1067,6 +1092,24 @@ def stop_simulator(item, reader, budget, begin, report):
 
 
 def reap(root, pools, dry_run=False, scan=True, listed=None, begin=None, clock=time.monotonic):
+    """stop_stale, and in recoverable, the record's entries that stay held with nothing keeping them,
+    which it never releases. It never raises."""
+    report = stop_stale(root, pools, dry_run, scan, listed, begin, clock)
+    report["recoverable"] = []
+    try:
+        entries = device_entries()
+        # As if no process ran: what could be named at all, without which nothing need be listed.
+        if recoverable(entries, {}):
+            processes = (listed or listing)(["ps", "-axww", "-o", "pid=,ppid=,uid=,lstart=,args="])
+            if not processes: raise ReapProblem("the processes could not be listed, so no held entry can be named")
+            report["recoverable"] = recoverable(entries, process_table(processes))
+    except Exception as error:
+        report["problem"] = report["problem"] or (str(error) if isinstance(error, ReapProblem)
+                                                  else f"{type(error).__name__}: {error}")
+    return report
+
+
+def stop_stale(root, pools, dry_run=False, scan=True, listed=None, begin=None, clock=time.monotonic):
     """Shut down the simulators that are stale: `eng simulator-pool reap`, and before work is sent to the
     second Mac. One goes only when it is a member of a pool, among pools or, with scan, those the
     checkouts name; the census lists it left over; nothing naming its UDID runs outside its own processes;
