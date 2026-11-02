@@ -617,7 +617,9 @@ its own. A large untracked file that no `.gitignore` names is sent too, and its 
 the repository's objects until Git's garbage collection prunes the snapshot, so ignore what the
 second Mac does not need.
 `eng run`, `eng admit --verify`, `eng remote run` and `eng remote admit` all send work this way.
-The toolkit goes only as a commit: a toolkit checkout with changes to tracked files is refused.
+The toolkit goes only as a commit: a toolkit checkout with changes to tracked files is refused, and
+the work runs here, as a session's own `eng run` still does. A queue's gate uses a clean copy of the
+toolkit instead, so this never moves it ([which toolkit a gate runs](maintenance.md#the-merge-queue)).
 
 `eng remote` takes no slot here. It pushes the commit, and the toolkit commit that runs it, by git
 over SSH and without hooks to bare repositories under

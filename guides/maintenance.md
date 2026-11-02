@@ -211,6 +211,17 @@ keeping both would double it. Anything else comes back, a change to an existing 
 another file above all. The commit keeps its message and author. Its patch is then not the branch's,
 so `landed.sh` proves no such branch landed, and it stays until its author removes it.
 
+**Which toolkit a gate runs.** Each round, a project's worker moves `../NAME-queue-toolkit`, a locked
+worktree of the toolkit with no session's edits, to the toolkit's `origin/main`, and runs the lanes, the
+pre-push hook and the carry-over checks with `VOCARO_ENGINEERING_ROOT` naming it (owner's decision,
+2026-11-01). A landed toolkit commit therefore reaches the next round of every project's gate, and a
+shared toolkit checkout that lags or holds a session's changes reaches none of them. Each worker has
+its own copy, so moving it changes no other project's running gate. The toolkit's own queue tests its
+batch instead, and a `VOCARO_ENGINEERING_ROOT` set where the worker started stands. A copy that cannot
+be fetched or moved holds the queue and blames no commit. Anything else still reads the shared checkout:
+a session's own `eng`, and a project file that hard-codes its path. So a project commit that needs a new
+toolkit option lands after the toolkit's commit, and runs by hand only once that checkout is pulled.
+
 **What comes back to the author.** `eng queue status` and `eng queue wait` name each entry's state,
 reason and log. An entry that conflicts with what is ahead of it comes back at once and costs the
 others nothing. When a batch fails, the oldest half runs next, and so on until one entry fails

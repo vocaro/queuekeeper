@@ -860,6 +860,113 @@ class Changelogs(Fixture):
         self.assertIsNone(mq.keep_both(start, start, self.top("- a").encode()))
 
 
+class ToolkitCopy(Fixture):
+    """Which toolkit a project's gate runs, with a toolkit repository of its own in the fixture."""
+    def setUp(self):
+        super().setUp()
+        self.seen = self.base / "seen"
+        (self.repo / "report.py").write_text(
+            "import os, pathlib, subprocess, sys\n"
+            "root = os.environ.get('VOCARO_ENGINEERING_ROOT', '')\n"
+            "head = subprocess.run(['git', '-C', root, 'rev-parse', 'HEAD'], capture_output=True, text=True).stdout.strip() if root else ''\n"
+            "dirty = subprocess.run(['git', '-C', root, 'status', '--porcelain'], capture_output=True, text=True).stdout.strip() if root else ''\n"
+            "pathlib.Path(sys.argv[1]).write_text('\\n'.join([root, head, dirty]))\n")
+        config = json.loads((self.repo / "engineering.json").read_text())
+        config["lanes"]["gate"]["command"] = ["python3", "report.py", str(self.seen)]
+        run(self.repo, "git", "checkout", "-q", "-B", "start", "origin/main")
+        run(self.repo, "git", "add", "report.py")
+        self.publish(config, "Report the toolkit")
+        self.kit_origin = self.base / "toolkit.git"
+        run(self.base, "git", "init", "-q", "--bare", "-b", "main", str(self.kit_origin))
+        self.kit = self.base / "toolkit"
+        run(self.base, "git", "clone", "-q", str(self.kit_origin), str(self.kit))
+        shutil.copytree(ROOT / "src/python", self.kit / "src/python", ignore=shutil.ignore_patterns("__pycache__"))
+        run(self.kit, "git", "add", ".")
+        run(self.kit, "git", "commit", "-qm", "Toolkit")
+        run(self.kit, "git", "push", "-q", "origin", "HEAD:main")
+        self.copy = self.base / "project-queue-toolkit"
+        variables = patch.dict(os.environ)
+        variables.start()
+        self.addCleanup(variables.stop)
+        del os.environ["VOCARO_ENGINEERING_ROOT"]
+        toolkit = patch.object(mq, "TOOLKIT_ROOT", self.kit)
+        toolkit.start()
+        self.addCleanup(toolkit.stop)
+
+    def advance_origin(self, name):
+        """A landed toolkit commit the shared checkout has not pulled."""
+        other = self.base / f"other-{name}"
+        run(self.base, "git", "clone", "-q", str(self.kit_origin), str(other))
+        (other / name).write_text("x")
+        run(other, "git", "add", name)
+        run(other, "git", "commit", "-qm", f"Add {name}")
+        run(other, "git", "push", "-q", "origin", "HEAD:main")
+        return run(other, "git", "rev-parse", "HEAD")
+
+    def gate_once(self, name):
+        self.commit(name, name)
+        [identifier] = self.add(name)
+        status = self.work()
+        return identifier, status
+
+    def test_a_gate_runs_the_toolkit_origin_has_not_the_lagging_shared_checkout(self):
+        behind = run(self.kit, "git", "rev-parse", "HEAD")
+        landed = self.advance_origin("landed")
+        identifier, status = self.gate_once("a")
+        self.assertEqual(status, 0)
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual(self.seen.read_text().split("\n"), [str(self.copy), landed, ""])
+        self.assertEqual(run(self.kit, "git", "rev-parse", "HEAD"), behind)
+
+    def test_a_dirty_shared_checkout_neither_reaches_a_gate_nor_is_touched(self):
+        edited = self.kit / "src/python/vocaro_engineering/cli.py"
+        edited.write_text(edited.read_text() + "\nraise SystemExit(1)  # a session's edit\n")
+        (self.kit / "untracked").write_text("x")
+        identifier, status = self.gate_once("a")
+        self.assertEqual(status, 0)
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual(self.seen.read_text().split("\n")[2], "")
+        self.assertIn("a session's edit", edited.read_text())
+        self.assertTrue((self.kit / "untracked").exists())
+
+    def test_the_copy_follows_origin_and_loses_what_was_left_in_it(self):
+        self.gate_once("a")
+        (self.copy / "left").write_text("x")
+        (self.copy / "src/python/vocaro_engineering/project.py").write_text("raise SystemExit(1)\n")
+        landed = self.advance_origin("later")
+        self.gate_once("b")
+        self.assertEqual(self.seen.read_text().split("\n"), [str(self.copy), landed, ""])
+
+    def test_a_toolkit_that_cannot_be_fetched_holds_and_blames_nobody(self):
+        run(self.kit, "git", "remote", "set-url", "origin", str(self.base / "gone.git"))
+        identifier, status = self.gate_once("a")
+        self.assertEqual(status, 1)
+        self.assertEqual(self.state(identifier)["state"], "queued")
+        self.assertIn("eng queue resume", mq.Queue(self.repo).held())
+        self.assertFalse(self.seen.exists())
+
+    def test_something_at_the_copys_path_holds_and_is_left_alone(self):
+        self.copy.mkdir()
+        (self.copy / "kept").write_text("x")
+        identifier, status = self.gate_once("a")
+        self.assertEqual(status, 1)
+        self.assertEqual(self.state(identifier)["state"], "queued")
+        self.assertTrue((self.copy / "kept").exists())
+
+    def test_the_toolkits_own_queue_tests_its_batch(self):
+        worker = mq.Worker(mq.Queue(self.repo))
+        with patch.object(mq, "TOOLKIT_ROOT", self.repo): worker.toolkit()
+        self.assertNotIn("VOCARO_ENGINEERING_ROOT", worker.environment)
+        self.assertFalse(self.copy.exists())
+
+    def test_an_explicit_toolkit_stands(self):
+        with patch.dict(os.environ, {"VOCARO_ENGINEERING_ROOT": str(ROOT)}):
+            identifier, status = self.gate_once("a")
+        self.assertEqual(status, 0)
+        self.assertEqual(self.seen.read_text().split("\n")[0], str(ROOT))
+        self.assertFalse(self.copy.exists())
+
+
 class Refusals(Fixture):
     def test_pull_request_projects_are_refused(self):
         self.publish({"schemaVersion": 1, "name": "x", "integration": "pull-request",

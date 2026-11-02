@@ -48,6 +48,8 @@ CARRIES = 3
 # What git says when the connection to the remote ended, which says nothing of the commits.
 DROPPED = re.compile(r"hung up unexpectedly|Could not read from remote|send disconnect|Connection (reset|closed|timed out)")
 POLL = 5
+# What a project's launcher reads first to find the toolkit.
+TOOLKIT_VARIABLE = "VOCARO_ENGINEERING_ROOT"
 BEFORE_GATE = ["spelling", "provision"]
 WAIT_LIMIT = 6 * 3600
 KEPT_LOGS = 200
@@ -423,6 +425,7 @@ class Worker:
         self.limit = None  # how many of the oldest entries the next round takes, while bisecting
         self.suspects = 0  # how many of the oldest entries hold a commit that fails
         self.retries = 0
+        self.environment = environment()  # what the lanes, the hook and the carry-over checks run in
 
     def say(self, words):
         print(f"queue: {time.strftime('%H:%M:%S')} {words}", flush=True)
@@ -437,6 +440,30 @@ class Worker:
                                  "`eng queue resume`")
             git(self.queue.main_checkout, "worktree", "add", "--detach", "--lock", "--reason",
                 "the merge queue's checkout", str(self.checkout), MAIN, hooks=False, check=True)
+
+    def toolkit(self):
+        """Run this round's lanes on the toolkit at origin/main, in a copy no session edits: a shared
+        checkout that lags, or holds a session's changes, says nothing of the commits (guides/maintenance.md,
+        The merge queue). Each worker has its own, so that moving it changes no other project's running
+        gate. The toolkit's own queue tests its batch, and an explicit VOCARO_ENGINEERING_ROOT stands.
+        A copy that cannot be made or moved holds the queue, as a fetch of the project that fails does."""
+        self.environment = environment()
+        if os.environ.get(TOOLKIT_VARIABLE): return
+        common = git(TOOLKIT_ROOT, "rev-parse", "--path-format=absolute", "--git-common-dir")
+        if common.returncode: return  # a toolkit that is no repository has no origin/main to follow
+        if common.stdout.strip() == text(self.queue.main_checkout, "rev-parse", "--path-format=absolute", "--git-common-dir"):
+            return
+        git(TOOLKIT_ROOT, *FETCH, check=True)
+        copy = self.checkout.with_name(f"{self.checkout.name}-toolkit")
+        if f"worktree {copy}" not in text(TOOLKIT_ROOT, "worktree", "list", "--porcelain").splitlines():
+            if copy.exists():
+                raise ValueError(f"{copy} exists and is no worktree of the toolkit: move it")
+            git(TOOLKIT_ROOT, "worktree", "add", "--detach", "--lock", "--reason", "the merge queue's copy of the toolkit",
+                str(copy), MAIN, hooks=False, check=True)
+        git(copy, "checkout", "--force", "--detach", text(TOOLKIT_ROOT, "rev-parse", MAIN), hooks=False, check=True)
+        git(copy, "clean", "-fdq", hooks=False, check=True)
+        self.say(f"toolkit {text(copy, 'rev-parse', 'HEAD')[:12]} in {copy}")
+        self.environment = {**environment(), TOOLKIT_VARIABLE: str(copy)}
 
     def reset(self, commit):
         """Exactly commit's tracked files. Ignored inputs a lane provisioned stay for the next round."""
@@ -522,7 +549,7 @@ class Worker:
             self.say(f"{lane} on {self.head()[:12]}")
             try:
                 status_ = processes.run(["python3", "scripts/eng", "run", lane], cwd=self.checkout, log_path=log,
-                                        timeout=LANE_LIMIT, env=environment())
+                                        timeout=LANE_LIMIT, env=self.environment)
             except processes.TimedOut as error:
                 self.say(f"{lane}: unmeasured: {error}")
                 return evidence.UNMEASURED, log
@@ -540,7 +567,7 @@ class Worker:
         for number, command in enumerate(commands):
             log = self.queue.logs / f"{time.strftime('%Y%m%d-%H%M%S')}-{self.head()[:8]}-carry-{number}.log"
             self.say(f"carry-over check: {shlex.join(command)}")
-            try: status_ = processes.run(command, cwd=self.checkout, log_path=log, timeout=LANE_LIMIT, env=environment())
+            try: status_ = processes.run(command, cwd=self.checkout, log_path=log, timeout=LANE_LIMIT, env=self.environment)
             except OSError as error: status_ = error
             if status_:
                 self.say(f"carry-over check {shlex.join(command)} ended with {status_}: gating again; see {log}")
@@ -621,7 +648,7 @@ class Worker:
         self.say(f"pre-push hook on {head[:12]}")
         try:
             result = processes.run(["git", "hook", "run", "--ignore-missing", f"--to-stdin={told}", "pre-push", "--",
-                                    "origin", url], cwd=self.checkout, log_path=log, timeout=LANE_LIMIT, env=environment())
+                                    "origin", url], cwd=self.checkout, log_path=log, timeout=LANE_LIMIT, env=self.environment)
         except processes.TimedOut as error:
             self.say(f"pre-push hook: unmeasured: {error}")
             return evidence.UNMEASURED, log
@@ -652,6 +679,7 @@ class Worker:
         if not batch: return False
         git(queue.main_checkout, *FETCH, check=True)
         self.prepare()
+        self.toolkit()
         base = text(queue.main_checkout, "rev-parse", MAIN)
         applied = self.integrate(batch, base)
         if not applied:
