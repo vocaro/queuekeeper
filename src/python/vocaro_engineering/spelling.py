@@ -82,10 +82,10 @@ KEEP = re.compile(r"spelling: keep\b\W*\w")
 # letter joins a set only with a British word that has it there; no ending gains an exception for
 # one word.
 ISE = re.compile(r"(?P<stem>[a-z]{3,}?)(?<!w)(?<!ou)is(?P<suf>e|es|ed|ing|ation|ations|ational|able"
-                 r"|er|ers)")
+                 r"|er|ers|ement|ements)")
 YSE = re.compile(r"(?P<stem>[a-z]+?l)ys(?P<suf>e|es|ed|ing|er|ers)")
-OUR = re.compile(r"(?P<stem>[a-z]+?[bcdgilmnpv])our(?P<suf>s|ed|ing|al|able|ably|ite|ites|ful|fully"
-                 r"|less|hood|hoods|er|ers|ist|ists|ism|ly|ish)?")
+OUR = re.compile(r"(?P<stem>[a-z]+?[bcdgilmnpv])our(?P<suf>s|ed|ing|al|able|ably|ite|ites|itism|ful"
+                 r"|fully|less|hood|hoods|er|ers|ist|ists|ism|ly|ish|y|ation|ations)?")
 TRE = re.compile(r"(?P<stem>[a-z]+?[aceilnpsu])tre(?P<suf>s|d)?")        # me-tre
 BRE = re.compile(r"(?P<stem>[a-z]+?(?:[ai]|om))bre(?P<suf>s|d)?")      # fi-bre, som-bre
 # The doubled-l inflections, by stem, with the prefixes that keep the doubling.
@@ -93,12 +93,12 @@ DOUBLE_L = re.compile(
     r"(?P<stem>(?:re|un|mis|pre)?(?:travel|cancel|model|label|marshal|signal|level|total|tunnel"
     r"|channel|counsel|dial|funnel|fuel|equal|panel|parcel|pedal|quarrel|rival|shovel|snorkel"
     r"|swivel|unravel|revel|jewel|bevel|chisel|cudgel|duel|enamel|gambol|grovel|kennel|libel"
-    r"|marvel|pencil|spiral|tassel|towel|trammel|yodel|initial|dishevel))"
+    r"|marvel|pencil|spiral|tassel|towel|trammel|yodel|initial|dishevel|journal))"
     r"l(?P<suf>ed|ing|er|ers|or|ors)")
 
 IRREGULAR = {
     "licence": "license", "licences": "licenses", "licenced": "licensed", "licencing": "licensing",
-    "defence": "defense", "defences": "defenses", "offence": "offense", "offences": "offenses",
+    "defence": "defense", "defences": "defenses", "defenceless": "defenseless", "offence": "offense", "offences": "offenses",
     "pretence": "pretense", "pretences": "pretenses", "practise": "practice",
     "practises": "practices", "practised": "practiced", "practising": "practicing",
     "grey": "gray", "greys": "grays", "greyed": "grayed", "greying": "graying",
@@ -110,23 +110,34 @@ IRREGULAR = {
     "whilst": "while", "amongst": "among", "orientate": "orient", "orientated": "oriented",
     "orientating": "orienting", "manoeuvre": "maneuver", "manoeuvres": "maneuvers",
     "manoeuvred": "maneuvered", "manoeuvring": "maneuvering", "programme": "program",
-    "programmes": "programs", "sulphur": "sulfur", "aluminium": "aluminum", "mould": "mold",
+    "programmes": "programs", "sulphur": "sulfur", "sulphurous": "sulfurous",
+    "sulphureous": "sulfureous", "sulphuric": "sulfuric", "sulphate": "sulfate",
+    "sulphates": "sulfates", "sulphide": "sulfide", "sulphides": "sulfides", "aluminium": "aluminum", "mould": "mold",
     "moulds": "molds", "moulded": "molded", "moulding": "molding", "storey": "story",
     "storeys": "stories", "tyre": "tire", "tyres": "tires", "kerb": "curb", "draught": "draft",
     "draughts": "drafts", "cheque": "check", "cheques": "checks", "plough": "plow",
     "ploughs": "plows", "ploughed": "plowed", "ploughing": "plowing", "skilful": "skillful",
-    "wilful": "willful", "fulfil": "fulfill", "fulfils": "fulfills", "fulfilment": "fulfillment",
+    "skilfully": "skillfully", "skilfulness": "skillfulness", "wilful": "willful",
+    "wilfully": "willfully", "wilfulness": "willfulness", "fulfil": "fulfill", "fulfils": "fulfills", "fulfilment": "fulfillment",
     "instil": "instill", "distil": "distill", "enthral": "enthrall", "instalment": "installment",
-    "enrol": "enroll", "enrols": "enrolls", "enrolment": "enrollment", "learnt": "learned",
+    "enrol": "enroll", "enrols": "enrolls", "enrolment": "enrollment",
+    "enrolments": "enrollments", "learnt": "learned",
     "misspelt": "misspelled", "dreamt": "dreamed", "spoilt": "spoiled", "ageing": "aging",
     "sceptic": "skeptic", "sceptical": "skeptical", "scepticism": "skepticism", "cosy": "cozy",
     "maths": "math", "aeroplane": "airplane", "speciality": "specialty",
     "specialities": "specialties", "jewellery": "jewelry", "woollen": "woolen",
     "marvellous": "marvelous", "focussed": "focused", "focussing": "focusing",
+    "focusses": "focuses", "refocussed": "refocused", "refocusses": "refocuses",
+    "refocussing": "refocusing",
     "benefitted": "benefited", "benefitting": "benefiting", "targetted": "targeted",
     "targetting": "targeting", "biassed": "biased", "enquire": "inquire", "enquiry": "inquiry",
     "enquiries": "inquiries", "tranquillity": "tranquility", "sizeable": "sizable",
     "useable": "usable", "moveable": "movable", "likeable": "likable", "liveable": "livable",
+    "cognisant": "cognizant", "ochre": "ocher", "ochres": "ochers", "ochreous": "ocherous",
+    "ochrey": "ochery", "haemorrhage": "hemorrhage", "haemorrhages": "hemorrhages",
+    "haemorrhaged": "hemorrhaged", "haemorrhaging": "hemorrhaging",
+    "haemorrhagic": "hemorrhagic", "leukaemia": "leukemia", "titbit": "tidbit",
+    "titbits": "tidbits", "routeing": "routing",
 }
 
 # American words the patterns mistake for British ones, as UNINFLECTED bases (the base of
@@ -252,7 +263,9 @@ BRITISH_SAMPLES = r"""colour Colour COLOUR colourRamp NEIGHBOUR_OFFSETS HarbourB
     bevelled unfavourable unrecognised behaviour misspelt practise kilometres
     BehaviourBoundError licence_display wasCancelled \ncolour \u201ccolour organise
     theatre paralyse odour rigour rancour vapour sceptre spectre lustre philtre accoutre sabre
-    sombre""".split()
+    sombre armoury colouration favouritism aggrandisement cognisant journalling refocussed
+    skilfully defenceless sulphuric ochre haemorrhage leukaemia titbit routeing enrolments
+    """.split()
 AMERICAN_SAMPLES = r"""QuiescentRegionCount MonoBehaviour aria-labelledby towards afterwards exercise
     unexercised advertised revised surprising unsurprising contour hours yours Fourier genre acres
     timbre controlled installer cancellation distilled fulfilled nodewise pairwise otherwise
@@ -265,7 +278,8 @@ AMERICAN_SAMPLES = r"""QuiescentRegionCount MonoBehaviour aria-labelledby toward
     outpouring overpouring hatred thoroughbred underbred mediumvioletred palevioletred
     microenterprise microenterprises eaa-microenterprise Microenterprise hombres Apryse Keyser
     Louise Readwises bonjour Hanjour Balfour Wintour votre lettres Chartres sobre septiembre
-    milesperhour sinceour \u201cyour""".split()
+    milesperhour sinceour \u201cyour advertisement chastisement disenfranchisement journaling
+    hourly dialogue doughnut saleable writeable lambast""".split()
 # Tracked paths: a binary file's name, a directory's, and a file name split at camelCase.
 BRITISH_PATHS = ("Docs/colour-chart.png", "centre/README.md", "Tests/NeighbourAlignmentTests.swift",
                  "Fonts/grey_sans.ttf")
