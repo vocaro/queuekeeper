@@ -171,6 +171,9 @@ is, the queue's order applies again. Work admitted beside a stranded entry print
 admitted beside a stranded entry: …` with the entry, its slots and the recover command, and its
 log line names them ([admission log](#admission-log)). Admission checks the entry again every
 HEAVY_RECOVER_SECONDS (60). `python3 scripts/eng admissions recover` lists those entries.
+This repository's `.claude/settings.json` allows agents to run it, with or without an owner, so
+that one can clear such an entry once its processes end; the command refuses any entry that is
+not provably finished (owner's decision, 2026-11-02).
 
 The rule: a disappeared owner's children may still be running, and they keep what its entry
 held, its slots and the model if it held it, and nothing more. The rest of the host stays open
