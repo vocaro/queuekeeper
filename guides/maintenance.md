@@ -89,7 +89,8 @@ runs that project's hooks. mpm's `post-checkout` opens the Unity editor for each
 the owner's screen (2026-10-28). Read `git config core.hooksPath` and the hooks it names before
 `git worktree add`. When a checkout hook would launch anything, add the worktree with
 `git -c core.hooksPath=/dev/null worktree add …`, and then commit and push under the project's
-hooks as usual. A worktree outside `~/Development` also loses the toolkit's sibling path: run
+hooks as usual. A plain `git checkout` in such a worktree can fire the same hook, as mpm's did
+on 2026-11-01 in a worktree added that way, so pass the same option there. A worktree outside `~/Development` also loses the toolkit's sibling path: run
 `scripts/eng` there with `VOCARO_ENGINEERING_ROOT` set. A project file may hard-code that path
 too. studywright's `app/project.yml` names `../../vocaro-engineering`, so its `check-app.sh`, which
 its pre-push hook runs, fails from a worktree that has no toolkit checkout beside it.
