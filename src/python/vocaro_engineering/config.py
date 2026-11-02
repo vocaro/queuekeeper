@@ -16,8 +16,12 @@ CAPABILITIES = {
 
 
 def load(root):
-    root = Path(root).resolve()
-    value = json.loads((root / "engineering.json").read_text())
+    return parse((Path(root).resolve() / "engineering.json").read_text())
+
+
+def parse(source):
+    """A project's engineering.json, checked, from its text, wherever that came from."""
+    value = json.loads(source)
     if not isinstance(value, dict) or value.get("schemaVersion") != 1:
         raise ValueError("engineering.json requires schemaVersion 1")
     allowed = {"schemaVersion", "name", "toolkit", "capabilities", "lanes", "exceptions",

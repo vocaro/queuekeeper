@@ -60,6 +60,13 @@ class Fixture(unittest.TestCase):
     def config(self):
         return configuration.load(self.repo)
 
+    def publish(self, config, message="Change the configuration"):
+        """Commit this configuration in the clone's checkout and push it to main."""
+        (self.repo / "engineering.json").write_text(json.dumps(config))
+        run(self.repo, "git", "add", "engineering.json")
+        run(self.repo, "git", "commit", "-q", "--allow-empty", "-m", message)
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+
     def commit(self, name, branch, content="x", start="origin/main"):
         """A commit of its own on a new branch, in the shared clone's object store."""
         run(self.repo, "git", "fetch", "-q", "origin")
@@ -76,7 +83,7 @@ class Fixture(unittest.TestCase):
         ids = []
         with patch.object(mq.Queue, "start"), patch("builtins.print"):
             for branch in branches:
-                mq.add(self.repo, self.config(), branch)
+                mq.add(self.repo, branch)
                 ids.append(next(e["id"] for e in reversed(mq.Queue(self.repo).all()) if e["branch"] == branch))
         return ids
 
@@ -151,21 +158,21 @@ class Landing(Fixture):
         run(self.repo, "git", "push", "-q", "origin", f"{tip}:main")
         self.commit("b", "b")
         with patch("builtins.print"):
-            self.assertIsNone(mq.add(self.repo, self.config(), "a"))
+            self.assertIsNone(mq.add(self.repo, "a"))
         self.assertEqual(mq.Queue(self.repo).all(), [])
 
     def test_a_merge_is_refused(self):
         self.commit("a", "a"); self.commit("b", "b", start="origin/main")
         run(self.repo, "git", "merge", "-q", "--no-edit", "a")
         with self.assertRaisesRegex(ValueError, "is a merge"), patch("builtins.print"):
-            mq.add(self.repo, self.config(), "b")
+            mq.add(self.repo, "b")
 
     def test_adding_a_branch_again_replaces_it(self):
         self.commit("a", "a")
         [first] = self.add("a")
         self.commit("a2", "a", start="a")
         with patch.object(mq.Queue, "start"), patch("builtins.print"):
-            mq.add(self.repo, self.config(), "a")
+            mq.add(self.repo, "a")
         self.assertEqual(self.state(first)["state"], "removed")
         self.work()
         self.assertLessEqual({"a", "a2"}, self.main_files())
@@ -629,14 +636,95 @@ class CarryOverChecks(Fixture):
         self.assertEqual(set(check["properties"]), {"command", "paths"})
 
 
+class LaggingCheckout(Fixture):
+    """The main checkout's engineering.json is behind origin/main, as Pagepour's was (#96)."""
+    def session(self, lagging, published=None):
+        """Leave the main checkout on a commit with the configuration lagging, and in a session's worktree
+        on branch fix a commit on top of origin/main, which holds the configuration published."""
+        current = json.loads((self.repo / "engineering.json").read_text())
+        self.publish(lagging, "An older configuration")
+        worktree = self.base / "session"
+        run(self.repo, "git", "worktree", "add", "-q", "-b", "fix", str(worktree))
+        (worktree / "engineering.json").write_text(json.dumps(published or current))
+        run(worktree, "git", "add", "engineering.json")
+        run(worktree, "git", "commit", "-q", "--allow-empty", "-m", "The newer configuration")
+        run(worktree, "git", "push", "-q", "origin", "HEAD:main")
+        (worktree / "fix").write_text("x")
+        run(worktree, "git", "add", "fix")
+        run(worktree, "git", "commit", "-qm", "Add fix")
+        return worktree
+
+    def land_from_another_project(self):
+        other = self.base / "dependent"
+        other.mkdir()
+        (other / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "dependent"}))
+        run(other, "git", "init", "-q")
+        (other / "scripts").mkdir()
+        shutil.copy(ROOT / "scripts/eng", other / "scripts/eng")
+        return subprocess.run(["python3", "scripts/eng", "land", "--repo", "project", "fix", "--wait", "--limit", "120"],
+                              cwd=other, capture_output=True, text=True)
+
+    def test_a_gate_lane_only_origin_main_has_lets_the_commit_in(self):
+        self.session({"schemaVersion": 1, "name": "fixture"})
+        done = self.land_from_another_project()
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertIn("fix", self.main_files())
+        self.assertEqual(self.gates(), 1)
+
+    def test_no_gate_lane_on_origin_main_is_refused_whatever_the_checkout_says(self):
+        """The negative control: the checkout has a gate lane, and origin/main and the commit have none."""
+        current = json.loads((self.repo / "engineering.json").read_text())
+        self.session(current, {"schemaVersion": 1, "name": "fixture"})
+        done = self.land_from_another_project()
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("nothing to run", done.stderr)
+        self.assertEqual(mq.Queue(self.repo).all(), [])
+        self.assertNotIn("fix", self.main_files())
+
+    def test_no_gate_lane_anywhere_is_refused(self):
+        lanes = {"schemaVersion": 1, "name": "fixture"}
+        self.session(lanes, lanes)
+        done = self.land_from_another_project()
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("nothing to run", done.stderr)
+        self.assertEqual(mq.Queue(self.repo).all(), [])
+
+    def test_pull_request_on_origin_main_is_refused_whatever_the_checkout_says(self):
+        current = json.loads((self.repo / "engineering.json").read_text())
+        self.session(current, {**current, "integration": "pull-request"})
+        done = self.land_from_another_project()
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("pull request", done.stderr)
+        self.assertEqual(mq.Queue(self.repo).all(), [])
+
+    def test_the_worker_runs_no_lane_from_the_checkout(self):
+        """The issue's open question: a gate that would fail, only in the main checkout, does not run."""
+        current = json.loads((self.repo / "engineering.json").read_text())
+        self.session({**current, "lanes": {"gate": {"command": ["false"]}}})
+        done = self.land_from_another_project()
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertIn("fix", self.main_files())
+        self.assertEqual(self.gates(), 1)
+
+    def test_a_checkout_too_old_for_this_toolkit_stops_no_worker(self):
+        """The worker's --project is the main checkout, whose configuration must not even be checked."""
+        worktree = self.session({"schemaVersion": 1, "name": "fixture", "hostedRepositories": []})
+        with self.assertRaises(ValueError): configuration.load(self.repo)
+        done = subprocess.run(["python3", "scripts/eng", "land", "fix", "--wait", "--limit", "120"], cwd=worktree,
+                              capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertIn("fix", self.main_files())
+
+
 class Refusals(Fixture):
     def test_pull_request_projects_are_refused(self):
-        with self.assertRaisesRegex(ValueError, "pull request"):
-            mq.add(self.repo, {"name": "x", "integration": "pull-request", "lanes": {"gate": {}}}, "HEAD")
+        self.publish({"schemaVersion": 1, "name": "x", "integration": "pull-request",
+                      "lanes": {"gate": {"command": ["true"]}}})
+        with self.assertRaisesRegex(ValueError, "pull request"): mq.add(self.repo, "HEAD")
 
     def test_a_project_with_nothing_to_run_is_refused(self):
-        with self.assertRaisesRegex(ValueError, "nothing to run"):
-            mq.add(self.repo, {"name": "x", "lanes": {"docs": {}}}, "HEAD")
+        self.publish({"schemaVersion": 1, "name": "x", "lanes": {"docs": {"command": ["true"]}}})
+        with self.assertRaisesRegex(ValueError, "nothing to run"): mq.add(self.repo, "HEAD")
 
     def test_named_lanes_come_first_and_gate_is_the_default(self):
         self.assertEqual(mq.lanes_of({"queue": {"lanes": ["a"]}, "lanes": {"a": {}, "gate": {}}}), ["a"])
@@ -768,7 +856,7 @@ class Refusals(Fixture):
 
     def test_a_session_started_worker_lands_in_the_background(self):
         self.commit("a", "a")
-        with patch("builtins.print"): mq.add(self.repo, self.config(), "a")
+        with patch("builtins.print"): mq.add(self.repo, "a")
         identifier = mq.Queue(self.repo).all()[0]["id"]
         with patch("builtins.print"): self.assertEqual(mq.wait(self.repo, identifier, 120), 0)
         self.assertIn("a", self.main_files())
@@ -784,7 +872,7 @@ class Refusals(Fixture):
                     if int(parent) == os.getpid() and int(pid) != listing.pid}
         before = set(children())
         self.commit("a", "a")
-        with patch("builtins.print"): mq.add(self.repo, self.config(), "a")
+        with patch("builtins.print"): mq.add(self.repo, "a")
         identifier = mq.Queue(self.repo).all()[0]["id"]
         with patch("builtins.print"): self.assertEqual(mq.wait(self.repo, identifier, 120), 0)
         self.assertIn("a", self.main_files())

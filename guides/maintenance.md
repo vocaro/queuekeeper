@@ -276,8 +276,11 @@ and exits when nothing waits; `eng queue wait` and `eng queue resume` start one 
 Whatever a dead worker left testing was never pushed, so the next worker tests it again. A lane may
 take `LANE_LIMIT` (6 h, three times eng's default limit: the default for the lane and two more for
 its wait for admission). The worker's checkout is locked, so that no sweep removes it, and keeps
-ignored inputs a provisioning lane made between rounds. A project with no gate lane, or one with
-`"integration": "pull-request"`, is refused, and the command says what to add.
+ignored inputs a provisioning lane made between rounds. A project with `"integration": "pull-request"`
+on `origin/main`, or with no gate lane on `origin/main` or in the commit added, is refused, and the
+command says what to add. Neither `eng land` nor the worker reads any checkout's working tree for
+this, so a main checkout that lags behind `origin/main` changes nothing: the worker reads its settings
+from `origin/main` in its own checkout, and `eng run` there reads each lane from the batch.
 
 ## Working through a backlog
 

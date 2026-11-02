@@ -28,7 +28,7 @@ import threading
 import time
 
 from . import evidence, landing, processes, remote, resources
-from .config import TOOLKIT_ROOT, load
+from .config import TOOLKIT_ROOT, load, parse
 
 MAIN = "refs/remotes/origin/main"
 FETCH = ["fetch", "--no-tags", "origin", f"refs/heads/main:{MAIN}"]
@@ -89,6 +89,14 @@ def lanes_of(config):
                          "holding what a commit must pass before it lands gate (guides/maintenance.md, "
                          "The merge queue)")
     return [name for name in BEFORE_GATE if name in lanes and name not in named] + named
+
+
+def config_at(root, commit):
+    """The project's configuration as commit has it, not as a checkout's working tree does, which
+    may lag: the queue serves every session from one main checkout that nobody keeps current."""
+    shown = git(root, "show", f"{commit}:engineering.json")
+    if shown.returncode: raise ValueError(f"{commit} has no engineering.json: {shown.stderr.strip() or 'no output'}")
+    return parse(shown.stdout)
 
 
 def named(path, key):
@@ -235,21 +243,23 @@ def land(root, args):
         if args.reference is None:
             raise ValueError(f"--repo lands a commit you name: `eng land --repo {args.repo} BRANCH`, since HEAD "
                              "there is another session's")
-    config = load(target)
-    identifier = add(target, config, args.reference or "HEAD", args.note, quiet_wait=args.wait)
+    identifier = add(target, args.reference or "HEAD", args.note, quiet_wait=args.wait)
     if not args.wait or identifier is None: return 0
     return wait(target, identifier, args.limit)
 
 
-def add(root, config, reference, note=None, quiet_wait=False):
+def add(root, reference, note=None, quiet_wait=False):
     """Put the commits reference has and origin/main lacks in the queue, and return at once with the
-    entry's ID, or None when there is nothing to queue."""
-    if config.get("integration", "direct-main") != "direct-main":
-        raise ValueError(f"{config.get('name')} integrates by pull request, which the queue does not push to")
-    lanes_of(config)
+    entry's ID, or None when there is nothing to queue. Whether it may be queued is what a round would
+    find: origin/main's settings, and origin/main's lanes or, until it has any, the commit's."""
     queue = Queue(root)
     git(root, *FETCH, check=True)
     tip = text(root, "rev-parse", "--verify", f"{reference}^{{commit}}")
+    config = config_at(root, MAIN)
+    if config.get("integration", "direct-main") != "direct-main":
+        raise ValueError(f"{config.get('name')} integrates by pull request, which the queue does not push to")
+    try: lanes_of(config)
+    except ValueError: lanes_of(config_at(root, tip))
     if git(root, "merge-base", "--is-ancestor", tip, MAIN).returncode == 0:
         print(f"origin/main already holds {tip[:12]}: nothing to queue")
         return None
@@ -664,9 +674,9 @@ def add_arguments(parser):
     operations.add_parser("run", help="be the worker in the foreground; `add` starts one by itself")
 
 
-def main(root, config, args):
+def main(root, args):
     if args.operation == "add":
-        add(root, config, args.reference, args.note)
+        add(root, args.reference, args.note)
         return 0
     if args.operation == "status": return status(root, args.json)
     if args.operation == "wait": return wait(root, args.id, args.limit)

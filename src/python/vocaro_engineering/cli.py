@@ -647,6 +647,10 @@ def main(argv=None):
                 if args.to or args.keep: raise ValueError("--to and --keep name a folder's offload; name the folder")
                 return evidence_offload.retry()
             return evidence_offload.offload(args.directory, to=args.to, keep=args.keep)
+        # The queue reads a project's settings from its commits, and never from this working tree,
+        # which for its worker is a main checkout that may lag.
+        if args.action == "land": return merge_queue.land(root, args)
+        if args.action == "queue": return merge_queue.main(root, args)
         config = load(root)
         if args.action == "instructions": instructions(config)
         elif args.action == "doctor":
@@ -689,8 +693,6 @@ def main(argv=None):
         elif args.action == "admit": return admit(root, args, config)
         elif args.action == "remote": return remote.main(root, config, args)
         elif args.action == "release": return release.main(root, config, args)
-        elif args.action == "land": return merge_queue.land(root, args)
-        elif args.action == "queue": return merge_queue.main(root, config, args)
         elif args.action == "source":
             from .support import source_path
             print(source_path(args.name))
