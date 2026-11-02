@@ -192,7 +192,7 @@ the dependent project's pin to that commit in a commit of its own, and land that
 queue.
 
 **A round.** The worker fetches, takes everything waiting, oldest first, cherry-picks each entry
-onto `origin/main` in its own checkout, `../NAME-queue`, and runs the project's queue lanes through
+onto `origin/main` in its own checkout, `~/Development/vocaro-queue/NAME/NAME`, and runs the project's queue lanes through
 `eng run`: its `spelling` and `provision` lanes when it has them, and then its `gate` lane, or
 `queue.lanes` in engineering.json for a project that needs others, read from `main`, or from the
 batch until `main` has any, so that the commit naming them can land. The
@@ -211,16 +211,42 @@ keeping both would double it. Anything else comes back, a change to an existing 
 another file above all. The commit keeps its message and author. Its patch is then not the branch's,
 so `landed.sh` proves no such branch landed, and it stays until its author removes it.
 
-**Which toolkit a gate runs.** Each round, a project's worker moves `../NAME-queue-toolkit`, a locked
-worktree of the toolkit with no session's edits, to the toolkit's `origin/main`, and runs the lanes, the
-pre-push hook and the carry-over checks with `VOCARO_ENGINEERING_ROOT` naming it (owner's decision,
-2026-11-01). A landed toolkit commit therefore reaches the next round of every project's gate, and a
-shared toolkit checkout that lags or holds a session's changes reaches none of them. Each worker has
-its own copy, so moving it changes no other project's running gate. The toolkit's own queue tests its
-batch instead, and a `VOCARO_ENGINEERING_ROOT` set where the worker started stands. A copy that cannot
-be fetched or moved holds the queue and blames no commit. Anything else still reads the shared checkout:
-a session's own `eng`, and a project file that hard-codes its path. So a project commit that needs a new
-toolkit option lands after the toolkit's commit, and runs by hand only once that checkout is pulled.
+**Which toolkit a gate runs.** Each round, a project's worker moves
+`~/Development/vocaro-queue/NAME/vocaro-engineering`, a locked worktree of the toolkit with no session's
+edits, to the toolkit's `origin/main`, and runs the lanes, the pre-push hook and the carry-over checks
+with `VOCARO_ENGINEERING_ROOT` naming it (owner's decision, 2026-11-01). A landed toolkit commit
+therefore reaches the next round of every project's gate, and a shared toolkit checkout that lags or
+holds a session's changes reaches none of them. Each worker has its own copy, so moving it changes no
+other project's running gate. The toolkit's own queue tests its batch instead, and a
+`VOCARO_ENGINEERING_ROOT` set where the worker started stands. A copy that cannot be fetched or moved
+holds the queue and blames no commit. Anything else still reads the shared checkout: a session's own
+`eng`. So a project commit that needs a new toolkit option lands after the toolkit's commit, and runs
+by hand only once that checkout is pulled.
+
+**Where the queue's checkouts are.** Each queue's pair is in one folder beside the main checkouts and
+outside every repository, laid out as the second Mac lays out a run's (`checkouts/NAME/N/...`):
+
+```
+~/Development/vocaro-queue/NAME/NAME                 the worker's checkout of the project
+~/Development/vocaro-queue/NAME/vocaro-engineering   its copy of the toolkit
+```
+
+So a project file that names the toolkit by a path relative to the checkout, as Pagepour's and
+studywright's `../vocaro-engineering/src/swift/EngineeringTestSupport` do, finds the queue's own copy,
+on this Mac as on the second Mac, with no change to the project. The toolkit's own queue is
+`vocaro-queue/vocaro-engineering/vocaro-engineering`, with no copy beside it. A folder inside the
+toolkit's checkout was set aside: `git clean -x`, a reclone and the toolkit's own tree-walking checks
+would all reach it (owner's decision, 2026-11-02,
+[vocaro-engineering#104](https://github.com/vocaro/vocaro-engineering/issues/104)).
+
+The checkouts an earlier worker kept beside the main checkout, `../NAME-queue` and
+`../NAME-queue-toolkit`, move by themselves: the first round of a worker running a toolkit that has
+this layout moves each with `git worktree move`, so Git knows it at its new place, it stays locked, and
+the ignored inputs a provisioning lane made come along. That worker holds the queue, so no gate of its
+own runs there. A process that still works in one, as a lane an earlier worker left running may, keeps
+it where it is, as does a process census that fails or a move Git refuses: the worker then makes the
+checkout afresh at the new place, locks the old one as `retired by the merge queue: replaced by PATH`,
+and says so in its log, and `eng disk` lists it for the owner's removal once nothing uses it.
 
 **What comes back to the author.** `eng queue status` and `eng queue wait` name each entry's state,
 reason and log. An entry that conflicts with what is ahead of it comes back at once and costs the

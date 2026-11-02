@@ -1217,7 +1217,12 @@ with their commands: exactly what `--delete` would offer to remove.
   stays kept. Its `git status` runs with `GIT_OPTIONAL_LOCKS=0`, so it never refreshes another
   session's index. The command is `git worktree remove` without `--force`, which itself refuses
   a dirty tree and leaves the branch. A session left open in a removed worktree cannot run
-  commands there again; its work is on main and its branch remains.
+  commands there again; its work is on main and its branch remains. A merge queue's checkout is
+  locked and kept, except one of the layout beside the main checkout (`NAME-queue`,
+  `NAME-queue-toolkit`) that its worker locked as `retired by the merge queue` when it made the
+  checkout afresh under `~/Development/vocaro-queue` because a process still used the old one:
+  once no process does, that is an owner decision, `git worktree remove --force --force PATH`
+  ([where the queue's checkouts are](maintenance.md#the-merge-queue)).
 - **Simulators**, from `simctl list -j`. A member of a pool that a main checkout's
   engineering.json names in `simulatorPool` is a candidate only under the
   [pruning rule](simulator-testing.md#pruning), and its command is `eng simulator-pool prune`,

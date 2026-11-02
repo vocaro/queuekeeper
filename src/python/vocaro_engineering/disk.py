@@ -50,6 +50,9 @@ EVIDENCE_NAMES = ignored.EVIDENCE_NAMES
 # archive Closeout used to keep in a main checkout; each belongs on the second Mac.
 EVIDENCE_ARCHIVE = re.compile(r".+-(evidence|measurements)|session-evidence")
 DATA_VOLUME = "/System/Volumes/Data"
+# The lock reason the merge queue gives a checkout of its old layout that it could not move while a process
+# used it, once it has made the checkout afresh in its place (merge_queue.Worker.place).
+RETIRED = "retired by the merge queue"
 
 
 @dataclass
@@ -152,6 +155,16 @@ class Usage:
     def naming(self, text):
         text = text.upper()
         return next((process for process, arguments in self.arguments if text in arguments), None)
+
+
+def users(processes, path, apart=()):
+    """The processes whose working directory, an open file or an argument is at or below path, and not
+    below any of apart: what a process started from a checkout still holds there."""
+    def inside(value):
+        return bool(value) and within(value, path) and not any(within(value, other) for other in apart)
+    return [process for process in processes
+            if any(inside(value) for value in [process.cwd, *process.paths,
+                                               *(token for token in SEPARATORS.split(process.args) if token.startswith("/"))])]
 
 
 def described(use):
@@ -357,6 +370,12 @@ def worktree(host, usage, sizes, main, entry, base, name):
     if "prunable" in entry or not os.path.isdir(path):
         return item(OWNER, "registered, but its directory is gone; `git worktree prune` forgets every such entry",
                     ["git", "-C", str(main), "worktree", "prune"])
+    if "locked" in entry and entry["locked"].startswith(RETIRED):
+        use = usage.of(path)
+        if use: return item(KEPT, f"{entry['locked']}, but still in use: " + described(use))
+        return item(OWNER, f"{entry['locked']}, and no process uses it; it holds only what the queue's lanes "
+                           "left, each round's logs being in the queue's own", ["git", "-C", str(main), "worktree",
+                                                                              "remove", "--force", "--force", path])
     if "locked" in entry: return item(KEPT, "locked" + (f": {entry['locked']}" if entry["locked"] else ""))
     use = usage.of(path)
     if use: return item(KEPT, "in use: " + described(use))

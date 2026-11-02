@@ -1,4 +1,6 @@
 """The merge queue against real Git repositories: a bare origin, a clone, and lanes that read the tree."""
+import contextlib
+import io
 import json
 import os
 from pathlib import Path
@@ -888,7 +890,9 @@ class ToolkitCopy(Fixture):
         run(self.kit, "git", "add", ".")
         run(self.kit, "git", "commit", "-qm", "Toolkit")
         run(self.kit, "git", "push", "-q", "origin", "HEAD:main")
-        self.copy = self.base / "project-queue-toolkit"
+        # This Mac's queue folder, laid out as the second Mac's checkouts are (vocaro-engineering#104).
+        self.checkout = self.base / "vocaro-queue/project/project"
+        self.copy = self.base / "vocaro-queue/project/toolkit"
         variables = patch.dict(os.environ)
         variables.start()
         self.addCleanup(variables.stop)
@@ -950,12 +954,95 @@ class ToolkitCopy(Fixture):
         self.assertFalse(self.seen.exists())
 
     def test_something_at_the_copys_path_holds_and_is_left_alone(self):
-        self.copy.mkdir()
+        self.copy.mkdir(parents=True)
         (self.copy / "kept").write_text("x")
         identifier, status = self.gate_once("a")
         self.assertEqual(status, 1)
         self.assertEqual(self.state(identifier)["state"], "queued")
         self.assertTrue((self.copy / "kept").exists())
+
+    def test_the_checkouts_relative_path_to_the_toolkit_finds_the_queues_copy(self):
+        # Pagepour's and studywright's ../vocaro-engineering, here ../toolkit, as a lane reads it.
+        config = json.loads((self.repo / "engineering.json").read_text())
+        config["lanes"]["gate"]["command"] = ["python3", "-c", "import os, pathlib, sys; "
+                                              "pathlib.Path(sys.argv[1]).write_text(os.path.realpath('../toolkit'))",
+                                              str(self.seen)]
+        run(self.repo, "git", "checkout", "-q", "-B", "start", "origin/main")
+        self.publish(config, "Read the toolkit by its relative path")
+        identifier, status = self.gate_once("a")
+        self.assertEqual(status, 0)
+        self.assertEqual(self.seen.read_text(), str(self.copy))
+        listed = run(self.repo, "git", "worktree", "list", "--porcelain")
+        self.assertIn(f"worktree {self.checkout}\n", listed)
+        self.assertIn(f"worktree {self.copy}\n", run(self.kit, "git", "worktree", "list", "--porcelain"))
+        # Nothing beside the main checkout, where the old layout kept them.
+        self.assertFalse((self.base / "project-queue").exists())
+        self.assertFalse((self.base / "project-queue-toolkit").exists())
+
+    def old_layout(self):
+        """The checkouts an earlier worker kept beside the main checkout, each locked as it locked them,
+        the project's with an input a lane provisioned."""
+        old, old_kit = self.base / "project-queue", self.base / "project-queue-toolkit"
+        run(self.repo, "git", "worktree", "add", "-q", "--detach", "--lock", "--reason", "the merge queue's checkout",
+            str(old), "origin/main")
+        run(self.kit, "git", "worktree", "add", "-q", "--detach", "--lock", "--reason",
+            "the merge queue's copy of the toolkit", str(old_kit), "origin/main")
+        info = Path(run(old, "git", "rev-parse", "--path-format=absolute", "--git-common-dir")) / "info/exclude"
+        info.parent.mkdir(exist_ok=True)
+        info.write_text("provisioned/\n")
+        (old / "provisioned").mkdir()
+        (old / "provisioned/input").write_text("made by a provision lane\n")
+        return old, old_kit
+
+    def locks(self, repository):
+        found, path = {}, None
+        for line in run(repository, "git", "worktree", "list", "--porcelain").splitlines():
+            if line.startswith("worktree "): path = line[len("worktree "):]
+            elif line.startswith("locked"): found[path] = line[len("locked "):]
+        return found
+
+    def test_the_old_layout_moves_once_nothing_uses_it_and_keeps_what_was_provisioned(self):
+        old, old_kit = self.old_layout()
+        identifier, status = self.gate_once("a")
+        self.assertEqual(status, 0)
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertFalse(old.exists())
+        self.assertFalse(old_kit.exists())
+        self.assertEqual((self.checkout / "provisioned/input").read_text(), "made by a provision lane\n")
+        self.assertEqual(self.seen.read_text().split("\n")[0], str(self.copy))
+        # Still locked, with the reasons they had, and Git knows each only at its new place.
+        self.assertEqual(self.locks(self.repo), {str(self.checkout): "the merge queue's checkout"})
+        self.assertEqual(self.locks(self.kit), {str(self.copy): "the merge queue's copy of the toolkit"})
+        run(self.checkout, "git", "status", "--porcelain")
+        run(self.copy, "git", "status", "--porcelain")
+
+    def test_an_old_checkout_a_process_uses_stays_and_the_new_one_is_made_afresh(self):
+        old, old_kit = self.old_layout()
+        # A lane an earlier worker left running in it, found by the real process census.
+        held = subprocess.Popen(["sleep", "300"], cwd=old)
+        self.addCleanup(held.wait)
+        self.addCleanup(held.kill)
+        with contextlib.redirect_stdout(io.StringIO()) as said:
+            identifier, status = self.gate_once("a")
+        self.assertEqual(status, 0)
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual((old / "provisioned/input").read_text(), "made by a provision lane\n")
+        self.assertFalse((self.checkout / "provisioned").exists())
+        locks = self.locks(self.repo)
+        self.assertEqual(locks[str(self.checkout)], "the merge queue's checkout")
+        self.assertEqual(locks[str(old)], f"retired by the merge queue: replaced by {self.checkout}")
+        # The toolkit's copy, which nothing used, moved.
+        self.assertFalse(old_kit.exists())
+        self.assertEqual(self.locks(self.kit), {str(self.copy): "the merge queue's copy of the toolkit"})
+        self.assertIn(f"{old} stays where it is, since PID {held.pid} (sleep)", said.getvalue())
+
+    def test_an_old_checkout_that_cannot_be_checked_for_processes_stays(self):
+        old, _old_kit = self.old_layout()
+        with patch.object(mq.disk, "census", side_effect=RuntimeError("could not list processes with lsof and ps")):
+            identifier, status = self.gate_once("a")
+        self.assertEqual(status, 0)
+        self.assertTrue((old / "provisioned/input").exists())
+        self.assertTrue(self.locks(self.repo)[str(old)].startswith("retired by the merge queue"))
 
     def test_the_toolkits_own_queue_tests_its_batch(self):
         worker = mq.Worker(mq.Queue(self.repo))

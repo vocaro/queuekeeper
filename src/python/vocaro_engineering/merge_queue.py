@@ -13,7 +13,8 @@ each waiting commit, so a branch that moves or goes takes nothing with it:
     <common>/eng-queue/logs/             what each round's lanes printed
     <common>/eng-queue/hold              why the queue stopped, until `eng queue resume`
     refs/eng-queue/ID                    the range's tip, until it lands or is removed
-    ../NAME-queue                        the worker's checkout, beside the main checkout
+    ../vocaro-queue/NAME/NAME            the worker's checkout, in a folder beside the main checkouts
+    ../vocaro-queue/NAME/TOOLKIT         its copy of the toolkit, which ../TOOLKIT names from the checkout
 """
 import contextlib
 import fcntl
@@ -28,7 +29,7 @@ import tempfile
 import threading
 import time
 
-from . import evidence, landing, processes, remote, resources
+from . import disk, evidence, landing, processes, remote, resources
 from .config import TOOLKIT_ROOT, load, parse
 
 MAIN = "refs/remotes/origin/main"
@@ -54,6 +55,12 @@ BEFORE_GATE = ["spelling", "provision"]
 WAIT_LIMIT = 6 * 3600
 KEPT_LOGS = 200
 GIT_TIMEOUT = 600
+# The folder, beside the main checkouts and outside every repository, that holds each queue's checkouts as
+# the second Mac holds a run's (offload_host, checkouts/NAME/N/...): QUEUES/NAME/NAME and, beside it, the
+# toolkit's copy, so that a project's ../vocaro-engineering finds that copy (owner's decision,
+# vocaro-engineering#104). The folders beside the main checkout it replaces, NAME-queue and NAME-queue-toolkit,
+# move there once nothing uses them.
+QUEUES = "vocaro-queue"
 # The file whose conflicts the queue may settle, by its name in any directory and in any case.
 CHANGELOG = "changelog.md"
 HEADING = re.compile(rb"#{1,6}\s")
@@ -192,7 +199,10 @@ class Queue:
         self.entries = self.directory / "entries"
         self.logs = self.directory / "logs"
         self.hold_file = self.directory / "hold"
-        self.checkout = self.main_checkout.parent / f"{self.main_checkout.name}-queue"
+        self.home = self.main_checkout.parent / QUEUES / self.main_checkout.name
+        self.checkout = self.home / self.main_checkout.name
+        # Where an earlier worker kept it, beside the main checkout, until it moves (Worker.place).
+        self.old_checkout = self.main_checkout.parent / f"{self.main_checkout.name}-queue"
         self.entries.mkdir(parents=True, exist_ok=True)
         self.logs.mkdir(exist_ok=True)
 
@@ -432,14 +442,39 @@ class Worker:
 
     def prepare(self):
         """The worker's own checkout. Locked, so that no sweep takes it for an abandoned worktree."""
-        listed = text(self.queue.main_checkout, "worktree", "list", "--porcelain")
-        registered = f"worktree {self.checkout}" in listed.splitlines()
-        if not registered:
-            if self.checkout.exists():
-                raise ValueError(f"{self.checkout} exists and is no worktree of this repository: move it, then run "
-                                 "`eng queue resume`")
-            git(self.queue.main_checkout, "worktree", "add", "--detach", "--lock", "--reason",
-                "the merge queue's checkout", str(self.checkout), MAIN, hooks=False, check=True)
+        self.place(self.queue.main_checkout, self.checkout, self.queue.old_checkout, "the merge queue's checkout")
+
+    def place(self, repository, path, old, reason):
+        """A locked worktree of repository at path. One an earlier worker kept at old moves there, with the
+        ignored inputs its lanes provisioned, when no process uses it: this worker holds the queue, so no gate
+        of its own runs there, and a process that does, a lane an earlier worker left running among them, keeps
+        it where it is. Then path is made afresh, and old stays, locked as retired, for `eng disk` to list."""
+        listed = text(repository, "worktree", "list", "--porcelain").splitlines()
+        if f"worktree {path}" in listed: return
+        if path.exists():
+            raise ValueError(f"{path} exists and is no worktree of {repository}: move it, then run `eng queue resume`")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if f"worktree {old}" in listed:
+            why = self.move(repository, old, path)
+            if why is None: return
+            self.say(f"{old} stays where it is, {why}: making {path} afresh and leaving {old} for removal")
+            # Relocked as retired, so that `eng disk` can show the owner that nothing needs it.
+            git(repository, "worktree", "unlock", str(old), hooks=False)
+            git(repository, "worktree", "lock", "--reason", f"{disk.RETIRED}: replaced by {path}", str(old), hooks=False)
+        git(repository, "worktree", "add", "--detach", "--lock", "--reason", reason, str(path), MAIN, hooks=False,
+            check=True)
+
+    def move(self, repository, old, new):
+        """Move the worktree at old to new and return None, or say why not, with it left as it was."""
+        try: users = disk.users(disk.census(), old)
+        except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+            return f"since whether a process uses it is unknown: {error}"
+        if users: return f"since {disk.described((users[0], 'working directory, an open file or an argument'))}"
+        # Twice --force moves a locked worktree, which stays locked, with the reason it had.
+        moved = git(repository, "worktree", "move", "--force", "--force", str(old), str(new), hooks=False)
+        if moved.returncode: return f"since `git worktree move` failed: {moved.stderr.strip() or 'no output'}"
+        self.say(f"moved {old} to {new}")
+        return None
 
     def toolkit(self):
         """Run this round's lanes on the toolkit at origin/main, in a copy no session edits: a shared
@@ -454,12 +489,11 @@ class Worker:
         if common.stdout.strip() == text(self.queue.main_checkout, "rev-parse", "--path-format=absolute", "--git-common-dir"):
             return
         git(TOOLKIT_ROOT, *FETCH, check=True)
-        copy = self.checkout.with_name(f"{self.checkout.name}-toolkit")
-        if f"worktree {copy}" not in text(TOOLKIT_ROOT, "worktree", "list", "--porcelain").splitlines():
-            if copy.exists():
-                raise ValueError(f"{copy} exists and is no worktree of the toolkit: move it")
-            git(TOOLKIT_ROOT, "worktree", "add", "--detach", "--lock", "--reason", "the merge queue's copy of the toolkit",
-                str(copy), MAIN, hooks=False, check=True)
+        # Named as the toolkit's main checkout is, which a project's relative path names from its own checkout.
+        kit = Path(common.stdout.strip())
+        copy = self.queue.home / (kit.parent.name if kit.name == ".git" else Path(TOOLKIT_ROOT).resolve().name)
+        old = self.queue.old_checkout.with_name(f"{self.queue.old_checkout.name}-toolkit")
+        self.place(TOOLKIT_ROOT, copy, old, "the merge queue's copy of the toolkit")
         git(copy, "checkout", "--force", "--detach", text(TOOLKIT_ROOT, "rev-parse", MAIN), hooks=False, check=True)
         git(copy, "clean", "-fdq", hooks=False, check=True)
         self.say(f"toolkit {text(copy, 'rev-parse', 'HEAD')[:12]} in {copy}")

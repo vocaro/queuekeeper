@@ -184,6 +184,35 @@ class WorktreeTests(Fixture):
         self.assertEqual(recent[str(cache)].status, disk.KEPT)
         self.assertIn("changed", recent[str(cache)].reason)
 
+    def test_a_queue_checkout_the_queue_retired_is_an_owner_decision_while_nothing_uses_it(self):
+        # vocaro-engineering#104: the worker made its checkout afresh in vocaro-queue/ and left the old one.
+        retired = self.worktree("Project-queue", parent=self.development)
+        live = self.worktree("Project", parent=self.development / "vocaro-queue/Project")
+        used = self.worktree("Used-queue", parent=self.development)
+        git(self.main, "worktree", "lock", "--reason", f"{disk.RETIRED}: replaced by {live}", str(retired))
+        git(self.main, "worktree", "lock", "--reason", f"{disk.RETIRED}: replaced by elsewhere", str(used))
+        git(self.main, "worktree", "lock", "--reason", "the merge queue's checkout", str(live))
+        items = self.items(self.host([disk.Process(104, "xcodebuild", cwd=str(used))]), ["worktree"])
+        self.assertEqual(items[str(retired)].status, disk.OWNER, items[str(retired)].reason)
+        self.assertIn(f"replaced by {live}", items[str(retired)].reason)
+        self.assertEqual(items[str(retired)].command,
+                         ["git", "-C", str(self.main), "worktree", "remove", "--force", "--force", str(retired)])
+        # The negative controls: the queue's current checkout, and a retired one a process still uses.
+        self.assertEqual(items[str(live)].status, disk.KEPT)
+        self.assertIn("locked: the merge queue's checkout", items[str(live)].reason)
+        self.assertEqual(items[str(used)].status, disk.KEPT)
+        self.assertIn("still in use: PID 104", items[str(used)].reason)
+
+    def test_users_finds_what_a_process_holds_in_a_checkout_apart_from_nested_ones(self):
+        checkout = self.root / "kit"
+        nested = checkout / ".claude/worktrees/agent"
+        found = disk.users([disk.Process(1, cwd=str(checkout / "src")), disk.Process(2, cwd=str(nested)),
+                            disk.Process(3, paths=(str(checkout / ".build/log"),)),
+                            disk.Process(4, args=f"python3 -c x {checkout}/src/python"),
+                            disk.Process(5, args=f"python3 {checkout}-queue/scripts/eng"),
+                            disk.Process(6, cwd=str(self.root))], checkout, apart=[nested])
+        self.assertEqual([process.pid for process in found], [1, 3, 4])
+
     def test_a_worktree_outside_the_session_directories_is_only_an_owner_decision(self):
         shared = self.worktree("Project", parent=self.root / "share")
         session = self.worktree("session", parent=self.home / ".codex/worktrees/abcd")
