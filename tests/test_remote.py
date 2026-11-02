@@ -26,6 +26,12 @@ import host_isolation
 # remote.advertised as it is, before any test patches it.
 ADVERTISED = remote.advertised
 
+
+def stretched(seconds):
+    """These seconds stretched by the host's one-minute load per core, as a bound on a stall is: at a
+    load of 450 to 590 on 18 cores, a holder that ends in 0.1 s on an idle Mac outlived 60 s (#111)."""
+    return seconds * max(1, os.getloadavg()[0] / (os.cpu_count() or 1))
+
 # Stands in for ssh: the second Mac is a home directory on this Mac. Like sshd, it runs the
 # command in that home through a shell, and git's own ssh transport reaches it the same way.
 # `ssh -G fake` names this Mac's loopback address and FAKE_PORT, where the test listens as the
@@ -249,8 +255,10 @@ class RemoteTests(unittest.TestCase):
                                         "    folder.mkdir(parents=True, exist_ok=True)\n"
                                         "    (folder / 'transcript.txt').write_text('VO: Next Page')\n"
                                         "print('Ran 1 tests')"], "resource": "heavy", "minimumTests": 1},
+            # Outlives any test that holds it, which stops it: on a loaded Mac a test that expected a
+            # 60 s lane to be running found it ended (#111).
             "linger": {"command": [python, "-c", "import os, pathlib, time; "
-                                   "pathlib.Path('.build/linger.pid').write_text(str(os.getpid())); time.sleep(60)"]},
+                                   "pathlib.Path('.build/linger.pid').write_text(str(os.getpid())); time.sleep(3600)"]},
             "gate": {"command": [python, "-c", "import os; print('Ran 2 tests in', os.getcwd())"],
                      "resource": "heavy", "minimumTests": 2},
             "failing": {"command": [python, "-c", "print('Ran 2 tests'); raise SystemExit(5)"],
@@ -908,7 +916,7 @@ class RemoteTests(unittest.TestCase):
             self.assertFalse((results / "source.json").exists())
             self.assertEqual(self.eng("remote", "passed", "linger")[0], 1)
             # Its end of the connection closed, so the second Mac stopped the run.
-            deadline = time.monotonic() + 60
+            deadline = time.monotonic() + stretched(60)
             while time.monotonic() < deadline:
                 try: os.kill(lane, 0)
                 except ProcessLookupError: break
@@ -1320,7 +1328,7 @@ class RemoteTests(unittest.TestCase):
             yield
         finally:
             holder.send_signal(signal.SIGTERM)
-            holder.wait(timeout=60)
+            holder.wait(timeout=stretched(60))
             holder.stdout.close()
 
     def busy_second_mac(self):
