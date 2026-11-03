@@ -66,7 +66,7 @@ UNREACHED = re.compile(r"Could not resolve host|Temporary failure in name resolu
 # What says the remote answered and refused, which no retry changes: an authentication failure, a missing
 # repository, a rejected push. SSH ends a refused key with the "Could not read from remote" of a dropped connection.
 REFUSED = re.compile(r"denied|Authentication failed|could not read Username|returned error: 4\d\d|not found|"
-                     r"rejected|Host key verification failed")
+                     r"rejected|Host key verification failed|does not appear to be a git repository")
 # Seconds before each further try of a fetch or push that did not reach the remote; after the last, it holds.
 BACKOFF = (10, 30, 90, 270)
 POLL = 5
