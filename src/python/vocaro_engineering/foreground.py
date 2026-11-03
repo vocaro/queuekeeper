@@ -99,7 +99,9 @@ def slot(purpose, *, timeout, expected=EXPECTED, record=None, poll=POLL, ready=N
                 continue
         if state in ("orphan", "uncertain"):
             raise devices.Refused(f"the second Mac's {devices.FOREGROUND} is {state}, held by {entry.get('ownerChatID')} "
-                                  f"for {entry.get('purpose')}; it needs attended recovery (`devices recover`) first")
+                                  f"for {entry.get('purpose')}; it needs attended recovery first, on the second Mac: "
+                                  f"`python3 -m vocaro_engineering.devices recover {devices.FOREGROUND} --by SESSION "
+                                  f"--revision {entry.get('revision')} --verified WHAT` ({GUIDE})")
         holder = entry.get("ownerChatID")
         if holder != announced:
             said(f"eng: waiting for the second Mac's foreground, held by {holder} for {entry.get('purpose')}, "
@@ -121,8 +123,9 @@ def slot(purpose, *, timeout, expected=EXPECTED, record=None, poll=POLL, ready=N
         with voiceover_state.preserved(owner, record=record, read_state=voiceover, said=said):
             yield owner
         outcome = "the run's work ended"
-    except voiceover_state.TransitionFailed:
-        uncertain = True
+    except voiceover_state.TransitionFailed as error:
+        # A failed transition whose original state the guard verified afterwards leaves the lease to release.
+        uncertain = not error.restored
         raise
     finally:
         if previous is None: os.environ.pop(devices.OWNER, None)

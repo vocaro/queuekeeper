@@ -2,7 +2,9 @@ import contextlib
 from io import StringIO
 import json
 import os
+import re
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import threading
@@ -105,6 +107,47 @@ class SlotTests(unittest.TestCase):
         self.assertEqual(devices.condition(self.record.entry(devices.FOREGROUND)), "uncertain")
         self.assertTrue(self.record.entry(devices.FOREGROUND)["activeRun"])
 
+
+    def test_a_timed_out_toggle_whose_original_state_is_verified_releases_the_foreground(self):
+        # #137: a driver's Command-F5 timed out on a loaded second Mac, VoiceOver came on later, and the
+        # foreground stayed uncertain for attended recovery. Now the guard turns it off again and releases.
+        self.second_mac()
+        enabled, sent = [False], []
+        def read(): return enabled[0]
+        def timed_out():
+            sent.append(not enabled[0])
+            if len(sent) == 1:
+                enabled[0] = True  # Applied, but its reply never came.
+                raise subprocess.TimeoutExpired("osascript", voiceover_state.WAIT)
+            enabled[0] = not enabled[0]
+        with patch.object(voiceover_state, "SETTLE", 0.3), patch.object(voiceover_state, "_read", read), \
+                patch.object(voiceover_state, "_toggle", timed_out), \
+                patch.object(voiceover_state, "_ready_to_enable", return_value=True):
+            with self.assertRaises(voiceover_state.TransitionFailed) as failed:
+                with self.slot(voiceover=read) as owner:
+                    voiceover_state.set_enabled(True, owner)
+            self.assertTrue(failed.exception.restored)
+            self.assertEqual((enabled[0], sent), (False, [True, False]))
+            entry = self.record.entry(devices.FOREGROUND)
+            self.assertEqual((entry["state"], entry["run"]), ("released", "ended by an exception"))
+            # Negative control: when no key restores the original, the foreground stays uncertain.
+            enabled[0], sent[:] = False, []
+            def never_restores():
+                sent.append(not enabled[0])
+                enabled[0] = True
+                raise subprocess.TimeoutExpired("osascript", voiceover_state.WAIT)
+            with patch.object(voiceover_state, "_toggle", never_restores), \
+                    self.assertRaisesRegex(voiceover_state.TransitionFailed, "original state was not restored") as failed:
+                with self.slot(voiceover=read) as owner:
+                    voiceover_state.set_enabled(True, owner)
+            self.assertFalse(failed.exception.restored)
+        entry = self.record.entry(devices.FOREGROUND)
+        self.assertEqual(devices.condition(entry), "uncertain")
+        # The next run names the exact recovery command, not an `eng` subcommand.
+        with self.assertRaisesRegex(devices.Refused, re.escape(
+                "python3 -m vocaro_engineering.devices recover mac-foreground --by SESSION "
+                f"--revision {entry['revision']} --verified WHAT")):
+            with self.slot(): self.fail("ran over an uncertain foreground")
 
     def test_a_run_that_fails_still_releases_the_foreground(self):
         self.second_mac()
