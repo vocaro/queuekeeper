@@ -29,7 +29,7 @@ import subprocess
 import sys
 import time
 
-from . import devices as device_record, ignored, landing
+from . import devices as device_record, failure_records as failures, ignored, landing
 from .config import TOOLKIT_ROOT
 from .simulators import pool as simulator_pool
 
@@ -38,6 +38,7 @@ STATUS_ORDER = {CANDIDATE: 0, OWNER: 1, KEPT: 2}
 CATEGORIES = {"worktree": "Linked worktrees", "simulator": "Simulators", "runtime": "Simulator runtimes",
               "derived-data": "Xcode DerivedData", "scratch": "Scratch builds outside checkouts",
               "swiftpm-cache": "SwiftPM shared cache", "results": "Result directories",
+              "failures": "Kept failure records (pruned by their rule)",
               "evidence": "Evidence archives (offload to the second Mac)"}
 UUID = re.compile(r"[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}", re.IGNORECASE)
 SEPARATORS = re.compile(r"[\s=,;\"']+")
@@ -692,6 +693,33 @@ def evidence_archives(host, sizes):
             for path, offload in folders]
 
 
+def failure_records(host, usage, sizes):
+    """Each checkout's kept failure records, .build/failures/NAME/RECORD/, counted, with those past their
+    rule (failure_records.RULE) as one candidate, which `eng failures prune` removes. `eng failures keep`
+    prunes by the same rule as it keeps a record, on either Mac."""
+    items = []
+    for checkout in checkouts(host):
+        found = failures.records(checkout)
+        if not found: continue
+        path = Path(checkout) / failures.FAILURES
+        kept = [record for records in found.values() for record in records]
+        names = ", ".join(f"{name} ({len(records)})" for name, records in found.items())
+        counted = f"{len(kept)} record{'s' if len(kept) != 1 else ''} of {names}"
+        gone = failures.past_rule(checkout, host.now)
+        idle = host.now - last_activity(path)
+        use = usage.of(path)
+        if use: items.append(Item("failures", str(path), KEPT, f"{counted}; in use: {described(use)}", sizes.of(path),
+                                  None, idle))
+        elif gone:
+            items.append(Item("failures", str(path), CANDIDATE, f"{counted}; {len(gone)} past the rule, which "
+                              f"{failures.RULE}", sum(sizes.of(record) for record in gone),
+                              ["python3", str(TOOLKIT_ROOT / "bin/eng"), "failures", "prune", str(checkout)], idle))
+        else:
+            items.append(Item("failures", str(path), KEPT, f"{counted}; none past the rule, which {failures.RULE}",
+                              sizes.of(path), None, idle))
+    return items
+
+
 def second_mac():
     """The second Mac this Mac offloads to, or None: here alone, or on the second Mac itself."""
     from . import remote  # remote imports this module
@@ -785,6 +813,7 @@ def inventory(host, sizes, categories=None):
     if "derived-data" in wanted: items += derived_data(host, usage, sizes)
     if "swiftpm-cache" in wanted: items += swiftpm_cache(host, usage, sizes)
     if "evidence" in wanted: items += evidence_archives(host, sizes)
+    if "failures" in wanted: items += failure_records(host, usage, sizes)
     if wanted & {"scratch", "results"}: items += [item for item in temp_items(host, usage, sizes) if item.category in wanted]
     return items
 

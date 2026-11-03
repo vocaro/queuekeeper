@@ -11,7 +11,7 @@ import subprocess
 import sys
 import time
 
-from . import __version__, app_registrations, crash_alerts, devices, disk, docs, evidence, evidence_offload, foreground, github_artifacts, keychain, merge_queue, \
+from . import __version__, app_registrations, crash_alerts, devices, disk, docs, evidence, evidence_offload, failure_records, foreground, github_artifacts, keychain, merge_queue, \
     offload_host, parallel, processes, release, remote, resources, skills, spelling, xctest_shards
 from .config import TOOLKIT_ROOT, CAPABILITIES, DEFAULT_TOOLKIT, load, source_identity, stays
 from .resources import BUSY, FREE_WAIT
@@ -521,6 +521,9 @@ def main(argv=None):
     commands.add_parser("simulator-pool", help="list, take, release, prune, reap or check members of the project's "
         "simulator pool under device-record reservations: eng simulator-pool list|take|release|prune|reap|check; "
         "-h for the rest")
+    commands.add_parser("failures", help="keep a failed test run's log, result bundle and failure messages in a "
+        "record under .build/failures/ that no later run replaces, with a copy in the lane's results/, and list or "
+        "prune the records by their rule: eng failures keep|list|prune; -h for the rest")
     commands.add_parser("unittest", help="run a unittest suite's modules in processes of their own, side by side: "
         "eng unittest [-s START] [-p PATTERN] [-j JOBS] [-v]; eng unittest -h for the rest")
     commands.add_parser("xctest", help="build a Swift package's tests once and run its XCTest classes in xctest "
@@ -669,6 +672,7 @@ def main(argv=None):
     project = argv[1] if first == 2 else argv[0].split("=", 1)[1] if first == 1 else None
     if argv[first:first + 1] == ["simulator-tests"]: return matrix.main(argv[first + 1:], project)
     if argv[first:first + 1] == ["simulator-pool"]: return simulator_pool.main(argv[first + 1:], project)
+    if argv[first:first + 1] == ["failures"]: return failure_records.main(argv[first + 1:], project)
     # Recovery, like the admission log, covers the whole host and reads no project.
     if argv[first:first + 2] == ["admissions", "recover"]: return resources.recover_main(argv[first + 2:])
     split = argv.index("--") if "--" in argv else len(argv)
@@ -813,6 +817,7 @@ def main(argv=None):
                        "policy": policy_commit, **placement(reason)}
             def prepared(work):
                 # What an earlier run left in results/ is not this run's, here as on the second Mac (remote.RESULTS).
+                # The lane finds the directory in ENG_RESULTS_DIR, and a group's lanes each find one of their own in it.
                 shutil.rmtree(directory / "results", ignore_errors=True)
                 if resource != "light": github_artifacts.configured(root, config)
                 commands = [config["lanes"][name]["command"] for name in group] if group is not None else [lane["command"]]
@@ -823,7 +828,7 @@ def main(argv=None):
                 def execute(on_stop=None):
                     return record(directory, receipt, lambda: prepared(lambda: processes.run(command, cwd=root,
                                   log_path=directory / "run.log", timeout=lane.get("timeout", processes.DEFAULT_LIMIT),
-                                  on_stop=on_stop,
+                                  on_stop=on_stop, env=parallel.results_environment(directory / "results"),
                                   kill_after=processes.FOREGROUND_KILL_AFTER if lane.get("foreground")
                                   else processes.KILL_AFTER)))
             else:
@@ -833,7 +838,8 @@ def main(argv=None):
                 members = [(name, {**config["lanes"][name], "command": awake(config["lanes"][name])}) for name in group]
                 def execute(on_stop=None):
                     return record(directory, receipt, lambda: prepared(lambda: parallel.lanes(root, members, directory / "lanes", jobs,
-                                  lambda member, status, log: judge(member, status, log)[0], receipt, on_stop)))
+                                  lambda member, status, log: judge(member, status, log)[0], receipt, on_stop,
+                                  results_directory=directory / "results")))
             try:
                 with processes.forwarding_signals():
                     if resource == "light": result = execute()

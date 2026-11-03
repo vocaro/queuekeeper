@@ -255,6 +255,11 @@ class RemoteTests(unittest.TestCase):
                                         "    folder.mkdir(parents=True, exist_ok=True)\n"
                                         "    (folder / 'transcript.txt').write_text('VO: Next Page')\n"
                                         "print('Ran 1 tests')"], "resource": "heavy", "minimumTests": 1},
+            # Writes where eng run says its results/ is, and says where that is.
+            "noted": {"command": [python, "-c", "import os, pathlib; folder = pathlib.Path(os.environ['ENG_RESULTS_DIR']); "
+                                  "print('results in', folder); (folder / 'note.txt').write_text('noted'); "
+                                  "print('Ran 1 tests')"], "resource": "heavy", "minimumTests": 1},
+            "notes": {"parallel": ["noted", "left"], "resource": "heavy"},
             # Outlives any test that holds it, which stops it: on a loaded Mac a test that expected a
             # 60 s lane to be running found it ended (#111).
             "linger": {"command": [python, "-c", "import os, pathlib, time; "
@@ -1156,6 +1161,35 @@ class RemoteTests(unittest.TestCase):
                              ("other/a.txt", False), ("lanes/y.log", False), (None, False)]:
             with self.subTest(path):
                 self.assertEqual(remote.returned_path(path, ["lanes/x.log", "results/"]), wanted)
+
+    def test_eng_run_gives_a_lane_its_results_directory_here_and_a_groups_lanes_each_one_of_their_own(self):
+        engineering = (self.project / ".build/engineering").resolve()
+        status, output, error = self.run_here("--here", "noted")
+        self.assertEqual(status, 0, output + error)
+        self.assertIn(f"results in {engineering}/noted/results\n", (engineering / "noted/run.log").read_text())
+        self.assertEqual((engineering / "noted/results/note.txt").read_text(), "noted")
+        status, output, error = self.run_here("--serial", "notes")
+        self.assertEqual(status, 0, output + error)
+        self.assertIn(f"results in {engineering}/notes/results/noted\n",
+                      (engineering / "notes/lanes/noted.log").read_text())
+        self.assertEqual((engineering / "notes/results/noted/note.txt").read_text(), "noted")
+        # Each lane's own: one that writes nothing has an empty one.
+        self.assertEqual(list((engineering / "notes/results/left").iterdir()), [])
+
+    def test_a_group_on_the_second_mac_brings_back_what_its_lanes_wrote_in_their_results(self):
+        results = self.project / ".build/engineering/remote/notes"
+        status, output, error = self.eng("run", "notes")
+        self.assertEqual(status, 0, output + error)
+        self.assertEqual((results / "results/noted/note.txt").read_text(), "noted")
+        self.assertIn("results/noted/note.txt", json.loads((results / "source.json").read_text())["returned"])
+        self.assertIn(f"in {results.resolve()}/results, from noted", error)
+        there = (self.checkout(0) / ".build/engineering").resolve()
+        self.assertIn(f"results in {there}/notes/results/noted\n", self.lane_files("notes", "noted")[0])
+        # A lane alone there writes in its own results/, which comes back as the lane's.
+        status, output, error = self.eng("run", "noted")
+        self.assertEqual(status, 0, output + error)
+        self.assertEqual((self.project / ".build/engineering/remote/noted/results/note.txt").read_text(), "noted")
+        self.assertNotIn(", from ", error)
 
     def test_a_group_on_the_second_mac_brings_each_lanes_log_and_receipt_back(self):
         results = self.project / ".build/engineering/remote/pair"

@@ -350,8 +350,9 @@ class ResultsTests(unittest.TestCase):
     def test_every_run_of_a_lane_begins_with_its_results_empty(self):
         with tempfile.TemporaryDirectory() as directory:
             project = Path(directory)
-            write = ("import pathlib, sys\nif sys.argv[1:] != ['skip']:\n"
-                     "    folder = pathlib.Path('.build/engineering/note/results'); folder.mkdir(parents=True)\n"
+            # The command finds its results/ in ENG_RESULTS_DIR, made for it.
+            write = ("import os, pathlib, sys\nif sys.argv[1:] != ['skip']:\n"
+                     "    folder = pathlib.Path(os.environ['ENG_RESULTS_DIR'])\n"
                      "    (folder / 'transcript.txt').write_text('VO')\nprint('Ran 1 tests')")
             (project / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "P", "lanes": {
                 "note": {"command": [sys.executable, "-c", write]}}}))
@@ -362,7 +363,7 @@ class ResultsTests(unittest.TestCase):
                 self.assertEqual((results / "transcript.txt").read_text(), "VO")
                 # The earlier run's file is not this run's.
                 self.assertEqual(cli.main(["--project", directory, "run", "note", "--", "skip"]), 0)
-            self.assertFalse(results.exists())
+            self.assertEqual(list(results.iterdir()), [])
 
 
 class ConfigurationTests(unittest.TestCase):

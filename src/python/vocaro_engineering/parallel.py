@@ -29,6 +29,9 @@ NO_TESTS = 5
 # whole run until its lane's limit. More than twice the slowest of the toolkit's own, test_remote's
 # 817 s at one-minute load averages of 100 to 280 on this Mac (2026-10-31).
 PROCESS_LIMIT = 1800
+# The variable that gives a lane's command the absolute path of its results/ directory, which `eng run` empties
+# before each run and brings back from the second Mac (guides/parallel-tests.md, A lane's results).
+RESULTS_VARIABLE = "ENG_RESULTS_DIR"
 
 
 def outcome(status):
@@ -41,11 +44,19 @@ def combined(statuses):
     return evidence.UNMEASURED if evidence.UNMEASURED in statuses else 0
 
 
-def lanes(root, members, directory, jobs, judge, receipt, on_stop=None):
+def results_environment(directory, base=None):
+    """The environment of a lane's command, with RESULTS_VARIABLE naming directory, its results/, made if missing."""
+    directory = Path(directory).resolve()
+    directory.mkdir(parents=True, exist_ok=True)
+    return {**(os.environ if base is None else base), RESULTS_VARIABLE: str(directory)}
+
+
+def lanes(root, members, directory, jobs, judge, receipt, on_stop=None, results_directory=None):
     """Run members, (name, lane) pairs, jobs at a time, each with its log at directory/NAME.log and
     its receipt at directory/NAME.json, and return the combined status. judge(lane, status, log) is
     a lane's status from its command's and its log, raising ValueError for a run that executed too
-    few tests.
+    few tests. With results_directory, the group's results/, each lane's command finds results/NAME/ in
+    RESULTS_VARIABLE, so that what it writes there comes back with the group's from the second Mac.
 
     Every lane runs to its own end, however the others end. A stop reaches every running lane and
     starts none of the rest; once all have ended the stop is raised, or the uncertainty of a lane
@@ -79,7 +90,8 @@ def lanes(root, members, directory, jobs, judge, receipt, on_stop=None):
         try:
             status = processes.run(lane["command"], cwd=root, log_path=log,
                                    timeout=lane.get("timeout", processes.DEFAULT_LIMIT),
-                                   on_stop=on_stop)
+                                   on_stop=on_stop,
+                                   env=results_environment(results_directory / name) if results_directory is not None else None)
             status = judge(lane, status, log.read_text(errors="replace"))
         except processes.TimedOut as error:
             # A lane's timeout is its backstop, so a run a busy host slowed past it is unmeasured.

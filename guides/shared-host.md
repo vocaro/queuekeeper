@@ -1200,8 +1200,9 @@ python3 scripts/eng disk
 
 It covers every project in `~/Development`, whichever project runs it, and reads only what those
 projects leave on the host: their worktrees, the simulators and runtimes their tests use, the
-DerivedData and SwiftPM caches their builds fill, and the scratch builds and results their
-sessions leave in `/private/tmp` and the user temporary directory. It never surveys the home
+DerivedData and SwiftPM caches their builds fill, the failure records their test runs keep, and
+the scratch builds and results their sessions leave in `/private/tmp` and the user temporary
+directory. It never surveys the home
 directory or the rest of the volume. It prints each item's size, the reason for its status and
 the exact command that would remove it.
 A **candidate** is proven unowned by the rules below. An **owner** item shows no sign of a
@@ -1268,6 +1269,12 @@ with their commands: exactly what `--delete` would offer to remove.
 - **Results.** Result bundles, and run directories whose `owner` file records a finished run's
   PID and start time, are owner items; a run whose recorded process still has that start time is
   kept.
+- **Kept failure records**, in each main checkout's and worktree's `.build/failures/`, counted by
+  name. Their rule prunes a record once it is 14 days old or once five newer records of its name
+  exist ([kept failure records](app-testing.md#kept-failure-records)). A checkout with records past
+  it is a candidate, sized by those records, whose command is `eng failures prune CHECKOUT`; one
+  with none past it, or whose records a process uses, is kept. `eng failures keep` applies the
+  same rule as it keeps a record, on either Mac. Records alone never keep a landed worktree.
 - **Evidence archives**, on a Mac that offloads to a second one. A folder in `~/Development` named
   `*-evidence`, `*-measurements` or `session-evidence` that is not a Git checkout, and a main
   checkout's `.build/session-evidence`, are owner items. Their command is

@@ -895,7 +895,8 @@ def describe(identity):
 
 
 # What a lane's command writes under its results' results/ on the second Mac, such as speech transcripts, comes
-# back whole into the results' results/ here, however the run ended.
+# back whole into the results' results/ here, however the run ended. The command finds that directory in
+# parallel.RESULTS_VARIABLE; a group's lanes each find results/LANE/ of the group's, which comes back with it.
 RESULTS = "results/"
 
 
@@ -1269,8 +1270,11 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
           f"{own}", file=sys.stderr, flush=True)
     files = [path for path in returned if path.startswith(RESULTS)]
     if files:
+        # A group's lanes each write under results/LANE/.
+        group = config["lanes"][lane].get("parallel") or () if members else ()
+        wrote = sorted({Path(path).parts[1] for path in files if len(Path(path).parts) > 2} & set(group))
         print(f"remote: {len(files)} file{'s' if len(files) != 1 else ''} the run wrote in its {RESULTS} came back in "
-              f"{results / RESULTS}", file=sys.stderr, flush=True)
+              f"{results / RESULTS}" + (f", from {', '.join(wrote)}" if wrote else ""), file=sys.stderr, flush=True)
     if members and result.get("stage") == "work":
         members = config["lanes"][lane]["parallel"]
         came = [member for member in members if f"lanes/{member}.log" in returned]

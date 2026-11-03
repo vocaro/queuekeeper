@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -544,6 +545,71 @@ class EvidenceArchiveTests(Fixture):
     def test_nothing_is_listed_without_a_second_mac(self):
         (self.development / "project-measurements").mkdir()
         self.assertEqual(self.items(self.host(), ["evidence"]), {})
+
+
+class FailureRecordTests(Fixture):
+    def record(self, checkout, name, days, label="iPad"):
+        stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(LATER - days * 86400))
+        path = checkout / ".build/failures" / name / f"{stamp}-{label}-0000"
+        path.mkdir(parents=True)
+        (path / "failures.json").write_text("{}")
+        return path
+
+    def test_records_are_counted_in_each_checkout_and_those_past_the_rule_are_a_candidate(self):
+        from vocaro_engineering import failure_records
+        old = self.record(self.main, "ways-in", failure_records.MAX_AGE_DAYS + 1)
+        young = self.record(self.main, "ways-in", 1)
+        other = self.record(self.main, "recents", 2)
+        worktree = self.worktree("diagnosing")
+        recent = self.record(worktree, "ways-in", 0)
+        processes = [disk.Process(201, "xcresulttool", paths=(str(recent / "failures.json"),))]
+        items = self.items(self.host(processes), ["failures"])
+        main, there = items[str(self.main / ".build/failures")], items[str(worktree / ".build/failures")]
+        self.assertEqual(main.status, disk.CANDIDATE, main.reason)
+        self.assertIn("3 records of recents (1), ways-in (2); 1 past the rule", main.reason)
+        self.assertIn(failure_records.RULE, main.reason)
+        self.assertEqual(main.command, ["python3", str(disk.TOOLKIT_ROOT / "bin/eng"), "failures", "prune",
+                                        str(self.main)])
+        self.assertEqual(there.status, disk.KEPT)
+        self.assertIn("1 record of ways-in (1); in use: PID 201", there.reason)
+        self.assertEqual(set(items), {str(self.main / ".build/failures"), str(worktree / ".build/failures")})
+        # The negative control: within the rule, the records are counted and kept.
+        shutil.rmtree(old)
+        items = self.items(self.host(), ["failures"])
+        self.assertEqual(items[str(self.main / ".build/failures")].status, disk.KEPT)
+        self.assertIn("2 records of recents (1), ways-in (1); none past the rule",
+                      items[str(self.main / ".build/failures")].reason)
+        # Nothing was removed by the inventory.
+        for path in (young, other, recent): self.assertTrue(path.exists())
+
+    def test_delete_prunes_by_the_rule_inside_a_checkout(self):
+        from vocaro_engineering import failure_records
+        old = self.record(self.main, "ways-in", failure_records.MAX_AGE_DAYS + 1)
+        young = self.record(self.main, "ways-in", 1)
+        host = self.host()
+        [item] = disk.inventory(host, disk.Sizes(measure=False), ["failures"])
+        ran = []
+        def run(command, **_):
+            ran.append(command)
+            # As eng failures prune would, by the rule at the inventory's time.
+            failure_records.prune(Path(command[-1]), now=LATER)
+            return subprocess.CompletedProcess(command, 0, "", "")
+        disk.delete([item], lambda category: disk.inventory(host, disk.Sizes(measure=False), [category]),
+                    self.root / "ledger.jsonl", ask=lambda _: "y", out=lambda *_: None, run=run, terminal=True)
+        self.assertEqual(ran, [item.command])
+        self.assertEqual((old.exists(), young.exists()), (False, True))
+
+    def test_records_alone_do_not_keep_a_landed_worktree_and_a_lanes_results_do(self):
+        commit(self.main, ".gitignore", ".build/\n")
+        self.publish()
+        records = self.worktree("records")
+        self.record(records, "ways-in", 1)
+        results = self.worktree("results")
+        (results / ".build/engineering/ways-in/results/failures/R").mkdir(parents=True)
+        (results / ".build/engineering/ways-in/results/failures/R/failures.json").write_text("{}")
+        items = self.items(self.host(), ["worktree"])
+        self.assertEqual(items[str(records)].status, disk.CANDIDATE, items[str(records)].reason)
+        self.assertEqual(items[str(results)].status, disk.KEPT)
 
 
 class CommandTests(Fixture):
