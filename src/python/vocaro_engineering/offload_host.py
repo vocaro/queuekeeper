@@ -68,6 +68,14 @@ DEVICE = re.compile(r"[0-9A-F]{8}-(?:[0-9A-F]{4}-){3}[0-9A-F]{12}", re.IGNORECAS
 # device's hardware UDID, as devices.PHYSICAL matches it.
 DEVICE_RECORD = "Library/Application Support/vocaro-engineering/device-handoff.json"
 DEFERRED = "physicalDevicesRecordedOn"
+# The setting that shows an app's "quit unexpectedly" alert, and where a foreground run that has it off
+# keeps its value from before the run, relative to the home (crash_alerts.py).
+CRASH_DIALOG = ("com.apple.CrashReporter", "DialogType")
+CRASH_DIALOG_RECORD = "Library/Application Support/vocaro-engineering/crash-dialog.json"
+# The processes whose windows are system alerts over a foreground run's windows: macOS's crash-report and
+# other user notification alerts, and the password, keychain and permission prompts that stay the owner's.
+ALERT_PROCESSES = ("UserNotificationCenter", "Problem Reporter", "CrashReporter", "SecurityAgent", "coreautha",
+                   "universalAccessAuthWarn", "CoreServicesUIAgent")
 PHYSICAL = re.compile(r"[0-9A-F]{8}-[0-9A-F]{16}|[0-9A-F]{40}")
 # Where a Mac keeps its users' keychain files, relative to the home, and its login keychain's file there.
 KEYCHAINS = "Library/Keychains"
@@ -408,6 +416,88 @@ def foreground_problems():
     return found
 
 
+def crash_dialog(run=output):
+    """com.apple.CrashReporter's DialogType, or None when it is unset, macOS's default, which shows an app's
+    "quit unexpectedly" alert."""
+    return run(["defaults", "read", *CRASH_DIALOG])
+
+
+def crash_dialog_record():
+    """The file a foreground run keeps DialogType's value from before it in while the run has it off, as
+    crash_alerts.py writes it, which VOCARO_CRASH_DIALOG_RECORD overrides for a test's."""
+    return Path(os.environ.get("VOCARO_CRASH_DIALOG_RECORD")
+                or Path(pwd.getpwuid(os.getuid()).pw_dir) / CRASH_DIALOG_RECORD)
+
+
+# Lists each window of the processes that raise system alerts as one line: the process, the window's
+# x, y, width and height, its texts and its buttons, the last two separated by the unit separator.
+ALERTS_SCRIPT = """on joined(found)
+    set out to ""
+    repeat with item_ in found
+        try
+            set out to out & (item_ as text) & (ASCII character 31)
+        end try
+    end repeat
+    return out
+end joined
+set out to ""
+tell application "System Events"
+    repeat with name_ in {%s}
+        if exists process (name_ as text) then
+            tell process (name_ as text)
+                repeat with window_ in windows
+                    set place to position of window_
+                    set extent to size of window_
+                    set texts to ""
+                    try
+                        set texts to my joined(value of static texts of window_)
+                    end try
+                    try
+                        set texts to texts & (name of window_ as text) & (ASCII character 31)
+                    end try
+                    set labels to ""
+                    try
+                        set labels to my joined(name of buttons of window_)
+                    end try
+                    set out to out & (name_ as text) & tab & (item 1 of place) & tab & (item 2 of place) & tab & (item 1 of extent) & tab & (item 2 of extent) & tab & texts & tab & labels & linefeed
+                end repeat
+            end tell
+        end if
+    end repeat
+end tell
+return out""" % ", ".join(f'"{name}"' for name in ALERT_PROCESSES)
+
+
+def system_alerts(run=output):
+    """The windows of the processes that raise system alerts, each as {"app", "frame": [x, y, width, height],
+    "texts", "buttons"}, read through System Events, which needs accessibility; None when they cannot be read.
+    It reads and changes nothing else: nothing here presses, activates or sends a key."""
+    found = run(["osascript", "-e", ALERTS_SCRIPT])
+    if found is None: return None
+    alerts = []
+    for line in found.splitlines():
+        fields = line.split("\t")
+        if len(fields) != 7: continue
+        try: frame = [int(float(value)) for value in fields[1:5]]
+        except ValueError: continue
+        # A window with no extent covers nothing.
+        if not frame[2] or not frame[3]: continue
+        texts, labels = ([part for part in field.split("\x1f") if part and part != "missing value"]
+                         for field in fields[5:7])
+        alerts.append({"app": fields[0], "frame": frame, "texts": texts, "buttons": labels})
+    return alerts
+
+
+def crash_dialogs():
+    """DialogType, the record a run that has it off keeps, and the system alerts on the screen, for
+    `eng remote foreground`."""
+    path = crash_dialog_record()
+    try: kept = json.loads(path.read_text())
+    except FileNotFoundError: kept = None
+    except (OSError, ValueError) as error: kept = {"error": f"{path} cannot be read: {error}"}
+    return {"value": crash_dialog(), "record": kept, "alerts": system_alerts()}
+
+
 def foreground():
     """The Mac's name, foreground readiness and mac-foreground entry, for `eng remote foreground`.
     VoiceOver is read under the lease only."""
@@ -417,7 +507,8 @@ def foreground():
     except (OSError, ValueError, AttributeError) as error: entry = {"error": f"the device record cannot be read: {error}"}
     # VoiceOver may belong to the current holder. Even its baseline is read only after a
     # run acquires the lease; on is a valid baseline, preserved by the foreground state guard.
-    return {"mac": mac_name(), "problems": foreground_problems(), "voiceoverManagedUnderLease": True, "entry": entry}
+    return {"mac": mac_name(), "problems": foreground_problems(), "voiceoverManagedUnderLease": True, "entry": entry,
+            "crashDialogs": crash_dialogs()}
 
 
 def toolchain(developer_dir):

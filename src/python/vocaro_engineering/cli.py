@@ -11,7 +11,7 @@ import subprocess
 import sys
 import time
 
-from . import __version__, app_registrations, devices, disk, docs, evidence, evidence_offload, foreground, github_artifacts, keychain, merge_queue, \
+from . import __version__, app_registrations, crash_alerts, devices, disk, docs, evidence, evidence_offload, foreground, github_artifacts, keychain, merge_queue, \
     offload_host, parallel, processes, release, remote, resources, skills, spelling, xctest_shards
 from .config import TOOLKIT_ROOT, CAPABILITIES, DEFAULT_TOOLKIT, load, source_identity, stays
 from .resources import BUSY, FREE_WAIT
@@ -401,6 +401,18 @@ def admitted_tree(root, name, offered, receipt):
     return None
 
 
+def guarded_alerts(stack, purpose, receipt):
+    """Foreground work's crash_alerts.Run, with crash-report dialogs off and the screen's crash-report alerts
+    cleared until the stack closes; or UNMEASURED, with nothing run, when an alert eng cannot clear is over the
+    screen (crash_alerts.py)."""
+    try:
+        return stack.enter_context(crash_alerts.guarded(purpose, receipt=receipt))
+    except crash_alerts.Blocked as error:
+        print(f"eng: unmeasured: {error}; nothing ran ({crash_alerts.GUIDE}, Crash-report alerts)", file=sys.stderr)
+        receipt["outcome"] = "unmeasured"
+        return evidence.UNMEASURED
+
+
 def admit(root, args, config=None):
     # A command runs here, in the current directory: its paths, devices and products are this Mac's
     # (guides/shared-host.md, Which Mac runs a lane). Only --verify, which says that its result is its
@@ -445,14 +457,17 @@ def admit(root, args, config=None):
         if stopped is not None: return stopped
         receipt["queueSeconds"] = round(time.monotonic() - asked, 3)
         if offered is not None: receipt["hereBecause"] = offered.status
+        alerts = guarded_alerts(stack, " ".join(command), receipt) if args.foreground else None
+        if isinstance(alerts, int): return alerts
         def work():
             github_artifacts.configured(root, config)
             # A foreground command restores what it changed on the Mac before SIGKILL, VoiceOver first.
             with app_registrations.around_run([command], Path.cwd()):
-                return processes.supervise(command, cwd=Path.cwd(), on_stop=admission.interrupted,
-                                           timeout=args.time_limit,
-                                           kill_after=processes.FOREGROUND_KILL_AFTER if args.foreground
-                                           else processes.KILL_AFTER)
+                status = processes.supervise(command, cwd=Path.cwd(), on_stop=admission.interrupted,
+                                             timeout=args.time_limit,
+                                             kill_after=processes.FOREGROUND_KILL_AFTER if args.foreground
+                                             else processes.KILL_AFTER)
+                return alerts.judged(status) if alerts is not None else status
         try:
             return record(root / ".build/engineering/admit", receipt, work)
         except processes.TimedOut as error:
@@ -668,6 +683,8 @@ def main(argv=None):
     # found it unreachable for, in the background (guides/evidence.md).
     if args.action in OFFLOAD_RETRIES: evidence_offload.retry_soon()
     root = args.project.resolve()
+    # A foreground run whose eng died left crash-report dialogs off; the next eng command puts them back.
+    crash_alerts.recover()
     try:
         if args.action == "init":
             initialize(root, args)
@@ -836,7 +853,10 @@ def main(argv=None):
                             # The wait in the queue, apart from what came before it (remote.execute).
                             receipt["queueSeconds"] = round(time.monotonic() - asked, 3)
                             if offered is not None: receipt["hereBecause"] = offered.status
+                            alerts = guarded_alerts(stack, args.lane, receipt) if lane.get("foreground") else None
+                            if isinstance(alerts, int): return alerts
                             result = execute(admission.interrupted)
+                            if alerts is not None: result = alerts.judged(result)
             except processes.TimedOut as error:
                 # The lane's timeout is its backstop, so a run a busy host slowed past it is
                 # unmeasured (guides/measurement.md). Its log is incomplete and counts nothing.

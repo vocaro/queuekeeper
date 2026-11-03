@@ -1341,6 +1341,7 @@ def foreground_report(host):
         entry.get("error") or f"{entry.get('ownerChatID')} holds it for {entry.get('purpose')}, " \
         f"expected release {entry.get('expectedReleaseBy')}"
     print(f"{found.get('mac')}'s foreground: {holder}")
+    for line in crash_dialog_report(found.get("crashDialogs"), entry): print(line)
     for problem, fix in found.get("problems", []):
         print(f"- {problem}: {fix}")
     if found.get("problems"):
@@ -1349,6 +1350,34 @@ def foreground_report(host):
         return MISCONFIGURED
     print("Ready for foreground work started over SSH.")
     return 0
+
+
+def crash_dialog_report(found, entry):
+    """What `eng remote foreground` says of the second Mac's crash-report dialogs and system alerts: a DialogType
+    left off with no run holding the foreground, and every alert over the screen (crash_alerts.py). A second Mac
+    whose toolkit predates them says nothing."""
+    if not found: return []
+    lines = []
+    held = bool(entry) and entry.get("state") not in (None, "released")
+    kept = found.get("record")
+    if kept is not None and not held:
+        before = kept.get("before") if "error" not in kept else None
+        lines.append(f"- a foreground run that no longer runs left crash-report dialogs off; the next eng command "
+                     f"there puts back com.apple.CrashReporter DialogType {before or 'unset'}"
+                     if "error" not in kept else f"- {kept['error']}")
+    elif found.get("value") == "none" and not held:
+        lines.append("- crash-report dialogs are off with no run going (com.apple.CrashReporter DialogType none), "
+                     "and no run left a value to put back: the owner keeps them on between runs, with "
+                     "`defaults delete com.apple.CrashReporter DialogType` there")
+    alerts = found.get("alerts")
+    if alerts is None:
+        lines.append("- its system alerts cannot be read (System Events needs accessibility)")
+    for alert in alerts or []:
+        x, y, width, height = alert["frame"]
+        lines.append(f"- a system alert is over the screen: {alert['app']}'s window at x {x}, y {y}, "
+                     f"{width}×{height}: {next(iter(alert['texts']), 'no text')!r}; a foreground run dismisses a "
+                     "crash report itself and stops, unmeasured, on any other")
+    return lines
 
 
 def install_script(formulae):

@@ -17,7 +17,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
-from vocaro_engineering import offload_host, resources
+from vocaro_engineering import crash_alerts, offload_host, resources
 
 ROOT = Path(tempfile.mkdtemp(prefix="vocaro-test-host-")).resolve()
 # Only by this process: a child forked from it exits through atexit too.
@@ -25,3 +25,8 @@ atexit.register(lambda owner=os.getpid(): os.getpid() == owner and shutil.rmtree
 GATE = str(ROOT / "gate")
 os.environ.update(HEAVY_SLOT_DIR=str(ROOT / "slots"), SW_GATE_LOCK_FILE=GATE)
 resources.GATE_LOCK = offload_host.GATE_LOCK = GATE
+# Nor does any reach the host's crash-report setting or its screen's alerts (#118): a foreground run a test
+# makes reads DialogType unset and no alert, and changes nothing. A test of either replaces these again.
+os.environ["VOCARO_CRASH_DIALOG_RECORD"] = str(ROOT / "crash-dialog.json")
+crash_alerts.run = lambda command, environment=None: "" if command[0] == "osascript" else None
+crash_alerts.change = lambda value: True
