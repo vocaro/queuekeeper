@@ -258,8 +258,11 @@ would all reach it (owner's decision, 2026-11-02,
 The checkouts an earlier worker kept beside the main checkout, `../NAME-queue` and
 `../NAME-queue-toolkit`, move by themselves: the first round of a worker running a toolkit that has
 this layout moves each with `git worktree move`, so Git knows it at its new place, it stays locked, and
-the ignored inputs a provisioning lane made come along. That worker holds the queue, so no gate of its
-own runs there. A process that still works in one, as a lane an earlier worker left running may, keeps
+the ignored inputs a provisioning lane made come along. Package state that names the old path does not:
+the worker removes each `.build`'s `workspace-state.json`, `artifacts`, `checkouts` and `repositories`,
+and each Xcode `SourcePackages`, whose `workspace-state.json` names it, so that SwiftPM and Xcode resolve
+the packages again; build products stay ([#114](https://github.com/vocaro/vocaro-engineering/issues/114)).
+That worker holds the queue, so no gate of its own runs there. A process that still works in one, as a lane an earlier worker left running may, keeps
 it where it is, as does a process census that fails or a move Git refuses: the worker then makes the
 checkout afresh at the new place, locks the old one as `retired by the merge queue: replaced by PATH`,
 and says so in its log, and `eng disk` lists it for the owner's removal once nothing uses it.

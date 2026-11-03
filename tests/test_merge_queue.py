@@ -1016,6 +1016,42 @@ class ToolkitCopy(Fixture):
         run(self.checkout, "git", "status", "--porcelain")
         run(self.copy, "git", "status", "--porcelain")
 
+    def test_a_moved_checkout_forgets_the_package_state_that_names_its_old_path(self):
+        # As studywright's suite-root failed on 2026-11-02: its moved .build named ~/Development/studywright-queue (#114).
+        old, _old_kit = self.old_layout()
+        info = Path(run(old, "git", "rev-parse", "--path-format=absolute", "--git-common-dir")) / "info/exclude"
+        info.write_text(info.read_text() + ".build/\n")
+        stale = {".build": "SwiftPM's", "app/.build/check-app/SourcePackages": "Xcode's",
+                 ".build/DerivedData/ios-tests/SourcePackages": "Xcode's, in DerivedData"}
+        for folder in stale:
+            (old / folder).mkdir(parents=True)
+            (old / folder / "workspace-state.json").write_text(json.dumps({"path": str(old / folder / "checkouts")}))
+        for name in ("artifacts/bundle/info.json", "checkouts/tokenizers/Package.swift", "repositories/tokenizers/HEAD",
+                     "debug/product", "DerivedData/ios-tests/Build/product"):
+            (old / ".build" / name).parent.mkdir(parents=True, exist_ok=True)
+            (old / ".build" / name).write_text("built\n")
+        # A package resolved at the new path keeps its state.
+        current = self.checkout / "Packages/Reader/.build"
+        (old / "Packages/Reader/.build/artifacts").mkdir(parents=True)
+        (old / "Packages/Reader/.build/workspace-state.json").write_text(json.dumps({"path": str(current)}))
+        with contextlib.redirect_stdout(io.StringIO()) as said:
+            identifier, status = self.gate_once("a")
+        self.assertEqual(status, 0)
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertFalse(old.exists())
+        moved = self.checkout / ".build"
+        for name in ("workspace-state.json", "artifacts", "checkouts", "repositories"):
+            self.assertFalse((moved / name).exists(), name)
+        for folder in list(stale)[1:]: self.assertFalse((self.checkout / folder).exists(), folder)
+        # Build products stay, and so does the input a lane provisioned.
+        self.assertEqual((moved / "debug/product").read_text(), "built\n")
+        self.assertEqual((moved / "DerivedData/ios-tests/Build/product").read_text(), "built\n")
+        self.assertEqual((self.checkout / "provisioned/input").read_text(), "made by a provision lane\n")
+        self.assertTrue((current / "workspace-state.json").exists())
+        self.assertTrue((current / "artifacts").exists())
+        for folder in stale: self.assertIn(f"cleared {self.checkout / folder}, which named {old}", said.getvalue())
+        self.assertNotIn("Packages/Reader", said.getvalue())
+
     def test_an_old_checkout_a_process_uses_stays_and_the_new_one_is_made_afresh(self):
         old, old_kit = self.old_layout()
         # A lane an earlier worker left running in it, found by the real process census.

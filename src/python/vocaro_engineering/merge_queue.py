@@ -23,6 +23,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -66,6 +67,39 @@ CHANGELOG = "changelog.md"
 HEADING = re.compile(rb"#{1,6}\s")
 # Long enough that no line of a changelog reads as one of `git merge-file`'s markers.
 MARKER_SIZE = 32
+# What SwiftPM keeps in a .build that records the checkout's absolute path: a moved checkout whose
+# workspace-state.json still named ~/Development/studywright-queue failed its build (#114). Xcode's
+# SourcePackages, a folder of a .build's DerivedData, keeps the same and goes whole.
+PACKAGE_STATE = ("workspace-state.json", "artifacts", "checkouts", "repositories")
+# Folders outside a .build that hold no package of the project's, and are too large to walk.
+UNWALKED = {".git", ".venv", "node_modules"}
+
+
+def forget(checkout, names):
+    """Remove the package state under checkout whose workspace-state.json names any of names, the
+    checkout's old paths, so that SwiftPM and Xcode resolve its packages again, and return the folders
+    cleared. Build products stay. A workspace-state.json sits at the top of a .build, or in a
+    SourcePackages two or three levels below it (.build/LANE/, .build/DerivedData/LANE/), so a walk goes no
+    deeper than that inside one."""
+    cleared = []
+    for top, folders, files in os.walk(checkout):
+        here = Path(top)
+        inside = next((depth for depth, part in enumerate(reversed(here.relative_to(checkout).parts))
+                       if part == ".build"), None)
+        if "workspace-state.json" in files and any(
+                name in (here / "workspace-state.json").read_text(errors="replace") for name in names):
+            if here.name == "SourcePackages":
+                shutil.rmtree(here)
+                folders[:] = []
+            else:
+                for name in PACKAGE_STATE:
+                    state = here / name
+                    if state.is_dir() and not state.is_symlink(): shutil.rmtree(state)
+                    elif state.exists() or state.is_symlink(): state.unlink()
+            cleared.append(here)
+        folders[:] = [folder for folder in folders if folder not in UNWALKED] if inside is None else \
+            [folder for folder in folders if inside < 3 and folder not in PACKAGE_STATE[1:]]
+    return cleared
 
 
 def environment():
@@ -470,10 +504,15 @@ class Worker:
         except (OSError, RuntimeError, subprocess.SubprocessError) as error:
             return f"since whether a process uses it is unknown: {error}"
         if users: return f"since {disk.described((users[0], 'working directory, an open file or an argument'))}"
+        names = {str(old), str(old.resolve())}
         # Twice --force moves a locked worktree, which stays locked, with the reason it had.
         moved = git(repository, "worktree", "move", "--force", "--force", str(old), str(new), hooks=False)
         if moved.returncode: return f"since `git worktree move` failed: {moved.stderr.strip() or 'no output'}"
         self.say(f"moved {old} to {new}")
+        try: cleared = forget(new, names)
+        except OSError as error: self.say(f"could not clear the package state in {new} that names {old}: {error}")
+        else:
+            for state in cleared: self.say(f"cleared {state}, which named {old}")
         return None
 
     def toolkit(self):
