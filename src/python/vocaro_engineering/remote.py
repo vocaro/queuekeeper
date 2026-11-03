@@ -1851,11 +1851,30 @@ def first(root, config, lane, arguments, expect, fallback=True):
     return offered
 
 
-# A simulator's identifier, a UUID, in uppercased text where it names one: a member of this Mac's pool.
-# It follows `id=`, as in a destination, or stands as a word of its own, as `simctl boot UUID` gives it;
-# one inside a path, such as a session's scratchpad (#116), or another word names no simulator.
-SIMULATOR = re.compile(r"(?:(?<![^\s'\"])|(?<=ID=))[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}"
-                       r"(?![^\s'\",;])")
+# A simulator's identifier, a UUID, as a word of uppercased text: a member of this Mac's pool.
+SIMULATOR = re.compile(r"[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}")
+# A destination's id= key, as `-destination id=UUID` or `platform=iOS Simulator,id=UUID` gives it, at the
+# start of a word or after a comma or `=` of the destination: not the end of another key, such as --build-id=.
+DESTINATION = re.compile(rf"(?:\A|[,=])ID=({SIMULATOR.pattern})(?=\Z|,)")
+# What ends one command of a shell's words, after which a UUID no longer follows simctl.
+SEPARATOR = re.compile(r"[;&|\n()]+")
+
+
+def simulators(command):
+    """The simulator identifiers command names, uppercased: a UUID where a simulator goes, as a destination's
+    id=, any word after `simctl` in the same shell command, or --device's argument. One inside a path, such
+    as an interpreter in a session's scratchpad (#116, #142), or in another word or argument names none."""
+    found = set()
+    for part in SEPARATOR.split(" ".join(map(str, command)).upper()):
+        words = [word.strip("'\"") for word in part.split()]
+        simctl = False
+        for previous, word in zip([None, *words], words):
+            found.update(DESTINATION.findall(word))
+            value = word.removeprefix("--DEVICE=") if previous != "--DEVICE" else word
+            if SIMULATOR.fullmatch(value) and (simctl or previous == "--DEVICE" or value != word):
+                found.add(value)
+            simctl = simctl or word == "SIMCTL" or word.endswith("/SIMCTL")
+    return found
 
 
 def first_command(root, config, command, kind):
@@ -1879,7 +1898,7 @@ def first_command(root, config, command, kind):
         refused = f"its directory {relative} is one Git ignores, which the second Mac's checkout lacks"
     elif str(top) in words:
         refused = f"it names this checkout's path {top}, which the second Mac's checkout is not"
-    elif SIMULATOR.search(words.upper()):
+    elif simulators(command):
         refused = "it names a simulator by its identifier, a member of this Mac's pool"
     elif named:
         refused = (f"it names the hardware UDID {', '.join(named)}, which the second Mac uses only under a "

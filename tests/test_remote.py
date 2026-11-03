@@ -2235,8 +2235,10 @@ exec {shlex.quote(real)} "$@"
     def test_admit_verify_sends_a_command_whose_paths_hold_a_uuid_to_the_second_mac(self):
         # A session's scratchpad path holds its UUID (#116), which names no simulator, nor does one in another word.
         probe = self.probe()
+        # Nor does one in a file path argument, as a word of its own outside simctl, or after another option (#142).
         scratchpad = f"/private/tmp/claude-501/-Users-owner-project/{DUO.lower()}/scratchpad/venv/bin/python"
-        status, output, error = self.admit_in(self.project, "--verify", "--", *probe, scratchpad, f"--run={DUO}-1")
+        status, output, error = self.admit_in(self.project, "--verify", "--", *probe, scratchpad, f"--run={DUO}-1",
+                                              f"{DUO}.xcresult", "--session", DUO, f"--build-id={DUO}")
         self.assertEqual(status, 0, output + error)
         self.assertEqual(self.ran_in(), self.checkout(0).resolve())
         receipt = json.loads((self.project / ".build/engineering/remote/admit/source.json").read_text())
@@ -2252,6 +2254,8 @@ exec {shlex.quote(real)} "$@"
                  (self.project, [str(self.project.resolve() / "pkg")], "it names this checkout's path"),
                  (self.project, [f"platform=iOS Simulator,id={DUO}"], "it names a simulator by its identifier"),
                  (self.project, ["xcrun simctl boot", DUO.lower()], "it names a simulator by its identifier"),
+                 (self.project, ["-destination", f"id={DUO}"], "it names a simulator by its identifier"),
+                 (self.project, ["--device", DUO.lower()], "it names a simulator by its identifier"),
                  # A hardware UDID that no entry of this Mac's record holds, as #57 refuses it without --device.
                  (self.project, [f"platform=iOS,id={PHONE}"], f"it names the hardware UDID {PHONE}"),
                  (self.project, [], "fake cannot be reached")]
@@ -2576,6 +2580,42 @@ exec {shlex.quote(real)} "$@"
                 self.assertEqual(sorted(path.name for path in base.iterdir()),
                                  sorted([remote.DISPATCHES, ".admit.lock", "admit"]))
                 self.assertEqual({git(self.checkout(slot), "rev-parse", "HEAD") for slot in (0, 1)}, {commit})
+
+
+class SimulatorPositionTests(unittest.TestCase):
+    """admit --verify keeps a command here for a UUID only where a simulator goes (#142)."""
+
+    def test_a_uuid_in_a_simulator_position_names_a_simulator(self):
+        for command in [["xcodebuild", "-destination", f"id={DUO.lower()}"],
+                        ["xcodebuild", "-destination", f"platform=iOS Simulator,id={DUO}"],
+                        ["xcodebuild", "-destination", f"'platform=iOS Simulator,id={DUO},arch=arm64'"],
+                        [f"-destination=id={DUO}"],
+                        ["xcrun", "simctl", "boot", DUO.lower()],
+                        ["xcrun simctl boot", DUO],
+                        ["/usr/bin/xcrun", "simctl", "spawn", f'"{DUO}"', "launchctl", "list"],
+                        ["/bin/sh", "-c", f"xcrun simctl shutdown {DUO}; true"],
+                        ["tool", "--device", DUO.lower()],
+                        ["tool", f"--device={DUO}"]]:
+            with self.subTest(command):
+                self.assertEqual(remote.simulators(command), {DUO})
+
+    def test_a_uuid_elsewhere_names_no_simulator(self):
+        scratchpad = f"/private/tmp/claude-501/-Users-owner-project/{DUO.lower()}/scratchpad/venv/bin/python"
+        for command in [[scratchpad, "-m", "unittest"],
+                        [sys.executable, f"/tmp/{DUO}/out.json"],
+                        ["tool", f"{DUO}.xcresult"],
+                        [f"--run={DUO}-1"],
+                        [f"--build-id={DUO}"],
+                        [f"session-{DUO}"],
+                        [f"/tmp/id={DUO}"],
+                        ["tool", DUO],
+                        ["--devices", DUO],
+                        ["--device", f"/tmp/{DUO}"],
+                        # A word after simctl's command ends is another command's.
+                        ["/bin/sh", "-c", f"xcrun simctl list && tool {DUO}"],
+                        [scratchpad, "-m", "pytest", "-k", "simctl"]]:
+            with self.subTest(command):
+                self.assertEqual(remote.simulators(command), set())
 
 
 class DispatchResultsTests(unittest.TestCase):
