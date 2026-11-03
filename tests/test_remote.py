@@ -2194,6 +2194,16 @@ exec {shlex.quote(real)} "$@"
         receipt = json.loads((self.project / ".build/engineering/admit/source.json").read_text())
         self.assertEqual((receipt["ranOn"], receipt["hereBecause"]), ("this Mac", "eng admit runs here without --verify"))
 
+    def test_admit_verify_sends_a_command_whose_paths_hold_a_uuid_to_the_second_mac(self):
+        # A session's scratchpad path holds its UUID (#116), which names no simulator, nor does one in another word.
+        probe = self.probe()
+        scratchpad = f"/private/tmp/claude-501/-Users-owner-project/{DUO.lower()}/scratchpad/venv/bin/python"
+        status, output, error = self.admit_in(self.project, "--verify", "--", *probe, scratchpad, f"--run={DUO}-1")
+        self.assertEqual(status, 0, output + error)
+        self.assertEqual(self.ran_in(), self.checkout(0).resolve())
+        receipt = json.loads((self.project / ".build/engineering/remote/admit/source.json").read_text())
+        self.assertEqual(receipt["ranOn"], "second Mac")
+
     def test_admit_verify_keeps_here_what_the_second_mac_could_not_run_as_it_runs_here(self):
         probe = self.probe()
         (self.project / ".build/scratch").mkdir(parents=True)
@@ -2203,6 +2213,7 @@ exec {shlex.quote(real)} "$@"
                  (self.project / ".build/scratch", [], "its directory .build/scratch is one Git ignores"),
                  (self.project, [str(self.project.resolve() / "pkg")], "it names this checkout's path"),
                  (self.project, [f"platform=iOS Simulator,id={DUO}"], "it names a simulator by its identifier"),
+                 (self.project, ["xcrun simctl boot", DUO.lower()], "it names a simulator by its identifier"),
                  # A hardware UDID that no entry of this Mac's record holds, as #57 refuses it without --device.
                  (self.project, [f"platform=iOS,id={PHONE}"], f"it names the hardware UDID {PHONE}"),
                  (self.project, [], "fake cannot be reached")]

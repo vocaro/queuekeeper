@@ -1759,8 +1759,11 @@ def first(root, config, lane, arguments, expect, fallback=True):
     return offered
 
 
-# A simulator's identifier, a UUID, as a word of uppercased text: a member of this Mac's pool.
-SIMULATOR = re.compile(r"(?<![0-9A-F])[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}(?![0-9A-F])")
+# A simulator's identifier, a UUID, in uppercased text where it names one: a member of this Mac's pool.
+# It follows `id=`, as in a destination, or stands as a word of its own, as `simctl boot UUID` gives it;
+# one inside a path, such as a session's scratchpad (#116), or another word names no simulator.
+SIMULATOR = re.compile(r"(?:(?<![^\s'\"])|(?<=ID=))[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}"
+                       r"(?![^\s'\",;])")
 
 
 def first_command(root, config, command, kind):
