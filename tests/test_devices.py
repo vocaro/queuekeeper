@@ -960,9 +960,14 @@ class BoundedRunTests(unittest.TestCase):
     def test_a_run_on_the_held_device_is_recorded_in_its_entry_which_stays_reserved(self):
         held = self.hold()
         during = self.root / "during.json"
+        # The bound is read from the clock when the run begins, between these two readings however slow the host
+        # (#119).
+        keep = devices.TERMINATION + devices.RESTORATION
+        before = (devices.moment(held["expectedReleaseBy"]) - datetime.now(timezone.utc)).total_seconds()
         # The command may name its own device in any case.
         code, _output, error = self.cli("run", "iPad", "--owner", "session-a", "--", sys.executable, "-c", PROBE,
                                         str(self.path), "iPad", str(during), f"id={TABLET.lower()}")
+        after = (devices.moment(held["expectedReleaseBy"]) - datetime.now(timezone.utc)).total_seconds()
         self.assertEqual(code, 0, error)
         self.assertIn("exited with status 0; iPad stays reserved", error)
         running = json.loads(during.read_text())
@@ -974,8 +979,8 @@ class BoundedRunTests(unittest.TestCase):
         self.assertEqual(devices.condition(entry), "held")
         self.assertEqual((entry["ownerChatID"], entry["state"], entry["run"]["outcome"]), ("session-a", "reserved", "exit 0"))
         self.assertEqual(entry["run"]["command"][:2], [sys.executable, "-c"])
-        left = (devices.moment(held["expectedReleaseBy"]) - datetime.now(timezone.utc)).total_seconds()
-        self.assertLessEqual(entry["run"]["boundSeconds"], left - devices.TERMINATION - devices.RESTORATION + 1)
+        self.assertLessEqual(entry["run"]["boundSeconds"], before - keep)
+        self.assertGreater(entry["run"]["boundSeconds"], after - keep - 1)
         self.assertEqual(entry["revision"], held["revision"] + 3)
         self.assertFalse(devices.running(entry))
         # The command's status is the run's, and the device stays reserved after a failure too.

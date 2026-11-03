@@ -44,8 +44,9 @@ class SlotTests(unittest.TestCase):
     def slot(self, **options):
         options.setdefault("ready", lambda: [])
         options.setdefault("voiceover", lambda: False)
+        options.setdefault("said", self.said.append)
         return foreground.slot("Project voiceover-mac", timeout=options.pop("timeout", 5), record=self.record,
-                               poll=0.05, said=self.said.append, **options)
+                               poll=0.05, **options)
 
     def test_only_the_second_mac_takes_its_foreground_and_only_once_it_is_ready(self):
         # This Mac's foreground needs the owner's window, which the session reserves itself.
@@ -117,9 +118,14 @@ class SlotTests(unittest.TestCase):
         held = self.record.reserve(devices.FOREGROUND, owner="other run", revision=0, purpose="Other voiceover-mac",
                                    release_by=(time.strftime("%Y") + "-12-31T00:00:00+00:00"),
                                    approval={**foreground.STANDING, "until": "released"})
-        # The holder's release comes while this run waits; until then, it takes nothing.
+        # The holder's release comes once this run says it waits, not after a time a slow host can outlast (#119);
+        # until then, it takes nothing.
+        waiting = threading.Event()
+        def said(text):
+            self.said.append(text)
+            if "held by other run" in text: waiting.set()
         def release():
-            time.sleep(0.3)
+            if not waiting.wait(10): return
             self.assertEqual(self.record.entry(devices.FOREGROUND)["ownerChatID"], "other run")
             self.record.release(devices.FOREGROUND, owner="other run", revision=held["revision"], outcome="done",
                                 restoration="checked", frontmost="restored")
@@ -131,7 +137,11 @@ class SlotTests(unittest.TestCase):
             self.assertNotEqual(entry["ownerChatID"], "other run")
             self.assertEqual(devices.condition(entry), "active")
             return False
-        with self.slot(voiceover=baseline) as owner:
+        # A run that starts late, as on a busy host, still finds the holder.
+        def late():
+            time.sleep(0.5)
+            return []
+        with self.slot(voiceover=baseline, ready=late, said=said, timeout=10) as owner:
             self.assertEqual(self.record.entry(devices.FOREGROUND)["ownerChatID"], owner)
         self.assertEqual(len([line for line in self.said if "held by other run" in line]), 1)
 
