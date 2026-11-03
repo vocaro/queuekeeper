@@ -666,12 +666,15 @@ def main(argv=None):
     merge_queue.land_arguments(commands.add_parser("land", help="land a finished commit through the merge queue of this "
         "repository, or with --repo of another, and return at once: the queue gates it on origin/main and pushes it"))
     publication = commands.add_parser("release", help="tag a library's release and publish it on GitHub once its "
-        "gate passed at the commit and origin/main holds it: eng release X.Y.Z COMMIT --notes NOTES.md; each step "
+        "gate and each lane in engineering.json's release.lanes passed at the commit and origin/main holds it: "
+        "eng release X.Y.Z COMMIT --notes NOTES.md; each step "
         "stops the rest when it fails, and a run that stopped part way can run again (guides/releasing.md)")
     publication.add_argument("version", metavar="X.Y.Z")
     publication.add_argument("commit", metavar="COMMIT")
     publication.add_argument("--notes", required=True, type=Path, help="the release notes, in a file in the checkout "
                              "that Git does not ignore, which eng spelling must pass")
+    publication.add_argument("--waive", action="append", metavar="LANE=ISSUE", help="the owner's waiver of a release "
+                             "lane's failure, filed in ISSUE, which the tag's message records; only the owner passes it")
     evid = commands.add_parser("evidence", help="verify an evidence receipt, or move a durable evidence folder "
                                "to the second Mac, deleting it here once every file verified there (guides/evidence.md)")
     evid.add_argument("operation", choices=["verify", "offload"])
@@ -775,6 +778,11 @@ def main(argv=None):
                     and config.get("integration", "direct-main") == "direct-main":
                 warnings.append("no lane is named gate, which eng land and eng release run: name the lane holding "
                                 "what a commit must pass before it lands gate (guides/adoption.md, Lane names)")
+            strays = [name for name in config.get("release", {}).get("lanes", []) if name not in config.get("lanes", {})]
+            if strays:
+                warnings.append(f"release.lanes names {', '.join(strays)}, which is no lane in lanes, so eng release "
+                                "finds no pass of it and stops: add the lane or correct the name (guides/releasing.md, "
+                                "Two gates)")
             warnings += temporary_model_storage(root, config)
             warnings += unlinked_packages(root, config)
             warnings += stale_copies(root)

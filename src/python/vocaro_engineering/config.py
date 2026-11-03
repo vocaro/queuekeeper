@@ -25,7 +25,7 @@ def parse(source):
     if not isinstance(value, dict) or value.get("schemaVersion") != 1:
         raise ValueError("engineering.json requires schemaVersion 1")
     allowed = {"schemaVersion", "name", "toolkit", "capabilities", "lanes", "exceptions",
-               "integration", "repository", "spelling", "simulatorPool", "githubArtifacts", "queue"}
+               "integration", "repository", "spelling", "simulatorPool", "githubArtifacts", "queue", "release"}
     hosted = [key for key in ("hostedRepositories", "voiceover") if key in value]
     if hosted:
         raise ValueError(f"engineering.json gives {' and '.join(hosted)}, which configured GitHub's hosted Mac runner "
@@ -91,6 +91,7 @@ def parse(source):
             if key in lane and (type(lane[key]) is not int or lane[key] <= 0):
                 raise ValueError(f"{name}.{key} must be a positive integer")
     merge_queue(value.get("queue", {}), lanes)
+    release(value.get("release", {}))
     spelling = value.get("spelling", {})
     if not isinstance(spelling, dict) or set(spelling) - {"skip", "exemptPhrases", "exemptRuns", "exemptTokens"}:
         raise ValueError("spelling supports only skip, exemptPhrases, exemptRuns and exemptTokens")
@@ -105,6 +106,21 @@ def parse(source):
 
 
 RESOURCES = ["light", "heavy", "exclusive"]
+
+
+def release(declared):
+    """The release gate's settings: lanes, the release checks each a lane of its own, which eng release
+    requires a pass of at the release commit, and maxCommits, the checkpoint's limit (guides/releasing.md,
+    Two gates and Checkpoints). A name in lanes that is no lane is eng doctor's warning, not an error."""
+    if not isinstance(declared, dict) or set(declared) - {"lanes", "maxCommits"}:
+        raise ValueError("release supports only lanes and maxCommits")
+    named = declared.get("lanes", [])
+    if not isinstance(named, list) or any(not isinstance(name, str) or not name.strip() for name in named) \
+            or len(set(named)) != len(named) or "gate" in named:
+        raise ValueError("release.lanes must list distinct lane names, never gate, which eng release checks first")
+    limit = declared.get("maxCommits", 100)
+    if type(limit) is not int or limit <= 0:
+        raise ValueError("release.maxCommits must be a positive integer")
 
 
 def merge_queue(queue, lanes):
