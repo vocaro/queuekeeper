@@ -105,7 +105,10 @@ def report(session, *, state_reader=None, test_ended=TEST_ENDED, failure_pattern
     if not counts or any(count != "1" for count in counts):
         failures.append("the filtered run did not confirm exactly one executed test")
     if session.activation:
-        failures += activation.evidence_failures(log, session.vot.read_text(errors="replace") if session.vot.exists() else "")
+        vot = session.vot.read_text(errors="replace") if session.vot.exists() else ""
+        # The guest build the runner read from the booted member (activation.guest_identity).
+        guest = getattr(session, "guest_build", None)
+        failures += activation.evidence_failures(log, vot, guest) if guest else activation.evidence_failures(log, vot)
     if "Restarting after unexpected exit, crash, or test timeout" in log:
         failures.append("the test runner exited unexpectedly")
     # The probe's last line: without it some steps never ran, whatever the test session reports.
