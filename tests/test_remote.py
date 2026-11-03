@@ -179,7 +179,7 @@ def rmtree(path, *arguments, **options):
     if path.name == "admit" and path.parent.name == "remote":
         mark = Path(os.environ["FAKE_BARRIER"]) / str(os.getpid())
         mark.touch()
-        deadline = time.monotonic() + 10
+        deadline = time.monotonic() + float(os.environ.get("FAKE_BARRIER_LIMIT", "10"))
         while len(list(mark.parent.iterdir())) < 2 and time.monotonic() < deadline: time.sleep(0.05)
 remote.shutil.rmtree = rmtree
 sys.exit(cli.main(sys.argv[2:]))
@@ -244,8 +244,9 @@ class RemoteTests(unittest.TestCase):
                                   "if 'DEVELOPER_DIR' in os.environ else 'no developer dir')"],
                       "resource": "heavy", "minimumTests": 2},
             "fail": {"command": [python, "-c", "print('Ran 1 tests'); raise SystemExit(3)"]},
+            # Outlives the test that stops it, however slowly the host runs it.
             "slow": {"command": [python, "-c", "import os, pathlib, time; "
-                                 "pathlib.Path('.build/slow.pid').write_text(str(os.getpid())); time.sleep(60)"],
+                                 f"pathlib.Path('.build/slow.pid').write_text(str(os.getpid())); time.sleep({stretched(60)})"],
                      "resource": "heavy"},
             "screen": {"command": [python, "-c", "pass"], "resource": "heavy", "foreground": True},
             "transcripts": {"command": [python, "-c", "import pathlib, sys\nif 'skip' not in sys.argv[1:]:\n"
@@ -732,7 +733,8 @@ class RemoteTests(unittest.TestCase):
                 patch.object(devices, "TERMINATION", remaining - devices.RESTORATION - 6):
             started = time.monotonic()
             status, _output, error = self.eng("remote", "admit", *sleeper)
-        self.assertLess(time.monotonic() - started, 60, error)
+        # The run's few seconds are the behavior under test; only this ceiling on its stop stretches by load.
+        self.assertLess(time.monotonic() - started, stretched(60), error)
         self.assertNotEqual(status, 0)
         self.assertIn("bound, which its device reservations set; asking fake to stop it", error)
         entry = devices.Record(self.record_here).entry("iPhone")
@@ -826,14 +828,14 @@ class RemoteTests(unittest.TestCase):
         command = [sys.executable, str(self.toolkit / "bin/eng"), "--project", str(self.project), "remote", "run", "slow"]
         dispatcher = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         marker = self.checkout(0) / ".build/slow.pid"
-        deadline = time.monotonic() + 60
+        deadline = time.monotonic() + stretched(60)
         while not marker.exists() and dispatcher.poll() is None and time.monotonic() < deadline:
             time.sleep(0.1)
         self.assertTrue(marker.exists(), dispatcher.stdout.read().decode() if dispatcher.poll() is not None else "")
-        time.sleep(0.2)
+        time.sleep(stretched(0.2))
         lane = int(marker.read_text())
         dispatcher.send_signal(signal.SIGTERM)
-        output = dispatcher.communicate(timeout=60)[0].decode()
+        output = dispatcher.communicate(timeout=stretched(60))[0].decode()
         self.assertEqual(dispatcher.returncode, -signal.SIGTERM, output)
         self.assertIn("asking fake to stop the run", output)
         with self.assertRaises(ProcessLookupError):
@@ -852,11 +854,11 @@ class RemoteTests(unittest.TestCase):
                    "linger"]
         dispatcher = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         marker = self.checkout(0) / ".build/linger.pid"
-        deadline = time.monotonic() + 60
+        deadline = time.monotonic() + stretched(60)
         while not marker.exists() and dispatcher.poll() is None and time.monotonic() < deadline:
             time.sleep(0.1)
         self.assertTrue(marker.exists(), dispatcher.stdout.read().decode() if dispatcher.poll() is not None else "")
-        time.sleep(0.2)
+        time.sleep(stretched(0.2))
         lane, left = int(marker.read_text()), []
         try:
             # A light lane takes no admission: its live run, which the checkout's slot lock records, accounts for it.
@@ -867,7 +869,7 @@ class RemoteTests(unittest.TestCase):
             self.assertEqual(record["start"], resources.process_start(record["pid"]))
             # The run there loses its dispatcher, as SIGKILL takes it, and leaves its lane running.
             os.kill(record["pid"], signal.SIGKILL)
-            dispatcher.communicate(timeout=60)
+            dispatcher.communicate(timeout=stretched(60))
             census, missing = remote.leftover_census("fake")
             self.assertIsNone(missing)
             left = [row["pid"] for row in census["leftovers"]]
@@ -976,8 +978,9 @@ class RemoteTests(unittest.TestCase):
         first = remote.asleep()
         if first is None: self.skipTest("this system has no pair of clocks that differ by sleep")
         time.sleep(0.2)
-        # Awake, the clock that runs through sleep and the one that stops for it keep together.
-        self.assertLess(abs(remote.asleep() - first), 0.05)
+        # Awake, the clock that runs through sleep and the one that stops for it keep together, within a tolerance
+        # stretched by load for a pause between the two readings. The 0.2 s nap stays fixed: it is no bound.
+        self.assertLess(abs(remote.asleep() - first), stretched(0.05))
 
     def test_a_census_that_fails_is_reported_and_stops_no_run(self):
         with patch.object(remote, "census_command", return_value="sh -c 'echo census broke >&2; exit 3'"):
@@ -1268,7 +1271,7 @@ class RemoteTests(unittest.TestCase):
         dispatcher = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         try:
             # A bound for a busy host, not a measure: the markers end the wait.
-            deadline = time.monotonic() + 300
+            deadline = time.monotonic() + stretched(300)
             while not all(marker.exists() for marker in markers) and dispatcher.poll() is None \
                     and time.monotonic() < deadline:
                 time.sleep(0.1)
@@ -1276,7 +1279,7 @@ class RemoteTests(unittest.TestCase):
                             dispatcher.stdout.read().decode() if dispatcher.poll() is not None else "")
             lanes = [int(marker.read_text()) for marker in markers]
             dispatcher.send_signal(signal.SIGTERM)
-            output = dispatcher.communicate(timeout=300)[0].decode()
+            output = dispatcher.communicate(timeout=stretched(300))[0].decode()
         finally:
             if dispatcher.poll() is None:
                 dispatcher.kill()
@@ -1379,7 +1382,7 @@ class RemoteTests(unittest.TestCase):
                                            "run", lane], stdout=output, stderr=subprocess.STDOUT)
         try:
             # A bound for a busy host, not a measure: the phrase ends the wait.
-            deadline = time.monotonic() + 120
+            deadline = time.monotonic() + stretched(120)
             while phrase not in log.read_text() and dispatcher.poll() is None and time.monotonic() < deadline:
                 time.sleep(0.1)
             self.assertIn(phrase, log.read_text())
@@ -1387,7 +1390,7 @@ class RemoteTests(unittest.TestCase):
             self.assertIsNone(dispatcher.poll(), log.read_text())
             self.assertFalse((self.project / ".build/engineering" / lane).exists(), log.read_text())
             release()
-            dispatcher.wait(timeout=300)
+            dispatcher.wait(timeout=stretched(300))
         finally:
             if dispatcher.poll() is None:
                 dispatcher.kill()
@@ -1503,6 +1506,7 @@ class RemoteTests(unittest.TestCase):
             self.assertIn("M\tengineering.json", output)
             self.assertFalse(lane.exists(), output)
 
+    # Fixed: the 8 s overflow wait is the behavior under test, and both Macs stay busy past it.
     @patch.object(remote, "OVERFLOW_TIMEOUT", 8)
     def test_a_lane_that_neither_mac_admits_in_time_runs_nowhere_and_if_free_asks_each_once(self):
         with self.busy_here(), self.busy_second_mac():
@@ -1557,7 +1561,9 @@ class RemoteTests(unittest.TestCase):
                 self.assertEqual(len(lines), 1, error)
                 self.assertIn(said, lines[0])
                 self.assertNotIn("not run", error)
-                self.assertLess(time.monotonic() - started, 60)
+                # Stretched by load: that each address has REACH_TIMEOUT, not ConnectTimeout, is proven exactly in
+                # test_the_check_before_a_dispatch_tells_an_offline_second_mac_from_a_misconfigured_one.
+                self.assertLess(time.monotonic() - started, stretched(60))
                 self.assertIn(f"Ran 2 tests in {self.project.resolve()}", (local / "run.log").read_text())
                 receipt = json.loads((local / "source.json").read_text())
                 self.assertEqual(receipt["ranOn"], "this Mac")
@@ -1600,7 +1606,7 @@ class RemoteTests(unittest.TestCase):
             self.assertFalse((self.project / ".build/engineering/slow").exists())
             # Its end of the connection closed, so the second Mac stopped the run.
             for pid in (lane, runner):
-                deadline = time.monotonic() + 60
+                deadline = time.monotonic() + stretched(60)
                 while time.monotonic() < deadline:
                     try: os.kill(pid, 0)
                     except ProcessLookupError: break
@@ -2431,9 +2437,9 @@ exec {shlex.quote(real)} "$@"
         return commit_all(self.project), Path(self.temp.name) / "throttled"
 
     def ended(self, marker):
-        """Wait, up to 30 s, for the processes the throttled relay's marker names to end."""
+        """Wait, up to 30 s stretched by load, for the processes the throttled relay's marker names to end."""
         for pid in [int(word) for word in marker.read_text().split()]:
-            deadline = time.monotonic() + 30
+            deadline = time.monotonic() + stretched(30)
             while time.monotonic() < deadline:
                 try: os.kill(pid, 0)
                 except ProcessLookupError: break
@@ -2462,6 +2468,7 @@ exec {shlex.quote(real)} "$@"
         self.assertNotIn("result", record)
         return record
 
+    # Fixed: the 2 s send bound is the behavior under test; its full-speed control below stretches it (#120).
     @patch.object(remote, "SEND_TIMEOUT", 2)
     def test_a_push_that_outlasts_its_bound_is_stopped_and_leaves_its_record_and_nothing_there(self):
         commit, marker = self.throttled()
@@ -2501,20 +2508,21 @@ exec {shlex.quote(real)} "$@"
             dispatcher = subprocess.Popen([sys.executable, str(self.toolkit / "bin/eng"), "--project", str(self.project),
                                            "remote", "run", "check"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
             try:
-                deadline = time.monotonic() + 60
+                deadline = time.monotonic() + stretched(60)
                 while not marker.exists() and dispatcher.poll() is None and time.monotonic() < deadline:
                     time.sleep(0.05)
                 self.assertTrue(marker.exists(), dispatcher.stdout.read().decode() if dispatcher.poll() is not None else "")
                 time.sleep(0.5)
                 stopped = time.monotonic()
                 dispatcher.send_signal(signal.SIGTERM)
-                output = dispatcher.communicate(timeout=60)[0].decode()
+                output = dispatcher.communicate(timeout=stretched(60))[0].decode()
             finally:
                 if dispatcher.poll() is None:
                     dispatcher.kill()
                     dispatcher.communicate()
-        # The push alone would take about 26 s more.
-        self.assertLess(time.monotonic() - stopped, 10, output)
+        # The push alone would take about 26 s more. Stretched by load, as #120's ceiling is: the stop itself is
+        # proven below, by the SIGTERM status, nothing received and the record of the stopped send.
+        self.assertLess(time.monotonic() - stopped, stretched(10), output)
         self.assertEqual(dispatcher.returncode, -signal.SIGTERM, output)
         self.ended(marker)
         self.nothing_received(commit)
@@ -2537,13 +2545,14 @@ exec {shlex.quote(real)} "$@"
                 shutil.rmtree(barrier, ignore_errors=True)
                 barrier.mkdir()
                 dispatchers = {}
-                with patch.dict(os.environ, {"FAKE_BARRIER": str(barrier)}):
+                # The two dispatches wait for each other at the barrier this long, stretched by load.
+                with patch.dict(os.environ, {"FAKE_BARRIER": str(barrier), "FAKE_BARRIER_LIMIT": str(stretched(10))}):
                     for label in ("first", "second"):
                         dispatchers[label] = subprocess.Popen(
                             [sys.executable, "-c", BARRIER_DRIVER, str(self.toolkit / "src/python"), "--project",
                              str(self.project), "remote", "admit", "--", sys.executable, "-c", f"print('ran {label}')"],
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-                    outputs = {label: dispatcher.communicate(timeout=300)[0].decode()
+                    outputs = {label: dispatcher.communicate(timeout=stretched(300))[0].decode()
                                for label, dispatcher in dispatchers.items()}
                 for label, dispatcher in dispatchers.items():
                     self.assertEqual(dispatcher.returncode, 0, outputs[label])
@@ -2588,7 +2597,7 @@ class DispatchResultsTests(unittest.TestCase):
             # The first dispatch to copy its results holds there, inside the lock, until released.
             if not inside.is_set():
                 inside.set()
-                release.wait(30)
+                release.wait(stretched(30))
             return copying(source, destination, **options)
         filed = {}
         filing = lambda label: filed.__setitem__(label, remote.file_results(
@@ -2596,16 +2605,17 @@ class DispatchResultsTests(unittest.TestCase):
         with patch.object(remote.shutil, "copytree", side_effect=copy):
             first = threading.Thread(target=filing, args=("first",))
             first.start()
-            self.assertTrue(inside.wait(30))
+            self.assertTrue(inside.wait(stretched(30)))
             second = threading.Thread(target=filing, args=("second",))
             second.start()
             time.sleep(0.5)
-            # The second waits for the first, whose results are not yet the latest.
+            # The second waits for the first, whose results are not yet the latest. Fixed: a window in which
+            # nothing may happen, which load can only make pass.
             self.assertTrue(second.is_alive())
             self.assertNotIn("second", filed)
             self.assertFalse((self.base / "admit").exists())
             release.set()
-            for thread in (first, second): thread.join(30)
+            for thread in (first, second): thread.join(stretched(30))
         for label in ("first", "second"):
             self.assertEqual((filed[label] / "output.log").read_text(), f"ran {label}\n")
             self.assertEqual(json.loads((filed[label] / "source.json").read_text()), {"run": label})
@@ -3134,9 +3144,9 @@ class ConnectionTests(unittest.TestCase):
                       remote.slow_connection("build-host", found))
 
     def test_reach_times_a_connection_and_names_a_refusal_or_silence(self):
-        seconds, failure = remote.reach(("127.0.0.1", self.port), socket.AF_INET, 5)
+        seconds, failure = remote.reach(("127.0.0.1", self.port), socket.AF_INET, stretched(5))
         self.assertIsNone(failure)
-        self.assertLess(seconds, 5)
+        self.assertLess(seconds, stretched(5))
         self.assertEqual(remote.reach(("127.0.0.1", self.closed), socket.AF_INET, 5)[1], "Connection refused")
         with patch.object(socket.socket, "connect", side_effect=socket.timeout("timed out")):
             self.assertEqual(remote.reach(("127.0.0.1", self.port), socket.AF_INET, 3)[1], "no answer in 3 s")
@@ -4094,10 +4104,11 @@ class RenamedSecondMacTests(unittest.TestCase):
     def test_watch_stops_the_command_at_its_line_or_its_time(self):
         started = time.monotonic()
         found = remote.watch([sys.executable, "-c", "import time\nprint('one', flush=True)\nprint('two', flush=True)\n"
-                                                    "time.sleep(60)"], 10, lambda line: line.startswith("two"))
+                                                    "time.sleep(60)"], stretched(10), lambda line: line.startswith("two"))
         self.assertEqual(found, ["one\n", "two\n"])
+        # Fixed: the 0.5 s limit is the behavior under test; only the ceiling on both watches stretches.
         self.assertEqual(remote.watch([sys.executable, "-c", "import time; time.sleep(60)"], 0.5), [])
-        self.assertLess(time.monotonic() - started, 10)
+        self.assertLess(time.monotonic() - started, stretched(10))
         self.assertEqual(remote.watch(["/nonexistent/dns-sd"], 1), [])
 
     def test_the_one_mac_presenting_the_old_key_is_the_second_mac_under_its_new_name(self):

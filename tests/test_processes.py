@@ -159,14 +159,18 @@ class ProcessTests(unittest.TestCase):
         can. With awaits, each sample after the stop's report waits for that file in directory, so
         that a descendant's SIGTERM handler runs however long the host takes to schedule it."""
         real, births, cue = processes.snapshot, {}, {"at": time.monotonic()}
+        # The grace a test gives is a wait the supervisor makes on purpose, without a cue, so a stall is bounded
+        # beyond it: a grace stretched by load at a test's start once outlasted the stall bound read later (#128).
+        grace = limits.get("LINGER", processes.LINGER)
         def observed():
             # Bound a stall here, from the latest cue: the start, the root's listing of its
             # descendants, their adoption. A timeout bounds only the root, so a lingering
             # descendant must not hold the run until the test is stopped.
-            if time.monotonic() - cue["at"] > stretched(30): self.fail("supervision stalled for 30 s, stretched by load")
+            if time.monotonic() - cue["at"] > grace + stretched(30):
+                self.fail("supervision stalled for 30 s past its grace, stretched by load")
             if awaits is not None and "stopping" in error.getvalue():
                 while not (Path(directory) / awaits).exists():
-                    if time.monotonic() - cue["at"] > stretched(30):
+                    if time.monotonic() - cue["at"] > grace + stretched(30):
                         self.fail(f"no {awaits} within 30 s, stretched by load, of the stop")
                     time.sleep(0.01)
             current = real()
