@@ -11,8 +11,9 @@ a closing `R` with the result as JSON. Standard input is the
 dispatcher's lifeline: its end, which a stop, the dispatcher's death or a dropped connection
 sends, stops the run as a stop signal stops a local one. Given `{"toolchain": DEVELOPER_DIR}`
 instead of a plan, it prints the Mac's Xcodes, simulator runtimes and device record for
-`eng doctor`; given `{"images": ...}` or `{"receive": ...}`, it lists the Mac's runtime images or
-adds one read from standard input, for `eng remote setup --runtimes`; given `{"leftovers": ROOT}`,
+`eng doctor`; given `{"images": ...}`, `{"receive": ...}` or `{"deleteRuntime": ...}`, it lists the Mac's
+runtime images, adds one read from standard input or deletes one that no simulator but Xcode's
+defaults uses, for `eng doctor` and `eng remote setup --runtimes`; given `{"leftovers": ROOT}`,
 it lists the processes left over from runs there, which `eng remote` prints before it sends work,
 and with `"advertise"` names as refs the commits the named repositories' checkouts hold, so that
 the push that follows sends only what they lack, and with `"reap"` first shuts down the stale pool
@@ -33,6 +34,7 @@ import getpass
 import json
 import os
 from pathlib import Path
+import plistlib
 import pwd
 import re
 import shlex
@@ -550,14 +552,42 @@ def image_file(record):
     return str(matching[0]), None
 
 
+def xcode_defaults():
+    """The UDIDs CoreSimulator's device set names as Xcode's default device for each runtime, as
+    simulators.pool.default_devices reads them; this module imports nothing from the toolkit."""
+    try:
+        with open(Path.home() / "Library/Developer/CoreSimulator/Devices/device_set.plist", "rb") as handle:
+            defaults = plistlib.load(handle).get("DefaultDevices", {})
+    except (OSError, plistlib.InvalidFileException, ValueError, AttributeError):
+        return frozenset()
+    return frozenset(udid.upper() for types in defaults.values() if isinstance(types, dict)
+                     for udid in types.values() if isinstance(udid, str))
+
+
+def runtime_users(developer_dir):
+    """The names of the simulators on each runtime identifier, but Xcode's defaults, which Xcode makes
+    again: what deleting a runtime would take from someone. None when simctl lists no devices."""
+    listed = output(["xcrun", "simctl", "list", "devices", "-j"], {**os.environ, "DEVELOPER_DIR": developer_dir})
+    try:
+        found = json.loads(listed)["devices"]
+        defaults = xcode_defaults()
+        return {runtime: sorted(device["name"] for device in devices if str(device["udid"]).upper() not in defaults)
+                for runtime, devices in found.items()}
+    except (TypeError, ValueError, KeyError, AttributeError):
+        return None
+
+
 def images(developer_dir):
     """The runtime disk images `simctl runtime list` reports, each with the runtime it holds named as
-    toolchain names it, NAME (BUILD), and its image file, or None when simctl lists none."""
+    toolchain names it, NAME (BUILD), its image file, and in users the simulators on its runtime
+    identifier but Xcode's defaults (runtime_users), or None when those cannot be listed. None when
+    simctl lists no images."""
     listed = output(["xcrun", "simctl", "runtime", "list", "-j"], {**os.environ, "DEVELOPER_DIR": developer_dir})
     try:
         records = list(json.loads(listed).values())
     except (TypeError, ValueError, AttributeError):
         return None
+    users = runtime_users(developer_dir)
     found = []
     for record in records:
         if not isinstance(record, dict) or not record.get("build"): continue
@@ -568,8 +598,27 @@ def images(developer_dir):
         found.append({"runtime": f"{name} ({record['build']})", "name": name, "build": record["build"],
                       "identifier": record.get("identifier"), "state": record.get("state"),
                       "sizeBytes": record.get("sizeBytes"), "architectures": record.get("supportedArchitectures") or [],
-                      "file": file, "unreadable": unreadable})
+                      "file": file, "unreadable": unreadable,
+                      "users": None if users is None else users.get(record.get("runtimeIdentifier"), [])
+                      if record.get("runtimeIdentifier") else None})
     return sorted(found, key=lambda image: image["runtime"])
+
+
+def delete_runtime(developer_dir, build):
+    """Delete the runtime image of build once simctl lists it and no simulator but Xcode's defaults
+    uses its runtime, both read again now. Return None once it is deleted, else why it was not."""
+    found = [image for image in images(developer_dir) or [] if image["build"] == build]
+    if len(found) != 1: return f"simctl lists {len(found)} images of {build}"
+    image = found[0]
+    if image["users"] is None: return "simctl did not list the simulators that might use it"
+    if image["users"]: return f"{', '.join(image['users'])} use{'s' if len(image['users']) == 1 else ''} it"
+    try:
+        done = subprocess.run(["xcrun", "simctl", "runtime", "delete", image["identifier"]], capture_output=True,
+                              text=True, env={**os.environ, "DEVELOPER_DIR": developer_dir}, timeout=300)
+    except (OSError, subprocess.SubprocessError) as error:
+        return f"simctl runtime delete failed: {error}"
+    if done.returncode: return f"simctl runtime delete exited {done.returncode}: {done.stderr.strip()}"
+    return None
 
 
 def stage(directory, clear):
@@ -1287,6 +1336,8 @@ def answer(request):
             found.update(git=output(["git", "--version"]),
                          advertised={path: advertise(Path.home() / path) for path in request["advertise"]})
         return found
+    if "deleteRuntime" in request:
+        return {"problem": delete_runtime(request["deleteRuntime"]["developer"], request["deleteRuntime"]["build"])}
     if "images" in request:
         return {"images": images(request["images"]), **stage(Path.home() / request["staging"], request.get("clear"))}
     # A stop or a dropped connection ends the copy, and the staged file is removed.
@@ -1602,6 +1653,6 @@ def main(plan):
 if __name__ == "__main__":
     request = json.loads(sys.argv[1])
     if "keepUnlocked" in request: sys.exit(keep_unlocked(request["keepUnlocked"]))
-    if {"toolchain", "images", "receive", "leftovers", "device", "keychain", "foreground"} & request.keys():
+    if {"toolchain", "images", "deleteRuntime", "receive", "leftovers", "device", "keychain", "foreground"} & request.keys():
         print(json.dumps(answer(request)))
     else: main(request)

@@ -124,6 +124,22 @@ def stale_copies(root):
             if (root / copy).is_file() and (root / copy).read_bytes() != (TOOLKIT_ROOT / source).read_bytes()]
 
 
+def fix_hosts(root, hosts):
+    """What `eng doctor` fixes of remote.compare_hosts' report itself, the owner's no longer (the owner's
+    decision, 2026-11-03): runtimes that differ, which it evens out (remote.match_runtimes) and then
+    compares again, and stale pool simulators on both Macs, which it shuts down (simulators.pool.reap_reports)
+    and lists in reaped. Its progress goes to standard error, so that standard output stays the report.
+    tests/host_isolation.py replaces it, so that no test changes either Mac."""
+    if hosts.pop("runtimesDiffer", False):
+        with contextlib.redirect_stdout(sys.stderr): remote.match_runtimes(hosts["host"], check=False)
+        hosts = remote.compare_hosts()
+        hosts.pop("runtimesDiffer", None)
+    # The second Mac only when it answered the comparison: one away is no error, and is not waited for.
+    reaped = simulator_pool.reap_reports(None, root, dry_run=False, here="remote" not in hosts)
+    hosts["reaped"] = [line for where, report in reaped for line in remote.reap_lines(where, report, listing=False)]
+    return hosts
+
+
 def default_simulators(config):
     """A warning when Xcode's default simulators exist on this Mac and the project uses simulators.
 
@@ -592,8 +608,9 @@ def main(argv=None):
         "Mac VoiceOver and Mac UI tests, started over SSH, each with the owner's fix, and which run holds its "
         f"foreground; exit 0 when it lacks nothing, {remote.MISCONFIGURED} otherwise")
     remote_setup.add_argument("--runtimes", action="store_true", help="instead, give this Mac and the second Mac the "
-        "union of the simulator runtimes that the Xcode at this Mac's developer directory lists, copying each one's "
-        "disk image over SSH to the Mac that lacks it; it deletes none, and exits 0 only when both list the same")
+        "same simulator runtimes of the Xcode at this Mac's developer directory, as eng doctor does: a runtime only "
+        "one Mac has is deleted there when no simulator but Xcode's defaults uses it, and otherwise its disk image "
+        "is copied over SSH to the Mac that lacks it; it exits 0 only when both list the same")
     for choice in (remote_run, remote_admit, remote_setup, remote_foreground):
         choice.add_argument("--host", help=f"the second Mac's SSH destination (default: {remote.HOST_VARIABLE}, "
                             f"else the ~/.ssh/config alias {' or '.join(remote.ALIASES)} that is defined, else "
@@ -743,7 +760,7 @@ def main(argv=None):
             warnings += default_simulators(config)
             warnings += skills.warnings(named_checkout(TOOLKIT_ROOT))
             # A difference between the two Macs is an error; a second Mac that cannot be reached is unchecked.
-            hosts = remote.compare_hosts()
+            hosts = fix_hosts(root, remote.compare_hosts())
             print(json.dumps({"project": config["name"], "toolkit": str(TOOLKIT_ROOT),
                 "source": source_identity(TOOLKIT_ROOT), "capabilities": config.get("capabilities", []),
                 "missingCommands": missing, "warnings": warnings, "offload": hosts}, indent=2))

@@ -8,6 +8,11 @@ test leaves has no process record, so recovery leaves it, and in the host's guar
 every session's heavy work until it was removed by hand (2026-10-31). The guard's default path is
 redirected too, for a test that clears the environment. A test that needs another namespace still
 sets its own; the process removes this one when it exits.
+
+`eng doctor` also fixes both Macs itself: it evens out their runtimes, deleting or copying them, and
+shuts down stale pool simulators (cli.fix_hosts). Most doctor tests compare this Mac with the real
+second Mac, so cli.fix_hosts is replaced here by one that changes nothing; a test of the fixes calls
+FIX_HOSTS, the real one, against fakes.
 """
 import atexit
 import os
@@ -17,7 +22,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
-from vocaro_engineering import crash_alerts, offload_host, resources
+from vocaro_engineering import cli, crash_alerts, offload_host, resources
 
 
 def stretched(seconds):
@@ -47,3 +52,14 @@ resources.GATE_LOCK = offload_host.GATE_LOCK = GATE
 os.environ["VOCARO_CRASH_DIALOG_RECORD"] = str(ROOT / "crash-dialog.json")
 crash_alerts.run = lambda command, environment=None: "" if command[0] == "osascript" else None
 crash_alerts.change = lambda value: True
+
+
+FIX_HOSTS = cli.fix_hosts
+
+
+def unfixed(root, hosts):
+    hosts.pop("runtimesDiffer", None)
+    return {**hosts, "reaped": []}
+
+
+cli.fix_hosts = unfixed

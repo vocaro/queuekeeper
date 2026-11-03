@@ -25,8 +25,9 @@ answers but is misconfigured, such as one that refuses the login or has another 
 work for the owner's decision (agents/core.md, Shared resources); only `--here` then runs it
 here. A run that was sent and lost its connection is unmeasured and runs nowhere else.
 `eng doctor` compares the two Macs and times how ssh connects to the second Mac, and reports a
-second Mac it cannot reach as unchecked, and `eng remote setup --runtimes` gives both the same
-simulator runtimes. Before it sends work, and
+second Mac it cannot reach as unchecked, and gives both the same simulator runtimes, as
+`eng remote setup --runtimes` does, without asking the owner (the owner's decision, 2026-11-03).
+Before it sends work, and
 in `eng doctor`, it lists the processes there that earlier runs left running, which nothing
 stops.
 """
@@ -1490,7 +1491,7 @@ def setup(host, formulae, modules, check, runtimes=False):
     (match_runtimes)."""
     if runtimes:
         if formulae or modules:
-            raise ValueError("--runtimes brings only the simulator runtimes to their union; name formulae and "
+            raise ValueError("--runtimes evens out only the simulator runtimes; name formulae and "
                              "--import modules in a setup of their own")
         return match_runtimes(host, check)
     for name in formulae:
@@ -1568,8 +1569,10 @@ def runtime_lock():
 
 def runtime_plan(found, stores, host):
     """A step for each runtime that only one Mac lists: the runtime, its build, the Mac that has it
-    (source), the one that lacks it (target), and how it comes there: a copy of the source's image
-    when that can be read, else a download by its build, else None, with why."""
+    (source), the one that lacks it (target), and how the two come to match: a delete from the source
+    when no simulator but Xcode's defaults uses it there, so a runtime nobody uses costs neither Mac
+    its space, else a copy of the source's image to the target when that can be read, else a download
+    there by its build, else None, with why."""
     plan = []
     for source, target in ((HERE, host), (host, HERE)):
         for runtime in sorted(set(found[source]["runtimes"]) - set(found[target]["runtimes"])):
@@ -1583,6 +1586,8 @@ def runtime_plan(found, stores, host):
             why = images[0]["unreadable"] if images else f"{source} lists no disk image of it"
             if build is None:
                 step.update(how=None, why="its name gives no build")
+            elif len(images) == 1 and images[0].get("users") == []:
+                step.update(how="delete", size=images[0]["sizeBytes"])
             elif held:
                 step.update(how=None, why=f"{target} holds its image ({held[0]['state']}), which the Xcode there does "
                             "not list as available; see `xcrun simctl runtime list` there")
@@ -1695,9 +1700,10 @@ def match_runtimes(host, check):
     """Bring this Mac and host to the union of the simulator runtimes that the Xcode at this Mac's
     developer directory lists, as `eng doctor` compares them, and return 0 once both list the same.
 
-    A runtime only one Mac lists goes to the other as its own disk image, over SSH: staged there,
-    and added with `simctl runtime add --move`, so no second copy stays. One whose image cannot be
-    read is downloaded there with xcodebuild, by its build. Nothing is ever deleted. A copy or
+    A runtime only one Mac lists that no simulator but Xcode's defaults uses there is deleted from
+    that Mac (the owner's decision, 2026-11-03). Any other goes to the other Mac as its own disk
+    image, over SSH: staged there, and added with `simctl runtime add --move`, so no second copy
+    stays. One whose image cannot be read is downloaded there with xcodebuild, by its build. A copy or
     download that would leave less than RUNTIME_MARGIN free where it lands is refused before it
     starts. Then both Macs' runtimes are listed again, and what still differs is named. With
     check, say what it would do and change nothing."""
@@ -1758,6 +1764,18 @@ def bring_runtimes(host, developer, check):
         if step["how"] is None:
             print(f"runtimes: {runtime}: cannot come to {target}: {step['why']}", flush=True)
             continue
+        if step["how"] == "delete":
+            heading = f"runtimes: {runtime}, {gib(step['size']) if isinstance(step['size'], int) else 'unknown size'}:"
+            if check:
+                print(f"{heading} would be deleted from {source}, where no simulator but Xcode's defaults uses it",
+                      flush=True)
+                continue
+            print(f"{heading} deleting from {source}, where no simulator but Xcode's defaults uses it", flush=True)
+            failure = offload_host.delete_runtime(developer, step["build"]) if source == HERE else \
+                ask(host, {"deleteRuntime": {"developer": developer, "build": step["build"]}}).get("problem")
+            print(f"runtimes: {runtime}: deleted from {source}" if failure is None else
+                  f"runtimes: {runtime}: not deleted from {source}: {failure}", flush=True)
+            continue
         size = step["size"]
         if check:
             free = stores[target]["free"] - planned[target]
@@ -1793,7 +1811,7 @@ def bring_runtimes(host, developer, check):
             print(f"runtimes: {runtime}: {'downloaded' if status == 0 else f'xcodebuild exited {status}'} on {target}",
                   flush=True)
     if check:
-        print(f"runtimes: {len(plan)} runtime(s) differ; `eng remote setup --runtimes` brings both Macs to their union",
+        print(f"runtimes: {len(plan)} runtime(s) differ; `eng remote setup --runtimes` or `eng doctor` evens them out",
               flush=True)
         return 1
     # What both Macs list now decides the outcome, not what each step reported.
@@ -2285,7 +2303,8 @@ def compare_hosts():
     processes there that runs left running are listed in leftovers, which are no error: they say
     what to tell the owner. How ssh connects to it is in connection, and first addresses that keep
     each connection waiting are an error too, as are device records that do not keep physical
-    devices in this Mac's alone."""
+    devices in this Mac's alone. Differing runtimes also set runtimesDiffer, which `eng doctor` evens
+    out (match_runtimes) before it compares again."""
     host = configured()
     report = {"host": host, "errors": [], "unchecked": []}
     if host is None:
@@ -2357,8 +2376,10 @@ def compare_hosts():
                                    f"{'this Mac' if here.get('runtimes') is None else host}")
     elif here["runtimes"] != there["runtimes"]:
         differences = runtime_differences(here["runtimes"], there["runtimes"], host)
+        report["runtimesDiffer"] = True
         report["errors"].append(f"the simulator runtimes of the Xcode at {developer} differ: {'; '.join(differences)}; "
-                                "to fix it, run `python3 scripts/eng remote setup --runtimes`, which copies each runtime "
-                                "to the Mac that lacks it and deletes none (guides/shared-host.md, Setting up a build "
-                                "host)")
+                                "`eng doctor` evens them out itself, deleting a runtime that no simulator but Xcode's "
+                                "defaults uses and copying any other to the Mac that lacks it, and it could not here: "
+                                "see its `runtimes:` lines, or run `python3 scripts/eng remote setup --runtimes` "
+                                "(guides/shared-host.md, Setting up the second Mac)")
     return report

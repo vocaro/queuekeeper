@@ -484,9 +484,10 @@ def stopped(number, _frame):
     raise Stopped(number)
 
 
-def reap_command(pool, project, *, dry_run, here):
-    """`eng simulator-pool reap`: on this Mac and, unless here, on the second Mac. pool alone when it is named,
-    otherwise every pool the project and the checkouts each Mac can see name. It exits 1 when anything failed."""
+def reap_reports(pool, project, *, dry_run, here):
+    """offload_host.reap's report from this Mac and, unless here, from the second Mac, each with where it
+    ran. pool alone when it is named, otherwise every pool the project and the checkouts each Mac can
+    see name."""
     # remote and disk import this module.
     from .. import disk, offload_host, remote
     if pool: pools = [pool]
@@ -496,6 +497,13 @@ def reap_command(pool, project, *, dry_run, here):
     reports = [("this Mac", offload_host.reap(remote.ROOT, **request))]
     host = None if here else remote.configured()
     if host: reports.append((host, remote.reap_there(host, request)))
+    return reports
+
+
+def reap_command(pool, project, *, dry_run, here):
+    """`eng simulator-pool reap`: reap_reports, said. It exits 1 when anything failed."""
+    from .. import remote
+    reports = reap_reports(pool, project, dry_run=dry_run, here=here)
     for where, report in reports:
         lines = remote.reap_lines(where, report)
         print("\n".join(lines) if lines else f"on {where}, no stale pool simulator")

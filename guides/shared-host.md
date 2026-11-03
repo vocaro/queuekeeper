@@ -379,7 +379,7 @@ python3 scripts/eng remote run LANE [-- ARGUMENTS]     # any lane, on the second
 python3 scripts/eng remote admit [--exclusive | --model] -- COMMAND
 python3 scripts/eng remote passed LANE [--commit REV]
 python3 scripts/eng remote setup [FORMULA ...] [--check]  # the gates' tools (Setting up the second Mac)
-python3 scripts/eng remote setup --runtimes [--check]     # both Macs' simulator runtimes: their union
+python3 scripts/eng remote setup --runtimes [--check]     # both Macs' simulator runtimes, evened out
 ```
 
 ### Which Mac runs a lane
@@ -554,10 +554,16 @@ answers but refuses the login. A second Mac that cannot be reached, as when this
 its network, is no error, since work then runs here (the owner's decision, 2026-10-28): `unchecked`
 says why it was not compared. A second Mac whose default Xcode differs still runs lanes, since a run selects this Mac's
 developer directory, but whatever reads its default, such as `ssh build-host xcodebuild -version`
-or a script without `DEVELOPER_DIR`, sees another Xcode. The two Macs keep the same runtimes:
-when one has a runtime the other lacks, the error names the fix, `eng remote setup --runtimes`,
-which brings both to the union of their runtimes and never deletes one
-([setting up the second Mac](#setting-up-the-second-mac)). Under `offload` in the report,
+or a script without `DEVELOPER_DIR`, sees another Xcode. The two Macs keep the same runtimes,
+and that is doctor's to fix, not the owner's (the owner's decision, 2026-11-03,
+[vocaro-engineering#123](https://github.com/vocaro/vocaro-engineering/issues/123)): when one has a
+runtime the other lacks, doctor evens them out as `eng remote setup --runtimes` does, deleting a
+runtime that no simulator but Xcode's defaults uses and copying any other to the Mac that lacks it
+([setting up the second Mac](#setting-up-the-second-mac)), with its progress on standard error, then
+compares again. The difference is an error only when that fails. Doctor also shuts down the
+[stale pool simulators](#stale-pool-simulators) on both Macs, as `eng simulator-pool reap` does, on
+the second Mac only when it answered, and lists each stop under `offload`, `reaped`
+([vocaro-engineering#127](https://github.com/vocaro/vocaro-engineering/issues/127)). Under `offload` in the report,
 `unchecked` names what was not compared: the second Mac, and why, when it cannot be reached, its
 Xcodes and runtimes when it did not report them, and the whole comparison when no second Mac is
 configured. `leftovers` lists the
@@ -873,9 +879,12 @@ The owner prepares the second Mac once:
    python3 scripts/eng remote setup --runtimes [--check]
    ```
 
-   It brings both Macs to the union of the runtimes that the Xcode at this Mac's developer
-   directory lists on each, as `eng doctor` compares them, and it never deletes a runtime: one
-   that only one Mac has is copied to the other. Both must have that Xcode at the same path. The
+   It gives both Macs the same runtimes of the Xcode at this Mac's developer directory, as
+   `eng doctor` compares them, and `eng doctor` runs it itself when they differ. A runtime that only
+   one Mac has is deleted from that Mac when no simulator but Xcode's defaults uses it there, read
+   again just before the delete (`xcrun simctl runtime delete`), so a runtime nobody uses costs
+   neither Mac its space; one that something uses, or whose simulators simctl cannot list, is
+   copied to the other. Both must have that Xcode at the same path. The
    copy is the runtime's own disk image, as `xcrun simctl runtime list -j` names it (for a
    cryptex, the one disk image of its listed size in its asset's `Restore` folder), so a beta
    build Apple no longer serves comes across exactly. It goes over the second Mac's SSH
@@ -890,7 +899,7 @@ The owner prepares the second Mac once:
    than 40 GiB: room for simctl to copy the image once more where it cannot clone it, and for
    other sessions' building worktrees. It reports each runtime's size, copy and addition, then
    lists both Macs' runtimes again and exits 0 only when they match, otherwise 1 with what still
-   differs. `--check` says what it would copy, download or refuse, changes nothing, and exits 1
+   differs. `--check` says what it would delete, copy, download or refuse, changes nothing, and exits 1
    while the runtimes differ. One run at a time copies: a second refuses while one runs on this
    Mac. A copy of five runtimes moves about 40 GB, so run it in the background; it reads no
    input, and its last line is the outcome.
@@ -1383,7 +1392,8 @@ simulator, below.
 On 2026-10-31 a `Pagepour Duo 1` simulator, a `launchd_sim` with about 320 descendants, sat booted
 on the second Mac for 22 hours waiting for that decision. The owner has decided it for this one
 case: any session may run `python3 scripts/eng simulator-pool reap`, without asking, and eng runs it
-in the connection that lists leftovers before work is sent to the second Mac. It runs
+in the connection that lists leftovers before work is sent to the second Mac, and on both Macs in
+`eng doctor` (the owner's decision, 2026-11-03). It runs
 `xcrun simctl shutdown UDID` on a simulator only when all of these hold:
 
 1. It is a member of a project's pool: named `POOL LABEL N`, for a pool named by the project, or by a

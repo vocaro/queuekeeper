@@ -4,6 +4,7 @@ import fcntl
 from io import StringIO
 import json
 import os
+import plistlib
 from pathlib import Path
 import re
 import shlex
@@ -2938,9 +2939,11 @@ class SecondMacDoctorTests(unittest.TestCase):
             self.assertEqual(status, 1)
             self.assertEqual(len(found["errors"]), 1, found)
             self.assertIn("only this Mac has iOS 27.2 (24C5028f)", found["errors"][0])
-            # The fix is the command that brings both Macs to the union, which deletes none.
-            self.assertIn("to fix it, run `python3 scripts/eng remote setup --runtimes`, which copies each runtime to "
-                          "the Mac that lacks it and deletes none", found["errors"][0])
+            # Doctor evens them out itself (cli.fix_hosts, which host_isolation leaves out); the error remains
+            # only when that fails.
+            self.assertIn("`eng doctor` evens them out itself, deleting a runtime that no simulator but Xcode's "
+                          "defaults uses and copying any other to the Mac that lacks it", found["errors"][0])
+            self.assertNotIn("runtimesDiffer", found)
 
     def test_device_records_that_do_not_keep_physical_devices_here_alone_are_errors(self):
         name = offload_host.mac_name()
@@ -3546,7 +3549,18 @@ elif arguments == ["simctl", "runtime", "list", "-j"]:
         "state": "Ready", "version": record["name"].split()[-1], "supportedArchitectures": ["arm64"],
         "platformIdentifier": "com.apple.platform.iphonesimulator",
         "runtimeBundlePath": f"/Library/Developer/CoreSimulator/Volumes/{record['build']}/{record['name']}.simruntime",
+        "runtimeIdentifier": "com.apple.CoreSimulator.SimRuntime." + record["name"].replace(" ", "-").replace(".", "-"),
     } for image, record in held()}))
+elif arguments == ["simctl", "list", "devices", "-j"]:
+    # A Mac's devices.json, as simctl lists them; without one, simctl fails.
+    listed = store / "devices.json"
+    if not listed.exists(): sys.exit(1)
+    print(listed.read_text())
+elif arguments[:3] == ["simctl", "runtime", "delete"]:
+    log("deletes.log")
+    found = [image for image, record in held() if record["build"] == arguments[3]]
+    if not found: sys.exit(1)
+    shutil.rmtree(found[0].parents[2])
 elif arguments[:3] == ["simctl", "runtime", "add"]:
     log("adds.log")
     if os.environ.get("FAKE_ADD_FAIL"):
@@ -3587,6 +3601,49 @@ HERE_RUNTIMES = [("iOS 26.5", "23F73"), ("iOS 27.0", "24A434"), ("iOS 27.1", "24
 THERE_RUNTIMES = [("iOS 27.0", "24A434"), ("iOS 27.0", "24A5423a")]
 EVERY_RUNTIME = sorted(f"{name} ({build})" for name, build in {*HERE_RUNTIMES, *THERE_RUNTIMES})
 XCODE = "Xcode 27.2, Build version 27B48"
+
+
+class DoctorFixTests(unittest.TestCase):
+    """cli.fix_hosts, the real one host_isolation keeps as FIX_HOSTS, over fakes of what it calls."""
+    REPORT = {"stopped": [{"name": "Example iPhone 1", "udid": "U", "pid": 7, "reason": "stale"}], "failed": [],
+              "skipped": [], "eligible": [], "kept": [], "problem": None}
+
+    def fix(self, first, again=None):
+        calls = []
+        with patch.object(remote, "compare_hosts", return_value=again) as compare, \
+                patch.object(remote, "match_runtimes", side_effect=lambda host, check: calls.append((host, check)) or
+                             print("runtimes: progress")) as match, \
+                patch.object(cli.simulator_pool, "reap_reports", return_value=[("this Mac", self.REPORT)]) as reap, \
+                contextlib.redirect_stdout(StringIO()) as output, contextlib.redirect_stderr(StringIO()) as error:
+            fixed = host_isolation.FIX_HOSTS(Path("/project"), first)
+        return fixed, calls, compare, reap, output.getvalue(), error.getvalue()
+
+    def test_differing_runtimes_are_evened_out_and_compared_again(self):
+        first = {"host": "fake", "remote": {}, "errors": ["the simulator runtimes differ"], "runtimesDiffer": True}
+        fixed, calls, compare, reap, output, error = self.fix(first, {"host": "fake", "remote": {}, "errors": []})
+        self.assertEqual(calls, [("fake", False)])
+        self.assertEqual(compare.call_count, 1)
+        self.assertEqual(fixed["errors"], [])
+        self.assertNotIn("runtimesDiffer", fixed)
+        # Its progress is on standard error, so standard output stays doctor's JSON.
+        self.assertEqual((output, error), ("", "runtimes: progress\n"))
+        reap.assert_called_once_with(None, Path("/project"), dry_run=False, here=False)
+        self.assertEqual(len(fixed["reaped"]), 1)
+        self.assertIn("on this Mac, stopped Example iPhone 1 (U), PID 7: stale", fixed["reaped"][0])
+
+    def test_matching_runtimes_change_nothing_and_an_unreached_second_mac_is_not_reaped(self):
+        first = {"host": "fake", "errors": [], "unchecked": ["fake, which cannot be reached"]}
+        fixed, calls, compare, reap, _, _ = self.fix(first)
+        self.assertEqual((calls, compare.call_count), ([], 0))
+        reap.assert_called_once_with(None, Path("/project"), dry_run=False, here=True)
+
+    def test_every_test_gets_a_doctor_that_changes_neither_mac(self):
+        self.assertIsNot(cli.fix_hosts, host_isolation.FIX_HOSTS)
+        with patch.object(remote, "match_runtimes") as match, patch.object(cli.simulator_pool, "reap_reports") as reap:
+            self.assertEqual(cli.fix_hosts(Path("/project"), {"errors": [], "runtimesDiffer": True}),
+                             {"errors": [], "reaped": []})
+        match.assert_not_called()
+        reap.assert_not_called()
 
 
 class RemoteRuntimeTests(unittest.TestCase):
@@ -3730,6 +3787,76 @@ class RemoteRuntimeTests(unittest.TestCase):
         status, output, error = self.eng()
         self.assertEqual((status, output.strip()), (0, self.same(EVERY_RUNTIME)), output + error)
 
+    def devices(self, mac, runtimes, defaults=()):
+        """A Mac's simulators, as {runtime name: [device name]}; those named in defaults are Xcode's defaults."""
+        identifier = lambda name: "com.apple.CoreSimulator.SimRuntime." + name.replace(" ", "-").replace(".", "-")
+        listing, chosen = {}, {}
+        for name, names in runtimes.items():
+            for device in names:
+                udid = str(uuid.uuid4()).upper()
+                listing.setdefault(identifier(name), []).append({"name": device, "udid": udid})
+                if device in defaults: chosen.setdefault(identifier(name), {})[device] = udid
+        (self.runtimes / mac / "devices.json").write_text(json.dumps({"devices": listing}))
+        sets = (self.local if mac == "here" else self.home) / "Library/Developer/CoreSimulator/Devices"
+        sets.mkdir(parents=True, exist_ok=True)
+        with open(sets / "device_set.plist", "wb") as handle: plistlib.dump({"DefaultDevices": chosen}, handle)
+
+    def test_a_runtime_nothing_but_xcodes_defaults_uses_is_deleted_from_the_mac_that_has_it(self):
+        # As on 2026-11-03 (vocaro-engineering#123): only the second Mac had iOS 26.5, with no pool member on it.
+        self.give("here", [("iOS 27.0", "24A434")])
+        self.give("there", [("iOS 26.5", "23F73"), ("iOS 27.0", "24A434")])
+        self.devices("here", {"iOS 27.0": ["Example iPhone 1"]})
+        self.devices("there", {"iOS 26.5": ["iPhone 17"], "iOS 27.0": ["Example iPhone 1"]}, defaults={"iPhone 17"})
+        status, output, error = self.eng("--check")
+        self.assertEqual(status, 1, output + error)
+        self.assertIn("runtimes: iOS 26.5 (23F73), 0.0 GiB: would be deleted from fake, where no simulator but Xcode's "
+                      "defaults uses it", output)
+        self.assertEqual(self.held("there"), ["iOS 26.5 (23F73)", "iOS 27.0 (24A434)"])
+        status, output, error = self.eng()
+        self.assertEqual(status, 0, output + error)
+        self.assertIn("runtimes: iOS 26.5 (23F73): deleted from fake", output)
+        self.assertTrue(output.strip().endswith(self.same(["iOS 27.0 (24A434)"])), output)
+        self.assertEqual(self.logged("there", "deletes.log"), ["simctl runtime delete 23F73"])
+        # Nothing was copied either way, and this Mac kept what it had.
+        self.assertEqual(self.logged("here", "adds.log") + self.logged("there", "adds.log"), [])
+        self.assertEqual((self.held("here"), self.held("there")), (["iOS 27.0 (24A434)"], ["iOS 27.0 (24A434)"]))
+
+    def test_a_runtime_only_here_that_nothing_uses_is_deleted_here(self):
+        self.give("here", [("iOS 26.5", "23F73"), ("iOS 27.0", "24A434")])
+        self.give("there", [("iOS 27.0", "24A434")])
+        for mac in ("here", "there"): self.devices(mac, {"iOS 27.0": ["Example iPhone 1"]})
+        status, output, error = self.eng()
+        self.assertEqual(status, 0, output + error)
+        self.assertIn("runtimes: iOS 26.5 (23F73): deleted from this Mac", output)
+        self.assertEqual(self.logged("here", "deletes.log"), ["simctl runtime delete 23F73"])
+        self.assertEqual(self.held("here"), ["iOS 27.0 (24A434)"])
+
+    def test_a_runtime_a_simulator_uses_is_copied_and_never_deleted(self):
+        # The negative controls: a pool member on it, or simulators that cannot be listed, keep it.
+        for case, listed in [("used", True), ("unlisted", False)]:
+            with self.subTest(case):
+                for mac in ("here", "there"): shutil.rmtree(self.runtimes / mac)
+                for mac in ("here", "there"): (self.runtimes / mac).mkdir()
+                self.give("here", [("iOS 27.0", "24A434")])
+                self.give("there", [("iOS 26.5", "23F73"), ("iOS 27.0", "24A434")])
+                if listed: self.devices("there", {"iOS 26.5": ["Example iPhone 1", "iPhone 17"]}, defaults={"iPhone 17"})
+                status, output, error = self.eng()
+                self.assertEqual(status, 0, output + error)
+                self.assertIn("runtimes: iOS 26.5 (23F73): added on this Mac", output)
+                self.assertEqual(self.logged("there", "deletes.log"), [])
+                self.assertEqual(self.held("there"), ["iOS 26.5 (23F73)", "iOS 27.0 (24A434)"])
+                self.assertEqual(self.held("here"), self.held("there"))
+
+    def test_a_delete_checks_the_runtimes_users_again_first(self):
+        # A pool member made on the runtime after the plan keeps it: delete_runtime reads its users again.
+        self.give("here", [("iOS 26.5", "23F73")])
+        self.devices("here", {"iOS 26.5": ["Example iPhone 1"]})
+        self.assertEqual(offload_host.delete_runtime(str(self.developer), "23F73"), "Example iPhone 1 uses it")
+        self.devices("here", {"iOS 26.5": ["iPhone 17"]}, defaults={"iPhone 17"})
+        self.assertIsNone(offload_host.delete_runtime(str(self.developer), "23F73"))
+        self.assertEqual(self.held("here"), [])
+        self.assertEqual(offload_host.delete_runtime(str(self.developer), "23F73"), "simctl lists 0 images of 23F73")
+
     def test_check_says_what_it_would_do_and_changes_nothing(self):
         self.give("here", HERE_RUNTIMES)
         self.give("there", THERE_RUNTIMES)
@@ -3738,7 +3865,7 @@ class RemoteRuntimeTests(unittest.TestCase):
         for runtime in ["iOS 26.5 (23F73)", "iOS 27.1 (24A94401)", "iOS 27.2 (24B5110a)", "iOS 27.2 (24B91011)"]:
             self.assertIn(f"runtimes: {runtime}, 0.0 GiB: would be copied from this Mac to fake, which has ", output)
         self.assertIn("runtimes: iOS 27.0 (24A5423a), 0.0 GiB: would be copied from fake to this Mac, which has ", output)
-        self.assertIn("runtimes: 5 runtime(s) differ; `eng remote setup --runtimes` brings both Macs to their union",
+        self.assertIn("runtimes: 5 runtime(s) differ; `eng remote setup --runtimes` or `eng doctor` evens them out",
                       output)
         self.assertNotIn("copying", output)
         self.assertEqual((self.held("here"), self.held("there")),
@@ -3855,7 +3982,7 @@ class RemoteRuntimeTests(unittest.TestCase):
         with self.subTest("formulae"):
             status, output, error = self.eng("numpy")
             self.assertEqual(status, 2, output + error)
-            self.assertIn("--runtimes brings only the simulator runtimes to their union", error)
+            self.assertIn("--runtimes evens out only the simulator runtimes", error)
         with self.subTest("unreachable"):
             with patch.dict(os.environ, {"FAKE_HOME": str(self.home / "missing")}):
                 status, output, error = self.eng()
