@@ -233,8 +233,8 @@ class MainMoves(Fixture):
         outside = self.base / "outside"
         run(self.base, "git", "clone", "-q", str(self.origin), str(outside))
         pushed = []
-        def gate(worker, config, round_name):
-            outcome = real(worker, config, round_name)
+        def gate(worker, lanes, round_name):
+            outcome = real(worker, lanes, round_name)
             if not pushed:
                 pushed.append(True)
                 path = outside / name
@@ -640,6 +640,153 @@ class CarryOverChecks(Fixture):
         schema = json.loads((ROOT / "schemas/engineering.schema.json").read_text())
         check = schema["properties"]["queue"]["properties"]["carryOverChecks"]["items"]
         self.assertEqual(set(check["properties"]), {"command", "paths"})
+
+
+class DocsOnly(Fixture):
+    def setUp(self):
+        super().setUp()
+        self.docs_counter, self.docs_status = self.base / "docs-runs", self.base / "docs-status"
+        self.ran = self.base / "hook-runs"
+        config = json.loads((self.repo / "engineering.json").read_text())
+        config["lanes"]["docs"] = {"command": ["python3", "lane.py", str(self.docs_counter), str(self.docs_status)]}
+        self.declared = {"paths": {"doc/": "no code lane reads it", "README.md": "nor this"}, "lanes": ["docs"]}
+        self.configured = config
+        self.publish({**config, "queue": {**config["queue"], "docsOnly": self.declared}}, "Declare the docs")
+
+    def docs_runs(self):
+        return len(self.docs_counter.read_text()) if self.docs_counter.exists() else 0
+
+    def test_a_docs_only_batch_runs_only_the_docs_lanes_and_lands_as_one(self):
+        self.commit("doc/guide.md", "guide"); self.commit("README.md", "readme"); self.commit("doc/papers.tsv", "tsv")
+        ids = self.add("guide", "readme", "tsv")
+        said = []
+        with patch.object(mq.Worker, "say", lambda worker, words: said.append(words)): self.assertEqual(self.work(), 0)
+        self.assertEqual([self.state(i)["state"] for i in ids], ["landed"] * 3)
+        self.assertEqual((self.gates(), self.docs_runs()), (0, 1))
+        self.assertEqual([self.state(i)["docsOnly"] for i in ids], [["docs"]] * 3)
+        self.assertLessEqual({"doc", "README.md"}, self.main_files())
+        self.assertTrue(any("queue.docsOnly: running only docs" in words for words in said), said)
+        self.assertIn("docs lanes only (docs): no gate of that commit", mq.describe(self.state(ids[0])))
+
+    def test_a_mixed_batch_runs_every_lane(self):
+        self.commit("doc/guide.md", "guide"); self.commit("code", "code")
+        ids = self.add("guide", "code")
+        self.work()
+        self.assertEqual([self.state(i)["state"] for i in ids], ["landed"] * 2)
+        self.assertEqual((self.gates(), self.docs_runs()), (1, 0))
+        self.assertNotIn("docsOnly", self.state(ids[0]))
+        self.assertNotIn("docs lanes only", mq.describe(self.state(ids[0])))
+
+    def test_an_undeclared_project_runs_every_lane(self):
+        self.publish(self.configured, "Declare nothing")
+        self.commit("doc/guide.md", "guide")
+        [identifier] = self.add("guide")
+        self.work()
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual((self.gates(), self.docs_runs()), (1, 0))
+        self.assertNotIn("docsOnly", self.state(identifier))
+
+    def test_a_path_beside_a_listed_file_or_directory_runs_every_lane(self):
+        for name in ("docs/guide.md", "README.md.orig", "doc"):
+            with self.subTest(name=name):
+                self.counter.unlink(missing_ok=True)
+                self.commit(name, name.replace("/", "-"))
+                [identifier] = self.add(name.replace("/", "-"))
+                self.work()
+                self.assertEqual(self.state(identifier)["state"], "landed")
+                self.assertEqual((self.gates(), self.docs_runs()), (1, 0))
+
+    def test_a_file_moved_into_docs_names_the_path_it_left(self):
+        self.commit("tool.py", "tool", "print('a tool')\n")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        self.counter.unlink(missing_ok=True)
+        run(self.repo, "git", "checkout", "-q", "-B", "move", "origin/main")
+        (self.repo / "doc").mkdir(exist_ok=True)
+        run(self.repo, "git", "mv", "tool.py", "doc/tool.py")
+        run(self.repo, "git", "commit", "-qm", "Move the tool")
+        [identifier] = self.add("move")
+        self.work()
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual((self.gates(), self.docs_runs()), (1, 0))
+
+    def test_a_failing_docs_lane_sends_the_batch_back(self):
+        self.docs_status.write_text("1")
+        self.commit("doc/guide.md", "guide")
+        [identifier] = self.add("guide")
+        self.work()
+        self.assertEqual(self.state(identifier)["state"], "failed")
+        self.assertEqual((self.gates(), self.docs_runs()), (0, 1))
+        self.assertNotIn("doc", self.main_files())
+
+    def test_a_branch_cannot_declare_its_own_docs(self):
+        # Main has no gate lane yet, so the round reads the batch's lanes, but never its docsOnly.
+        config = json.loads(json.dumps(self.configured))
+        config["lanes"]["checks"] = config["lanes"].pop("gate")
+        self.publish(config, "No gate lane yet")
+        run(self.repo, "git", "checkout", "-q", "-B", "declare", "origin/main")
+        config["queue"].update(lanes=["checks"], docsOnly={"paths": {"engineering.json": "it says so"}, "lanes": ["docs"]})
+        (self.repo / "engineering.json").write_text(json.dumps(config))
+        run(self.repo, "git", "add", "engineering.json")
+        run(self.repo, "git", "commit", "-qm", "Declare the docs here")
+        [identifier] = self.add("declare")
+        self.work()
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual((self.gates(), self.docs_runs()), (1, 0))
+
+    def test_a_hook_the_code_lanes_cover_does_not_run(self):
+        # The hook is part of lanes that read none of the batch's paths, so it can say nothing new of them.
+        config = json.loads((self.repo / "engineering.json").read_text())
+        config["queue"]["hookCoveredBy"] = {"gate": "all the hook runs"}
+        self.publish(config, "Opt in")
+        PrePushHooks.hook(self, "exit 1")
+        self.commit("doc/guide.md", "guide")
+        [identifier] = self.add("guide")
+        self.work()
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual((self.gates(), self.docs_runs(), PrePushHooks.runs(self)), (0, 1, []))
+
+    def test_a_hook_no_lane_covers_runs(self):
+        PrePushHooks.hook(self, "exit 0")
+        self.commit("doc/guide.md", "guide")
+        [identifier] = self.add("guide")
+        self.work()
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual(len(PrePushHooks.runs(self)), 1)
+
+    def test_a_docs_only_landing_is_no_gate_eng_release_takes(self):
+        from vocaro_engineering import release
+        self.commit("code", "code")
+        [code] = self.add("code")
+        self.work()
+        checkout = mq.Queue(self.repo).checkout
+        # The control: a batch that ran every lane leaves a receipt of the gate at the commit it pushed.
+        self.assertIn("in this checkout", release.gate_passed(checkout, self.state(code)["landedAs"]))
+        self.commit("doc/guide.md", "guide")
+        [docs] = self.add("guide")
+        self.work()
+        self.assertEqual(self.state(docs)["state"], "landed")
+        with self.assertRaisesRegex(release.Stop, "no pass of the whole gate lane"):
+            release.gate_passed(checkout, self.state(docs)["landedAs"])
+
+    def test_the_configuration_is_checked(self):
+        config = self.configured
+        good = {"paths": {"doc/": "why"}, "lanes": ["docs"]}
+        for declared in (good, {"paths": {"doc/": "why", "README.md": "why"}, "lanes": ["docs"]}):
+            (self.repo / "engineering.json").write_text(json.dumps({**config, "queue": {"docsOnly": declared}}))
+            self.assertEqual(self.config()["queue"]["docsOnly"], declared)
+        for bad in ({}, {"paths": {"doc/": "why"}}, {"lanes": ["docs"]}, {**good, "other": 1}, {**good, "paths": {}},
+                    {**good, "paths": ["doc/"]}, {**good, "paths": {"doc/": ""}}, {**good, "paths": {" ": "why"}},
+                    {**good, "lanes": []}, {**good, "lanes": "docs"}, {**good, "lanes": ["docs", "docs"]},
+                    {**good, "lanes": ["absent"]}, {**good, "lanes": ["gate"]}, {**good, "lanes": ["docs", "gate"]}, []):
+            with self.subTest(bad=bad):
+                (self.repo / "engineering.json").write_text(json.dumps({**config, "queue": {"docsOnly": bad}}))
+                with self.assertRaisesRegex(ValueError, "docsOnly"): self.config()
+
+    def test_the_schema_knows_the_setting(self):
+        schema = json.loads((ROOT / "schemas/engineering.schema.json").read_text())
+        declared = schema["properties"]["queue"]["properties"]["docsOnly"]
+        self.assertEqual(set(declared["properties"]), {"paths", "lanes"})
+        self.assertEqual(declared["properties"]["lanes"]["items"]["not"], {"const": "gate"})
 
 
 class LaggingCheckout(Fixture):
@@ -1241,8 +1388,8 @@ class Refusals(Fixture):
         ids = self.add("a", "b")
         queue = mq.Queue(self.repo)
         real = mq.Worker.gate
-        def gate(worker, config, round_name):
-            outcome = real(worker, config, round_name)
+        def gate(worker, lanes, round_name):
+            outcome = real(worker, lanes, round_name)
             if not queue.read(ids[0])["state"] == "removed":
                 with patch("builtins.print"): mq.remove(queue, ids[0])
             return outcome

@@ -316,6 +316,31 @@ take it. Any other move gates again, with no blame. List in `queue.carryOver` on
 records no queue lane reads, and check first: studywright's gate compiles sources under
 `measurements/audits`, and BreezEPUB's script tests read parts of `evidence/`.
 
+**A docs-only batch runs the docs lanes.** A project may declare on `main` which paths are
+documentation, each with why no code lane reads it, and the lanes a batch that changes only those
+paths runs instead of every queue lane:
+
+```json
+"docsOnly": {"paths": {"doc/guide/": "read by no code lane; eng docs check reads it",
+                       "README.md": "read by no code lane; eng docs check reads it"},
+             "lanes": ["docs"]}
+```
+
+When every path the batch changes, counting a moved file's old path, is a listed file or under a
+listed directory ending in `/`, the worker runs only those lanes, in order, and lands the batch on
+their pass (owner's decision, 2026-11-02,
+[#112](https://github.com/vocaro/vocaro-engineering/issues/112)). Several docs-only entries land
+together as one batch. A batch with any other path, a mixed batch, and every batch of a project
+that declares nothing run every lane, as does a batch that changes nothing. Only `main`'s
+declaration counts, as with `hookCoveredBy`, so a branch cannot widen it. A project with
+`hookCoveredBy` has said its hook is part of code lanes that read none of these paths, so a
+docs-only batch skips the hook too; a project without it runs its hook as on any batch. A docs-only landing, like a carried-over
+result, is no gate of the pushed commit: `gate` may not be a docs lane, so no gate receipt names
+that commit and `eng release` will not take it; a release commit gets its gate from the release
+procedure. The worker's log and `eng queue status` say an entry landed on the docs lanes only. List
+only paths no code lane reads, and check first, as for `carryOver`: a path a docs check reads is
+listed only when that check is a docs lane.
+
 **Checks before a carry-over.** A project whose rule asks for more than the docs lane names the
 commands in `queue.carryOverChecks`, in order, on the batch rebased onto the new `main`:
 

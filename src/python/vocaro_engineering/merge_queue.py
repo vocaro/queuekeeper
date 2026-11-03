@@ -203,6 +203,15 @@ def named(path, key):
     return path.startswith(key) if key.endswith("/") else path == key
 
 
+def docs_lanes(config, changed):
+    """The lanes main's queue.docsOnly names when every path a batch changes is one it lists, else None:
+    a batch that changes nothing, or anything else, runs every lane."""
+    declared = config.get("queue", {}).get("docsOnly")
+    if not declared or not changed: return None
+    if all(any(named(path, key) for key in declared["paths"]) for path in changed): return declared["lanes"]
+    return None
+
+
 def carried_over(path, config, batch_files):
     """Whether main changing path leaves a passed batch's result standing: a path the project lists
     in queue.carryOver as read by none of its queue lanes, or a Markdown document, and in either
@@ -417,6 +426,7 @@ def remove(queue, identifier, quiet=False):
 def describe(entry):
     line = f"{entry['state']:8} {entry['id']}  {entry['subject']}"
     if entry.get("landedAs"): line += f"  -> {entry['landedAs'][:12]}"
+    if entry.get("docsOnly"): line += f"\n         docs lanes only ({', '.join(entry['docsOnly'])}): no gate of that commit"
     if entry.get("why"): line += f"\n         {entry['why']}"
     if entry.get("log"): line += f"\n         log: {entry['log']}"
     return line
@@ -660,10 +670,10 @@ class Worker:
             applied.append(entry)
         return applied
 
-    def gate(self, config, round_name):
-        """(status of the first lane that did not pass or 0, its log)."""
+    def gate(self, lanes, round_name):
+        """(status of the first of lanes that did not pass or 0, its log)."""
         log = None
-        for lane in lanes_of(config):
+        for lane in lanes:
             log = self.queue.logs / f"{round_name}-{lane}.log"
             # A lane run here logs to its own file, and one on the second Mac prints here. What an
             # earlier round left there is not this one's.
@@ -721,10 +731,12 @@ class Worker:
         self.say(f"carried the result over {len(moved)} file(s) on main: {', '.join(moved[:5])}")
         return new_base, self.head()
 
-    def push(self, config, batch, base):
+    def push(self, config, batch, base, docs=None):
         """Push HEAD to main. True on a push, False to gate again; a refusal that is no race holds.
         The project's pre-push hook runs here rather than inside the push, unless main's queue.hookCoveredBy
-        says which passed lanes cover it: a long hook then holds no connection open, and its refusal is its own."""
+        says which passed lanes cover it: a long hook then holds no connection open, and its refusal is its own.
+        A docs-only batch, whose lanes docs names, skips it too: the hook is part of lanes that read none of the
+        batch's paths. The landed entries record docs, since such a landing is no gate of the pushed commit."""
         head = self.head()
         dropped = unsure = False
         checked = None
@@ -750,7 +762,8 @@ class Worker:
             if pushed.returncode == 0:
                 git(self.checkout, *FETCH)
                 self.say(f"pushed {head[:12]}")
-                for entry in batch: self.queue.settle(entry, LANDED, landedAs=head)
+                for entry in batch:
+                    self.queue.settle(entry, LANDED, landedAs=head, **({"docsOnly": docs} if docs else {}))
                 if self.toolkits_own(): self.follow()
                 return True
             said = pushed.stderr.strip()
@@ -818,13 +831,19 @@ class Worker:
         try: lanes_of(config)
         except ValueError:
             config = load(self.checkout)
-            # The batch may name its lanes, but only main may say the hook need not run.
+            # The batch may name its lanes, but only main may say the hook need not run, or which paths are docs.
             config.get("queue", {}).pop("hookCoveredBy", None)
+            config.get("queue", {}).pop("docsOnly", None)
         queue.mark(applied, TESTING)
         head = self.head()
         self.say(f"testing {len(applied)} entr{'y' if len(applied) == 1 else 'ies'} at {head[:12]} on {base[:12]}")
+        # Without renames, so that a file moved into a docs path also names the path it left.
+        docs = docs_lanes(config, [path for path in text(self.checkout, "diff", "--name-only", "--no-renames", base,
+                                                         head).splitlines() if path])
+        if docs: self.say(f"every path the batch changes is in main's queue.docsOnly: running only {', '.join(docs)}, "
+                          "which is no gate of the pushed commit")
         round_name = f"{time.strftime('%Y%m%d-%H%M%S')}-{head[:8]}"
-        result, log = self.gate(config, round_name)
+        result, log = self.gate(docs or lanes_of(config), round_name)
         self.prune()
         if result in NO_VERDICT:
             queue.mark(applied, QUEUED)
@@ -844,7 +863,7 @@ class Worker:
             self.say("an entry was removed during the run: gating what is left")
             queue.mark(applied, QUEUED)
             return True
-        if self.push(config, applied, base): self.passed(len(applied))
+        if self.push(config, applied, base, docs): self.passed(len(applied))
         else: queue.mark(applied, QUEUED)
         return True
 

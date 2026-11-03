@@ -110,10 +110,11 @@ RESOURCES = ["light", "heavy", "exclusive"]
 def merge_queue(queue, lanes):
     """The lanes a commit passes in the merge queue, what main may change under a passed result,
     each path with why no such lane reads it, the commands that main's change must pass first, and
-    which of the lanes cover the pre-push hook, each with what of the hook it runs
+    which of the lanes cover the pre-push hook, each with what of the hook it runs, and the paths a
+    docs-only batch changes, each with why no code lane reads it, with the lanes it runs instead
     (guides/maintenance.md, The merge queue)."""
-    if not isinstance(queue, dict) or set(queue) - {"lanes", "carryOver", "carryOverChecks", "hookCoveredBy"}:
-        raise ValueError("queue supports only lanes, carryOver, carryOverChecks and hookCoveredBy")
+    if not isinstance(queue, dict) or set(queue) - {"lanes", "carryOver", "carryOverChecks", "hookCoveredBy", "docsOnly"}:
+        raise ValueError("queue supports only lanes, carryOver, carryOverChecks, hookCoveredBy and docsOnly")
     named = queue.get("lanes", [])
     if not isinstance(named, list) or len(set(map(str, named))) != len(named) or any(name not in lanes for name in named):
         raise ValueError("queue.lanes must list distinct configured lanes")
@@ -128,10 +129,23 @@ def merge_queue(queue, lanes):
                                                                  or not what.strip() for lane, what in covering.items()):
             raise ValueError("queue.hookCoveredBy maps each lane the queue runs that covers the pre-push hook to what "
                              "of the hook it runs")
+    if "docsOnly" in queue and not docs_only(queue["docsOnly"], lanes):
+        raise ValueError("queue.docsOnly holds paths, mapping each path, a directory ending in /, to why no code lane "
+                         "reads it, and lanes, the distinct configured lanes a docs-only batch runs instead, never gate, "
+                         "whose receipt eng release reads")
     checks = queue.get("carryOverChecks", [])
     if not isinstance(checks, list) or any(not carry_over_check(check) for check in checks):
         raise ValueError("queue.carryOverChecks lists objects with a command, an argv list and never shell source, and "
                          "optional paths, a nonempty list limiting it to moves of those paths, a directory ending in /")
+
+
+def docs_only(declared, lanes):
+    if not isinstance(declared, dict) or set(declared) != {"paths", "lanes"}: return False
+    paths, named = declared["paths"], declared["lanes"]
+    return isinstance(paths, dict) and paths and all(isinstance(key, str) and key.strip() and isinstance(why, str)
+                                                      and why.strip() for key, why in paths.items()) \
+        and isinstance(named, list) and named and len(set(map(str, named))) == len(named) \
+        and all(name in lanes and name != "gate" for name in named)
 
 
 def carry_over_check(check):
