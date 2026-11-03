@@ -1370,8 +1370,11 @@ it:
 - An Xcode program, such as the `DTServiceHub` that `xcodebuild` starts and leaves to launchd
   once it ends, is a live run's when it runs from a checkout slot in which a live admission's
   owner works, and started no earlier than that admission, by the log's time or else the owner's
-  start. That window is the only signal it leaves, so other programs from the checkout are
-  still listed.
+  start. So is the executable of an app, XPC service or app extension (`.app`, `.xpc` or `.appex`
+  `Contents/MacOS/`) built in that slot, which launchd starts when a UI test launches the app:
+  on 2026-11-03 the census listed a live Pagepour `mac-test-suites` run's app and its converter
+  service as left over (vocaro-engineering#129). That window is the only signal they leave, so
+  other programs from the checkout, a bundle's scripts among them, are still listed.
 - Once the admission ends, or the reservation's process is gone or another process has its
   PID, they are listed. On 2026-10-27 a dispatch listed a live EPUBLib `ios-tests` run's three
   `launchd_sim` processes, each with about 230 descendants, and two `DTServiceHub` processes from
