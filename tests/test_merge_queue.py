@@ -17,6 +17,12 @@ sys.path.insert(0, str(ROOT / "src/python"))
 from vocaro_engineering import cli, config as configuration, merge_queue as mq
 import host_isolation
 
+
+def stretched(seconds):
+    """These seconds stretched by the host's one-minute load per core, as a bound on a stall is: at a load
+    near 280 on 18 cores, a landing that takes seconds on an idle Mac was still testing after 120 s (#121)."""
+    return seconds * max(1, os.getloadavg()[0] / (os.cpu_count() or 1))
+
 # Fails when any tracked file is named bad*, passes otherwise; touches a counter so a test can count gates.
 LANE = """import pathlib, sys
 counter = pathlib.Path(sys.argv[1]); counter.write_text(counter.read_text() + "x" if counter.exists() else "x")
@@ -814,8 +820,8 @@ class LaggingCheckout(Fixture):
         run(other, "git", "init", "-q")
         (other / "scripts").mkdir()
         shutil.copy(ROOT / "scripts/eng", other / "scripts/eng")
-        return subprocess.run(["python3", "scripts/eng", "land", "--repo", "project", "fix", "--wait", "--limit", "120"],
-                              cwd=other, capture_output=True, text=True)
+        return subprocess.run(["python3", "scripts/eng", "land", "--repo", "project", "fix", "--wait",
+                               "--limit", str(stretched(120))], cwd=other, capture_output=True, text=True)
 
     def test_a_gate_lane_only_origin_main_has_lets_the_commit_in(self):
         self.session({"schemaVersion": 1, "name": "fixture"})
@@ -863,8 +869,8 @@ class LaggingCheckout(Fixture):
         """The worker's --project is the main checkout, whose configuration must not even be checked."""
         worktree = self.session({"schemaVersion": 1, "name": "fixture", "hostedRepositories": []})
         with self.assertRaises(ValueError): configuration.load(self.repo)
-        done = subprocess.run(["python3", "scripts/eng", "land", "fix", "--wait", "--limit", "120"], cwd=worktree,
-                              capture_output=True, text=True)
+        done = subprocess.run(["python3", "scripts/eng", "land", "fix", "--wait", "--limit", str(stretched(120))],
+                              cwd=worktree, capture_output=True, text=True)
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         self.assertIn("fix", self.main_files())
 
@@ -1443,8 +1449,8 @@ class Refusals(Fixture):
         self.commit("fix", "fix")
         self.commit("own", "own")
         [own] = self.add("own")
-        done = subprocess.run(["python3", "scripts/eng", "land", "--repo", "project", "fix", "--wait", "--limit", "120"],
-                              cwd=other, capture_output=True, text=True)
+        done = subprocess.run(["python3", "scripts/eng", "land", "--repo", "project", "fix", "--wait",
+                               "--limit", str(stretched(120))], cwd=other, capture_output=True, text=True)
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         self.assertLessEqual({"fix", "own"}, self.main_files())
         self.assertEqual(self.state(own)["state"], "landed")
@@ -1470,7 +1476,7 @@ class Refusals(Fixture):
         self.commit("a", "a")
         with patch("builtins.print"): mq.add(self.repo, "a")
         identifier = mq.Queue(self.repo).all()[0]["id"]
-        with patch("builtins.print"): self.assertEqual(mq.wait(self.repo, identifier, 120), 0)
+        with patch("builtins.print"): self.assertEqual(mq.wait(self.repo, identifier, stretched(120)), 0)
         self.assertIn("a", self.main_files())
 
     def test_a_worker_that_ended_leaves_no_child_of_this_process(self):
@@ -1486,7 +1492,7 @@ class Refusals(Fixture):
         self.commit("a", "a")
         with patch("builtins.print"): mq.add(self.repo, "a")
         identifier = mq.Queue(self.repo).all()[0]["id"]
-        with patch("builtins.print"): self.assertEqual(mq.wait(self.repo, identifier, 120), 0)
+        with patch("builtins.print"): self.assertEqual(mq.wait(self.repo, identifier, stretched(120)), 0)
         self.assertIn("a", self.main_files())
         deadline = time.monotonic() + 30
         while (left := {pid: stat for pid, stat in children().items() if pid not in before}) and time.monotonic() < deadline:
