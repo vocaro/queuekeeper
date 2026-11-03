@@ -49,7 +49,45 @@ commit, and check that the diff against the base is empty before calling the tre
 have merged since the brief was written; look before building on its branch, and once it has
 merged, build on `main`. A test merged since your branch was cut may pin a decision the owner
 has since reversed; hold it against the decision recorded on the issue before changing the test
-or your code.
+or your code. A condition in a brief, such as "if the pull request is still open", is read again
+straight before the step that depends on it, not only at the start: a pull request can merge
+within a minute. Before pushing to a pull request's branch, run `gh pr view N --json state` alone,
+in its own call, and push in a later call only if it says `OPEN`; a compound command that prints
+the state goes on regardless. A remote-tracking ref is no evidence that a branch exists, since
+`git fetch` without `--prune` keeps it after GitHub deletes the branch; `git ls-remote --heads
+origin BRANCH` is the check. A push to a branch GitHub deleted at a merge re-creates it, and a
+session may not be allowed to delete it again. On 2026-10-13 a brief's push went to a pull
+request merged 28 seconds after the session read it, and the owner had to delete the re-created
+branch.
+
+**Overlapping sessions.** On 2026-10-12 two sessions, each started by a different session, made
+the same fix within minutes: neither brief named the other, a search of issues and pull requests
+showed nothing because neither had one yet, and messages between them stayed queued for hours.
+What gave it away was the other session's title in the app's list of linked sessions. So:
+
+- Before the first change on a handed-over task, and again before committing, read the linked
+  sessions' titles and, for one that overlaps, its worktree's log and status. A clean worktree
+  says only that nothing is written yet; ask its session or the owner, and do not wait for an answer.
+- When two branches hold the same change, the later session merges the earlier one's pushed
+  branch into its own, takes its wording where they agree and lands only what it adds. It does
+  not push to the other session's branch.
+- A brief names the sessions its writer knows to be working near the same code. A session that
+  will file an issue for a task it hands over says so in the brief, or files the issue first and
+  names it. Search the tracker again straight before filing an issue: on 2026-10-13 a started
+  session filed a duplicate three minutes after its starter filed the original.
+- Messages cannot hold a working session back, since it reads them when its turn ends. Sessions
+  that must not build or commit at the same moment work in a worktree each. Where two share one
+  checkout, each says before it starts which files it will edit, commits only those, and checks
+  `git status` and its head against the remote before every commit; a hold the other must
+  respect is something it meets in the tree, such as a file it checks before building or
+  committing.
+- Hand out parallel work by files, not areas. Before giving out issues, list the files of every
+  open pull request (`gh pr list --state open --json number,files`) and of every branch waiting
+  in the merge queue, choose issues whose code is in none of them, and give each session that
+  list, every sibling's issues and files, and, where two must edit one file, the functions each
+  keeps to. On 2026-10-22 twelve agents made 14 pull requests this way with no conflict in a
+  source file. This finds only work already on a branch, not a session that has written nothing
+  yet; the linked sessions' titles cover that.
 
 **Fetch before the last verification, and do not chase `main`.** When `main` moves faster than a
 full verification runs, verifying again after each rebase never ends. On a direct-main repository
