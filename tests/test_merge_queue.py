@@ -1482,6 +1482,9 @@ REFUSED = {
     "missing": "ERROR: Repository not found.\nfatal: Could not read from remote repository.",
     "rejected": " ! [remote rejected] HEAD -> main (protected branch hook declined)\nerror: failed to push some refs",
     "not git": "fatal: 'origin' does not appear to be a git repository",
+    # A local path with no repository: git adds the line a dropped SSH connection ends with.
+    "no repository": "fatal: '/x/gone.git' does not appear to be a git repository\nfatal: Could not read from remote "
+                     "repository.\n\nPlease make sure you have the correct access rights\nand the repository exists.",
 }
 
 
