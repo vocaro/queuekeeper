@@ -25,16 +25,33 @@ SWIFT_TESTING_RUN = re.compile(r"Test run with (\d+) tests?(?: in \d+ suites?)? 
 SWIFT_TESTING_SKIP = re.compile(r'^\S+ Test \S.*? (?:skipped(?:\.|: ".*")?|was cancelled after [^\n]*)$', re.M)
 # unittest's total, then its result line, which names its skips: OK (skipped=2).
 RAN = re.compile(r"^Ran (\d+) tests?\b[^\n]*\n\s*(?:(?:OK|FAILED)(?: \(([^)\n]*)\))?)?", re.M)
+# pytest's last line, a line of its own, framed in "=" unless -q, and indented by a wrapper that
+# indents its steps: 1 failed, 10468 passed, 24 skipped in 589.31s (0:09:49), or no tests ran in
+# 0.01s. pytest-xdist prints it alike (pytest 8.4.2, pytest-xdist 3.8.0, November 2026). Every item
+# must be one pytest names, so a line that merely says "passed" is no count.
+PYTEST_ITEM = r"\d+ (?:failed|passed|skipped|deselected|xfailed|xpassed|warnings?|errors?)"
+PYTEST_SUMMARY = re.compile(r"^[ \t]*(?:=+ )?((?:" + PYTEST_ITEM + r")(?:, " + PYTEST_ITEM + r")*|no tests ran)"
+                            r" in \d+(?:\.\d+)?s(?: \([^)\n]*\))?(?: =+)?[ \t]*$", re.M)
+# The tests that ran, and so count with their skips among them: not deselected ones, warnings, or
+# errors, which pytest counts apart from the tests (a fixture's, or a module's that collected none).
+PYTEST_RAN = ("failed", "passed", "skipped", "xfailed", "xpassed")
+
+
+def pytest_counts(text):
+    """(ran, skipped) for each pytest run whose summary line the log holds."""
+    for match in PYTEST_SUMMARY.finditer(text):
+        items = dict((word, int(n)) for n, word in re.findall(r"(\d+) (\w+)", match.group(1)))
+        yield sum(items.get(word, 0) for word in PYTEST_RAN), items.get("skipped", 0)
 
 
 def counted(text):
     """(ran, skipped) over the counts a log reports, or None when it reports no count.
 
-    Each XCTest bundle's top-level total, each Swift Testing run and each unittest run. A
-    wrapper's own "Executed N tests" line, one per simulator for example, counts only when the
-    log holds no XCTest totals, which it would repeat. XCTest's, unittest's and Swift Testing's
+    Each XCTest bundle's top-level total, each Swift Testing run, each unittest run and each pytest
+    run. A wrapper's own "Executed N tests" line, one per simulator for example, counts only when
+    the log holds no XCTest totals, which it would repeat. XCTest's, unittest's and Swift Testing's
     totals include their skips; XCTest and unittest name them apart, and Swift Testing gives each
-    skipped or canceled test a line."""
+    skipped or canceled test a line. pytest names each outcome apart, its skips among them."""
     suites = list(SUITE_TOTAL.finditer(text))
     top = [(int(match.group(2)), int(match.group(3) or 0)) for match in suites
            if match.group(1) in ("All tests", "Selected tests")]
@@ -47,6 +64,7 @@ def counted(text):
     for match in RAN.finditer(text):
         skipped = re.search(r"\bskipped=(\d+)", match.group(2) or "")
         counts.append((int(match.group(1)), int(skipped.group(1)) if skipped else 0))
+    counts.extend(pytest_counts(text))
     if not counts: return None
     return sum(ran for ran, _ in counts), sum(skipped for _, skipped in counts)
 
@@ -81,12 +99,19 @@ UNMEASURED = 3
 
 # A test the host left unmeasured skips (XCTest, unittest) or cancels itself (Swift Testing) with a
 # reason that begins "Unmeasured:", and swift test and xcodebuild still exit 0. unittest prints the
-# reason only when verbose.
+# reason only when verbose. pytest prints it in its short summary under -rs (or -ra, -rA), folding
+# the skips that share a file, line and reason into one line that names no test,
+# SKIPPED [2] tests/test_x.py:15: Unmeasured: ..., unless --no-fold-skipped gives each its own:
+# SKIPPED tests/test_x.py::test_y[1] - Skipped: Unmeasured: ... (pytest 8.4.2, with and without
+# pytest-xdist 3.8.0, November 2026). Its -v lines truncate the reason, and under xdist omit it.
 UNMEASURED_TEST = re.compile(r"^.*:\d+: -\[[^\]\n]+\] : Test skipped - Unmeasured: .*$"
                              # eng simulator-tests' line for one a result bundle records: DEVICE: -[TEST] : ...
                              r"|^\S+: -\[[^\]\n]+\] : Test skipped - Unmeasured: .*$"
                              r"|^\S+ Test .* was cancelled after [^:\n]*: \"Unmeasured: .*\"$"
-                             r"|^.* \.\.\. skipped 'Unmeasured: .*'$", re.M)
+                             r"|^.* \.\.\. skipped 'Unmeasured: .*'$"
+                             r"|^[ \t]*SKIPPED \S+::.*? - (?:Skipped: )?Unmeasured: .*$"
+                             # A folded line still makes the run unmeasured, though it names no test.
+                             r"|^[ \t]*SKIPPED \[\d+\] [^\n]*?: Unmeasured: .*$", re.M)
 
 
 def unmeasured_tests(text):
