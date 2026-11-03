@@ -3,8 +3,9 @@
 One worker per repository takes everything waiting, cherry-picks it onto origin/main in a checkout
 of its own, runs the project's queue lanes there once, and pushes on a pass. When the lanes fail on
 a batch it halves the batch until it finds the commit to send back, landing the rest. Only a lane's
-verdict blames a commit: a run the host left unmeasured retries once and then holds the queue for
-the owner, with every commit still waiting (guides/maintenance.md, The merge queue).
+verdict blames a commit: a run the host left unmeasured retries once, when the host has settled, and
+then holds the queue for the owner, with every commit still waiting (guides/maintenance.md, The merge
+queue).
 
 The state is in the repository's common Git directory, so every worktree shares it, and a ref holds
 each waiting commit, so a branch that moves or goes takes nothing with it:
@@ -45,6 +46,14 @@ NO_VERDICT = {evidence.UNMEASURED, resources.BUSY, remote.MISCONFIGURED}
 LANE_LIMIT = 3 * processes.DEFAULT_LIMIT
 # A run with no verdict is tried again once, since a busy host clears, before the queue holds.
 RETRIES = 1
+# Seconds the retry waits for the host to settle, by admission's load and memory test (resources.pressure), and
+# between its looks. A retry started at once met the load that voided the run it repeats, and each such run cost
+# mpm's queue a gate of about an hour (#124); a wait no longer than that run, past which the queue holds as
+# before, costs no more than the retry it saves.
+SETTLE_LIMIT = 3600
+SETTLE_POLL = 15
+# Seconds between the wait's lines in the worker's log while the host stays busy.
+SETTLE_REPORT = 600
 # Times main may move past a passed batch, in carried-over steps, before the batch is gated again.
 CARRIES = 3
 # What git says, over HTTPS or SSH, when it never reached the remote or the connection ended: a name that did
@@ -148,6 +157,11 @@ def unreached(said):
 def pause(seconds):
     """The backoff's wait, apart from every other sleep, for a test to replace."""
     time.sleep(seconds)
+
+
+def now():
+    """The monotonic clock a settling wait reads, for a test to replace."""
+    return time.monotonic()
 
 
 def reach(directory, *arguments, say=print, check=False):
@@ -523,6 +537,38 @@ class Worker:
     def say(self, words):
         print(f"queue: {time.strftime('%H:%M:%S')} {words}", flush=True)
 
+    def settle(self, what):
+        """None once the host has spare capacity by admission's test (resources.pressure), so that the retry of
+        what gave no verdict does not meet the load that voided it; else, past SETTLE_LIMIT, why it has none.
+        It logs what it saw, and a stop request ends it as one ends a lane (processes.Interrupted)."""
+        start = reported = now()
+        looks, seen = 0, None
+        loads = []
+        while True:
+            if processes.requested():
+                raise processes.Interrupted(processes.requested(), f"while {what} waited for the host to settle")
+            busy = resources.pressure()
+            looks += 1
+            load = resources.one_minute_load()
+            if load is not None: loads.append(load)
+            waited = now() - start
+            span = (f"; one-minute load first {loads[0]:g}, highest {max(loads):g}, last {loads[-1]:g}"
+                    if loads else "; the load average was unavailable")
+            if busy is None:
+                if looks > 1: self.say(f"the host settled after {int(waited)}s and {looks} looks{span}: {what} again")
+                return None
+            kind, reason = busy
+            if looks == 1:
+                self.say(f"{reason}: {what} again once the host settles, waiting up to {SETTLE_LIMIT}s")
+            elif kind != seen or now() - reported >= SETTLE_REPORT:
+                self.say(f"still waiting after {int(waited)}s: {reason}")
+                reported = now()
+            seen = kind
+            if waited >= SETTLE_LIMIT:
+                self.say(f"the host did not settle in {int(waited)}s and {looks} looks{span}")
+                return f"the host did not settle in {int(waited)}s ({reason})"
+            pause(min(SETTLE_POLL, max(0, SETTLE_LIMIT - waited)))
+
     def prepare(self):
         """The worker's own checkout. Locked, so that no sweep takes it for an abandoned worktree."""
         self.place(self.queue.main_checkout, self.checkout, self.queue.old_checkout, "the merge queue's checkout")
@@ -792,7 +838,11 @@ class Worker:
                 result, log = self.pre_push(head)
                 if result in NO_VERDICT and not unsure:
                     unsure = True
-                    self.say(f"the pre-push hook gave no verdict (exit {result}): trying it again")
+                    self.say(f"the pre-push hook gave no verdict (exit {result})")
+                    busy = self.settle("the pre-push hook runs")
+                    if busy:
+                        raise ValueError(f"the pre-push hook gave no verdict, exit {result}, on {head[:12]}, and {busy}; "
+                                         f"see {log}")
                     continue
                 if result in NO_VERDICT:
                     raise ValueError(f"the pre-push hook gave no verdict, exit {result}, twice on {head[:12]}; see {log}")
@@ -890,7 +940,12 @@ class Worker:
             if self.retries > RETRIES:
                 queue.hold(f"the lanes gave no verdict, exit {result}, {self.retries} times; see {log}, then run "
                            "`eng queue resume`")
-            else: self.say(f"no verdict (exit {result}): trying again")
+                return True
+            self.say(f"no verdict (exit {result})")
+            busy = self.settle("the lanes run")
+            if busy:
+                queue.hold(f"the lanes gave no verdict, exit {result}, and {busy}; see {log}, then run "
+                           "`eng queue resume`")
             return True
         self.retries = 0
         if result:

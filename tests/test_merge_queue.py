@@ -49,6 +49,10 @@ class Fixture(unittest.TestCase):
                                           "VOCARO_ENGINEERING_ROOT": str(ROOT)})
         patcher.start()
         self.addCleanup(patcher.stop)
+        # A settled host unless a test says otherwise, so that no retry waits on this Mac's real load.
+        settled = patch.object(mq.resources, "pressure", return_value=None)
+        self.pressure = settled.start()
+        self.addCleanup(settled.stop)
         self.counter, self.status = self.base / "gates", self.base / "status"
         self.origin = self.base / "origin.git"
         run(self.base, "git", "init", "-q", "--bare", "-b", "main", str(self.origin))
@@ -126,6 +130,26 @@ class Fixture(unittest.TestCase):
             return real(directory, *arguments, **options)
         with patch.object(mq, "git", git), patch.object(mq, "pause", slept.append):
             yield seen, slept
+
+    @contextlib.contextmanager
+    def host(self, looks, then=None):
+        """The host's pressure at each look as looks says, a reason while it is busy and None once it has
+        settled, the last repeating, and a one-minute load of 40 while busy and 3 once settled; then runs at
+        the first settled look. Each pause moves a fake clock rather than sleeping. Yields the pauses taken
+        and what the worker said."""
+        clock, slept, said, last = [1000.0], [], io.StringIO(), [None]
+        def pressure(limit=None):
+            last[0] = looks[min(self.pressure.call_count - 1, len(looks) - 1)]
+            if last[0] is None and then: then()
+            return last[0]
+        def pause(seconds):
+            slept.append(seconds)
+            clock[0] += seconds
+        self.pressure.side_effect = pressure
+        with patch.object(mq, "now", lambda: clock[0]), patch.object(mq, "pause", pause), \
+                patch.object(mq.resources, "one_minute_load", side_effect=lambda: 3.0 if last[0] is None else 40.0), \
+                contextlib.redirect_stdout(said):
+            yield slept, said
 
 
 class Landing(Fixture):
@@ -229,6 +253,70 @@ class NoVerdict(Fixture):
         self.work()
         self.assertEqual(self.state(identifier)["state"], "failed")
         self.assertIsNone(mq.Queue(self.repo).held())
+
+    BUSY = ("load", "load 40.0 is at or above HEAVY_LOAD_LIMIT=13.5")
+
+    def test_a_retry_waits_while_the_load_is_high_and_starts_once_it_drops(self):
+        self.status.write_text("3")
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        # The second gate passes only if it starts after the host settled: the load is what voided the first.
+        with self.host([self.BUSY, self.BUSY, self.BUSY, None], then=self.status.unlink) as (slept, said):
+            self.assertEqual(self.work(), 0)
+        self.assertEqual(slept, [mq.SETTLE_POLL] * 3)
+        self.assertEqual(self.gates(), 2)
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertIsNone(mq.Queue(self.repo).held())
+        log = said.getvalue()
+        self.assertIn("load 40.0 is at or above HEAVY_LOAD_LIMIT=13.5: the lanes run again once the host settles", log)
+        self.assertIn(f"the host settled after {3 * mq.SETTLE_POLL}s and 4 looks; one-minute load first 40, highest 40, "
+                      "last 3: the lanes run again", log)
+
+    def test_a_retry_whose_host_stays_busy_past_the_bound_holds_and_says_why(self):
+        self.status.write_text("3")
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        with self.host([self.BUSY]) as (slept, said):
+            self.assertEqual(self.work(), 0)
+        self.assertEqual(sum(slept), mq.SETTLE_LIMIT)
+        self.assertEqual(len(slept), mq.SETTLE_LIMIT // mq.SETTLE_POLL)
+        # No second gate and nothing blamed: the entry waits for the owner, and the hold says why.
+        self.assertEqual(self.gates(), 1)
+        self.assertEqual(self.state(identifier)["state"], "queued")
+        held = mq.Queue(self.repo).held()
+        self.assertIn(f"exit 3, and the host did not settle in {mq.SETTLE_LIMIT}s (load 40.0 is at or above", held)
+        self.assertIn("eng queue resume", held)
+        self.assertIn(f"the host did not settle in {mq.SETTLE_LIMIT}s and {len(slept) + 1} looks", said.getvalue())
+        # A line every SETTLE_REPORT while it waited, not one per look.
+        self.assertEqual(said.getvalue().count("still waiting"), mq.SETTLE_LIMIT // mq.SETTLE_REPORT)
+        self.pressure.side_effect = None
+        self.status.unlink()
+        with patch.object(mq.Queue, "start"), patch("builtins.print"): mq.resume(self.repo)
+        self.work()
+        self.assertEqual(self.state(identifier)["state"], "landed")
+
+    def test_a_failure_comes_back_at_once_without_a_wait(self):
+        """Negative control: only no verdict waits for the host. A lane's failure, alone or bisected, never does."""
+        self.commit("a", "a"); self.commit("bad", "bad")
+        ids = self.add("a", "bad")
+        with self.host([self.BUSY]) as (slept, said):
+            self.assertEqual(self.work(), 0)
+        self.assertEqual([self.state(i)["state"] for i in ids], ["landed", "failed"])
+        self.assertEqual(slept, [])
+        self.assertEqual(self.pressure.call_count, 0)
+        self.assertNotIn("settle", said.getvalue())
+        self.assertIsNone(mq.Queue(self.repo).held())
+
+    def test_a_stop_during_the_wait_ends_it_and_leaves_the_entry_waiting(self):
+        self.status.write_text("3")
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        with self.host([self.BUSY]) as (slept, _), \
+                patch.object(mq.processes, "requested", side_effect=lambda: 15 if slept else None):
+            with self.assertRaisesRegex(mq.processes.Interrupted, "waited for the host to settle"): self.work()
+        self.assertEqual(slept, [mq.SETTLE_POLL])
+        self.assertEqual(self.gates(), 1)
+        self.assertEqual(self.state(identifier)["state"], "queued")
 
     def test_a_worker_that_died_leaves_its_batch_to_the_next(self):
         self.commit("a", "a")
@@ -396,6 +484,32 @@ class PrePushHooks(Fixture):
                 self.assertEqual(self.state(identifier)["state"], "landed")
                 self.assertEqual(len(self.runs()), 2)
                 self.assertEqual(self.gates(), gates + 1)
+
+    def test_no_verdict_from_the_hook_waits_for_the_host_before_it_runs_again(self):
+        self.hook(f'[ "$(wc -l < "{self.ran}")" -gt 1 ] && exit 0\nexit 3')
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        busy = ("memory", "memory pressure is level 2 (warning), not 1 (normal)")
+        with self.host([busy, None]) as (slept, said):
+            self.assertEqual(self.work(), 0)
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual(slept, [mq.SETTLE_POLL])
+        self.assertEqual(len(self.runs()), 2)
+        self.assertIn("memory pressure is level 2 (warning), not 1 (normal): the pre-push hook runs again once the host "
+                      "settles", said.getvalue())
+
+    def test_a_hook_that_gave_no_verdict_holds_when_the_host_stays_busy(self):
+        self.hook("exit 3")
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        with self.host([NoVerdict.BUSY]) as (slept, _):
+            self.assertEqual(self.work(), 1)
+        self.assertEqual(sum(slept), mq.SETTLE_LIMIT)
+        self.assertEqual(len(self.runs()), 1)
+        self.assertEqual(self.state(identifier)["state"], "queued")
+        held = mq.Queue(self.repo).held()
+        self.assertIn("the pre-push hook gave no verdict, exit 3, on", held)
+        self.assertIn(f"the host did not settle in {mq.SETTLE_LIMIT}s", held)
 
     def test_a_hook_that_keeps_giving_no_verdict_holds_and_blames_nobody(self):
         self.hook("exit 75")

@@ -279,6 +279,23 @@ queue, with every entry waiting, as it also does for a push refused for any reas
 hold stays until the owner, or a session the owner told to, has dealt with its cause and run
 `eng queue resume`. Nothing fails over to another route.
 
+The retry waits first for the host to settle, by the test heavy-work admission applies before it takes
+a slot beyond the guaranteed ones (`resources.pressure`; [heavy-work admission](shared-host.md#heavy-work-admission)):
+a one-minute load average below `HEAVY_LOAD_LIMIT`, three quarters of the cores by default, and memory
+pressure at level 1 (normal). A retry that started at once met the load that voided the run it repeated:
+on mpm's queue, two gate runs of about an hour each passed every row but voided a timing anchor at loads
+of 84 to 222, and the queue held until a manual resume once the load had fallen
+([#124](https://github.com/vocaro/vocaro-engineering/issues/124)). The worker looks every 15 seconds
+(`SETTLE_POLL`) for up to an hour (`SETTLE_LIMIT`), no longer than the gate run the wait may save. Past
+that it holds, with every entry waiting, as it did before, and the hold names the reason it last read,
+such as `load 40.0 is at or above HEAVY_LOAD_LIMIT=13.5`. Its log names the reason when the wait
+starts, again every ten minutes or when the reason changes, and at the end how long it waited, how many
+looks it took and the first, highest and last one-minute load. A stop request (SIGTERM, SIGINT or SIGHUP)
+ends the wait at its next look, with the entries still waiting. The test reads the Mac the worker runs
+on: a lane that the second Mac ran left its load there, which this wait does not see. A lane that fails
+blames its commits at once, with no wait, and the hook's no verdict waits the same way before it runs
+again.
+
 **A remote out of reach is tried again.** A fetch or push that never reached the remote, or whose
 connection ended, says nothing of the commits, and a brief outage clears by itself: a name that did not
 resolve, a connection refused, timed out, reset or dropped, over HTTPS or SSH. The worker tries it again
@@ -296,7 +313,7 @@ the project's hook itself with `git hook run`, as Git would call it for pushing 
 log in `eng-queue/logs`, and then pushes with `--no-verify`. A connection that dropped or a race that
 leaves the commit unchanged pushes again without running the hook again; a carried-over commit is a
 new commit and runs it again. A hook's exit 3, 75 or 78 is no verdict, as a lane's is: it is tried
-once more and then holds. Git passes the hook's status through, so a hook that waits for admission
+once more, once the host has settled, and then holds. Git passes the hook's status through, so a hook that waits for admission
 should exit with the status it got rather than 1. Any other refusal holds at once, since the gate
 passed and the hook disagrees, which is for the owner to read; it blames no commit.
 

@@ -290,6 +290,33 @@ def one_minute_load():
         return None
 
 
+def load_limit():
+    """The one-minute load average at or above which the host has no spare capacity: HEAVY_LOAD_LIMIT, or
+    three quarters of the cores."""
+    return float(os.environ.get("HEAVY_LOAD_LIMIT", 0.75 * (os.cpu_count() or 1)))
+
+
+def pressure(limit=None):
+    """Why the host has no spare capacity now, by the load average and memory pressure, as the refusal's kind,
+    load or memory, and its reason, which names the limit and its value beside what was read; None when it has.
+    Admission takes a slot beyond the guaranteed ones only without it, and the merge queue waits for it to clear
+    before it runs a gate again that gave no verdict (guides/maintenance.md, The merge queue)."""
+    limit = load_limit() if limit is None else limit
+    try:
+        load = os.getloadavg()[0]
+    except OSError:
+        return "load", f"the load average, which HEAVY_LOAD_LIMIT={limit:g} bounds, is unavailable"
+    if load >= limit:
+        return "load", f"load {load:.1f} is at or above HEAVY_LOAD_LIMIT={limit:g}"
+    level = memory_level()
+    if level is None:
+        return "memory", "memory pressure, which must be level 1 (normal), cannot be read"
+    if level != 1:
+        named = f" ({PRESSURE[level]})" if level in PRESSURE else ""
+        return "memory", f"memory pressure is level {level}{named}, not 1 (normal)"
+    return None
+
+
 def inherited(exclusive=False, model=False):
     raw = os.environ.get(TOKEN)
     if not raw:
@@ -354,7 +381,7 @@ class Admission:
         cores = os.cpu_count() or 1
         self.slots = int(os.environ.get("HEAVY_SLOTS", "3"))
         self.maximum = int(os.environ.get("HEAVY_SLOTS_MAX", max(self.slots, cores // 2)))
-        self.load_limit = float(os.environ.get("HEAVY_LOAD_LIMIT", 0.75 * cores))
+        self.load_limit = load_limit()
         # The one-minute load average shows a new job's load only gradually.
         self.settle = float(os.environ.get("HEAVY_SETTLE_SECONDS", "30"))
         self.poll = float(os.environ.get("HEAVY_POLL_SECONDS", "1"))
@@ -560,19 +587,7 @@ class Admission:
         if settling < self.settle:
             return "settle", (f"the load does not yet show the job admitted {int(settling)}s ago, "
                               f"within HEAVY_SETTLE_SECONDS={self.settle:g}")
-        try:
-            load = os.getloadavg()[0]
-        except OSError:
-            return "load", f"the load average, which HEAVY_LOAD_LIMIT={self.load_limit:g} bounds, is unavailable"
-        if load >= self.load_limit:
-            return "load", f"load {load:.1f} is at or above HEAVY_LOAD_LIMIT={self.load_limit:g}"
-        level = memory_level()
-        if level is None:
-            return "memory", "memory pressure, which must be level 1 (normal), cannot be read"
-        if level != 1:
-            named = f" ({PRESSURE[level]})" if level in PRESSURE else ""
-            return "memory", f"memory pressure is level {level}{named}, not 1 (normal)"
-        return None
+        return pressure(self.load_limit)
 
     def _take_model(self):
         """The model lock's descriptor, or None with its holder named. The caller holds the coordination lock,
