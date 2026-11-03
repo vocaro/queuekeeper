@@ -120,7 +120,9 @@ def slot(purpose, *, timeout, expected=EXPECTED, record=None, poll=POLL, ready=N
     outcome = "ended by an exception"
     uncertain = False
     try:
-        with voiceover_state.preserved(owner, record=record, read_state=voiceover, said=said):
+        # Always settled: the run's child driver may have died between a failed toggle and its own restoration,
+        # and nothing tells this process so. Release only once the original state has held (#137).
+        with voiceover_state.preserved(owner, record=record, read_state=voiceover, said=said, settle=True):
             yield owner
         outcome = "the run's work ended"
     except voiceover_state.TransitionFailed as error:

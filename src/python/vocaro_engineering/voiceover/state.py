@@ -308,11 +308,14 @@ def set_enabled(desired, owner=None, *, record=None):
 
 
 @contextlib.contextmanager
-def preserved(owner=None, *, target=None, record=None, read_state=None, toggle=None, said=None):
+def preserved(owner=None, *, target=None, record=None, read_state=None, toggle=None, said=None, settle=None):
     """Capture after acquisition; optionally choose target; restore before lease release.
 
     target=None preserves existing clients' initial on/off behavior. target=False is the
     explicit quiet-test opt-in. Dependencies are injectable for offline contract tests.
+    settle=None watches the restored state hold for a stretched SETTLE only after this scope's own failed
+    transition; settle=True always does, as eng's guard around a child driver must: a child killed between its
+    failed toggle and its own restoration tells the parent nothing, and its late key may still arrive.
     An initial read failure acted on nothing and may release cleanly. A failed transition,
     unreadable final state or lost ownership retains uncertainty for attended recovery.
     Existing eng/driver signal handlers keep ownership; otherwise stop_signals handles stops.
@@ -340,7 +343,8 @@ def preserved(owner=None, *, target=None, record=None, read_state=None, toggle=N
                 # bounded restoration is delivered only after the original state is verified.
                 with guard.restoring_signals():
                     try:
-                        _restore(lease, original, reader, toggle, settle=bool(failures))
+                        _restore(lease, original, reader, toggle,
+                                 settle=bool(failures) if settle is None else settle)
                         said(f"VoiceOver restored to original {'on' if original else 'off'}")
                     except BaseException as error:
                         lease.uncertain(f"VoiceOver original state restoration was not verified: {error}")

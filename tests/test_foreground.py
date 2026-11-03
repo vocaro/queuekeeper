@@ -36,7 +36,9 @@ class SlotTests(unittest.TestCase):
         self.record = devices.Record(self.root / "device-handoff.json")
         self.said = []
         for patcher in (patch.dict(os.environ, {devices.OVERRIDE: str(self.record.path)}),
-                        patch.object(foreground, "front", return_value="Finder (ASN:0x0-0x1:)")):
+                        patch.object(foreground, "front", return_value="Finder (ASN:0x0-0x1:)"),
+                        # eng's guard always settles; short for offline fakes.
+                        patch.object(voiceover_state, "SETTLE", 0.3)):
             patcher.start()
             self.addCleanup(patcher.stop)
         os.environ.pop(devices.OWNER, None)
@@ -148,6 +150,49 @@ class SlotTests(unittest.TestCase):
                 "python3 -m vocaro_engineering.devices recover mac-foreground --by SESSION "
                 f"--revision {entry['revision']} --verified WHAT")):
             with self.slot(): self.fail("ran over an uncertain foreground")
+
+    def killed_child(self, toggle):
+        """A run whose child driver sent Command-F5, timed out and was killed before its own restoration: the
+        parent hears only an abnormal end. The key arrives late, on the third read after the run's first."""
+        self.second_mac()
+        enabled, reads, sent = [False], [0], []
+        def read():
+            reads[0] += 1
+            if reads[0] == 3: enabled[0] = True  # The dead child's late key.
+            return enabled[0]
+        def send():
+            sent.append(not enabled[0])
+            toggle(enabled)
+        with patch.object(voiceover_state, "_toggle", send), \
+                patch.object(voiceover_state, "_ready_to_enable", return_value=True):
+            try:
+                with self.slot(voiceover=read):
+                    raise RuntimeError("driver killed by SIGKILL; no report")
+            except (RuntimeError, voiceover_state.TransitionFailed) as error:
+                failed = error
+        return enabled, read, sent, failed
+
+    def test_a_killed_childs_late_key_is_undone_by_the_settled_outer_guard_and_released(self):
+        def works(enabled): enabled[0] = not enabled[0]
+        enabled, read, sent, failed = self.killed_child(works)
+        self.assertRegex(str(failed), "driver killed")
+        self.assertEqual(sent, [False])
+        self.assertIs(read(), False)
+        entry = self.record.entry(devices.FOREGROUND)
+        self.assertEqual((entry["state"], entry["run"]), ("released", "ended by an exception"))
+
+    def test_a_killed_childs_late_key_the_outer_guard_cannot_undo_leaves_the_foreground_uncertain(self):
+        # Negative control: before the outer guard settled, it read the original once, released, and the late key
+        # then left VoiceOver on behind a released foreground.
+        def fails(enabled): raise subprocess.TimeoutExpired("osascript", voiceover_state.WAIT)
+        enabled, read, sent, failed = self.killed_child(fails)
+        self.assertIsInstance(failed, voiceover_state.TransitionFailed)
+        self.assertFalse(failed.restored)
+        self.assertTrue(enabled[0])
+        # The first attempt finds the original and sends nothing; settling sees the late key; each later attempt
+        # sends a key that fails.
+        self.assertEqual(len(sent), voiceover_state.RESTORE_ATTEMPTS - 1)
+        self.assertEqual(devices.condition(self.record.entry(devices.FOREGROUND)), "uncertain")
 
     def test_a_run_that_fails_still_releases_the_foreground(self):
         self.second_mac()
