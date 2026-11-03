@@ -85,6 +85,8 @@ QUEUES = "vocaro-queue"
 # The file whose conflicts the queue may settle, by its name in any directory and in any case.
 CHANGELOG = "changelog.md"
 HEADING = re.compile(rb"#{1,6}\s")
+# The first line of a Markdown list item: a changelog entry.
+ITEM = re.compile(rb"([-*+]|\d{1,9}[.)])\s")
 # Long enough that no line of a changelog reads as one of `git merge-file`'s markers.
 MARKER_SIZE = 32
 # What SwiftPM keeps in a .build that records the checkout's absolute path: a moved checkout whose
@@ -206,10 +208,12 @@ def blank(line):
 
 
 def both_added(before, ours, base, theirs, held):
-    """What one conflict block becomes, or None unless each side only adds whole lines at the top of a
+    """What one conflict block becomes, or None unless each side only adds whole lines at one place in a
     section, with none of the commit's lines already in the file: the new lines, then those ahead of them.
-    A blank line both sides add around their lines stays where it is; any other blank line, or a heading,
-    is no longer a list of entries, and keeping both could put them under the wrong section."""
+    The place is directly below a heading or, when each side's lines start an entry, below an entry, as
+    when two branches each put their line second (#130). A blank line both sides add around their lines
+    stays where it is; any other blank line, or a heading, is no longer a list of entries, and keeping
+    both could put them under the wrong section."""
     if base or not ours or not theirs or not all(line.endswith(b"\n") for line in ours + theirs): return None
     start = end = 0
     shortest = min(len(ours), len(theirs))
@@ -218,7 +222,7 @@ def both_added(before, ours, base, theirs, held):
     new, old = theirs[start:len(theirs) - end], ours[start:len(ours) - end]
     if not new or not old or any(blank(line) or HEADING.match(line) for line in new + old): return None
     above = next((line for line in reversed(before + ours[:start]) if not blank(line)), b"")
-    if not HEADING.match(above): return None
+    if not HEADING.match(above) and not (ITEM.match(above) and ITEM.match(new[0]) and ITEM.match(old[0])): return None
     stripped = [line.strip() for line in new]
     if len(set(stripped)) != len(stripped) or set(stripped) & held: return None
     return ours[:start] + new + old + ours[len(ours) - end:]
@@ -339,6 +343,14 @@ class Queue:
             self.save(current)
         if state in (LANDED, REMOVED): git(self.root, "update-ref", "-d", f"refs/eng-queue/{entry['id']}")
         return current
+
+    def record(self, entry, **fields):
+        """Fields of a waiting entry's record, for the entry nobody has removed meanwhile."""
+        with self.locked():
+            current = self.read(entry["id"])
+            if current and current["state"] in WAITING:
+                current.update(fields)
+                self.save(current)
 
     def mark(self, entries, state):
         """Queued or testing, for the entries nobody has removed meanwhile."""
@@ -480,6 +492,7 @@ def describe(entry):
     line = f"{entry['state']:8} {entry['id']}  {entry['subject']}"
     if entry.get("landedAs"): line += f"  -> {entry['landedAs'][:12]}"
     if entry.get("docsOnly"): line += f"\n         docs lanes only ({', '.join(entry['docsOnly'])}): no gate of that commit"
+    for kept in entry.get("kept", []): line += f"\n         {kept}"
     if entry.get("why"): line += f"\n         {entry['why']}"
     if entry.get("log"): line += f"\n         log: {entry['log']}"
     return line
@@ -695,6 +708,7 @@ class Worker:
     def pick(self, entry):
         """Cherry-pick entry's commits onto HEAD. None when they apply, else why, with HEAD as it was."""
         before = self.head()
+        self.kept = []  # each changelog conflict it settled, which integrate records on the entry
         for commit in entry["commits"]:
             picked = git(self.checkout, "cherry-pick", commit, hooks=False)
             if picked.returncode == 0: continue
@@ -703,10 +717,11 @@ class Worker:
                 # main already has this commit's change, as another route may have landed it.
                 git(self.checkout, "cherry-pick", "--skip", hooks=False, check=True)
                 continue
-            if conflicted and self.keep_changelogs(conflicted):
+            if conflicted and self.keep_changelogs(conflicted, f"{entry['commits'][0]}^", before, commit):
                 # -C, for the commit's own message and author, without Git's note of the conflict.
                 git(self.checkout, "commit", "--no-verify", "-C", commit, hooks=False, check=True)
-                self.say(f"{commit[:12]}: kept both sides of {', '.join(conflicted)}, the new lines first")
+                self.kept.append(f"{commit[:12]}: kept both sides of {', '.join(conflicted)}, the new lines first")
+                self.say(self.kept[-1])
                 continue
             self.reset(before)
             files = ", ".join(conflicted) or picked.stderr.strip()
@@ -717,9 +732,12 @@ class Worker:
         return subprocess.run(["git", "-C", str(self.checkout), "cat-file", "blob", identifier], capture_output=True,
                               check=True, stdin=subprocess.DEVNULL, env=environment(), timeout=GIT_TIMEOUT).stdout
 
-    def keep_changelogs(self, conflicted):
-        """Settle the cherry-pick in progress when every file in conflict is a changelog whose conflicts
-        keep_both settles, and say whether it did; otherwise change nothing."""
+    def keep_changelogs(self, conflicted, start, before, commit):
+        """Settle the cherry-pick of commit in progress when every file in conflict is a changelog whose
+        conflicts keep_both settles, and say whether it did; otherwise change nothing. keep_both merges the
+        entry's whole change to the file, from start, its first commit's parent, to commit, onto before, what
+        is ahead of the entry: so a later commit that rewords the line an earlier one added is that line
+        added, not a change to a line ahead of it (#130)."""
         settled = {}
         for path in conflicted:
             if Path(path).name.lower() != CHANGELOG: return False
@@ -731,7 +749,11 @@ class Worker:
             if set(stages) != {"1", "2", "3"} or len({mode for mode, _ in stages.values()}) != 1 \
                     or not stages["1"][0].startswith("100"):
                 return False
-            settled[path] = keep_both(*(self.blob(stages[stage][1]) for stage in "123"))
+            sides = [git(self.checkout, "rev-parse", "--verify", "-q", f"{revision}:{path}").stdout.strip()
+                     for revision in (start, before, commit)]
+            if not all(sides): return False
+            base, ours, theirs = map(self.blob, sides)
+            settled[path] = keep_both(base, ours, theirs)
             if settled[path] is None: return False
         for path, content in settled.items():
             (self.checkout / path).write_bytes(content)
@@ -748,6 +770,7 @@ class Worker:
                 self.queue.settle(entry, LANDED, landedAs=base, why=f"origin/main already holds it ({how})")
                 continue
             why = self.pick(entry)
+            if not why and self.kept: self.queue.record(entry, kept=self.kept)
             if why:
                 self.say(f"{entry['id']}: {why}")
                 self.queue.settle(entry, CONFLICT, why=why)
