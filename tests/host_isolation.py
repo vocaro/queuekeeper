@@ -59,7 +59,7 @@ FIX_HOSTS = cli.fix_hosts
 
 def unfixed(root, hosts):
     hosts.pop("runtimesDiffer", None)
-    return {**hosts, "reaped": []}
+    return {**hosts, "reaped": [], "deletedDefaults": []}
 
 
 cli.fix_hosts = unfixed

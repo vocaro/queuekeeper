@@ -22,6 +22,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 from vocaro_engineering import cli, config, devices, evidence, offload_host, processes, release, remote, resources
+from vocaro_engineering import disk as disk_module
 import host_isolation
 from host_isolation import stretched
 
@@ -3614,6 +3615,7 @@ class DoctorFixTests(unittest.TestCase):
                 patch.object(remote, "match_runtimes", side_effect=lambda host, check: calls.append((host, check)) or
                              print("runtimes: progress")) as match, \
                 patch.object(cli.simulator_pool, "reap_reports", return_value=[("this Mac", self.REPORT)]) as reap, \
+                patch.object(cli, "delete_defaults", return_value=["removed: U iPhone 17"]), \
                 contextlib.redirect_stdout(StringIO()) as output, contextlib.redirect_stderr(StringIO()) as error:
             fixed = host_isolation.FIX_HOSTS(Path("/project"), first)
         return fixed, calls, compare, reap, output.getvalue(), error.getvalue()
@@ -3630,6 +3632,7 @@ class DoctorFixTests(unittest.TestCase):
         reap.assert_called_once_with(None, Path("/project"), dry_run=False, here=False)
         self.assertEqual(len(fixed["reaped"]), 1)
         self.assertIn("on this Mac, stopped Example iPhone 1 (U), PID 7: stale", fixed["reaped"][0])
+        self.assertEqual(fixed["deletedDefaults"], ["removed: U iPhone 17"])
 
     def test_matching_runtimes_change_nothing_and_an_unreached_second_mac_is_not_reaped(self):
         first = {"host": "fake", "errors": [], "unchecked": ["fake, which cannot be reached"]}
@@ -3639,11 +3642,34 @@ class DoctorFixTests(unittest.TestCase):
 
     def test_every_test_gets_a_doctor_that_changes_neither_mac(self):
         self.assertIsNot(cli.fix_hosts, host_isolation.FIX_HOSTS)
-        with patch.object(remote, "match_runtimes") as match, patch.object(cli.simulator_pool, "reap_reports") as reap:
+        with patch.object(remote, "match_runtimes") as match, patch.object(cli.simulator_pool, "reap_reports") as reap, \
+                patch.object(cli, "delete_defaults") as defaults:
             self.assertEqual(cli.fix_hosts(Path("/project"), {"errors": [], "runtimesDiffer": True}),
-                             {"errors": [], "reaped": []})
-        match.assert_not_called()
-        reap.assert_not_called()
+                             {"errors": [], "reaped": [], "deletedDefaults": []})
+        for fake in (match, reap, defaults): fake.assert_not_called()
+
+    def test_doctor_deletes_only_xcodes_shut_down_unused_defaults_and_records_each(self):
+        home = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, home, True)
+        runtime = "com.apple.CoreSimulator.SimRuntime.iOS-27-2"
+        default, booted, member = (str(uuid.uuid4()).upper() for _ in range(3))
+        listing = {"devices": {runtime: [
+            {"udid": default, "name": "iPhone 17", "state": "Shutdown", "isAvailable": True},
+            {"udid": booted, "name": "iPhone 17 Pro", "state": "Booted", "isAvailable": True},
+            {"udid": member, "name": "Example iPhone 1", "state": "Shutdown", "isAvailable": True}]}}
+        host = lambda: disk_module.Host(home=home, development=home / "Development", now=time.time(), min_idle=0,
+                                        processes=[], simulators=listing, default_devices=frozenset({default, booted}))
+        calls = []
+        def run(command, **options):
+            calls.append(command)
+            return subprocess.CompletedProcess(command, 0, "", "")
+        with patch.object(disk_module.Host, "current", side_effect=lambda *arguments: host()):
+            said = cli.delete_defaults(run=run)
+        # The booted default and the device in no pool stay; only the shut-down default goes.
+        self.assertEqual(calls, [["xcrun", "simctl", "delete", default]])
+        self.assertIn(f"removed: {default} iPhone 17 (iOS-27-2)", said)
+        ledger = json.loads(disk_module.ledger_path(home).read_text().splitlines()[0])
+        self.assertEqual((ledger["path"], ledger["outcome"]), (f"{default} iPhone 17 (iOS-27-2)", "removed"))
 
 
 class RemoteRuntimeTests(unittest.TestCase):

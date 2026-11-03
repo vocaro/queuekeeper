@@ -128,8 +128,10 @@ def fix_hosts(root, hosts):
     """What `eng doctor` fixes of remote.compare_hosts' report itself, the owner's no longer (the owner's
     decision, 2026-11-03): runtimes that differ, which it evens out (remote.match_runtimes) and then
     compares again, and stale pool simulators on both Macs, which it shuts down (simulators.pool.reap_reports)
-    and lists in reaped. Its progress goes to standard error, so that standard output stays the report.
-    tests/host_isolation.py replaces it, so that no test changes either Mac."""
+    and lists in reaped, and Xcode's default simulators on this Mac, which it deletes as `eng disk --delete`
+    does, checking each again first, and lists in deletedDefaults. Its progress goes to standard error, so
+    that standard output stays the report. tests/host_isolation.py replaces it, so that no test changes
+    either Mac."""
     if hosts.pop("runtimesDiffer", False):
         with contextlib.redirect_stdout(sys.stderr): remote.match_runtimes(hosts["host"], check=False)
         hosts = remote.compare_hosts()
@@ -137,7 +139,26 @@ def fix_hosts(root, hosts):
     # The second Mac only when it answered the comparison: one away is no error, and is not waited for.
     reaped = simulator_pool.reap_reports(None, root, dry_run=False, here="remote" not in hosts)
     hosts["reaped"] = [line for where, report in reaped for line in remote.reap_lines(where, report, listing=False)]
+    hosts["deletedDefaults"] = delete_defaults()
     return hosts
+
+
+def delete_defaults(run=subprocess.run):
+    """Delete Xcode's default simulators on this Mac that `eng disk` finds deletable, each checked again
+    first and recorded in its ledger, and return what was said of each."""
+    def defaults():
+        found = disk.Host.current(0, None, run)
+        return found, [item for item in disk.inventory(found, disk.Sizes(run, False), ["simulator"])
+                       if item.status == disk.CANDIDATE and item.reason.startswith("Xcode's default device")]
+    try:
+        host, items = defaults()
+        if not items: return []
+        said = []
+        disk.delete(items, lambda category: defaults()[1], disk.ledger_path(host.home), out=said.append, run=run,
+                    terminal=False)
+        return said
+    except (OSError, RuntimeError, subprocess.SubprocessError, ValueError) as error:
+        return [f"could not delete Xcode's default simulators: {type(error).__name__}: {error}"]
 
 
 def default_simulators(config):
@@ -145,7 +166,8 @@ def default_simulators(config):
 
     A script or Xcode run that picks a device by name, or `booted`, finds one of them instead of a
     pool member and fills it with the project's apps (vocaro-engineering#91). Xcode makes them again
-    when it installs a runtime. Deleting them is the owner's call, so this only says so."""
+    when it installs a runtime. `eng doctor` deletes each one first (fix_hosts), so this names only
+    those still there: booted, in use or named by a process."""
     if not any(capability.startswith("simulator") for capability in config.get("capabilities", [])):
         return []
     try:
@@ -157,9 +179,9 @@ def default_simulators(config):
         return []
     shown = ", ".join(found[:5]) + (f" and {len(found) - 5} more" if len(found) > 5 else "")
     return [f"{len(found)} of Xcode's default simulators exist on this Mac: {shown}. A script or Xcode run that "
-            "picks a device by name or `booted` installs on one instead of a pool member; `eng disk` lists them "
-            "with their delete commands, which are the owner's call (guides/simulator-testing.md, Reserved "
-            "simulator pool)"]
+            "picks a device by name or `booted` installs on one instead of a pool member; `eng doctor` deletes each "
+            "one that is shut down and unused, and `eng disk` says why it kept these (guides/simulator-testing.md, "
+            "Reserved simulator pool)"]
 
 
 def initialize(root, args):
@@ -757,10 +779,10 @@ def main(argv=None):
             warnings += unlinked_packages(root, config)
             warnings += stale_copies(root)
             warnings += agent_entry(root, config)
-            warnings += default_simulators(config)
             warnings += skills.warnings(named_checkout(TOOLKIT_ROOT))
             # A difference between the two Macs is an error; a second Mac that cannot be reached is unchecked.
             hosts = fix_hosts(root, remote.compare_hosts())
+            warnings += default_simulators(config)
             print(json.dumps({"project": config["name"], "toolkit": str(TOOLKIT_ROOT),
                 "source": source_identity(TOOLKIT_ROOT), "capabilities": config.get("capabilities", []),
                 "missingCommands": missing, "warnings": warnings, "offload": hosts}, indent=2))

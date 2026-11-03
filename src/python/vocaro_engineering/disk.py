@@ -5,7 +5,9 @@ simulators and runtimes, the build caches their builds fill, and the scratch bui
 their sessions leave in the temporary directories. It reads nothing else, and classifies each item:
 
 - candidate: the rules prove that no session's live work is in it. `--delete` removes it after
-  the owner confirms its category on a terminal, checking it again first.
+  the owner confirms its category on a terminal, checking it again first. Simulators and runtimes,
+  which Xcode makes or downloads again, it removes without asking, on a terminal or not (the
+  owner's decision, 2026-11-03).
 - owner: nothing shows a session using it, but only the owner can say whether it is still
   wanted. The command that would remove it is printed; `--delete` never runs it.
 - kept: it is in use, owned, of unclear ownership, or holds work or evidence.
@@ -40,6 +42,12 @@ CATEGORIES = {"worktree": "Linked worktrees", "simulator": "Simulators", "runtim
               "swiftpm-cache": "SwiftPM shared cache", "results": "Result directories",
               "failures": "Kept failure records (pruned by their rule)",
               "evidence": "Evidence archives (offload to the second Mac)"}
+# The categories --delete removes without asking: Xcode makes simulators and downloads runtimes again, so
+# deleting one is no longer the owner's call (the owner's decision, 2026-11-03).
+UNASKED = {"simulator", "runtime"}
+# A runtime no device uses is removed once it has gone unused this long, as a pool member is pruned: a
+# lane may make its devices on it next.
+RUNTIME_IDLE_DAYS = 14
 UUID = re.compile(r"[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}", re.IGNORECASE)
 SEPARATORS = re.compile(r"[\s=,;\"']+")
 # Xcode names a workspace's DerivedData folder NAME-<28 letters>; other folders are shared caches.
@@ -485,11 +493,16 @@ def disposable_name(name):
     return bool(UUID.search(name))
 
 
+def idle_since(stamp, now):
+    """Seconds since an ISO 8601 stamp such as simctl's lastUsedAt, or None when there is none to read."""
+    if not stamp: return None
+    try: return now - datetime.datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp()
+    except (ValueError, AttributeError): return None
+
+
 def last_used(device, directory, now):
-    stamp = device.get("lastUsedAt") or device.get("lastBootedAt")
-    if stamp:
-        try: return now - datetime.datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp()
-        except ValueError: pass
+    idle = idle_since(device.get("lastUsedAt") or device.get("lastBootedAt"), now)
+    if idle is not None: return idle
     return now - last_activity(directory) if directory and os.path.isdir(directory) else None
 
 
@@ -563,10 +576,12 @@ def simulators(host, usage, sizes):
                 else: items.append(item(KEPT, "a disposable device with no recorded use" if idle is None
                                         else f"a disposable device last used {age(idle)} ago"))
             elif not device.get("isAvailable", True):
-                items.append(item(OWNER, f"unavailable ({device.get('availabilityError', 'runtime missing')}); "
-                                         "a named device whose use only the owner knows", command))
+                items.append(item(CANDIDATE, f"unavailable ({device.get('availabilityError', 'runtime missing')}), "
+                                             "so nothing can run on it", command))
             elif udid in host.default_devices:
-                items.append(item(OWNER, "Xcode's default device for its runtime; any session may use it", command))
+                items.append(item(CANDIDATE, "Xcode's default device for its runtime, which Xcode makes again; a "
+                                             "script that picks a device by name fills it instead of a pool member",
+                                  command))
             else:
                 items.append(item(KEPT, "a named device in no project's pool, perhaps made by hand; "
                                         "only its owner removes it"))
@@ -574,7 +589,7 @@ def simulators(host, usage, sizes):
         for directory in host.device_directory.iterdir():
             if directory.is_dir() and UUID.fullmatch(directory.name) and directory.name.upper() not in listed:
                 use = usage.of(directory)
-                items.append(Item("simulator", str(directory), KEPT if use else OWNER,
+                items.append(Item("simulator", str(directory), KEPT if use else CANDIDATE,
                                   "in use: " + described(use) if use else "a device directory CoreSimulator no longer lists",
                                   sizes.of(directory), None if use else ["rm", "-rf", "--", str(directory)],
                                   host.now - last_activity(directory)))
@@ -596,9 +611,15 @@ def runtimes(host):
         elif image.get("deletable") is False:
             items.append(Item("runtime", label, KEPT, "not deletable: it came with Xcode", size))
         else:
-            items.append(Item("runtime", label, OWNER, f"no device uses it; last used {stamp or 'never'}; a lane may "
-                              "create its devices on it next", size,
-                              ["xcrun", "simctl", "runtime", "delete", image.get("identifier", key)]))
+            idle = idle_since(stamp, host.now)
+            command = ["xcrun", "simctl", "runtime", "delete", image.get("identifier", key)]
+            if idle is not None and idle < RUNTIME_IDLE_DAYS * 86400:
+                items.append(Item("runtime", label, KEPT, f"no device uses it, but it was used {age(idle)} ago, within "
+                                  f"{RUNTIME_IDLE_DAYS} days; a lane may create its devices on it next", size, idle=idle))
+            else:
+                items.append(Item("runtime", label, CANDIDATE, f"no device uses it; last used {stamp or 'never'}, "
+                                  f"over {RUNTIME_IDLE_DAYS} days ago or never; xcodebuild downloads it again", size,
+                                  command, idle))
     return items
 
 
@@ -885,17 +906,21 @@ def outside_checkouts(path):
 
 
 def delete(items, fresh, ledger, ask=input, out=print, run=subprocess.run, terminal=None):
-    """Remove candidates category by category, after confirmation and a fresh check of each."""
-    if not (sys.stdin.isatty() if terminal is None else terminal):
-        raise RuntimeError("--delete asks for confirmation on a terminal; run it there")
+    """Remove candidates category by category after a fresh check of each: those of UNASKED at once,
+    any other category once the owner confirms it on a terminal. Off a terminal, the others stay."""
+    terminal = sys.stdin.isatty() if terminal is None else terminal
     removed = 0
     for category, title in CATEGORIES.items():
         group = [item for item in items if item.category == category and item.status == CANDIDATE]
         if not group: continue
-        answer = ask(f"Remove {len(group)} {title.lower()} candidates, {human(sum(item.size for item in group))}? [y/N] ")
-        if answer.strip().lower() not in ("y", "yes"):
-            out(f"Kept every {title.lower()} candidate.")
-            continue
+        if category not in UNASKED:
+            if not terminal:
+                out(f"Kept every {title.lower()} candidate: removing them asks the owner on a terminal.")
+                continue
+            answer = ask(f"Remove {len(group)} {title.lower()} candidates, {human(sum(item.size for item in group))}? [y/N] ")
+            if answer.strip().lower() not in ("y", "yes"):
+                out(f"Kept every {title.lower()} candidate.")
+                continue
         current = {item.path: item for item in fresh(category)}
         for item in group:
             now = current.get(item.path)
@@ -919,7 +944,8 @@ def delete(items, fresh, ledger, ask=input, out=print, run=subprocess.run, termi
 def add_arguments(parser):
     action = parser.add_mutually_exclusive_group()
     action.add_argument("--dry-run", action="store_true", help="list only what --delete would remove, and remove nothing")
-    action.add_argument("--delete", action="store_true", help="remove candidates after confirming each category")
+    action.add_argument("--delete", action="store_true", help="remove candidates: simulators and runtimes at once, "
+                        "any other category after the owner confirms it on a terminal")
     parser.add_argument("--json", action="store_true", help="print the items as JSON")
     parser.add_argument("--min-idle-hours", type=float, default=24.0,
                         help="how long a candidate must have been unchanged (default 24)")

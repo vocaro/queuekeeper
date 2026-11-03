@@ -257,8 +257,11 @@ class SimulatorTests(Fixture):
         self.assertEqual(items[disposable["udid"]].command, ["xcrun", "simctl", "delete", disposable["udid"]])
         self.assertEqual(items[pool["udid"]].status, disk.KEPT)
         self.assertIsNone(items[pool["udid"]].command)
-        self.assertEqual(items[unavailable_pool["udid"]].status, disk.OWNER)
-        self.assertEqual(items[default["udid"]].status, disk.OWNER)
+        # Xcode makes its defaults again, and nothing runs on a device whose runtime is gone (the owner's
+        # decision, 2026-11-03).
+        self.assertEqual(items[unavailable_pool["udid"]].status, disk.CANDIDATE)
+        self.assertEqual(items[default["udid"]].status, disk.CANDIDATE)
+        self.assertEqual(items[default["udid"]].command, ["xcrun", "simctl", "delete", default["udid"]])
 
     def test_a_pool_member_is_a_candidate_only_under_the_pruning_rule(self):
         stamp = lambda days: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(LATER - days * 86400))
@@ -340,15 +343,23 @@ class SimulatorTests(Fixture):
         self.assertEqual(items[disposable["udid"]].status, disk.KEPT)
         self.assertIn("could not be read", items[disposable["udid"]].reason)
 
-    def test_a_runtime_without_devices_is_an_owner_decision(self):
+    def test_a_runtime_no_device_uses_is_a_candidate_once_unused_for_14_days(self):
+        stamp = lambda days: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(LATER - days * 86400))
         listing = {"devices": {"com.apple.CoreSimulator.SimRuntime.iOS-27-0": [device("iPhone 17")]}}
-        images = {"A": {"identifier": "A", "runtimeIdentifier": "com.apple.CoreSimulator.SimRuntime.iOS-27-0", "sizeBytes": 8},
-                  "B": {"identifier": "B", "runtimeIdentifier": "com.apple.CoreSimulator.SimRuntime.iOS-26-5", "sizeBytes": 9}}
-        items = {item.path[0]: item for item in disk.inventory(self.host(simulators=listing, runtimes=images),
+        runtime = lambda key, version, **values: {"identifier": key, "sizeBytes": 8,
+            "runtimeIdentifier": f"com.apple.CoreSimulator.SimRuntime.iOS-{version}", **values}
+        images = {"A": runtime("A", "27-0", lastUsedAt=stamp(40)), "B": runtime("B", "26-5"),
+                  "C": runtime("C", "27-1", lastUsedAt=stamp(20)), "D": runtime("D", "27-2", lastUsedAt=stamp(3)),
+                  "E": runtime("E", "27-3", deletable=False)}
+        items = {item.path[0]: item for item in disk.inventory(self.host(simulators=listing, runtimes=images, now=LATER),
                                                                 disk.Sizes(measure=False), ["runtime"])}
-        self.assertEqual(items["A"].status, disk.KEPT)
-        self.assertEqual(items["B"].status, disk.OWNER)
-        self.assertEqual(items["B"].command, ["xcrun", "simctl", "runtime", "delete", "B"])
+        self.assertEqual(items["A"].status, disk.KEPT)  # a device uses it, however long ago
+        for key in "BC":
+            self.assertEqual(items[key].status, disk.CANDIDATE, items[key].reason)
+            self.assertEqual(items[key].command, ["xcrun", "simctl", "runtime", "delete", key])
+        self.assertEqual(items["D"].status, disk.KEPT)
+        self.assertIn("within 14 days", items["D"].reason)
+        self.assertEqual(items["E"].status, disk.KEPT)
 
 
 class CacheTests(Fixture):
@@ -448,11 +459,25 @@ class DeletionTests(Fixture):
         host = self.host(processes, temp_roots=[(self.root / "tmp", 3)])
         return disk.inventory(host, disk.Sizes(measure=False), categories)
 
-    def test_deletion_needs_a_terminal(self):
-        with self.assertRaises(RuntimeError):
-            disk.delete(self.collect(), lambda category: self.collect(categories=[category]), self.ledger,
-                        ask=lambda prompt: "y", terminal=False)
+    def test_off_a_terminal_only_simulators_and_runtimes_are_removed(self):
+        stale = disk.Item("simulator", "U Example", disk.CANDIDATE, "test", command=["xcrun", "simctl", "delete", "U"])
+        runtime = disk.Item("runtime", "R", disk.CANDIDATE, "test", command=["xcrun", "simctl", "runtime", "delete", "R"])
+        items = [*self.collect(), stale, runtime]
+        calls = []
+        def run(command, **options):
+            calls.append(command)
+            return subprocess.CompletedProcess(command, 0, "", "")
+        asked = []
+        with contextlib.redirect_stdout(StringIO()) as output:
+            disk.delete(items, lambda category: [item for item in items if item.category == category]
+                        if category in disk.UNASKED else self.collect(categories=[category]), self.ledger,
+                        ask=lambda prompt: asked.append(prompt) or "y", out=print, run=run, terminal=False)
+        # Nothing asked, and only the unasked categories removed: every worktree and scratch build stays.
+        self.assertEqual(asked, [])
+        self.assertEqual(calls, [stale.command, runtime.command])
         self.assertTrue(self.landed.exists() and self.scratch.exists())
+        self.assertIn("Kept every linked worktrees candidate: removing them asks the owner on a terminal.",
+                      output.getvalue())
 
     def test_only_confirmed_candidates_are_removed_and_each_decision_is_recorded(self):
         answers = {"linked worktrees": "y", "scratch builds outside checkouts": "n"}

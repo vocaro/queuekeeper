@@ -1215,9 +1215,11 @@ directory. It never surveys the home
 directory or the rest of the volume. It prints each item's size, the reason for its status and
 the exact command that would remove it.
 A **candidate** is proven unowned by the rules below. An **owner** item shows no sign of a
-session using it, but only the owner can say whether it is still wanted: Xcode's default
-simulators, a runtime no device uses, test results, a directory no repository has registered and
-a worktree outside the session directories. Everything else is **kept**: in use, owned, of
+session using it, but only the owner can say whether it is still wanted: test results, a
+directory no repository has registered and a worktree outside the session directories.
+Simulators and runtimes are never owner items: Xcode makes its simulators again and downloads its
+runtimes again, so eng deletes them when the rules allow, without asking (the owner's decision,
+2026-11-03). Everything else is **kept**: in use, owned, of
 unclear ownership, or holding work or evidence. `eng disk --dry-run` lists only the candidates,
 with their commands: exactly what `--delete` would offer to remove.
 
@@ -1259,9 +1261,11 @@ with their commands: exactly what `--delete` would offer to remove.
   the devices module reads, the account's record when `VOCARO_DEVICE_RECORD` names another, and
   any legacy `/private/tmp` handoff file. Every device is shut down and unused by any process
   before it can be a candidate, and an unreadable record keeps every device. Xcode's default
-  devices and unavailable named devices are owner items; any other named device was made by
-  hand and is kept. A runtime no device uses is an owner item: a pool may create its members on
-  it next.
+  devices, unavailable named devices and device directories CoreSimulator no longer lists are
+  candidates, and `eng doctor` deletes this Mac's defaults itself; any other named device, which
+  may be another pool's member on a checkout eng cannot see, is kept. A runtime no device uses
+  is a candidate once simctl's `lastUsedAt` is over 14 days old, or absent, so a pool that will
+  create its members on it next keeps it meanwhile; one that came with Xcode is kept.
 - **Build caches.** A DerivedData folder in `~/Library/Developer/Xcode` (named
   `NAME-<28 letters>`) whose `info.plist` names a workspace in `~/Development` or a temporary
   directory is a candidate when that workspace no longer exists; a folder for any other
@@ -1291,7 +1295,9 @@ with their commands: exactly what `--delete` would offer to remove.
   ([evidence](evidence.md#public-and-private-destinations)). A main checkout's archive goes to
   `Development/session-evidence/<project>` there.
 
-`eng disk --delete` runs only on a terminal and asks once per category. Immediately before each
+`eng disk --delete` removes simulator and runtime candidates at once, on a terminal or not, so a
+script can run it. Every other category it removes only on a terminal, after asking once for
+that category; off a terminal it keeps them and says so. Immediately before each
 removal it takes a fresh census and checks that candidate again, refuses an `rm` inside any
 working tree or reached through a link, and appends every decision to
 `~/Library/Application Support/vocaro-engineering/disk-reclaimed.jsonl`. It never runs an owner
