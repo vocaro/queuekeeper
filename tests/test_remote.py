@@ -3462,6 +3462,31 @@ class LeftoverCensusTests(unittest.TestCase):
         self.assertEqual((rows[8000]["place"], rows[8000]["cwd"], rows[8000]["written"]),
                          ("checkout", str(self.checkout), 4 << 10))
 
+    def test_an_app_a_ui_test_launched_from_a_checkout_during_a_live_admission_there_is_not_listed_until_it_ends(self):
+        # A Pagepour Mac test run's app and its converter service, which launchd starts for the UI test, were
+        # listed as left over while their run went on (2026-11-03, vocaro-engineering#129).
+        self.ios_tests()
+        del self.table[7000], self.table[7001], self.table[7002], self.table[7003]
+        products = self.checkout / ".build/DerivedData/mac-tests/Build/Products/Debug/Example.app/Contents"
+        app = f"{products}/MacOS/Example --reader-scene-qualification -ApplePersistenceIgnoreState YES"
+        service = f"{products}/XPCServices/ExampleConverter.xpc/Contents/MacOS/ExampleConverter"
+        self.process(8000, 1, app, cwd="/", start=TESTING, written=4 << 10)
+        self.process(8001, 1, service, cwd="/", start=TESTING)
+        self.assertEqual(self.census(), {})
+        # Negative controls, while the admission is live: the app of an earlier run, one built in another
+        # checkout, a bundle's resource that is no executable, and a program of the run's that is no bundle.
+        self.process(8002, 1, app, cwd="/", start=EARLY)
+        other = str(self.checkout.parents[1] / "1/Example")
+        self.process(8003, 1, app.replace(str(self.checkout), other), cwd="/", start=TESTING)
+        self.process(8004, 1, f"/bin/sh {products}/Resources/helper.sh", cwd="/", start=TESTING)
+        self.process(8005, 1, "/usr/bin/python3 writer.py", cwd=str(self.checkout), start=TESTING)
+        self.assertEqual(sorted(self.census()), [8002, 8003, 8004, 8005])
+        # Once the admission has ended, the run's own app is listed too.
+        for pid in (8002, 8003, 8004, 8005): del self.table[pid]
+        self.admission(5000, LATER, ("admitted", 1), ("ended", 455))
+        del self.table[5000], self.table[5010]
+        self.assertEqual(sorted(self.census()), [8000, 8001])
+
     def test_a_census_that_cannot_read_says_so_and_one_that_fails_says_why(self):
         self.assertEqual(offload_host.leftovers(remote.ROOT, listed=lambda command: None), {"error": "ps listed no processes"})
         # Without lsof's working directories, only command lines place a process.

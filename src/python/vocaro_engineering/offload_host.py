@@ -96,6 +96,10 @@ HOLDER = "holderProcess"
 # A program inside an Xcode, such as the DTServiceHub that xcodebuild starts for a test run,
 # which launchd adopts once xcodebuild has ended.
 XCODE = re.compile(r"[^\s'\"]*/Xcode[^/\s'\"]*\.app/Contents/")
+# The executable of an app, an XPC service or an app extension, which launchd starts when a UI test launches
+# the app a run built in its checkout, as a Pagepour Mac test run's app and its converter service were on
+# 2026-11-03, which the census listed as left over (vocaro-engineering#129).
+BUNDLE = re.compile(r"[^\s'\"]*\.(?:app|xpc|appex)/Contents/MacOS/[^/\s'\"]+(?=\s|$)")
 # Characters of a leftover's command line that the census reports.
 COMMAND_LIMIT = 1000
 # How ps prints a process's start (lstart), with its spacing collapsed.
@@ -861,8 +865,9 @@ def leftovers(root, listed=listing, written=disk_writes):
     its own, with everything below them. A simulator's processes descend from launchd_sim, never
     from a run, so a device is a live run's while the device record holds it for one of that run's
     processes, as the pool records the process that reserved a member, or while one of them names
-    it. An Xcode program, such as the DTServiceHub that xcodebuild leaves behind, is a live run's
-    when it started in a checkout after a live admission there began. Each leftover whose parent is
+    it. An Xcode program, such as the DTServiceHub that xcodebuild leaves behind, or a bundle's
+    executable in the checkout, such as the app a UI test launches and the XPC services it starts,
+    is a live run's when it started in a checkout after a live admission there began. Each leftover whose parent is
     no leftover is listed, with its PID, start, command, how much it has written, and each of its
     descendants with what that one has written."""
     home, uid = Path.home(), os.getuid()
@@ -927,10 +932,13 @@ def leftovers(root, listed=listing, written=disk_writes):
         if where is not None and moment is not None: windows[where] = min(moment, windows.get(where, moment))
 
     def holds(pid, kind, path, device):
-        """Whether a live run holds the process: its simulator, or, for an Xcode program, the
-        checkout it started in after that run's admission there began."""
+        """Whether a live run holds the process: its simulator, or, for an Xcode program or a bundle's
+        executable in the checkout, the checkout it started in after that run's admission there began."""
         if device: return device in held or device in named
-        if kind != "checkout" or not XCODE.match(table[pid]["args"]): return False
+        if kind != "checkout": return False
+        args = table[pid]["args"]
+        bundle = BUNDLE.match(args)
+        if not XCODE.match(args) and not (bundle and slot(bundle.group(0)) == slot(path)): return False
         since, began = windows.get(slot(path)), started(table[pid]["start"])
         return since is not None and began is not None and began >= since - 1
 
