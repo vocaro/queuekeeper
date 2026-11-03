@@ -1053,6 +1053,33 @@ class Changelogs(Fixture):
         self.assertEqual([self.state(i)["state"] for i in ids], ["landed"] * 2)
         self.assertEqual(self.changelog(), self.START.replace("- old\n", "- c\n- b\n- a\n- old\n", 1))
 
+    def test_a_branch_that_rewords_its_own_line_lands_once(self):
+        """EPUBLib's #938: its second commit changed the line its first added, which commit by commit read as
+        a change to a line ahead of it (#130)."""
+        self.commit("CHANGELOG.md", "b0", self.top("- a"))
+        self.commit("CHANGELOG.md", "b1", self.top("- b"))
+        (self.repo / "CHANGELOG.md").write_text(self.top("- b, reworded"))
+        run(self.repo, "git", "commit", "-qam", "Reword b")
+        ids = self.add("b0", "b1")
+        self.work()
+        self.assertEqual([self.state(i)["state"] for i in ids], ["landed"] * 2)
+        self.assertEqual(self.changelog(), self.START.replace("- old\n", "- b, reworded\n- a\n- old\n", 1))
+        self.assertNotIn("kept", self.state(ids[0]))
+        kept = self.state(ids[1])["kept"]
+        self.assertEqual(len(kept), 2, kept)
+        self.assertTrue(all("kept both sides of CHANGELOG.md" in line for line in kept), kept)
+        self.assertIn("kept both sides of CHANGELOG.md", mq.describe(self.state(ids[1])))
+
+    def test_a_branch_that_later_rewords_a_line_ahead_of_it_comes_back(self):
+        self.commit("CHANGELOG.md", "b0", self.top("- a"))
+        self.commit("CHANGELOG.md", "b1", self.top("- b"))
+        (self.repo / "CHANGELOG.md").write_text(self.top("- b").replace("- old", "- old, reworded"))
+        run(self.repo, "git", "commit", "-qam", "Reword old")
+        ids = self.add("b0", "b1")
+        self.work()
+        self.assertEqual([self.state(i)["state"] for i in ids], ["landed", "conflict"])
+        self.assertEqual(self.changelog(), self.top("- a"))
+
     def test_a_section_with_no_entries_yet(self):
         start = "# Release notes\n\n## Unreleased\n\n## 1.0\n\n- first\n"
         self.commit("CHANGELOG.md", "empty", start)
@@ -1072,11 +1099,28 @@ class Changelogs(Fixture):
         self.assertEqual(states, ["landed", "conflict"])
         self.assertEqual(self.changelog(), ahead)
 
-    def test_lines_added_below_the_top_of_a_section_come_back(self):
+    def test_entries_added_below_an_entry_land_with_the_new_first(self):
+        """EPUBLib's #706: the entry ahead had put its line second, and so had the branch (#130)."""
         start = self.START.replace("- old\n", "- old\n- older\n", 1)
         self.commit("CHANGELOG.md", "longer", start)
         run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
         states = self.outcome(*(start.replace("- older", f"{line}\n- older") for line in ("- a", "- b")))
+        self.assertEqual(states, ["landed"] * 2)
+        self.assertEqual(self.changelog(), start.replace("- older", "- b\n- a\n- older"))
+
+    def test_lines_added_below_what_is_no_entry_come_back(self):
+        start = self.START.replace("- old\n", "Entries since 1.0.\n- old\n", 1)
+        self.commit("CHANGELOG.md", "intro", start)
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        states = self.outcome(*(start.replace("- old", f"{line}\n- old") for line in ("- a", "- b")))
+        self.assertEqual(states, ["landed", "conflict"])
+
+    def test_lines_that_start_no_entry_below_an_entry_come_back(self):
+        """Keeping both would join the commit's wrapped line to the entry above it."""
+        start = self.START.replace("- old\n", "- old\n- older\n", 1)
+        self.commit("CHANGELOG.md", "longer", start)
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        states = self.outcome(start.replace("- older", "- a\n- older"), start.replace("- older", "  more of old\n- older"))
         self.assertEqual(states, ["landed", "conflict"])
 
     def test_a_new_section_ahead_comes_back(self):
@@ -1101,6 +1145,7 @@ class Changelogs(Fixture):
         ids = self.add("b0", "b1")
         self.work()
         self.assertEqual([self.state(i)["state"] for i in ids], ["landed", "conflict"])
+        self.assertIn("in CHANGELOG.md, same:", self.state(ids[1])["why"])
         self.assertEqual(self.changelog(), self.top("- a"))
 
     def test_a_line_on_both_sides_is_not_doubled(self):

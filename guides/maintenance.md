@@ -239,15 +239,22 @@ exactly the commits it tested, as ordinary commits with their own messages and c
 Closeout finds each branch landed by equal patches. The gate receipt is of the pushed commit, which
 `eng release` accepts, unless the result was carried over.
 
-**Lines added at the top of a changelog section need no author.** Branches that each add a line at
-the top of a section of `CHANGELOG.md`, in any directory and any case, conflict in turn, since each
-line sits where the one before it just went. The worker settles such a conflict by keeping both, the
-new lines first, and gates the result as usual. It does so only when every conflict in the commit is
-in a changelog and each is lines both sides only added directly below a Markdown `#` heading, as
-whole lines, with no heading and no blank line among them, and with none of the commit's lines already in the file, since
-keeping both would double it. Anything else comes back, a change to an existing line or a conflict in
-another file above all. The commit keeps its message and author. Its patch is then not the branch's,
-so `landed.sh` proves no such branch landed, and it stays until its author removes it.
+**Lines added to a changelog section need no author.** Branches that each add a line to a section of
+`CHANGELOG.md`, in any directory and any case, conflict in turn, since each line sits where the one
+before it just went. The worker settles such a conflict by keeping both, the new lines first, so the
+entry being landed goes above those ahead of it, and gates the result as usual. It does so only when
+every conflict in the commit is in a changelog and each is lines both sides only added at one place,
+as whole lines, with no heading and no blank line among them, and with none of the commit's lines
+already in the file, since keeping both would double it. The place is directly below a Markdown `#`
+heading or, when each side's lines start a list item, directly below one, as when two branches each
+put their line second ([#130](https://github.com/vocaro/vocaro-engineering/issues/130)). For an entry
+of several commits the worker merges the entry's whole change to the changelog, from its first
+commit's parent, onto what is ahead of it, so a later commit that rewords the line an earlier one
+added is still that line added. Anything else comes back, naming each file in conflict: a change to a
+line ahead of it, lines below a paragraph or inside a wrapped entry, or a conflict in another file
+above all. Each settled commit is listed under `kept` in the entry's record, which `eng queue status`
+and `eng queue wait` show. The commit keeps its message and author. Its patch is then not the
+branch's, so `landed.sh` proves no such branch landed, and it stays until its author removes it.
 
 **Which toolkit a gate runs.** Each round, a project's worker moves
 `~/Development/vocaro-queue/NAME/vocaro-engineering`, a locked worktree of the toolkit with no session's
