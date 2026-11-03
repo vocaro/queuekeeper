@@ -62,6 +62,8 @@ FREE_WAIT, BUSY = 5, 75
 # The admission log and its previous generation. A line that would take the log past LOG_LIMIT
 # bytes first makes the log the previous generation, so the two together stay within twice it.
 LOG, PREVIOUS_LOG, LOG_LIMIT = "admissions.jsonl", "admissions.1.jsonl", 8 << 20
+# The characters of a label that logs, queues and messages keep; the guard records it whole.
+LABEL_LIMIT = 160
 # The path that names the guard's namespace, unless SW_GATE_LOCK_FILE names another.
 GATE_LOCK = "/tmp/studywright-gate-suite.lock"
 # The admissions this process holds, by identity: only the owner's own supervision writes an entry's
@@ -462,7 +464,7 @@ class Admission:
         def held(slots, model):
             named = f"slot{'s' if len(slots) > 1 else ''} {', '.join(map(str, slots))}" if slots else ""
             return " and ".join(part for part in [named, "the model" if model else ""] if part) or "nothing"
-        described = [f"the guard entry of {str(owner.get('label') or 'an unnamed owner')[:160]}, PID {owner['pid']}, is "
+        described = [f"the guard entry of {str(owner.get('label') or 'an unnamed owner')[:LABEL_LIMIT]}, PID {owner['pid']}, is "
                      f"{'uncertain' if owner.get('uncertain') else 'dead'} and requires inspection ({why}), and is "
                      f"counted as {held(slots, model)}" for _identity, owner, why, slots, model in self.counted]
         return "; ".join(described) + (f"; `python3 scripts/eng admissions recover` lists "
@@ -514,7 +516,7 @@ class Admission:
     def _log(self, event, **fields):
         """Append this request's line to the admission log. The caller holds the coordination lock."""
         append_log({"event": event, "identity": self.identity, "pid": os.getpid(), "kind": self.kind,
-                    "label": self.label[:160], **fields})
+                    "label": self.label[:LABEL_LIMIT], **fields})
 
     def _seen(self):
         """What the request saw, for its admitted or withdrawn line (#49): the holders and the one-minute load
@@ -522,7 +524,7 @@ class Admission:
         fields = {"holders": self.holders, "load": self.loads[0] if self.loads else None}
         if self.counted:
             # The stranded entries recovery left, which the latest attempt counted as the slots they held (#89).
-            fields["stranded"] = [{"identity": identity, "pid": owner["pid"], "label": str(owner.get("label"))[:160],
+            fields["stranded"] = [{"identity": identity, "pid": owner["pid"], "label": str(owner.get("label"))[:LABEL_LIMIT],
                                    "uncertain": bool(owner.get("uncertain")), "why": why, "slots": slots, "model": model}
                                   for identity, owner, why, slots, model in self.counted]
         if self.refusals:
@@ -612,7 +614,7 @@ class Admission:
                        if owner.get("exclusive") and identity not in self.stranded), None)
         if holder is not None:
             self.refusal, self.waiting = "exclusive", ("it waits behind exclusive work holding the host: "
-                                                       f"{str(holder.get('label') or 'an unnamed owner')[:160]}")
+                                                       f"{str(holder.get('label') or 'an unnamed owner')[:LABEL_LIMIT]}")
         else:
             self._refused_beside_stranded()
         return False
@@ -630,7 +632,7 @@ class Admission:
                 born = process_start(os.getpid())
                 if born is None:
                     raise RuntimeError("Cannot establish the admission owner's process identity")
-                waiters.append({"identity": self.identity, "pid": os.getpid(), "start": born, "label": self.label[:160]})
+                waiters.append({"identity": self.identity, "pid": os.getpid(), "start": born, "label": self.label[:LABEL_LIMIT]})
                 # Set first, so that leaving the wait by any exception withdraws the record.
                 self.queued = True
                 self._record(waiters)
@@ -686,7 +688,7 @@ class Admission:
             locks = []
             for name, fd in held:
                 os.ftruncate(fd, 0)
-                os.write(fd, f"{os.getpid()} {self.identity} {self.label[:160]}\n".encode())
+                os.write(fd, f"{os.getpid()} {self.identity} {self.label[:LABEL_LIMIT]}\n".encode())
                 os.set_inheritable(fd, True)
                 locks.append({"fd": fd, "path": str(self.directory / name), "nonce": self.identity})
             self.previous = os.environ.get(TOKEN)
@@ -729,7 +731,7 @@ class Admission:
         _held[self.identity] = self
         print(f"heavy: slot {','.join(str(slot) for slot, _fd in self.descriptors)}"
               f"{' and the model' if self.held_model is not None else ''} after {int(time.monotonic() - started)}s: "
-              f"{self.label[:160]}", file=sys.stderr, flush=True)
+              f"{self.label[:LABEL_LIMIT]}", file=sys.stderr, flush=True)
         if self.counted:
             print(f"heavy: admitted beside a stranded entry: {self._stranded_text()}", file=sys.stderr, flush=True)
         return self
@@ -1038,7 +1040,7 @@ def census(path):
     unsettled = [command for command in commands.values() if not command["settled"]]
     for command in unsettled:
         if command["root"] is None:
-            raise ValueError(f"its command `{' '.join(map(str, command['argv']))[:160]}` may have started before "
+            raise ValueError(f"its command `{' '.join(map(str, command['argv']))[:LABEL_LIMIT]}` may have started before "
                              "the record named its process")
     current, left = snapshot(), {}
     for command in unsettled:
@@ -1070,7 +1072,7 @@ def recover(owner=None, out=print):
 
     def shown(entry):
         """An entry's label on one line: an eng admit label is its command line, which can span several."""
-        return " ".join(entry["label"].split())[:160]
+        return " ".join(entry["label"].split())[:LABEL_LIMIT]
 
     def recorded(identity):
         """The entry's process record, or None: an identity that is not admission's names none."""
@@ -1124,7 +1126,7 @@ def reclaim(guard, state, identity, automatic=False):
     recovery would leave is removed."""
     owners = state["owners"]
     entry = owners[identity]
-    name = f"{' '.join(entry['label'].split())[:160]} (PID {entry['pid']})"
+    name = f"{' '.join(entry['label'].split())[:LABEL_LIMIT]} (PID {entry['pid']})"
     if not ended(entry):
         return False, (f"{name} still runs, so its entry stays: its owner removes the entry, or leaves it for recovery, "
                        "when it ends."), "its owner still runs"
@@ -1151,7 +1153,7 @@ def reclaim(guard, state, identity, automatic=False):
     with contextlib.suppress(OSError): path.unlink(missing_ok=True)
     append_log({"event": "recovered", "identity": identity, "pid": entry["pid"],
                 "kind": "exclusive" if entry.get("exclusive") else "model" if entry.get("model") else "heavy",
-                "label": entry["label"][:160], "uncertain": bool(entry.get("uncertain")),
+                "label": entry["label"][:LABEL_LIMIT], "uncertain": bool(entry.get("uncertain")),
                 "commands": commands, "processes": processes, "spaces": spaces,
                 **({"automatic": True} if automatic else {})})
     return True, (f"Recovered {name}: " + (f"nothing of its {commands} unsettled command(s) still runs, among {processes} "
