@@ -137,12 +137,17 @@ OTHER_KEY = re.compile(r"Host key verification failed|REMOTE HOST IDENTIFICATION
 # one's name to resolve, and at most how many it tries. Answers this Mac's mDNSResponder holds come in
 # under 0.1 s (macOS 27.0.1, 2026-11-01).
 BROWSE_SECONDS, RESOLVE_SECONDS, CANDIDATES = 2, 2, 8
-# What `dns-sd -B _ssh._tcp local.` prints of a Mac that offers ssh, and `dns-sd -L` of where it is.
-BROWSED = re.compile(r"^\S+\s+Add\s+\d+\s+\d+\s+(\S+)\s+_ssh\._tcp\.\s+(.+?)\s*$")
+# What `dns-sd -B _ssh._tcp local.` prints of a Mac that offers ssh, and `dns-sd -L` of where it is. dns-sd
+# pads an hour before 10 with a space (" 9:46:14.615  Add"), which hid every Mac each morning until
+# 2026-11-03 (vocaro-engineering#129).
+BROWSED = re.compile(r"^\s*\S+\s+Add\s+\d+\s+\d+\s+(\S+)\s+_ssh\._tcp\.\s+(.+?)\s*$")
 RESOLVED = re.compile(r"can be reached at (\S+?)\.?:(\d+)\b")
 # The second Mac found under a new .local name in this process, by destination: what it was renamed
 # from and to, and the name its key is known by (rediscover).
 RENAMED = {}
+# The second Mac searched for in this process and not found, by destination: the names Bonjour offered
+# ssh under that were asked for its key, none presenting it (rediscover).
+UNFOUND = {}
 # Set by offload_host.py for the work it runs: the name of the Mac that sent it, which a receipt records.
 DISPATCHER = "VOCARO_DISPATCHED_FROM"
 # Seconds `eng doctor` waits for the second Mac to report its Xcodes and runtimes.
@@ -231,7 +236,8 @@ def ssh_failure(host, said, *context, sent=False):
     line = last_line(said)
     banner = NO_BANNER in [entry.strip() for entry in (said or "").splitlines()]
     if line and LOGIN.search(line):
-        return Misconfigured(f"ssh reached {host} but could not log in: {line}",
+        found = searched(host) if OTHER_KEY.search(line) else ""
+        return Misconfigured(f"ssh reached {host} but could not log in: {line}{found}",
                              f"correct its entry in ~/.ssh/config, its host key in ~/.ssh/known_hosts or this Mac's key "
                              f"in its ~/.ssh/authorized_keys, until `ssh {host} true` succeeds without a prompt "
                              "(guides/shared-host.md, Setting up the second Mac)")
@@ -251,12 +257,16 @@ def reachable(host, found=None):
     A .local name that does not resolve, or that answers with another key, may be a second Mac that
     macOS renamed (rediscover): one found under a new name is checked there, and every connection of
     this process to host then goes to that name."""
+    # An earlier search's finding says nothing of this check's failure, which is searched for afresh.
+    UNFOUND.pop(host, None)
     try:
         check(host, found)
     except (Unreachable, Misconfigured) as stop:
         if isinstance(stop, Misconfigured) and not OTHER_KEY.search(stop.problem): raise
         RENAMED.pop(host, None)
-        if rediscover(host) is None: raise
+        if rediscover(host) is None:
+            if not searched(host): raise
+            raise type(stop)(stop.problem + searched(host), stop.fix) from None
         check(host)
 
 
@@ -308,6 +318,8 @@ def rediscover(host):
     here = offload_host.mac_name().lower()
     names = [name for name, offered in advertised() if offered == port and name not in {old, f"{here}.local"}]
     matches = [name for name in names[:CANDIDATES] if presents(host, name, alias)]
+    UNFOUND.pop(host, None)
+    if not matches: UNFOUND[host] = {"names": names[:CANDIDATES], "keyAlias": alias, "port": port}
     if len(matches) != 1:
         if len(matches) > 1:
             print(f"eng: {old} does not reach {host}, and {', '.join(matches)} all present its key, so eng chose none",
@@ -317,6 +329,20 @@ def rediscover(host):
     print(f"eng: {host} was renamed: {old} no longer reaches it, and {matches[0]}, which presents the key known_hosts "
           f"holds for {alias}, does, so this run uses {matches[0]}; {renamed_fix(host)}", file=sys.stderr, flush=True)
     return matches[0]
+
+
+def searched(host):
+    """What the search for host found when it found no Mac presenting its key, as words to add to the
+    problem; nothing when it was not searched for, or was found. A second Mac that Bonjour does not list
+    is away or asleep, not renamed, and one that Bonjour lists under another name but that presents
+    another key is another machine: either way no rename explains the failure."""
+    found = UNFOUND.get(host)
+    if found is None: return ""
+    if not found["names"]:
+        return (f"; no other Mac offers ssh on port {found['port']} over Bonjour (`dns-sd -B _ssh._tcp local.`), "
+                f"so {host} was not renamed: it is away or asleep")
+    return (f"; of the Macs offering ssh over Bonjour, {', '.join(found['names'])}, none presents the key known_hosts "
+            f"holds for {found['keyAlias']}, so {host} was not renamed among them")
 
 
 def renamed_fix(host):
@@ -393,7 +419,7 @@ def unreachable(host, detail, slept=None):
     name = unresolved.group(1) if unresolved else None
     now = asleep() if slept is not None else None
     sleep = now - slept if now is not None else 0
-    problem = f"{host} cannot be reached: {said or 'ssh exited 255'}"
+    problem = f"{host} cannot be reached: {said or 'ssh exited 255'}{searched(host)}"
     connected = bool(TIMED_OUT.match(said or ""))
     if NO_ANSWER.match(said or ""):
         problem += f"; nothing answered ssh's TCP connection in ConnectTimeout's {CONNECT_TIMEOUT} s"
@@ -576,7 +602,22 @@ def login(script):
 
 
 def ssh(host, script, **options):
-    return subprocess.run([*SSH, *moved(host), host, login(script)], env=environment(), **options)
+    """Run script in host's login shell. When ssh's captured words say the name did not resolve or answered
+    with another key, ssh logged in nowhere and nothing ran, so a second Mac that macOS renamed is looked
+    for (rediscover) and, once found, script runs there: every connection finds it, not only those after
+    reachable(), such as a foreground lane's and `eng remote foreground`'s (vocaro-engineering#129)."""
+    run = lambda: subprocess.run([*SSH, *moved(host), host, login(script)], env=environment(), **options)
+    done = run()
+    if done.returncode == 255 and host not in RENAMED and renamed_failure(done.stderr) and rediscover(host):
+        done = run()
+    return done
+
+
+def renamed_failure(said):
+    """Whether ssh's own words, said, are those of a name that a rename may explain: one that did not
+    resolve, or that answered with another key than the one known_hosts holds for it."""
+    line = last_line(said) if isinstance(said, str) else None
+    return bool(line and (re.search(r"Could not resolve hostname", line) or OTHER_KEY.search(line)))
 
 
 def send(root, host, repository, commit, advertised=None, sends=None):

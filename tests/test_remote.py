@@ -3854,11 +3854,15 @@ class RenamedSecondMacTests(unittest.TestCase):
                "Timestamp     A/R    Flags  if Domain               Service Type         Instance Name\n",
                "11:02:14.905  Add        3  30 local.               _ssh._tcp.           Media’s MacBook Pro\n",
                "11:02:14.906  Add        3  14 local.               _ssh._tcp.           Media’s MacBook Pro\n",
-               "11:02:14.907  Add        2  30 local.               _ssh._tcp.           Studio\n"]
+               "11:02:14.907  Add        2  30 local.               _ssh._tcp.           Studio\n",
+               # dns-sd pads an hour before 10 with a space (macOS 27.2, 2026-11-03).
+               " 9:46:14.615  Add        2  15 local.               _ssh._tcp.           Mini\n"]
 
     def setUp(self):
         remote.RENAMED.clear()
         self.addCleanup(remote.RENAMED.clear)
+        remote.UNFOUND.clear()
+        self.addCleanup(remote.UNFOUND.clear)
         self.settings = {"hostname": "mac-3.local", "port": "22"}
         stack = contextlib.ExitStack()
         self.addCleanup(stack.close)
@@ -3869,12 +3873,13 @@ class RenamedSecondMacTests(unittest.TestCase):
     def test_advertised_resolves_each_browsed_mac_once(self):
         def watch(command, seconds, until=None):
             if command[1] == "-B": return self.BROWSED
-            name = {"Media’s MacBook Pro": "Mac-4", "Studio": "Here"}[command[2]]
+            name = {"Media’s MacBook Pro": "Mac-4", "Studio": "Here", "Mini": "Mini"}[command[2]]
             return [f"11:02:22.628  x._ssh._tcp.local. can be reached at {name}.local.:22 (interface 30)\n"]
         with patch.object(remote, "watch", side_effect=watch) as watched:
-            self.assertEqual(ADVERTISED(), [("mac-4.local", "22"), ("here.local", "22")])
+            self.assertEqual(ADVERTISED(), [("mac-4.local", "22"), ("here.local", "22"), ("mini.local", "22")])
         # One instance seen on two interfaces is resolved once.
-        self.assertEqual([call.args[0][2] for call in watched.call_args_list[1:]], ["Media’s MacBook Pro", "Studio"])
+        self.assertEqual([call.args[0][2] for call in watched.call_args_list[1:]],
+                         ["Media’s MacBook Pro", "Studio", "Mini"])
         with patch.object(remote, "watch", return_value=[]):
             self.assertEqual(ADVERTISED(), [])
 
@@ -3964,6 +3969,80 @@ class RenamedSecondMacTests(unittest.TestCase):
                     self.assertIs(raised.exception, outcomes[0])
                 self.assertEqual(checked.call_count, len(outcomes) if found != "unused" or kind is None else 1)
                 self.assertEqual(searched.called, outcomes[0] in (away, other_key))
+
+    def test_a_check_that_finds_no_rename_says_what_bonjour_offered(self):
+        away = remote.Unreachable("fake cannot be reached: ssh: Could not resolve hostname mac-3.local", "wake it")
+        for names, said in [([("other.local", "22")], "of the Macs offering ssh over Bonjour, other.local, none "
+                                                      "presents the key known_hosts holds for mac-3.local"),
+                            ([], "no other Mac offers ssh on port 22 over Bonjour")]:
+            with self.subTest(names=names), patch.object(remote, "check", side_effect=[away]), \
+                    patch.object(remote, "advertised", return_value=names), \
+                    patch.object(remote, "presents", return_value=False):
+                with self.assertRaises(remote.Unreachable) as raised:
+                    remote.reachable("fake")
+                self.assertTrue(raised.exception.problem.startswith(away.problem), raised.exception.problem)
+                self.assertIn(said, raised.exception.problem)
+                self.assertEqual(raised.exception.fix, away.fix)
+        # The negative control: a second Mac that was never searched for gets no such words.
+        remote.UNFOUND.clear()
+        self.assertEqual(remote.searched("fake"), "")
+        self.assertNotIn("Bonjour", remote.unreachable("fake", "ssh: Could not resolve hostname mac-3.local: x").problem)
+
+    def test_every_connection_finds_a_renamed_second_mac_not_only_the_check_before_a_dispatch(self):
+        # A foreground lane's preparing connection and `eng remote foreground` reach the second Mac by ssh(),
+        # which on 2026-11-03 said "wake build-host" of a Mac renamed from -4 to -5 (vocaro-engineering#129).
+        unresolved = subprocess.CompletedProcess([], 255, "", "ssh: Could not resolve hostname mac-3.local: "
+                                                              "nodename nor servname provided, or not known\n")
+        other_key = subprocess.CompletedProcess([], 255, "", "Host key verification failed.\n")
+        answered = subprocess.CompletedProcess([], 0, '{"foreground": true}\n', "")
+        for failure in [unresolved, other_key]:
+            remote.RENAMED.clear()
+            with self.subTest(failure=failure.stderr), \
+                    patch.object(remote.subprocess, "run", side_effect=[failure, answered]) as run, \
+                    patch.object(remote, "advertised", return_value=[("mac-4.local", "22")]), \
+                    patch.object(remote, "presents", return_value=True):
+                self.assertEqual(remote.ask("fake", {"foreground": True}), {"foreground": True})
+                self.assertEqual(run.call_count, 2)
+                self.assertIn("HostName=mac-4.local", run.call_args.args[0])
+                self.assertNotIn("HostName=mac-4.local", run.call_args_list[0].args[0])
+        self.assertIn("fake was renamed", self.error.getvalue())
+
+    def test_a_connection_that_finds_no_rename_fails_at_once_saying_what_bonjour_offered(self):
+        unresolved = subprocess.CompletedProcess([], 255, "", "ssh: Could not resolve hostname mac-3.local: x\n")
+        with patch.object(remote.subprocess, "run", side_effect=[unresolved]) as run, \
+                patch.object(remote, "advertised", return_value=[("other.local", "22")]), \
+                patch.object(remote, "presents", return_value=False):
+            with self.assertRaises(remote.Misconfigured) as raised:
+                remote.ask("fake", {"foreground": True})
+        self.assertEqual(run.call_count, 1)
+        self.assertIn("other.local, none presents the key", raised.exception.problem)
+
+    def test_a_connection_searches_only_on_failures_a_rename_explains(self):
+        failures = [subprocess.CompletedProcess([], 255, "", "fake: Permission denied (publickey).\n"),
+                    subprocess.CompletedProcess([], 255, "", "ssh: connect to host mac-3.local port 22: "
+                                                             "Operation timed out\n"),
+                    subprocess.CompletedProcess([], 1, "", "ssh: Could not resolve hostname mac-3.local: x\n"),
+                    # Words not captured cannot be read.
+                    subprocess.CompletedProcess([], 255, None, None)]
+        for failure in failures:
+            with self.subTest(failure=failure), patch.object(remote.subprocess, "run", side_effect=[failure]) as run, \
+                    patch.object(remote, "rediscover") as searched:
+                self.assertIs(remote.ssh("fake", "true", capture_output=True, text=True), failure)
+            searched.assert_not_called()
+            self.assertEqual(run.call_count, 1)
+        # A second Mac already found renamed in this process is not searched for again.
+        remote.RENAMED["fake"] = {"from": "mac-3.local", "to": "mac-4.local", "keyAlias": "mac-3.local"}
+        unresolved = subprocess.CompletedProcess([], 255, "", "ssh: Could not resolve hostname mac-4.local: x\n")
+        with patch.object(remote.subprocess, "run", side_effect=[unresolved]), \
+                patch.object(remote, "rediscover") as searched:
+            remote.ssh("fake", "true", capture_output=True, text=True)
+        searched.assert_not_called()
+        # Nor is one whose search finds nothing asked twice.
+        remote.RENAMED.clear()
+        with patch.object(remote.subprocess, "run", side_effect=[unresolved]) as run, \
+                patch.object(remote, "rediscover", return_value=None) as searched:
+            self.assertIs(remote.ssh("fake", "true", capture_output=True, text=True), unresolved)
+        self.assertEqual((searched.call_count, run.call_count), (1, 1))
 
 
 class SharedOriginTests(unittest.TestCase):
