@@ -308,6 +308,75 @@ class PoolTests(unittest.TestCase):
         self.assertEqual({call[0] for call in self.simctl.calls}, {"list"})
         self.assertFalse(self.path.exists())
 
+    def test_check_held_passes_only_a_member_the_owner_holds(self):
+        held = self.simctl.add("Project Duo 1", state="Booted")
+        theirs = self.simctl.add("Project Duo 2", state="Booted")
+        free = self.simctl.add("Project Duo 3")
+        released = self.simctl.add("Project Duo 4")
+        elsewhere = self.simctl.add("Project Duo 5", state="Booted")
+        orphaned = self.simctl.add("Project Duo 6", state="Booted")
+        default = self.simctl.add("iPhone Duo", state="Booted")
+        self.hold("Project Duo 1", held, owner="me")
+        self.hold("Project Duo 2", theirs)
+        self.release_entry("Project Duo 4", released, days=1)
+        # A reservation under another key that names the member's UDID holds it too.
+        self.hold("old key", elsewhere, owner="me")
+        self.hold("Project Duo 6", orphaned, owner="me")
+        value = json.loads(self.path.read_text())
+        value["devices"]["Project Duo 6"].update(activeRun=True, hostProcessIdentifier=999999999,
+                                                 hostProcessStart="never")
+        self.path.write_text(json.dumps(value))
+        before = self.path.read_text()
+        def command(*arguments, owner="me", environment=None):
+            out, err = StringIO(), StringIO()
+            with mock.patch.object(simulator_pool, "simctl", self.simctl), \
+                    mock.patch.object(simulator_pool, "default_devices", return_value=frozenset({default})), \
+                    mock.patch.object(simulator_pool, "default_owner", return_value=environment), \
+                    redirect_stdout(out), redirect_stderr(err):
+                status = simulator_pool.main(["--pool", "Project", *(["--owner", owner] if owner else []),
+                                              "check", "--held", *arguments])
+            return status, out.getvalue(), err.getvalue()
+        self.assertEqual(command(held), (0, held + "\n", ""))
+        self.assertEqual(command(held.lower())[:2], (0, held + "\n"))
+        self.assertEqual(command(elsewhere)[:2], (0, elsewhere + "\n"))
+        # The owner comes from VOCARO_DEVICE_OWNER or the session when --owner is absent.
+        self.assertEqual(command(held, owner=None, environment="me")[:2], (0, held + "\n"))
+        status, output, error = command(held, owner="someone else")
+        self.assertEqual((status, output), (1, ""))
+        self.assertIn("someone else holds no reservation of; me holds it (Project Duo 1)", error)
+        status, output, error = command(theirs)
+        self.assertEqual((status, output), (1, ""))
+        self.assertIn(f"Project Duo 2 ({theirs}) is a Project pool member that me holds no reservation of; "
+                      "another session holds it (Project Duo 2)", error)
+        for unheld in (free, released):
+            with self.subTest(unheld=unheld):
+                status, output, error = command(unheld)
+                self.assertEqual((status, output), (1, ""))
+                self.assertIn("nobody holds it", error)
+        status, _, error = command(orphaned)
+        self.assertEqual(status, 1)
+        self.assertIn("its reservation Project Duo 6 is orphan: recover it", error)
+        status, _, error = command(default)
+        self.assertEqual(status, 1)
+        self.assertIn(f"iPhone Duo ({default}) is one of Xcode's default devices outside the Project simulator pool",
+                      error)
+        status, _, error = command("booted")
+        self.assertEqual(status, 1)
+        self.assertIn("is not a simulator UDID", error)
+        # --held needs an owner, where a plain check does not.
+        with self.assertRaises(SystemExit), redirect_stderr(StringIO()):
+            command(held, owner=None)
+        # Without --held, a member someone else holds still passes.
+        with mock.patch.object(simulator_pool, "simctl", self.simctl), redirect_stdout(StringIO()) as out:
+            self.assertEqual(simulator_pool.main(["--pool", "Project", "--owner", "me", "check", theirs]), 0)
+        self.assertEqual(out.getvalue(), theirs + "\n")
+        # Nothing but listings and reading the record: a check changes neither.
+        self.assertEqual({call[0] for call in self.simctl.calls}, {"list"})
+        self.assertEqual(self.path.read_text(), before)
+        self.assertEqual(self.pool.check_held(held).name, "Project Duo 1")
+        with self.assertRaises(devices.Refused):
+            self.pool.check_held(theirs, defaults=frozenset())
+
     def test_default_devices_come_from_the_device_set(self):
         with tempfile.TemporaryDirectory() as directory:
             self.assertEqual(simulator_pool.default_devices(directory), frozenset())

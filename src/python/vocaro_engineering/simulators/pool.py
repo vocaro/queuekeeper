@@ -9,7 +9,8 @@ lowest-numbered of its kind, and records the deletion (guides/simulator-testing.
 simulator pool). Nothing else here deletes or renames a simulator. Reaping shuts down a member left
 booted past its time (offload_host.reap; guides/shared-host.md, Processes left over from runs).
 Checking a UDID refuses any device outside the pool, such as one of Xcode's default devices, which a
-script that picks a device by name finds instead of a member (vocaro-engineering#91).
+script that picks a device by name finds instead of a member (vocaro-engineering#91); checking it
+as held also refuses a member that the caller holds no live reservation of (vocaro-engineering#122).
 
     eng simulator-pool list|take|release|prune|reap|check [--pool NAME] ...; eng simulator-pool -h for the rest
 """
@@ -200,6 +201,34 @@ class Pool:
         raise RuntimeError(f"{entry.get('name')} ({udid}) is {kind} outside the {self.name} simulator pool: take a "
                            "member with `eng simulator-pool take --device TYPE --runtime RUNTIME` and pass its UDID "
                            "(guides/simulator-testing.md, Reserved simulator pool)")
+
+    def check_held(self, udid, listing=None, defaults=None):
+        """The member this UDID names, when this owner holds a live reservation of it: its record entry,
+        under the member's name or any key naming its UDID, is held or in an active run for this owner.
+        Anything check refuses is refused, and so is a member that is unreserved, held by another owner,
+        or only in an orphaned or uncertain reservation, which a recovery settles first."""
+        member = self.check(udid, listing, defaults)
+        if not self.owner:
+            raise ValueError(f"name the owner whose reservation holds {member.name}: --owner, "
+                             f"${device_record.OWNER} or the agent's session")
+        entries = entries_for(member, self.record.load())
+        conditions = {key: device_record.condition(entry) for key, entry in entries.items()}
+        if any(entry.get("ownerChatID") == self.owner and str(entry.get("device") or "").upper() == member.udid
+               and conditions[key] in {"held", "active"} for key, entry in entries.items()):
+            return member
+        live = {key: entry for key, entry in entries.items() if conditions[key] != "released"}
+        ours = [key for key, entry in live.items() if entry.get("ownerChatID") == self.owner]
+        if ours:
+            why = f"its reservation {ours[0]} is {conditions[ours[0]]}: recover it before using the member"
+        elif live:
+            key, entry = next(iter(live.items()))
+            why = f"{entry.get('ownerChatID') or 'another session'} holds it ({key})"
+        else:
+            why = "nobody holds it"
+        raise device_record.Refused(f"{member.name} ({member.udid}) is a {self.name} pool member that {self.owner} "
+                                    f"holds no reservation of; {why}. Take one with `eng simulator-pool take "
+                                    "--device TYPE --runtime RUNTIME` and pass the UDID it prints "
+                                    "(guides/simulator-testing.md, Reserved simulator pool)")
 
     def state(self, udid):
         """A fresh observation of this exact device, or None when simctl no longer lists it."""
@@ -500,6 +529,8 @@ def main(argv, project=None):
     reap.add_argument("--here", action="store_true", help="only this Mac")
     check = commands.add_parser("check", help="print a pool member's canonical UDID; exit 1 for any other device, "
                                 "such as one of Xcode's default devices, a name or `booted`")
+    check.add_argument("--held", action="store_true", help="also exit 1 unless the owner holds a live "
+                       "reservation of the member, as `take` leaves it")
     check.add_argument("udid")
     args = parser.parse_args(argv)
     if args.action == "reap":
@@ -512,7 +543,7 @@ def main(argv, project=None):
     owner = args.owner or default_owner()
     if not name:
         parser.error("name the pool with --pool, or in engineering.json's simulatorPool")
-    if not owner and args.action not in {"list", "check"}:
+    if not owner and (args.action not in {"list", "check"} or getattr(args, "held", False)):
         parser.error(f"name the owner with --owner or ${device_record.OWNER}")
     try:
         pool = Pool(name, owner=owner)
@@ -536,7 +567,7 @@ def main(argv, project=None):
                 return status if status != 124 else evidence.UNMEASURED
             print(lease.udid)
         elif args.action == "check":
-            print(pool.check(args.udid).udid)
+            print((pool.check_held if args.held else pool.check)(args.udid).udid)
         elif args.action == "release":
             return 0 if pool.release(pool.held(args.udid), outcome=args.outcome) else 1
         elif args.action == "prune":
