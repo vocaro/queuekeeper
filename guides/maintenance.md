@@ -218,9 +218,9 @@ with `VOCARO_ENGINEERING_ROOT` naming it (owner's decision, 2026-11-01). A lande
 therefore reaches the next round of every project's gate, and a shared toolkit checkout that lags or
 holds a session's changes reaches none of them. Each worker has its own copy, so moving it changes no
 other project's running gate. The toolkit's own queue tests its batch instead, and a
-`VOCARO_ENGINEERING_ROOT` set where the worker started stands. A copy that cannot be fetched or moved
-holds the queue and blames no commit. Anything else still reads the shared checkout: a session's own
-`eng`. So a project commit that needs a new toolkit option lands after the toolkit's commit, and runs
+`VOCARO_ENGINEERING_ROOT` set where the worker started stands. A copy that cannot be fetched, after the
+retries a remote out of reach gets, or moved holds the queue and blames no commit. Anything else still
+reads the shared checkout: a session's own `eng`. So a project commit that needs a new toolkit option lands after the toolkit's commit, and runs
 by hand only once that checkout has it.
 
 **The shared checkout follows each toolkit landing.** After each push, the toolkit's own worker
@@ -279,10 +279,21 @@ queue, with every entry waiting, as it also does for a push refused for any reas
 hold stays until the owner, or a session the owner told to, has dealt with its cause and run
 `eng queue resume`. Nothing fails over to another route.
 
+**A remote out of reach is tried again.** A fetch or push that never reached the remote, or whose
+connection ended, says nothing of the commits, and a brief outage clears by itself: a name that did not
+resolve, a connection refused, timed out, reset or dropped, over HTTPS or SSH. The worker tries it again
+after 10, 30, 90 and 270 seconds (`BACKOFF`), and holds only when the fifth try fails too, so a gate
+that passed is not discarded because GitHub could not be reached for a moment
+([#113](https://github.com/vocaro/vocaro-engineering/issues/113)). `eng land`'s own fetch retries the
+same way. Git's message decides: one that says the remote answered and refused, an authentication
+failure, a 4xx status, an SSH key or host key refused, a missing repository or a rejected push, holds
+at once, though SSH ends a refused key with the same `Could not read from remote repository` as a
+dropped connection. So does any other error.
+
 **A pre-push hook runs ahead of the push.** `git push` connects before it runs the hook, so a hook's
 long wait held an SSH connection open until GitHub dropped it. After a gate passes, the worker runs
 the project's hook itself with `git hook run`, as Git would call it for pushing to `main`, with its
-log in `eng-queue/logs`, and then pushes with `--no-verify`. A dropped connection or a race that
+log in `eng-queue/logs`, and then pushes with `--no-verify`. A connection that dropped or a race that
 leaves the commit unchanged pushes again without running the hook again; a carried-over commit is a
 new commit and runs it again. A hook's exit 3, 75 or 78 is no verdict, as a lane's is: it is tried
 once more and then holds. Git passes the hook's status through, so a hook that waits for admission

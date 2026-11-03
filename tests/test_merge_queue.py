@@ -112,6 +112,21 @@ class Fixture(unittest.TestCase):
     def gates(self):
         return len(self.counter.read_text()) if self.counter.exists() else 0
 
+    @contextlib.contextmanager
+    def remote_says(self, said, calls, command="fetch"):
+        """Each of the numbered calls, from 1, of git's command fails with said, as git does when the network or
+        the remote stops it; the rest run. Yields the calls made and the backoffs slept, which take no time."""
+        real, seen, slept = mq.git, [], []
+        def git(directory, *arguments, **options):
+            if arguments and arguments[0] == command:
+                seen.append(arguments)
+                if len(seen) in calls:
+                    done = subprocess.CompletedProcess(["git", *arguments], 128, "", said + "\n")
+                    return mq.checked(done, arguments) if options.get("check") else done
+            return real(directory, *arguments, **options)
+        with patch.object(mq, "git", git), patch.object(mq, "pause", slept.append):
+            yield seen, slept
+
 
 class Landing(Fixture):
     def test_one_gate_lands_a_whole_batch(self):
@@ -394,14 +409,9 @@ class PrePushHooks(Fixture):
 
     def test_a_dropped_connection_does_not_run_the_hook_again(self):
         self.hook("exit 0")
-        count = self.origin / "attempts"
-        receive = self.origin / "hooks/pre-receive"
-        receive.write_text(f'#!/bin/sh\n[ -e "{count}" ] && exit 0\ntouch "{count}"\n'
-                           'echo "fatal: the remote end hung up unexpectedly" >&2\nexit 1\n')
-        receive.chmod(0o755)
         self.commit("a", "a")
         [identifier] = self.add("a")
-        self.work()
+        with self.remote_says("fatal: the remote end hung up unexpectedly", {1}, "push"): self.work()
         self.assertEqual(self.state(identifier)["state"], "landed")
         self.assertEqual(len(self.runs()), 1)
 
@@ -1334,6 +1344,115 @@ class SharedCheckout(Fixture):
         self.assertNotIn("as it is:", said)
 
 
+# What git prints, over HTTPS and SSH, when it did not reach GitHub.
+UNREACHED = {
+    "https name": "fatal: unable to access 'https://github.com/vocaro/vocaro-engineering.git/': Could not resolve host: "
+                  "github.com",
+    "ssh name": "ssh: Could not resolve hostname github.com: nodename nor servname provided, or not known\n"
+                "fatal: Could not read from remote repository.\n\nPlease make sure you have the correct access rights",
+    "https refused": "fatal: unable to access 'https://github.com/x/y.git/': Failed to connect to github.com port 443 "
+                     "after 2 ms: Couldn't connect to server",
+    "ssh refused": "ssh: connect to host github.com port 22: Connection refused\nfatal: Could not read from remote "
+                   "repository.",
+    "https timeout": "fatal: unable to access 'https://github.com/x/y.git/': Failed to connect to github.com port 443 "
+                     "after 75003 ms: Operation timed out",
+    "ssh timeout": "ssh: connect to host github.com port 22: Operation timed out\nfatal: Could not read from remote "
+                   "repository.",
+    "https reset": "error: RPC failed; curl 56 Recv failure: Connection reset by peer\nfatal: early EOF",
+    "ssh dropped": "Connection closed by 140.82.112.4 port 22\nfatal: the remote end hung up unexpectedly",
+}
+# What git prints when GitHub answered and refused, which holds at once.
+REFUSED = {
+    "https authentication": "remote: Invalid username or token.\nfatal: Authentication failed for "
+                            "'https://github.com/x/y.git/'",
+    "https forbidden": "fatal: unable to access 'https://github.com/x/y.git/': The requested URL returned error: 403",
+    "https no prompt": "fatal: could not read Username for 'https://github.com': terminal prompts disabled",
+    "ssh key": "git@github.com: Permission denied (publickey).\nfatal: Could not read from remote repository.",
+    "ssh host key": "Host key verification failed.\nfatal: Could not read from remote repository.",
+    "missing": "ERROR: Repository not found.\nfatal: Could not read from remote repository.",
+    "rejected": " ! [remote rejected] HEAD -> main (protected branch hook declined)\nerror: failed to push some refs",
+    "not git": "fatal: 'origin' does not appear to be a git repository",
+}
+
+
+class Unreachable(Fixture):
+    """A fetch or push that did not reach the remote is tried again with a backoff, and holds only when it keeps
+    failing; one the remote refused holds at once (vocaro-engineering#113)."""
+    def test_what_did_not_reach_the_remote_is_told_from_a_refusal(self):
+        for name, said in UNREACHED.items():
+            with self.subTest(name): self.assertTrue(mq.unreached(said))
+        for name, said in REFUSED.items():
+            with self.subTest(name): self.assertFalse(mq.unreached(said))
+
+    def test_a_fetch_that_did_not_reach_the_remote_is_tried_again(self):
+        for name, said in UNREACHED.items():
+            with self.subTest(name):
+                self.commit(name.replace(" ", "-"), name.replace(" ", "-"))
+                [identifier] = self.add(name.replace(" ", "-"))
+                with patch("builtins.print"), self.remote_says(said, {1, 2}) as (fetches, slept): self.work()
+                self.assertEqual(self.state(identifier)["state"], "landed")
+                self.assertIsNone(mq.Queue(self.repo).held())
+                self.assertEqual(slept, list(mq.BACKOFF[:2]))
+
+    def test_a_passed_gate_survives_an_outage_at_the_fetch_before_the_push(self):
+        """The case of 2026-11-02: the round's own fetch worked, the push's did not, for a while."""
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        with self.remote_says(UNREACHED["https name"], {2, 3, 4}) as (fetches, slept): self.work()
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertIn("a", self.main_files())
+        self.assertEqual(self.gates(), 1)
+        self.assertEqual(slept, list(mq.BACKOFF[:3]))
+
+    def test_a_push_that_did_not_reach_the_remote_is_pushed_again(self):
+        for name in ("https refused", "ssh timeout"):
+            with self.subTest(name):
+                self.commit(name.replace(" ", "-"), name.replace(" ", "-"))
+                [identifier] = self.add(name.replace(" ", "-"))
+                with patch("builtins.print"), self.remote_says(UNREACHED[name], {1}, "push") as (pushes, slept):
+                    self.work()
+                self.assertEqual(self.state(identifier)["state"], "landed")
+                self.assertEqual(len(pushes), 2)
+
+    def test_a_remote_that_stays_out_of_reach_holds_after_the_last_backoff(self):
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        with self.remote_says(UNREACHED["https name"], range(1, 99)) as (fetches, slept):
+            self.assertEqual(self.work(), 1)
+        self.assertEqual(self.state(identifier)["state"], "queued")
+        self.assertEqual((len(fetches), slept), (len(mq.BACKOFF) + 1, list(mq.BACKOFF)))
+        self.assertIn(f"{len(mq.BACKOFF) + 1} times", mq.Queue(self.repo).held())
+        self.assertEqual(self.gates(), 0)
+
+    def test_a_fetch_or_push_the_remote_refused_holds_at_once(self):
+        for command in ("fetch", "push"):
+            for name, said in REFUSED.items():
+                with self.subTest(command=command, refusal=name):
+                    with contextlib.suppress(OSError): mq.Queue(self.repo).hold_file.unlink()
+                    branch = f"{command}-{name}".replace(" ", "-")
+                    self.commit(branch, branch)
+                    [identifier] = self.add(branch)
+                    with patch("builtins.print"), self.remote_says(said, {1}, command) as (calls, slept):
+                        self.assertEqual(self.work(), 1)
+                    self.assertEqual(self.state(identifier)["state"], "queued")
+                    self.assertEqual((len(calls), slept), (1, []))
+                    self.assertIn(said.splitlines()[-1], mq.Queue(self.repo).held())
+                    mq.remove(mq.Queue(self.repo), identifier, quiet=True)
+
+    def test_land_tries_its_fetch_again_and_fails_on_a_refusal(self):
+        self.commit("a", "a")
+        with patch.object(mq.Queue, "start"), contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()) as said:
+            with self.remote_says(UNREACHED["ssh dropped"], {1}) as (fetches, slept):
+                self.assertIsNotNone(mq.add(self.repo, "a"))
+            self.assertIn("did not reach the remote", said.getvalue())
+            self.assertEqual(slept, [mq.BACKOFF[0]])
+            self.commit("b", "b")
+            with self.remote_says(REFUSED["ssh key"], {1}) as (fetches, slept):
+                with self.assertRaisesRegex(ValueError, "Permission denied"): mq.add(self.repo, "b")
+            self.assertEqual((len(fetches), slept), (1, []))
+
+
 class Refusals(Fixture):
     def test_pull_request_projects_are_refused(self):
         self.publish({"schemaVersion": 1, "name": "x", "integration": "pull-request",
@@ -1366,28 +1485,36 @@ class Refusals(Fixture):
         self.assertEqual(self.state(identifier)["state"], "queued")
         self.assertIn("refused", mq.Queue(self.repo).held())
 
-    def test_a_push_whose_connection_dropped_is_pushed_again_once(self):
+    def test_a_push_whose_connection_dropped_is_pushed_again(self):
         self.commit("a", "a")
         [identifier] = self.add("a")
-        count = self.origin / "attempts"
-        hook = self.origin / "hooks/pre-receive"
-        hook.write_text(f'#!/bin/sh\n[ -e "{count}" ] && exit 0\ntouch "{count}"\n'
-                        'echo "fatal: the remote end hung up unexpectedly" >&2\nexit 1\n')
-        hook.chmod(0o755)
-        self.work()
+        with self.remote_says("fatal: the remote end hung up unexpectedly", {1}, "push") as (pushes, slept):
+            self.work()
         self.assertEqual(self.state(identifier)["state"], "landed")
         self.assertIn("a", self.main_files())
         self.assertEqual(self.gates(), 1)
+        self.assertEqual((len(pushes), slept), (2, [mq.BACKOFF[0]]))
 
     def test_a_push_that_keeps_dropping_holds(self):
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        with self.remote_says("fatal: the remote end hung up unexpectedly", range(1, 99), "push") as (pushes, slept):
+            self.assertEqual(self.work(), 1)
+        self.assertEqual(self.state(identifier)["state"], "queued")
+        self.assertIn("did not reach the remote", mq.Queue(self.repo).held())
+        self.assertEqual((len(pushes), slept), (len(mq.BACKOFF) + 1, list(mq.BACKOFF)))
+
+    def test_a_remote_that_refuses_a_push_holds_at_once_whatever_else_it_says(self):
+        """The remote answered: its hook's message is no dropped connection, which Git would print the same."""
         self.commit("a", "a")
         [identifier] = self.add("a")
         hook = self.origin / "hooks/pre-receive"
         hook.write_text('#!/bin/sh\necho "fatal: the remote end hung up unexpectedly" >&2\nexit 1\n')
         hook.chmod(0o755)
-        self.assertEqual(self.work(), 1)
+        with patch.object(mq, "pause") as slept: self.assertEqual(self.work(), 1)
         self.assertEqual(self.state(identifier)["state"], "queued")
         self.assertIn("refused", mq.Queue(self.repo).held())
+        slept.assert_not_called()
 
     def test_a_removed_entry_does_not_land(self):
         self.commit("a", "a"); self.commit("b", "b")

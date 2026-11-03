@@ -47,8 +47,19 @@ LANE_LIMIT = 3 * processes.DEFAULT_LIMIT
 RETRIES = 1
 # Times main may move past a passed batch, in carried-over steps, before the batch is gated again.
 CARRIES = 3
-# What git says when the connection to the remote ended, which says nothing of the commits.
-DROPPED = re.compile(r"hung up unexpectedly|Could not read from remote|send disconnect|Connection (reset|closed|timed out)")
+# What git says, over HTTPS or SSH, when it never reached the remote or the connection ended: a name that did
+# not resolve, a connection refused or timed out, one that dropped. It says nothing of the commits, and a brief
+# outage clears by itself (vocaro-engineering#113).
+UNREACHED = re.compile(r"Could not resolve host|Temporary failure in name resolution|Failed to connect|Couldn't connect|"
+                       r"Connection (refused|reset|closed|timed out)|Operation timed out|Network is unreachable|"
+                       r"No route to host|hung up unexpectedly|Could not read from remote|send disconnect|early EOF|"
+                       r"unexpected disconnect|SSL_ERROR_SYSCALL|Recv failure|Send failure|Empty reply from server")
+# What says the remote answered and refused, which no retry changes: an authentication failure, a missing
+# repository, a rejected push. SSH ends a refused key with the "Could not read from remote" of a dropped connection.
+REFUSED = re.compile(r"denied|Authentication failed|could not read Username|returned error: 4\d\d|not found|"
+                     r"rejected|Host key verification failed")
+# Seconds before each further try of a fetch or push that did not reach the remote; after the last, it holds.
+BACKOFF = (10, 30, 90, 270)
 POLL = 5
 # What a project's launcher reads first to find the toolkit.
 TOOLKIT_VARIABLE = "VOCARO_ENGINEERING_ROOT"
@@ -118,9 +129,37 @@ def git(directory, *arguments, hooks=True, check=False, timeout=GIT_TIMEOUT):
     command = ["git", *([] if hooks else ["-c", "core.hooksPath=/dev/null"]), "-C", str(directory), *arguments]
     done = subprocess.run(command, capture_output=True, text=True, stdin=subprocess.DEVNULL, env=environment(),
                           timeout=timeout)
-    if check and done.returncode:
-        raise ValueError(f"`git {shlex.join(arguments)}` exited {done.returncode}: "
-                         f"{done.stderr.strip() or 'no output'}")
+    if check: checked(done, arguments)
+    return done
+
+
+def checked(done, arguments, tries=1):
+    if done.returncode:
+        raise ValueError(f"`git {shlex.join(arguments)}` exited {done.returncode}"
+                         f"{f' {tries} times' if tries > 1 else ''}: {done.stderr.strip() or 'no output'}")
+    return done
+
+
+def unreached(said):
+    """Whether git's stderr says it did not reach the remote, rather than that the remote refused."""
+    return bool(UNREACHED.search(said)) and not REFUSED.search(said)
+
+
+def pause(seconds):
+    """The backoff's wait, apart from every other sleep, for a test to replace."""
+    time.sleep(seconds)
+
+
+def reach(directory, *arguments, say=print, check=False):
+    """Git in directory for what talks to the remote, a fetch or a push: one that did not reach it is tried
+    again after each of BACKOFF, and only then fails, as anything else does at once."""
+    for tries, delay in enumerate((*BACKOFF, None), start=1):
+        done = git(directory, *arguments)
+        said = done.stderr.strip()
+        if done.returncode == 0 or delay is None or not unreached(said): break
+        say(f"`git {arguments[0]}` did not reach the remote, so trying again in {delay}s: {said.splitlines()[-1]}")
+        pause(delay)
+    if check: checked(done, arguments, tries)
     return done
 
 
@@ -364,7 +403,7 @@ def add(root, reference, note=None, quiet_wait=False):
     entry's ID, or None when there is nothing to queue. Whether it may be queued is what a round would
     find: origin/main's settings, and origin/main's lanes or, until it has any, the commit's."""
     queue = Queue(root)
-    git(root, *FETCH, check=True)
+    reach(root, *FETCH, say=lambda words: print(f"queue: {words}", file=sys.stderr), check=True)
     tip = text(root, "rev-parse", "--verify", f"{reference}^{{commit}}")
     config = config_at(root, MAIN)
     if config.get("integration", "direct-main") != "direct-main":
@@ -530,14 +569,14 @@ class Worker:
         checkout that lags, or holds a session's changes, says nothing of the commits (guides/maintenance.md,
         The merge queue). Each worker has its own, so that moving it changes no other project's running
         gate. The toolkit's own queue tests its batch, and an explicit VOCARO_ENGINEERING_ROOT stands.
-        A copy that cannot be made or moved holds the queue, as a fetch of the project that fails does."""
+        A copy that cannot be made or moved holds the queue, as a fetch of the project that keeps failing does."""
         self.environment = environment()
         if os.environ.get(TOOLKIT_VARIABLE): return
         common = git(TOOLKIT_ROOT, "rev-parse", "--path-format=absolute", "--git-common-dir")
         if common.returncode: return  # a toolkit that is no repository has no origin/main to follow
         if common.stdout.strip() == text(self.queue.main_checkout, "rev-parse", "--path-format=absolute", "--git-common-dir"):
             return
-        git(TOOLKIT_ROOT, *FETCH, check=True)
+        reach(TOOLKIT_ROOT, *FETCH, say=self.say, check=True)
         # Named as the toolkit's main checkout is, which a project's relative path names from its own checkout.
         kit = Path(common.stdout.strip())
         copy = self.queue.home / (kit.parent.name if kit.name == ".git" else Path(TOOLKIT_ROOT).resolve().name)
@@ -732,17 +771,18 @@ class Worker:
         return new_base, self.head()
 
     def push(self, config, batch, base, docs=None):
-        """Push HEAD to main. True on a push, False to gate again; a refusal that is no race holds.
+        """Push HEAD to main. True on a push, False to gate again; a refusal that is no race holds, as a remote
+        that stays out of reach does.
         The project's pre-push hook runs here rather than inside the push, unless main's queue.hookCoveredBy
         says which passed lanes cover it: a long hook then holds no connection open, and its refusal is its own.
         A docs-only batch, whose lanes docs names, skips it too: the hook is part of lanes that read none of the
         batch's paths. The landed entries record docs, since such a landing is no gate of the pushed commit."""
         head = self.head()
-        dropped = unsure = False
+        unsure = False
         checked = None
         covered = config.get("queue", {}).get("hookCoveredBy")
         for _ in range(CARRIES):
-            git(self.checkout, *FETCH, check=True)
+            reach(self.checkout, *FETCH, say=self.say, check=True)
             if git(self.checkout, "merge-base", "--is-ancestor", MAIN, head).returncode:
                 carried = self.carry(config, batch, base, head)
                 if carried is None: return False
@@ -758,7 +798,8 @@ class Worker:
                     raise ValueError(f"the pre-push hook gave no verdict, exit {result}, twice on {head[:12]}; see {log}")
                 if result: raise ValueError(f"the pre-push hook refused {head[:12]}, exit {result}; see {log}")
                 checked = head
-            pushed = git(self.checkout, "push", "--no-verify", "origin", "HEAD:refs/heads/main")
+            # A connection that dropped pushes again here, without running the hook again.
+            pushed = reach(self.checkout, "push", "--no-verify", "origin", "HEAD:refs/heads/main", say=self.say)
             if pushed.returncode == 0:
                 git(self.checkout, *FETCH)
                 self.say(f"pushed {head[:12]}")
@@ -768,10 +809,8 @@ class Worker:
                 return True
             said = pushed.stderr.strip()
             if "rejected" in said and ("fetch first" in said or "non-fast-forward" in said): continue
-            if DROPPED.search(said) and not dropped:
-                dropped = True
-                self.say(f"the connection dropped during the push of {head[:12]}: pushing again")
-                continue
+            if unreached(said):
+                raise ValueError(f"the push of {head[:12]} did not reach the remote in {len(BACKOFF) + 1} tries: {said}")
             raise ValueError(f"the push of {head[:12]} was refused: {said or 'no output'}")
         return False
 
@@ -814,7 +853,7 @@ class Worker:
         batch = queue.waiting()
         if self.limit: batch = batch[:self.limit]
         if not batch: return False
-        git(queue.main_checkout, *FETCH, check=True)
+        reach(queue.main_checkout, *FETCH, say=self.say, check=True)
         self.prepare()
         self.toolkit()
         base = text(queue.main_checkout, "rev-parse", MAIN)
