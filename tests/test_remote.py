@@ -2436,7 +2436,9 @@ exec {shlex.quote(real)} "$@"
         with self.relaying(FAKE_THROTTLE=str(32 << 10), FAKE_THROTTLED=str(marker)):
             started = time.monotonic()
             status, output, error = self.run_here("gate")
-            self.assertLess(time.monotonic() - started, 20)
+            # Stretched by load: at loads of 170 to 770 its stop took 46 to 155 s (#120). The stop itself is
+            # proven below, by the timed-out send and nothing received.
+            self.assertLess(time.monotonic() - started, stretched(20))
         self.assertEqual(status, remote.MISCONFIGURED, output + error)
         self.assertIn(f"eng: gate not run: the push of {commit[:12]} into ~/{remote.ROOT}/repositories/example.git on "
                       "fake did not finish in 2s and was stopped, so nothing ran there: ", error)
@@ -2451,8 +2453,9 @@ exec {shlex.quote(real)} "$@"
         self.assertGreaterEqual(sent["seconds"], 2)
         self.assertIn("nothing ran on fake; the record of what was sent is ", error)
         self.assertEqual(self.eng("remote", "passed", "gate")[0], 1)
-        # The positive control: at full speed the same commit goes, cold, and runs.
-        with self.relaying():
+        # The positive control: at full speed the same commit goes, cold, and runs, within a bound stretched by
+        # load: at a load of 280 on 18 cores this push outlasted 2 s twice (#120).
+        with self.relaying(), patch.object(remote, "SEND_TIMEOUT", stretched(2)):
             status, output, error = self.run_here("gate")
         self.assertEqual(status, 0, output + error)
         self.assertGreaterEqual(self.passed()[0], LARGE)
