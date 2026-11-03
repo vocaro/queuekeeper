@@ -17,6 +17,7 @@ import unittest
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 import host_isolation
+from host_isolation import stretched
 from vocaro_engineering import app_registrations as registrations, cli, processes
 
 SOURCE = Path(__file__).resolve().parents[1] / "src/python"
@@ -96,7 +97,7 @@ exit "${STUB_STATUS:-0}"' "$@"
         self.assertEqual(self.journals(), [])
 
     def wait_for(self, seen, seconds=15):
-        end = time.monotonic() + seconds
+        end = time.monotonic() + stretched(seconds)
         while not seen():
             self.assertLess(time.monotonic(), end, "never happened")
             time.sleep(0.05)
@@ -123,6 +124,7 @@ exit "${STUB_STATUS:-0}"' "$@"
 
     def test_a_run_past_its_limit_unregisters_what_it_built(self):
         with patch.dict(os.environ, STUB_HOLD="30"):
+            # Fixed: the 1 s limit is the behavior under test, and the 30 s hold outlasts it.
             self.assertIsInstance(self.run_command(self.build_command(), timeout=1), processes.TimedOut)
         self.assert_settled()
 
@@ -132,14 +134,14 @@ exit "${STUB_STATUS:-0}"' "$@"
                 with r.around_run([command], base):
                     processes.supervise(command, cwd=base)
         """)
-        with patch.dict(os.environ, STUB_HOLD="60"):
+        with patch.dict(os.environ, STUB_HOLD=str(stretched(60))):  # it outlives the wait for its stop
             run = subprocess.Popen([sys.executable, "-c", script], start_new_session=True, stderr=subprocess.DEVNULL)
             self.addCleanup(run.wait)
             self.addCleanup(lambda: run.poll() is None and run.kill())
             self.wait_for(self.journals)
             self.assertEqual(self.calls(), [], "a run in progress keeps its registrations")
             run.send_signal(signal.SIGTERM)
-            run.wait(30)
+            run.wait(stretched(30))
         self.assert_settled()
 
     def test_a_run_in_progress_keeps_its_registrations_until_it_ends(self):
@@ -225,7 +227,8 @@ exit "${STUB_STATUS:-0}"' "$@"
             path.write_text(json.dumps({**json.loads(path.read_text()), "start": "Thu Jan  1 00:00:00 1970"}))
 
     def live_process(self, *arguments):
-        process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)", *arguments])
+        # It must outlive the test that holds it, however slowly the host runs it (#111).
+        process = subprocess.Popen([sys.executable, "-c", f"import time; time.sleep({stretched(60)})", *arguments])
         self.addCleanup(process.wait)
         self.addCleanup(process.kill)
         self.wait_for(lambda: registrations.process_start(process.pid))
@@ -272,10 +275,11 @@ exit "${STUB_STATUS:-0}"' "$@"
         self.assertEqual(self.journals(), [])
 
     def test_a_killed_run_stays_registered_until_the_next_run_sweeps_it(self):
-        script = self.child("""
+        # The run must outlive the test that kills it, however slowly the host runs it (#111).
+        script = self.child(f"""
             with r.around_run([command], base):
                 print("ready", flush=True)
-                time.sleep(60)
+                time.sleep({stretched(60)})
         """)
         run = subprocess.Popen([sys.executable, "-c", script], stdout=subprocess.PIPE, text=True)
         self.addCleanup(run.stdout.close)

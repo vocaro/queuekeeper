@@ -13,6 +13,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 from vocaro_engineering import cli, config, devices, foreground, offload_host, remote
 import host_isolation
+from host_isolation import stretched
 from vocaro_engineering.voiceover import state as voiceover_state
 
 SECOND = "Trevors-MacBook-Pro-715"
@@ -45,7 +46,7 @@ class SlotTests(unittest.TestCase):
         options.setdefault("ready", lambda: [])
         options.setdefault("voiceover", lambda: False)
         options.setdefault("said", self.said.append)
-        return foreground.slot("Project voiceover-mac", timeout=options.pop("timeout", 5), record=self.record,
+        return foreground.slot("Project voiceover-mac", timeout=options.pop("timeout", stretched(5)), record=self.record,
                                poll=0.05, **options)
 
     def test_only_the_second_mac_takes_its_foreground_and_only_once_it_is_ready(self):
@@ -125,7 +126,7 @@ class SlotTests(unittest.TestCase):
             self.said.append(text)
             if "held by other run" in text: waiting.set()
         def release():
-            if not waiting.wait(10): return
+            if not waiting.wait(stretched(10)): return
             self.assertEqual(self.record.entry(devices.FOREGROUND)["ownerChatID"], "other run")
             self.record.release(devices.FOREGROUND, owner="other run", revision=held["revision"], outcome="done",
                                 restoration="checked", frontmost="restored")
@@ -141,7 +142,7 @@ class SlotTests(unittest.TestCase):
         def late():
             time.sleep(0.5)
             return []
-        with self.slot(voiceover=baseline, ready=late, said=said, timeout=10) as owner:
+        with self.slot(voiceover=baseline, ready=late, said=said, timeout=stretched(10)) as owner:
             self.assertEqual(self.record.entry(devices.FOREGROUND)["ownerChatID"], owner)
         self.assertEqual(len([line for line in self.said if "held by other run" in line]), 1)
 
@@ -152,6 +153,7 @@ class SlotTests(unittest.TestCase):
                                    approval={**foreground.STANDING, "until": "released"})
         with self.assertRaisesRegex(TimeoutError, "held by other run for 0.2s"):
             with patch.object(voiceover_state, "_read") as read, patch.object(voiceover_state, "_toggle") as toggle:
+                # Fixed: the 0.2 s wait is the behavior under test, and the holder never releases.
                 with self.slot(timeout=0.2, voiceover=read): self.fail("ran while another run held the foreground")
         read.assert_not_called()
         toggle.assert_not_called()

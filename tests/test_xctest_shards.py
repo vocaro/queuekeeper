@@ -181,6 +181,8 @@ class RunnerTests(unittest.TestCase):
         self.assertRegex(output, r"eng xctest: .*FAILED: shard \d+ of \d+, Beta")
 
     def test_a_process_past_its_timeout_is_stopped_and_leaves_the_run_unmeasured(self):
+        # Fixed: the 5 s limit is the behavior under test. A sibling shard that load held past it would be left
+        # unmeasured too, which none of these assertions rules out, so it cannot fail the test.
         status, output = self.run_eng("--skip-build", "--timeout", "5", FAKE_HANG="Beta")
         self.assertEqual(status, evidence.UNMEASURED, output)
         self.assertRegex(output, r"== shard \d+ of \d+, Beta .*: timed out after 5s")

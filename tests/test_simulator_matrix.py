@@ -14,6 +14,7 @@ import uuid
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 from vocaro_engineering import devices, evidence
 import host_isolation
+from host_isolation import stretched
 
 ENG = Path(__file__).resolve().parents[1] / "scripts/eng"
 
@@ -152,7 +153,9 @@ class SimulatorMatrixTests(unittest.TestCase):
         self.record = self.root / "record/device-handoff.json"
         self.others = set()  # devices another session holds booted
         self.environment = {"PATH": f"{tools}:{Path(sys.executable).parent}:/usr/bin:/bin", "FAKE_STATE": str(self.state),
-                            "VOCARO_DEVICE_RECORD": str(self.record), "VOCARO_DEVICE_OWNER": "matrix-tests"}
+                            "VOCARO_DEVICE_RECORD": str(self.record), "VOCARO_DEVICE_OWNER": "matrix-tests",
+                            # Devices that should meet wait for each other this long, stretched by load.
+                            "FAKE_MEET_LIMIT": str(stretched(60))}
 
     def run_matrix(self, *arguments, **environment):
         command = [sys.executable, str(ENG), "simulator-tests", "--scheme", "Package-Tests", "--runtime", "iOS-27-0",
@@ -393,6 +396,7 @@ class SimulatorMatrixTests(unittest.TestCase):
         self.assert_every_device_returned()
 
     def test_a_boot_past_its_limit_leaves_only_that_device_unmeasured(self):
+        # Fixed: the 1 s boot timeout is the behavior under test, and the slow boot's 60 s outlasts it.
         status, output = self.run_matrix("--boot-timeout", "1", FAKE_SLOW_BOOT="iPad-Air-13-inch-M4")
         self.assertEqual(status, 3, output)
         self.assertIn("UNMEASURED iPad-Air-13-inch-M4: the boot exceeded its limit", output)
@@ -429,12 +433,12 @@ class SimulatorMatrixTests(unittest.TestCase):
         process = subprocess.Popen(command, cwd=self.root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                                    env={**self.environment, "FAKE_MEET": "3"})
         self.addCleanup(lambda: process.poll() is None and process.kill())
-        deadline = time.monotonic() + 60
+        deadline = time.monotonic() + stretched(60)
         while len(list(self.state.glob("testing-*"))) < 2:
             self.assertLess(time.monotonic(), deadline, "the devices never started testing")
             time.sleep(0.05)
         process.send_signal(signal.SIGTERM)
-        output = process.communicate(timeout=60)[0]
+        output = process.communicate(timeout=stretched(60))[0]
         self.assertEqual(process.returncode, -signal.SIGTERM, output)
         self.assertIn("SIGTERM received; forwarding it", output)
         self.assert_every_device_returned()

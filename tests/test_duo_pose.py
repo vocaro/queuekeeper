@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src/python"))
 from vocaro_engineering.simulators import duo_pose
 import host_isolation
+from host_isolation import stretched
 
 UDID = "0C1F2E3D-4B5A-6978-8796-A5B4C3D2E1F0"
 # Stands in for xcrun: the SDK queries, clang writing its -o file, and simctl spawn, which refuses
@@ -81,7 +82,7 @@ class DuoPoseTests(unittest.TestCase):
     def pose(self, *arguments, **fakes):
         """Runs the wrapper as an executable, as a lane's --hinge-script runs it."""
         return subprocess.run([str(self.kit / "scripts/duo-pose"), *arguments], capture_output=True, text=True,
-                              env={**self.environment, **fakes}, timeout=60)
+                              env={**self.environment, **fakes}, timeout=stretched(60))
 
     def calls(self):
         """The fake tools' calls since the last read."""

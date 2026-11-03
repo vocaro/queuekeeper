@@ -7,11 +7,13 @@ import re
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 import host_isolation
+from host_isolation import stretched
 from vocaro_engineering import cli, crash_alerts, devices, evidence, foreground, offload_host, remote
 from vocaro_engineering.voiceover import state as voiceover_state
 
@@ -202,16 +204,14 @@ class GuardTests(HostTest):
     def test_an_alert_raised_during_the_run_is_cleared_or_makes_a_failure_unmeasured(self):
         with self.guarded(watch=0.02) as run:
             self.host.alerts.append(CRASH)
-            for _ in range(500):
-                if self.host.pressed: break
-                threading.Event().wait(0.01)
+            deadline = time.monotonic() + stretched(5)
+            while not self.host.pressed and time.monotonic() < deadline: threading.Event().wait(0.01)
         self.assertEqual(self.host.pressed, [("UserNotificationCenter", "Ignore")])
         self.assertEqual(run.judged(5), 5)
         with self.guarded(watch=0.02) as run:
             self.host.alerts.append(PASSWORD)
-            for _ in range(500):
-                if run.left: break
-                threading.Event().wait(0.01)
+            deadline = time.monotonic() + stretched(5)
+            while not run.left and time.monotonic() < deadline: threading.Event().wait(0.01)
         self.assertEqual(self.host.alerts, [PASSWORD])
         with contextlib.redirect_stderr(StringIO()) as error:
             self.assertEqual(run.judged(5), evidence.UNMEASURED)

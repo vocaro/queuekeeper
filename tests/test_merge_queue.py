@@ -16,12 +16,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src/python"))
 from vocaro_engineering import cli, config as configuration, merge_queue as mq
 import host_isolation
+from host_isolation import stretched
 
-
-def stretched(seconds):
-    """These seconds stretched by the host's one-minute load per core, as a bound on a stall is: at a load
-    near 280 on 18 cores, a landing that takes seconds on an idle Mac was still testing after 120 s (#121)."""
-    return seconds * max(1, os.getloadavg()[0] / (os.cpu_count() or 1))
 
 # Fails when any tracked file is named bad*, passes otherwise; touches a counter so a test can count gates.
 LANE = """import pathlib, sys
@@ -1735,7 +1731,7 @@ class Refusals(Fixture):
         identifier = mq.Queue(self.repo).all()[0]["id"]
         with patch("builtins.print"): self.assertEqual(mq.wait(self.repo, identifier, stretched(120)), 0)
         self.assertIn("a", self.main_files())
-        deadline = time.monotonic() + 30
+        deadline = time.monotonic() + stretched(30)
         while (left := {pid: stat for pid, stat in children().items() if pid not in before}) and time.monotonic() < deadline:
             time.sleep(0.1)
         self.assertEqual(left, {})

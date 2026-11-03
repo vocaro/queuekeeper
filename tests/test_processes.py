@@ -13,6 +13,7 @@ SOURCE = Path(__file__).resolve().parents[1] / "src/python"
 sys.path.insert(0, str(SOURCE))
 from vocaro_engineering import processes, resources
 import host_isolation
+from host_isolation import stretched
 
 # Starts each descendant in its own session, as Xcode starts DTServiceHub apart from xcodebuild's
 # group, and exits 3 once each is ready and the supervisor has seen it under this root.
@@ -52,7 +53,7 @@ if os.fork() == 0:
         (here / "pid").write_text(str(os.getpid()))
         (here / "pid").replace(here / "orphan")
         began = time.monotonic()
-        while how != "ends" and here.exists() and time.monotonic() - began < 60: time.sleep(0.05)
+        while how != "ends" and here.exists() and time.monotonic() - began < 120: time.sleep(0.05)
     os._exit(0)
 os.wait()
 while not (here / "orphan").exists(): time.sleep(0.01)
@@ -140,11 +141,11 @@ def unobserved():
 processes.snapshot = unobserved
 raise SystemExit(resources.main(sys.argv[2:]))
 """
-
-
-def stretched(seconds):
-    """These seconds stretched by the host's one-minute load per core, as a bound on a stall is."""
-    return seconds * max(1, os.getloadavg()[0] / (os.cpu_count() or 1))
+# A stand-in's 120 s life, and the 120 s backstop that ends one a failed test left, stretched by load: each
+# outlasts the stretched bound on the stall it stands in for, however slowly the host runs.
+IGNORES_TERM, HANDLES_TERM, STAYS, ORPHANS, STUCK_OWNER, SLOW_TO_END = (
+    script.replace("time.sleep(120)", f"time.sleep({stretched(120)})").replace("began < 120", f"began < {stretched(120)}")
+    for script in (IGNORES_TERM, HANDLES_TERM, STAYS, ORPHANS, STUCK_OWNER, SLOW_TO_END))
 
 
 class ProcessTests(unittest.TestCase):
@@ -201,12 +202,14 @@ class ProcessTests(unittest.TestCase):
             script = (f"import pathlib, subprocess, sys, time\nchild = subprocess.Popen([sys.executable, '-c', {stubborn!r}])\n"
                       f"pathlib.Path({str(marker)!r}).write_text(str(child.pid))\nprint('started', flush=True)\ntime.sleep(60)")
             began = time.monotonic()
+            # Fixed: the 10 s timeout is the behavior under test, and the script's 60 s outlasts it; only the
+            # ceiling on the stop and the wait for the descendant's end stretch.
             status, output = processes.bounded([sys.executable, "-c", script], timeout=10, kill_after=1)
             self.assertIsNone(status)
-            self.assertLess(time.monotonic() - began, 30)
+            self.assertLess(time.monotonic() - began, stretched(30))
             self.assertIn("started", output)
             child = int(marker.read_text())
-            deadline = time.monotonic() + 10
+            deadline = time.monotonic() + stretched(10)
             while time.monotonic() < deadline:
                 try: os.kill(child, 0)
                 except ProcessLookupError: break
@@ -214,7 +217,8 @@ class ProcessTests(unittest.TestCase):
             else:
                 self.fail(f"descendant {child} outlived the group's SIGKILL")
         # The positive control: a command that ends in time keeps its status and output.
-        self.assertEqual(processes.bounded([sys.executable, "-c", "print('done'); raise SystemExit(4)"], timeout=60),
+        self.assertEqual(processes.bounded([sys.executable, "-c", "print('done'); raise SystemExit(4)"],
+                                           timeout=stretched(60)),
                          (4, "done\n"))
 
     def test_descendants_that_outlive_the_root_are_reported_then_stopped_keeping_its_status(self):
@@ -222,6 +226,8 @@ class ProcessTests(unittest.TestCase):
             # The first sample after the root ends comes past LINGER and kill_after together, as a
             # busy host's can; SIGTERM must still come first. The sample after it waits for the
             # handler to run, so that how soon the host schedules it does not matter (#90).
+            # Fixed: the 0.2 s grace and 0.5 s kill_after are the behavior under test, and awaits holds the
+            # samples after the stop for the handler however slowly the host runs.
             result, error, births = self.outlive_the_root(directory, IGNORES_TERM, HANDLES_TERM, LINGER=0.2, kill_after=0.5,
                                                           late=1, awaits="terminated")
             self.assertEqual(result, 3)
@@ -238,14 +244,17 @@ class ProcessTests(unittest.TestCase):
     def test_a_root_that_exits_in_time_keeps_its_status_when_its_timeout_expires_during_the_grace(self):
         with tempfile.TemporaryDirectory() as directory:
             # The root exits at once; its timeout expires before the grace stops the descendant. The
-            # root starts two interpreters first, which on a busy host took more than 2 s.
-            result, error, _births = self.outlive_the_root(directory, IGNORES_TERM, timeout=8, LINGER=10, kill_after=0.5)
+            # root starts two interpreters first, which on a busy host took more than 2 s. Both stretch by
+            # load, keeping the timeout inside the grace.
+            result, error, _births = self.outlive_the_root(directory, IGNORES_TERM, timeout=stretched(8),
+                                                           LINGER=stretched(10), kill_after=0.5)
             self.assertEqual(result, 3)
             self.assertIn("stopping 1 process(es)", error)
 
     def test_a_descendant_that_ends_within_the_grace_is_awaited_and_never_signaled(self):
         with tempfile.TemporaryDirectory() as directory:
-            result, error, _births = self.outlive_the_root(directory, FINISHES, LINGER=30)
+            # The grace stretches by load: the descendant must end within it.
+            result, error, _births = self.outlive_the_root(directory, FINISHES, LINGER=stretched(30))
             self.assertEqual(result, 3)
             self.assertTrue((Path(directory) / "finished").exists())
             self.assertEqual(error, "")
@@ -284,7 +293,8 @@ class ProcessTests(unittest.TestCase):
             bare = run()
             ran.unlink()
             def on_start(pid):
-                # Long enough for a command that was not held to have written its file.
+                # Long enough for a command that was not held to have written its file. Fixed: a window in which
+                # nothing may happen, which load can only make pass.
                 time.sleep(1)
                 seen.append((pid, ran.exists()))
             self.assertEqual(run(on_start=on_start), bare)
@@ -308,7 +318,8 @@ class ProcessTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             ran = Path(directory) / "ran"
             def on_start(pid):
-                # Long enough for a command that was not held to have written its file.
+                # Long enough for a command that was not held to have written its file. Fixed: a window in which
+                # nothing may happen, which load can only make pass.
                 time.sleep(1)
                 raise ValueError("refused")
             with self.assertRaisesRegex(ValueError, "refused"):
@@ -318,22 +329,27 @@ class ProcessTests(unittest.TestCase):
     def test_a_timeout_is_not_a_successful_terminal_result(self):
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(TimeoutError):
+                # Fixed: the 0.1 s timeout is the behavior under test, and the 30 s sleep outlasts it.
                 processes.run([sys.executable, "-c", "import time; time.sleep(30)"],
                               cwd=directory, log_path=Path(directory)/"run.log", timeout=0.1)
 
     def test_a_timeout_stops_descendants_with_sigterm_then_sigkill_and_raises_timed_out_once_they_end(self):
         with tempfile.TemporaryDirectory() as directory:
-            # The root stays until the timeout ends it; one descendant handles SIGTERM, one ignores it.
+            # The root stays until the timeout ends it; one descendant handles SIGTERM, one ignores it. The timeout
+            # stretches by load, so that the descendant has set its handler before it comes.
+            limit = round(stretched(2))
             result, error, _births = self.outlive_the_root(directory, IGNORES_TERM, HANDLES_TERM, root=STAYS,
-                                                           timeout=2, kill_after=0.5)
+                                                           timeout=limit, kill_after=0.5)
             self.assertIsInstance(result, processes.TimedOut)
             self.assertTrue((Path(directory) / "terminated").exists())
-            self.assertIn("timed out after 2s; sending SIGTERM", error)
+            self.assertIn(f"timed out after {limit}s; sending SIGTERM", error)
 
     def test_a_timeout_gives_a_command_that_handles_sigterm_one_signal(self):
         with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stderr(StringIO()):
             with self.assertRaises(processes.TimedOut):
-                processes.supervise([sys.executable, "-c", COUNTS_TERM, directory], cwd=directory, timeout=1.5, kill_after=30)
+                # Stretched by load, so that the command has set its handler before the timeout comes.
+                processes.supervise([sys.executable, "-c", COUNTS_TERM, directory], cwd=directory, timeout=stretched(1.5),
+                                    kill_after=30)
             self.assertEqual((Path(directory) / "terms").read_text(), "TERM\n")
 
     def test_a_stop_reaches_descendants_in_other_sessions_then_raises_interrupted(self):
@@ -426,7 +442,7 @@ class ProcessTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             here, real, births, begun, sampled = Path(directory), processes.snapshot, {}, time.monotonic(), set()
             def observed():
-                if time.monotonic() - begun > 60: self.fail("supervision was still waiting after 60 s")
+                if time.monotonic() - begun > stretched(60): self.fail("supervision was still waiting after 60 s, stretched by load")
                 current = real()
                 try: root, *children = map(int, (here / "children").read_text().split())
                 except FileNotFoundError: return current
@@ -451,7 +467,7 @@ class ProcessTests(unittest.TestCase):
                 sent.append((pid, number))
                 kill(pid, number)
             with patch.object(processes, "snapshot", observed), \
-                 patch.object(processes, "SETTLE_WAIT", 60, create=True), patch.object(processes.os, "kill", recorded), \
+                 patch.object(processes, "SETTLE_WAIT", stretched(60), create=True), patch.object(processes.os, "kill", recorded), \
                  patch.dict(os.environ, {"SW_GATE_LOCK_FILE": str(here / "gate")}), contextlib.redirect_stderr(StringIO()):
                 with self.assertRaises(processes.Interrupted):
                     processes.supervise([sys.executable, "-c", ROOT, directory, *(SAMPLES.replace("ROLE", role)
@@ -467,7 +483,7 @@ class ProcessTests(unittest.TestCase):
         here, real, begun = Path(directory), processes.snapshot, time.monotonic()
         def unobserved():
             while not (here / "orphaned").exists():
-                if time.monotonic() - begun > 30: self.fail("the command orphaned nothing within 30 s")
+                if time.monotonic() - begun > stretched(30): self.fail("the command orphaned nothing within 30 s, stretched by load")
                 time.sleep(0.01)
             if how == "stays" and processes.requested() is None: processes.request_stop(signal.SIGTERM)
             return real()
@@ -532,9 +548,9 @@ class NestedAdmissionTests(unittest.TestCase):
         def observed():
             # The first sample waits for the command, after any descendant it leaves.
             while not (here / "command").exists():
-                if time.monotonic() - begun > 60: self.fail("the admitted command was not ready within 60 s")
+                if time.monotonic() - begun > stretched(60): self.fail("the admitted command was not ready within 60 s, stretched by load")
                 time.sleep(0.01)
-            if time.monotonic() - begun > 120: self.fail("supervision was still waiting after 120 s")
+            if time.monotonic() - begun > stretched(120): self.fail("supervision was still waiting after 120 s, stretched by load")
             current = real()
             if not births:
                 owner = next(iter(json.loads(guard.read_text())["owners"].values()))["pid"]
@@ -550,7 +566,7 @@ class NestedAdmissionTests(unittest.TestCase):
             # supervisor sees it gone and sends SIGKILL to what remains, the script included.
             while waiting and running("script", current) and not running("admission", current) \
                     and not (here / "status").exists():
-                if time.monotonic() - begun > 120: self.fail("the lane's script recorded nothing within 120 s")
+                if time.monotonic() - begun > stretched(120): self.fail("the lane's script recorded nothing within 120 s, stretched by load")
                 time.sleep(0.01)
                 current = real()
             return current
@@ -563,7 +579,7 @@ class NestedAdmissionTests(unittest.TestCase):
         # This supervisor's KILL_AFTER is shorter than the admitted command takes to end, and than
         # the nested admission's own. SETTLE_WAIT is long, so that a busy host cannot reach it.
         with patch.object(processes, "snapshot", observed), \
-             patch.object(processes, "SETTLE_WAIT", 300, create=True), contextlib.redirect_stderr(error):
+             patch.object(processes, "SETTLE_WAIT", stretched(300), create=True), contextlib.redirect_stderr(error):
             try: outcome = processes.run(command, cwd=here, log_path=here / "lane.log", env=environment, kill_after=1)
             except (processes.Interrupted, RuntimeError) as raised: outcome = raised
         status = (here / "status").read_text() if (here / "status").exists() else None

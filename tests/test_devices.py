@@ -20,6 +20,7 @@ SOURCE = Path(__file__).resolve().parents[1] / "src/python"
 sys.path.insert(0, str(SOURCE))
 from vocaro_engineering import cli, devices, resources
 import host_isolation
+from host_isolation import stretched
 from vocaro_engineering.resources import process_start
 
 # Well-formed, invented identifiers: hardware UDIDs and a simulator UUID.
@@ -38,14 +39,14 @@ import contextlib, sys, time
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 from vocaro_engineering import devices
-path, key, ready, count, mode, release_by = sys.argv[2:8]
+path, key, ready, count, mode, release_by, window = sys.argv[2:9]
 record = devices.Record(path)
 if mode == "unlocked":
     record._exclusive = contextlib.nullcontext
 load = record.load
 def composing():
     value = load()
-    time.sleep(0.3)
+    time.sleep(float(window))
     return value
 record.load = composing
 Path(ready, key).touch()
@@ -57,6 +58,11 @@ record.reserve(key, owner=key, revision=0, purpose="concurrent claim", release_b
 
 def later(minutes=30):
     return (datetime.now(timezone.utc) + timedelta(minutes=minutes)).isoformat()
+
+
+def live():
+    """A process that stands in for a live run: it outlives the test that ends it, however slowly the host runs it."""
+    return subprocess.Popen([sys.executable, "-c", f"import time; time.sleep({stretched(60)})"])
 
 
 def approval(**changes):
@@ -150,10 +156,12 @@ class DeviceRecordTests(unittest.TestCase):
         ready = self.root / f"ready-{mode}"
         ready.mkdir()
         path = self.root / f"{mode}.json"
+        # The window in which a writer composes its change stretches by load, so that unlocked writers still overlap.
         writers = [subprocess.Popen([sys.executable, "-c", WRITER, str(SOURCE), str(path), f"device-{index}",
-                                     str(ready), str(count), mode, later()], stderr=subprocess.PIPE, text=True)
+                                     str(ready), str(count), mode, later(), str(stretched(0.3))],
+                                    stderr=subprocess.PIPE, text=True)
                    for index in range(count)]
-        errors = [writer.communicate(timeout=60)[1] for writer in writers]
+        errors = [writer.communicate(timeout=stretched(60))[1] for writer in writers]
         self.assertEqual([writer.returncode for writer in writers], [0] * count, errors)
         return devices.Record(path).load()
 
@@ -198,7 +206,7 @@ class DeviceRecordTests(unittest.TestCase):
             self.reserve("iPad", release_by=past)
 
     def test_a_vanished_run_is_an_orphan_kept_for_attended_recovery(self):
-        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        child = live()
         self.addCleanup(child.wait)
         self.addCleanup(child.kill)
         entry = self.reserve(device=PHONE)
@@ -225,7 +233,7 @@ class DeviceRecordTests(unittest.TestCase):
         self.reserve(owner="session-b", revision=released["revision"], approval=approval())
 
     def test_recovering_a_run_sent_to_the_second_mac_waits_until_nothing_there_may_use_the_device(self):
-        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        child = live()
         self.addCleanup(child.wait)
         self.addCleanup(child.kill)
         entry = self.reserve(device=PHONE)
@@ -323,13 +331,13 @@ class DeviceRecordTests(unittest.TestCase):
              patch.object(foreground, "front", return_value="owned control"), \
              patch.object(foreground.offload_host, "mac_name", return_value="test Mac"):
             # Independent positive control: the normal context still releases.
-            with foreground.slot("positive", timeout=1, record=self.record,
+            with foreground.slot("positive", timeout=stretched(1), record=self.record,
                                  ready=lambda: [], voiceover=lambda: False, said=lambda _: None):
                 pass
             self.assertEqual(self.record.entry(devices.FOREGROUND)["state"], "released")
             with self.assertRaisesRegex(state.TransitionFailed, "original state was not restored"):
                 # The state guard refuses restoration over unrelated process uncertainty.
-                with foreground.slot("unknown launch", timeout=1, record=self.record,
+                with foreground.slot("unknown launch", timeout=stretched(1), record=self.record,
                                      ready=lambda: [], voiceover=lambda: False, said=lambda _: None) as owner:
                     entry = self.record.entry(devices.FOREGROUND)
                     self.record.update(devices.FOREGROUND, owner=owner, revision=entry["revision"],
@@ -445,7 +453,7 @@ class DeviceRecordTests(unittest.TestCase):
         descriptor = os.open(self.record.lock, os.O_RDWR)
         self.addCleanup(os.close, descriptor)
         fcntl.flock(descriptor, fcntl.LOCK_EX)
-        waiting = devices.Record(self.path, timeout=0.1)
+        waiting = devices.Record(self.path, timeout=0.1)  # fixed: the refusal at 0.1 s is the behavior under test
         with self.assertRaisesRegex(TimeoutError, "nothing was changed"):
             waiting.update("iPhone", owner="session-a", revision=1, run="blocked")
         self.assertEqual(self.path.read_bytes(), before)
@@ -623,7 +631,7 @@ class DeviceRecordTests(unittest.TestCase):
         self.assertEqual(self.cli("check", "--owner", "session-b")[0], 2)
         with patch.dict(os.environ, {devices.OWNER: "session-a"}):
             self.assertEqual(self.cli("check")[0], 0)
-        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        child = live()
         self.addCleanup(child.wait)
         self.addCleanup(child.kill)
         self.record.update(devices.FOREGROUND, owner="session-a", revision=entry["revision"], state="testing",
@@ -643,7 +651,7 @@ class DeviceRecordTests(unittest.TestCase):
         # As eng holds the second Mac's foreground: the entry's active run is a live process. A
         # sandboxed XCTest runner then checks it, and its sandbox refuses to start ps.
         entry = self.foreground()
-        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        child = live()
         self.addCleanup(child.wait)
         self.addCleanup(child.kill)
         self.record.update(devices.FOREGROUND, owner="session-a", revision=entry["revision"], state="testing",
@@ -657,7 +665,7 @@ class DeviceRecordTests(unittest.TestCase):
         def sandboxed():
             environment = {**os.environ, "PYTHONPATH": str(SOURCE), devices.OVERRIDE: str(self.path)}
             return subprocess.run([SANDBOX_EXEC, "-p", DENY_PS, sys.executable, "-c", check], env=environment,
-                                  capture_output=True, text=True, timeout=60)
+                                  capture_output=True, text=True, timeout=stretched(60))
 
         found = sandboxed()
         self.assertEqual(found.returncode, 0, found.stderr)
@@ -671,7 +679,7 @@ class DeviceRecordTests(unittest.TestCase):
 
     def test_release_waits_for_owned_processes_and_records_the_frontmost_restoration(self):
         entry = self.foreground()
-        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        child = live()
         self.addCleanup(child.wait)
         self.addCleanup(child.kill)
         with self.assertRaisesRegex(devices.Refused, "not running"):
@@ -745,7 +753,7 @@ class DeviceRecordTests(unittest.TestCase):
 
     def waiter(self):
         """A running process to wait in line as, stopped at the test's end."""
-        process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        process = live()
         self.addCleanup(process.wait)
         self.addCleanup(process.kill)
         return process
@@ -762,12 +770,12 @@ class DeviceRecordTests(unittest.TestCase):
         def take():
             try:
                 result["entry"] = self.record.take("iPad", owner="session-b", purpose="UI tests", release_by=later(),
-                                                   timeout=30, poll=0.01, said=said.append)
+                                                   timeout=stretched(30), poll=0.01, said=said.append)
             except BaseException as error:
                 result["error"] = error
         thread = threading.Thread(target=take)
         thread.start()
-        deadline = time.monotonic() + 10
+        deadline = time.monotonic() + stretched(10)
         while not devices.waiting(self.record.load(), "iPad") and time.monotonic() < deadline:
             time.sleep(0.01)
         # Joining the line leaves the holder's entry, and so its next change, alone.
@@ -776,7 +784,7 @@ class DeviceRecordTests(unittest.TestCase):
         with self.assertRaisesRegex(devices.Refused, "held by session-a"):
             self.reserve("iPad", owner="session-c", revision=held["revision"])
         self.record.release("iPad", owner="session-a", revision=held["revision"], outcome="o", restoration="r")
-        thread.join(10)
+        thread.join(stretched(10))
         self.assertNotIn("error", result)
         entry = result["entry"]
         self.assertEqual((entry["ownerChatID"], entry["device"]), ("session-b", TABLET))
@@ -806,6 +814,7 @@ class DeviceRecordTests(unittest.TestCase):
         self.assertEqual(self.record.load()[devices.QUEUES]["iPad"], [])
 
     def test_only_standing_devices_that_record_their_device_are_taken(self):
+        # Their 1 s timeouts stay fixed: each take is refused before it waits.
         with self.assertRaisesRegex(ValueError, "take waits only for iPad or iPhone"):
             self.record.take("Example Duo 1", owner="s", purpose="p", release_by=later(), timeout=1)
         with self.assertRaisesRegex(devices.Refused, "records no physical device yet"):
@@ -836,12 +845,12 @@ class DeviceRecordTests(unittest.TestCase):
         self.assertEqual(set(devices.WINDOWED), {"iPhone"})
         self.released_tablet()
         phone = self.released_phone()
-        taken = self.record.take("iPad", owner="session-b", purpose="p", release_by=later(), timeout=5, poll=0.01,
+        taken = self.record.take("iPad", owner="session-b", purpose="p", release_by=later(), timeout=stretched(5), poll=0.01,
                                  said=lambda _text: None)
         self.assertEqual(taken["approval"], {**devices.STANDING["iPad"], "until": "released"})
         with self.assertRaisesRegex(devices.Refused, r"iPhone has no standing approval\. Ask the owner for a window "
                                     r"first.*devices reserve iPhone --approved-by.*Nothing was changed"):
-            self.record.take("iPhone", owner="session-b", purpose="p", release_by=later(), timeout=5, poll=0.01,
+            self.record.take("iPhone", owner="session-b", purpose="p", release_by=later(), timeout=stretched(5), poll=0.01,
                              said=lambda _text: None)
         self.assertEqual(self.record.entry("iPhone"), phone)
         self.assertEqual(devices.waiting(self.record.load(), "iPhone"), [])
@@ -859,12 +868,12 @@ class DeviceRecordTests(unittest.TestCase):
         for window, release_by in ((approval(at=later(-90), until=later(-30)), later()),
                                    (approval(until=later(10)), later(30))):
             with self.assertRaises(ValueError):
-                self.record.take("iPhone", owner="session-b", purpose="p", release_by=release_by, timeout=5,
+                self.record.take("iPhone", owner="session-b", purpose="p", release_by=release_by, timeout=stretched(5),
                                  poll=0.01, said=lambda _text: None, approval=window)
         self.assertEqual(self.record.entry("iPhone"), phone)
         self.assertEqual(devices.waiting(self.record.load(), "iPhone"), [])
         window = approval(words="ok, the iphone is yours for the next hour")
-        taken = self.record.take("iPhone", owner="session-b", purpose="p", release_by=later(), timeout=5, poll=0.01,
+        taken = self.record.take("iPhone", owner="session-b", purpose="p", release_by=later(), timeout=stretched(5), poll=0.01,
                                  said=lambda _text: None, approval=window)
         self.assertEqual((taken["ownerChatID"], taken["device"], taken["approval"]), ("session-b", PHONE, window))
         self.assertIs(devices.require_window("iPhone", taken), taken)
@@ -901,7 +910,7 @@ class DeviceRecordTests(unittest.TestCase):
         gone.kill()
         gone.wait()
         with self.assertRaisesRegex(devices.Refused, "orphan.*attended recovery"):
-            self.record.take("iPad", owner="session-b", purpose="p", release_by=later(), timeout=5, poll=0.01,
+            self.record.take("iPad", owner="session-b", purpose="p", release_by=later(), timeout=stretched(5), poll=0.01,
                              said=lambda _text: None)
         self.assertEqual(devices.waiting(self.record.load(), "iPad"), [])
 
@@ -997,7 +1006,7 @@ class BoundedRunTests(unittest.TestCase):
         def late(bounded, pid):
             # As a busy host can delay it: the record waits for the command to have read the entry,
             # which it must not get to do before the record names it (#94).
-            deadline = time.monotonic() + 2
+            deadline = time.monotonic() + stretched(2)
             while not during.exists() and time.monotonic() < deadline: time.sleep(0.01)
             real(bounded, pid)
         with patch.object(devices.BoundedRun, "own", late):
@@ -1017,12 +1026,12 @@ class BoundedRunTests(unittest.TestCase):
                   "devices.BoundedRun.own = own\n"
                   "devices.main(sys.argv[1:])\n")
         launcher = subprocess.run([sys.executable, "-c", script, "run", "iPad", "--owner", "session-a", "--", *self.mark()],
-                                  env={**os.environ, "PYTHONPATH": str(SOURCE)}, capture_output=True, text=True, timeout=60)
+                                  env={**os.environ, "PYTHONPATH": str(SOURCE)}, capture_output=True, text=True,
+                                  timeout=stretched(60))
         self.assertEqual(launcher.returncode, -signal.SIGKILL, launcher.stderr)
         root = int(started.read_text())
-        for _ in range(600):
-            if process_start(root) is None: break
-            time.sleep(0.05)
+        deadline = time.monotonic() + stretched(30)
+        while process_start(root) is not None and time.monotonic() < deadline: time.sleep(0.05)
         self.assertIsNone(process_start(root))
         self.assertFalse(self.marker.exists())
         entry = self.record.entry("iPad")
@@ -1090,7 +1099,7 @@ class BoundedRunTests(unittest.TestCase):
         refused("shows it released")
         held = self.hold()
         refused("at revision .*, not 1: it changed after the session verified it", "--revision", "1")
-        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        child = live()
         self.addCleanup(child.wait)
         self.addCleanup(child.kill)
         active = self.record.update("iPad", owner="session-a", revision=held["revision"], activeRun=True,
@@ -1124,23 +1133,26 @@ class BoundedRunTests(unittest.TestCase):
         keep = devices.TERMINATION + devices.RESTORATION
         self.hold(release_by=later((keep + 300) / 60))
         bounded = devices.BoundedRun(["iPad"], "session-a", [], record=self.record)
-        self.assertAlmostEqual(bounded.seconds(), 300, delta=5)
+        self.assertAlmostEqual(bounded.seconds(), 300, delta=stretched(5))
         self.assertEqual(devices.BoundedRun(["iPad"], "session-a", [], record=self.record, limit=40).seconds(), 40)
         self.assertAlmostEqual(devices.BoundedRun(["iPad"], "session-a", [], record=self.record,
-                                                  restoration=0).seconds(), 300 + devices.RESTORATION, delta=5)
+                                                  restoration=0).seconds(), 300 + devices.RESTORATION, delta=stretched(5))
         with self.assertRaisesRegex(ValueError, "at least 30s"):
             devices.BoundedRun(["iPad"], "session-a", [], record=self.record, limit=10)
         # A later expected release leaves the run within the owner's approval, which ends first.
         entry = self.record.entry("iPad")
         self.record.update("iPad", owner="session-a", revision=entry["revision"], expectedReleaseBy=later(600))
-        self.assertAlmostEqual(devices.BoundedRun(["iPad"], "session-a", [], record=self.record).seconds(), 300, delta=5)
+        self.assertAlmostEqual(devices.BoundedRun(["iPad"], "session-a", [], record=self.record).seconds(), 300, delta=stretched(5))
         # Too little time left refuses the run, and nothing runs.
         entry = self.record.entry("iPad")
         self.record.update("iPad", owner="session-a", revision=entry["revision"], expectedReleaseBy=later((keep + 10) / 60))
         code, _output, error = self.cli("run", "iPad", "--owner", "session-a", "--", *self.mark())
         self.assertEqual(code, 2)
-        self.assertRegex(error, r"leaving (9|10)s for a run after the \d+s kept for its termination and restoration; "
+        self.assertRegex(error, r"leaving \d+s for a run after the \d+s kept for its termination and restoration; "
                                 r"a run needs 30s")
+        # The 10 s left less what passed since it was set, a span stretched by load.
+        left = int(re.search(r"leaving (\d+)s", error).group(1))
+        self.assertTrue(10 - stretched(1) <= left <= 10, error)
         self.assertFalse(self.marker.exists())
         # A command that outlasts its bound is stopped, and its outcome recorded; the device stays reserved.
         entry = self.record.update("iPad", owner="session-a", revision=self.record.entry("iPad")["revision"],
@@ -1150,7 +1162,8 @@ class BoundedRunTests(unittest.TestCase):
             code, _output, error = self.cli("run", "iPad", "--owner", "session-a", "--limit", "1", "--",
                                             sys.executable, "-c", "import time; time.sleep(60)")
         self.assertEqual(code, devices.TIMED_OUT, error)
-        self.assertLess((datetime.now(timezone.utc) - started).total_seconds(), 30)
+        # The 1 s limit is the behavior under test and stays fixed; only the ceiling on the stop stretches.
+        self.assertLess((datetime.now(timezone.utc) - started).total_seconds(), stretched(30))
         entry = self.record.entry("iPad")
         self.assertEqual(devices.condition(entry), "held")
         self.assertIn("timed out after 1s", entry["run"]["outcome"])
@@ -1167,7 +1180,7 @@ class BoundedRunTests(unittest.TestCase):
 
     def test_an_unconfirmed_end_keeps_the_run_active_and_its_entry_uncertain(self):
         self.hold()
-        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        child = live()
         self.addCleanup(child.wait)
         self.addCleanup(child.kill)
         def stuck(command, *, cwd, stdout, timeout, on_start):
@@ -1191,18 +1204,18 @@ class BoundedRunTests(unittest.TestCase):
         started = self.root / "started"
         launcher = subprocess.Popen(
             [sys.executable, "-m", "vocaro_engineering.devices", "run", "iPad", "--owner", "session-a", "--",
-             sys.executable, "-c", "import sys, time; open(sys.argv[1], 'w').close(); time.sleep(60)", str(started)],
+             sys.executable, "-c", f"import sys, time; open(sys.argv[1], 'w').close(); time.sleep({stretched(60)})",
+             str(started)],
             env={**os.environ, "PYTHONPATH": str(SOURCE)}, stderr=subprocess.PIPE, text=True)
         self.addCleanup(launcher.kill)
         # The command can start before the launcher's record names it, so both are awaited.
         recorded = lambda: started.exists() and "ownedProcesses" in self.record.entry("iPad")
-        for _ in range(600):
-            if recorded() or launcher.poll() is not None: break
-            time.sleep(0.05)
+        deadline = time.monotonic() + stretched(30)
+        while not recorded() and launcher.poll() is None and time.monotonic() < deadline: time.sleep(0.05)
         self.assertTrue(recorded(), launcher.stderr.read() if launcher.poll() is not None else "not started")
         [command] = self.record.entry("iPad")["ownedProcesses"]
         launcher.send_signal(signal.SIGTERM)
-        _output, error = launcher.communicate(timeout=60)
+        _output, error = launcher.communicate(timeout=stretched(60))
         self.assertEqual(launcher.returncode, -signal.SIGTERM, error)
         entry = self.record.entry("iPad")
         self.assertEqual(devices.condition(entry), "held")
@@ -1238,7 +1251,7 @@ class ProcessStartTests(unittest.TestCase):
     """process_start reads a start as ps prints it, and from the kernel where ps cannot be started."""
 
     def test_the_kernel_gives_each_process_the_start_ps_gives_it(self):
-        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        child = live()
         self.addCleanup(child.wait)
         self.addCleanup(child.kill)
         for pid in (os.getpid(), os.getppid(), 1, child.pid):

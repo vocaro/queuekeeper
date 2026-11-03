@@ -19,6 +19,23 @@ import tempfile
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 from vocaro_engineering import crash_alerts, offload_host, resources
 
+
+def stretched(seconds):
+    """These seconds stretched by the host's one-minute load per core, as a bound on a stall is (#128).
+
+    A test's wall-clock bound that only catches a hang, such as a subprocess's `timeout=`, an `--limit`, a
+    wait for an event or a ceiling on elapsed time, takes this, and so does the life of a stand-in process
+    that must outlive its test: at loads of 145 to 590 on 18 cores, work that takes seconds on an idle Mac
+    outlived fixed bounds of 20 to 120 s (#81, #90, #111, #119, #120, #121). A bound that is the behavior
+    under test stays fixed, with a comment, and stretches only its control (db166cf). These stay fixed for a
+    reason stated here rather than at every site: an `Admission(timeout=0)`, which asks once and does not
+    wait; a lower bound on elapsed time, which load only lengthens; a hang's stand-in that sleeps 60 s or
+    more, which a fixed bound under test stops at a second or so, or which a quick in-process test kills; a
+    take or slot refused before it waits; and a timeout a fake receives or a test reads back, which no clock
+    enforces. The stretch is finite, so a test that really hangs still fails at it (test_host_isolation)."""
+    return seconds * max(1, os.getloadavg()[0] / (os.cpu_count() or 1))
+
+
 ROOT = Path(tempfile.mkdtemp(prefix="vocaro-test-host-")).resolve()
 # Only by this process: a child forked from it exits through atexit too.
 atexit.register(lambda owner=os.getpid(): os.getpid() == owner and shutil.rmtree(ROOT, True))

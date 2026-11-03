@@ -12,6 +12,7 @@ from unittest.mock import Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 from vocaro_engineering import cli, evidence, host_context, keychain, offload_host, remote
 import host_isolation
+from host_isolation import stretched
 
 # Invented Mac names: the workstation that sends work, the second Mac, and a third Mac neither knows.
 WORKSTATION, SECOND, THIRD = "workstation-mac", "second-mac-host", "third-mac"
@@ -177,7 +178,7 @@ class KeychainFileTests(unittest.TestCase):
         # As remote.ask sends it: offload_host.py's source run by python3, the request as its argument.
         found = subprocess.run([sys.executable, "-c", Path(offload_host.__file__).read_text(),
                                 json.dumps({"keychain": keychain.DEFAULT})], capture_output=True, text=True,
-                               env={**os.environ, "HOME": str(self.home)}, timeout=60)
+                               env={**os.environ, "HOME": str(self.home)}, timeout=stretched(60))
         self.assertEqual(found.returncode, 0, found.stderr)
         answer = json.loads(found.stdout)
         self.assertEqual((answer["exists"], answer["home"]), (True, str(self.home)))
@@ -199,7 +200,7 @@ class CommandTests(unittest.TestCase):
         self.log.write_text("")
         found = subprocess.run([*shell, "-c", command], capture_output=True, text=True, stdin=subprocess.DEVNULL,
                                env={"PATH": f"{self.bin}:/usr/bin:/bin", "FAKE_MAC": mac, "FAKE_LOG": str(self.log),
-                                    "FAKE_REMOTE_MAC": remote_mac or ""}, timeout=60)
+                                    "FAKE_REMOTE_MAC": remote_mac or ""}, timeout=stretched(60))
         return found, self.log.read_text().splitlines()
 
     def commands(self, here, where, path=LOGIN):

@@ -22,15 +22,11 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 from vocaro_engineering import cli, config, devices, evidence, offload_host, processes, release, remote, resources
 import host_isolation
+from host_isolation import stretched
 
 # remote.advertised as it is, before any test patches it.
 ADVERTISED = remote.advertised
 
-
-def stretched(seconds):
-    """These seconds stretched by the host's one-minute load per core, as a bound on a stall is: at a
-    load of 450 to 590 on 18 cores, a holder that ends in 0.1 s on an idle Mac outlived 60 s (#111)."""
-    return seconds * max(1, os.getloadavg()[0] / (os.cpu_count() or 1))
 
 # Stands in for ssh: the second Mac is a home directory on this Mac. Like sshd, it runs the
 # command in that home through a shell, and git's own ssh transport reaches it the same way.

@@ -13,6 +13,7 @@ SOURCE = Path(__file__).resolve().parents[1] / "src/python"
 sys.path.insert(0, str(SOURCE))
 from vocaro_engineering import cli, evidence, resources
 import host_isolation
+from host_isolation import stretched
 
 ENG = Path(__file__).resolve().parents[1] / "scripts/eng"
 
@@ -67,7 +68,10 @@ class UnittestRunnerTests(unittest.TestCase):
             (root / f"{name}.py").write_text(source)
         return root
 
-    def run_suite(self, root, *arguments, limit=60, cwd=None):
+    def run_suite(self, root, *arguments, limit=None, cwd=None):
+        # A meeting's limit stretches by load where the modules should meet; a negative control's 1 s stays
+        # fixed, since load only makes a module that cannot meet the other fail surer.
+        limit = stretched(60) if limit is None else limit
         finished = subprocess.run([sys.executable, str(ENG), "unittest", "-s", str(root), *arguments],
                                   capture_output=True, text=True, cwd=cwd,
                                   env={"MEET_LIMIT": str(limit), "PATH": "/usr/bin:/bin"})
@@ -86,16 +90,19 @@ class UnittestRunnerTests(unittest.TestCase):
         self.assertIn("right never appeared", output)
 
     def test_a_process_past_its_timeout_is_stopped_and_leaves_the_run_unmeasured(self):
-        root = self.suite(module("test_hung", "class H(unittest.TestCase):\n    def test_hung(self): time.sleep(60)\n"),
+        # Stretched by load: the quick module and the failing one run under the same limit as the hung one, which
+        # sleeps twelve times as long, so it is still stopped.
+        limit = round(stretched(5))
+        root = self.suite(module("test_hung", f"class H(unittest.TestCase):\n    def test_hung(self): time.sleep({12 * limit})\n"),
                           module("test_quick", "class Q(unittest.TestCase):\n    def test_quick(self): pass\n"))
-        status, output = self.run_suite(root, "--timeout", "5")
+        status, output = self.run_suite(root, "--timeout", str(limit))
         self.assertEqual(status, evidence.UNMEASURED, output)
-        self.assertIn("== test_hung: timed out after 5s (0 tests", output)
+        self.assertIn(f"== test_hung: timed out after {limit}s (0 tests", output)
         self.assertIn("== test_quick: OK (1 tests", output)
-        self.assertIn("UNMEASURED: test_hung (timed out after 5s)", output)
+        self.assertIn(f"UNMEASURED: test_hung (timed out after {limit}s)", output)
         # A failure beside it still fails the run.
         (root / "test_fail.py").write_text("import unittest\nclass F(unittest.TestCase):\n    def test_f(self): self.fail('planted')\n")
-        status, output = self.run_suite(root, "--timeout", "5")
+        status, output = self.run_suite(root, "--timeout", str(limit))
         self.assertEqual(status, 1, output)
         self.assertRegex(output, r"FAILED: test_fail .*; UNMEASURED: test_hung")
         self.assertEqual(self.run_suite(root, "--timeout", "0")[0], 2)
@@ -346,7 +353,7 @@ class LaneGroupTests(unittest.TestCase):
                 "minimumTests": 1}
 
     def test_a_group_runs_its_lanes_side_by_side_and_serial_runs_them_in_turn(self):
-        self.configure({"left": self.meet("left", "right", 60), "right": self.meet("right", "left", 60),
+        self.configure({"left": self.meet("left", "right", stretched(60)), "right": self.meet("right", "left", stretched(60)),
                         "both": {"parallel": ["left", "right"]}})
         status, output = self.run_lane("both")
         self.assertEqual(status, 0, output)
@@ -361,7 +368,8 @@ class LaneGroupTests(unittest.TestCase):
                          {"lane": "left", "status": 0, "outcome": "passed", "executedTests": 1, "skippedTests": 0,
                           "log": "left.log"})
         self.assertEqual(receipt["lanes"]["right"]["executedTests"], 1)
-        # The negative control: in turn, the first lane cannot meet the second.
+        # The negative control: in turn, the first lane cannot meet the second. Its 1 s stays fixed: load only
+        # makes a lane that cannot meet the other fail surer.
         self.configure({"left": self.meet("late", "never", 1), "right": self.meet("never", "late", 1),
                         "both": {"parallel": ["left", "right"]}})
         status, output = self.run_lane("--serial", "both")
@@ -375,6 +383,7 @@ class LaneGroupTests(unittest.TestCase):
         unmeasured = "/p/T.swift:5: -[P.T testA] : Test skipped - Unmeasured: busy\nRan 1 test"
         lanes = {"pass": say("Ran 2 tests", minimumTests=2), "fail": say("Ran 2 tests", 1),
                  "unmeasured": say(unmeasured), "short": say("Ran 1 test", minimumTests=2),
+                 # Fixed: the slow lane's 1 s timeout is the behavior under test; the others have none.
                  "slow": {"command": [sys.executable, "-c", "import time; time.sleep(60)"], "timeout": 1}}
         cases = {("pass",): 0, ("pass", "unmeasured"): 3, ("pass", "slow"): 3, ("pass", "unmeasured", "fail"): 1,
                  ("pass", "short"): 1}
