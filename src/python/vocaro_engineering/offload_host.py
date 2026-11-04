@@ -23,7 +23,8 @@ given `{"device": ...}`, what there may still use a physical device a run was gi
 there, for `eng keychain recover`; given `{"keepUnlocked": ...}`, at the owner's terminal, it asks for
 the login keychain's password and keeps it for runs to unlock that keychain with, for `eng keychain
 keep-unlocked`; given `{"foreground": true}`, what the Mac lacks for foreground work started over
-SSH and who holds its mac-foreground, for `eng remote foreground`.
+SSH and who holds its mac-foreground, for `eng remote foreground`; given `{"pressure": true}`, its
+load, the limit admission sets on it and its memory pressure, for the merge queue's settle wait.
 """
 import base64
 import contextlib
@@ -1327,6 +1328,20 @@ def advertise(repository):
         return {"error": str(error)}
 
 
+def pressure():
+    """This Mac's one-minute load, None when unavailable; the limit at or above which its heavy-work
+    admission finds no spare capacity, HEAVY_LOAD_LIMIT or three quarters of the cores, as
+    resources.load_limit sets it, which this file cannot import; and its memory pressure level, None when
+    unread. The merge queue judges them as admission does (resources.judged) before it runs again a lane
+    that ran here and gave no verdict (guides/maintenance.md, The merge queue)."""
+    try: load = round(os.getloadavg()[0], 2)
+    except OSError: load = None
+    try: limit = float(os.environ.get("HEAVY_LOAD_LIMIT", 0.75 * (os.cpu_count() or 1)))
+    except ValueError as error: return {"error": f"HEAVY_LOAD_LIMIT is no number: {error}"}
+    level = output(["/usr/sbin/sysctl", "-n", "kern.memorystatus_vm_pressure_level"]) if sys.platform == "darwin" else None
+    return {"load": load, "limit": limit, "memory": int(level) if level and level.isdigit() else None}
+
+
 def answer(request):
     """offload_host.py's answer to a request other than a plan, for `eng doctor`, `eng remote`,
     `eng remote setup`, `eng remote foreground`, `devices recover` and `eng keychain recover`. A census before a dispatch can
@@ -1334,6 +1349,7 @@ def answer(request):
     if "toolchain" in request: return toolchain(request["toolchain"])
     if "keychain" in request: return keychain(request["keychain"])
     if "foreground" in request: return foreground()
+    if "pressure" in request: return pressure()
     if "leftovers" in request or "device" in request:
         reaped = reap(request["leftovers"], **request["reap"]) if "reap" in request else None
         # A census that fails says why: it must never stop the work it is printed before.
@@ -1661,6 +1677,7 @@ def main(plan):
 if __name__ == "__main__":
     request = json.loads(sys.argv[1])
     if "keepUnlocked" in request: sys.exit(keep_unlocked(request["keepUnlocked"]))
-    if {"toolchain", "images", "deleteRuntime", "receive", "leftovers", "device", "keychain", "foreground"} & request.keys():
+    if {"toolchain", "images", "deleteRuntime", "receive", "leftovers", "device", "keychain", "foreground",
+            "pressure"} & request.keys():
         print(json.dumps(answer(request)))
     else: main(request)

@@ -33,6 +33,7 @@ stops.
 """
 import base64
 import binascii
+import calendar
 import contextlib
 import fcntl
 import json
@@ -50,7 +51,7 @@ import tempfile
 import threading
 import time
 
-from . import devices, disk, offload_host, processes
+from . import devices, disk, offload_host, processes, resources
 from .config import TOOLKIT_ROOT
 from .resources import BUSY, FREE_WAIT
 from .simulators import pool as simulator_pool
@@ -2060,6 +2061,42 @@ def ask(host, request, timeout=SURVEY_TIMEOUT):
 def survey(host, developer):
     """The second Mac's offload_host.toolchain, read in its login shell as a run there reads it."""
     return ask(host, {"toolchain": developer})
+
+
+def pressure_there(host):
+    """The second Mac's pressure as resources.pressure gives this Mac's, judged by resources.judged with the
+    limit it sets there (offload_host.pressure), and its one-minute load, None when unavailable: what the merge
+    queue's settle wait reads before it runs again a lane that ran there. A second Mac that cannot be reached,
+    or that does not answer with its reading, raises Unavailable, and the wait reads this Mac instead."""
+    answered = ask(host, {"pressure": True}, timeout=CENSUS_TIMEOUT)
+    if not isinstance(answered, dict) or not isinstance(answered.get("limit"), (int, float)):
+        why = answered.get("error") if isinstance(answered, dict) and answered.get("error") else f"it answered {answered!r}"
+        raise Unavailable(f"{host} did not report its load: {why}")
+    load = answered.get("load")
+    load = load if isinstance(load, (int, float)) else None
+    return resources.judged(load, answered["limit"], lambda: answered.get("memory")), load
+
+
+def dispatched(root, name, since):
+    """The second Mac that ran the newest dispatch of name from root that started at or after since, an epoch
+    time, or None when none did: the merge queue's record of where a lane it ran gave no verdict. A dispatch's
+    directory is named for the second it started (execute); one that only prepared, whose receipt says so,
+    ran nothing there. A run that ended without a receipt, as a lost one does, ran on the configured second
+    Mac."""
+    try: runs = sorted((Path(root) / ".build/engineering/remote" / DISPATCHES / name).iterdir(), reverse=True)
+    except OSError: return None
+    for run in runs:
+        try: started = calendar.timegm(time.strptime(run.name[:16], "%Y%m%dT%H%M%SZ"))
+        except ValueError: continue
+        if started < int(since): return None
+        try: receipt = json.loads((run / "source.json").read_text())
+        except FileNotFoundError: receipt = {}
+        except (OSError, ValueError): continue
+        if not isinstance(receipt, dict) or receipt.get("stage") == "preparation": continue
+        if receipt.get("host"): return receipt["host"]
+        try: return configured()
+        except ValueError: return None
+    return None
 
 
 def reap_request(root):

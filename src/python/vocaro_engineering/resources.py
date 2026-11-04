@@ -415,10 +415,19 @@ def pressure(limit=None):
     try:
         load = os.getloadavg()[0]
     except OSError:
+        load = None
+    return judged(load, limit, memory_level)
+
+
+def judged(load, limit, level):
+    """pressure's answer for a reading of a Mac: its one-minute load, None when unavailable, the limit of that
+    Mac, and level, a function that reads its memory pressure level, called only when the load is below the
+    limit. The merge queue judges the second Mac's reading by it too (remote.pressure_there)."""
+    if load is None:
         return "load", f"the load average, which HEAVY_LOAD_LIMIT={limit:g} bounds, is unavailable"
     if load >= limit:
         return "load", f"load {load:.1f} is at or above HEAVY_LOAD_LIMIT={limit:g}"
-    level = memory_level()
+    level = level()
     if level is None:
         return "memory", "memory pressure, which must be level 1 (normal), cannot be read"
     if level != 1:

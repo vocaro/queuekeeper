@@ -344,6 +344,234 @@ class NoVerdict(Fixture):
         self.assertEqual(self.state(identifier)["state"], "queued")
 
 
+# Files, as `eng run` does for a lane the second Mac ran, a dispatch record in the checkout's
+# .build/engineering/remote/.dispatches/LANE/, named for the second it started unless the receipt names
+# one, and holding the receipt that sys.argv[1] holds, if any; then runs lane.py with the rest.
+DISPATCHING_LANE = """import json, os, pathlib, runpy, sys, time
+receipt = pathlib.Path(sys.argv[1])
+if receipt.exists():
+    said = json.loads(receipt.read_text())
+    name = said.pop("name", None) or time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + f"-{os.getpid()}"
+    run = pathlib.Path(".build/engineering/remote/.dispatches/gate") / name
+    run.mkdir(parents=True, exist_ok=True)
+    if said: (run / "source.json").write_text(json.dumps(said))
+sys.argv = ["lane.py", *sys.argv[2:]]
+runpy.run_path("lane.py", run_name="__main__")
+"""
+
+
+class SecondMacSettle(Fixture):
+    """The settle wait reads the Mac the lane ran on (#140): the second Mac, faked at offload_host's answer
+    (remote.ask), when the lane's dispatch says it ran there; this Mac otherwise."""
+    HOST = "fake-mac"
+    LOCAL_BUSY = ("load", "load 40.0 is at or above HEAVY_LOAD_LIMIT=13.5")
+    THERE_BUSY = {"load": 30.0, "limit": 7.5, "memory": 1}
+    THERE_SETTLED = {"load": 2.0, "limit": 7.5, "memory": 1}
+
+    def setUp(self):
+        super().setUp()
+        self.receipt = self.base / "receipt"
+        (self.repo / "dispatching.py").write_text(DISPATCHING_LANE)
+        run(self.repo, "git", "add", "dispatching.py")
+        run(self.repo, "git", "commit", "-qm", "Add the dispatching lane")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        config = self.config()
+        config["lanes"]["gate"]["command"] = ["python3", "dispatching.py", str(self.receipt), str(self.counter),
+                                              str(self.status)]
+        self.publish(config)
+
+    def ran_there(self, **receipt):
+        self.receipt.write_text(json.dumps({"host": self.HOST, "ranOn": "second Mac", **receipt}))
+
+    @contextlib.contextmanager
+    def second_mac(self, answers):
+        """The second Mac's answers to the pressure request, one per look, the last repeating; an exception
+        among them is raised, as remote.ask raises for a second Mac it cannot reach. Yields the requests."""
+        asked = []
+        def ask(host, request, timeout=None):
+            asked.append((host, request))
+            said = answers[min(len(asked) - 1, len(answers) - 1)]
+            if isinstance(said, Exception): raise said
+            return said
+        with patch.object(mq.remote, "ask", side_effect=ask): yield asked
+
+    @contextlib.contextmanager
+    def passing_after_no_verdict(self):
+        """The retry passes: the status file that voided the first gate goes once it has."""
+        real = mq.Worker.gate
+        def gate(worker, *arguments):
+            result = real(worker, *arguments)
+            if result[0] == 3: self.status.unlink()
+            return result
+        with patch.object(mq.Worker, "gate", gate): yield
+
+    def test_a_lane_the_second_mac_ran_waits_for_that_mac_not_this_one(self):
+        self.status.write_text("3")
+        self.ran_there()
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        # This Mac stays busy throughout: a wait that read it would hold, not land.
+        with self.second_mac([self.THERE_BUSY, self.THERE_BUSY, self.THERE_SETTLED]) as asked, \
+                self.host([self.LOCAL_BUSY]) as (slept, said), self.passing_after_no_verdict():
+            self.assertEqual(self.work(), 0)
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual(self.gates(), 2)
+        self.assertEqual(slept, [mq.SETTLE_POLL] * 2)
+        self.assertEqual(asked, [(self.HOST, {"pressure": True})] * 3)
+        self.assertEqual(self.pressure.call_count, 0)
+        log = said.getvalue()
+        self.assertIn(f"no verdict (exit 3) from {self.HOST}", log)
+        self.assertIn(f"on {self.HOST}, load 30.0 is at or above HEAVY_LOAD_LIMIT=7.5: the lanes run again once "
+                      f"{self.HOST} settles", log)
+        self.assertIn(f"{self.HOST} settled after {2 * mq.SETTLE_POLL}s and 3 looks; one-minute load first 30, "
+                      "highest 30, last 2: the lanes run again", log)
+
+    def test_a_second_mac_that_stays_busy_holds_naming_it(self):
+        self.status.write_text("3")
+        self.ran_there()
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        # This Mac is settled throughout: a wait that read it would run the lanes again at once.
+        with self.second_mac([{"load": 1.0, "limit": 7.5, "memory": 2}]), self.host([None]) as (slept, said):
+            self.assertEqual(self.work(), 0)
+        self.assertEqual(sum(slept), mq.SETTLE_LIMIT)
+        self.assertEqual(self.gates(), 1)
+        self.assertEqual(self.state(identifier)["state"], "queued")
+        self.assertEqual(self.pressure.call_count, 0)
+        self.assertIn(f"{self.HOST} did not settle in {mq.SETTLE_LIMIT}s (on {self.HOST}, memory pressure is level 2 "
+                      "(warning), not 1 (normal))", mq.Queue(self.repo).held())
+
+    def test_a_lane_that_ran_here_reads_only_this_mac(self):
+        """Negative control: no dispatch record, so the second Mac is never asked."""
+        self.status.write_text("3")
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        with self.second_mac([AssertionError("the second Mac was asked")]) as asked, \
+                self.host([self.LOCAL_BUSY, None], then=self.status.unlink) as (slept, said):
+            self.assertEqual(self.work(), 0)
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual(asked, [])
+        self.assertEqual(self.pressure.call_count, 2)
+        self.assertIn("the host settled after", said.getvalue())
+        self.assertNotIn(self.HOST, said.getvalue())
+
+    def test_a_dispatch_that_only_prepared_or_started_before_the_lane_reads_this_mac(self):
+        """Negative controls: nothing ran on the second Mac during this lane's run."""
+        for case, receipt in [("prepared", {"stage": "preparation", "outcome": "failed-or-interrupted"}),
+                              ("earlier", {"name": "20200101T000000Z-1"})]:
+            with self.subTest(case):
+                self.status.write_text("3")
+                self.ran_there(**receipt)
+                self.commit(f"a-{case}", f"a-{case}")
+                [identifier] = self.add(f"a-{case}")
+                self.pressure.reset_mock()
+                with self.second_mac([AssertionError("the second Mac was asked")]) as asked, \
+                        self.host([self.LOCAL_BUSY, None], then=self.status.unlink):
+                    self.assertEqual(self.work(), 0)
+                self.assertEqual(self.state(identifier)["state"], "landed")
+                self.assertEqual(asked, [])
+                self.assertEqual(self.pressure.call_count, 2)
+
+    def test_a_second_mac_out_of_reach_falls_back_to_this_macs_reading_saying_so(self):
+        self.status.write_text("3")
+        self.ran_there()
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        lost = mq.remote.Misconfigured(f"{self.HOST} cannot be reached: ssh: Could not resolve hostname", "wake it")
+        # Out of reach at both looks, while this Mac is busy and then settled; asked again at each.
+        with self.second_mac([lost]) as asked, \
+                self.host([self.LOCAL_BUSY, None], then=self.status.unlink) as (slept, said):
+            self.assertEqual(self.work(), 0)
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual(len(asked), 2)
+        self.assertEqual(self.pressure.call_count, 2)
+        log = said.getvalue()
+        self.assertEqual(log.count("cannot be read, so the wait reads this Mac's load instead"), 1)
+        self.assertIn(f"{self.HOST}, where the lanes ran, cannot be read, so the wait reads this Mac's load instead: "
+                      f"{self.HOST} cannot be reached", log)
+        self.assertIn("the host settled after", log)
+
+    def test_a_second_mac_that_answers_again_is_read_again(self):
+        self.status.write_text("3")
+        self.ran_there()
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        lost = mq.remote.Unavailable(f"{self.HOST} did not report its load: it answered None")
+        with self.second_mac([lost, self.THERE_SETTLED]), self.host([self.LOCAL_BUSY]) as (slept, said), \
+                self.passing_after_no_verdict():
+            self.assertEqual(self.work(), 0)
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual(self.pressure.call_count, 1)
+        self.assertIn(f"{self.HOST}'s load can be read again: reading it", said.getvalue())
+        self.assertIn(f"{self.HOST} settled after {mq.SETTLE_POLL}s and 2 looks", said.getvalue())
+
+
+class SecondMacReading(unittest.TestCase):
+    """remote.pressure_there and remote.dispatched alone, and the reading offload_host gives."""
+
+    def test_the_second_macs_reading_is_judged_by_its_own_limit(self):
+        cases = [({"load": 7.5, "limit": 7.5, "memory": 1}, ("load", "load 7.5 is at or above HEAVY_LOAD_LIMIT=7.5")),
+                 ({"load": 7.4, "limit": 7.5, "memory": 1}, None),
+                 ({"load": 7.4, "limit": 7.5, "memory": 4},
+                  ("memory", "memory pressure is level 4 (critical), not 1 (normal)")),
+                 ({"load": 7.4, "limit": 7.5, "memory": None},
+                  ("memory", "memory pressure, which must be level 1 (normal), cannot be read")),
+                 ({"load": None, "limit": 7.5, "memory": 1},
+                  ("load", "the load average, which HEAVY_LOAD_LIMIT=7.5 bounds, is unavailable"))]
+        for answer, expected in cases:
+            with self.subTest(answer=answer), patch.object(mq.remote, "ask", return_value=answer) as ask:
+                self.assertEqual(mq.remote.pressure_there("fake-mac"), (expected, answer["load"]))
+                ask.assert_called_once_with("fake-mac", {"pressure": True}, timeout=mq.remote.CENSUS_TIMEOUT)
+
+    def test_a_second_mac_without_a_reading_is_unavailable(self):
+        for answer in [{"error": "HEAVY_LOAD_LIMIT is no number: x"}, {"load": 1.0}, ["no"], None]:
+            with self.subTest(answer=answer), patch.object(mq.remote, "ask", return_value=answer):
+                with self.assertRaisesRegex(mq.remote.Unavailable, "fake-mac did not report its load"):
+                    mq.remote.pressure_there("fake-mac")
+
+    def test_the_reading_there_uses_admissions_limit(self):
+        from vocaro_engineering import offload_host, resources
+        with patch.dict(os.environ, {"HEAVY_LOAD_LIMIT": "5"}):
+            read = offload_host.pressure()
+            self.assertEqual(read["limit"], resources.load_limit())
+        with patch.dict(os.environ):
+            os.environ.pop("HEAVY_LOAD_LIMIT", None)
+            self.assertEqual(offload_host.pressure()["limit"], resources.load_limit())
+        self.assertIsInstance(read["load"], float)
+        with patch.dict(os.environ, {"HEAVY_LOAD_LIMIT": "x"}):
+            self.assertIn("error", offload_host.pressure())
+        # Answered as a request, not taken for a plan to run.
+        done = subprocess.run([sys.executable, str(ROOT / "src/python/vocaro_engineering/offload_host.py"),
+                               json.dumps({"pressure": True})], capture_output=True, text=True, timeout=60)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(set(json.loads(done.stdout.splitlines()[-1])), {"load", "limit", "memory"})
+
+    def test_only_a_dispatch_that_ran_there_since_the_lane_began_names_its_mac(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        runs = root / ".build/engineering/remote/.dispatches/gate"
+        def dispatch(name, receipt):
+            (runs / name).mkdir(parents=True)
+            if receipt is not None: (runs / name / "source.json").write_text(json.dumps(receipt))
+        since = 1_800_000_000.5  # 2027-01-15T08:00:00.5Z
+        self.assertIsNone(mq.remote.dispatched(root, "gate", since))
+        dispatch("20270115T075959Z-1", {"host": "earlier"})
+        self.assertIsNone(mq.remote.dispatched(root, "gate", since))
+        # Named for the second it started, which holds since.
+        dispatch("20270115T080000Z-2", {"host": "fake-mac"})
+        self.assertEqual(mq.remote.dispatched(root, "gate", since), "fake-mac")
+        # A later dispatch that only prepared ran nothing there; the one before it did.
+        dispatch("20270115T080100Z-3", {"host": "other", "stage": "preparation"})
+        self.assertEqual(mq.remote.dispatched(root, "gate", since), "fake-mac")
+        # One lost, with no receipt, ran on the configured second Mac.
+        dispatch("20270115T080200Z-4", None)
+        with patch.dict(os.environ, {"VOCARO_OFFLOAD_HOST": "configured-mac"}):
+            self.assertEqual(mq.remote.dispatched(root, "gate", since), "configured-mac")
+        with patch.dict(os.environ, {"VOCARO_OFFLOAD_HOST": "none"}):
+            self.assertIsNone(mq.remote.dispatched(root, "gate", since))
+        self.assertIsNone(mq.remote.dispatched(root, "other-lane", since))
+
+
 class MainMoves(Fixture):
     def during_gate(self, name, content="x"):
         """Push name to main directly, as a session outside the queue does, while the lanes run."""

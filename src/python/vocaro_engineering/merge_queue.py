@@ -545,41 +545,59 @@ class Worker:
         self.limit = None  # how many of the oldest entries the next round takes, while bisecting
         self.suspects = 0  # how many of the oldest entries hold a commit that fails
         self.retries = 0
+        self.ran_on = None  # the second Mac that ran the last lane the gate ran, or None (gate)
         self.environment = environment()  # what the lanes, the hook and the carry-over checks run in
 
     def say(self, words):
         print(f"queue: {time.strftime('%H:%M:%S')} {words}", flush=True)
 
-    def settle(self, what):
+    def look(self, host, said):
+        """(pressure, one-minute load, where it was read) of the Mac a lane ran on: host, the second Mac, by
+        remote.pressure_there, or with host None this Mac. A second Mac that cannot be read gives this Mac's
+        reading, saying so when that starts, in said, and again once it can be read."""
+        if host is not None:
+            try:
+                busy, load = remote.pressure_there(host)
+                if said.get("fallback"): self.say(f"{host}'s load can be read again: reading it")
+                said["fallback"] = False
+                return (None if busy is None else (busy[0], f"on {host}, {busy[1]}")), load, host
+            except remote.Unavailable as error:
+                if not said.get("fallback"):
+                    self.say(f"{host}, where the lanes ran, cannot be read, so the wait reads this Mac's load instead: "
+                             f"{error}")
+                said["fallback"] = True
+        return resources.pressure(), resources.one_minute_load(), "the host"
+
+    def settle(self, what, host=None):
         """None once the host has spare capacity by admission's test (resources.pressure), so that the retry of
         what gave no verdict does not meet the load that voided it; else, past SETTLE_LIMIT, why it has none.
-        It logs what it saw, and a stop request ends it as one ends a lane (processes.Interrupted)."""
+        With host, the second Mac that ran what gave no verdict, the test reads that Mac (look). It logs what
+        it saw, and a stop request ends it as one ends a lane (processes.Interrupted)."""
         start = reported = now()
         looks, seen = 0, None
-        loads = []
+        loads, said = [], {}
         while True:
             if processes.requested():
                 raise processes.Interrupted(processes.requested(), f"while {what} waited for the host to settle")
-            busy = resources.pressure()
+            busy, load, where = self.look(host, said)
             looks += 1
-            load = resources.one_minute_load()
             if load is not None: loads.append(load)
             waited = now() - start
             span = (f"; one-minute load first {loads[0]:g}, highest {max(loads):g}, last {loads[-1]:g}"
                     if loads else "; the load average was unavailable")
             if busy is None:
-                if looks > 1: self.say(f"the host settled after {int(waited)}s and {looks} looks{span}: {what} again")
+                if looks > 1: self.say(f"{where} settled after {int(waited)}s and {looks} looks{span}: {what} again")
                 return None
             kind, reason = busy
             if looks == 1:
-                self.say(f"{reason}: {what} again once the host settles, waiting up to {SETTLE_LIMIT}s")
-            elif kind != seen or now() - reported >= SETTLE_REPORT:
+                self.say(f"{reason}: {what} again once {where} settles, waiting up to {SETTLE_LIMIT}s")
+            elif (kind, where) != seen or now() - reported >= SETTLE_REPORT:
                 self.say(f"still waiting after {int(waited)}s: {reason}")
                 reported = now()
-            seen = kind
+            seen = kind, where
             if waited >= SETTLE_LIMIT:
-                self.say(f"the host did not settle in {int(waited)}s and {looks} looks{span}")
-                return f"the host did not settle in {int(waited)}s ({reason})"
+                self.say(f"{where} did not settle in {int(waited)}s and {looks} looks{span}")
+                return f"{where} did not settle in {int(waited)}s ({reason})"
             pause(min(SETTLE_POLL, max(0, SETTLE_LIMIT - waited)))
 
     def prepare(self):
@@ -784,8 +802,9 @@ class Worker:
         return applied
 
     def gate(self, lanes, round_name):
-        """(status of the first of lanes that did not pass or 0, its log)."""
-        log = None
+        """(status of the first of lanes that did not pass or 0, its log). ran_on is the second Mac that ran
+        that lane, by its dispatch's record (remote.dispatched), or None when it ran here or nowhere."""
+        log, self.ran_on = None, None
         for lane in lanes:
             log = self.queue.logs / f"{round_name}-{lane}.log"
             # A lane run here logs to its own file, and one on the second Mac prints here. What an
@@ -793,12 +812,15 @@ class Worker:
             lane_log = self.checkout / ".build/engineering" / lane / "run.log"
             with contextlib.suppress(OSError): lane_log.unlink()
             self.say(f"{lane} on {self.head()[:12]}")
+            began = time.time()
             try:
                 status_ = processes.run(["python3", "scripts/eng", "run", lane], cwd=self.checkout, log_path=log,
                                         timeout=LANE_LIMIT, env=self.environment)
             except processes.TimedOut as error:
+                self.ran_on = remote.dispatched(self.checkout, lane, began)
                 self.say(f"{lane}: unmeasured: {error}")
                 return evidence.UNMEASURED, log
+            self.ran_on = remote.dispatched(self.checkout, lane, began)
             with contextlib.suppress(OSError), log.open("a") as kept: kept.write(lane_log.read_text(errors="replace"))
             self.say(f"{lane} exited {status_}")
             if status_: return status_, log
@@ -969,8 +991,8 @@ class Worker:
                 queue.hold(f"the lanes gave no verdict, exit {result}, {self.retries} times; see {log}, then run "
                            "`eng queue resume`")
                 return True
-            self.say(f"no verdict (exit {result})")
-            busy = self.settle("the lanes run")
+            self.say(f"no verdict (exit {result})" + (f" from {self.ran_on}" if self.ran_on else ""))
+            busy = self.settle("the lanes run", self.ran_on)
             if busy:
                 queue.hold(f"the lanes gave no verdict, exit {result}, and {busy}; see {log}, then run "
                            "`eng queue resume`")

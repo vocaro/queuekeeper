@@ -341,10 +341,19 @@ that it holds, with every entry waiting, as it did before, and the hold names th
 such as `load 40.0 is at or above HEAVY_LOAD_LIMIT=13.5`. Its log names the reason when the wait
 starts, again every ten minutes or when the reason changes, and at the end how long it waited, how many
 looks it took and the first, highest and last one-minute load. A stop request (SIGTERM, SIGINT or SIGHUP)
-ends the wait at its next look, with the entries still waiting. The test reads the Mac the worker runs
-on: a lane that the second Mac ran left its load there, which this wait does not see. A lane that fails
-blames its commits at once, with no wait, and the hook's no verdict waits the same way before it runs
-again.
+ends the wait at its next look, with the entries still waiting. The test reads the Mac the lane ran
+on, since a lane that the second Mac ran left its load there
+([#140](https://github.com/vocaro/vocaro-engineering/issues/140)). The worker knows it from the
+lane's dispatch, which `eng run` files under `.build/engineering/remote/.dispatches/LANE/` in the
+queue's checkout: one that started during the run and reached the second Mac, rather than only
+preparing, names it. Each look then asks the second Mac over SSH, as `eng doctor` does, for its
+one-minute load, the `HEAVY_LOAD_LIMIT` it sets there (three quarters of its own cores by default) and
+its memory pressure, and judges them as admission does; the log and the hold name that Mac. A second
+Mac that cannot be reached, or does not answer with its reading, gives this Mac's reading for that look
+instead, and the log says so when that starts and again once it answers. A lane that ran here, or that
+no Mac ran, reads this Mac only. A lane that fails blames its commits at once, with no wait, and the
+hook's no verdict waits the same way before it runs again, reading this Mac, where the worker runs the
+hook.
 
 **A remote out of reach is tried again.** A fetch or push that never reached the remote, or whose
 connection ended, says nothing of the commits, and a brief outage clears by itself: a name that did not
