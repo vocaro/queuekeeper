@@ -1936,6 +1936,15 @@ Supervise the process group you own. The toolkit's `processes.supervise`, which 
   reported Xcode's `DTServiceHub` outliving an ad hoc `xcodebuild … test` on a fresh iOS
   simulator by 10 to 15 minutes, ignoring SIGTERM, until they killed it by hand (EPUBLib, macOS
   27.0, Xcode 27.1, October 2026).
+- Xcode's own programs have no grace. When every descendant still running is a program inside an
+  Xcode (`…/Xcode*.app/Contents/…`, other than `xcodebuild`) that launchd adopted, the supervisor
+  stops them as soon as the root exits, with SIGTERM, then SIGKILL after the same 10 s. Nothing of
+  the run can use them by then, since the supervisor returns only once they are gone. Anything else
+  still running, beside them or alone, keeps the whole 60 s. Between 2026-10-31 and 2026-11-04 the
+  queue's lane logs held 44 stops after the grace, each of a `DTServiceHub` that `xcodebuild … test`
+  left or an `ibtoold` that a build left. Each held its lane and heavy slot about 70 s after the
+  work had ended: in BreezEPUB's `tests` lane, about 70 s of a 100 s lane
+  ([vocaro-engineering#154](https://github.com/vocaro/vocaro-engineering/issues/154)).
 - A command that cannot start, such as a mistyped name or a script without its executable bit,
   raises `NotStarted` and releases admission. `Popen` reaps the child whose exec failed before
   it raises, so nothing is left to inspect; keeping the guard would stop every session's

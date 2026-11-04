@@ -33,6 +33,22 @@ HANDLES_TERM = READY + ("def stop(*_): (here / 'terminated').touch(); os._exit(0
                         "signal.signal(signal.SIGTERM, stop)\n(here / f'ready-{os.getpid()}').touch()\ntime.sleep(120)")
 FINISHES = READY + ("parent = os.getppid()\n(here / f'ready-{os.getpid()}').touch()\n"
                     "while os.getppid() == parent: time.sleep(0.01)\n(here / 'finished').touch()")
+# ROOT that also starts, for each argument "xcode:PATH", /bin/sleep as the program PATH inside a stand-in Xcode
+# in the test's directory, as xcodebuild leaves DTServiceHub or a build ibtoold: ps shows that path.
+HELPERS_ROOT = ROOT.replace(
+    'children = [subprocess.Popen([sys.executable, "-c", code, str(here)], start_new_session=True).pid for code in sys.argv[2:]]',
+    'children = []\n'
+    'for code in sys.argv[2:]:\n'
+    '    if code.startswith("xcode:"):\n'
+    '        child = subprocess.Popen([str(here / "Xcode.app/Contents" / code[6:]), "120"], executable="/bin/sleep",\n'
+    '                                 start_new_session=True).pid\n'
+    '        (here / f"ready-{child}").touch()\n'
+    '    else:\n'
+    '        child = subprocess.Popen([sys.executable, "-c", code, str(here)], start_new_session=True).pid\n'
+    '    children.append(child)')
+DTSERVICEHUB = "xcode:SharedFrameworks/DVTInstrumentsFoundation.framework/Resources/DTServiceHub"
+IBTOOLD = "xcode:Developer/usr/bin/ibtoold"
+XCODEBUILD = "xcode:Developer/usr/bin/xcodebuild"
 # ROOT that stays once its descendants are adopted, until a signal ends it.
 STAYS = ROOT.replace("raise SystemExit(3)", "time.sleep(120)")
 # Logs each SIGTERM and takes half a second to shut down after the first, as a test runner can.
@@ -254,6 +270,52 @@ class ProcessTests(unittest.TestCase):
                                                            LINGER=stretched(10), kill_after=0.5)
             self.assertEqual(result, 3)
             self.assertIn("stopping 1 process(es)", error)
+
+    def test_xcodes_own_programs_left_to_launchd_are_stopped_without_the_grace(self):
+        with tempfile.TemporaryDirectory() as directory:
+            # Fixed: a grace of 600 s, which the run must not wait; the bound on it stretches by load.
+            began = time.monotonic()
+            result, error, births = self.outlive_the_root(directory, DTSERVICEHUB, IBTOOLD, root=HELPERS_ROOT,
+                                                          LINGER=600, kill_after=0.5)
+            self.assertLess(time.monotonic() - began, stretched(30))
+            self.assertEqual(result, 3)
+            self.assertIn("stopping 2 Xcode program(s) that launchd adopted when the command", error)
+            self.assertIn("without waiting 600s, with SIGTERM, then SIGKILL after 0.5s", error)
+            self.assertIn("/Xcode.app/Contents/SharedFrameworks/DVTInstrumentsFoundation.framework/Resources/DTServiceHub 120",
+                          error)
+            self.assertEqual(len(births), 2)
+
+    def test_anything_else_still_running_keeps_the_whole_grace_for_all(self):
+        for name, descendants in (("beside a process of its own", (DTSERVICEHUB, HANDLES_TERM)),
+                                  ("xcodebuild itself", (XCODEBUILD,)),
+                                  ("a process of its own", (HANDLES_TERM,))):
+            with self.subTest(name), tempfile.TemporaryDirectory() as directory:
+                # The grace stretches by load: the run must wait it out before anything is stopped.
+                grace = stretched(2)
+                began = time.monotonic()
+                result, error, _births = self.outlive_the_root(directory, *descendants, root=HELPERS_ROOT,
+                                                               LINGER=grace, kill_after=0.5)
+                self.assertGreaterEqual(time.monotonic() - began, grace)
+                self.assertEqual(result, 3)
+                self.assertIn(f"stopping {len(descendants)} process(es) still running {grace:g}s after the command",
+                              error)
+                self.assertNotIn("Xcode program", error)
+
+    def test_an_xcode_helper_is_a_program_inside_an_xcode_that_launchd_adopted_other_than_xcodebuild(self):
+        hub = "/Applications/Xcode.app/Contents/SharedFrameworks/DVTInstrumentsFoundation.framework/Resources/DTServiceHub"
+        for parent, command, expected in (
+                (1, hub, True),
+                (1, "/Applications/Xcode.app/Contents/Developer/usr/bin/ibtoold --sending-client-environment", True),
+                (1, "/Applications/Xcode-beta.app/Contents/Developer/usr/bin/ibtoold", True),
+                (4242, hub, False),
+                (1, "/Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild test-without-building", False),
+                (1, "/Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild", False),
+                (1, f"/usr/bin/python3 {hub}", False),
+                (1, "/Applications/MyXcode.app/Contents/MacOS/tool", False),
+                (1, "/Applications/Xcode.app.old/Contents/MacOS/tool", False),
+                (1, None, False), (1, "", False)):
+            with self.subTest(parent=parent, command=command):
+                self.assertEqual(processes.xcode_helper(parent, command), expected)
 
     def test_a_descendant_that_ends_within_the_grace_is_awaited_and_never_signaled(self):
         with tempfile.TemporaryDirectory() as directory:
