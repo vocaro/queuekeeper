@@ -24,6 +24,12 @@ SPEECH = "Processing markup for voice locale"
 PREDICATE = 'process == "vot" OR process == "MauiAUSP"'
 # Seconds VoiceOver may stay silent after it is switched on; under saturation it took up to 292 s.
 VOICEOVER_LIMIT = 600
+# Inside a take, a kind's first creation warms its template before the lane's own work begins, so the
+# boot and VoiceOver get shorter limits there: VoiceOver the probe's default start limit. A template
+# VoiceOver left cold is still cloned, booted once; `eng simulator-pool template` warms it again with
+# the full limits.
+TAKE_BOOT = 300
+TAKE_VOICEOVER_LIMIT = 180
 # A member booted without the first boot's migration, kept or cloned, put its volume back to 60 3 to 17 s
 # after it was muted, in 20 of 24 sessions (vocaro-engineering#146), so VoiceOver starts only once the
 # mute has held this many readings in a row, one a second, within MUTE_LIMIT seconds.
@@ -61,6 +67,14 @@ def reading(devicectl, udid, kind):
         return None
 
 
+def confirmed_off(devicectl, udid):
+    """Whether devicectl reads VoiceOver off, switching it off once more when it does not."""
+    if (reading(devicectl, udid, "voiceover") or {}).get("enabled") is False:
+        return True
+    devicectl("settings", "voiceover", "--device", udid, "--disable")
+    return (reading(devicectl, udid, "voiceover") or {}).get("enabled") is False
+
+
 def warm(udid, runtime, *, simctl, devicectl=devicectl, stream=log_stream, boot_timeout=600,
          voiceover_limit=VOICEOVER_LIMIT, clock=time.monotonic, sleep=time.sleep):
     """Warm the held, shut-down template udid on runtime; what the pool records of it.
@@ -69,8 +83,11 @@ def warm(udid, runtime, *, simctl, devicectl=devicectl, stream=log_stream, boot_
     be read. VoiceOver that stays silent past voiceover_limit, or a volume that cannot be set to 0,
     leaves the template booted and migrated but VoiceOver cold, and the record says so. VoiceOver
     speaks through the Mac's own output device, so it starts only once the volume has read 0 MUTE_HELD
-    times in a row, and the volume is read again each second while it is on. The caller shuts the
-    template down, however this ends."""
+    times in a row, a reading with no answer neither counting nor breaking the run, within MUTE_LIMIT
+    seconds, and the volume is read again each second while it is on. voiceOverOff records whether
+    devicectl confirmed VoiceOver off at the end: the setting is in the data container, so a clone of
+    a template it did not confirm would boot with VoiceOver on. The caller shuts the template down,
+    however this ends."""
     started = clock()
     booted = simctl("boot", udid, timeout=120)
     if booted.returncode:
@@ -95,13 +112,17 @@ def warm(udid, runtime, *, simctl, devicectl=devicectl, stream=log_stream, boot_
     devicectl("settings", "audio", "--device", udid, "--volume", "0")
     while held < MUTE_HELD and clock() - muting < MUTE_LIMIT:
         volume = (reading(devicectl, udid, "audio") or {}).get("volume")
-        held = held + 1 if volume == 0 else 0
-        if volume not in (0, None):
+        # No answer says nothing of the volume; only a reading of another volume breaks the run.
+        if volume == 0:
+            held += 1
+        elif volume is not None:
+            held = 0
             devicectl("settings", "audio", "--device", udid, "--volume", "0")
             unmuted.append(volume)
         if held < MUTE_HELD: sleep(1)
     if held < MUTE_HELD:
         record["voiceOver"] = f"not started: the volume did not hold at 0 for {MUTE_HELD} readings in {MUTE_LIMIT} s"
+        record["voiceOverOff"] = confirmed_off(devicectl, udid)
         if unmuted: record["unmuted"] = unmuted
         return record
     with tempfile.TemporaryDirectory(prefix="pool-template-") as directory:
@@ -127,10 +148,11 @@ def warm(udid, runtime, *, simctl, devicectl=devicectl, stream=log_stream, boot_
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(timeout=10)
-    off = (reading(devicectl, udid, "voiceover") or {}).get("enabled") is False
+    off = confirmed_off(devicectl, udid)
     record["voiceOver"] = (f"spoke {spoke} s after it was switched on" if spoke is not None else
                            f"silent for {voiceover_limit} s, so it is not warmed") + \
         ("" if off else "; it could not be confirmed off")
     record["voiceOverWarmed"] = spoke is not None
+    record["voiceOverOff"] = off
     if unmuted: record["unmuted"] = unmuted
     return record

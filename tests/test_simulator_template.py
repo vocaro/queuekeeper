@@ -30,9 +30,9 @@ class Device:
 
     speaks_after: seconds after VoiceOver is switched on when the speech extension logs its first phrase,
     None for never. volumes: what the volume reads after each mute, in turn, then 0."""
-    def __init__(self, clock, speaks_after=50, volumes=(), boot=0, bootstatus=0):
+    def __init__(self, clock, speaks_after=50, volumes=(), boot=0, bootstatus=0, stuck_on=False):
         self.clock, self.speaks_after, self.volumes = clock, speaks_after, list(volumes)
-        self.calls, self.boot, self.bootstatus = [], boot, bootstatus
+        self.calls, self.boot, self.bootstatus, self.stuck_on = [], boot, bootstatus, stuck_on
         self.voiceover, self.volume, self.switched, self.log = False, 60, None, None
 
     def simctl(self, *arguments, timeout=600):
@@ -46,12 +46,13 @@ class Device:
         if action == "settings" and kind == "audio":
             self.volume = self.volumes.pop(0) if self.volumes else 0
         elif action == "settings" and kind == "voiceover":
-            self.voiceover = "--enable" in arguments
-            if self.voiceover: self.switched = self.clock()
+            self.voiceover = "--enable" in arguments or (self.stuck_on and self.voiceover)
+            if "--enable" in arguments: self.switched = self.clock()
         elif action == "info":
             result = {"volume": self.volume} if kind == "audio" else {"enabled": self.voiceover}
-            if self.log is not None and self.voiceover and self.speaks_after is not None and \
-                    self.clock() - self.switched >= self.speaks_after:
+            # The log exists only while the warm-up streams it.
+            if self.log is not None and self.log.parent.exists() and self.voiceover and \
+                    self.speaks_after is not None and self.clock() - self.switched >= self.speaks_after:
                 self.log.write_text(f"MauiAUSP: {template.SPEECH}: en-US\n")
             return subprocess.CompletedProcess(arguments, 0, json.dumps({"result": result}), "")
         return subprocess.CompletedProcess(arguments, 0, "", "")
@@ -113,6 +114,53 @@ class WarmTests(unittest.TestCase):
         self.assertEqual(len([index for index in mutes if index < on]), 2)
         heard = [call for call in device.calls[mutes[-1]:on] if call[:3] == ("devicectl", "info", "audio")]
         self.assertGreaterEqual(len(heard), template.MUTE_HELD)
+
+    def test_a_reading_with_no_answer_neither_counts_nor_breaks_the_mute_hold(self):
+        clock = Clock()
+        device = Device(clock)
+        original = device.devicectl
+        # Five zeros, three readings with no answer, then zeros: the hold completes after twenty zeros.
+        answers = iter([0] * 5 + [None] * 3)
+        def devicectl(*arguments, timeout=30):
+            if arguments[:2] == ("info", "audio"):
+                answer = next(answers, 0)
+                if answer is None:
+                    device.calls.append(("devicectl", *arguments))
+                    return subprocess.CompletedProcess(arguments, 124, "", "timed out after 10 s")
+            return original(*arguments, timeout=timeout)
+        device.devicectl = devicectl
+        record = self.warm(device, clock)
+        self.assertEqual(record["voiceOverWarmed"], True)
+        self.assertNotIn("unmuted", record)
+        mute = device.order(("devicectl", "settings", "audio"))[0]
+        on = device.order(("devicectl", "settings", "voiceover", "--device", UDID, "--enable"))[0]
+        readings = [call for call in device.calls[mute:on] if call[:3] == ("devicectl", "info", "audio")]
+        # Twenty zeros and the three without an answer: none of the three started the count again.
+        self.assertEqual(len(readings), template.MUTE_HELD + 3)
+        # And within MUTE_LIMIT still: readings that never answer never start VoiceOver.
+        clock, device = Clock(), Device(clock)
+        silent = device.devicectl
+        device.devicectl = lambda *arguments, timeout=30: (
+            subprocess.CompletedProcess(arguments, 124, "", "") if arguments[:2] == ("info", "audio")
+            else silent(*arguments, timeout=timeout))
+        record = self.warm(device, clock)
+        self.assertIn("not started: the volume did not hold at 0", record["voiceOver"])
+        self.assertLessEqual(clock(), template.MUTE_LIMIT + 1)
+        self.assertFalse([call for call in device.calls if call[:3] == ("devicectl", "settings", "voiceover")])
+
+    def test_voiceover_that_will_not_read_off_is_recorded_so(self):
+        clock = Clock()
+        device = Device(clock, stuck_on=True)
+        record = self.warm(device, clock)
+        self.assertEqual(record["voiceOverOff"], False)
+        self.assertTrue(record["voiceOver"].endswith("; it could not be confirmed off"), record)
+        # It was switched off once at the end and once more when the first reading said it was still on.
+        disables = [call for call in device.calls if call[:3] == ("devicectl", "settings", "voiceover")
+                    and "--disable" in call]
+        self.assertEqual(len(disables), 2)
+        clock = Clock()
+        device = Device(clock)
+        self.assertEqual(self.warm(device, clock)["voiceOverOff"], True)
 
     def test_voiceover_never_starts_unless_the_volume_holds_at_zero(self):
         clock = Clock()

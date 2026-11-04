@@ -180,6 +180,13 @@ def template_current(template, entry, builds):
     details = (entry or {}).get("template") or {}
     if (entry or {}).get("device") != template.udid or details.get("udid") != template.udid:
         return False, "it was never warmed to the end"
+    # VoiceOver's setting is in the data container: a clone of a template it was left on in boots with it
+    # on, and speaks through the Mac's output once the volume comes back. A record from before
+    # voiceOverOff was written says so in its voiceOver.
+    off = details.get("voiceOverOff")
+    if off is None: off = "could not be confirmed off" not in str(details.get("voiceOver") or "")
+    if not off:
+        return False, "VoiceOver could not be confirmed off, so a clone would boot with it on"
     if not template.available:
         return False, "its runtime is no longer installed"
     if builds is not None and details.get("installedBuilds") != builds:
@@ -332,10 +339,15 @@ class Pool:
                                              builds.setdefault(template.runtime, self.installed_builds(template.runtime))))
                 for template in templates(self.name, listing)]
 
-    def template(self, device_type, runtime, label, purpose):
+    def template(self, device_type, runtime, label, purpose, *, boot_timeout=warmed.TAKE_BOOT,
+                 voiceover_limit=warmed.TAKE_VOICEOVER_LIMIT, require_voiceover=False):
         """A held, shut-down, current template of the kind to clone a new member from, warming one first
         when the kind has none current, as when its runtime's installed builds changed; None when there is
-        none to clone, such as while another session holds the template, and the member is created."""
+        none to clone, such as while another session holds the template, and the member is created.
+
+        A take warms within the shorter template.TAKE_* limits, so that a kind's first creation does not
+        eat a lane's time; require_voiceover also replaces a current template whose VoiceOver stayed
+        cold, as `eng simulator-pool template` does with the full limits."""
         if self.warm is None: return None
         device_type, runtime = qualified(DEVICE_TYPE, device_type), qualified(RUNTIME, runtime)
         builds = self.installed_builds(runtime)
@@ -353,8 +365,10 @@ class Pool:
             self.log(f"{key} is {device_record.condition(current)} by {current.get('ownerChatID')}, so the new "
                      "member is created instead")
             return None
-        usable = existing is not None and existing.kind == (device_type, runtime) and \
-            template_current(existing, current, builds)[0]
+        current_now, why = template_current(existing, current, builds) if existing is not None else (False, None)
+        if current_now and require_voiceover and not ((current or {}).get("template") or {}).get("voiceOverWarmed"):
+            current_now, why = False, "its VoiceOver was not warmed"
+        usable = existing is not None and existing.kind == (device_type, runtime) and current_now
         details = {"template": current["template"]} if usable else {}
         try:
             revision = self._reserve(key, f"{'Clone' if usable else 'Warm'} the template for {purpose}",
@@ -372,7 +386,7 @@ class Pool:
             if usable:
                 return lease
             if existing is not None:
-                why = template_current(existing, current, builds)[1]
+                if existing.kind != (device_type, runtime): why = f"it is a {existing.device_type}, not a {device_type}"
                 deleted = self.run("delete", existing.udid, timeout=300)
                 if deleted.returncode != 0 or self.state(existing.udid) is not None:
                     self.log(f"{key} ({existing.udid}) could not be replaced: simctl delete exited {deleted.returncode}")
@@ -402,7 +416,8 @@ class Pool:
                                                 createdAt=self.clock().isoformat())["revision"]
             self.log(f"WARMING the template {key} ({udid}): boot, then VoiceOver until it speaks")
             try:
-                warmth = self.warm(udid, runtime, simctl=self.run)
+                warmth = self.warm(udid, runtime, simctl=self.run, boot_timeout=boot_timeout,
+                                   voiceover_limit=voiceover_limit)
             except warmed.WarmFailed as error:
                 self.log(f"{key} ({udid}) was not warmed: {error}")
                 self.release(lease, outcome=f"Not warmed: {error}")
@@ -414,11 +429,31 @@ class Pool:
             if self.state(udid) != "Shutdown":
                 self.release(lease, outcome="Warmed, but its shutdown could not be confirmed", shutdown=False)
                 return None
+            clonable, reason = template_current(Template(key, udid, label, device_type, runtime, "Shutdown"),
+                                                self.record.entry(key), builds)
+            if not clonable:
+                # Never cloned: the next creation replaces it.
+                self.log(f"{key} ({udid}) is not cloned: {reason}")
+                self.release(lease, outcome=f"Warmed, not cloned: {reason}", shutdown=False)
+                return None
             self.log(f"WARMED the template {key} ({udid}) on runtime build {warmth['runtimeBuild']}: "
                      f"{warmth.get('voiceOver')}")
             return lease
-        except BaseException:
-            if lease.udid is not None: self.release(lease, outcome=f"Stopped while preparing the template for {purpose}")
+        except BaseException as error:
+            if lease.udid is not None:
+                self.release(lease, outcome=f"Stopped while preparing the template for {purpose}")
+            else:
+                # Stopped before a UDID was recorded, as during simctl create or after a stale template's
+                # delete: release the name unless a device of that name now exists, which keeps it for
+                # recovery, as create() does for a member.
+                held = self.record.entry(key) or {}
+                if held.get("ownerChatID") == self.owner and not held.get("device") and not self._named(key):
+                    self.record.release(key, owner=self.owner, revision=held["revision"],
+                                        outcome=f"Not warmed: {str(error) or type(error).__name__}",
+                                        restoration="Nothing was created")
+                else:
+                    self.log(f"{key}: stopped with a device of its name stored but not recorded; its reservation "
+                             "is kept for recovery")
             raise
 
     @staticmethod
@@ -744,8 +779,9 @@ def main(argv, project=None):
                                "this Mac and the second Mac (guides/shared-host.md, Processes left over from runs)")
     reap.add_argument("--dry-run", action="store_true", help="say what it would stop and keep, and stop nothing")
     reap.add_argument("--here", action="store_true", help="only this Mac")
-    template = commands.add_parser("template", help="warm the kind's template now, or remake it when its runtime "
-                                   "moved, so that a lane's new members are cloned from it")
+    template = commands.add_parser("template", help="warm the kind's template now, with VoiceOver's full start "
+                                   "limit, or remake it when its runtime moved or its VoiceOver stayed cold, so that "
+                                   "a lane's new members are cloned from it")
     template.add_argument("--device", required=True, metavar="TYPE", help="a device type, such as iPhone-17-Pro")
     template.add_argument("--runtime", required=True, help="a runtime, such as iOS-27-1")
     template.add_argument("--label", help="the kind's label (default: the pool's own, else the device type's name)")
@@ -782,7 +818,8 @@ def main(argv, project=None):
                 signal.signal(number, stopped)
             device_type, runtime = qualified(DEVICE_TYPE, args.device), qualified(RUNTIME, args.runtime)
             lease = pool.template(device_type, runtime, args.label or pool.kind_label(device_type, runtime),
-                                  "eng simulator-pool template")
+                                  "eng simulator-pool template", boot_timeout=600,
+                                  voiceover_limit=warmed.VOICEOVER_LIMIT, require_voiceover=True)
             if lease is None:
                 print(f"eng simulator-pool: no current template of {args.device} on {args.runtime}; new members are "
                       "created instead", file=sys.stderr)
