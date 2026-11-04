@@ -91,7 +91,7 @@ def parse(source):
             if key in lane and (type(lane[key]) is not int or lane[key] <= 0):
                 raise ValueError(f"{name}.{key} must be a positive integer")
     merge_queue(value.get("queue", {}), lanes)
-    release(value.get("release", {}))
+    release(value.get("release", {}), lanes, value.get("queue", {}))
     spelling = value.get("spelling", {})
     if not isinstance(spelling, dict) or set(spelling) - {"skip", "exemptPhrases", "exemptRuns", "exemptTokens"}:
         raise ValueError("spelling supports only skip, exemptPhrases, exemptRuns and exemptTokens")
@@ -108,10 +108,38 @@ def parse(source):
 RESOURCES = ["light", "heavy", "exclusive"]
 
 
-def release(declared):
+# The lanes the merge queue runs before its gate where a project has them: merge_queue.BEFORE_GATE, kept
+# here too because merge_queue reads this module.
+LANDING_FIRST = ["spelling", "provision"]
+
+
+def landing_lanes(lanes, queue):
+    """Each lane a landing runs, with why: the cheap checks before the gate, queue.lanes or gate, the lanes a
+    docs-only batch runs instead, and every lane a group among them runs (guides/maintenance.md, The merge
+    queue)."""
+    named = queue.get("lanes") or (["gate"] if "gate" in lanes else [])
+    found = {name: "the merge queue runs it before the gate" for name in LANDING_FIRST if name in lanes}
+    found.update({name: "the merge queue runs it as " + ("one of queue.lanes" if queue.get("lanes") else "the gate")
+                  for name in named})
+    found.update({name: "a docs-only batch runs it, as queue.docsOnly.lanes says"
+                  for name in queue.get("docsOnly", {}).get("lanes", []) if name not in found})
+    waiting = list(found)
+    while waiting:
+        name = waiting.pop()
+        lane = lanes.get(name)
+        for member in lane.get("parallel", []) if isinstance(lane, dict) else []:
+            if member not in found:
+                found[member] = f"the lane group {name}, which a landing runs, runs it"
+                waiting.append(member)
+    return found
+
+
+def release(declared, lanes=None, queue=None):
     """The release gate's settings: lanes, the release checks each a lane of its own, which eng release
     requires a pass of at the release commit, and maxCommits, the checkpoint's limit (guides/releasing.md,
-    Two gates and Checkpoints). A name in lanes that is no lane is eng doctor's warning, not an error."""
+    Two gates and Checkpoints). A name in lanes that is no lane is eng doctor's warning, not an error.
+    A release lane that a landing also runs is an error: a release check runs once, on the release
+    commit, and no change waits for one to land."""
     if not isinstance(declared, dict) or set(declared) - {"lanes", "maxCommits"}:
         raise ValueError("release supports only lanes and maxCommits")
     named = declared.get("lanes", [])
@@ -121,6 +149,12 @@ def release(declared):
     limit = declared.get("maxCommits", 100)
     if type(limit) is not int or limit <= 0:
         raise ValueError("release.maxCommits must be a positive integer")
+    landing = landing_lanes(lanes or {}, queue or {})
+    for name in named:
+        if name in landing:
+            raise ValueError(f"release.lanes names {name}, which a landing runs too: {landing[name]}. A release "
+                             "check runs once, on the release commit, so take it out of the landing lanes or out of "
+                             "release.lanes (guides/releasing.md, Two gates)")
 
 
 def merge_queue(queue, lanes):
