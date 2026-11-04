@@ -474,8 +474,8 @@ def add(root, reference, note=None, quiet_wait=False):
     if why: print(f"queue: held, so it waits until the owner runs `eng queue resume`: {why}", file=sys.stderr)
     queue.start()
     if not quiet_wait:
-        print("nothing else is needed for it to land; to follow it to its result: "
-              f"python3 {shlex.quote(str(root))}/scripts/eng queue wait {identifier}")
+        print("nothing else is needed for it to land; to be told at once if it comes back, run as a background "
+              f"command: python3 {shlex.quote(str(root))}/scripts/eng queue wait {identifier}")
     return identifier
 
 
@@ -705,8 +705,10 @@ class Worker:
     def head(self):
         return text(self.checkout, "rev-parse", "HEAD")
 
-    def pick(self, entry):
-        """Cherry-pick entry's commits onto HEAD. None when they apply, else why, with HEAD as it was."""
+    def pick(self, entry, ahead=()):
+        """Cherry-pick entry's commits onto HEAD. None when they apply, else why, with HEAD as it was. ahead
+        names the entries applied before it, which a conflict names too, so that its author knows what to wait
+        for before rebasing (#130)."""
         before = self.head()
         self.kept = []  # each changelog conflict it settled, which integrate records on the entry
         for commit in entry["commits"]:
@@ -725,7 +727,10 @@ class Worker:
                 continue
             self.reset(before)
             files = ", ".join(conflicted) or picked.stderr.strip()
-            return f"{commit[:12]} conflicts with what is ahead of it, in {files}: rebase onto origin/main and add it again"
+            if not ahead:
+                return f"{commit[:12]} conflicts with origin/main, in {files}: rebase onto origin/main and add it again"
+            return (f"{commit[:12]} conflicts with what is ahead of it, origin/main and {', '.join(ahead)}, in {files}: "
+                    "once those land, rebase onto origin/main and add it again")
         return None
 
     def blob(self, identifier):
@@ -769,7 +774,7 @@ class Worker:
             if how:
                 self.queue.settle(entry, LANDED, landedAs=base, why=f"origin/main already holds it ({how})")
                 continue
-            why = self.pick(entry)
+            why = self.pick(entry, [ahead["id"] for ahead in applied])
             if not why and self.kept: self.queue.record(entry, kept=self.kept)
             if why:
                 self.say(f"{entry['id']}: {why}")

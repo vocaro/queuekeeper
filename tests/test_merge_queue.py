@@ -198,7 +198,20 @@ class Landing(Fixture):
         self.work()
         self.assertEqual([self.state(i)["state"] for i in ids], ["landed", "conflict", "landed"])
         self.assertIn("same", self.state(ids[1])["why"])
+        # Its author learns which entry to wait for before rebasing (#130).
+        self.assertIn(f"ahead of it, origin/main and {ids[0]}, in same:", self.state(ids[1])["why"])
         self.assertEqual(self.gates(), 1)
+
+    def test_a_conflict_with_main_alone_names_no_entry(self):
+        start = run(self.repo, "git", "rev-parse", "origin/main")
+        self.commit("same", "one", "one")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        self.commit("same", "two", "two", start)
+        identifier, = self.add("two")
+        self.work()
+        why = self.state(identifier)["why"]
+        self.assertIn("conflicts with origin/main, in same: rebase onto origin/main", why)
+        self.assertNotIn("once those land", why)
 
     def test_a_commit_main_already_holds_needs_no_gate(self):
         tip = self.commit("a", "a")

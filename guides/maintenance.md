@@ -210,8 +210,8 @@ busiest, 82% of landings were followed by another within 45 minutes. The queue m
 per repository the route to `main`, as GitHub's merge queue does, on the owner's Macs:
 
 ```sh
-python3 scripts/eng land                        # HEAD; returns at once, and the commit lands by itself
-python3 scripts/eng land BRANCH --wait          # follow it: 0 landed, 1 came back, 75 held or still waiting
+python3 scripts/eng land --wait                 # HEAD, as a background command: 0 landed, 1 came back, 75 held or still waiting
+python3 scripts/eng land BRANCH                 # returns at once, and the commit lands by itself
 python3 scripts/eng land --repo EPUBLib BRANCH  # from any project: land a fix in another repository
 python3 scripts/eng queue status
 ```
@@ -314,7 +314,12 @@ and says so in its log, and `eng disk` lists it for the owner's removal once not
 
 **What comes back to the author.** `eng queue status` and `eng queue wait` name each entry's state,
 reason and log. An entry that conflicts with what is ahead of it comes back at once and costs the
-others nothing. When a batch fails, the oldest half runs next, and so on until one entry fails
+others nothing. Its reason names the files in conflict and the entries ahead of it, which may still
+be in their gate: once those land, rebase onto `origin/main` and add it again. A session therefore
+lands with `eng land --wait` run as a background command, whose end wakes it within seconds of a
+send-back; on 2026-11-03 a session that had run plain `eng land` learned of a conflict only half an
+hour later, from `eng queue status`
+([#130](https://github.com/vocaro/vocaro-engineering/issues/130)). When a batch fails, the oldest half runs next, and so on until one entry fails
 alone; every entry that passes along the way lands. An entry that comes back keeps its ref until
 `eng queue remove ID`. Fix it, rebase and land it again.
 
