@@ -3,6 +3,7 @@ import contextlib
 import os
 import json
 from pathlib import Path
+import re
 import select
 import signal
 import subprocess
@@ -15,6 +16,12 @@ import uuid
 # Seconds an observed descendant may outlive the root before it is stopped, and then before
 # SIGTERM becomes SIGKILL. Xcode's DTServiceHub can outlive xcodebuild by minutes, ignoring SIGTERM.
 LINGER, KILL_AFTER = 60, 10
+# A program inside an Xcode, by where its command line starts, other than xcodebuild itself: the
+# DTServiceHub that xcodebuild starts for a test run, or the ibtoold a build starts. Once launchd has
+# adopted every descendant still running and each is such a program, they are stopped without LINGER:
+# on 2026-11-04 every one of 44 such stops in the queue's lane logs had waited it out, each holding its
+# lane and heavy slot about 70 s after the work ended (vocaro-engineering#154).
+XCODE_PROGRAM = re.compile(r"[^\s'\"]*/Xcode[^/\s'\"]*\.app/Contents/(?!Developer/usr/bin/xcodebuild(?:\s|$))\S")
 # Seconds a foreground run has between SIGTERM and SIGKILL instead: it restores what it changed on a Mac
 # that keeps its state, VoiceOver first, then collects what it heard (guides/second-mac-foreground.md).
 # On 2026-10-30 a stop at KILL_AFTER left VoiceOver on there. Chosen to cover a session's restoration and
@@ -98,14 +105,31 @@ def survivors(spaces):
     return found
 
 
-def describe(pids, known, root, kill_after=KILL_AFTER):
-    """The processes still running after the root, with the parent and group each was first seen with."""
+def describe(pids, known, root, kill_after=KILL_AFTER, helpers=False):
+    """The processes still running after the root, with the parent and group each was first seen with;
+    with helpers, Xcode's own programs stopped without the grace."""
     pids = sorted(pids)
     listing = subprocess.run(["ps", "-o", "pid,ppid,pgid,lstart,args", "-p", ",".join(map(str, pids))],
                              capture_output=True, text=True).stdout.rstrip()
     seen = "; ".join(f"{pid} with parent {known[pid][0]}, group {known[pid][1]}" for pid in pids)
-    return (f"supervise: stopping {len(pids)} process(es) still running {LINGER:g}s after the command "
-            f"(PID {root}) exited, with SIGTERM, then SIGKILL after {kill_after:g}s; first seen: {seen}\n{listing}")
+    when = (f"Xcode program(s) that launchd adopted when the command (PID {root}) exited, without waiting "
+            f"{LINGER:g}s," if helpers else f"process(es) still running {LINGER:g}s after the command (PID {root}) exited,")
+    return (f"supervise: stopping {len(pids)} {when} with SIGTERM, then SIGKILL after {kill_after:g}s; first seen: "
+            f"{seen}\n{listing}")
+
+
+def xcode_helper(parent, command):
+    """Whether a descendant still running after the root is one of Xcode's own programs that launchd has
+    adopted, which nothing of the run waits on (XCODE_PROGRAM)."""
+    return parent == 1 and bool(XCODE_PROGRAM.match(command or ""))
+
+
+def commands(pids):
+    """The command line of each of these processes that ps lists, by PID."""
+    listed = subprocess.run(["ps", "-o", "pid=,args=", "-p", ",".join(map(str, sorted(pids)))],
+                            capture_output=True, text=True).stdout
+    return {int(parts[0]): parts[1] for parts in (line.split(maxsplit=1) for line in listed.splitlines())
+            if len(parts) == 2 and parts[0].isdigit()}
 
 
 def owners(identities, environment):
@@ -227,7 +251,8 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
     stopped or times out is confirmed only once a census of the process groups and sessions it was
     seen using finds nothing left in them.
     Descendants still running LINGER seconds after the root exits are reported on stderr and
-    stopped; the root's status stands once they are gone, and one that survives SIGKILL is
+    stopped, or at once when each is a program inside an Xcode that launchd adopted, such as
+    DTServiceHub (xcode_helper); the root's status stands once they are gone, and one that survives SIGKILL is
     still awaited. A timeout bounds only the root: one that exits in time keeps its status
     through that grace. A command that cannot start raises NotStarted, which admission releases.
 
@@ -286,6 +311,8 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
     known, born, exited, stopping = {}, None, None, set()
     # When the first SIGTERM went to descendants that outlived the root, which starts their kill_after.
     lingered = None
+    # Each descendant's command line once the root has exited, by (PID, start): read once, for xcode_helper.
+    lines = {}
     # The process groups and sessions the command was seen using, for the census at its end. The
     # root's own are its PID. Never every observed PID: the PID space can wrap during a long run.
     spaces = {child.pid}
@@ -417,12 +444,20 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
                                    "reservation retained")
             if result is not None and expired is None and stopped is None:
                 if exited is None: exited = time.monotonic()
-                overdue = time.monotonic() - exited - LINGER
+                helpers = False
+                if lingered is None:
+                    unread = {pid for pid in live if (pid, known[pid][2]) not in lines}
+                    if unread:
+                        read = commands(unread)
+                        lines.update({(pid, known[pid][2]): read.get(pid) for pid in unread})
+                    # Xcode's own programs left to launchd need no grace; anything else beside them keeps it.
+                    helpers = all(xcode_helper(current[pid][0], lines[(pid, known[pid][2])]) for pid in live)
+                overdue = time.monotonic() - exited - (0 if helpers or lingered is not None else LINGER)
                 if overdue >= 0:
                     # SIGTERM once for each process, then SIGKILL, which cannot be caught, until it is gone.
                     fresh = {pid for pid in live if (pid, known[pid][2]) not in stopping}
                     if stopping: fresh = unowned(fresh, identities)
-                    if fresh: print(describe(fresh, known, child.pid, kill_after), file=sys.stderr, flush=True)
+                    if fresh: print(describe(fresh, known, child.pid, kill_after, helpers), file=sys.stderr, flush=True)
                     stopping.update((pid, known[pid][2]) for pid in fresh)
                     # Timed from that SIGTERM, not from LINGER: a sample a busy host delays past
                     # LINGER and kill_after together must still send SIGTERM first (#90).
