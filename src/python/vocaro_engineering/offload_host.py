@@ -124,8 +124,11 @@ REAP_SECONDS, REAP_STOP_SECONDS, REAP_CHECK_SECONDS, REAP_LOCK_SECONDS = 60, 20,
 REAP_LOG = "simulator-reaps.jsonl"
 # A simulator's own launchd_sim, as ps prints it.
 LAUNCHD_SIM = re.compile(r"(?:\S*/)?launchd_sim\s")
-# What follows a pool's name in a member's: LABEL N, as simulators/pool.py names one.
+# What follows a pool's name in a member's: LABEL N, as simulators/pool.py names one; and in its kind's
+# warmed template's, LABEL template (RUNTIME), with pool.py's own pattern, which this file cannot import
+# because it runs on the second Mac alone.
 MEMBER = re.compile(r".+ [1-9][0-9]*")
+TEMPLATE = re.compile(r"(?P<label>.+) template \((?P<runtime>[^()]+)\)")
 SIMULATORS = ("xcrun", "simctl", "list", "devices", "-j")
 
 _output = threading.Lock()
@@ -1024,9 +1027,18 @@ def known_pools(root):
     return found
 
 
-def pool_of(name, pools):
-    """The pool whose member a simulator's name makes it, or None."""
-    return next((pool for pool in sorted(pools) if name.startswith(pool + " ") and MEMBER.fullmatch(name[len(pool) + 1:])), None)
+def pool_of(name, pools, runtime=""):
+    """The pool a simulator belongs to and as what: (POOL, "member") for a name `POOL LABEL N`, and
+    (POOL, "template") for its kind's warmed template, `POOL LABEL template (RUNTIME)` on that runtime, as
+    simulators/pool.py lists one; else (None, None). Reaping may shut down a template too, by the owner's
+    decision of 2026-11-04 (guides/shared-host.md, Stale pool simulators)."""
+    for pool in sorted(pools):
+        if not name.startswith(pool + " "): continue
+        rest = name[len(pool) + 1:]
+        if MEMBER.fullmatch(rest): return pool, "member"
+        match = TEMPLATE.fullmatch(rest)
+        if match and match["runtime"] == runtime.rsplit(".", 1)[-1]: return pool, "template"
+    return None, None
 
 
 def device_entries():
@@ -1145,7 +1157,8 @@ def observe(root, pools, listed):
     table = process_table(seen(["ps", "-axww", "-o", "pid=,ppid=,uid=,lstart=,args="]))
     try:
         groups = json.loads(seen(list(SIMULATORS)))["devices"]
-        simulators = {device["udid"].upper(): device for group in groups.values() for device in group}
+        simulators = {device["udid"].upper(): {**device, "runtime": runtime}
+                      for runtime, group in groups.items() for device in group}
     except (TypeError, ValueError, KeyError, AttributeError) as error:
         raise ReapProblem(f"simctl did not list its devices ({error!r})") from None
     entries = device_entries()
@@ -1159,18 +1172,19 @@ def observe(root, pools, listed):
         holds = [reservation_hold(key, entries[key], table) for key in keys]
         naming = [other for other, process in table.items() if process["uid"] == uid and other not in own
                   and pid not in lineage(table, other) and udid in process["args"].upper()]
-        pool = pool_of(name, pools)
+        pool, what = pool_of(name, pools, device.get("runtime") or "")
         if sum(other["simulator"] == udid for other in rows) > 1: hold = "more than one launchd_sim runs for it"
         elif device.get("state") != "Booted": hold = f"simctl shows it {device.get('state') or 'unlisted'}, not Booted"
-        elif pool is None: hold = "it is no member of a simulator pool"
+        elif pool is None: hold = "it is neither a member of a simulator pool nor a pool's warmed template"
         elif naming: hold = f"PID {naming[0]} names its UDID"
         elif any(item[0] for item in holds): hold = next(item[0] for item in holds if item[0])
         elif seconds is None: hold = "its launchd_sim's start cannot be read"
         elif seconds < REAP_AFTER: hold = f"it has run {seconds / 3600:.1f} h, under {REAP_AFTER / 3600:g} h"
         if hold is None:
             note = next((item[1] for item in holds if item[1]), None)
-            reason = (f"member of pool {pool}, left over: no live run, admission or process accounts for it, no live "
-                      f"reservation holds it, and it has run {seconds / 3600:.1f} h") + (f"; {note}" if note else "")
+            reason = (f"{'warmed template' if what == 'template' else 'member'} of pool {pool}, left over: no live "
+                      f"run, admission or process accounts for it, no live reservation holds it, and it has run "
+                      f"{seconds / 3600:.1f} h") + (f"; {note}" if note else "")
         found[udid] = {"udid": udid, "name": name, "pid": pid, "start": row["start"], "seconds": seconds,
                        "hold": hold, "reason": reason}
     return found
@@ -1260,8 +1274,8 @@ def reap(root, pools, dry_run=False, scan=True, listed=None, begin=None, clock=t
 
 def stop_stale(root, pools, dry_run=False, scan=True, listed=None, begin=None, clock=time.monotonic):
     """Shut down the simulators that are stale: `eng simulator-pool reap`, and before work is sent to the
-    second Mac. One goes only when it is a member of a pool, among pools or, with scan, those the
-    checkouts name; the census lists it left over; nothing naming its UDID runs outside its own processes;
+    second Mac. One goes only when it is a member of a pool or the pool's warmed template, among pools or,
+    with scan, those the checkouts name; the census lists it left over; nothing naming its UDID runs outside its own processes;
     the device record holds no live reservation of it; and its launchd_sim has run REAP_AFTER; all
     checked again immediately before the stop, under the record's lock. It reads and logs, and never
     erases, deletes or kills. It never raises: whatever it cannot read or do, it says in problem and

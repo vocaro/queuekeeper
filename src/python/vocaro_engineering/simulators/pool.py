@@ -9,8 +9,9 @@ which is made, or remade when the runtime's installed builds change, under its o
 (template.py). A take with keep_state reserves and boots a member without erasing it. Pruning deletes
 a member unused for 14 days, never the lowest-numbered of its kind, and records the deletion
 (guides/simulator-testing.md, Reserved simulator pool). Nothing else here deletes or renames a
-simulator, except a template whose runtime moved, which is replaced. Reaping shuts down a member left
-booted past its time (offload_host.reap; guides/shared-host.md, Processes left over from runs).
+simulator, except a template whose runtime moved, which is replaced. Reaping shuts down a member, or a
+template, left booted past its time, such as by a killed warm-up (offload_host.reap; guides/shared-host.md,
+Stale pool simulators).
 Checking a UDID refuses any device outside the pool, such as one of Xcode's default devices, which a
 script that picks a device by name finds instead of a member (vocaro-engineering#91); checking it
 as held also refuses a member that the caller holds no live reservation of (vocaro-engineering#122).
@@ -776,8 +777,9 @@ def main(argv, project=None):
     release.add_argument("--outcome", default="Released")
     prune = commands.add_parser("prune", help="delete members unused for 14 days, never the lowest of a kind")
     prune.add_argument("udids", nargs="*", metavar="UDID", help="only these members")
-    reap = commands.add_parser("reap", help="shut down members left booted for 2 hours that nothing accounts for, on "
-                               "this Mac and the second Mac (guides/shared-host.md, Processes left over from runs)")
+    reap = commands.add_parser("reap", help="shut down members and warmed templates left booted for 2 hours that "
+                               "nothing accounts for, on this Mac and the second Mac (guides/shared-host.md, Stale "
+                               "pool simulators)")
     reap.add_argument("--dry-run", action="store_true", help="say what it would stop and keep, and stop nothing")
     reap.add_argument("--here", action="store_true", help="only this Mac")
     template = commands.add_parser("template", help="warm the kind's template now, with VoiceOver's full start "

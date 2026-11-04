@@ -20,6 +20,9 @@ from vocaro_engineering.simulators import pool as simulator_pool
 UDID = "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE"
 OTHER = "11111111-2222-4333-8444-555555555555"
 NAME = "Pagepour Duo 1"
+# The pool's warmed template of the kind, on its own runtime, as simulators/pool.py names and lists one.
+TEMPLATE = "Pagepour Duo template (iOS-27-2)"
+RUNTIME = "com.apple.CoreSimulator.SimRuntime.iOS-27-2"
 LAUNCHD = 7000
 HOLDER = 6000
 
@@ -64,7 +67,7 @@ class ReapTests(unittest.TestCase):
         self.guard = Path(os.environ["SW_GATE_LOCK_FILE"] + ".warm-push-guard")
         self.log = self.slots / offload_host.REAP_LOG
         self.uid = os.getuid()
-        self.table, self.directories, self.names = {}, {}, {UDID: NAME}
+        self.table, self.directories, self.names, self.runtimes = {}, {}, {UDID: NAME}, {}
         self.states, self.looks, self.between, self.stops, self.outcome = {}, 0, None, [], Process()
         self.simctl_fails = False
         self.simulator()
@@ -87,9 +90,11 @@ class ReapTests(unittest.TestCase):
             return f"p{os.getpid()}\nfcwd\nn{self.home}\n"
         if command[:3] == ["xcrun", "simctl", "list"]:
             if self.simctl_fails: return ""
-            return json.dumps({"devices": {"iOS": [
-                {"udid": udid, "name": name, "state": self.states.get(udid, "Booted")}
-                for udid, name in self.names.items()]}})
+            groups = {}
+            for udid, name in self.names.items():
+                groups.setdefault(self.runtimes.get(udid, "iOS"), []).append(
+                    {"udid": udid, "name": name, "state": self.states.get(udid, "Booted")})
+            return json.dumps({"devices": groups})
         self.fail(f"an unexpected command: {command}")
 
     def begin(self, udid):
@@ -100,10 +105,14 @@ class ReapTests(unittest.TestCase):
         options.setdefault("scan", False)
         return offload_host.reap(remote.ROOT, ["Pagepour"], listed=self.listed, begin=self.begin, **options)
 
-    def reserve(self, **entry):
-        self.record.write_text(json.dumps({"vocaroDeviceHandoff": 1, "revision": 1, "devices": {NAME: {
+    def reserve(self, key=NAME, **entry):
+        self.record.write_text(json.dumps({"vocaroDeviceHandoff": 1, "revision": 1, "devices": {key: {
             "revision": 1, "device": UDID, "ownerChatID": "session", "state": "reserved", "activeRun": False,
             "purpose": "tests", **entry}}}))
+
+    def template(self):
+        """setUp's simulator as the pool's warmed template instead of a member."""
+        self.names[UDID], self.runtimes[UDID] = TEMPLATE, RUNTIME
 
     def assertKept(self, report, reason):
         self.assertEqual(self.stops, [], report)
@@ -192,7 +201,7 @@ class ReapTests(unittest.TestCase):
         for line in lines:
             self.assertEqual((line["udid"], line["name"], line["pid"]), (UDID, NAME, LAUNCHD))
             self.assertGreaterEqual(line["seconds"], 3 * 3600 - 5)
-            self.assertIn("left over", line["reason"])
+            self.assertTrue(line["reason"].startswith("member of pool Pagepour, left over"), line)
         said = "\n".join(remote.reap_lines("fake", report, listing=False))
         self.assertIn(f"on fake, stopped {NAME} ({UDID})", said)
         self.assertIn("has run 3.0 h", said)
@@ -211,7 +220,78 @@ class ReapTests(unittest.TestCase):
         for name in ("iPhone 17 Pro", "Pagepour", "Pagepour Duo", "PagepourX Duo 1", "Pagepour Duo 0"):
             with self.subTest(name):
                 self.names[UDID] = name
-                self.assertKept(self.reap(), "no member of a simulator pool")
+                self.assertKept(self.reap(), "neither a member of a simulator pool nor a pool's warmed template")
+
+    # Condition 1 also takes in the pool's warmed template, by the owner's decision of 2026-11-04.
+
+    def test_a_stale_template_is_stopped_and_logged_as_the_pools_warmed_template(self):
+        self.template()
+        report = self.reap()
+        self.assertStopped(report)
+        lines = [json.loads(line) for line in self.log.read_text().splitlines()]
+        self.assertEqual([(line["event"], line["udid"], line["name"]) for line in lines],
+                         [("stopping", UDID, TEMPLATE), ("stopped", UDID, TEMPLATE)])
+        for line in lines:
+            self.assertTrue(line["reason"].startswith("warmed template of pool Pagepour, left over"), line)
+        said = "\n".join(remote.reap_lines("fake", report, listing=False))
+        self.assertIn(f"on fake, stopped {TEMPLATE} ({UDID}), PID {LAUNCHD}: warmed template of pool Pagepour", said)
+
+    def test_a_name_like_a_templates_that_the_pool_does_not_list_as_one_is_never_stopped(self):
+        for name, runtime in ((TEMPLATE, "com.apple.CoreSimulator.SimRuntime.iOS-27-1"), (TEMPLATE, "iOS"),
+                              ("Pagepour template (iOS-27-2)", RUNTIME), ("Pagepour Duo template", RUNTIME),
+                              ("Pagepour Duo template ()", RUNTIME), ("PagepourX Duo template (iOS-27-2)", RUNTIME),
+                              ("Pagepour Duo template (iOS-27-2) copy", RUNTIME)):
+            with self.subTest(name=name, runtime=runtime):
+                self.names[UDID], self.runtimes[UDID] = name, runtime
+                self.assertKept(self.reap(), "neither a member of a simulator pool nor a pool's warmed template")
+
+    def test_it_reads_a_template_as_the_pool_does(self):
+        self.assertEqual(offload_host.TEMPLATE.pattern, simulator_pool.TEMPLATE.pattern)
+        for name, runtime in ((TEMPLATE, RUNTIME), (TEMPLATE, "com.apple.CoreSimulator.SimRuntime.iOS-27-1"),
+                              ("Pagepour Duo 3", RUNTIME), ("Pagepour template (iOS-27-2)", RUNTIME)):
+            with self.subTest(name=name, runtime=runtime):
+                listing = {"devices": {runtime: [{"udid": UDID, "name": name, "deviceTypeIdentifier": "Duo"}]}}
+                listed = bool(simulator_pool.templates("Pagepour", listing))
+                self.assertEqual(offload_host.pool_of(name, ["Pagepour"], runtime)[1] == "template", listed)
+
+    def test_a_template_under_2_hours_is_kept(self):
+        self.template()
+        self.simulator(age=offload_host.REAP_AFTER - 60)
+        self.assertKept(self.reap(), "under 2 h")
+
+    def test_a_template_whose_warm_up_still_runs_is_kept(self):
+        # Pool.template reserves the template in the warming process's name, its holder, before it boots it.
+        self.template()
+        self.process(HOLDER, 900, "python3 -m vocaro_engineering.simulators.pool template --device iPhone-Duo "
+                                  "--runtime iOS-27-2")
+        self.reserve(TEMPLATE, holderProcess={"pid": HOLDER, "start": self.table[HOLDER][2]}, expectedReleaseBy=self.DUE)
+        self.assertKept(self.reap(), f"its reservation {TEMPLATE.replace('(', '[(]').replace(')', '[)]')} is live: "
+                                     f"PID {HOLDER} still runs")
+
+    def test_a_killed_warm_ups_template_is_kept_until_its_expected_release(self):
+        self.template()
+        future = time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(time.time() + 3600))
+        self.reserve(TEMPLATE, **self.held_entry(due=future))
+        self.assertKept(self.reap(), "is not due for release until")
+
+    def test_a_template_another_session_holds_by_name_or_udid_is_kept(self):
+        self.template()
+        self.process(HOLDER, 900, "python3 tool")
+        live = {"holderProcess": {"pid": HOLDER, "start": self.table[HOLDER][2]}}
+        for key, device in ((TEMPLATE, None), ("another key", UDID)):
+            with self.subTest(key=key):
+                self.reserve(key, device=device, **live)
+                self.assertKept(self.reap(), f"is live: PID {HOLDER}")
+
+    def test_a_reaped_templates_entry_stays_held_and_is_named_with_its_recover_command(self):
+        self.template()
+        self.reserve(TEMPLATE, **self.held_entry())
+        before = self.record.read_bytes()
+        report = self.reap()
+        self.assertStopped(report)
+        self.assertNamed(report, key=TEMPLATE)
+        self.assertEqual(self.record.read_bytes(), before, "reap releases nothing")
+        self.assertIn("stays held", "\n".join(remote.reap_lines("fake", report, listing=False)))
 
     def test_no_pool_named_or_found_lists_nothing_and_asks_nothing_of_simctl(self):
         self.simctl_fails = True

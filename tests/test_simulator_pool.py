@@ -659,6 +659,52 @@ class PoolTests(unittest.TestCase):
         self.assertEqual(devices.Record(self.path).entry("Project iPhone Duo 1")["state"], "released")
         self.assertEqual(self.simctl.deleted(), [])
 
+    def test_a_template_reaped_after_its_warm_up_was_killed_is_replaced_once_recovered(self):
+        """A warm-up killed outright (SIGKILL, or the Mac stopping) leaves its template booted and its entry held
+        with no template details. Reap shuts it down once its release is past and it has run 2 hours, and leaves
+        the entry held; until it is recovered, members are created instead. Once recovered, the next creation
+        of the kind reads it as never warmed to the end, deletes it and warms a new one."""
+        template = "Project iPhone Duo template (iOS-27-1)"
+        killed = {}
+
+        def killed_while_warming(udid, runtime, *, simctl, **limits):
+            simctl("boot", udid)
+            # What the record holds when the warming process dies with no chance to release anything.
+            killed.update(udid=udid, record=self.path.read_text())
+            raise KeyboardInterrupt
+
+        with self.assertRaises(KeyboardInterrupt):
+            self.make("a killed session", warm=killed_while_warming).take(DUO, RUNTIME, purpose="Tests")
+        self.path.write_text(killed["record"])
+        udid = killed["udid"]
+        entry = devices.Record(self.path).entry(template)
+        self.assertEqual((entry["state"], entry["ownerChatID"], entry["device"], entry.get("template")),
+                         ("reserved", "a killed session", udid, None))
+        # Reap's one change: simctl shutdown.
+        self.simctl.devices[udid]["state"] = "Shutdown"
+        warm, before = Warm(), len(self.simctl.calls)
+        pool = self.make("me", warm=warm)
+        held = pool.take(DUO, RUNTIME, purpose="Tests")
+        self.assertEqual((held.created, held.cloned), (True, None))
+        self.assertEqual([call for call in self.simctl.calls[before:] if udid in call], [])
+        self.assertEqual(warm.calls, [])
+        self.assertIn(f"{template} is held by a killed session, so the new member is created instead", self.log)
+        self.assertTrue(pool.release(held, outcome="done"))
+        devices.Record(self.path).recover(template, by="me", revision=entry["revision"],
+                                          verified="its warm-up process is gone and reap shut it down")
+        self.assertEqual([(found.name, current, why) for found, current, why in pool.templates()],
+                         [(template, False, "it was never warmed to the end")])
+        cloned = pool.create(DUO, RUNTIME, purpose="Tests")
+        self.assertEqual(self.simctl.deleted(), [udid])
+        self.assertIn(f"REPLACED the template {template} ({udid}): it was never warmed to the end", self.log)
+        replacement = devices.Record(self.path).entry(template)
+        self.assertNotEqual(replacement["device"], udid)
+        self.assertEqual((replacement["state"], replacement["template"]["udid"], replacement["replaced"]["udid"]),
+                         ("released", replacement["device"], udid))
+        self.assertEqual(warm.calls, [(replacement["device"], RUNTIME)])
+        self.assertEqual(cloned.cloned, template)
+        self.assertTrue(pool.release(cloned, outcome="done"))
+
     def test_the_command_lists_and_warms_templates(self):
         self.simctl.add("Project Duo 1")
         warm = Warm()

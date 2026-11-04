@@ -1421,7 +1421,12 @@ in the connection that lists leftovers before work is sent to the second Mac, an
 `xcrun simctl shutdown UDID` on a simulator only when all of these hold:
 
 1. It is a member of a project's pool: named `POOL LABEL N`, for a pool named by the project, or by a
-   project's main checkout here or its checkout on the second Mac.
+   project's main checkout here or its checkout on the second Mac. Or it is that pool's warmed template,
+   `POOL LABEL template (RUNTIME)` on the runtime its name gives, as `eng simulator-pool list` shows one
+   ([warmed templates](simulator-testing.md#warmed-templates)). Asked on 2026-11-04 "May the pool's reap
+   shut down a warmed template a killed warm-up left booted?", the owner answered "Yes, reap them"
+   ([vocaro-engineering#153](https://github.com/vocaro/vocaro-engineering/issues/153)). The stop is
+   logged and printed as a warmed template's, not a member's.
 2. The search above lists its `launchd_sim` as left over, and no process of the account outside that
    simulator's own names its UDID.
 3. The device record holds no live reservation of it, by its name or its UDID. A reservation whose
@@ -1438,6 +1443,15 @@ owner booted by hand. To keep one running, boot a simulator outside the pool, or
 session that took a member with `eng simulator-pool take`, whose process ends when it prints the
 UDID, holds a reservation whose process is gone, which counts as live until its expected release;
 to work past that, it records a running process of its own (`devices update KEY --own PID`).
+
+**A template stays while its warm-up runs.** The pool reserves a template in the warming process's name,
+its `holderProcess`, before it boots it, so a live warm-up's reservation keeps it running however long
+the warm-up takes. A warm-up killed outright (`SIGKILL`, or the Mac stopping) leaves the template booted
+and its entry held by a process that is gone; that entry counts as live until its expected release, 8
+hours after the reservation, and then reap shuts the template down. Its entry stays held, named with its
+`devices recover` command as below; until it is recovered, the kind's new members are created rather
+than cloned, and once it is recovered the next creation replaces the template, which was never warmed
+to the end.
 
 It erases, deletes and kills nothing, and other leftovers, such as `DTServiceHub`, stay report-only.
 It stops only what it is sure of: a census with anything unread, an unreadable device record or
