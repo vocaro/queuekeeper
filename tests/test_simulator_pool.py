@@ -247,7 +247,10 @@ class PoolTests(unittest.TestCase):
         self.simctl.fail["create"] = lambda rest: (1, "", "no such runtime")
         with self.assertRaisesRegex(RuntimeError, "no such runtime"):
             self.pool.create(DUO, RUNTIME, purpose="Tests")
-        self.assertEqual(devices.Record(self.path).entry("Project Duo 3")["state"], "released")
+        entry = devices.Record(self.path).entry("Project Duo 3")
+        # An error with a message keeps it.
+        self.assertEqual((entry["state"], entry["run"]), ("released", "Not created: simctl create Project Duo 3 "
+                                                                       "failed with status 1: no such runtime"))
 
     def test_a_release_keeps_a_changed_reservation_or_an_unconfirmed_shutdown(self):
         udid = self.simctl.add("Project Duo 1")
@@ -293,7 +296,9 @@ class PoolTests(unittest.TestCase):
         self.simctl.fail["create"] = stop
         with self.assertRaises(KeyboardInterrupt):
             self.pool.take(DUO, RUNTIME, purpose="Tests")
-        self.assertEqual(devices.Record(self.path).entry("Project Duo 2")["state"], "released")
+        entry = devices.Record(self.path).entry("Project Duo 2")
+        # A stop with no message names itself.
+        self.assertEqual((entry["state"], entry["run"]), ("released", "Not created: KeyboardInterrupt"))
         self.assertEqual(self.simctl.deleted(), [])
 
     def test_a_member_block_whose_release_fails_fails(self):

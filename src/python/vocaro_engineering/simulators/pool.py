@@ -546,7 +546,8 @@ class Pool:
                     not any(entry.get("name") == key for entries in self.listing().get("devices", {}).values()
                             for entry in entries):
                 self.record.release(key, owner=self.owner, revision=current["revision"],
-                                    outcome=f"Not created: {error or type(error).__name__}",
+                                    # An exception is truthy even when its message is empty.
+                                    outcome=f"Not created: {str(error) or type(error).__name__}",
                                     restoration="Nothing was created")
             raise
 
