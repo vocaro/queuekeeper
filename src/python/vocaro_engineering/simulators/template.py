@@ -24,9 +24,9 @@ SPEECH = "Processing markup for voice locale"
 PREDICATE = 'process == "vot" OR process == "MauiAUSP"'
 # Seconds VoiceOver may stay silent after it is switched on; under saturation it took up to 292 s.
 VOICEOVER_LIMIT = 600
-# A member booted without the first boot's migration, kept or cloned, put its volume back to 60 4 to 17 s
-# after it was muted, once in each of twelve sessions (vocaro-engineering#146), so VoiceOver starts only
-# once the mute has held this many readings in a row, one a second, within MUTE_LIMIT seconds.
+# A member booted without the first boot's migration, kept or cloned, put its volume back to 60 3 to 17 s
+# after it was muted, in 20 of 24 sessions (vocaro-engineering#146), so VoiceOver starts only once the
+# mute has held this many readings in a row, one a second, within MUTE_LIMIT seconds.
 MUTE_HELD = 20
 MUTE_LIMIT = 90
 
