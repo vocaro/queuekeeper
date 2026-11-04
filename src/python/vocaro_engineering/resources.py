@@ -11,7 +11,10 @@ HEAVY_SLOTS jobs are always admitted while no exclusive request waits. More, up 
 HEAVY_SLOTS_MAX, are admitted one at a time while the load average and memory pressure show
 spare capacity: a fixed count left the host idle behind jobs waiting on simulators, while ten
 unqueued builds starved watchdogd until the kernel panicked (2026-10-14). Admission cannot
-preempt a job that becomes heavy later.
+preempt a job that becomes heavy later. Each limit can be set for a host in its limits file,
+admission-limits.json beside the admission log, which every process there reads, as a number or
+as a share of the cores; a limit's environment variable overrides it for one process. Without
+the file the defaults stand (#49).
 
 Exclusive requests queue in arrival order, and every other request waits behind a live one, so
 an exclusive request waits only for the work running when it asked. While heavy jobs kept
@@ -290,10 +293,117 @@ def one_minute_load():
         return None
 
 
+# The host's admission limits, beside its admission log: the limits its owner chose for this host (#49).
+LIMITS = "admission-limits.json"
+# Each limit by its key in the limits file: the environment variable that overrides it, whether it counts
+# slots, and its default and how the default is reached, given the cores and the guaranteed slots in force.
+LIMIT_KEYS = {
+    "slots": ("HEAVY_SLOTS", True, lambda cores, slots: (3, "3")),
+    "slotsMax": ("HEAVY_SLOTS_MAX", True, lambda cores, slots: (max(slots, cores // 2), "half the cores, at least HEAVY_SLOTS")),
+    "loadLimit": ("HEAVY_LOAD_LIMIT", False, lambda cores, slots: (0.75 * cores, "three quarters of the cores")),
+    "settleSeconds": ("HEAVY_SETTLE_SECONDS", False, lambda cores, slots: (30.0, "30")),
+}
+
+
+def limits_path():
+    """The host's limits file. An isolated HEAVY_SLOT_DIR namespace keeps its own beside its slots, as it keeps its
+    log, so that a test never reads the host's."""
+    return log_path().with_name(LIMITS)
+
+
+def host_limits(path=None, cores=None):
+    """The limits the host's file sets, by key, each resolved against the cores: a number, or {"perCore": F}, F
+    times the cores, which for a slot count is rounded down and at least 1. {} when there is no file. Anything else
+    in it, an unknown key among them, raises ValueError naming the file: a host whose limits cannot be read is a
+    configuration problem for its owner, never a reason to guess them."""
+    path = limits_path() if path is None else Path(path)
+    cores = (os.cpu_count() or 1) if cores is None else cores
+    try:
+        text = path.read_text()
+    except FileNotFoundError:
+        return {}
+    except OSError as error:
+        raise ValueError(f"Invalid resource limits: {path} cannot be read: {error}") from None
+    try:
+        data = json.loads(text)
+    except ValueError as error:
+        raise ValueError(f"Invalid resource limits: {path} is not JSON: {error}") from None
+    if not isinstance(data, dict):
+        raise ValueError(f"Invalid resource limits: {path} holds no JSON object")
+    unknown = sorted(set(data) - set(LIMIT_KEYS))
+    if unknown:
+        raise ValueError(f"Invalid resource limits: {path} names {', '.join(unknown)}, not one of "
+                         f"{', '.join(LIMIT_KEYS)}")
+
+    def number(value):
+        return isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0
+
+    resolved = {}
+    for key, value in data.items():
+        counts = LIMIT_KEYS[key][1]
+        if isinstance(value, dict) and set(value) == {"perCore"} and number(value["perCore"]) and value["perCore"] > 0:
+            share = value["perCore"] * cores
+            resolved[key] = max(1, int(share)) if counts else float(share)
+        elif number(value) and (not counts or float(value).is_integer()):
+            resolved[key] = int(value) if counts else float(value)
+        else:
+            raise ValueError(f"Invalid resource limits: {path} sets {key} to {json.dumps(value)}, not a "
+                             f"{'whole ' if counts else ''}number at or above 0 or {{\"perCore\": F}} with F above 0")
+    return resolved
+
+
+def limits():
+    """The admission limits in force, by key: each its value and where it came from. A limit's environment variable,
+    set for one process, overrides the host's limits file, which every process on the host reads; without either,
+    the default stands, which with no file keeps admission as it was before the file existed (#49)."""
+    cores = os.cpu_count() or 1
+    path = limits_path()
+    configured = host_limits(path, cores)
+    found, slots = {}, None
+    for key, (variable, counts, default) in LIMIT_KEYS.items():
+        if variable in os.environ:
+            try:
+                value = int(os.environ[variable]) if counts else float(os.environ[variable])
+            except ValueError:
+                raise ValueError(f"Invalid resource limits: {variable}={os.environ[variable]} is not a "
+                                 f"{'whole ' if counts else ''}number") from None
+            found[key] = value, variable
+        elif key in configured:
+            found[key] = configured[key], str(path)
+        else:
+            value, how = default(cores, slots)
+            found[key] = value, f"default: {how}"
+        if key == "slots":
+            slots = found[key][0]
+    (slots, slots_from), (maximum, maximum_from) = found["slots"], found["slotsMax"]
+    if slots < 1 or maximum < slots or found["settleSeconds"][0] < 0:
+        raise ValueError(f"Invalid resource limits: HEAVY_SLOTS={slots} ({slots_from}) must be at least 1, "
+                         f"HEAVY_SLOTS_MAX={maximum} ({maximum_from}) at least HEAVY_SLOTS, and HEAVY_SETTLE_SECONDS "
+                         f"at least 0")
+    return found
+
+
 def load_limit():
-    """The one-minute load average at or above which the host has no spare capacity: HEAVY_LOAD_LIMIT, or
-    three quarters of the cores."""
-    return float(os.environ.get("HEAVY_LOAD_LIMIT", 0.75 * (os.cpu_count() or 1)))
+    """The one-minute load average at or above which the host has no spare capacity: HEAVY_LOAD_LIMIT, or the host's
+    limits file, or three quarters of the cores."""
+    return float(limits()["loadLimit"][0])
+
+
+def limits_main(argv=None, out=print):
+    """eng admissions limits: the admission limits in force for a process started like this one, and their sources."""
+    parser = argparse.ArgumentParser(prog="eng admissions limits", description="Print the heavy-work admission "
+        "limits in force here and where each comes from: its environment variable, the host's limits file or the "
+        "default (guides/shared-host.md, Heavy-work admission).")
+    parser.parse_args(argv)
+    try:
+        found = limits()
+    except ValueError as error:
+        print(f"eng: {error}", file=sys.stderr)
+        return 2
+    out(f"{os.cpu_count() or 1} cores; limits file {limits_path()}")
+    for key, (value, source) in found.items():
+        out(f"{LIMIT_KEYS[key][0]}={value:g}  ({key}; {source})")
+    return 0
 
 
 def pressure(limit=None):
@@ -378,12 +488,12 @@ class Admission:
         # When the request began to wait, and when it was admitted, by the monotonic clock.
         self.started, self.admitted = time.monotonic(), None
         self.directory = slot_directory()
-        cores = os.cpu_count() or 1
-        self.slots = int(os.environ.get("HEAVY_SLOTS", "3"))
-        self.maximum = int(os.environ.get("HEAVY_SLOTS_MAX", max(self.slots, cores // 2)))
-        self.load_limit = load_limit()
+        # Each from its environment variable, the host's limits file or the default (#49).
+        found = limits()
+        self.slots, self.maximum = found["slots"][0], found["slotsMax"][0]
+        self.load_limit = float(found["loadLimit"][0])
         # The one-minute load average shows a new job's load only gradually.
-        self.settle = float(os.environ.get("HEAVY_SETTLE_SECONDS", "30"))
+        self.settle = float(found["settleSeconds"][0])
         self.poll = float(os.environ.get("HEAVY_POLL_SECONDS", "1"))
         # How long a dead or uncertain entry that recovery left waits before it is checked again.
         self.recheck = float(os.environ.get("HEAVY_RECOVER_SECONDS", "60"))

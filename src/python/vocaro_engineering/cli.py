@@ -595,10 +595,11 @@ def main(argv=None):
     admission.add_argument("command", nargs=argparse.REMAINDER, help="the command and its arguments, after --; "
         "it runs in the current directory")
     logged = commands.add_parser("admissions", usage="%(prog)s [-h] [--since WHEN] [--until WHEN] [log ...]\n"
-        "       %(prog)s recover [OWNER]", help="summarize this host's heavy-work admission log: for each kind "
-        "and label, the requests admitted and withdrawn, how long they waited and held, and how admissions ended; "
-        "eng admissions recover lists the guard's dead or uncertain entries, and eng admissions recover OWNER "
-        "removes that owner's once a census against its process record finds nothing it ran still running",
+        "       %(prog)s recover [OWNER]\n       %(prog)s limits", help="summarize this host's heavy-work admission "
+        "log: for each kind and label, the requests admitted and withdrawn, how long they waited and held, and how "
+        "admissions ended; eng admissions recover lists the guard's dead or uncertain entries, and eng admissions "
+        "recover OWNER removes that owner's once a census against its process record finds nothing it ran still "
+        "running; eng admissions limits prints the admission limits in force and where each comes from",
         description="Summarize the admission log, or, with recover, list the guard's dead or uncertain entries and "
         "recover one: its owner, named by PID or identity, has ended, and nothing of the commands its process "
         "record leaves unsettled still runs. A live owner's entry, an entry without a process record and a "
@@ -717,6 +718,7 @@ def main(argv=None):
     if argv[first:first + 1] == ["failures"]: return failure_records.main(argv[first + 1:], project)
     # Recovery, like the admission log, covers the whole host and reads no project.
     if argv[first:first + 2] == ["admissions", "recover"]: return resources.recover_main(argv[first + 2:])
+    if argv[first:first + 2] == ["admissions", "limits"]: return resources.limits_main(argv[first + 2:])
     split = argv.index("--") if "--" in argv else len(argv)
     args = parser.parse_args(argv[:split])
     args.passed = argv[split + 1:] if split < len(argv) else None

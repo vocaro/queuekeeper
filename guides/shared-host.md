@@ -93,10 +93,25 @@ average is below HEAVY_LOAD_LIMIT (75% of the CPU count), macOS reports normal m
 (`kern.memorystatus_vm_pressure_level` is 1), and no slot was taken in the last
 HEAVY_SETTLE_SECONDS (30) for the load average to show. Setting HEAVY_SLOTS_MAX to HEAVY_SLOTS
 restores a fixed limit. Admission cannot preempt: a job admitted while the host was quiet may
-become heavy later. Exclusive work holds every slot up to the maximum. Each process reads these
-variables from its own environment, so set them for every session or for none: an exclusive
-job holds only the slots below its own maximum, and a caller with a higher one can take slots
-above it.
+become heavy later. Exclusive work holds every slot up to the maximum.
+
+A host's own limits go in its limits file, `admission-limits.json` beside the admission log
+(`~/Library/Application Support/vocaro-engineering/`; an isolated HEAVY_SLOT_DIR namespace keeps
+its own there), which every process on that host reads. Its keys are `slots`, `slotsMax`,
+`loadLimit` and `settleSeconds`, for the four limits above; each is a number, or
+`{"perCore": F}` for F times the CPU count, which for a slot count is rounded down and at least
+1. A key it leaves out keeps its default; without the file every default stands. For example,
+`{"slots": 4, "loadLimit": {"perCore": 3}}` on a 10-core Mac guarantees four slots and opens
+extra ones below a load of 30. A file admission cannot read, with an unknown key or a value of
+the wrong kind, refuses every request on that host with an error naming the file: its owner
+fixes it rather than eng guessing the limits. Choosing the second Mac's and this Mac's values
+waits for the measurement #49 describes; neither has a file yet.
+
+A limit's environment variable overrides the file for the process it is set in. Each process
+reads its own environment, so set one for every session or for none: an exclusive job holds only
+the slots below its own maximum, and a caller with a higher one can take slots above it.
+`python3 scripts/eng admissions limits` prints the limits a process started like it would use,
+and where each comes from. Waiting messages name a limit by its variable whatever set it.
 
 Exclusive requests are admitted one at a time, in the order they asked. Each joins the queue,
 `exclusive-queue.json` in the slot directory, at its first attempt, and is admitted once it is
