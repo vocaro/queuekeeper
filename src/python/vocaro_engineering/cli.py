@@ -11,7 +11,7 @@ import subprocess
 import sys
 import time
 
-from . import __version__, app_registrations, crash_alerts, devices, disk, docs, evidence, evidence_offload, failure_records, foreground, github_artifacts, keychain, merge_queue, \
+from . import __version__, app_registrations, budgets, crash_alerts, devices, disk, docs, evidence, evidence_offload, failure_records, foreground, github_artifacts, keychain, merge_queue, \
     offload_host, parallel, processes, release, remote, resources, skills, spelling, xctest_shards
 from .config import TOOLKIT_ROOT, CAPABILITIES, DEFAULT_TOOLKIT, load, source_identity, stays
 from .resources import BUSY, FREE_WAIT
@@ -272,6 +272,18 @@ def agent_entry(root, config):
         problems.append(f"CLAUDE.md does not hold {CLAUDE_ENTRY} alone: make it that line, keeping any comment "
                         "lines, and move any other import into AGENTS.md (guides/adoption.md)")
     return problems
+
+
+def split_warnings(root, config):
+    """The gate over its budget and main past its release commit limit, as eng land warns after its result,
+    in a project with a Git repository (budgets.py)."""
+    try:
+        common = subprocess.run(["git", "-C", str(root), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                                capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if common.returncode: return []
+    return budgets.landing_warnings(root, config, budgets.entries(Path(common.stdout.strip()) / "eng-queue/entries"))
 
 
 def behind_main(root):
@@ -785,6 +797,8 @@ def main(argv=None):
                 warnings.append(f"release.lanes names {', '.join(strays)}, which is no lane in lanes, so eng release "
                                 "finds no pass of it and stops: add the lane or correct the name (guides/releasing.md, "
                                 "Two gates)")
+            warnings += budgets.doctor_warnings(config)
+            warnings += split_warnings(root, config)
             warnings += temporary_model_storage(root, config)
             warnings += unlinked_packages(root, config)
             warnings += stale_copies(root)

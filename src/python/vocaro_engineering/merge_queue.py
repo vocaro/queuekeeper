@@ -31,7 +31,7 @@ import tempfile
 import threading
 import time
 
-from . import disk, evidence, landing, processes, remote, resources
+from . import budgets, disk, evidence, landing, processes, remote, resources
 from .config import TOOLKIT_ROOT, load, parse
 
 MAIN = "refs/remotes/origin/main"
@@ -420,8 +420,16 @@ def land(root, args):
             raise ValueError(f"--repo lands a commit you name: `eng land --repo {args.repo} BRANCH`, since HEAD "
                              "there is another session's")
     identifier = add(target, args.reference or "HEAD", args.note, quiet_wait=args.wait)
-    if not args.wait or identifier is None: return 0
-    return wait(target, identifier, args.limit)
+    status_ = wait(target, identifier, args.limit) if args.wait and identifier is not None else 0
+    warn(target)
+    return status_
+
+
+def warn(root):
+    """After eng land's result, the gate over its budget and main past its release commit limit, by main's
+    settings (budgets.py)."""
+    for warning in budgets.landing_warnings(root, config_at(root, MAIN), Queue(root).all()):
+        print(f"warning: {warning}", flush=True)
 
 
 def add(root, reference, note=None, quiet_wait=False):
@@ -547,6 +555,7 @@ class Worker:
         self.retries = 0
         self.ran_on = None  # the second Mac that ran the last lane the gate ran, or None (gate)
         self.environment = environment()  # what the lanes, the hook and the carry-over checks run in
+        self.measured = None  # the passing gate run of the last round, which its landed entries record
 
     def say(self, words):
         print(f"queue: {time.strftime('%H:%M:%S')} {words}", flush=True)
@@ -803,8 +812,10 @@ class Worker:
 
     def gate(self, lanes, round_name):
         """(status of the first of lanes that did not pass or 0, its log). ran_on is the second Mac that ran
-        that lane, by its dispatch's record (remote.dispatched), or None when it ran here or nowhere."""
-        log, self.ran_on = None, None
+        that lane, by its dispatch's record (remote.dispatched), or None when it ran here or nowhere. A pass of
+        the gate lane leaves its wall time and the parts its log reports in self.measured, for the gate's
+        budget (budgets.py)."""
+        log, self.ran_on, self.measured = None, None, None
         for lane in lanes:
             log = self.queue.logs / f"{round_name}-{lane}.log"
             # A lane run here logs to its own file, and one on the second Mac prints here. What an
@@ -812,7 +823,8 @@ class Worker:
             lane_log = self.checkout / ".build/engineering" / lane / "run.log"
             with contextlib.suppress(OSError): lane_log.unlink()
             self.say(f"{lane} on {self.head()[:12]}")
-            began = time.time()
+            began = time.time()  # wall clock, to match the dispatch records' start times
+            started = time.monotonic()  # for the gate's measured duration
             try:
                 status_ = processes.run(["python3", "scripts/eng", "run", lane], cwd=self.checkout, log_path=log,
                                         timeout=LANE_LIMIT, env=self.environment)
@@ -824,6 +836,10 @@ class Worker:
             with contextlib.suppress(OSError), log.open("a") as kept: kept.write(lane_log.read_text(errors="replace"))
             self.say(f"{lane} exited {status_}")
             if status_: return status_, log
+            if lane == budgets.GATE:
+                with contextlib.suppress(OSError):
+                    self.measured = {"seconds": round(time.monotonic() - started, 1),
+                                     "parts": budgets.parts(log.read_text(errors="replace"))[:budgets.KEPT_PARTS]}
         return 0, log
 
     def changed(self, old, new):
@@ -904,7 +920,8 @@ class Worker:
                 git(self.checkout, *FETCH)
                 self.say(f"pushed {head[:12]}")
                 for entry in batch:
-                    self.queue.settle(entry, LANDED, landedAs=head, **({"docsOnly": docs} if docs else {}))
+                    self.queue.settle(entry, LANDED, landedAs=head, **({"docsOnly": docs} if docs else {}),
+                                      **({"gate": self.measured} if self.measured and not docs else {}))
                 if self.toolkits_own(): self.follow()
                 return True
             said = pushed.stderr.strip()

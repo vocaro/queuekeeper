@@ -65,11 +65,12 @@ def parse(source):
     lanes = value.get("lanes", {})
     retired(lanes)
     for name, lane in lanes.items():
+        budget(name, lane)
         if isinstance(lane, dict) and "parallel" in lane:
             group(name, lane, lanes)
             continue
         if not isinstance(lane, dict) or set(lane) - {"command", "resource", "minimumTests", "timeout", "foreground",
-                                                       "here", "model", "display"}:
+                                                       "here", "model", "display", "budgetMinutes"}:
             raise ValueError(f"Invalid lane {name}")
         for key in ["foreground", "model", "display"]:
             if key in lane and type(lane[key]) is not bool:
@@ -155,6 +156,17 @@ def release(declared, lanes=None, queue=None):
             raise ValueError(f"release.lanes names {name}, which a landing runs too: {landing[name]}. A release "
                              "check runs once, on the release commit, so take it out of the landing lanes or out of "
                              "release.lanes (guides/releasing.md, Two gates)")
+
+
+def budget(name, lane):
+    """budgetMinutes, the gate's time budget, from its measured time, past which eng land and eng doctor warn
+    (guides/releasing.md, Keeping the split). Only the gate lane has one."""
+    if not isinstance(lane, dict) or "budgetMinutes" not in lane: return
+    if name != "gate":
+        raise ValueError(f"{name}.budgetMinutes: only the gate lane has a time budget (guides/releasing.md, "
+                         "Keeping the split)")
+    if type(lane["budgetMinutes"]) is not int or lane["budgetMinutes"] <= 0:
+        raise ValueError("gate.budgetMinutes must be a positive integer")
 
 
 def merge_queue(queue, lanes):
@@ -255,8 +267,8 @@ def group(name, lane, lanes):
     """A lane group names other lanes to run side by side under its one admission, so it needs
     the heaviest resource among them, the model when one of them runs a model, and one lane at a
     time when several do (guides/parallel-tests.md)."""
-    if set(lane) - {"parallel", "jobs", "resource", "here", "model"}:
-        raise ValueError(f"Lane group {name} takes only parallel, jobs, resource, here and model")
+    if set(lane) - {"parallel", "jobs", "resource", "here", "model", "budgetMinutes"}:
+        raise ValueError(f"Lane group {name} takes only parallel, jobs, resource, here, model and budgetMinutes")
     members = lane["parallel"]
     if not isinstance(members, list) or not members or len(set(members)) != len(members) \
             or any(not isinstance(member, str) for member in members):
