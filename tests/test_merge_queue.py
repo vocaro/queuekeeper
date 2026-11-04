@@ -1828,8 +1828,10 @@ class Unreachable(Fixture):
         self.assertEqual(self.gates(), 0)
 
     def test_a_fetch_or_push_the_remote_refused_holds_at_once(self):
+        """A push refused for its credentials is tried again (PushRefusedInAnIncident); a fetch so refused is not."""
         for command in ("fetch", "push"):
             for name, said in REFUSED.items():
+                if command == "push" and mq.AUTHENTICATION.search(said): continue
                 with self.subTest(command=command, refusal=name):
                     with contextlib.suppress(OSError): mq.Queue(self.repo).hold_file.unlink()
                     branch = f"{command}-{name}".replace(" ", "-")
@@ -1862,7 +1864,8 @@ class PassedThroughAHold(Fixture):
     def refused(self, *branches):
         """Queue branches and run a worker whose push the remote refuses, as GitHub's SSH did on 2026-11-04."""
         ids = self.add(*branches)
-        with self.remote_says(REFUSED["ssh key"], {1}, "push"), patch("builtins.print"):
+        # Every try, past the retries a refused key has (vocaro-engineering#151), on a remote that is not GitHub's.
+        with self.remote_says(REFUSED["ssh key"], range(1, 99), "push"), patch("builtins.print"):
             self.assertEqual(self.work(), 1)
         return ids
 
@@ -1975,6 +1978,148 @@ class PassedThroughAHold(Fixture):
         self.assertEqual(self.resume(), 0)
         self.assertEqual(self.state(identifier)["state"], "landed")
         self.assertEqual(self.gates(), 2)
+
+
+class PushRefusedInAnIncident(Fixture):
+    """A push refused for its credentials, seconds after a fetch from the same URL went through, is tried again:
+    after each of BACKOFF, then, on GitHub, while its status says Git Operations is not operational, for up to
+    SETTLE_LIMIT. GitHub's SSH refused the owner's key so for over an hour on 2026-11-04 (vocaro-engineering#151)."""
+    @contextlib.contextmanager
+    def incident(self, pushes, statuses=None, github=True):
+        """The numbered pushes refused for the key, GitHub's Git Operations as statuses says at each look (the last
+        repeating; None for no reading), and a clock that each pause moves. Yields the pushes, the pauses and what
+        the worker said."""
+        clock, slept, said = [1000.0], [], io.StringIO()
+        def pause(seconds):
+            slept.append(seconds)
+            clock[0] += seconds
+        looks = list(statuses or [("operational", None)])
+        def status():
+            self.looks += 1
+            return looks[min(self.looks, len(looks)) - 1]
+        self.looks = 0
+        with self.remote_says(REFUSED["ssh key"], pushes, "push") as (calls, _), patch.object(mq, "pause", pause), \
+                patch.object(mq, "now", lambda: clock[0]), patch.object(mq, "on_github", return_value=github), \
+                patch.object(mq, "git_operations", side_effect=status), contextlib.redirect_stdout(said):
+            yield calls, slept, said
+
+    def test_a_refusal_that_clears_within_the_backoff_lands_without_another_gate(self):
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        with self.incident({1, 2}) as (pushes, slept, said): self.assertEqual(self.work(), 0)
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual((len(pushes), slept, self.gates(), self.looks), (3, list(mq.BACKOFF[:2]), 1, 0))
+        self.assertIn("the push was refused as the fetch before it was not, so trying again in 10s", said.getvalue())
+
+    def test_a_refusal_that_lasts_while_github_is_degraded_is_waited_out(self):
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        tries = len(mq.BACKOFF) + 4
+        with self.incident(range(1, tries), [("partial_outage", None)]) as (pushes, slept, said):
+            self.assertEqual(self.work(), 0)
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual(slept, list(mq.BACKOFF) + [mq.REFUSAL_POLL] * 3)
+        self.assertEqual((len(pushes), self.gates()), (tries, 1))
+        self.assertIn("while GitHub's Git Operations is partial_outage", said.getvalue())
+
+    def test_a_refusal_while_github_is_operational_holds_after_the_backoff_and_says_so(self):
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        with self.incident(range(1, 99)) as (pushes, slept, _): self.assertEqual(self.work(), 1)
+        self.assertEqual((len(pushes), slept, self.looks), (len(mq.BACKOFF) + 1, list(mq.BACKOFF), 1))
+        held = mq.Queue(self.repo).held()
+        self.assertIn("was refused: git@github.com: Permission denied (publickey).", held)
+        self.assertIn("GitHub's Git Operations is operational", held)
+        # The batch's pass stays for resume (vocaro-engineering#150).
+        self.assertEqual(self.state(identifier)["state"], "passed")
+
+    def test_a_refusal_that_outlasts_the_limit_holds_naming_githubs_status(self):
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        with self.incident(range(1, 999), [("major_outage", None)]) as (pushes, slept, _):
+            self.assertEqual(self.work(), 1)
+        self.assertEqual(sum(slept), mq.SETTLE_LIMIT)
+        self.assertIn(f"GitHub's Git Operations was still major_outage after {mq.SETTLE_LIMIT}s of tries",
+                      mq.Queue(self.repo).held())
+        self.assertEqual(self.state(identifier)["state"], "passed")
+        self.assertEqual(self.gates(), 1)
+
+    def test_an_unreadable_status_holds_after_the_backoff_and_says_why(self):
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        with self.incident(range(1, 99), [(None, "GitHub's status could not be read: timed out")]) as (pushes, *_):
+            self.assertEqual(self.work(), 1)
+        self.assertEqual(len(pushes), len(mq.BACKOFF) + 1)
+        self.assertIn("GitHub's status could not be read: timed out", mq.Queue(self.repo).held())
+
+    def test_a_remote_that_is_not_githubs_holds_after_the_backoff_without_asking_github(self):
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        with self.incident(range(1, 99), github=False) as (pushes, slept, _): self.assertEqual(self.work(), 1)
+        self.assertEqual((len(pushes), slept, self.looks), (len(mq.BACKOFF) + 1, list(mq.BACKOFF), 0))
+        self.assertNotIn("Git Operations", mq.Queue(self.repo).held())
+
+    def test_a_push_url_other_than_the_fetchs_holds_at_once(self):
+        """The fetch that went through says nothing of credentials it did not use."""
+        run(self.repo, "git", "config", "remote.origin.pushurl", f"file://{self.origin}")
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        with self.incident(range(1, 99)) as (pushes, slept, _): self.assertEqual(self.work(), 1)
+        self.assertEqual((len(pushes), slept, self.looks), (1, [], 0))
+
+    def test_a_refusal_of_another_kind_holds_at_once(self):
+        """Negative control: a missing repository or a rejected push is no incident's."""
+        for name in ("missing", "rejected", "ssh host key"):
+            with self.subTest(name):
+                with contextlib.suppress(OSError): mq.Queue(self.repo).hold_file.unlink()
+                self.commit(name.replace(" ", "-"), name.replace(" ", "-"))
+                [identifier] = self.add(name.replace(" ", "-"))
+                with patch("builtins.print"), self.remote_says(REFUSED[name], range(1, 99), "push") as (pushes, slept), \
+                        patch.object(mq, "git_operations") as status:
+                    self.assertEqual(self.work(), 1)
+                self.assertEqual((len(pushes), slept), (1, []))
+                status.assert_not_called()
+                mq.remove(mq.Queue(self.repo), identifier, quiet=True)
+
+    def test_main_moving_during_the_wait_is_carried_over_as_any_rejection(self):
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        moved = []
+        real = mq.git
+        def git(directory, *arguments, **options):
+            # The retry, the first push to get past the refusal: main moves first, by a path no lane reads, so
+            # the push is rejected, not refused.
+            if arguments[:1] == ("push",) and not moved and self.pushes == 0:
+                moved.append(self.commit("records/note", "other"))
+                run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+            if arguments[:1] == ("push",): self.pushes += 1
+            return real(directory, *arguments, **options)
+        self.pushes = 0
+        with patch.object(mq, "git", git), self.incident({1}) as (pushes, slept, _): self.assertEqual(self.work(), 0)
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertLessEqual({"a", "records"}, self.main_files())
+        self.assertEqual((self.gates(), len(moved)), (1, 1))
+
+    def test_githubs_status_is_read_from_its_components(self):
+        def answer(body):
+            response = io.BytesIO(json.dumps(body).encode() if not isinstance(body, bytes) else body)
+            return patch.object(mq.urllib.request, "urlopen", return_value=response)
+        with answer({"components": [{"name": "API Requests", "status": "operational"},
+                                    {"name": "Git Operations", "status": "partial_outage"}]}):
+            self.assertEqual(mq.git_operations(), ("partial_outage", None))
+        with answer({"components": [{"name": "API Requests", "status": "operational"}]}):
+            self.assertEqual(mq.git_operations(), (None, "GitHub's status names no Git Operations"))
+        with answer(b"<html>"):
+            self.assertIn("could not be read", mq.git_operations()[1])
+        with patch.object(mq.urllib.request, "urlopen", side_effect=OSError("timed out")):
+            self.assertEqual(mq.git_operations(), (None, "GitHub's status could not be read: timed out"))
+
+    def test_githubs_urls_are_told_from_others(self):
+        for url in ("git@github.com:vocaro/x.git", "ssh://git@github.com/vocaro/x.git", "https://github.com/vocaro/x.git",
+                    "https://token@github.com/vocaro/x.git"):
+            with self.subTest(url): self.assertTrue(mq.on_github(url))
+        for url in (str(self.origin), "https://github.com.example/x.git", "git@gitlab.com:x/y.git"):
+            with self.subTest(url): self.assertFalse(mq.on_github(url))
 
 
 class Refusals(Fixture):

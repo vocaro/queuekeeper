@@ -366,6 +366,17 @@ failure, a 4xx status, an SSH key or host key refused, a missing repository or a
 at once, though SSH ends a refused key with the same `Could not read from remote repository` as a
 dropped connection. So does any other error.
 
+**A push refused for its credentials is tried again.** During GitHub's incident of 2026-11-04 its
+SSH refused the owner's key from one second to the next for over an hour, while the same key fetched
+([#151](https://github.com/vocaro/vocaro-engineering/issues/151)). So a push refused for its key or
+token (`Permission denied (publickey)`, `Authentication failed`, `Invalid username or token`), when
+the fetch just before it went through from the same URL, is tried again after each of `BACKOFF`. On
+GitHub the worker then reads [its status](https://www.githubstatus.com) for Git Operations: while that
+is not operational, it tries every minute for up to an hour (`SETTLE_LIMIT`), since a hold costs a
+gate. A refusal while Git Operations is operational, past the hour, with a status that could not be
+read, or on another host holds, and the hold's reason gives GitHub's status. A push URL other than
+the fetch's, a refused fetch, and any other refusal hold at once.
+
 **A pre-push hook runs ahead of the push.** `git push` connects before it runs the hook, so a hook's
 long wait held an SSH connection open until GitHub dropped it. After a gate passes, the worker runs
 the project's hook itself with `git hook run`, as Git would call it for pushing to `main`, with its

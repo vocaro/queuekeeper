@@ -31,6 +31,7 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.request
 
 from . import budgets, disk, evidence, landing, processes, remote, resources
 from .config import TOOLKIT_ROOT, load, parse
@@ -72,6 +73,17 @@ REFUSED = re.compile(r"denied|Authentication failed|could not read Username|retu
                      r"rejected|Host key verification failed|does not appear to be a git repository")
 # Seconds before each further try of a fetch or push that did not reach the remote; after the last, it holds.
 BACKOFF = (10, 30, 90, 270)
+# What a remote says when it refused the key or the token. During GitHub's incident of 2026-11-04 its SSH said so of
+# the owner's key from one second to the next, for over an hour, while the same key fetched (vocaro-engineering#151).
+# A push refused so, seconds after a fetch from the same URL went through, is tried again (Worker.push_again).
+AUTHENTICATION = re.compile(r"Permission denied \(publickey\)|Authentication failed|Invalid username or token")
+# GitHub's status page, and its component for Git over SSH and HTTPS, which says whether a refusal may be GitHub's.
+GITHUB_STATUS = "https://www.githubstatus.com/api/v2/components.json"
+GIT_OPERATIONS = "Git Operations"
+OPERATIONAL = "operational"
+# Seconds between the tries of a refused push while GitHub says Git Operations is not operational, which go on for
+# up to SETTLE_LIMIT: as long as a gate, which a hold would cost again.
+REFUSAL_POLL = 60
 POLL = 5
 # What a project's launcher reads first to find the toolkit.
 TOOLKIT_VARIABLE = "VOCARO_ENGINEERING_ROOT"
@@ -180,6 +192,23 @@ def reach(directory, *arguments, say=print, check=False):
         pause(delay)
     if check: checked(done, arguments, tries)
     return done
+
+
+def on_github(url):
+    """Whether a remote's URL is GitHub's, whose status page can say whether a refusal is its own."""
+    return bool(re.match(r"(?:ssh://)?git@github\.com[:/]|https://(?:[^@/]+@)?github\.com/", url))
+
+
+def git_operations():
+    """(status, None) of GitHub's Git Operations, such as operational or partial_outage, or (None, why not)."""
+    asked = urllib.request.Request(GITHUB_STATUS, headers={"User-Agent": "vocaro-engineering", "Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(asked, timeout=20) as answer: components = json.load(answer)["components"]
+        status = next((part.get("status") for part in components if part.get("name") == GIT_OPERATIONS), None)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
+        return None, f"GitHub's status could not be read: {error}"
+    if not isinstance(status, str): return None, f"GitHub's status names no {GIT_OPERATIONS}"
+    return status, None
 
 
 def text(directory, *arguments):
@@ -925,6 +954,7 @@ class Worker:
                 checked = head
             # A connection that dropped pushes again here, without running the hook again.
             pushed = reach(self.checkout, "push", "--no-verify", "origin", "HEAD:refs/heads/main", say=self.say)
+            pushed, status = self.push_again(pushed)
             if pushed.returncode == 0:
                 git(self.checkout, *FETCH)
                 self.say(f"pushed {head[:12]}")
@@ -937,8 +967,38 @@ class Worker:
             if "rejected" in said and ("fetch first" in said or "non-fast-forward" in said): continue
             if unreached(said):
                 raise ValueError(f"the push of {head[:12]} did not reach the remote in {len(BACKOFF) + 1} tries: {said}")
-            raise ValueError(f"the push of {head[:12]} was refused: {said or 'no output'}")
+            raise ValueError(f"the push of {head[:12]} was refused: {said or 'no output'}{status}")
         return False
+
+    def push_again(self, pushed):
+        """(the last push, what a hold adds of GitHub's status). A push the remote refused for its credentials, when
+        the fetch at the top of push went through from the same URL a moment before, is tried again after each of
+        BACKOFF; and then, on GitHub, while its status says Git Operations is not operational, every REFUSAL_POLL
+        seconds for up to SETTLE_LIMIT, since a hold costs a gate (vocaro-engineering#151). Any other answer ends
+        the tries: a push, a rejection that push handles, a refusal of another kind, or one with Git Operations
+        operational, which holds as before."""
+        said = pushed.stderr.strip()
+        if pushed.returncode == 0 or not AUTHENTICATION.search(said): return pushed, ""
+        url = text(self.checkout, "remote", "get-url", "--push", "origin")
+        if url != text(self.checkout, "remote", "get-url", "origin"): return pushed, ""
+        backoff, started, status = list(BACKOFF), now(), None
+        while True:
+            if backoff: delay = backoff.pop(0)
+            else:
+                if not on_github(url): return pushed, ""
+                status, why = git_operations()
+                if status is None: return pushed, f"; {why}"
+                if status == OPERATIONAL: return pushed, f"; GitHub's {GIT_OPERATIONS} is {status}"
+                waited = now() - started
+                if waited >= SETTLE_LIMIT:
+                    return pushed, f"; GitHub's {GIT_OPERATIONS} was still {status} after {int(waited)}s of tries"
+                delay = min(REFUSAL_POLL, SETTLE_LIMIT - waited)
+            self.say(f"the push was refused as the fetch before it was not, so trying again in {delay:g}s"
+                     + (f" while GitHub's {GIT_OPERATIONS} is {status}" if status else "") + f": {said.splitlines()[-1]}")
+            pause(delay)
+            pushed = reach(self.checkout, "push", "--no-verify", "origin", "HEAD:refs/heads/main", say=self.say)
+            said = pushed.stderr.strip()
+            if pushed.returncode == 0 or not AUTHENTICATION.search(said): return pushed, ""
 
     def pre_push(self, head):
         """(status, log) of the project's pre-push hook for pushing head to main, called as Git would
