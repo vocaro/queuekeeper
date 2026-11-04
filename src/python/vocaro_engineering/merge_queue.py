@@ -5,7 +5,8 @@ of its own, runs the project's queue lanes there once, and pushes on a pass. Whe
 a batch it halves the batch until it finds the commit to send back, landing the rest. Only a lane's
 verdict blames a commit: a run the host left unmeasured retries once, when the host has settled, and
 then holds the queue for the owner, with every commit still waiting (guides/maintenance.md, The merge
-queue).
+queue). A batch whose lanes passed is recorded as passed before its push, so a hold the push meets
+keeps that verdict, and `eng queue resume` pushes the commit that passed instead of gating it again.
 
 The state is in the repository's common Git directory, so every worktree shares it, and a ref holds
 each waiting commit, so a branch that moves or goes takes nothing with it:
@@ -36,8 +37,10 @@ from .config import TOOLKIT_ROOT, load, parse
 
 MAIN = "refs/remotes/origin/main"
 FETCH = ["fetch", "--no-tags", "origin", f"refs/heads/main:{MAIN}"]
-QUEUED, TESTING, LANDED, FAILED, CONFLICT, REMOVED = "queued", "testing", "landed", "failed", "conflict", "removed"
-WAITING = {QUEUED, TESTING}
+QUEUED, TESTING, PASSED, LANDED, FAILED, CONFLICT, REMOVED = \
+    "queued", "testing", "passed", "landed", "failed", "conflict", "removed"
+# Passed is a batch whose lanes passed and whose push has not landed it: Worker.keep and Worker.push_passed.
+WAITING = {QUEUED, TESTING, PASSED}
 # What a lane exits with when it says nothing about the commits: unmeasured, no admission, and a
 # shared host's configuration, which stops for the owner.
 NO_VERDICT = {evidence.UNMEASURED, resources.BUSY, remote.MISCONFIGURED}
@@ -353,12 +356,14 @@ class Queue:
                 self.save(current)
 
     def mark(self, entries, state):
-        """Queued or testing, for the entries nobody has removed meanwhile."""
+        """Queued or testing, for the entries nobody has removed meanwhile. An entry that goes back to the
+        queue leaves behind the batch whose pass it held, and so that pass."""
         with self.locked():
             for entry in entries:
                 current = self.read(entry["id"])
                 if current and current["state"] in WAITING:
                     current["state"] = state
+                    current.pop("passed", None)
                     self.save(current)
 
     def held(self):
@@ -499,6 +504,10 @@ def remove(queue, identifier, quiet=False):
 def describe(entry):
     line = f"{entry['state']:8} {entry['id']}  {entry['subject']}"
     if entry.get("landedAs"): line += f"  -> {entry['landedAs'][:12]}"
+    if entry["state"] == PASSED:
+        verdict = entry["passed"]
+        line += (f"\n         passed at {verdict['head'][:12]} on {verdict['base'][:12]}: the push lands it without "
+                 "gating it again")
     if entry.get("docsOnly"): line += f"\n         docs lanes only ({', '.join(entry['docsOnly'])}): no gate of that commit"
     for kept in entry.get("kept", []): line += f"\n         {kept}"
     if entry.get("why"): line += f"\n         {entry['why']}"
@@ -970,28 +979,19 @@ class Worker:
         batch = queue.waiting()
         if self.limit: batch = batch[:self.limit]
         if not batch: return False
+        passed = [entry for entry in batch if entry["state"] == PASSED]
         reach(queue.main_checkout, *FETCH, say=self.say, check=True)
         self.prepare()
         self.toolkit()
+        if passed: return self.push_passed(passed)
         base = text(queue.main_checkout, "rev-parse", MAIN)
         applied = self.integrate(batch, base)
         if not applied:
             self.limit, self.suspects = None, 0
             return True
-        # The project's lanes and settings as they stand on main, so that no branch chooses its own gate.
-        self.reset(base)
-        config = load(self.checkout)
-        for entry in applied:
-            if self.pick(entry): raise ValueError(f"{entry['id']} applied a moment ago and no longer does")
-        # Until main names any, the batch's: the commit that first names a project's lanes has to land.
-        try: lanes_of(config)
-        except ValueError:
-            config = load(self.checkout)
-            # The batch may name its lanes, but only main may say the hook need not run, or which paths are docs.
-            config.get("queue", {}).pop("hookCoveredBy", None)
-            config.get("queue", {}).pop("docsOnly", None)
-        queue.mark(applied, TESTING)
         head = self.head()
+        config = self.settings(base, head)
+        queue.mark(applied, TESTING)
         self.say(f"testing {len(applied)} entr{'y' if len(applied) == 1 else 'ies'} at {head[:12]} on {base[:12]}")
         # Without renames, so that a file moved into a docs path also names the path it left.
         docs = docs_lanes(config, [path for path in text(self.checkout, "diff", "--name-only", "--no-renames", base,
@@ -1024,8 +1024,56 @@ class Worker:
             self.say("an entry was removed during the run: gating what is left")
             queue.mark(applied, QUEUED)
             return True
+        self.keep(applied, base, head, docs)
         if self.push(config, applied, base, docs): self.passed(len(applied))
         else: queue.mark(applied, QUEUED)
+        return True
+
+    def settings(self, base, head):
+        """The project's lanes and settings as they stand on main at base, so that no branch chooses its own gate,
+        with the checkout left at head. Until main names any lanes, the batch's: the commit that first names a
+        project's lanes has to land."""
+        self.reset(base)
+        config = load(self.checkout)
+        self.reset(head)
+        try: lanes_of(config)
+        except ValueError:
+            config = load(self.checkout)
+            # The batch may name its lanes, but only main may say the hook need not run, or which paths are docs.
+            config.get("queue", {}).pop("hookCoveredBy", None)
+            config.get("queue", {}).pop("docsOnly", None)
+        return config
+
+    def keep(self, batch, base, head, docs):
+        """Record a batch's pass before its push. A hold the push meets, a refusal or a remote out of reach, then
+        leaves the batch passed rather than queued, and `eng queue resume` pushes head instead of gating the same
+        tree again (vocaro-engineering#150): EPUBLib's queue spent an hour of the second Mac doing that."""
+        verdict = {"head": head, "base": base, "batch": [entry["id"] for entry in batch], "at": time.time()}
+        if docs: verdict["docsOnly"] = docs
+        if self.measured: verdict["gate"] = self.measured
+        for entry in batch: self.queue.record(entry, state=PASSED, passed=verdict)
+
+    def push_passed(self, passed):
+        """Push the batch whose pass keep recorded, when it is still the batch that passed: the same entries, none
+        removed or added again since, and its commit still in the repository. Main having moved since is push's to
+        decide, by carry, as for any batch that passed. Otherwise its entries queue again and are gated as any
+        others."""
+        verdict = passed[0]["passed"]
+        whole = sorted(entry["id"] for entry in passed) == sorted(verdict["batch"]) \
+            and all(entry.get("passed") == verdict for entry in passed) \
+            and not git(self.checkout, "cat-file", "-e", f"{verdict['head']}^{{commit}}").returncode
+        if not whole:
+            self.say(f"what passed at {verdict['head'][:12]} is no longer the batch waiting: gating its entries again")
+            self.queue.mark(passed, QUEUED)
+            return True
+        batch = sorted(passed, key=lambda entry: verdict["batch"].index(entry["id"]))
+        base, head, docs = verdict["base"], verdict["head"], verdict.get("docsOnly")
+        config = self.settings(base, head)
+        self.measured = verdict.get("gate")
+        self.say(f"{len(batch)} entr{'y' if len(batch) == 1 else 'ies'} passed at {head[:12]} on {base[:12]}: "
+                 "pushing without gating again")
+        if self.push(config, batch, base, docs): self.passed(len(batch))
+        else: self.queue.mark(batch, QUEUED)
         return True
 
     def prune(self):
@@ -1044,18 +1092,28 @@ def run(root):
     while True:
         with queue.worker() as free:
             if not free: return 0
-            # Whatever a worker that died left testing was never pushed.
+            # Whatever a worker that died left testing was never pushed. What it left passed is pushed first,
+            # and a push that had gone through lands it then, as a push of what main already has.
             queue.mark([entry for entry in queue.all() if entry["state"] == TESTING], QUEUED)
             worker = Worker(queue)
             try:
                 with processes.forwarding_signals(): worker.drain()
             except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
                 queue.mark([entry for entry in queue.all() if entry["state"] == TESTING], QUEUED)
-                queue.hold(f"{error}; then run `eng queue resume`")
+                queue.hold(f"{error}{passed_push(queue)}; then run `eng queue resume`")
                 return 1
         # An entry added after the last look, while its adder found this worker running, is this
         # worker's to take: its adder's own worker has already exited.
         if queue.held() or not queue.waiting(): return 0
+
+
+def passed_push(queue):
+    """What a hold keeps of a batch that passed, for its reason: the push it waits for."""
+    passed = [entry for entry in queue.all() if entry["state"] == PASSED]
+    if not passed: return ""
+    verdict = passed[0]["passed"]
+    return (f"; passed {verdict['head'][:12]} on {verdict['base'][:12]} ({len(passed)} "
+            f"entr{'y' if len(passed) == 1 else 'ies'}), whose push waits for the owner and needs no gate again")
 
 
 def resume(root):

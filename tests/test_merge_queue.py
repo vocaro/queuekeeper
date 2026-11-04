@@ -705,7 +705,7 @@ class PrePushHooks(Fixture):
         self.commit("a", "a")
         [identifier] = self.add("a")
         self.assertEqual(self.work(), 1)
-        self.assertEqual(self.state(identifier)["state"], "queued")
+        self.assertEqual(self.state(identifier)["state"], "passed")
         self.assertNotIn("a", self.main_files())
         self.assertEqual(len(self.runs()), 1)
         held = mq.Queue(self.repo).held()
@@ -747,7 +747,7 @@ class PrePushHooks(Fixture):
             self.assertEqual(self.work(), 1)
         self.assertEqual(sum(slept), mq.SETTLE_LIMIT)
         self.assertEqual(len(self.runs()), 1)
-        self.assertEqual(self.state(identifier)["state"], "queued")
+        self.assertEqual(self.state(identifier)["state"], "passed")
         held = mq.Queue(self.repo).held()
         self.assertIn("the pre-push hook gave no verdict, exit 3, on", held)
         self.assertIn(f"the host did not settle in {mq.SETTLE_LIMIT}s", held)
@@ -757,7 +757,7 @@ class PrePushHooks(Fixture):
         self.commit("a", "a")
         [identifier] = self.add("a")
         self.assertEqual(self.work(), 1)
-        self.assertEqual(self.state(identifier)["state"], "queued")
+        self.assertEqual(self.state(identifier)["state"], "passed")
         self.assertEqual(len(self.runs()), 2)
         self.assertEqual(self.gates(), 1)
         self.assertIn("no verdict, exit 75", mq.Queue(self.repo).held())
@@ -814,7 +814,7 @@ class PrePushHooks(Fixture):
         self.hook("exit 1")
         [identifier] = self.add("sneaks")
         self.assertEqual(self.work(), 1)
-        self.assertEqual(self.state(identifier)["state"], "queued")
+        self.assertEqual(self.state(identifier)["state"], "passed")
         self.assertEqual(len(self.runs()), 1)
 
     def test_the_commit_that_first_names_the_lanes_cannot_opt_out_either(self):
@@ -832,7 +832,7 @@ class PrePushHooks(Fixture):
         self.hook("exit 1")
         [identifier] = self.add("name")
         self.assertEqual(self.work(), 1)
-        self.assertEqual(self.state(identifier)["state"], "queued")
+        self.assertEqual(self.state(identifier)["state"], "passed")
         self.assertEqual(len(self.runs()), 1)
 
     def test_the_opt_in_must_name_lanes_the_queue_runs_and_what_they_cover(self):
@@ -1837,7 +1837,7 @@ class Unreachable(Fixture):
                     [identifier] = self.add(branch)
                     with patch("builtins.print"), self.remote_says(said, {1}, command) as (calls, slept):
                         self.assertEqual(self.work(), 1)
-                    self.assertEqual(self.state(identifier)["state"], "queued")
+                    self.assertEqual(self.state(identifier)["state"], "queued" if command == "fetch" else "passed")
                     self.assertEqual((len(calls), slept), (1, []))
                     self.assertIn(said.splitlines()[-1], mq.Queue(self.repo).held())
                     mq.remove(mq.Queue(self.repo), identifier, quiet=True)
@@ -1854,6 +1854,127 @@ class Unreachable(Fixture):
             with self.remote_says(REFUSED["ssh key"], {1}) as (fetches, slept):
                 with self.assertRaisesRegex(ValueError, "Permission denied"): mq.add(self.repo, "b")
             self.assertEqual((len(fetches), slept), (1, []))
+
+
+class PassedThroughAHold(Fixture):
+    """A batch whose lanes passed keeps that verdict through a hold its push meets, and the next worker pushes
+    it without gating the same tree again (vocaro-engineering#150)."""
+    def refused(self, *branches):
+        """Queue branches and run a worker whose push the remote refuses, as GitHub's SSH did on 2026-11-04."""
+        ids = self.add(*branches)
+        with self.remote_says(REFUSED["ssh key"], {1}, "push"), patch("builtins.print"):
+            self.assertEqual(self.work(), 1)
+        return ids
+
+    def resume(self):
+        """`eng queue resume` with its worker run here, in the foreground."""
+        mq.Queue(self.repo).hold_file.unlink()
+        with patch("builtins.print"): return self.work()
+
+    def test_a_refused_push_keeps_the_pass_and_resume_pushes_it_without_a_gate(self):
+        self.commit("a", "a"); self.commit("b", "b")
+        ids = self.refused("a", "b")
+        self.assertEqual([self.state(i)["state"] for i in ids], ["passed"] * 2)
+        verdict = self.state(ids[0])["passed"]
+        self.assertEqual(verdict["batch"], ids)
+        self.assertEqual(verdict["base"], run(self.repo, "git", "rev-parse", "origin/main"))
+        held = mq.Queue(self.repo).held()
+        self.assertIn("Permission denied (publickey)", held)
+        self.assertIn(f"passed {verdict['head'][:12]} on {verdict['base'][:12]} (2 entries)", held)
+        self.assertIn("lands it without gating it again", mq.describe(self.state(ids[0])))
+        self.assertEqual(self.gates(), 1)
+        self.assertEqual(self.resume(), 0)
+        self.assertEqual([self.state(i)["state"] for i in ids], ["landed"] * 2)
+        self.assertEqual(self.gates(), 1)
+        self.assertEqual(self.state(ids[0])["landedAs"], verdict["head"])
+        self.assertLessEqual({"a", "b"}, self.main_files())
+        # The landed entries still record the gate that passed them, for its budget.
+        self.assertEqual(self.state(ids[0])["gate"], verdict["gate"])
+
+    def test_without_a_pass_the_next_worker_gates_again(self):
+        """Negative control: a batch a worker left testing was never judged, so it is gated again."""
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        queue = mq.Queue(self.repo)
+        queue.mark([queue.read(identifier)], "testing")
+        with patch("builtins.print"): self.assertEqual(self.work(), 0)
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual(self.gates(), 1)
+
+    def test_main_moving_by_files_no_lane_reads_carries_the_pass_over(self):
+        self.commit("a", "a")
+        [identifier] = self.refused("a")
+        self.commit("records/note", "other")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        self.assertEqual(self.resume(), 0)
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual(self.gates(), 1)
+        self.assertLessEqual({"a", "records"}, self.main_files())
+
+    def test_main_moving_by_files_a_lane_reads_gates_again(self):
+        self.commit("a", "a")
+        [identifier] = self.refused("a")
+        first = self.state(identifier)["passed"]
+        self.commit("other", "other")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        self.assertEqual(self.resume(), 0)
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual(self.gates(), 2)
+        # What landed is the pass of the second gate, on the main that moved.
+        self.assertNotEqual(self.state(identifier)["passed"]["base"], first["base"])
+        self.assertEqual(self.state(identifier)["landedAs"], self.state(identifier)["passed"]["head"])
+
+    def test_an_entry_removed_during_the_hold_gates_what_is_left(self):
+        self.commit("a", "a"); self.commit("b", "b")
+        ids = self.refused("a", "b")
+        with patch("builtins.print"): mq.remove(mq.Queue(self.repo), ids[0])
+        self.assertEqual(self.resume(), 0)
+        self.assertEqual(self.state(ids[1])["state"], "landed")
+        self.assertEqual(self.gates(), 2)
+        self.assertNotIn("a", self.main_files())
+
+    def test_a_branch_added_again_during_the_hold_gates_again(self):
+        self.commit("a", "a")
+        [first] = self.refused("a")
+        self.commit("a2", "a", start="a")
+        [second] = self.add("a")
+        self.assertEqual(self.state(first)["state"], "removed")
+        self.assertEqual(self.resume(), 0)
+        self.assertEqual(self.state(second)["state"], "landed")
+        self.assertEqual(self.gates(), 2)
+        self.assertLessEqual({"a", "a2"}, self.main_files())
+
+    def test_an_entry_added_during_the_hold_waits_for_the_next_round(self):
+        self.commit("a", "a")
+        [first] = self.refused("a")
+        self.commit("b", "b")
+        [second] = self.add("b")
+        self.assertEqual(self.resume(), 0)
+        self.assertEqual([self.state(first)["state"], self.state(second)["state"]], ["landed", "landed"])
+        # One gate for a, before the hold, and one for b after it.
+        self.assertEqual(self.gates(), 2)
+        self.assertEqual(self.state(first)["landedAs"], self.state(first)["passed"]["head"])
+
+    def test_a_push_that_went_through_before_the_worker_died_lands_as_it_is(self):
+        self.commit("a", "a")
+        [identifier] = self.refused("a")
+        head = self.state(identifier)["passed"]["head"]
+        run(self.repo, "git", "push", "-q", "--no-verify", "origin", f"{head}:refs/heads/main")
+        self.assertEqual(self.resume(), 0)
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual(self.gates(), 1)
+        self.assertEqual(run(self.repo, "git", "rev-parse", "origin/main"), head)
+
+    def test_a_commit_that_is_gone_gates_again(self):
+        self.commit("a", "a")
+        [identifier] = self.refused("a")
+        queue = mq.Queue(self.repo)
+        entry = queue.read(identifier)
+        entry["passed"]["head"] = "0" * 40
+        queue.save(entry)
+        self.assertEqual(self.resume(), 0)
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual(self.gates(), 2)
 
 
 class Refusals(Fixture):
@@ -1885,7 +2006,7 @@ class Refusals(Fixture):
         hook.write_text("#!/bin/sh\necho no >&2\nexit 1\n")
         hook.chmod(0o755)
         self.assertEqual(self.work(), 1)
-        self.assertEqual(self.state(identifier)["state"], "queued")
+        self.assertEqual(self.state(identifier)["state"], "passed")
         self.assertIn("refused", mq.Queue(self.repo).held())
 
     def test_a_push_whose_connection_dropped_is_pushed_again(self):
@@ -1903,7 +2024,7 @@ class Refusals(Fixture):
         [identifier] = self.add("a")
         with self.remote_says("fatal: the remote end hung up unexpectedly", range(1, 99), "push") as (pushes, slept):
             self.assertEqual(self.work(), 1)
-        self.assertEqual(self.state(identifier)["state"], "queued")
+        self.assertEqual(self.state(identifier)["state"], "passed")
         self.assertIn("did not reach the remote", mq.Queue(self.repo).held())
         self.assertEqual((len(pushes), slept), (len(mq.BACKOFF) + 1, list(mq.BACKOFF)))
 
@@ -1915,7 +2036,7 @@ class Refusals(Fixture):
         hook.write_text('#!/bin/sh\necho "fatal: the remote end hung up unexpectedly" >&2\nexit 1\n')
         hook.chmod(0o755)
         with patch.object(mq, "pause") as slept: self.assertEqual(self.work(), 1)
-        self.assertEqual(self.state(identifier)["state"], "queued")
+        self.assertEqual(self.state(identifier)["state"], "passed")
         self.assertIn("refused", mq.Queue(self.repo).held())
         slept.assert_not_called()
 

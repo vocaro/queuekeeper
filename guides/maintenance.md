@@ -451,7 +451,12 @@ as its base. Prove each check fails on a bad move before relying on it.
 **State and recovery.** Each repository's state is under `eng-queue` in its common Git directory,
 so every worktree sees one queue. A worker starts by itself with `eng land`, apart from the session,
 and exits when nothing waits; `eng queue wait` and `eng queue resume` start one after a reboot.
-Whatever a dead worker left testing was never pushed, so the next worker tests it again. A lane may
+Whatever a dead worker left testing was never pushed, so the next worker tests it again. A batch
+whose lanes passed is recorded `passed`, with the commit that passed and its base, before its push;
+a hold the push meets, a refusal or a remote out of reach, keeps it so, and the hold's reason says so.
+The next worker, after `eng queue resume`, pushes that commit without gating it again, while the
+batch is still the one that passed: an entry removed or added again since gates what is left. Main
+having moved meanwhile is the carry-over's decision, as for any push. A lane may
 take `LANE_LIMIT` (6 h, three times eng's default limit: the default for the lane and two more for
 its wait for admission). The worker's checkout is locked, so that no sweep removes it, and keeps
 ignored inputs a provisioning lane made between rounds. A project with `"integration": "pull-request"`
