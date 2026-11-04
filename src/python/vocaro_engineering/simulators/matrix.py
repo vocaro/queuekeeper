@@ -20,6 +20,11 @@ One run at a time builds into a derived data folder and writes a logs folder: a 
 names either waits for the earlier to end, and says so. Simulators test from the build's products
 in place, and a build can replace a test bundle's embedded resource bundle whole, so a build beside
 another run's tests can take the files they read from under them (vocaro/EPUBLib#872).
+
+With --build-only it builds and tests nothing: it takes the first device's member without erasing or
+booting it, only to name the build's destination, and returns it once the build ends. A gate can then
+build while its earlier stages run, and the full run that follows finds the build up to date
+(vocaro/EPUBLib#958).
 """
 import argparse
 import contextlib
@@ -72,6 +77,9 @@ def parse(argv):
     parser.add_argument("--keep-state", action="store_true", help="take each member without erasing it, for tests "
                         "that need no fresh installation: it keeps what earlier runs installed and skips the "
                         "first boot's migration (guides/simulator-testing.md, Reserved simulator pool)")
+    parser.add_argument("--build-only", action="store_true", help="build the tests for the first device and "
+                        "test nothing, so that a later run with the same options finds the build up to date; the "
+                        "member is taken without erasing or booting it, only to name the build's destination")
     parser.add_argument("--test-timeout", type=int, default=processes.DEFAULT_LIMIT, help="seconds after which a "
                         "device's test run is stopped and left unmeasured, a backstop for a hang (default "
                         f"{processes.DEFAULT_LIMIT})")
@@ -326,7 +334,7 @@ def main(argv, project=None):
     if args.forward_env:
         names = sorted(forwarded(args.forward_env, os.environ))
         run.say(f"FORWARD {', '.join(args.forward_env)}: {', '.join(names) if names else 'nothing to forward'}")
-    kinds = args.device
+    kinds = args.device[:1] if args.build_only else args.device
     started = time.monotonic()
     pool = simulator_pool.Pool(name, owner=simulator_pool.default_owner() or f"simulator-tests-{uuid.uuid4()}",
                                log=run.say)
@@ -336,9 +344,17 @@ def main(argv, project=None):
             stack.enter_context(folders_held([args.derived_data, run.logs], run.say))
             devices = []
             for kind in kinds:
-                device = stack.enter_context(taken(pool, run, kind, args.runtime, f"eng simulator-tests {args.scheme}",
-                                                   args.keep_state))
+                purpose = f"eng simulator-tests {args.scheme}" + (", build only" if args.build_only else "")
+                device = stack.enter_context(taken(pool, run, kind, args.runtime, purpose,
+                                                   args.keep_state or args.build_only))
                 devices.append((kind, device))
+            if args.build_only:
+                # The member names the destination alone: nothing boots, installs or runs on it.
+                xctestrun = run.build(f"platform=iOS Simulator,id={devices[0][1].udid}")
+                run.results[kinds[0]] = 0 if xctestrun is not None else 1
+                print(f"Simulator build (wall-clock {round(time.monotonic() - started)}s): "
+                      f"{'BUILT' if xctestrun is not None else 'FAIL'}, no test run", flush=True)
+                return run.results[kinds[0]]
             # The build runs while every device boots; tests wait for both.
             with ThreadPoolExecutor(max_workers=1) as builder, \
                     ThreadPoolExecutor(max_workers=args.jobs or len(kinds)) as testers:

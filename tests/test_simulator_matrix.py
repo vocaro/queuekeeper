@@ -438,6 +438,33 @@ class SimulatorMatrixTests(unittest.TestCase):
         self.assertEqual([call[0] for call in self.calls()], ["build-for-testing"])
         self.assert_every_device_returned()
 
+    def test_build_only_builds_for_the_first_device_and_boots_erases_and_tests_nothing(self):
+        iphone = self.add("Project iPhone 17 Pro 1")
+        status, output = self.run_matrix("--build-only", "--", "-only-testing:T/C")
+        self.assertEqual(status, 0, output)
+        self.assertEqual([call[0] for call in self.calls()], ["build-for-testing"])
+        build = self.calls()[0]
+        self.assertEqual(build[build.index("-destination") + 1], f"platform=iOS Simulator,id={iphone}")
+        self.assertNotIn("-only-testing:T/C", build)
+        simctl = (self.state / "simctl.log").read_text().splitlines()
+        self.assertFalse([line for line in simctl if line.startswith(("boot ", "erase ", "create "))], simctl)
+        self.assertNotIn("Project iPad Air 13-inch (M4) 1", self.devices())
+        self.assertRegex(output, r"Simulator build \(wall-clock \d+s\): BUILT, no test run")
+        self.assertEqual(self.entries()["Project iPhone 17 Pro 1"]["state"], "released")
+        self.assert_every_device_returned()
+        # The full run after it builds into the same derived data and tests on every device.
+        status, output = self.run_matrix(FAKE_MEET="2")
+        self.assertEqual(status, 0, output)
+        self.assertEqual(evidence.executed_tests(output), 6, output)
+
+    def test_a_failed_build_only_run_fails(self):
+        self.add("Project iPhone 17 Pro 1")
+        status, output = self.run_matrix("--build-only", FAKE_BUILD_FAIL="1")
+        self.assertEqual(status, 1, output)
+        self.assertIn("FAIL build: status 1", output)
+        self.assertRegex(output, r"Simulator build \(wall-clock \d+s\): FAIL, no test run")
+        self.assert_every_device_returned()
+
     def test_any_device_failure_fails_the_run_and_otherwise_an_unmeasured_test_leaves_it_unmeasured(self):
         cases = [({"FAKE_UNMEASURED": "iPhone-17-Pro"}, 3), ({"FAKE_UNMEASURED": "iPhone-17-Pro",
                   "FAKE_TEST_FAIL": "iPad-Air-13-inch-M4"}, 1), ({"FAKE_NO_TESTS": "iPad-Air-13-inch-M4"}, 1)]
