@@ -232,6 +232,29 @@ class SimulatorMatrixTests(unittest.TestCase):
         self.assertIn("TOOK Project iPhone 17 Pro 1", output)
         self.assert_every_device_returned()
 
+    def test_keep_state_takes_each_member_without_erasing_it(self):
+        iphone = self.add("Project iPhone 17 Pro 1")
+        ipad = self.add("Project iPad Air 13-inch (M4) 1", IPAD)
+        status, output = self.run_matrix("--keep-state", FAKE_MEET="2")
+        self.assertEqual(status, 0, output)
+        simctl = (self.state / "simctl.log").read_text().splitlines()
+        self.assertFalse([line for line in simctl if line.startswith(("erase ", "create "))], simctl)
+        self.assertEqual(sorted(line.split()[1] for line in simctl if line.startswith("boot ")), sorted([iphone, ipad]))
+        self.assertIn(f"TOOK Project iPhone 17 Pro 1 ({iphone}), not erased: it keeps its state", output)
+        self.assertRegex(output, rf"BOOTED iPhone-17-Pro \({iphone}\) in \d+s")
+        for key in ("Project iPhone 17 Pro 1", "Project iPad Air 13-inch (M4) 1"):
+            self.assertEqual((self.entries()[key]["keptState"], self.entries()[key]["state"]), (True, "released"))
+            self.assertIn("not erased", self.entries()[key]["preservation"])
+        self.assert_every_device_returned()
+        # The negative control: the same run without it erases both members.
+        (self.state / "simctl.log").unlink()
+        status, output = self.run_matrix(FAKE_MEET="2")
+        self.assertEqual(status, 0, output)
+        simctl = (self.state / "simctl.log").read_text().splitlines()
+        self.assertEqual(sorted(line.split()[1] for line in simctl if line.startswith("erase ")), sorted([iphone, ipad]))
+        self.assertNotIn("keptState", self.entries()["Project iPhone 17 Pro 1"])
+        self.assert_every_device_returned()
+
     def planted_modules(self):
         derived = self.root / ".build/simulator-tests/derived"
         modules = derived / "Build/Intermediates.noindex/SwiftExplicitPrecompiledModules"

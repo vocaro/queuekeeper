@@ -5,8 +5,9 @@
         [-- TEST-ARGUMENTS such as -only-testing:T/C]
 
 Each device is a member of the pool, `POOL LABEL N`: a free one of its kind is reserved in the
-host's device record and erased, or, when none is free, the next is created and kept in the pool,
-after members unused for 14 days are pruned (guides/simulator-testing.md, Reserved simulator pool).
+host's device record and erased, or, with --keep-state, kept as earlier runs left it, or, when none is
+free, the next is created and kept in the pool, after members unused for 14 days are pruned
+(guides/simulator-testing.md, Reserved simulator pool).
 Every device boots while the tests build, and is shut down and released however the run ends. The
 build is one `xcodebuild build-for-testing` for the first device's destination; each device
 then runs `xcodebuild test-without-building` on the same .xctestrun, with its own log and
@@ -68,6 +69,9 @@ def parse(argv):
     parser.add_argument("--workers", type=int, help="xcodebuild's parallel test workers on each device, each a "
                         "clone of it; without this each device runs one test process")
     parser.add_argument("--boot-timeout", type=int, default=600, help="seconds a boot may take (default 600)")
+    parser.add_argument("--keep-state", action="store_true", help="take each member without erasing it, for tests "
+                        "that need no fresh installation: it keeps what earlier runs installed and skips the "
+                        "first boot's migration (guides/simulator-testing.md, Reserved simulator pool)")
     parser.add_argument("--test-timeout", type=int, default=processes.DEFAULT_LIMIT, help="seconds after which a "
                         "device's test run is stopped and left unmeasured, a backstop for a hang (default "
                         f"{processes.DEFAULT_LIMIT})")
@@ -128,6 +132,7 @@ class Run:
         """None once the device has booted; otherwise its outcome is already reported."""
         log = self.logs / f"{kind}-boot.log"
         self.say(f"BOOT {kind} ({device.udid}), limit {self.args.boot_timeout}s; log: {log}")
+        started = time.monotonic()
         try:
             with log.open("w") as stream:
                 status = processes.supervise(["xcrun", "simctl", "boot", device.udid], cwd=Path.cwd(),
@@ -143,6 +148,7 @@ class Run:
         if status != 0:
             self.finish(kind, 1, f"the boot failed with status {status}", log)
             return False
+        self.say(f"BOOTED {kind} ({device.udid}) in {round(time.monotonic() - started)}s")
         return True
 
     def build(self, destination):
@@ -294,9 +300,10 @@ def folders_held(folders, say):
 
 
 @contextlib.contextmanager
-def taken(pool, run, kind, runtime, purpose):
+def taken(pool, run, kind, runtime, purpose, keep_state=False):
     """A member of the kind for this run, shut down and released however the run ends."""
-    lease = pool.take(qualified(DEVICE_TYPE, kind), qualified(RUNTIME, runtime), purpose=purpose)
+    lease = pool.take(qualified(DEVICE_TYPE, kind), qualified(RUNTIME, runtime), purpose=purpose,
+                      keep_state=keep_state)
     try:
         yield lease
     finally:
@@ -329,7 +336,8 @@ def main(argv, project=None):
             stack.enter_context(folders_held([args.derived_data, run.logs], run.say))
             devices = []
             for kind in kinds:
-                device = stack.enter_context(taken(pool, run, kind, args.runtime, f"eng simulator-tests {args.scheme}"))
+                device = stack.enter_context(taken(pool, run, kind, args.runtime, f"eng simulator-tests {args.scheme}",
+                                                   args.keep_state))
                 devices.append((kind, device))
             # The build runs while every device boots; tests wait for both.
             with ThreadPoolExecutor(max_workers=1) as builder, \

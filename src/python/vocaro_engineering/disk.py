@@ -521,6 +521,12 @@ def pool_members(host):
     return found
 
 
+def pool_templates(host):
+    """Each pool's warmed templates by UDID: the pool and the template."""
+    return {template.udid: (pool, template) for pool in host.pools
+            for template in simulator_pool.templates(pool, host.simulators)}
+
+
 def record_entries(host):
     """Every readable record's entries, as one record for the pruning rule."""
     entries = {}
@@ -535,7 +541,7 @@ def simulators(host, usage, sizes):
     if host.simulators is None:
         return [Item("simulator", "simctl", KEPT, "`xcrun simctl list -j` failed, so no simulator can be shown unowned")]
     unreadable = [path for path, text in host.records.items() if text is None]
-    pooled, entries = pool_members(host), record_entries(host)
+    pooled, entries, templated = pool_members(host), record_entries(host), pool_templates(host)
     now = datetime.datetime.fromtimestamp(host.now, datetime.timezone.utc)
     items, listed = [], set()
     for runtime, devices in host.simulators.get("devices", {}).items():
@@ -567,6 +573,12 @@ def simulators(host, usage, sizes):
                 items.append(item(CANDIDATE, f"a member of the {pool} pool eligible for pruning: {why}",
                                   prune_command(pool, udid)) if allowed else
                              item(KEPT, f"a member of the {pool} pool, kept: {why}"))
+            elif udid in templated:
+                pool, template = templated[udid]
+                items.append(item(KEPT, f"the {pool} pool's warmed template of its kind, which new members are "
+                                        "cloned from") if device.get("isAvailable", True) else
+                             item(CANDIDATE, f"the {pool} pool's warmed template of its kind, unavailable, its runtime "
+                                             "gone; the next new member of the kind warms another", command))
             elif record: items.append(item(KEPT, f"named in the device record {record}"))
             elif disposable_name(name):
                 if idle is not None and idle >= host.min_idle:

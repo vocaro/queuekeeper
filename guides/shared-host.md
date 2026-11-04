@@ -1457,7 +1457,7 @@ cannot be reached among them. Before a dispatch it is bounded: one reap spends a
 is printed and the work is sent all the same. With nothing listed it adds only `ps` and `lsof`.
 
 A reap cannot race a run that takes the device, by three things. `Pool.take` only takes a member that
-`simctl` shows shut down, and reserves it, under the record's lock, before it erases and boots it, so a
+`simctl` shows shut down, and reserves it, under the record's lock, before it erases or boots it, so a
 reap never finds a take's fresh boot unreserved. A stale simulator has run for 2 hours, which a booting
 member has not, and `take` passes over a booted one. And the second check runs holding the device
 record's lock, which every reservation takes, until the shutdown has started, so no reservation lands

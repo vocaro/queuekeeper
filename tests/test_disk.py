@@ -263,6 +263,25 @@ class SimulatorTests(Fixture):
         self.assertEqual(items[default["udid"]].status, disk.CANDIDATE)
         self.assertEqual(items[default["udid"]].command, ["xcrun", "simctl", "delete", default["udid"]])
 
+    def test_a_pool_template_is_kept_until_its_runtime_is_gone(self):
+        template = device("Project Duo template (iOS-27-0)")
+        gone = device("Project iPad template (iOS-27-0)", isAvailable=False, availabilityError="runtime missing")
+        # The same name in another pool, or on another runtime than its name says, is no template of this pool.
+        stranger = device("Other Duo template (iOS-27-0)")
+        mislabeled = device("Project Duo template (iOS-26-0)")
+        record = json.dumps({"devices": {"Project Duo template (iOS-27-0)": {"device": template["udid"],
+                                                                             "state": "released"}}})
+        items = self.simulators([template, gone, stranger, mislabeled], pools=frozenset({"Project"}),
+                                records={"/record.json": record})
+        self.assertEqual(items[template["udid"]].status, disk.KEPT)
+        self.assertIn("the Project pool's warmed template", items[template["udid"]].reason)
+        self.assertIsNone(items[template["udid"]].command)
+        self.assertEqual(items[gone["udid"]].status, disk.CANDIDATE)
+        self.assertIn("its runtime gone; the next new member of the kind warms another", items[gone["udid"]].reason)
+        self.assertEqual(items[gone["udid"]].command, ["xcrun", "simctl", "delete", gone["udid"]])
+        for other in (stranger, mislabeled):
+            self.assertNotIn("warmed template", items[other["udid"]].reason)
+
     def test_a_pool_member_is_a_candidate_only_under_the_pruning_rule(self):
         stamp = lambda days: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(LATER - days * 86400))
         lowest, stale, recent, released, booted = (device("Project Duo 1", used=stamp(40)),
