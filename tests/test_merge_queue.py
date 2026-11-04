@@ -18,6 +18,10 @@ from vocaro_engineering import cli, config as configuration, merge_queue as mq
 import host_isolation
 from host_isolation import stretched
 
+# Each class in a process of its own under `eng unittest`'s default module split: whole, with a real Git
+# fixture built for every test, this module alone bounded the toolkit's suite (guides/parallel-tests.md).
+shard_by = "class"
+
 
 # Fails when any tracked file is named bad*, passes otherwise; touches a counter so a test can count gates.
 LANE = """import pathlib, sys

@@ -248,6 +248,10 @@ class LaneTests(HostTest):
                         patch.object(cli, "source_identity", return_value={}),
                         patch.object(cli, "refresh_policy", return_value=None),
                         patch.object(voiceover_state, "_read", return_value=False),
+                        # eng's guard around a foreground run always settles, for a stretched SETTLE. VoiceOver is
+                        # a fake here that never changes, so no settle can show a late key: the real 5 s, stretched
+                        # by load, held each run 40 to 120 s on a loaded host, and 0.3 s still 7 s at the stretch cap.
+                        patch.object(voiceover_state, "SETTLE", 0.05),
                         patch.object(foreground, "front", return_value=None),
                         patch.object(foreground, "problems", return_value=[])):
             patcher.start()

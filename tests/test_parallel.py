@@ -1,3 +1,4 @@
+import concurrent.futures
 import contextlib
 from io import StringIO
 import json
@@ -93,16 +94,20 @@ class UnittestRunnerTests(unittest.TestCase):
         # Stretched by load: the quick module and the failing one run under the same limit as the hung one, which
         # sleeps twelve times as long, so it is still stopped.
         limit = round(stretched(5))
-        root = self.suite(module("test_hung", f"class H(unittest.TestCase):\n    def test_hung(self): time.sleep({12 * limit})\n"),
-                          module("test_quick", "class Q(unittest.TestCase):\n    def test_quick(self): pass\n"))
-        status, output = self.run_suite(root, "--timeout", str(limit))
+        modules = (module("test_hung", f"class H(unittest.TestCase):\n    def test_hung(self): time.sleep({12 * limit})\n"),
+                   module("test_quick", "class Q(unittest.TestCase):\n    def test_quick(self): pass\n"))
+        root = self.suite(*modules)
+        # A failure beside it still fails the run. Both runs wait out the hung module's limit, so they run at once.
+        failing = self.suite(*modules, ("test_fail", "import unittest\nclass F(unittest.TestCase):\n"
+                                                     "    def test_f(self): self.fail('planted')\n"))
+        with concurrent.futures.ThreadPoolExecutor(2) as pool:
+            alone, beside = [pool.submit(self.run_suite, suite, "--timeout", str(limit)) for suite in (root, failing)]
+            (status, output), failed = alone.result(), beside.result()
         self.assertEqual(status, evidence.UNMEASURED, output)
         self.assertIn(f"== test_hung: timed out after {limit}s (0 tests", output)
         self.assertIn("== test_quick: OK (1 tests", output)
         self.assertIn(f"UNMEASURED: test_hung (timed out after {limit}s)", output)
-        # A failure beside it still fails the run.
-        (root / "test_fail.py").write_text("import unittest\nclass F(unittest.TestCase):\n    def test_f(self): self.fail('planted')\n")
-        status, output = self.run_suite(root, "--timeout", str(limit))
+        status, output = failed
         self.assertEqual(status, 1, output)
         self.assertRegex(output, r"FAILED: test_fail .*; UNMEASURED: test_hung")
         self.assertEqual(self.run_suite(root, "--timeout", "0")[0], 2)
@@ -168,6 +173,43 @@ class UnittestRunnerTests(unittest.TestCase):
         self.assertNotEqual(one, three)
         self.assertEqual(self.run_suite(root, "--split", "test")[0], 0)
         self.assertEqual(len(set(pids())), 3)
+        # The negative control: by default the module is one process.
+        self.assertEqual(self.run_suite(root)[0], 0)
+        self.assertEqual(len(set(pids())), 1)
+
+    def test_a_module_that_sets_shard_by_is_split_that_finely_and_never_more_coarsely_than_split(self):
+        source = """
+            class A(unittest.TestCase):
+                def test_one(self): (HERE / f"one").write_text(str(os.getpid()))
+                def test_two(self): (HERE / f"two").write_text(str(os.getpid()))
+            class B(unittest.TestCase):
+                def test_three(self): (HERE / f"three").write_text(str(os.getpid()))
+            class Grouped(unittest.TestCase):
+                serial_group = "kept"
+                def test_four(self): (HERE / f"four").write_text(str(os.getpid()))
+            class AlsoGrouped(unittest.TestCase):
+                serial_group = "kept"
+                def test_five(self): (HERE / f"five").write_text(str(os.getpid()))
+        """
+        root = self.suite(module("test_split", 'shard_by = "class"\n' + textwrap.dedent(source)),
+                          module("test_whole", "class W(unittest.TestCase):\n"
+                                               "    def test_six(self): (HERE / 'six').write_text(str(os.getpid()))\n"
+                                               "    def test_seven(self): (HERE / 'seven').write_text(str(os.getpid()))\n"))
+        names = ("one", "two", "three", "four", "five", "six", "seven")
+        pids = lambda: dict(zip(names, ((root / name).read_text() for name in names)))
+        status, output = self.run_suite(root)
+        self.assertEqual(status, 0, output)
+        self.assertIn("7 tests (0 skipped) in 4 processes", output)
+        seen = pids()
+        # Its classes apart, and a class serial_group still together; the module that sets none stays whole.
+        self.assertEqual(seen["one"], seen["two"])
+        self.assertEqual(len({seen["one"], seen["three"], seen["four"], seen["six"]}), 4)
+        self.assertEqual((seen["four"], seen["six"]), (seen["five"], seen["seven"]))
+        # A finer --split still splits it by test, and the group stays one process.
+        self.assertEqual(self.run_suite(root, "--split", "test")[0], 0)
+        seen = pids()
+        self.assertEqual(seen["four"], seen["five"])
+        self.assertEqual(len(set(seen.values())), 6)
 
     def test_a_module_loaded_under_a_name_no_process_can_import_runs_whole_in_its_loaders_process(self):
         root = self.suite(module("test_loader", """

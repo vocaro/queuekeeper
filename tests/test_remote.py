@@ -26,6 +26,11 @@ from vocaro_engineering import disk as disk_module
 import host_isolation
 from host_isolation import stretched
 
+# Each test in a process of its own under `eng unittest`'s default module split: most are in RemoteTests, and
+# whole, the module's real eng runs against a fake second Mac took 450 s on a quiet host, bounding the toolkit's
+# suite alone (guides/parallel-tests.md).
+shard_by = "test"
+
 # remote.advertised as it is, before any test patches it.
 ADVERTISED = remote.advertised
 

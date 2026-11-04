@@ -160,10 +160,15 @@ def addressable(test):
     return sys.modules.get(type(test).__module__) is not None
 
 
+# What one process runs, from coarsest to finest, as --split and a module's shard_by name it.
+SPLITS = ("module", "class", "test")
+
+
 def shards(suite, split, origins=None):
     """{shard name: [test ids]}, in discovery order. A shard is a module, class or test, as split
-    says. Tests whose class or module sets serial_group share one shard, so they run one after
-    another in one process. A module that failed to import is a shard of its own, which reports
+    says, or finer where a module sets shard_by to "class" or "test": a module that alone bounds a
+    run splits itself without every module splitting. Tests whose class or module sets serial_group
+    share one shard, so they run one after another in one process. A module that failed to import is a shard of its own, which reports
     the import error when it runs. A module whose load_tests loads a module that a fresh process
     cannot import by name cannot be split: it runs whole in one shard, addressed by its own name,
     which stands in for each of its tests."""
@@ -183,9 +188,10 @@ def shards(suite, split, origins=None):
             group = getattr(sys.modules.get(origin), "serial_group", None)
             found.setdefault(f"group:{group}" if group else origin, []).append(origin)
             continue
-        group = getattr(module, "serial_group", None) if split == "module" else \
+        finest = max(split, getattr(module, "shard_by", "module"), key=SPLITS.index)
+        group = getattr(module, "serial_group", None) if finest == "module" else \
             getattr(cls, "serial_group", getattr(module, "serial_group", None))
-        unit = {"module": cls.__module__, "class": f"{cls.__module__}.{cls.__qualname__}", "test": test.id()}[split]
+        unit = {"module": cls.__module__, "class": f"{cls.__module__}.{cls.__qualname__}", "test": test.id()}[finest]
         found.setdefault(f"group:{group}" if group else unit, []).append(test.id())
     return found
 
@@ -223,7 +229,7 @@ def unittest_main(argv):
     parser.add_argument("-t", "--top-level-directory")
     parser.add_argument("-j", "--jobs", type=int, default=DEFAULT_JOBS,
                         help=f"processes at a time (default {DEFAULT_JOBS}); 1 runs them one after another")
-    parser.add_argument("--split", choices=["module", "class", "test"], default="module",
+    parser.add_argument("--split", choices=SPLITS, default="module",
                         help="what one process runs (default: one module)")
     parser.add_argument("--timeout", type=float, default=PROCESS_LIMIT, metavar="SECONDS",
                         help=f"seconds one process may run before it is stopped and left unmeasured "
