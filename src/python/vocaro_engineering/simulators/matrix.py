@@ -14,10 +14,16 @@ result bundle. Each device's outcome stands apart: a boot that reached its limit
 device unmeasured, and the run fails when any device failed, and is otherwise unmeasured when
 any device was. guides/parallel-tests.md says how to bound it. A build that fails on a module older
 than a header it was built from clears that module cache and builds once more, and says so.
+
+One run at a time builds into a derived data folder and writes a logs folder: a later run that
+names either waits for the earlier to end, and says so. Simulators test from the build's products
+in place, and a build can replace a test bundle's embedded resource bundle whole, so a build beside
+another run's tests can take the files they read from under them (vocaro/EPUBLib#872).
 """
 import argparse
 import contextlib
 from concurrent.futures import ThreadPoolExecutor
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -251,6 +257,42 @@ def bundle_results(bundle, kind):
     return total - skipped, skipped, list(dict.fromkeys(unmeasured))
 
 
+# The file in a derived data or logs folder whose flock a run holds from before its build until its last
+# test ends.
+FOLDER_LOCK = ".eng-simulator-tests.lock"
+
+
+@contextlib.contextmanager
+def folders_held(folders, say):
+    """Hold each folder's lock for the run, waiting while another run holds it.
+
+    Simulators test from the build's products in place, and a build can replace a test bundle's embedded
+    resource bundle whole, so a build into derived data that another run is testing from can take files
+    from under its tests (vocaro/EPUBLib#872); a logs folder's files are each run's own. The locks are taken in
+    path order, so that two runs never each hold one the other waits for. An flock ends with the process
+    that holds it, however it ends; the wait is bounded by the run's own limit."""
+    descriptors = []
+    try:
+        for folder in sorted({Path(folder).resolve() for folder in folders}):
+            folder.mkdir(parents=True, exist_ok=True)
+            path = folder / FOLDER_LOCK
+            descriptor = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+            descriptors.append(descriptor)
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                holder = path.read_text(errors="replace").strip() or "it has not said which"
+                say(f"WAIT: another eng simulator-tests run holds {folder} ({holder}); waiting for it to end")
+                waited = time.monotonic()
+                fcntl.flock(descriptor, fcntl.LOCK_EX)
+                say(f"HELD {folder} after waiting {round(time.monotonic() - waited)}s")
+            os.ftruncate(descriptor, 0)
+            os.pwrite(descriptor, f"PID {os.getpid()} since {time.strftime('%Y-%m-%d %H:%M:%S')}\n".encode(), 0)
+        yield
+    finally:
+        for descriptor in descriptors: os.close(descriptor)
+
+
 @contextlib.contextmanager
 def taken(pool, run, kind, runtime, purpose):
     """A member of the kind for this run, shut down and released however the run ends."""
@@ -283,6 +325,8 @@ def main(argv, project=None):
                                log=run.say)
     try:
         with processes.forwarding_signals(), contextlib.ExitStack() as stack:
+            # Before any device is taken, so that a run that waits holds none.
+            stack.enter_context(folders_held([args.derived_data, run.logs], run.say))
             devices = []
             for kind in kinds:
                 device = stack.enter_context(taken(pool, run, kind, args.runtime, f"eng simulator-tests {args.scheme}"))

@@ -84,6 +84,9 @@ XCODEBUILD = textwrap.dedent("""\
                                                    if "PROJECT_" in name}}) + "\\n")
     if action == "build-for-testing":
         if os.environ.get("FAKE_BUILD_FAIL"): sys.exit("** TEST BUILD FAILED **")
+        # FAKE_BUILD_WAIT holds the build until a file of that name appears in FAKE_STATE.
+        while os.environ.get("FAKE_BUILD_WAIT") and not (state / os.environ["FAKE_BUILD_WAIT"]).exists():
+            time.sleep(0.05)
         # FAKE_STALE_BUILDS builds report a stale module, each after recording the module folder it found,
         # and FAKE_STALE_THEN_FAIL makes the build after them fail on something else.
         modules = pathlib.Path(value("-derivedDataPath")) / "Build/Intermediates.noindex/SwiftExplicitPrecompiledModules"
@@ -441,6 +444,67 @@ class SimulatorMatrixTests(unittest.TestCase):
         output = process.communicate(timeout=stretched(60))[0]
         self.assertEqual(process.returncode, -signal.SIGTERM, output)
         self.assertIn("SIGTERM received; forwarding it", output)
+        self.assert_every_device_returned()
+
+    def test_a_run_waits_for_another_that_holds_its_derived_data_and_logs_but_not_for_one_elsewhere(self):
+        # A build beside another run's tests copied the resources they read again (vocaro/EPUBLib#872).
+        command = [sys.executable, str(ENG), "simulator-tests", "--scheme", "Package-Tests", "--runtime", "iOS-27-0",
+                   "--device", "iPhone-17-Pro", "--device", "iPad-Air-13-inch-M4", "--pool", "Project"]
+        def start(**environment):
+            process = subprocess.Popen(command, cwd=self.root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                       text=True, env={**self.environment, **environment})
+            self.addCleanup(lambda: process.poll() is None and process.kill())
+            return process
+        first = start(FAKE_BUILD_WAIT="release")
+        deadline = time.monotonic() + stretched(60)
+        while not (self.state / "xcodebuild.log").exists():
+            self.assertLess(time.monotonic(), deadline, "the first run never started its build")
+            time.sleep(0.05)
+        second = start()
+        # A run with folders of its own goes ahead while the first holds the defaults.
+        status, output = self.run_matrix("--derived-data", "elsewhere/derived", "--logs", "elsewhere/logs")
+        self.assertEqual(status, 0, output)
+        self.assertNotIn("WAIT:", output)
+        def where(call):
+            path = call[call.index("-derivedDataPath" if call[0] == "build-for-testing" else "-resultBundlePath") + 1]
+            return ("elsewhere " if "elsewhere" in path else "") + call[0]
+        self.assertEqual([where(call) for call in self.calls()],
+                         ["build-for-testing", "elsewhere build-for-testing", *["elsewhere test-without-building"] * 2])
+        self.assertIsNone(second.poll(), "the second run waits for the first, which is still building")
+        (self.state / "release").touch()
+        outputs = [process.communicate(timeout=stretched(60))[0] for process in (first, second)]
+        self.assertEqual([first.returncode, second.returncode], [0, 0], outputs)
+        self.assertNotIn("WAIT:", outputs[0])
+        derived = self.root / ".build/simulator-tests/derived"
+        self.assertRegex(outputs[1], rf"WAIT: another eng simulator-tests run holds {derived} \(PID {first.pid} since ")
+        self.assertIn(f"HELD {derived} after waiting", outputs[1])
+        # The second run built only once the first run's tests had ended.
+        self.assertEqual([where(call) for call in self.calls()][4:],
+                         [*["test-without-building"] * 2, "build-for-testing", *["test-without-building"] * 2])
+        self.assert_every_device_returned()
+
+    def test_a_run_waits_for_its_logs_folder_too(self):
+        import fcntl
+        logs = self.root / "logs"
+        logs.mkdir()
+        lock = (logs / ".eng-simulator-tests.lock").open("w")
+        self.addCleanup(lock.close)
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        command = [sys.executable, str(ENG), "simulator-tests", "--scheme", "Package-Tests", "--runtime", "iOS-27-0",
+                   "--device", "iPhone-17-Pro", "--device", "iPad-Air-13-inch-M4", "--pool", "Project", "--logs", "logs"]
+        process = subprocess.Popen(command, cwd=self.root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                                   env=self.environment)
+        self.addCleanup(lambda: process.poll() is None and process.kill())
+        time.sleep(1)
+        self.assertIsNone(process.poll())
+        self.assertFalse((self.state / "xcodebuild.log").exists(), "nothing builds while another run holds the logs")
+        self.assertFalse((self.state / "simctl.log").exists() and "boot" in (self.state / "simctl.log").read_text(),
+                         "and no device is booted for it")
+        fcntl.flock(lock, fcntl.LOCK_UN)
+        output = process.communicate(timeout=stretched(60))[0]
+        self.assertEqual(process.returncode, 0, output)
+        self.assertIn(f"WAIT: another eng simulator-tests run holds {logs} (it has not said which)", output)
+        self.assertIn(f"HELD {logs} after waiting", output)
         self.assert_every_device_returned()
 
     def test_skipped_tests_ran_nothing_so_a_device_whose_tests_all_skipped_fails(self):
