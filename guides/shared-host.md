@@ -1515,9 +1515,9 @@ in the connection that lists leftovers before work is sent to the second Mac, an
    simulator's own names its UDID.
 3. The device record holds no live reservation of it, by its name or its UDID. A reservation whose
    recorded process (`holderProcess`, an active run's process, `--own` processes) is gone, or whose
-   PID now has another start, is not live, and its entry stays for its owner or
-   [recovery](#device-reservations). One that records no process, is marked uncertain, or has not
-   reached its expected release counts as live.
+   PID now has another start, is not live, and once the simulator is shut down reap releases its
+   entry, as below. One that records no process, is marked uncertain, or has not reached its expected
+   release counts as live.
 4. Its `launchd_sim` has run for 2 hours (`offload_host.REAP_AFTER`), and all of this is still so at
    a second check immediately before the stop.
 
@@ -1532,10 +1532,9 @@ to work past that, it records a running process of its own (`devices update KEY 
 its `holderProcess`, before it boots it, so a live warm-up's reservation keeps it running however long
 the warm-up takes. A warm-up killed outright (`SIGKILL`, or the Mac stopping) leaves the template booted
 and its entry held by a process that is gone; that entry counts as live until its expected release, 8
-hours after the reservation, and then reap shuts the template down. Its entry stays held, named with its
-`devices recover` command as below; until it is recovered, the kind's new members are created rather
-than cloned, and once it is recovered the next creation replaces the template, which was never warmed
-to the end.
+hours after the reservation, and then reap shuts the template down and releases its entry, as below.
+Until the entry is released, the kind's new members are created rather than cloned, and once it is
+released the next creation replaces the template, which was never warmed to the end.
 
 It erases, deletes and kills nothing, and other leftovers, such as `DTServiceHub`, stay report-only.
 It stops only what it is sure of: a census with anything unread, an unreadable device record or
@@ -1562,16 +1561,47 @@ record's lock, which every reservation takes, until the shutdown has started, so
 between the check and the stop. It holds that lock for at most 20 seconds, under the 30 another change
 waits, and gives up with nothing stopped when it cannot have the lock in 5.
 
-Reap leaves a stopped simulator's record entry held, for its owner or
-[recovery](#device-reservations), and releases nothing itself: a process being gone does not show that
-the device's state was restored. But it names what would otherwise wait unseen
-([vocaro-engineering#97](https://github.com/vocaro/vocaro-engineering/issues/97)). `eng simulator-pool
-reap`, with or without `--dry-run`, and `devices status` end with each held entry that records a process
-known to be gone (a PID with another start counts) and an expected release that has passed, with its exact
-`devices recover` command. A live holder, a release not yet due or unreadable, an entry that records no
-process and an uncertain entry are not named. The reap before a dispatch names only the entries of
-simulators it just stopped, so that other runs' sends do not repeat the rest. Releasing automatically is
-left as the owner's choice.
+**Reap releases a pool reservation it proves dead**, on whichever Mac the entry is on, so that no
+session recovers leftover simulators by hand or brings them to the owner (the owner's decision,
+2026-11-04, [vocaro-engineering#156](https://github.com/vocaro/vocaro-engineering/issues/156), which
+reverses the report-only rule of [#97](https://github.com/vocaro/vocaro-engineering/issues/97)). Pool
+members are erased before each take, so a dead holder leaves nothing on the device to restore. Each run of
+`eng simulator-pool reap`, the reap before a dispatch to the second Mac and `eng doctor`'s releases an
+entry of that Mac's device record only when all of these hold, read in that order:
+
+1. The entry records a process (`holderProcess`, an active run's process, `--own` processes) and every
+   one of them is gone: its PID is not in `ps`, or runs with another start. `ps` is read after the
+   record, so a process it lacks was recorded before it went, and the listing must show the reap's own
+   process, or it shows nothing gone. An entry that records no process, or a running PID with no start
+   to compare, is left.
+2. Its expected release has passed. Before then a session that took the member with `eng simulator-pool
+   take`, whose process ends when it prints the UDID, still holds it by its word, so a reservation not
+   yet due is never released, however dead its process.
+3. It is not uncertain or `restoration-unverified`, and its run did not go to another Mac (`run.host`),
+   whose processes this Mac cannot check.
+4. It is a simulator pool's: its device is a simulator, `simctl` lists that UDID under the entry's key,
+   and the key is a member or warmed template of a pool reap looks at.
+5. `simctl` shows the device `Shutdown`, after this reap stopped it if it was stale, and no other held
+   entry names the device.
+6. The reap met no problem, and under the device record's lock the entry is still at the revision it read.
+
+It releases the entry as `devices recover` does, at the next revision, with `recovery.by` set to `reap`,
+the condition (`held`, or `orphan` for an active run whose process is gone) and `recovery.verified` naming
+the PIDs, their starts, the release that had passed and the `Shutdown` it saw; it logs a `releasing` line
+before it writes the record, then `released`, in `simulator-reaps.jsonl`, so a log that cannot be written
+releases nothing. Each release is printed (`released KEY (UDID), held for owner …`); `--dry-run` says
+`would release` and changes nothing.
+
+An entry whose processes are gone and whose release has passed, but which reap could not prove dead by the
+rest, stays held and is named with why (`reap did not release it: simctl shows it Booted, not Shutdown`,
+for one; its simulator is still under 2 hours old) and its exact `devices recover` command; for an entry
+in the second Mac's record that command runs there, as `ssh HOST 'cd
+~/Development/vocaro-engineering/src/python && python3 -m vocaro_engineering.devices recover …'`, since
+run here it would read this Mac's record. `eng simulator-pool reap`, with or without `--dry-run`, and
+`eng doctor`'s `reaped` name every such entry; the reap before a dispatch names only those of
+simulators it just stopped. `devices status` names them too, and releases nothing. A live holder, a
+release not yet due or unreadable, an entry that records no process and an uncertain entry are neither
+named nor released.
 
 ### Registered Mac builds
 
@@ -1663,7 +1693,10 @@ were never imported; once it is imported, stop writing it.
 
 A device is released only explicitly. A passed expected release time, an idle screen or a silent
 session proves nothing: obtain the release and verify the device's state freshly. A deadline
-never releases a device; `status` reports an overdue entry and changes nothing. Release yours
+never releases a device; `status` reports an overdue entry and changes nothing. The one exception is
+a simulator pool's reservation whose processes are all gone, past its expected release and with its
+simulator shut down, which reap releases as a recovery
+([stale pool simulators](#stale-pool-simulators)). Release yours
 during offline analysis instead of holding an idle reservation. `release` refuses while a run is
 active: record its confirmed terminal result first.
 

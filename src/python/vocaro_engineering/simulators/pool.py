@@ -750,7 +750,7 @@ def reap_reports(pool, project, *, dry_run, here):
     else:
         pools = sorted({*disk.pools(Path.home() / "Development"), *filter(None, [configured(project or Path.cwd())])})
     request = {"pools": pools, "dry_run": dry_run, "scan": not pool}
-    reports = [("this Mac", offload_host.reap(remote.ROOT, **request))]
+    reports = [(remote.HERE, offload_host.reap(remote.ROOT, **request))]
     host = None if here else remote.configured()
     if host: reports.append((host, remote.reap_there(host, request)))
     return reports

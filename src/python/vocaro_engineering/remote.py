@@ -2261,9 +2261,11 @@ def reap_there(host, request):
     return {**empty, "problem": f"exit {found.returncode}: {last_line(found.stderr) or 'no output'}"}
 
 
-def reap_lines(where, report, listing=True):
-    """What is said of offload_host.reap's report for a Mac: each stop, failure and problem, and with
-    listing, what it found and left running, as `eng simulator-pool reap` prints them. Nothing when it found nothing."""
+def reap_lines(where, report, listing=True, held=False):
+    """What is said of offload_host.reap's report for a Mac: each stop, failure, release and problem, and with
+    listing, what it found and left running, as `eng simulator-pool reap` prints them. Nothing when it found
+    nothing. A held entry whose process is gone is named with listing or held, and otherwise only when this
+    reap stopped its simulator; its recover command runs on where unless where is HERE."""
     if not isinstance(report, dict): return []
     item_line = lambda item: f"{item['name']} ({item['udid']}), PID {item['pid']}"
     lines = [f"on {where}, stopped {item_line(item)}: {item['reason']} ({offload_host.REAP_LOG}; "
@@ -2276,10 +2278,12 @@ def reap_lines(where, report, listing=True):
     if listing:
         lines += [f"on {where}, would stop {item_line(item)}: {item['reason']}" for item in report.get("eligible", [])]
         lines += [f"on {where}, keeps {item_line(item)}: {item['hold']}" for item in report.get("kept", [])]
+    lines += [f"on {where}, {offload_host.released_line(item)}" for item in report.get("released", [])]
     # Before a dispatch, only an entry whose simulator this reap stopped; a listing names every one.
     stopped = {item["udid"] for item in report.get("stopped", [])}
-    lines += [f"on {where}, {offload_host.recoverable_line(item)}" for item in report.get("recoverable", [])
-              if listing or str(item.get("device") or "").upper() in stopped]
+    lines += [f"on {where}, {offload_host.recoverable_line(item, None if where == HERE else where)}"
+              for item in report.get("recoverable", [])
+              if listing or held or str(item.get("device") or "").upper() in stopped]
     return lines
 
 

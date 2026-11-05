@@ -138,7 +138,10 @@ def fix_hosts(root, hosts):
         hosts.pop("runtimesDiffer", None)
     # The second Mac only when it answered the comparison: one away is no error, and is not waited for.
     reaped = simulator_pool.reap_reports(None, root, dry_run=False, here="remote" not in hosts)
-    hosts["reaped"] = [line for where, report in reaped for line in remote.reap_lines(where, report, listing=False)]
+    # With each held entry whose process is gone that reap could not release, and why, so that no leftover
+    # waits unseen behind an empty leftovers (vocaro-engineering#156).
+    hosts["reaped"] = [line for where, report in reaped
+                       for line in remote.reap_lines(where, report, listing=False, held=True)]
     hosts["deletedDefaults"] = delete_defaults()
     return hosts
 
