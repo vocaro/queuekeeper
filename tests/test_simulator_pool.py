@@ -1012,6 +1012,13 @@ class PoolTests(unittest.TestCase):
         self.assertRegex(devices.Record(self.path).entry("Project Duo 1")["erasedBecause"],
                          rf"^{re.escape(template)} \(\S+\) was not warmed: the boot did not finish within 300 s$")
         self.assertTrue(pool.release(lease, outcome="done"))
+        # No readable runtime catalog: erased, saying so in the reset's words.
+        self.simctl.runtimes, kept = {}, self.simctl.runtimes
+        lease = pool.take(DUO, RUNTIME, purpose="Tests")
+        self.assertEqual(devices.Record(self.path).entry("Project Duo 1")["erasedBecause"],
+                         f"no installed build of {RUNTIME} could be read, so no template is warmed or copied")
+        self.assertTrue(pool.release(lease, outcome="done"))
+        self.simctl.runtimes = kept
         # Templates off, as for a pool that keeps none: erased, with nothing to say.
         lease = self.make("me").take(DUO, RUNTIME, purpose="Tests")
         self.assertIn(f"TOOK Project Duo 1 ({free}), erased", self.log)

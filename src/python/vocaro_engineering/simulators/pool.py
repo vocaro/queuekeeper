@@ -456,14 +456,15 @@ class Pool:
         current template whose VoiceOver stayed cold or whose voices did not settle. use, clone or copy,
         names what the caller does with the template, for the reasons."""
         if self.warm is None: return None, None
+        used = {"clone": "cloned", "copy": "copied"}[use]
         device_type, runtime = qualified(DEVICE_TYPE, device_type), qualified(RUNTIME, runtime)
         builds = self.installed_builds(runtime)
         if not builds:
-            return None, f"no installed build of {runtime} could be read, so no template is warmed or {use}d"
+            return None, f"no installed build of {runtime} could be read, so no template is warmed or {used}"
         key = template_name(self.name, label, runtime)
         found = [template for template in templates(self.name, self.listing()) if template.name == key]
         if len(found) > 1:
-            return None, f"{len(found)} simulators are named {key}; none is {use}d or replaced"
+            return None, f"{len(found)} simulators are named {key}; none is {used} or replaced"
         existing = found[0] if found else None
         current, waited = self.record.entry(key), 0
         while current is not None and device_record.condition(current) != "released" and waited < wait:
@@ -546,7 +547,7 @@ class Pool:
             if not clonable:
                 # Never cloned: the next creation replaces it.
                 self.release(lease, outcome=f"Warmed, not cloned: {reason}", shutdown=False)
-                return None, f"{key} ({udid}) is not {use}d: {reason}"
+                return None, f"{key} ({udid}) is not {used}: {reason}"
             voices = warmth.get("voices") or {}
             self.log(f"WARMED the template {key} ({udid}) on runtime build {warmth['runtimeBuild']}: "
                      f"{warmth.get('voiceOver')}; voices: {voices.get('outcome')}")
