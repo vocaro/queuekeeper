@@ -411,24 +411,27 @@ def placement(reason):
     return {"ranOn": "this Mac", "mac": offload_host.mac_name(), "hereBecause": reason}
 
 
-def admitted_here(stack, name, label, timeout, offered=None, once=False, exclusive=False, model=False):
+def admitted_here(stack, name, label, timeout, offered=None, once=False, exclusive=False, model=False, whole_host=False):
     """This Mac's heavy-work admission of the work label names, entered in stack, or the work's status
     instead: its status on the second Mac when the second Mac took it after all, MISCONFIGURED, or
-    BUSY when no admission came, after saying so. Work the second Mac declined as busy (offered)
-    goes to whichever Mac admits it first, the second Mac preferred (remote.overflow). Other work
-    waits in this Mac's queue for timeout seconds, or with once FREE_WAIT, and only once declines."""
+    BUSY when no admission came, after saying so. Work the second Mac did not take (offered), declined
+    as busy or not offered while it had no spare capacity and this Mac had, goes to whichever Mac admits
+    it first, this Mac asked first (remote.overflow). Other work waits in this Mac's queue for timeout
+    seconds, or with once FREE_WAIT, and only once declines. A whole-host lane takes every guaranteed slot."""
     refused = []
 
     def admit(seconds):
         try:
-            return stack.enter_context(resources.Admission(label, exclusive=exclusive, timeout=seconds, model=model))
+            return stack.enter_context(resources.Admission(label, exclusive=exclusive, timeout=seconds, model=model,
+                                                           whole_host=whole_host))
         except TimeoutError as error:
             # Admission published nothing, so declining leaves nothing to release.
             refused.append(error)
             return None
     if offered is not None and offered.busy is not None:
         return remote.overflow(offered, admit, timeout, once)
-    if not once: return stack.enter_context(resources.Admission(label, exclusive=exclusive, timeout=timeout, model=model))
+    if not once: return stack.enter_context(resources.Admission(label, exclusive=exclusive, timeout=timeout, model=model,
+                                                                whole_host=whole_host))
     admission = admit(FREE_WAIT)
     if admission is None:
         print(f"eng: {name} not run: {refused[-1]}", file=sys.stderr)
@@ -487,7 +490,7 @@ def admit(root, args, config=None):
         "nested in the admission it inherits" if os.environ.get(resources.TOKEN) else None
     offered = None
     if reason is None:
-        # The second Mac first, this Mac while the second Mac is busy (admitted_here).
+        # Whichever Mac has spare capacity for it, the second Mac first (remote.first_command, admitted_here).
         offered = remote.first_command(root, config, command, kind)
         if not isinstance(offered.status, str): return offered.status
         reason = offered.status
@@ -544,9 +547,10 @@ def main(argv=None):
     policy = commands.add_parser("policy")
     policy.add_argument("operation", choices=["refresh"])
     run = commands.add_parser("run", usage="%(prog)s [-h] [--expect N] lane [-- ARGUMENTS ...]",
-        help="run a configured lane, admitting a heavy or exclusive one, on the second Mac first and on this Mac "
-        "while the second Mac is at capacity or cannot be reached, unless the lane says why it stays on this Mac: "
-        "eng run LANE [-- ARGUMENTS], which appends the arguments, such as a test filter, to the lane's command")
+        help="run a configured lane, admitting a heavy or exclusive one, on whichever Mac has spare capacity for "
+        "it now, the second Mac first, and on this Mac while the second Mac has none or cannot be reached, unless "
+        "the lane says why it stays on this Mac: eng run LANE [-- ARGUMENTS], which appends the arguments, such as "
+        "a test filter, to the lane's command")
     run.add_argument("--expect", type=int, metavar="N", help="require exactly N executed tests; without it, a "
         "run with arguments needs at least one in place of the lane's minimumTests")
     where = run.add_mutually_exclusive_group()
@@ -868,8 +872,8 @@ def main(argv=None):
                                 else "nested in the admission it inherits" if os.environ.get(resources.TOKEN) else None)
             offered = None
             if reason is None:
-                # The second Mac first, this Mac while the second Mac is busy, and while both are, whichever
-                # admits the lane first (admitted_here).
+                # Whichever Mac has spare capacity for the lane, the second Mac first, and while neither has,
+                # whichever admits the lane first (remote.first, admitted_here).
                 offered = remote.first(root, config, args.lane, extra, args.expect)
                 if not isinstance(offered.status, str): return offered.status
                 reason = offered.status
@@ -915,7 +919,8 @@ def main(argv=None):
                                     timeout=remote.OVERFLOW_TIMEOUT, expected=lane.get("timeout", foreground.EXPECTED)))
                             admission = admitted_here(stack, args.lane, lane_label(root, config, args.lane),
                                                       remote.OVERFLOW_TIMEOUT, offered, args.if_free,
-                                                      resource == "exclusive", lane.get("model", False))
+                                                      resource == "exclusive", lane.get("model", False),
+                                                      lane.get("wholeHost", False))
                             if isinstance(admission, int): return admission
                             stopped = admitted_tree(root, args.lane, offered, receipt)
                             if stopped is not None: return stopped

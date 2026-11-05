@@ -93,7 +93,14 @@ average is below HEAVY_LOAD_LIMIT (75% of the CPU count), macOS reports normal m
 (`kern.memorystatus_vm_pressure_level` is 1), and no slot was taken in the last
 HEAVY_SETTLE_SECONDS (30) for the load average to show. Setting HEAVY_SLOTS_MAX to HEAVY_SLOTS
 restores a fixed limit. Admission cannot preempt: a job admitted while the host was quiet may
-become heavy later. Exclusive work holds every slot up to the maximum.
+become heavy later. Exclusive work holds every slot up to the maximum. A whole-host lane, a gate
+that runs the project's suites side by side (`"wholeHost": true` on the lane or its group), takes
+every guaranteed slot instead of one, and waits while any of them is busy (`a whole-host lane needs
+every guaranteed slot (HEAVY_SLOTS=3) free, and 1 is busy`), so that two such lanes never run on
+one Mac at once; a lighter heavy lane still shares the Mac, in a slot beyond the guaranteed ones
+while the host shows spare capacity, and eng sends each lane to the Mac that has the slots it needs
+([which Mac runs a lane](#which-mac-runs-a-lane)). Nested work reuses its inherited admission,
+whole-host or not.
 
 A host's own limits go in its limits file, `admission-limits.json` beside the admission log
 (`~/Library/Application Support/vocaro-engineering/`; an isolated HEAVY_SLOT_DIR namespace keeps
@@ -156,7 +163,7 @@ value, beside what the attempt read, so that a wait says which limit to look at:
 
 | Kind | Reason, as printed |
 | --- | --- |
-| `slots` | `all 3 guaranteed slots are busy and so is every slot up to HEAVY_SLOTS_MAX=9`, or `… and HEAVY_SLOTS_MAX=3 allows none beyond them`; for exclusive work, `exclusive work needs every slot up to HEAVY_SLOTS_MAX=9 free, and 2 are busy` |
+| `slots` | `all 3 guaranteed slots are busy and so is every slot up to HEAVY_SLOTS_MAX=9`, or `… and HEAVY_SLOTS_MAX=3 allows none beyond them`; for a whole-host lane, `a whole-host lane needs every guaranteed slot (HEAVY_SLOTS=3) free, and 1 is busy`; for exclusive work, `exclusive work needs every slot up to HEAVY_SLOTS_MAX=9 free, and 2 are busy` |
 | `settle` | `all 3 guaranteed slots are busy and the load does not yet show the job admitted 12s ago, within HEAVY_SETTLE_SECONDS=30` |
 | `load` | `all 3 guaranteed slots are busy and load 412.3 is at or above HEAVY_LOAD_LIMIT=13.5`, or `… the load average, which HEAVY_LOAD_LIMIT=13.5 bounds, is unavailable` |
 | `memory` | `all 3 guaranteed slots are busy and memory pressure is level 2 (warning), not 1 (normal)`, or `… memory pressure, which must be level 1 (normal), cannot be read` |
@@ -374,11 +381,16 @@ Admission reads the load before it admits and cannot account for work that never
 
 ## Second Mac
 
-The owner's second Mac takes heavy work first. This Mac takes what has to run here, what the
-second Mac cannot run, and heavy work while the second Mac is at capacity, until this Mac is too.
-This Mac is the owner's workstation, busy with work the queue never sees, while the second Mac is
-otherwise idle and has more memory and disk. eng, not the session, chooses the Mac; configuration
-calls sending work there offloading it. The second Mac runs work under its own heavy-work
+Both Macs are for work. Heavy work goes to whichever Mac has spare capacity for it now, the
+second Mac first: this Mac takes what has to run here, what the second Mac cannot run, and heavy
+work while the second Mac has no spare capacity and this Mac has, and while neither has, the work
+goes to whichever admits it first. When one Mac is busy and the other idle, work starts on the idle
+one, and a session never asks the owner which Mac to use (the owner's decision, 2026-11-04,
+[vocaro-engineering#168](https://github.com/vocaro/vocaro-engineering/issues/168)). This Mac is the
+owner's workstation, busy with work the queue never sees, while the second Mac is otherwise idle
+and has more memory and disk; its screen stays the owner's, which is a separate rule
+([attended Mac sessions](#attended-mac-sessions)). eng, not the session, chooses the Mac;
+configuration calls sending work there offloading it. The second Mac runs work under its own heavy-work
 admission: each host's queue sees that host's load, so the second Mac is no private slot pool.
 `eng remote` reaches it by the SSH alias `build-host`, or `second-mac`; `--host` or
 `VOCARO_OFFLOAD_HOST` names another destination. Until 2026-10-28 the second Mac was the build
@@ -386,7 +398,7 @@ host. Records made until then, measurements among them, keep that name, and eng 
 configuration's earlier names ([earlier names](#earlier-names)).
 
 ```sh
-python3 scripts/eng run LANE [-- ARGUMENTS]            # a heavy lane: the second Mac first, then this Mac
+python3 scripts/eng run LANE [-- ARGUMENTS]            # a heavy lane: whichever Mac has spare capacity, the second Mac first
 python3 scripts/eng run --here LANE                    # this Mac
 python3 scripts/eng run --offload-only LANE            # the second Mac if it can start it now, never here
 python3 scripts/eng admit --verify -- COMMAND          # a test or build: the second Mac, as a lane goes
@@ -432,30 +444,61 @@ the second Mac: `here` would not help them, since this Mac locks too, and their 
 in-process NSAccessibility methods instead
 ([Pagepour#123](https://github.com/vocaro/Pagepour/issues/123)).
 
-`eng run` sends the lane to the second Mac, whole or filtered (`eng run LANE -- FILTER`), over
-the working tree as it is: a tree with uncommitted changes or new files goes as a snapshot commit
-([how a run reaches the second Mac](#how-a-run-reaches-the-second-mac)), so a session's iteration
-over its edits runs there too. The second Mac comes first, and this Mac takes heavy work while
-the second Mac is at capacity, until it is too (the owner's decision, 2026-10-28):
+`eng run` sends the lane to the Mac that has spare capacity for it, whole or filtered
+(`eng run LANE -- FILTER`), over the working tree as it is: a tree with uncommitted changes or new
+files goes as a snapshot commit ([how a run reaches the second Mac](#how-a-run-reaches-the-second-mac)),
+so a session's iteration over its edits runs there too. Both Macs are for work, the second Mac
+first, and the choice is eng's, by what each Mac's admission would admit, never the session's or
+the owner's (the owner's decisions, 2026-10-28 and 2026-11-04,
+[vocaro-engineering#168](https://github.com/vocaro/vocaro-engineering/issues/168)). Before it
+offers the lane, `eng run` reads both Macs' capacity for it: a Mac has spare capacity while a
+guaranteed slot is free there, every guaranteed slot for a whole-host lane and every slot up to
+HEAVY_SLOTS_MAX for an exclusive one, its one-minute load is under its own HEAVY_LOAD_LIMIT, and
+no whole-host lane or exclusive work runs there. On 2026-11-04 the second Mac, 10 cores, ran two
+EPUBLib gates side by side at a load of 719 while this Mac, 18 cores, idled at 3, since its three
+guaranteed slots admitted the second gate whatever the load, and 8 of 12 gates there that day
+ended with no verdict; the rule above is what that cost.
 
-1. The second Mac runs the lane if it can start it now: its queue admits the lane within five
-   seconds (`eng run --if-free` there, which exits 75 without running otherwise) and one of the
-   project's four checkouts there is free.
-2. When the second Mac declines it as busy, this Mac's own admission gets the same five seconds,
-   and the lane runs here if it admits it. `eng: trying LANE on this Mac:` says why, and the
-   receipt's `hereBecause` records that the second Mac was busy. Busy is no configuration problem.
-3. While both are busy, the lane waits for whichever admits it first, the second Mac preferred.
-   It waits in this Mac's queue, 15 s at first, doubling to 120 s, and between those waits it is
-   offered to the second Mac again, so the second Mac is asked at least every two minutes; each
-   offer costs the second Mac a checkout's claim, the project's `provision` lane and a policy
-   refresh. An offer made again sends nothing a second time: the second Mac holds the commits
-   after the first. `eng: LANE waits for whichever Mac admits it first:` says so, with what the
-   second Mac declined it for, and this Mac's admission prints what it waits behind
+1. The second Mac runs the lane when its reading shows spare capacity and it can start the lane
+   now: its queue admits the lane within five seconds (`eng run --if-free` there, which exits 75
+   without running otherwise) and one of the project's four checkouts there is free.
+2. When the second Mac's reading shows no spare capacity and this Mac's shows some, the lane goes
+   to this Mac's queue at once, and nothing is offered: `eng: trying LANE on this Mac:` says why,
+   and the receipt's `hereBecause` records it, naming the second Mac's load when that is it, as
+   `the second Mac is loaded (load 719.0, at or above its HEAVY_LOAD_LIMIT=7.5)`, else the
+   whole-host lane or exclusive work running there, or its guaranteed slots all busy. A second
+   Mac whose reading shows capacity may still decline the lane as busy once it is offered, as
+   when every checkout of the project there is in use or the model is held: this Mac's own
+   admission then gets the same five seconds, and the lane runs here if it admits it, the receipt
+   recording that the second Mac was busy. Busy is no configuration problem.
+3. While neither Mac's reading shows spare capacity, `eng: neither Mac has spare capacity for
+   LANE now (…), so it goes to whichever admits it first, the second Mac asked first` says so, and
+   the lane is offered to the second Mac, whose guaranteed slots admit it whatever its load. While
+   both decline it, the lane waits for whichever admits it first. It waits in this Mac's queue,
+   15 s at first, doubling to 120 s, and between those waits both Macs are read again and the lane
+   is offered to the second Mac again when the reading allows, so the second Mac is asked at least
+   every two minutes; each offer costs the second Mac a checkout's claim, the project's `provision`
+   lane and a policy refresh. An offer made again sends nothing a second time: the second Mac holds
+   the commits after the first. `eng: LANE waits for whichever Mac admits it first:` says so, with
+   why the second Mac has not taken it, and this Mac's admission prints what it waits behind
    ([heavy-work admission](#heavy-work-admission)). A second Mac that cannot be reached at one of
    these offers is asked again at the next, since one that went offline during the wait may come
    back before it ends: `eng: LANE waits for this Mac, and asks the second Mac again at the next
    offer:` says why, once for each reason. A lane that neither admits within 5,400 s ends with
    exit 75 (`BUSY`) and runs nowhere.
+
+A gate that runs the project's suites side by side is a whole Mac's work: it says
+`"wholeHost": true`, on the lane or on the group, and takes every guaranteed slot of the Mac it
+runs on, so that two such lanes never run on one Mac at once, while a lighter heavy lane still
+shares the Mac ([heavy-work admission](#heavy-work-admission)). A lane group that runs a
+whole-host lane says `wholeHost` too, or is exclusive, as configuration validation requires; a
+light lane cannot be whole-host, since it is not admitted, and an exclusive lane holds the host
+already. Exclusive admission is unchanged. Each Mac's reading is `offload_host.py`'s `capacity`
+answer, read in the second Mac's login shell as a run there reads it: its guaranteed slots and
+their maximum, the slots busy among them, its load and limit, and the whole-host lanes and
+exclusive work its admission guard records as running. A second Mac that cannot answer with a
+reading runs the lane here, saying so; one whose admission limits cannot be read is misconfigured,
+as every request there is refused ([heavy-work admission](#heavy-work-admission)).
 
 A lane this Mac takes runs in this checkout, over its working tree as it is once admitted, not over
 the commit sent to the second Mac. So when a commit was sent, this Mac runs the lane only while the
@@ -500,7 +543,12 @@ lost once the work was sent leaves the run unmeasured rather than running the la
 here, since it may still run there.
 
 `eng run --here` keeps a lane on this Mac, for instance a build whose products the session uses
-here, or, once the owner has decided so, any lane while the second Mac is misconfigured.
+here, or, once the owner has decided so, any lane while the second Mac is misconfigured. It is not
+for a second Mac that is busy or loaded: eng reads that itself and runs the lane here when this Mac
+has the capacity, so a session that sees the second Mac loaded and this Mac idle runs
+`eng run LANE` and asks nobody (the owner's decision, 2026-11-04,
+[vocaro-engineering#168](https://github.com/vocaro/vocaro-engineering/issues/168)).
+`eng run --offload-only` remains for work that must not run here, below.
 `eng run --serial GROUP`, a group's serial reference, runs here too, and nested work runs inside
 the admission it inherits, here. `eng run` looks for the second Mac only when
 `VOCARO_OFFLOAD_HOST` names one or `~/.ssh/config` defines the alias `build-host` or
@@ -518,8 +566,9 @@ stay in the second Mac's checkout until a later run there replaces them.
 Every run's receipt says where it ran. `ranOn` is `this Mac` or `second Mac`, which a receipt
 written before 2026-10-28 gives as `build host`, and `mac` names the Mac. On this Mac,
 `hereBecause` says why the run ran here: the lane's own reason, `--here`, `--serial`, nested
-work, no second Mac configured, the second Mac being busy, or why it could not be reached or
-could not run the work. The second Mac's own receipt, kept within the receipt that comes back,
+work, no second Mac configured, the second Mac having no spare capacity (its load, a whole-host
+lane or exclusive work running there, or its guaranteed slots all busy), the second Mac being busy
+once offered, or why it could not be reached or could not run the work. The second Mac's own receipt, kept within the receipt that comes back,
 names the Mac that sent the run in `dispatchedFrom`. A receipt holds its lane's last run only.
 The share of heavy work each Mac runs over a period is in their admission logs, one line for
 each admission: `eng admissions` here and on a copy of the second Mac's log counts each Mac's
@@ -539,9 +588,10 @@ what the session uses next, here, and nothing about a command tells a test from 
 on the second Mac, in another checkout at another path, it would read and write the wrong places.
 So the session says which it is: `eng admit --verify -- COMMAND` marks the command as
 verification, a test or build whose result is its log and exit status and whose products this
-Mac does not use. Such a command goes as a lane does, at HEAD or a snapshot commit: to the second
-Mac first, to this Mac while the second Mac is busy or cannot be reached, and while both are busy
-to whichever admits it first, within its `--timeout`; `--if-free` asks each once. It runs
+Mac does not use. Such a command goes as a lane does, at HEAD or a snapshot commit: to whichever Mac has
+spare capacity for it, the second Mac first, to this Mac while the second Mac has none or cannot
+be reached, and while neither has to whichever admits it first, within its `--timeout`;
+`--if-free` asks each once. It runs
 in the directory of the second Mac's checkout that matches the current one, and its output and
 receipt come back to `.build/engineering/remote/admit/`. eng keeps it here, saying why, when the
 second Mac could not run it as it runs here: its directory is outside the checkout or one Git

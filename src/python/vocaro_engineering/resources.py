@@ -11,7 +11,10 @@ HEAVY_SLOTS jobs are always admitted while no exclusive request waits. More, up 
 HEAVY_SLOTS_MAX, are admitted one at a time while the load average and memory pressure show
 spare capacity: a fixed count left the host idle behind jobs waiting on simulators, while ten
 unqueued builds starved watchdogd until the kernel panicked (2026-10-14). Admission cannot
-preempt a job that becomes heavy later. Each limit can be set for a host in its limits file,
+preempt a job that becomes heavy later. A whole-host lane, a gate that runs a project's suites
+side by side, takes every guaranteed slot, so that two such lanes never run on one Mac at once
+(two EPUBLib gates at once put a 10-core Mac at a load of 719 on 2026-11-04, #168); a lighter
+heavy lane still shares, beyond them, while the host shows spare capacity. Each limit can be set for a host in its limits file,
 admission-limits.json beside the admission log, which every process there reads, as a number or
 as a share of the cores; a limit's environment variable overrides it for one process. Without
 the file the defaults stand (#49).
@@ -134,7 +137,8 @@ def guard_path(environment):
 # The fields of a guard entry as admission writes it, each with its type. Every toolkit has written the first
 # four; an entry may lack the others, which later toolkits added or which mark it. A field named in neither,
 # such as a newer toolkit may add, is read past.
-FIELDS, LATER = {"pid": int, "start": str, "label": str, "exclusive": bool}, {"model": bool, "admitted": str, "uncertain": bool}
+FIELDS, LATER = {"pid": int, "start": str, "label": str, "exclusive": bool}, {"model": bool, "admitted": str, "uncertain": bool,
+                                                                                "wholeHost": bool}
 
 
 def entries(state):
@@ -489,10 +493,14 @@ def publish_guard(path, state):
 
 
 class Admission:
-    def __init__(self, label, exclusive=False, timeout=5400, model=False):
+    def __init__(self, label, exclusive=False, timeout=5400, model=False, whole_host=False):
         self.label, self.exclusive, self.timeout = label, exclusive, timeout
         # Exclusive work holds the host, the model with it.
         self.model = model or exclusive
+        # A whole-host lane, a gate that runs a project's suites side by side, takes every guaranteed slot, so
+        # that a second such lane never runs beside it on this Mac; a lighter heavy lane still shares, beyond
+        # them. Exclusive work holds every slot already (vocaro-engineering#168).
+        self.whole_host = bool(whole_host) and not exclusive
         self.kind = "exclusive" if exclusive else "model" if model else "heavy"
         # When the request began to wait, and when it was admitted, by the monotonic clock.
         self.started, self.admitted = time.monotonic(), None
@@ -792,15 +800,20 @@ class Admission:
                 self.held_model = self._take_model()
                 if self.held_model is None:
                     return self._held_back(state)
-            for _ in range(self.maximum if self.exclusive else 1):
+            wanted = self.maximum if self.exclusive else self.slots if self.whole_host else 1
+            for _ in range(wanted):
                 taken = take_slot(self.directory, self.maximum if self.exclusive else self.slots, skip=reserved)
-                if taken is None and not self.exclusive:
+                if taken is None and not self.exclusive and not self.whole_host:
                     taken = self._extra_slot(reserved)
                 if taken is None:
+                    busy = wanted - len(self.descriptors)
                     if self.exclusive:
-                        busy = self.maximum - len(self.descriptors)
                         self.refusal, self.waiting = "slots", (f"exclusive work needs every slot up to HEAVY_SLOTS_MAX="
                                                                f"{self.maximum} free, and {busy} {'is' if busy == 1 else 'are'} busy")
+                    elif self.whole_host:
+                        self.refusal, self.waiting = "slots", (f"a whole-host lane needs every guaranteed slot "
+                                                               f"(HEAVY_SLOTS={self.slots}) free, and {busy} "
+                                                               f"{'is' if busy == 1 else 'are'} busy")
                     self._release()
                     return self._held_back(state)
                 self.descriptors.append(taken)
@@ -810,7 +823,8 @@ class Admission:
                 raise RuntimeError("Cannot establish the admission owner's process identity")
             state["owners"][self.identity] = {"pid": os.getpid(), "start": born, "label": self.label,
                                                 "exclusive": self.exclusive, "model": self.model,
-                                                "admitted": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+                                                "admitted": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                                                **({"wholeHost": True} if self.whole_host else {})}
             publish_guard(self.guard, state)
             if self.exclusive:
                 # The next exclusive request waits for these slots, and every other behind it.
@@ -827,10 +841,11 @@ class Admission:
                 locks.append({"fd": fd, "path": str(self.directory / name), "nonce": self.identity})
             self.previous = os.environ.get(TOKEN)
             os.environ[TOKEN] = json.dumps({"schemaVersion": 1, "exclusive": self.exclusive, "model": self.model,
-                                            "guard": str(self.guard), "locks": locks})
+                                            "wholeHost": self.whole_host, "guard": str(self.guard), "locks": locks})
             self.admitted = time.monotonic()
             self._log("admitted", slots=[slot for slot, _fd in self.descriptors],
-                      waited=round(self.admitted - self.started, 3), **self._seen())
+                      waited=round(self.admitted - self.started, 3), **({"wholeHost": True} if self.whole_host else {}),
+                      **self._seen())
             return True
 
     def __enter__(self):
@@ -945,8 +960,8 @@ class Admission:
 
 
 @contextlib.contextmanager
-def heavy_slot(label, *, exclusive=False, timeout=5400, model=False):
-    with Admission(label, exclusive, timeout, model):
+def heavy_slot(label, *, exclusive=False, timeout=5400, model=False, whole_host=False):
+    with Admission(label, exclusive, timeout, model, whole_host):
         yield
 
 
@@ -1318,13 +1333,16 @@ def main(argv=None):
     kind = parser.add_mutually_exclusive_group()
     kind.add_argument("--exclusive", action="store_true")
     kind.add_argument("--model", action="store_true")
+    parser.add_argument("--whole-host", action="store_true", help="take every guaranteed slot, as a whole-host lane "
+                        "does, so that no other such lane runs beside the command on this host")
     parser.add_argument("--timeout", type=float, default=5400)
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
     if not command: parser.error("a command is required")
     from vocaro_engineering.processes import forwarding_signals, supervise
-    with forwarding_signals(), Admission(" ".join(command), args.exclusive, args.timeout, args.model) as admission:
+    with forwarding_signals(), Admission(" ".join(command), args.exclusive, args.timeout, args.model,
+                                         args.whole_host) as admission:
         environment = dict(os.environ)
         return supervise(command, cwd=Path.cwd(), env=environment, on_stop=admission.interrupted)
 

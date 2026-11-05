@@ -24,7 +24,9 @@ there, for `eng keychain recover`; given `{"keepUnlocked": ...}`, at the owner's
 the login keychain's password and keeps it for runs to unlock that keychain with, for `eng keychain
 keep-unlocked`; given `{"foreground": true}`, what the Mac lacks for foreground work started over
 SSH and who holds its mac-foreground, for `eng remote foreground`; given `{"pressure": true}`, its
-load, the limit admission sets on it and its memory pressure, for the merge queue's settle wait.
+load, the limit admission sets on it and its memory pressure, for the merge queue's settle wait;
+given `{"capacity": true}`, its spare capacity for heavy work, which `eng run` reads on both Macs
+before it chooses one (remote.spare).
 """
 import base64
 import contextlib
@@ -63,6 +65,18 @@ PLATFORMS = {"com.apple.platform.iphonesimulator": "iOS", "com.apple.platform.ap
 GATE_LOCK = "/tmp/studywright-gate-suite.lock"
 ADMISSION_STATE = "Library/Application Support/vocaro-engineering"
 ADMISSION_LOGS = ("admissions.1.jsonl", "admissions.jsonl")
+# The host's admission limits file, beside its log, and its slot files' directory: the legacy user-temp
+# namespace unless HEAVY_SLOT_DIR names one, as resources.py names them (#49).
+ADMISSION_LIMITS = "admission-limits.json"
+SLOTS = "pdfreflow-heavy-slots"
+# Each admission limit the capacity reading needs, by its key in the limits file: its environment variable,
+# whether it counts slots, and its default given the cores and the guaranteed slots, as resources.LIMIT_KEYS
+# has them. The two must agree: eng chooses a Mac by what each Mac's admission would admit.
+LIMIT_KEYS = {
+    "slots": ("HEAVY_SLOTS", True, lambda cores, slots: 3),
+    "slotsMax": ("HEAVY_SLOTS_MAX", True, lambda cores, slots: max(slots, cores // 2)),
+    "loadLimit": ("HEAVY_LOAD_LIMIT", False, lambda cores, slots: 0.75 * cores),
+}
 # The simulators' devices, relative to the home: a booted device's processes name its directory.
 DEVICES = "Library/Developer/CoreSimulator/Devices"
 DEVICE = re.compile(r"[0-9A-F]{8}-(?:[0-9A-F]{4}-){3}[0-9A-F]{12}", re.IGNORECASE)
@@ -762,6 +776,116 @@ def admission_directory():
         Path(pwd.getpwuid(os.getuid()).pw_dir) / ADMISSION_STATE
 
 
+def slot_directory():
+    """Where admission's slot files are, as resources.slot_directory finds them: a HEAVY_SLOT_DIR namespace,
+    else the legacy namespace in the user's temporary directory, whatever TMPDIR a command sets."""
+    if os.environ.get("HEAVY_SLOT_DIR"): return Path(os.environ["HEAVY_SLOT_DIR"])
+    if sys.platform != "darwin": return Path("/tmp") / SLOTS
+    base = output(["/usr/bin/getconf", "DARWIN_USER_TEMP_DIR"])
+    if not base: raise RuntimeError("Cannot establish the host resource directory")
+    return Path(base) / SLOTS
+
+
+def limits():
+    """The admission limits the capacity reading needs, by key: HEAVY_SLOTS, HEAVY_SLOTS_MAX and HEAVY_LOAD_LIMIT,
+    each from its environment variable, else the host's limits file, admission-limits.json beside the admission
+    log, as a number or {"perCore": F}, else its default, as resources.limits reads them, which this file cannot
+    import (#49). A file or variable admission could not read raises ValueError naming it, as admission does:
+    its owner fixes it rather than eng guessing."""
+    cores = os.cpu_count() or 1
+    path = admission_directory() / ADMISSION_LIMITS
+    try: text = path.read_text()
+    except FileNotFoundError: text = None
+    except OSError as error: raise ValueError(f"Invalid resource limits: {path} cannot be read: {error}")
+    configured = {}
+    if text is not None:
+        try: data = json.loads(text)
+        except ValueError as error: raise ValueError(f"Invalid resource limits: {path} is not JSON: {error}")
+        if not isinstance(data, dict): raise ValueError(f"Invalid resource limits: {path} holds no JSON object")
+        for key, value in data.items():
+            if key not in LIMIT_KEYS: continue  # settleSeconds and whatever a later toolkit adds
+            counts = LIMIT_KEYS[key][1]
+            number = lambda found: isinstance(found, (int, float)) and not isinstance(found, bool) and found >= 0
+            if isinstance(value, dict) and set(value) == {"perCore"} and number(value["perCore"]) and value["perCore"] > 0:
+                share = value["perCore"] * cores
+                configured[key] = max(1, int(share)) if counts else float(share)
+            elif number(value) and (not counts or float(value).is_integer()):
+                configured[key] = int(value) if counts else float(value)
+            else:
+                raise ValueError(f"Invalid resource limits: {path} sets {key} to {json.dumps(value)}, not a "
+                                 f"{'whole ' if counts else ''}number at or above 0 or {{\"perCore\": F}} with F above 0")
+    found, slots = {}, None
+    for key, (variable, counts, default) in LIMIT_KEYS.items():
+        if variable in os.environ:
+            try: found[key] = int(os.environ[variable]) if counts else float(os.environ[variable])
+            except ValueError:
+                raise ValueError(f"Invalid resource limits: {variable}={os.environ[variable]} is not a "
+                                 f"{'whole ' if counts else ''}number")
+        elif key in configured: found[key] = configured[key]
+        else: found[key] = default(cores, slots)
+        if key == "slots": slots = found[key]
+    if found["slots"] < 1 or found["slotsMax"] < found["slots"]:
+        raise ValueError(f"Invalid resource limits: HEAVY_SLOTS={found['slots']} must be at least 1, and "
+                         f"HEAVY_SLOTS_MAX={found['slotsMax']} at least HEAVY_SLOTS")
+    return found
+
+
+def busy_slots(directory, count):
+    """The slots among the first count whose lock a holder holds: each slot file in the directory is held with
+    flock by the admission that took it (resources.take_slot). A shared lock tried without waiting tells, and
+    is given up at once; a slot file that is missing was never taken, and one that cannot be opened counts as
+    busy, so that a Mac eng cannot read never reads as idle."""
+    found = []
+    for slot in range(count):
+        try: fd = os.open(directory / f"slot{slot}", os.O_RDONLY)
+        except FileNotFoundError: continue
+        except OSError:
+            found.append(slot)
+            continue
+        try: fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError: found.append(slot)
+        finally: os.close(fd)
+    return found
+
+
+def guard_entries():
+    """The owners heavy-work admission's guard records, as it writes them, each with its identity."""
+    try:
+        state = json.loads(Path(os.environ.get("SW_GATE_LOCK_FILE", GATE_LOCK) + ".warm-push-guard").read_text())
+    except (OSError, ValueError):
+        return []
+    owners = state.get("owners") if isinstance(state, dict) and state.get("vocaroEngineering") == 1 else None
+    if not isinstance(owners, dict): return []
+    return [{**owner, "identity": identity} for identity, owner in owners.items()
+            if isinstance(owner, dict) and isinstance(owner.get("pid"), int) and isinstance(owner.get("start"), str)]
+
+
+def alive(owner):
+    """Whether a guard owner's process still runs as itself: its PID has the start its entry records."""
+    found = output(["ps", "-p", str(owner["pid"]), "-o", "lstart="])
+    return bool(found) and " ".join(found.split()) == " ".join(owner["start"].split())
+
+
+def capacity():
+    """This Mac's spare capacity for heavy work, which `eng run` reads on both Macs before it chooses one
+    (remote.spare; vocaro-engineering#168): its guaranteed slots and their maximum; the slots busy among those
+    up to the maximum; its one-minute load, None when unavailable, and the limit at or above which its admission
+    finds no spare capacity; and the labels of the whole-host lanes and the exclusive work its guard records as
+    running. A reading it cannot take says why, as error, as pressure does."""
+    try: found = limits()
+    except ValueError as error: return {"error": str(error)}
+    try: directory = slot_directory()
+    except RuntimeError as error: return {"error": str(error)}
+    try: load = round(os.getloadavg()[0], 2)
+    except OSError: load = None
+    running = [owner for owner in guard_entries() if alive(owner)]
+    label = lambda owner: str(owner.get("label") or "an unnamed owner")
+    return {"slots": found["slots"], "slotsMax": found["slotsMax"], "busy": busy_slots(directory, found["slotsMax"]),
+            "load": load, "limit": found["loadLimit"],
+            "wholeHost": [label(owner) for owner in running if owner.get("wholeHost") and not owner.get("exclusive")],
+            "exclusive": [label(owner) for owner in running if owner.get("exclusive")]}
+
+
 def unended():
     """(PID, when it was admitted, in seconds since the epoch) of each admission the admission log
     records without an end: one still held, or one SIGKILL ended."""
@@ -1344,14 +1468,13 @@ def advertise(repository):
 
 def pressure():
     """This Mac's one-minute load, None when unavailable; the limit at or above which its heavy-work
-    admission finds no spare capacity, HEAVY_LOAD_LIMIT or three quarters of the cores, as
-    resources.load_limit sets it, which this file cannot import; and its memory pressure level, None when
-    unread. The merge queue judges them as admission does (resources.judged) before it runs again a lane
+    admission finds no spare capacity, HEAVY_LOAD_LIMIT, the host's limits file or three quarters of the
+    cores, as resources.load_limit sets it (limits); and its memory pressure level, None when unread. The merge queue judges them as admission does (resources.judged) before it runs again a lane
     that ran here and gave no verdict (guides/maintenance.md, The merge queue)."""
     try: load = round(os.getloadavg()[0], 2)
     except OSError: load = None
-    try: limit = float(os.environ.get("HEAVY_LOAD_LIMIT", 0.75 * (os.cpu_count() or 1)))
-    except ValueError as error: return {"error": f"HEAVY_LOAD_LIMIT is no number: {error}"}
+    try: limit = limits()["loadLimit"]
+    except ValueError as error: return {"error": str(error)}
     level = output(["/usr/sbin/sysctl", "-n", "kern.memorystatus_vm_pressure_level"]) if sys.platform == "darwin" else None
     return {"load": load, "limit": limit, "memory": int(level) if level and level.isdigit() else None}
 
@@ -1364,6 +1487,7 @@ def answer(request):
     if "keychain" in request: return keychain(request["keychain"])
     if "foreground" in request: return foreground()
     if "pressure" in request: return pressure()
+    if "capacity" in request: return capacity()
     if "leftovers" in request or "device" in request:
         reaped = reap(request["leftovers"], **request["reap"]) if "reap" in request else None
         # A census that fails says why: it must never stop the work it is printed before.
@@ -1692,6 +1816,6 @@ if __name__ == "__main__":
     request = json.loads(sys.argv[1])
     if "keepUnlocked" in request: sys.exit(keep_unlocked(request["keepUnlocked"]))
     if {"toolchain", "images", "deleteRuntime", "receive", "leftovers", "device", "keychain", "foreground",
-            "pressure"} & request.keys():
+            "pressure", "capacity"} & request.keys():
         print(json.dumps(answer(request)))
     else: main(request)

@@ -70,9 +70,9 @@ def parse(source):
             group(name, lane, lanes)
             continue
         if not isinstance(lane, dict) or set(lane) - {"command", "resource", "minimumTests", "timeout", "foreground",
-                                                       "here", "model", "display", "budgetMinutes"}:
+                                                       "here", "model", "display", "budgetMinutes", "wholeHost"}:
             raise ValueError(f"Invalid lane {name}")
-        for key in ["foreground", "model", "display"]:
+        for key in ["foreground", "model", "display", "wholeHost"]:
             if key in lane and type(lane[key]) is not bool:
                 raise ValueError(f"{name}.{key} must be true or false")
         if lane.get("foreground") and lane.get("resource", "light") == "light":
@@ -80,6 +80,7 @@ def parse(source):
                              "inside the run's admission, and a light lane is not admitted")
         place(name, lane)
         model(name, lane)
+        whole_host(name, lane)
         if lane.get("display") and lane.get("resource", "light") == "light":
             raise ValueError(f"{name}.display needs a heavy or exclusive lane: only an admitted test run holds the "
                              "display's assertions, and a light lane is not admitted")
@@ -246,6 +247,12 @@ def place(name, lane):
         raise ValueError(f"{name}.here keeps a heavy or exclusive lane on this Mac, and a light lane runs here already")
 
 
+def whole_host_lane(lanes, name):
+    """Whether the lane name takes every guaranteed slot of the Mac it runs on: a lane, or a group, that says
+    "wholeHost": true. A group that runs such a lane says so itself, as validation requires."""
+    return bool(lanes[name].get("wholeHost"))
+
+
 def stays(lanes, name):
     """Why the lane name runs only on this Mac, as its configuration says, or None for a lane that goes to the
     second Mac: a light lane runs where it starts, and a lane, or a lane of a group, says why with "here". A
@@ -267,12 +274,24 @@ def model(name, lane):
                          "admission holds the model already")
 
 
+def whole_host(name, lane):
+    """A whole-host lane, "wholeHost": true, is a Mac's work: a gate that runs the project's suites side by
+    side. It takes every guaranteed slot of the Mac it runs on, so that a second such lane never runs
+    beside it there, and eng sends it to the Mac that has them all free, while a lighter heavy lane still
+    shares (vocaro-engineering#168; guides/shared-host.md, Which Mac runs a lane). A light lane is not
+    admitted, and exclusive admission holds the host already."""
+    if lane.get("wholeHost") and lane.get("resource", "light") != "heavy":
+        raise ValueError(f"{name}.wholeHost needs a heavy lane: a light lane is not admitted, and exclusive "
+                         "admission holds the host already")
+
+
 def group(name, lane, lanes):
     """A lane group names other lanes to run side by side under its one admission, so it needs
     the heaviest resource among them, the model when one of them runs a model, and one lane at a
     time when several do (guides/parallel-tests.md)."""
-    if set(lane) - {"parallel", "jobs", "resource", "here", "model", "budgetMinutes"}:
-        raise ValueError(f"Lane group {name} takes only parallel, jobs, resource, here, model and budgetMinutes")
+    if set(lane) - {"parallel", "jobs", "resource", "here", "model", "budgetMinutes", "wholeHost"}:
+        raise ValueError(f"Lane group {name} takes only parallel, jobs, resource, here, model, wholeHost and "
+                         "budgetMinutes")
     members = lane["parallel"]
     if not isinstance(members, list) or not members or len(set(members)) != len(members) \
             or any(not isinstance(member, str) for member in members):
@@ -292,6 +311,9 @@ def group(name, lane, lanes):
         if other.get("model") and not lane.get("model") and resource != "exclusive":
             raise ValueError(f"{name} runs {member} under its own admission, so it needs \"model\": true or an "
                              "exclusive resource")
+        if other.get("wholeHost") and not lane.get("wholeHost") and resource != "exclusive":
+            raise ValueError(f"{name} runs {member} under its own admission, so it needs \"wholeHost\": true or an "
+                             "exclusive resource")
     if "jobs" in lane and (type(lane["jobs"]) is not int or not 1 <= lane["jobs"] <= len(members)):
         raise ValueError(f"{name}.jobs must be from 1 to the number of its lanes")
     # One model workload per machine: the group's one model lock cannot keep its own lanes apart.
@@ -299,10 +321,12 @@ def group(name, lane, lanes):
     if len(models) > 1 and lane.get("jobs", len(members)) != 1:
         raise ValueError(f"{name} runs the model lanes {', '.join(models)}, which would drive the model at once, "
                          "so it needs \"jobs\": 1")
-    if "model" in lane and type(lane["model"]) is not bool:
-        raise ValueError(f"{name}.model must be true or false")
+    for key in ["model", "wholeHost"]:
+        if key in lane and type(lane[key]) is not bool:
+            raise ValueError(f"{name}.{key} must be true or false")
     place(name, lane)
     model(name, lane)
+    whole_host(name, lane)
 
 
 def source_identity(root):

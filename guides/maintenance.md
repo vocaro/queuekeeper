@@ -234,7 +234,9 @@ onto `origin/main` in its own checkout, `~/Development/vocaro-queue/NAME/NAME`, 
 `eng run`: its `spelling` and `provision` lanes when it has them, and then its `gate` lane, or
 `queue.lanes` in engineering.json for a project that needs others, read from `main`, or from the
 batch until `main` has any, so that the commit naming them can land. The
-lanes therefore go where every lane goes, and one gate serves the whole batch. On a pass it pushes
+lanes therefore go where every lane goes, to whichever Mac has spare capacity for them, the second Mac
+first ([which Mac runs a lane](shared-host.md#which-mac-runs-a-lane)), and the round's log says where
+each ran and why; one gate serves the whole batch. On a pass it pushes
 exactly the commits it tested, as ordinary commits with their own messages and closing lines, so
 Closeout finds each branch landed by equal patches. The gate receipt is of the pushed commit, which
 `eng release` accepts, unless the result was carried over.

@@ -887,13 +887,27 @@ class Worker:
                 return evidence.UNMEASURED, log
             self.ran_on = remote.dispatched(self.checkout, lane, began)
             with contextlib.suppress(OSError), log.open("a") as kept: kept.write(lane_log.read_text(errors="replace"))
-            self.say(f"{lane} exited {status_}")
+            self.say(f"{lane} exited {status_}{self.placed(lane, began)}")
             if status_: return status_, log
             if lane == budgets.GATE:
                 with contextlib.suppress(OSError):
                     self.measured = {"seconds": round(time.monotonic() - started, 1),
                                      "parts": budgets.parts(log.read_text(errors="replace"))[:budgets.KEPT_PARTS]}
         return 0, log
+
+    def placed(self, lane, began):
+        """Where the lane ran, for the log, which eng run chose by both Macs' capacity (vocaro-engineering#168):
+        on the second Mac, by its dispatch's record, or on this Mac, with why, by the receipt the run wrote here
+        since began (cli.placement); nothing when neither says."""
+        if self.ran_on: return f" on {self.ran_on}"
+        receipt = self.checkout / ".build/engineering" / lane / "source.json"
+        try:
+            if receipt.stat().st_mtime < began: return ""
+            said = json.loads(receipt.read_text())
+        except (OSError, ValueError):
+            return ""
+        if not isinstance(said, dict) or said.get("ranOn") != "this Mac": return ""
+        return f" on this Mac ({said.get('hereBecause')})"
 
     def changed(self, old, new):
         return text(self.checkout, "diff", "--name-only", old, new).split("\n")

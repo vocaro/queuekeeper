@@ -44,7 +44,8 @@ ADVERTISED = remote.advertised
 # the second Mac's name does not resolve, FAKE_DENIED as it does when the second Mac refuses the
 # login, and FAKE_SSH_SAYS fail with the lines it holds, as ssh says them of a failure of its own.
 # FAKE_TMPDIR gives the second Mac a temporary directory of its own, and FAKE_DEVICE_RECORD its
-# device record, which is never this Mac's.
+# device record, which is never this Mac's. FAKE_LOAD_LIMIT sets the second Mac's HEAVY_LOAD_LIMIT apart
+# from this Mac's, which both read from the one environment otherwise: 0 makes it loaded at any load.
 FAKE_SSH = """#!/bin/sh
 if [ "$1" = -G ]; then
     case " fake $FAKE_ALIASES " in
@@ -77,7 +78,7 @@ cd "$FAKE_HOME" || exit 255
 # The second Mac has its own heavy-work queue.
 HOME="$FAKE_HOME" SHELL="$FAKE_SHELL" HEAVY_SLOT_DIR="$FAKE_SLOTS" SW_GATE_LOCK_FILE="$FAKE_GATE" \
     TMPDIR="${FAKE_TMPDIR:-$TMPDIR}" VOCARO_DEVICE_RECORD="${FAKE_DEVICE_RECORD:-$FAKE_HOME/device-handoff.json}" \
-    exec /bin/sh -c "$*"
+    exec env ${FAKE_LOAD_LIMIT:+"HEAVY_LOAD_LIMIT=$FAKE_LOAD_LIMIT"} /bin/sh -c "$*"
 """
 # A login shell that reads no profile, so the test's PATH reaches the second Mac.
 FAKE_SHELL = """#!/bin/sh
@@ -270,6 +271,9 @@ class RemoteTests(unittest.TestCase):
                                    "pathlib.Path('.build/linger.pid').write_text(str(os.getpid())); time.sleep(3600)"]},
             "gate": {"command": [python, "-c", "import os; print('Ran 2 tests in', os.getcwd())"],
                      "resource": "heavy", "minimumTests": 2},
+            # A gate that runs the project's suites side by side: a Mac's work, every guaranteed slot of it.
+            "suites": {"command": [python, "-c", "import os; print('Ran 2 tests in', os.getcwd())"],
+                       "resource": "heavy", "minimumTests": 2, "wholeHost": True},
             "failing": {"command": [python, "-c", "print('Ran 2 tests'); raise SystemExit(5)"],
                         "resource": "heavy", "minimumTests": 2},
             "build": {"command": [python, "-c", "print('Ran 1 tests')"], "resource": "heavy",
@@ -331,6 +335,9 @@ class RemoteTests(unittest.TestCase):
             "PATH": f"{tools}{os.pathsep}{os.environ['PATH']}", "FAKE_HOME": str(self.home),
             "FAKE_SHELL": str(tools / "login-shell"), "HEAVY_SLOT_DIR": str(base / "slots"),
             "SW_GATE_LOCK_FILE": str(base / "gate"), "HEAVY_POLL_SECONDS": "0.01", "VOCARO_OFFLOAD_HOST": "fake",
+            # Both Macs have spare capacity by their load whatever this Mac's real load, so that eng's choice of a
+            # Mac is the test's to set: FAKE_LOAD_LIMIT loads the second Mac, HEAVY_LOAD_LIMIT this Mac (#168).
+            "HEAVY_LOAD_LIMIT": "1000000",
             "FAKE_SLOTS": str(base / "second-mac-slots"), "FAKE_GATE": str(base / "second-mac-gate"),
             "FAKE_TMPDIR": str(base / "second-mac-tmp"), devices.OVERRIDE: str(self.record_here),
             "FAKE_DEVICE_RECORD": str(self.record_there)})
@@ -346,6 +353,7 @@ class RemoteTests(unittest.TestCase):
         os.environ.pop("DEVELOPER_DIR", None)
         # VOCARO_OFFLOAD_HOST's old name, which eng refuses, is set only where a test sets it.
         os.environ.pop(remote.OLD_HOST_VARIABLE, None)
+        os.environ.pop("FAKE_LOAD_LIMIT", None)
         # A run on the real second Mac hands its git the credential file through these.
         for key in [key for key in os.environ if key.startswith("GIT_CONFIG_") and key != "GIT_CONFIG_GLOBAL"]:
             del os.environ[key]
@@ -1355,11 +1363,12 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual(self.eng("remote", "passed", "turns")[0], 0)
 
     @contextlib.contextmanager
-    def busy_mac(self, slots="FAKE_SLOTS", gate="FAKE_GATE"):
-        """Exclusive work that holds every slot of a Mac's queue while the block runs: the second Mac's,
-        or with HEAVY_SLOT_DIR and SW_GATE_LOCK_FILE this Mac's."""
-        holder = subprocess.Popen([sys.executable, "-m", "vocaro_engineering.resources", "--exclusive", "--",
-                                   sys.executable, "-c", "print('held', flush=True); import time; time.sleep(300)"],
+    def busy_mac(self, slots="FAKE_SLOTS", gate="FAKE_GATE", kind="--exclusive"):
+        """Work admitted in a Mac's queue while the block runs: the second Mac's, or with HEAVY_SLOT_DIR and
+        SW_GATE_LOCK_FILE this Mac's. Exclusive work, which holds every slot, unless kind is --whole-host, which
+        holds every guaranteed slot, or None, one heavy slot."""
+        holder = subprocess.Popen([sys.executable, "-m", "vocaro_engineering.resources", *([kind] if kind else []),
+                                   "--", sys.executable, "-c", "print('held', flush=True); import time; time.sleep(300)"],
                                   stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, env={
                                       **os.environ, "PYTHONPATH": str(config.TOOLKIT_ROOT / "src/python"),
                                       "HEAVY_SLOT_DIR": os.environ[slots], "SW_GATE_LOCK_FILE": os.environ[gate]})
@@ -1409,17 +1418,24 @@ class RemoteTests(unittest.TestCase):
         return receipt
 
     def test_a_busy_second_mac_sends_the_lane_to_this_mac_when_this_mac_admits_it(self):
+        # Exclusive work holds the second Mac, which its capacity reading shows before anything is offered: the
+        # lane runs here at once, and the receipt says what held the second Mac (vocaro-engineering#168).
         with self.busy_second_mac():
             status, output, error = self.run_here("gate")
         self.assertEqual(status, 0, output + error)
-        busy = "the second Mac is busy: fake did not take it: its heavy-work queue cannot take the lane now"
+        busy = "exclusive work holds the second Mac: "
         self.assertIn(f"eng: trying gate on this Mac: {busy}", error)
+        self.assertNotIn("remote: sending", error)
         receipt = self.ran_here()
-        self.assertEqual((receipt["ranOn"], receipt["hereBecause"]), ("this Mac", busy))
+        self.assertEqual(receipt["ranOn"], "this Mac")
+        self.assertTrue(receipt["hereBecause"].startswith(busy), receipt["hereBecause"])
+        self.assertIn("time.sleep(300)", receipt["hereBecause"])
         # Its wait in this Mac's queue, as a run on the second Mac's receipt gives it there.
         self.assertIsInstance(receipt["queueSeconds"], float)
-        # It was offered there and declined: no result of the second Mac's is kept.
+        # Nothing was offered there: no result of the second Mac's is kept.
         self.assertFalse((self.project / ".build/engineering/remote/gate").exists())
+        # A second Mac its reading shows free may still decline the lane as busy once it is offered: one whose
+        # every checkout is in use. This Mac takes it then, as before the reading.
         # A second Mac whose every checkout is in use is busy too.
         shutil.rmtree(self.project / ".build/engineering/gate")
         base = self.home / remote.ROOT / "checkouts/example"
@@ -1431,14 +1447,109 @@ class RemoteTests(unittest.TestCase):
         finally:
             for lock in locks: os.close(lock)
         self.assertEqual(status, 0, output + error)
-        self.assertIn("eng: trying gate on this Mac: the second Mac is busy: fake did not take it: every checkout of "
-                      "example is in use", error)
-        self.assertIn("every checkout of example is in use", self.ran_here()["hereBecause"])
+        busy = "the second Mac is busy: fake did not take it: every checkout of example is in use"
+        self.assertIn(f"eng: trying gate on this Mac: {busy}", error)
+        self.assertIn("remote: sending", error)
+        self.assertEqual(self.ran_here()["hereBecause"], busy)
         # The negative control: free, the second Mac takes it.
         shutil.rmtree(self.project / ".build/engineering/gate")
         self.assertEqual(self.run_here("gate")[0], 0)
         self.assertFalse((self.project / ".build/engineering/gate").exists())
         self.assertTrue((self.project / ".build/engineering/remote/gate/source.json").exists())
+
+    def test_a_loaded_second_mac_sends_the_lane_to_this_mac_when_this_mac_has_spare_capacity(self):
+        """The owner's rule (vocaro-engineering#168): when one Mac is busy and the other idle, the work goes to the
+        idle one. The second Mac's load is at or above its limit, this Mac's is under its own."""
+        with patch.dict(os.environ, {"FAKE_LOAD_LIMIT": "0"}):
+            status, output, error = self.run_here("gate")
+        self.assertEqual(status, 0, output + error)
+        loaded = "the second Mac is loaded (load "
+        self.assertIn(f"eng: trying gate on this Mac: {loaded}", error)
+        self.assertRegex(error, r"the second Mac is loaded \(load \d+\.\d, at or above its HEAVY_LOAD_LIMIT=0\)")
+        # Nothing was sent: the reading decided before the offer.
+        self.assertNotIn("remote: sending", error)
+        self.assertNotIn("waits for whichever", error)
+        receipt = self.ran_here()
+        self.assertEqual(receipt["ranOn"], "this Mac")
+        self.assertRegex(receipt["hereBecause"], r"^the second Mac is loaded \(load \d+\.\d, at or above its "
+                                                 r"HEAVY_LOAD_LIMIT=0\)$")
+        self.assertFalse((self.project / ".build/engineering/remote/gate").exists())
+        # The negative control: with both Macs under their limits, the second Mac takes it, as before.
+        shutil.rmtree(self.project / ".build/engineering/gate")
+        status, output, error = self.run_here("gate")
+        self.assertEqual(status, 0, output + error)
+        self.assertNotIn("on this Mac", error)
+        self.assertFalse((self.project / ".build/engineering/gate").exists())
+        self.assertEqual(json.loads((self.project / ".build/engineering/remote/gate/source.json").read_text())["ranOn"],
+                         "second Mac")
+        # With neither Mac under its limit, the lane goes to whichever admits it first, the second Mac asked
+        # first, as before the reading: its guaranteed slot admits the lane whatever its load.
+        shutil.rmtree(self.project / ".build/engineering/remote/gate")
+        with patch.dict(os.environ, {"FAKE_LOAD_LIMIT": "0", "HEAVY_LOAD_LIMIT": "0"}):
+            status, output, error = self.run_here("gate")
+        self.assertEqual(status, 0, output + error)
+        self.assertRegex(error, r"eng: neither Mac has spare capacity for gate now \(the second Mac is loaded \(load "
+                                r"\d+\.\d, at or above its HEAVY_LOAD_LIMIT=0\); this Mac is loaded \(load \d+\.\d, at "
+                                r"or above its HEAVY_LOAD_LIMIT=0\)\), so it goes to whichever admits it first, the "
+                                r"second Mac asked first")
+        self.assertIn("remote: sending", error)
+        self.assertFalse((self.project / ".build/engineering/gate").exists())
+        self.assertEqual(json.loads((self.project / ".build/engineering/remote/gate/source.json").read_text())["ranOn"],
+                         "second Mac")
+
+    def test_a_whole_host_lane_goes_to_the_mac_whose_guaranteed_slots_are_all_free(self):
+        """A gate marked wholeHost is a Mac's work: two never run on one Mac at once, while a lighter heavy lane
+        still shares the Mac (vocaro-engineering#168)."""
+        remote_receipt = lambda lane: json.loads((self.project / ".build/engineering/remote" / lane / "source.json").read_text())
+        with self.subTest("the second Mac runs a whole-host lane"), self.busy_mac(kind="--whole-host"):
+            # Any heavy lane then goes to this Mac, the whole-host lane and a lighter one alike.
+            for lane in ["suites", "gate"]:
+                status, output, error = self.run_here(lane)
+                self.assertEqual(status, 0, output + error)
+                receipt = self.ran_here(lane)
+                self.assertTrue(receipt["hereBecause"].startswith("the second Mac is running a whole-host lane: "),
+                                receipt["hereBecause"])
+                self.assertIn(f"eng: trying {lane} on this Mac: the second Mac is running a whole-host lane: ", error)
+                self.assertNotIn("remote: sending", error)
+                self.assertFalse((self.project / ".build/engineering/remote" / lane).exists())
+                shutil.rmtree(self.project / ".build/engineering" / lane)
+        with self.subTest("the second Mac runs a lighter heavy lane"), self.busy_mac(kind=None):
+            # One guaranteed slot there is busy: the whole-host lane needs them all, so it comes here; the
+            # negative control, a lighter heavy lane, shares the second Mac.
+            status, output, error = self.run_here("suites")
+            self.assertEqual(status, 0, output + error)
+            busy = "a whole-host lane needs every guaranteed slot of the second Mac (HEAVY_SLOTS=3) free, and 1 is busy"
+            self.assertIn(f"eng: trying suites on this Mac: {busy}", error)
+            self.assertEqual(self.ran_here("suites")["hereBecause"], busy)
+            self.assertFalse((self.project / ".build/engineering/remote/suites").exists())
+            status, output, error = self.run_here("gate")
+            self.assertEqual(status, 0, output + error)
+            self.assertNotIn("on this Mac", error)
+            self.assertEqual(remote_receipt("gate")["ranOn"], "second Mac")
+            self.assertFalse((self.project / ".build/engineering/gate").exists())
+            shutil.rmtree(self.project / ".build/engineering/suites")
+        with self.subTest("this Mac runs a whole-host lane"), self.busy_mac("HEAVY_SLOT_DIR", "SW_GATE_LOCK_FILE",
+                                                                             kind="--whole-host"):
+            # The second Mac has its slots free: the whole-host lane goes there, as before.
+            status, output, error = self.run_here("suites")
+            self.assertEqual(status, 0, output + error)
+            self.assertNotIn("on this Mac", error)
+            self.assertEqual(remote_receipt("suites")["ranOn"], "second Mac")
+            self.assertFalse((self.project / ".build/engineering/suites").exists())
+            # Both Macs run one: the lane waits for whichever Mac admits it first, the second Mac asked first and
+            # declining it, since a whole-host lane never runs beside another on one Mac.
+            shutil.rmtree(self.project / ".build/engineering/remote/suites")
+            with contextlib.ExitStack() as there:
+                there.enter_context(self.busy_mac(kind="--whole-host"))
+                status, output = self.waits_there("suites", "waits for whichever Mac admits it first", there.close)
+            self.assertEqual(status, 0, output)
+            self.assertIn("neither Mac has spare capacity for suites now (the second Mac is running a whole-host lane: ",
+                          output)
+            self.assertIn("; this Mac is running a whole-host lane: ", output)
+            self.assertIn("eng: trying suites on this Mac: the second Mac is busy: fake did not take it: its heavy-work "
+                          "queue cannot take the lane now", output)
+            self.assertEqual(remote_receipt("suites")["ranOn"], "second Mac")
+            self.assertFalse((self.project / ".build/engineering/suites").exists())
 
     def test_while_both_macs_are_busy_the_lane_runs_on_whichever_admits_it_first(self):
         waiting = "waits for whichever Mac admits it first"
@@ -2221,14 +2332,25 @@ exec {shlex.quote(real)} "$@"
         status, output, error = self.admit_in(self.project, "--verify", "--", *probe)
         self.assertEqual(status, 0, output + error)
         self.assertEqual(self.ran_in(), self.checkout(0).resolve())
-        # A busy second Mac declines it, as `eng admit --if-free` there, and this Mac admits it.
+        # A second Mac that exclusive work holds has no spare capacity by its reading, so this Mac takes the
+        # command at once, as it takes a lane (vocaro-engineering#168).
         with self.busy_second_mac():
             status, output, error = self.admit_in(self.project / "pkg", "--verify", "--", *probe)
         self.assertEqual(status, 0, output + error)
         self.assertEqual(self.ran_in(), (self.project / "pkg").resolve())
         receipt = json.loads((self.project / ".build/engineering/admit/source.json").read_text())
         self.assertEqual(receipt["ranOn"], "this Mac")
-        self.assertTrue(receipt["hereBecause"].startswith("the second Mac is busy: fake did not take it"), receipt)
+        self.assertTrue(receipt["hereBecause"].startswith("exclusive work holds the second Mac: "), receipt)
+        self.assertIn("eng: trying the command on this Mac: exclusive work holds the second Mac: ", error)
+        self.assertNotIn("remote: sending", error)
+        # A loaded second Mac keeps the command here the same way, naming its load.
+        shutil.rmtree(self.project / ".build/engineering/admit")
+        with patch.dict(os.environ, {"FAKE_LOAD_LIMIT": "0"}):
+            status, output, error = self.admit_in(self.project / "pkg", "--verify", "--", *probe)
+        self.assertEqual(status, 0, output + error)
+        self.assertEqual(self.ran_in(), (self.project / "pkg").resolve())
+        receipt = json.loads((self.project / ".build/engineering/admit/source.json").read_text())
+        self.assertRegex(receipt["hereBecause"], r"^the second Mac is loaded \(load \d+\.\d, at or above its HEAVY_LOAD_LIMIT=0\)$")
         shutil.rmtree(self.project / ".build/engineering/admit")
         # The negative control: without --verify it runs here.
         status, output, error = self.admit_in(self.project / "pkg", "--", *probe)

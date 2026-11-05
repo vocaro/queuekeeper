@@ -13,12 +13,17 @@ there ends. A whole lane's result at a commit is also kept by commit in
 the repository's Git directory, where every worktree of the repository can find it; a
 snapshot's is not.
 
-`eng run` offers every heavy or exclusive lane to the second Mac first unless the lane says why
-it stays on this Mac, and `eng admit --verify` a command whose result is its log and status. The
-second Mac runs the work if it can start it now; while it is at capacity, this Mac takes the
-work, and while both are, the work goes to whichever admits it first, offered to the second Mac
-again and again (overflow; the owner's decision, 2026-10-28). First it checks, within seconds,
-that the second Mac can be reached. When it cannot, because its name does not resolve, as when
+`eng run` sends every heavy or exclusive lane to whichever Mac has spare capacity for it now,
+the second Mac first, unless the lane says why it stays on this Mac, and `eng admit --verify` a
+command whose result is its log and status. Before it offers the work it reads both Macs'
+capacity (offload_host.capacity, spare): the second Mac runs the work when it has a guaranteed
+slot free, all of them for a whole-host lane, its load is under its limit and no whole-host lane
+or exclusive work holds it, and then only if it can start the work now; when it has no spare
+capacity and this Mac has, this Mac takes the work at once, with the second Mac's reason in the
+receipt (Loaded); and while neither has, the work goes to whichever admits it first, offered to
+the second Mac again and again (overflow). Both Macs are for work, and a session never asks the
+owner which (the owner's decisions, 2026-10-28 and 2026-11-04, vocaro-engineering#168). First it
+checks, within seconds, that the second Mac can be reached. When it cannot, because its name does not resolve, as when
 this Mac is away from the second Mac's network, nothing answers on its ssh port or ssh cannot
 connect, the work runs on this Mac at once (the owner's decision, 2026-10-27). A second Mac that
 answers but is misconfigured, such as one that refuses the login or has another Xcode, stops the
@@ -205,6 +210,14 @@ class Busy(Unavailable):
     """The second Mac could not start the work in time, or at once when the work asked it not to wait:
     its queue or every checkout is in use. A busy second Mac is no configuration problem, and this Mac
     takes the work while it is busy, if it can (overflow)."""
+
+
+class Loaded(Busy):
+    """The second Mac has no spare capacity for the work now, by its reading, while this Mac has, by its
+    own (spare): nothing was offered, and this Mac takes the work. Its text is the reason, as the
+    receipt's hereBecause gives it, naming the second Mac's load when that is it (vocaro-engineering#168).
+    The second Mac is read again before each later offer (Offer.again), so that it takes the work once
+    it has capacity before this Mac admits it."""
 
 
 class Misconfigured(Unavailable):
@@ -1834,11 +1847,13 @@ def bring_runtimes(host, developer, check):
 def first(root, config, lane, arguments, expect, fallback=True):
     """Offer a lane to the second Mac to start now, once (Offer.make), and return the Offer.
 
-    The second Mac runs the lane only if it can start it now: its queue admits the lane within
-    FREE_WAIT (`eng run --if-free` there) and one of the project's checkouts there is free. A tree with
-    uncommitted changes goes as a snapshot commit (execute), and so does the toolkit's. The second Mac
-    cannot run a lane whose arguments name a physical device of this Mac's record, nor any lane when Git
-    cannot name the commits to send.
+    With fallback, the offer first reads both Macs' capacity for the lane (Offer.choose): a whole-host
+    lane needs every guaranteed slot of its Mac, an exclusive one every slot. The second Mac runs the
+    lane only if it can start it now: its queue admits the lane within FREE_WAIT (`eng run --if-free`
+    there) and one of the project's checkouts there is free. A tree with uncommitted changes goes as a
+    snapshot commit (execute), and so does the toolkit's. The second Mac cannot run a lane whose
+    arguments name a physical device of this Mac's record, nor any lane when Git cannot name the
+    commits to send.
     """
     work = ["run", "--here", "--if-free", *(["--expect", str(expect)] if expect else []), lane,
             *(["--", *arguments] if arguments else [])]
@@ -1846,8 +1861,10 @@ def first(root, config, lane, arguments, expect, fallback=True):
     named = named_devices(arguments)
     refused = (f"its arguments name the physical device of {', '.join(named)}, which the second Mac uses only under "
                "a reservation `eng remote run --device` carries from here") if named else None
+    settings = config.get("lanes", {}).get(lane, {})
     offered = Offer(lane, f"`eng run --here {lane}`", lambda host, sent: execute(
-        root, config, host, work, lane=lane, arguments=arguments, expect=expect, decline=True, sent=sent), refused)
+        root, config, host, work, lane=lane, arguments=arguments, expect=expect, decline=True, sent=sent), refused,
+        whole_host=bool(settings.get("wholeHost")), exclusive=settings.get("resource") == "exclusive")
     offered.make(fallback)
     return offered
 
@@ -1908,7 +1925,7 @@ def first_command(root, config, command, kind):
     work = ["admit", *kind, "--if-free", "--", *command]
     offered = Offer("the command", "`eng admit` without --verify", lambda host, sent: execute(
         root, config, host, work, decline=True, subdirectory=None if relative in (None, ".") else relative,
-        sent=sent), refused)
+        sent=sent), refused, exclusive="--exclusive" in kind)
     offered.make()
     return offered
 
@@ -1919,26 +1936,61 @@ class Offer:
     send(host, sent) runs the work there (execute), keeping in sent what it sent, so that the work
     can be offered again without a second snapshot or push. refused is why the second Mac cannot run
     the work, if it cannot, and instead the command that runs it here when the owner so decides after a
-    configuration problem stopped it. status, once made, is the work's status there, MISCONFIGURED or
-    BUSY, or why the work runs on this Mac instead; busy is why the second Mac declined it, while it
-    was busy, and None once it ran there or can no longer take it."""
+    configuration problem stopped it. whole_host says the work needs every guaranteed slot of its Mac,
+    and exclusive every slot (spare). status, once made, is the work's status there, MISCONFIGURED or
+    BUSY, or why the work runs on this Mac instead; busy is why the second Mac did not take it, as the
+    receipt gives it, while it has not: declined as busy, or not offered while it has no spare capacity
+    and this Mac has (Loaded); and None once it ran there or can no longer take it."""
 
-    def __init__(self, name, instead, send, refused=None):
+    def __init__(self, name, instead, send, refused=None, whole_host=False, exclusive=False):
         self.name, self.instead, self.send, self.refused = name, instead, send, refused
+        self.whole_host, self.exclusive = whole_host, exclusive
         self.sent, self.host, self.status, self.busy, self.away = {}, None, None, None, None
+        # Whether each offer first reads both Macs' capacity (choose): an offer this Mac may take does, and
+        # --offload-only's, which never runs the work here, does not. Set by make.
+        self.choosing = False
+        self.neither = None
 
     def attempt(self):
-        """Offer the work once: its status there, or Busy, Unreachable or Unavailable raised."""
+        """Offer the work once: its status there, or Busy, Unreachable or Unavailable raised; Loaded, a Busy,
+        when the second Mac has no spare capacity for it while this Mac has, with nothing offered."""
         if self.refused is not None: raise Unavailable(self.refused)
         with processes.forwarding_signals():
             # A second Mac that cannot be reached costs seconds here, and nothing is sent to it.
             reachable(self.host)
+            if self.choosing:
+                reason = self.choose()
+                if reason is not None: raise Loaded(reason)
             return self.send(self.host, self.sent)
+
+    def choose(self):
+        """Why the work goes to this Mac's queue now rather than being offered, by both Macs' capacity for it
+        (spare), or None to offer it: the second Mac has spare capacity, or neither Mac has, and then the
+        work goes to whichever admits it first, the second Mac asked first, as before the choice existed. Both
+        Macs are for work: a session uses the one with capacity and never asks the owner which
+        (vocaro-engineering#168)."""
+        there = spare(capacity_there(self.host), "the second Mac", self.whole_host, self.exclusive)
+        if there is None: return None
+        reading = offload_host.capacity()
+        here = (f"this Mac's capacity cannot be read: {reading['error']}" if reading.get("error")
+                else spare(reading, HERE, self.whole_host, self.exclusive))
+        if here is None: return there
+        if self.neither != (there, here):
+            print(f"eng: neither Mac has spare capacity for {self.name} now ({there}; {here}), so it goes to "
+                  "whichever admits it first, the second Mac asked first", file=sys.stderr, flush=True)
+            self.neither = there, here
+        return None
+
+    def declined(self, busy):
+        """Why the second Mac did not take the work, as the receipt and messages give it."""
+        return str(busy) if isinstance(busy, Loaded) else f"the second Mac is busy: {busy}"
 
     def make(self, fallback=True):
         """Offer the work once and set status. Without fallback, for a caller that runs the work itself
-        when the second Mac does not, every reason that it does not is BUSY, after saying why."""
+        when the second Mac does not, every reason that it does not is BUSY, after saying why; the capacity
+        of the Macs is not read for it, since the work never runs here (--offload-only)."""
         self.host = configured()
+        self.choosing = fallback
         if self.host is None:
             if not fallback:
                 print(f"eng: {self.name} not run: no second Mac is configured ({HOST_VARIABLE}, or the ssh alias "
@@ -1951,8 +2003,7 @@ class Offer:
             self.stopped(stop)
         except Busy as busy:
             # This Mac takes work the second Mac is too busy to start now, when it can (overflow).
-            self.busy = str(busy)
-            said = f"the second Mac is busy: {busy}"
+            self.busy = said = self.declined(busy)
             print(f"eng: {f'trying {self.name} on this Mac' if fallback else f'{self.name} not run'}: {said}",
                   file=sys.stderr, flush=True)
             self.status = said if fallback else BUSY
@@ -1984,7 +2035,7 @@ class Offer:
         except Misconfigured as stop:
             return self.stopped(stop)
         except Busy as busy:
-            self.busy, self.away = str(busy), None
+            self.busy, self.away = self.declined(busy), None
         except Unreachable as away:
             if away.problem != self.away:
                 print(f"eng: {self.name} waits for this Mac, and asks the second Mac again at the next offer: "
@@ -2009,12 +2060,13 @@ def overflow(offered, admit, timeout=OVERFLOW_TIMEOUT, once=False):
     took it after all or its configuration stopped it, or BUSY when neither Mac admitted it in timeout
     seconds, after saying so.
 
-    admit(seconds) is this Mac's admission of the work, or None when none came in that time. The second
-    Mac comes first, and this Mac takes the work while the second Mac is at capacity, until it is too:
-    this Mac's admission waits FREE_WAIT, as the second Mac's did, then, while both are busy,
-    OVERFLOW_WAIT doubling to OVERFLOW_WAIT_MAX, and between those waits the second Mac is offered the
-    work again (Offer.again). The wait in this Mac's queue is the backoff between offers, so the work
-    starts on whichever Mac admits it first, and the second Mac is asked again at least every
+    admit(seconds) is this Mac's admission of the work, or None when none came in that time. The work
+    comes here once the second Mac has not taken it, declined as busy or not offered while it had no
+    spare capacity and this Mac had (Offer.choose): this Mac's admission waits FREE_WAIT, as the second
+    Mac's did, then, while both Macs keep it waiting, OVERFLOW_WAIT doubling to OVERFLOW_WAIT_MAX, and
+    between those waits both Macs are read again and the second Mac is offered the work again when the
+    reading allows (Offer.again). The wait in this Mac's queue is the backoff between offers, so the
+    work starts on whichever Mac admits it first, and the second Mac is asked again at least every
     OVERFLOW_WAIT_MAX seconds: each offer costs it a checkout claim, the project's provision lane and
     a policy refresh, so not every few seconds. Each of this Mac's waits that ends unadmitted leaves
     its queue and is logged as withdrawn, as a declined offer is there; an exclusive request rejoins
@@ -2029,11 +2081,11 @@ def overflow(offered, admit, timeout=OVERFLOW_TIMEOUT, once=False):
         if once or time.monotonic() >= deadline:
             print(f"eng: {offered.name} not run: neither Mac admitted it {'now' if once else f'in {timeout:g}s'}"
                   + (f"; the second Mac cannot be reached: {offered.away}" if offered.away
-                     else f"; the second Mac is busy: {offered.busy}" if offered.busy else ""), file=sys.stderr, flush=True)
+                     else f"; {offered.busy}" if offered.busy else ""), file=sys.stderr, flush=True)
             return BUSY
         if offered.busy is not None and offered.away is None and offered.busy != said:
             print(f"eng: {offered.name} waits for whichever Mac admits it first, the second Mac asked again every "
-                  f"{OVERFLOW_WAIT_MAX}s or sooner: the second Mac is busy ({offered.busy}), and so is this Mac",
+                  f"{OVERFLOW_WAIT_MAX}s or sooner: {offered.busy}, and this Mac has not admitted it",
                   file=sys.stderr, flush=True)
             said = offered.busy
         status = offered.again()
@@ -2041,17 +2093,21 @@ def overflow(offered, admit, timeout=OVERFLOW_TIMEOUT, once=False):
         window = min(max(2 * window, OVERFLOW_WAIT), OVERFLOW_WAIT_MAX)
 
 
-def ask(host, request, timeout=SURVEY_TIMEOUT):
-    """offload_host.py's answer to request on the second Mac, run by its login shell as a run there is."""
+def ask(host, request, timeout=SURVEY_TIMEOUT, unsent=False):
+    """offload_host.py's answer to request on the second Mac, run by its login shell as a run there is. A second
+    Mac ssh cannot reach raises Misconfigured, which eng doctor and the merge queue's wait report; with unsent,
+    for a question asked before work is sent (capacity_there), it raises as execute's preparing connection does
+    (ssh_failure): Unreachable, so that the work runs on this Mac, unless the second Mac refused the login."""
     request = shlex.join(["python3", "-c", Path(offload_host.__file__).read_text(), json.dumps(request)])
     attempt = asleep()
+    failed = lambda said, *context: ssh_failure(host, said, *context) if unsent else unreachable(host, said, *context)
     try:
         found = ssh(host, request, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
-        raise unreachable(host, f"it did not answer in {timeout}s", attempt) from None
+        raise failed(f"it did not answer in {timeout}s", attempt) from None
     except OSError as error:
-        raise unreachable(host, str(error)) from None
-    if found.returncode == 255: raise unreachable(host, found.stderr, attempt)
+        raise failed(str(error)) from None
+    if found.returncode == 255: raise failed(found.stderr, attempt)
     try:
         return json.loads(last_line(found.stdout))
     except (TypeError, ValueError):
@@ -2061,6 +2117,51 @@ def ask(host, request, timeout=SURVEY_TIMEOUT):
 def survey(host, developer):
     """The second Mac's offload_host.toolchain, read in its login shell as a run there reads it."""
     return ask(host, {"toolchain": developer})
+
+
+def capacity_there(host):
+    """The second Mac's capacity for heavy work, as offload_host.capacity reads it there, in its login shell as a
+    run there reads it. A second Mac that cannot be reached raises Unreachable, as the connection that prepares
+    a run does, and one that does not answer with a reading Unavailable: the work then runs on this Mac, saying so. One whose admission limits cannot
+    be read refuses every request there, which is its owner's to fix (Misconfigured)."""
+    answered = ask(host, {"capacity": True}, timeout=CENSUS_TIMEOUT, unsent=True)
+    if isinstance(answered, dict) and answered.get("error"):
+        raise Misconfigured(f"{host} could not read its admission limits: {answered['error']}",
+                            f"correct the limits file or variable it names on {host} (guides/shared-host.md, "
+                            "Heavy-work admission)")
+    if not isinstance(answered, dict) or not all(isinstance(answered.get(key), int) for key in ("slots", "slotsMax")) \
+            or not isinstance(answered.get("busy"), list) or not isinstance(answered.get("limit"), (int, float)):
+        raise Unavailable(f"{host} did not report its capacity: it answered {answered!r}")
+    return answered
+
+
+def spare(reading, mac, whole_host=False, exclusive=False):
+    """Why mac, read as reading (offload_host.capacity), has no spare capacity now for the work, or None while
+    it has (vocaro-engineering#168). The work needs a guaranteed slot free there, every guaranteed slot for a
+    whole-host lane and every slot up to the maximum for exclusive work, a one-minute load under the Mac's own
+    HEAVY_LOAD_LIMIT, and no whole-host lane or exclusive work running there. The reason names the Mac and,
+    for its load, the load read and the limit; the receipt's hereBecause carries it."""
+    slots, maximum, busy = reading["slots"], reading["slotsMax"], sorted(reading["busy"])
+    running, holding = reading.get("wholeHost") or [], reading.get("exclusive") or []
+    if running:
+        return f"{mac} is running a whole-host lane: {running[0]}"
+    if holding:
+        return f"exclusive work holds {mac}: {holding[0]}"
+    if exclusive and busy:
+        return (f"exclusive work needs every slot of {mac} up to HEAVY_SLOTS_MAX={maximum} free, and {len(busy)} "
+                f"{'is' if len(busy) == 1 else 'are'} busy")
+    taken = [slot for slot in busy if slot < slots]
+    if whole_host and taken:
+        return (f"a whole-host lane needs every guaranteed slot of {mac} (HEAVY_SLOTS={slots}) free, and {len(taken)} "
+                f"{'is' if len(taken) == 1 else 'are'} busy")
+    if not exclusive and not whole_host and len(taken) >= slots:
+        return f"every guaranteed slot of {mac} is busy (HEAVY_SLOTS={slots})"
+    load, limit = reading.get("load"), reading["limit"]
+    if not isinstance(load, (int, float)):
+        return f"the load average of {mac}, which HEAVY_LOAD_LIMIT={limit:g} bounds, is unavailable"
+    if load >= limit:
+        return f"{mac} is loaded (load {load:.1f}, at or above its HEAVY_LOAD_LIMIT={limit:g})"
+    return None
 
 
 def pressure_there(host):
