@@ -115,6 +115,14 @@ MOVED = "moved"
 # Seconds the toolkit at origin/main has to import what a worker runs before a worker moves to it (starts).
 STARTS_LIMIT = 120
 BEFORE_GATE = ["spelling", "provision"]
+# eng land's emergency options, in every repository, by the entry field each sets: an entry tested next as a batch
+# of its own, and one landed alone on the light lanes without the gate, whose written reason --why gives (owner's
+# decision, 2026-11-04, vocaro-engineering#163). Neither is routine.
+OPTIONS = {"front": "--front", "noGate": "--no-gate"}
+# The lanes an ungated landing runs where the project has them: the light check a hand push ran.
+UNGATED_LANES = ["spelling"]
+# The trailer an ungated landing adds to its tip, so that main's history says so (Worker.mark_ungated).
+UNGATED = "Landed-without-gate"
 WAIT_LIMIT = 6 * 3600
 KEPT_LOGS = 200
 GIT_TIMEOUT = 600
@@ -350,6 +358,25 @@ def no_verdict_runs(config):
     return config.get("queue", {}).get("noVerdictRuns", NO_VERDICT_RUNS)
 
 
+def ungated_lanes(config):
+    """The lanes an ungated landing runs instead of the queue's: UNGATED_LANES that the project has."""
+    return [name for name in UNGATED_LANES if name in config.get("lanes", {})]
+
+
+def ahead(front, no_gate, why):
+    """The entry fields eng land's options set, or a refusal: --no-gate needs a written reason, --why, which the
+    landing records everywhere it says it skipped the gate; --front takes one too, but needs none."""
+    if no_gate and not (why and why.strip()):
+        raise ValueError("--no-gate needs a written reason: `eng land --no-gate --why TEXT`, which the entry, the log, "
+                         "the landed commit's trailer and `eng queue status` record (guides/maintenance.md, Landing "
+                         "ahead of the queue)")
+    if why and not (front or no_gate): raise ValueError("--why is the reason for --front or --no-gate")
+    flags = {name: True for name, wanted in (("front", front), ("noGate", no_gate)) if wanted}
+    # On one line, as a trailer needs.
+    if flags and why and why.strip(): flags["aheadWhy"] = " ".join(why.split())
+    return flags
+
+
 def docs_lanes(config, changed):
     """The lanes main's queue.docsOnly names when every path a batch changes is one it lists, else None:
     a batch that changes nothing, or anything else, runs every lane."""
@@ -515,7 +542,9 @@ def land(root, args):
         if args.reference is None:
             raise ValueError(f"--repo lands a commit you name: `eng land --repo {args.repo} BRANCH`, since HEAD "
                              "there is another session's")
-    identifier = add(target, args.reference or "HEAD", args.note, quiet_wait=args.wait)
+    identifier = add(target, args.reference or "HEAD", args.note, quiet_wait=args.wait,
+                     front=getattr(args, "front", False), no_gate=getattr(args, "no_gate", False),
+                     why=getattr(args, "why", None))
     status_ = wait(target, identifier, args.limit) if args.wait and identifier is not None else 0
     warn(target)
     return status_
@@ -528,10 +557,13 @@ def warn(root):
         print(f"warning: {warning}", flush=True)
 
 
-def add(root, reference, note=None, quiet_wait=False):
+def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False, why=None):
     """Put the commits reference has and origin/main lacks in the queue, and return at once with the
     entry's ID, or None when there is nothing to queue. Whether it may be queued is what a round would
-    find: origin/main's settings, and origin/main's lanes or, until it has any, the commit's."""
+    find: origin/main's settings, and origin/main's lanes or, until it has any, the commit's. front and
+    no_gate, eng land's emergency options --front and --no-gate, and why, the reason --why gives (ahead), go
+    in the entry; an entry already queued with the same tip takes them."""
+    flags = ahead(front, no_gate, why)
     queue = Queue(root)
     reach(root, *FETCH, say=lambda words: print(f"queue: {words}", file=sys.stderr), check=True)
     tip = text(root, "rev-parse", "--verify", f"{reference}^{{commit}}")
@@ -558,6 +590,7 @@ def add(root, reference, note=None, quiet_wait=False):
         same = next((entry for entry in waiting if entry["tip"] == tip), None)
     if same:
         print(f"{same['id']} already holds {tip[:12]} ({same['state']})")
+        if flags: promote(queue, same, flags)
         queue.start()
         return same["id"]
     # A branch added again replaces what it added before; main names nobody's work in particular.
@@ -570,10 +603,12 @@ def add(root, reference, note=None, quiet_wait=False):
     identifier = f"{time.strftime('%Y%m%d-%H%M%S', time.localtime(now))}-{tip[:8]}"
     entry = {"id": identifier, "tip": tip, "base": base, "commits": commits, "branch": branch or None, "note": note,
              "subject": text(root, "log", "-1", "--format=%s", tip), "submitted": now, "state": QUEUED,
-             "directory": str(root)}
+             "directory": str(root), **flags}
     text(root, "update-ref", f"refs/eng-queue/{identifier}", tip)
     with queue.locked(): queue.save(entry)
     print(f"queued {identifier}: {len(commits)} commit(s), {entry['subject']}")
+    for name in OPTIONS:
+        if name in flags: print(f"queue: {identifier} {asked_for(name)}{because(flags)}")
     why = queue.held()
     if why: print(f"queue: {identifier} waits, since the queue is held {why}", file=sys.stderr)
     queue.start()
@@ -581,6 +616,41 @@ def add(root, reference, note=None, quiet_wait=False):
         print("nothing else is needed for it to land; to be told at once if it comes back, run as a background "
               f"command: python3 {shlex.quote(str(root))}/scripts/eng queue wait {identifier}")
     return identifier
+
+
+def asked_for(name):
+    """What an entry's option, a name of OPTIONS, does, for eng land's lines and `eng queue status`."""
+    return ("is tested next, ahead of everything waiting, as a batch of its own" if name == "front" else
+            "lands alone on the light lanes, without the gate, and is recorded as ungated")
+
+
+def because(entry):
+    """The reason --why gave an entry's options, for a line that names them."""
+    return f", because {entry['aheadWhy']}" if entry.get("aheadWhy") else ""
+
+
+def promote(queue, entry, flags):
+    """Give a queued entry the options flags holds, as eng land does an entry already holding its tip. A batch in its
+    gate, or one that passed, finishes as it is, so for one of those the options change nothing."""
+    with queue.locked():
+        current = queue.read(entry["id"])
+        if current and current["state"] == QUEUED:
+            current.update(flags)
+            queue.save(current)
+    if current and current["state"] == QUEUED:
+        for name in OPTIONS:
+            if name in flags: print(f"queue: {entry['id']} now {asked_for(name)}{because(current)}")
+        return
+    print(f"queue: {entry['id']} is {current['state'] if current else 'gone'}, so "
+          f"{' and '.join(OPTIONS[name] for name in OPTIONS if name in flags)} changes nothing now", file=sys.stderr)
+
+
+def covered(root, entry, entries):
+    """Whether a gate on main has passed over an ungated landing since: a later landing whose gate ran on a base
+    that holds it (Worker.push's gatedOn)."""
+    return any(other.get("gatedOn") and other.get("settled", 0) >= entry.get("settled", 0)
+               and git(root, "merge-base", "--is-ancestor", entry["landedAs"], other["gatedOn"]).returncode == 0
+               for other in entries if other["state"] == LANDED)
 
 
 def remove(queue, identifier, quiet=False):
@@ -600,6 +670,12 @@ def describe(entry):
         line += (f"\n         passed at {verdict['head'][:12]} on {verdict['base'][:12]}: the push lands it without "
                  "gating it again")
     if entry.get("docsOnly"): line += f"\n         docs lanes only ({', '.join(entry['docsOnly'])}): no gate of that commit"
+    if entry.get("ungated"):
+        line += (f"\n         landed without the gate, on {', '.join(entry['ungated']['lanes']) or 'no lane'}, because "
+                 f"{entry['ungated']['why']}; the next gate on main covers it")
+    elif entry["state"] in WAITING:
+        for name in OPTIONS:
+            if entry.get(name): line += f"\n         {asked_for(name)} ({OPTIONS[name]}){because(entry)}"
     for kept in entry.get("kept", []): line += f"\n         {kept}"
     if entry.get("why"): line += f"\n         {entry['why']}"
     if entry.get("log"): line += f"\n         log: {entry['log']}"
@@ -613,11 +689,18 @@ def status(root, as_json=False, recent=5):
     done = sorted((entry for entry in entries if entry["state"] not in WAITING),
                   key=lambda entry: entry.get("settled", 0))[-recent:]
     working, why = queue.working(), queue.held()
+    # Shown until a gate on main passes over it, however long ago it landed.
+    ungated = [entry for entry in entries if entry["state"] == LANDED and entry.get("ungated")
+               and not covered(root, entry, entries)]
     if as_json:
-        print(json.dumps({"worker": working, "held": why, "waiting": waiting, "recent": done}, indent=2))
+        print(json.dumps({"worker": working, "held": why, "waiting": waiting, "recent": done,
+                          "ungated": [entry["id"] for entry in ungated]}, indent=2))
         return 0
     print(f"worker: {'running' if working else 'none'}" + (f"; held {why}" if why else ""))
     if waiting and not working and not why: print("waiting with no worker: `eng queue resume` starts one")
+    for entry in ungated:
+        print(f"ungated on main: {entry['id']} landed {entry['landedAs'][:12]} without the gate, which the next gate "
+              "on main covers")
     for entry in waiting + done: print(describe(entry))
     return 0
 
@@ -711,6 +794,7 @@ class Worker:
         self.ran_on = None  # the second Mac that ran the last lane the gate ran, or None (gate)
         self.environment = environment()  # what the lanes, the hook and the carry-over checks run in
         self.measured = None  # the passing gate run of the last round, which its landed entries record
+        self.alone = False  # whether this round's batch is one entry an option of eng land put on its own (choose)
 
     def say(self, words):
         print(f"queue: {time.strftime('%H:%M:%S')} {words}", flush=True)
@@ -1118,14 +1202,19 @@ class Worker:
         self.say(f"carried the result over {len(moved)} file(s) on main: {', '.join(moved[:5])}")
         return new_base, self.head()
 
-    def push(self, config, batch, base, docs=None):
+    def push(self, config, batch, base, docs=None, ungated=None):
         """Push HEAD to main. True on a push, False to gate again; a refusal that is no race holds, as a remote
         that stays out of reach does.
         The project's pre-push hook runs here rather than inside the push, unless main's queue.hookCoveredBy
         says which passed lanes cover it: a long hook then holds no connection open, and its refusal is its own.
         A docs-only batch, whose lanes docs names, skips it too: the hook is part of lanes that read none of the
-        batch's paths. The landed entries record docs, since such a landing is no gate of the pushed commit."""
+        batch's paths. The landed entries record docs, since such a landing is no gate of the pushed commit.
+        An ungated landing, whose lanes ungated names, runs the hook unless those lanes cover it, which the gate's then
+        do and it skips; its entry records ungated, and its tip carries the UNGATED trailer, again after a carry-over.
+        Any other landing records gatedOn, the base its gate ran on, by which `eng queue status` knows that a gate on
+        main has passed over an earlier ungated landing (covered)."""
         head = self.head()
+        gated_on = base
         unsure = False
         checked = None
         covered = config.get("queue", {}).get("hookCoveredBy")
@@ -1135,7 +1224,10 @@ class Worker:
                 carried = self.carry(config, batch, base, head)
                 if carried is None: return False
                 base, head = carried
-            if covered: self.say(f"no pre-push hook: main's queue.hookCoveredBy says {', '.join(covered)} cover it")
+                if ungated: head = self.mark_ungated(ungated, base)
+            if covered:
+                self.say(f"no pre-push hook: main's queue.hookCoveredBy says {', '.join(covered)} cover it"
+                         + (", and this landing skips them" if ungated and not set(covered) <= set(ungated["lanes"]) else ""))
             elif checked != head:
                 result, log = self.pre_push(head)
                 if result in NO_VERDICT and not unsure:
@@ -1155,10 +1247,13 @@ class Worker:
             pushed, status = self.push_again(pushed)
             if pushed.returncode == 0:
                 git(self.checkout, *FETCH)
-                self.say(f"pushed {head[:12]}")
+                self.say(f"pushed {head[:12]}" + (", landed without the gate, which the next gate on main covers"
+                                                  if ungated else ""))
                 for entry in batch:
                     self.queue.settle(entry, LANDED, landedAs=head, **({"docsOnly": docs} if docs else {}),
-                                      **({"gate": self.measured} if self.measured and not docs else {}))
+                                      **({"ungated": ungated} if ungated else {}),
+                                      **({"gate": self.measured} if self.measured and not docs else {}),
+                                      **({} if docs or ungated else {"gatedOn": gated_on}))
                 if self.toolkits_own(): self.follow()
                 return True
             said = pushed.stderr.strip()
@@ -1221,7 +1316,8 @@ class Worker:
             why = "the queue's lanes fail on this commit on top of origin/main: fix it and add it again"
             self.say(f"{applied[0]['id']}: {why}")
             self.queue.settle(applied[0], FAILED, why=why, log=str(log))
-            self.limit, self.suspects = None, 0
+            # An entry on its own was no suspect of a bisect, which goes on where it was.
+            if not self.alone: self.limit, self.suspects = None, 0
             return
         self.queue.mark(applied, QUEUED)
         self.suspects = len(applied)
@@ -1229,13 +1325,28 @@ class Worker:
         self.say(f"{len(applied)} commits fail together: next the oldest {self.limit}")
 
     def passed(self, count):
+        if self.alone: return
         self.suspects = max(0, self.suspects - count)
         self.limit = self.suspects or None
 
+    def choose(self, waiting):
+        """This round's batch of waiting, oldest first. A batch that passed comes first, to push. Then the oldest
+        entry eng land --front put first, alone; then the oldest entries, as many as a bisect allows, up to the first
+        one eng land --no-gate lands alone, or that entry alone when it is the oldest. alone says whether the batch is
+        one entry an option put on its own, whose outcome leaves a bisect where it was."""
+        batch = waiting[:self.limit] if self.limit else waiting
+        self.alone = False
+        if any(entry["state"] == PASSED for entry in batch): return batch
+        first = next((entry for entry in waiting if entry.get("front")), None)
+        if first is None and batch and batch[0].get("noGate"): first = batch[0]
+        if first is not None:
+            self.alone = True
+            return [first]
+        return batch[:next((index for index, entry in enumerate(batch) if entry.get("noGate")), len(batch))]
+
     def round(self):
         queue = self.queue
-        batch = queue.waiting()
-        if self.limit: batch = batch[:self.limit]
+        batch = self.choose(queue.waiting())
         if not batch: return False
         passed = [entry for entry in batch if entry["state"] == PASSED]
         reach(queue.main_checkout, *FETCH, say=self.say, check=True)
@@ -1245,19 +1356,21 @@ class Worker:
         base = text(queue.main_checkout, "rev-parse", MAIN)
         applied = self.integrate(batch, base)
         if not applied:
-            self.limit, self.suspects = None, 0
+            if not self.alone: self.limit, self.suspects = None, 0
             return True
         head = self.head()
         config = self.settings(base, head)
         queue.mark(applied, TESTING)
-        self.say(f"testing {len(applied)} entr{'y' if len(applied) == 1 else 'ies'} at {head[:12]} on {base[:12]}")
+        self.say(f"testing {len(applied)} entr{'y' if len(applied) == 1 else 'ies'} at {head[:12]} on {base[:12]}"
+                 + (" at the front of the queue, as eng land --front asked" if applied[0].get("front") else ""))
+        ungated = self.ungated(applied, config)
         # Without renames, so that a file moved into a docs path also names the path it left.
-        docs = docs_lanes(config, [path for path in text(self.checkout, "diff", "--name-only", "--no-renames", base,
-                                                         head).splitlines() if path])
+        docs = None if ungated else docs_lanes(config, [path for path in text(
+            self.checkout, "diff", "--name-only", "--no-renames", base, head).splitlines() if path])
         if docs: self.say(f"every path the batch changes is in main's queue.docsOnly: running only {', '.join(docs)}, "
                           "which is no gate of the pushed commit")
         round_name = f"{time.strftime('%Y%m%d-%H%M%S')}-{head[:8]}"
-        result, log = self.gate(docs or lanes_of(config), round_name)
+        result, log = self.gate(ungated["lanes"] if ungated else docs or lanes_of(config), round_name)
         self.prune()
         if result in NO_VERDICT:
             queue.mark(applied, QUEUED)
@@ -1287,10 +1400,31 @@ class Worker:
             self.say("an entry was removed during the run: gating what is left")
             queue.mark(applied, QUEUED)
             return True
-        self.keep(applied, base, head, docs)
-        if self.push(config, applied, base, docs): self.passed(len(applied))
+        if ungated: head = self.mark_ungated(ungated, base)
+        self.keep(applied, base, head, docs, ungated)
+        if self.push(config, applied, base, docs, ungated): self.passed(len(applied))
         else: queue.mark(applied, QUEUED)
         return True
+
+    def ungated(self, applied, config):
+        """What an ungated landing of applied records, the reason --why gave and the lanes it runs, when it is one
+        entry eng land --no-gate put on its own; else None."""
+        if not (self.alone and applied[0].get("noGate")): return None
+        ungated = {"why": applied[0].get("aheadWhy") or "no reason was recorded", "lanes": ungated_lanes(config)}
+        self.say(f"{applied[0]['id']} lands without the gate, as eng land --no-gate asked, because {ungated['why']}: "
+                 f"running only {', '.join(ungated['lanes']) or 'no lane'}; the next gate on main covers it")
+        return ungated
+
+    def mark_ungated(self, ungated, base):
+        """Add the UNGATED trailer to HEAD, an ungated landing's tip, and return the new HEAD; a HEAD at base, whose
+        commits main already has, stays. The commit keeps its author, message and patch, by which Closeout finds its
+        branch landed."""
+        if self.head() == base: return base
+        words = (f"eng land --no-gate ran {', '.join(ungated['lanes']) or 'no lane'} and the pre-push checks, not the "
+                 f"gate, because {ungated['why']}; the next gate on main covers it")
+        git(self.checkout, "commit", "--amend", "--no-verify", "--no-edit", "--allow-empty", "--trailer",
+            f"{UNGATED}: {words}", hooks=False, check=True)
+        return self.head()
 
     def no_verdict_cause(self, result, log):
         """Why the gate that exited result gave no verdict, for a hold's reason: the lane's limit it reached, the
@@ -1329,12 +1463,14 @@ class Worker:
             raise Hold(SESSION, f"{error}, judging {what} with the toolkit at "
                                 f"{self.code[:12] if self.code else 'no commit'}") from error
 
-    def keep(self, batch, base, head, docs):
+    def keep(self, batch, base, head, docs, ungated=None):
         """Record a batch's pass before its push. A hold the push meets, a refusal or a remote out of reach, then
         leaves the batch passed rather than queued, and `eng queue resume` pushes head instead of gating the same
         tree again (vocaro-engineering#150): EPUBLib's queue spent an hour of the second Mac doing that."""
         verdict = {"head": head, "base": base, "batch": [entry["id"] for entry in batch], "at": time.time()}
         if docs: verdict["docsOnly"] = docs
+        if ungated: verdict["ungated"] = ungated
+        if self.alone: verdict["alone"] = True
         if self.measured: verdict["gate"] = self.measured
         for entry in batch: self.queue.record(entry, state=PASSED, passed=verdict)
 
@@ -1352,12 +1488,13 @@ class Worker:
             self.queue.mark(passed, QUEUED)
             return True
         batch = sorted(passed, key=lambda entry: verdict["batch"].index(entry["id"]))
-        base, head, docs = verdict["base"], verdict["head"], verdict.get("docsOnly")
+        base, head, docs, ungated = verdict["base"], verdict["head"], verdict.get("docsOnly"), verdict.get("ungated")
         config = self.settings(base, head)
         self.measured = verdict.get("gate")
+        self.alone = bool(verdict.get("alone"))
         self.say(f"{len(batch)} entr{'y' if len(batch) == 1 else 'ies'} passed at {head[:12]} on {base[:12]}: "
                  "pushing without gating again")
-        if self.push(config, batch, base, docs): self.passed(len(batch))
+        if self.push(config, batch, base, docs, ungated): self.passed(len(batch))
         else: self.queue.mark(batch, QUEUED)
         return True
 
@@ -1440,6 +1577,21 @@ def land_arguments(parser):
                         "0 landed, 1 came back, 75 held or still waiting at the limit")
     parser.add_argument("--limit", type=float, default=WAIT_LIMIT, metavar="SECONDS")
     parser.add_argument("--note", help="what the entry is, for `eng queue status`")
+    options(parser)
+
+
+def options(parser):
+    """eng land's emergency options, in every repository, which `eng queue add` takes too (guides/maintenance.md,
+    Landing ahead of the queue)."""
+    parser.add_argument("--front", action="store_true", help="for an emergency, such as an important fix stuck behind "
+                        "queued changes: test it next, ahead of everything waiting, as a batch of its own, once a gate "
+                        "already running finishes. Again with a commit already queued, it moves that entry")
+    parser.add_argument("--no-gate", action="store_true", help="for an emergency, such as an important fix held up by "
+                        "an unrelated flaky test: land it alone on the spelling lane, where the project has one, and "
+                        "the pre-push hook, without the gate, and record it as ungated, which the next gate on main "
+                        "covers. Needs --why; tell the owner you used it and why. With --front it lands at once")
+    parser.add_argument("--why", metavar="TEXT", help="the reason for --front or --no-gate, which --no-gate requires: "
+                        "the entry, the log, the landed commit's trailer and `eng queue status` record it")
 
 
 def add_arguments(parser):
@@ -1447,6 +1599,7 @@ def add_arguments(parser):
     adding = operations.add_parser("add", help="queue the commits a ref has and origin/main lacks, and return at once")
     adding.add_argument("reference", nargs="?", default="HEAD")
     adding.add_argument("--note", help="what the entry is, for `eng queue status`")
+    options(adding)
     state = operations.add_parser("status", help="say what is waiting, what is running, what came back and, when the "
                                   "queue is held, why and for whom")
     state.add_argument("--json", action="store_true")
@@ -1463,7 +1616,7 @@ def add_arguments(parser):
 
 def main(root, args):
     if args.operation == "add":
-        add(root, args.reference, args.note)
+        add(root, args.reference, args.note, front=args.front, no_gate=args.no_gate, why=args.why)
         return 0
     if args.operation == "status": return status(root, args.json)
     if args.operation == "wait": return wait(root, args.id, args.limit)

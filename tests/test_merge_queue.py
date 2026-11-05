@@ -1552,6 +1552,229 @@ class DocsOnly(Fixture):
         self.assertEqual(declared["properties"]["lanes"]["items"]["not"], {"const": "gate"})
 
 
+class AheadOfTheQueue(Fixture):
+    """eng land's emergency options --front and --no-gate, in every repository with no setting (owner's decision,
+    2026-11-04, vocaro-engineering#163); --no-gate needs a written reason."""
+    WHY = "a flaky voice test unrelated to the fix fails the gate"
+
+    def setUp(self):
+        super().setUp()
+        self.light_counter, self.light_status = self.base / "spelling-runs", self.base / "spelling-status"
+        config = json.loads((self.repo / "engineering.json").read_text())
+        config["lanes"]["spelling"] = {"command": ["python3", "lane.py", str(self.light_counter), str(self.light_status)]}
+        self.configured = config
+        self.publish(config, "Add a spelling lane")
+        self.counter.unlink(missing_ok=True)
+        self.light_counter.unlink(missing_ok=True)
+
+    def light(self):
+        return len(self.light_counter.read_text()) if self.light_counter.exists() else 0
+
+    def add_with(self, branch, **options):
+        with patch.object(mq.Queue, "start"), patch("builtins.print"): return mq.add(self.repo, branch, **options)
+
+    def ungated(self, branch):
+        return self.add_with(branch, no_gate=True, why=self.WHY)
+
+    def rounds(self, count=1):
+        """count rounds of one worker, and what it said."""
+        said, worker = [], mq.Worker(mq.Queue(self.repo))
+        with patch.object(mq.Worker, "say", lambda _, words: said.append(words)):
+            for _ in range(count): worker.round()
+        return worker, said
+
+    def tip_message(self):
+        run(self.repo, "git", "fetch", "-q", "origin")
+        return run(self.repo, "git", "log", "-1", "--format=%B", "origin/main")
+
+    def queue_status(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out): mq.status(self.repo)
+        return out.getvalue()
+
+    def test_no_gate_needs_a_written_reason(self):
+        self.commit("fix", "fix")
+        for why in (None, "", "  "):
+            with self.subTest(why=why), self.assertRaisesRegex(ValueError, "--no-gate needs a written reason"):
+                self.add_with("fix", no_gate=True, why=why)
+        with self.assertRaisesRegex(ValueError, "--why is the reason for --front or --no-gate"):
+            self.add_with("fix", why=self.WHY)
+        self.assertEqual(mq.Queue(self.repo).all(), [])
+        # The control: with a reason it is queued, and the reason is kept on one line.
+        identifier = self.add_with("fix", no_gate=True, why="a flaky test\n  fails the gate")
+        self.assertEqual((self.state(identifier)["noGate"], self.state(identifier)["aheadWhy"]),
+                         (True, "a flaky test fails the gate"))
+
+    def test_both_options_work_with_no_setting_and_main_cannot_declare_one(self):
+        # The fixture's main declares neither, and front needs no reason.
+        self.commit("a", "a")
+        identifier = self.add_with("a", front=True)
+        self.assertEqual(self.state(identifier)["front"], True)
+        self.assertNotIn("aheadWhy", self.state(identifier))
+        for name in ("front", "noGate"):
+            with self.subTest(name=name):
+                (self.repo / "engineering.json").write_text(json.dumps(
+                    {**self.configured, "queue": {name: {"why": "a setting that no longer exists"}}}))
+                with self.assertRaisesRegex(ValueError, "queue supports only"): self.config()
+        schema = json.loads((ROOT / "schemas/engineering.schema.json").read_text())["properties"]["queue"]["properties"]
+        self.assertFalse({"front", "noGate"} & set(schema))
+
+    def test_a_front_entry_is_tested_next_as_a_batch_of_its_own(self):
+        self.commit("a", "a"); self.commit("b", "b"); self.commit("c", "c")
+        a, b = self.add("a", "b")
+        c = self.add_with("c", front=True, why="an important toolkit fix")
+        _, said = self.rounds()
+        self.assertEqual([self.state(i)["state"] for i in (a, b, c)], ["queued", "queued", "landed"])
+        self.assertEqual(self.gates(), 1)
+        self.assertTrue(any("at the front of the queue" in words for words in said), said)
+        self.assertNotIn("ungated", self.state(c))
+        # Those already queued are tested with the fix, without being queued again.
+        self.rounds()
+        self.assertEqual([self.state(i)["state"] for i in (a, b)], ["landed"] * 2)
+        self.assertEqual(self.gates(), 2)
+        log = run(self.repo, "git", "log", "--format=%s", "origin/main").splitlines()
+        self.assertEqual(log[:3], ["Add b", "Add a", "Add c"])
+
+    def test_without_front_the_same_entries_share_one_gate_in_order(self):
+        self.commit("a", "a"); self.commit("b", "b"); self.commit("c", "c")
+        ids = self.add("a", "b", "c")
+        self.rounds()
+        self.assertEqual([self.state(i)["state"] for i in ids], ["landed"] * 3)
+        self.assertEqual(self.gates(), 1)
+        self.assertEqual(run(self.repo, "git", "log", "--format=%s", "origin/main").splitlines()[:3],
+                         ["Add c", "Add b", "Add a"])
+
+    def test_front_again_moves_an_entry_already_queued(self):
+        self.commit("a", "a"); self.commit("b", "b")
+        a, b = self.add("a", "b")
+        self.assertEqual(self.add_with("b", front=True, why="it unblocks the queue"), b)
+        described = mq.describe(self.state(b))
+        self.assertIn("is tested next", described)
+        self.assertIn("because it unblocks the queue", described)
+        self.rounds()
+        self.assertEqual([self.state(i)["state"] for i in (a, b)], ["queued", "landed"])
+
+    def test_a_front_entry_leaves_a_bisect_where_it_was(self):
+        self.commit("a", "a"); self.commit("bad", "bad")
+        self.add("a")
+        identifier = self.add_with("bad", front=True)
+        worker = mq.Worker(mq.Queue(self.repo))
+        worker.limit, worker.suspects = 1, 2
+        with patch.object(mq.Worker, "say"): worker.round()
+        self.assertEqual(self.state(identifier)["state"], "failed")
+        self.assertEqual((worker.limit, worker.suspects), (1, 2))
+
+    def test_no_gate_lands_on_the_light_lanes_and_records_its_reason(self):
+        tip = self.commit("fix", "fix")
+        identifier = self.ungated("fix")
+        _, said = self.rounds()
+        entry = self.state(identifier)
+        self.assertEqual(entry["state"], "landed")
+        self.assertEqual((self.gates(), self.light()), (0, 1))
+        self.assertEqual(entry["ungated"], {"why": self.WHY, "lanes": ["spelling"]})
+        self.assertNotIn("gatedOn", entry)
+        self.assertTrue(any("lands without the gate" in words and self.WHY in words
+                            and "the next gate on main covers it" in words for words in said), said)
+        # Main's history says so, with the reason, and the commit keeps its message, author and tree.
+        message = self.tip_message()
+        self.assertTrue(message.startswith("Add fix"), message)
+        self.assertIn(f"{mq.UNGATED}: eng land --no-gate ran spelling", message)
+        self.assertIn(f"because {self.WHY}", message)
+        self.assertEqual(run(self.repo, "git", "log", "-1", "--format=%an %T", "origin/main"),
+                         run(self.repo, "git", "log", "-1", "--format=%an %T", tip))
+        self.assertIn(f"landed without the gate, on spelling, because {self.WHY}", mq.describe(entry))
+        self.assertIn(f"ungated on main: {identifier}", self.queue_status())
+        # A later gate on main covers it, and the status says no more of it.
+        self.commit("later", "later")
+        later = self.add_with("later")
+        self.rounds()
+        self.assertEqual(self.state(later)["state"], "landed")
+        self.assertEqual(self.gates(), 1)
+        self.assertNotIn(mq.UNGATED, self.tip_message())
+        self.assertNotIn("ungated on main", self.queue_status())
+
+    def test_a_project_without_a_spelling_lane_runs_no_lane(self):
+        config = json.loads(json.dumps(self.configured))
+        del config["lanes"]["spelling"]
+        run(self.repo, "git", "checkout", "-q", "--detach", "origin/main")
+        self.publish(config, "No spelling lane")
+        self.counter.unlink(missing_ok=True)
+        self.commit("fix", "fix")
+        identifier = self.ungated("fix")
+        self.rounds()
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual((self.gates(), self.light()), (0, 0))
+        self.assertEqual(self.state(identifier)["ungated"]["lanes"], [])
+
+    def test_a_docs_only_landing_does_not_cover_an_ungated_one(self):
+        config = json.loads(json.dumps(self.configured))
+        config["queue"]["docsOnly"] = {"paths": {"doc/": "no code lane reads it"}, "lanes": ["spelling"]}
+        run(self.repo, "git", "checkout", "-q", "--detach", "origin/main")
+        self.publish(config, "Declare the docs")
+        self.commit("fix", "fix")
+        identifier = self.ungated("fix")
+        self.rounds()
+        self.commit("doc/guide.md", "guide")
+        self.add("guide")
+        self.rounds()
+        self.assertEqual(self.gates(), 0)
+        self.assertIn(f"ungated on main: {identifier}", self.queue_status())
+
+    def test_an_ungated_entry_waits_its_turn_and_lands_alone(self):
+        self.commit("a", "a"); self.commit("b", "b"); self.commit("c", "c")
+        [a] = self.add("a")
+        b = self.ungated("b")
+        [c] = self.add("c")
+        self.rounds()
+        self.assertEqual([self.state(i)["state"] for i in (a, b, c)], ["landed", "queued", "queued"])
+        self.assertEqual(self.gates(), 1)
+        self.rounds()
+        self.assertEqual([self.state(i)["state"] for i in (b, c)], ["landed", "queued"])
+        self.assertEqual(self.gates(), 1)
+        self.assertIn("ungated", self.state(b))
+        self.rounds()
+        self.assertEqual(self.state(c)["state"], "landed")
+        self.assertEqual(self.gates(), 2)
+
+    def test_front_and_no_gate_together_land_at_once(self):
+        self.commit("a", "a"); self.commit("fix", "fix")
+        [a] = self.add("a")
+        fix = self.add_with("fix", front=True, no_gate=True, why=self.WHY)
+        self.rounds()
+        self.assertEqual([self.state(i)["state"] for i in (a, fix)], ["queued", "landed"])
+        self.assertEqual((self.gates(), self.light()), (0, 1))
+        self.assertIn(mq.UNGATED, self.tip_message())
+
+    def test_a_light_lane_that_fails_sends_it_back(self):
+        self.light_status.write_text("1")
+        self.commit("fix", "fix")
+        identifier = self.ungated("fix")
+        self.rounds()
+        self.assertEqual(self.state(identifier)["state"], "failed")
+        self.assertNotIn("fix", self.main_files())
+
+    def test_the_pre_push_hook_still_runs_and_its_refusal_holds(self):
+        self.ran = self.base / "hook-runs"
+        PrePushHooks.hook(self, "exit 1")
+        self.commit("fix", "fix")
+        identifier = self.ungated("fix")
+        with contextlib.redirect_stdout(io.StringIO()): self.work()
+        self.assertEqual(len(PrePushHooks.runs(self)), 1)
+        self.assertIn("pre-push hook refused", mq.Queue(self.repo).held())
+        self.assertNotIn("fix", self.main_files())
+        self.assertEqual(self.state(identifier)["state"], "passed")
+
+    def test_the_options_reach_eng_land_and_eng_queue_add(self):
+        import argparse
+        for adder, words in ((mq.land_arguments, []), (mq.add_arguments, ["add"])):
+            parser = argparse.ArgumentParser()
+            adder(parser)
+            asked = parser.parse_args([*words, "--front", "--no-gate", "--why", "a reason"])
+            plain = parser.parse_args(words)
+            self.assertEqual((asked.front, asked.no_gate, asked.why, plain.front, plain.no_gate, plain.why),
+                             (True, True, "a reason", False, False, None))
+
+
 class LaggingCheckout(Fixture):
     """The main checkout's engineering.json is behind origin/main, as Pagepour's was (#96)."""
     def session(self, lagging, published=None):

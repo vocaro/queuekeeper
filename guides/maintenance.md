@@ -454,10 +454,43 @@ The lanes must be ones the queue runs, so their passing is what the worker just 
 admission there is a lane's no verdict. The worker then does not run the hook, and its log says so.
 Keep the opt-in only while it is true: a hook that checks something no lane does stays a hook. A person's own `git push` still runs the hook.
 
+**Landing ahead of the queue.** Two options of `eng land`, and of `eng queue add`, are for
+emergencies only, never routine. They work in every repository, with no setting (owner's decision,
+2026-11-04, [#163](https://github.com/vocaro/vocaro-engineering/issues/163)), and do what a hand push
+past the queue did, with the tool keeping the record:
+
+```sh
+python3 scripts/eng land --front --why "the toolkit fix every queued change needs" --wait
+python3 scripts/eng land --no-gate --why "an unrelated flaky test fails the gate" --wait
+```
+
+- `--front` tests the entry next, ahead of everything waiting, as a batch of its own. A gate already
+  running finishes first, as does a batch that passed and waits for its push; a bisect in progress
+  goes on where it was. `eng land --front` again with a commit already queued moves that entry.
+  `--why` is optional here, and the entry and `eng queue status` show it. Example: an important
+  toolkit fix stuck behind several queued changes jumps the queue. The entries already queued are
+  then tested with the fix without being queued again: they rebase onto the new `main`, and other
+  projects' workers move to the toolkit at `origin/main` each round.
+- `--no-gate` needs a written reason, `--why TEXT`, and is refused without one. It lands the entry
+  alone, in its turn: the worker rebases it onto `origin/main`, runs only the project's `spelling`
+  lane, where it has one, and the pre-push hook, unless `main`'s `queue.hookCoveredBy` says the gate
+  covers the hook, and pushes. The reason is recorded everywhere the skip is: the entry's `ungated`,
+  with the lanes; the worker's log; the landed tip's `Landed-without-gate:` trailer, its author,
+  message and patch otherwise its own; and `eng queue status`. Example: an important fix is held up by
+  an unrelated flaky test failing the gate. It is no gate of the pushed commit, so `eng release`
+  will not take it. The next gate on `main` covers it: `eng queue status` lists it as `ungated on
+  main` until a landing whose gate ran on a base that holds it has passed, and a docs-only landing
+  does not count. A session that uses it tells the owner it did and why, as for a hand push.
+
+With both, the entry lands at once, once a gate already running finishes, which is the hand push of
+2026-11-04: a one-line change that made a late voice listing a skip on simulators, so that
+EPUBLib's gates gave a verdict again ([EPUBLib#946](https://github.com/vocaro/EPUBLib/issues/946)).
+
 **Pushing by hand is the exception.** A session pushes to `main` by hand only when `eng land` cannot
 be used, when it must be bypassed, each for a reason it can state, such as a broken queue or a fix
-that cannot wait for it, or with the owner's approval. A record or a document lands by the queue
-like anything else. A hand push follows [push only onto the `main` you tested](#concurrent-git-integration)
+that cannot wait for it, or with the owner's approval. A fix that cannot wait for the gate lands
+with `eng land --front --no-gate --why TEXT` instead, as above. A record or a document lands
+by the queue like anything else. A hand push follows [push only onto the `main` you tested](#concurrent-git-integration)
 and is reported to the owner with its reason. No check enforces this.
 
 **Main moving under a passed batch.** The queue takes a hand push as it comes. If `main` moved only by Markdown documents the batch
