@@ -1284,8 +1284,13 @@ with their commands: exactly what `--delete` would offer to remove.
 - **Build caches.** A DerivedData folder in `~/Library/Developer/Xcode` (named
   `NAME-<28 letters>`) whose `info.plist` names a workspace in `~/Development` or a temporary
   directory is a candidate when that workspace no longer exists; a folder for any other
-  workspace is not the projects' and is not listed. One without `info.plist` is an owner item, and the folders every build shares
-  (`ModuleCache.noindex`, `SDKExplicitPrecompiledModules`) are kept. A SwiftPM scratch (a
+  workspace is not the projects' and is not listed. One without `info.plist` can be traced to no
+  project. When it holds nothing but `Logs`, `SourcePackages` and `TestResults`, which an
+  `xcodebuild` without `-derivedDataPath` leaves when it resolves packages or tests without
+  building, it has no build products to lose and is a candidate under the same rules: no
+  process and idle for `--min-idle-hours`. One holding `Build` or anything else is an owner
+  item. The folders every build shares (`ModuleCache.noindex`, `SDKExplicitPrecompiledModules`)
+  are kept. A SwiftPM scratch (a
   directory holding `workspace-state.json`) or an Xcode `-derivedDataPath` directory under
   `/private/tmp` or the user temporary directory is a candidate when it lies outside every
   checkout. Claude Code keeps each session's scratchpad in

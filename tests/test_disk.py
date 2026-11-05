@@ -409,6 +409,35 @@ class CacheTests(Fixture):
         self.assertEqual(items[str(shared)].status, disk.KEPT)
         self.assertEqual(items[str(explicit)].status, disk.KEPT)
 
+    def test_derived_data_recording_no_workspace_is_a_candidate_only_without_build_products(self):
+        root = self.home / "Library/Developer/Xcode/DerivedData"
+        def tree(name, *folders):
+            directory = root / (name + "-" + "f" * 28)
+            for folder in folders: (directory / folder).mkdir(parents=True)
+            return directory
+        resolved = tree("Resolved", "Logs", "SourcePackages", "TestResults")
+        logs = tree("Logs", "Logs")
+        built = tree("Built", "Logs", "SourcePackages", "Build")
+        indexed = tree("Indexed", "Logs", "Index.noindex")
+        used = tree("Used", "Logs", "SourcePackages")
+        recent = tree("Recent", "Logs", "SourcePackages")
+        os.utime(recent / "Logs", (LATER - 3600, LATER - 3600))
+        process = disk.Process(6, "xcodebuild", cwd=str(used / "SourcePackages/checkouts/Package"))
+        items = self.items(self.host([process]), ["derived-data"])
+        for candidate in (resolved, logs):
+            self.assertEqual(items[str(candidate)].status, disk.CANDIDATE, items[str(candidate)].reason)
+            self.assertEqual(items[str(candidate)].command, ["rm", "-rf", "--", str(candidate)])
+        self.assertIn("records no workspace; holds only Logs, SourcePackages, TestResults, no build products",
+                      items[str(resolved)].reason)
+        # A folder with build products, or anything else this rule does not know, stays the owner's decision.
+        for owner in (built, indexed):
+            self.assertEqual(items[str(owner)].status, disk.OWNER, items[str(owner)].reason)
+            self.assertIn("records no workspace; holds", items[str(owner)].reason)
+        self.assertEqual(items[str(used)].status, disk.KEPT)
+        self.assertIn("in use: PID 6 (xcodebuild)", items[str(used)].reason)
+        self.assertEqual(items[str(recent)].status, disk.KEPT)
+        self.assertIn("but changed 60 min ago", items[str(recent)].reason)
+
     def test_derived_data_of_a_workspace_outside_the_projects_is_not_listed(self):
         mine = self.derived("Mine-" + "a" * 28, self.root / "Desktop/Personal.xcodeproj")
         gone = self.derived("Gone-" + "b" * 28, self.root / "removed/Personal.xcodeproj")

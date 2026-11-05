@@ -52,6 +52,9 @@ UUID = re.compile(r"[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}
 SEPARATORS = re.compile(r"[\s=,;\"']+")
 # Xcode names a workspace's DerivedData folder NAME-<28 letters>; other folders are shared caches.
 WORKSPACE_FOLDER = re.compile(r".+-[a-z]{28}")
+# What an xcodebuild leaves in a folder it writes no info.plist for, when it resolves packages or tests
+# without building: logs, resolved package checkouts and test results, and no build products to lose.
+UNBUILT = frozenset({"Logs", "SourcePackages", "TestResults"})
 # Ignored files under a directory of one of these names may be evidence; ignored.py, which Closeout
 # reads too, says which ignored files are caches a tool rebuilds and keeps a worktree for any other.
 EVIDENCE_NAMES = ignored.EVIDENCE_NAMES
@@ -668,8 +671,15 @@ def derived_data(host, usage, sizes):
             workspace = None
         if workspace and not project_workspace(host, workspace): continue  # another workspace's build
         if not workspace:
+            names = sorted(entry.name for entry in child.iterdir())
+            held = ", ".join(names[:5]) or "nothing"
+            if set(names) <= UNBUILT:
+                # No project to trace it to, but nothing in it a build could need again: a candidate once
+                # idle and unused, as a folder whose workspace is gone.
+                items.append(cache_item(host, usage, sizes, "derived-data", child,
+                                        f"records no workspace; holds only {held}, no build products"))
+                continue
             use = usage.of(child)
-            held = ", ".join(sorted(entry.name for entry in child.iterdir())[:5]) or "nothing"
             items.append(Item("derived-data", str(child), KEPT if use else OWNER,
                               "in use: " + described(use) if use else f"records no workspace; holds {held}",
                               sizes.of(child), None if use else ["rm", "-rf", "--", str(child)],
