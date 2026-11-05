@@ -62,8 +62,10 @@ def runs(entries):
     seen, found = set(), []
     for entry in sorted(entries, key=lambda entry: entry.get("settled", 0), reverse=True):
         run = entry.get("gate")
-        if entry.get("state") != "landed" or not isinstance(run, dict) or entry.get("landedAs") in seen: continue
-        seen.add(entry.get("landedAs"))
+        # The batch's tip, which every entry of a batch shares; landedAs is each entry's own commit (#184).
+        pushed = entry.get("landedTip") or entry.get("landedAs")
+        if entry.get("state") != "landed" or not isinstance(run, dict) or pushed in seen: continue
+        seen.add(pushed)
         found.append(run)
     return found
 

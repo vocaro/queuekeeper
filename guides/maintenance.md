@@ -225,9 +225,11 @@ again replaces what it added before.
 **A fix in another repository lands there the same way.** Commit it in a worktree of that
 repository, then `eng land --repo NAME BRANCH --wait`, from wherever the session is. It joins that
 repository's queue beside its own sessions' commits and so stops none of their work. A commit must
-be named, because HEAD there is another session's. `--wait` prints `landed: COMMIT` in full. Move
-the dependent project's pin to that commit in a commit of its own, and land that in the dependent's
-queue.
+be named, because HEAD there is another session's. `--wait` prints `landed: COMMIT` in full: the
+entry's own last commit on `main`, not another entry's at the batch's tip, and its status line
+above says `-> COMMIT (N commits), in batch tip TIP` when the entry has several commits or another
+entry's commit tops the batch. Cite that commit. Move the dependent project's pin to it in a
+commit of its own, and land that in the dependent's queue.
 
 **A round.** The worker fetches, takes everything waiting, oldest first, cherry-picks each entry
 onto `origin/main` in its own checkout, `~/Development/vocaro-queue/NAME/NAME`, and runs the project's queue lanes through

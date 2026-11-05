@@ -1874,6 +1874,9 @@ class AheadOfTheQueue(Fixture):
         self.assertEqual(run(self.repo, "git", "log", "-1", "--format=%an %T", "origin/main"),
                          run(self.repo, "git", "log", "-1", "--format=%an %T", tip))
         self.assertIn(f"landed without the gate, on spelling, because {self.WHY}", mq.describe(entry))
+        # The UNGATED amend keeps the author, date and subject by which the entry finds its own commit (#184).
+        self.assertEqual(entry["landedAs"], run(self.repo, "git", "rev-parse", "origin/main"))
+        self.assertEqual(entry["landedCommits"], 1)
         self.assertIn(f"ungated on main: {identifier}", self.queue_status())
         # A later gate on main covers it, and the status says no more of it.
         self.commit("later", "later")
@@ -2986,6 +2989,86 @@ class Unreachable(Fixture):
             self.assertEqual((len(fetches), slept), (1, []))
 
 
+class LandedCommits(Fixture):
+    """Each entry records and prints its own commit on main, not the batch's tip (vocaro-engineering#184)."""
+
+    def on_main(self, subject):
+        run(self.repo, "git", "fetch", "-q", "origin")
+        return run(self.repo, "git", "log", "--format=%H", "-1", f"--grep=^{subject}$", "origin/main")
+
+    def tip(self):
+        run(self.repo, "git", "fetch", "-q", "origin")
+        return run(self.repo, "git", "rev-parse", "origin/main")
+
+    def waited(self, identifier):
+        with contextlib.redirect_stdout(io.StringIO()) as said:
+            self.assertEqual(mq.wait(self.repo, identifier), 0)
+        return said.getvalue()
+
+    def test_a_single_entry_is_the_tip(self):
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        self.work()
+        entry, tip = self.state(identifier), self.tip()
+        self.assertEqual((entry["landedAs"], entry["landedTip"]), (tip, tip))
+        self.assertEqual(entry["landedCommits"], 1)
+        said = self.waited(identifier)
+        self.assertEqual(said.rsplit("landed: ", 1)[1].strip(), tip)
+        self.assertIn(f"-> {tip[:12]}\n", said)
+        self.assertNotIn("batch tip", said)
+        self.assertNotIn("commits)", said)
+
+    def test_an_entry_below_the_tip_names_its_own_commit_and_the_tip(self):
+        self.commit("a", "a"); self.commit("b", "b"); self.commit("c", "c")
+        first, middle, last = self.add("a", "b", "c")
+        self.work()
+        tip = self.tip()
+        for identifier, subject in ((first, "Add a"), (middle, "Add b"), (last, "Add c")):
+            entry = self.state(identifier)
+            self.assertEqual(entry["landedAs"], self.on_main(subject))
+            self.assertEqual(entry["landedTip"], tip)
+        own = self.state(first)["landedAs"]
+        self.assertNotEqual(own, tip)  # the bug: every entry named the tip
+        said = self.waited(first)
+        self.assertEqual(said.rsplit("landed: ", 1)[1].strip(), own)
+        self.assertIn(f"-> {own[:12]}, in batch tip {tip[:12]}", said)
+        # The control: the entry whose commit is the tip says nothing of a batch tip.
+        said = self.waited(last)
+        self.assertEqual(said.rsplit("landed: ", 1)[1].strip(), tip)
+        self.assertNotIn("batch tip", said)
+
+    def test_a_multi_commit_entry_names_its_last_commit_and_counts_them(self):
+        self.commit("m1", "multi")
+        for name in ("m2", "m3"):
+            (self.repo / name).write_text("x")
+            run(self.repo, "git", "add", name)
+            run(self.repo, "git", "commit", "-qm", f"Add {name}")
+        self.commit("z", "z")
+        multi, single = self.add("multi", "z")
+        self.work()
+        tip, entry = self.tip(), self.state(multi)
+        self.assertEqual(entry["landedAs"], self.on_main("Add m3"))
+        self.assertEqual(entry["landedCommits"], 3)
+        self.assertEqual(run(self.repo, "git", "rev-list", "--count", f"{self.on_main('Add m1')}^..{entry['landedAs']}"),
+                         "3")
+        said = self.waited(multi)
+        self.assertIn(f"-> {entry['landedAs'][:12]} (3 commits), in batch tip {tip[:12]}", said)
+        self.assertEqual(said.rsplit("landed: ", 1)[1].strip(), entry["landedAs"])
+        # The control: a one-commit entry gives no count.
+        self.assertEqual(self.state(single)["landedAs"], tip)
+        self.assertNotIn("commits)", self.waited(single))
+
+    def test_commits_main_already_had_leave_the_tip(self):
+        worker = mq.Worker.__new__(mq.Worker)
+        worker.checkout = self.repo
+        base = run(self.repo, "git", "rev-parse", "origin/main")
+        tip = self.commit("a", "a")
+        other = self.commit("b", "b")
+        # An entry none of whose commits base..tip holds is left out, and records the tip.
+        own = worker.landed([{"id": "a", "commits": [tip]}, {"id": "b", "commits": [other]}], base, tip)
+        self.assertEqual(own, {"a": (tip, 1)})
+
+
 class PassedThroughAHold(Fixture):
     """A batch whose lanes passed keeps that verdict through a hold its push meets, and the next worker pushes
     it without gating the same tree again (vocaro-engineering#150)."""
@@ -3017,7 +3100,10 @@ class PassedThroughAHold(Fixture):
         self.assertEqual(self.resume(), 0)
         self.assertEqual([self.state(i)["state"] for i in ids], ["landed"] * 2)
         self.assertEqual(self.gates(), 1)
-        self.assertEqual(self.state(ids[0])["landedAs"], verdict["head"])
+        # The batch's tip is the commit that passed; each entry, pushed by a worker that picked nothing, its own (#184).
+        self.assertEqual([self.state(i)["landedTip"] for i in ids], [verdict["head"]] * 2)
+        self.assertEqual(self.state(ids[1])["landedAs"], verdict["head"])
+        self.assertEqual(self.state(ids[0])["landedAs"], run(self.repo, "git", "rev-parse", f"{verdict['head']}^"))
         self.assertLessEqual({"a", "b"}, self.main_files())
         # The landed entries still record the gate that passed them, for its budget.
         self.assertEqual(self.state(ids[0])["gate"], verdict["gate"])

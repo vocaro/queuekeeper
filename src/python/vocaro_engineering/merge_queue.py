@@ -696,7 +696,12 @@ def remove(queue, identifier, quiet=False):
 
 def describe(entry):
     line = f"{entry['state']:8} {entry['id']}  {entry['subject']}"
-    if entry.get("landedAs"): line += f"  -> {entry['landedAs'][:12]}"
+    if entry.get("landedAs"):
+        # The entry's own last commit on main; the batch's tip beside it when another entry's commit is the tip.
+        line += f"  -> {entry['landedAs'][:12]}"
+        if entry.get("landedCommits", 1) > 1: line += f" ({entry['landedCommits']} commits)"
+        if entry.get("landedTip", entry["landedAs"]) != entry["landedAs"]:
+            line += f", in batch tip {entry['landedTip'][:12]}"
     if entry["state"] == PASSED:
         verdict = entry["passed"]
         line += (f"\n         passed at {verdict['head'][:12]} on {verdict['base'][:12]}: the push lands it without "
@@ -1291,8 +1296,12 @@ class Worker:
                 git(self.checkout, *FETCH)
                 self.say(f"pushed {head[:12]}" + (", landed without the gate, which the next gate on main covers"
                                                   if ungated else ""))
+                own = self.landed(batch, base, head)
                 for entry in batch:
-                    self.queue.settle(entry, LANDED, landedAs=head, **({"docsOnly": docs} if docs else {}),
+                    commit, count = own.get(entry["id"], (head, 0))
+                    self.queue.settle(entry, LANDED, landedAs=commit, landedTip=head,
+                                      **({"landedCommits": count} if count else {}),
+                                      **({"docsOnly": docs} if docs else {}),
                                       **({"ungated": ungated} if ungated else {}),
                                       **({"gate": self.measured} if self.measured and not docs else {}),
                                       **({} if docs or ungated else {"gatedOn": gated_on}))
@@ -1304,6 +1313,28 @@ class Worker:
                 raise Hold(CLEARS, f"the push of {head[:12]} did not reach the remote in {len(BACKOFF) + 1} tries: {said}")
             raise Hold(OWNER, f"the push of {head[:12]} was refused: {said or 'no output'}{status}")
         return False
+
+    def landed(self, batch, base, head):
+        """{entry id: (its last commit in base..head, how many of its commits that range holds)}, so that each entry
+        records its own commit on main rather than the batch's tip (vocaro-engineering#184). A pushed commit is its
+        entry's by author, author date and subject, which a cherry-pick, a carry-over and the UNGATED amend all keep,
+        matched in order, as the batch was picked in order. An entry none of whose commits the range holds, as when
+        main already had each, is left out, and records the tip, which holds it."""
+        form = "--format=%H%x00%an%x00%ae%x00%ad%x00%s"
+        def keyed(output):
+            return [(line.split("\0", 1)[0], line.split("\0", 1)[1]) for line in output.splitlines() if line]
+        expected = []
+        for entry in batch:
+            originals = keyed(text(self.checkout, "show", "-s", "--date=raw", form, *entry["commits"]))
+            expected += [(entry["id"], key) for _, key in originals]
+        own, position = {}, 0
+        for commit, key in keyed(text(self.checkout, "log", "--reverse", "--date=raw", form, f"{base}..{head}")):
+            match = next((index for index in range(position, len(expected)) if expected[index][1] == key), None)
+            if match is None: continue
+            identifier = expected[match][0]
+            own[identifier] = (commit, own.get(identifier, (None, 0))[1] + 1)
+            position = match + 1
+        return own
 
     def push_again(self, pushed):
         """(the last push, what a hold adds of GitHub's status). A push the remote refused for its credentials, when

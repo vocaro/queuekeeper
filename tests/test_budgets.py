@@ -79,6 +79,11 @@ class GateBudget(unittest.TestCase):
         others = [{**landed(5, 9000), "state": "failed"}, {"id": "x", "state": "landed", "landedAs": "d", "settled": 6}]
         self.assertEqual(budgets.gate_warnings(self.config(budgetMinutes=1), batch + others), [])
         self.assertEqual(len(budgets.gate_warnings(self.config(budgetMinutes=1), batch + three)), 1)
+        # Since #184 each entry of a batch records its own commit and the batch's tip beside it: the tip is the run.
+        own = [{**landed(n, 3000, landed_as=f"own{n}"), "landedTip": "tip"} for n in range(3)]
+        self.assertEqual(budgets.gate_warnings(self.config(budgetMinutes=1), own + others), [])
+        apart = [{**entry, "landedTip": f"tip{n}"} for n, entry in enumerate(own)]
+        self.assertEqual(len(budgets.gate_warnings(self.config(budgetMinutes=1), apart)), 1)
 
     def test_the_median_reads_only_the_recent_runs(self):
         old = [landed(n, 9000) for n in range(10)]
