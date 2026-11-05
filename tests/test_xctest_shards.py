@@ -261,6 +261,8 @@ class SplitSwiftTestingTests(unittest.TestCase):
         for call in runs:
             self.assertIn("--no-parallel", call)
             self.assertIn("--disable-xctest", call)
+            # Shards of one package run at once only past SwiftPM's lock on its .build.
+            self.assertIn("--ignore-lock", call)
         # A suite goes whole into one process, and every Swift Testing test runs exactly once.
         self.assertEqual(self.selected(), sorted(self.SUITES))
         self.assertIn("--filter=^Alpha\\.SuiteA/", [argument for call in runs for argument in call])
@@ -273,6 +275,7 @@ class SplitSwiftTestingTests(unittest.TestCase):
         runs = self.swift_testing_runs()
         self.assertEqual(len(runs), 1)
         self.assertNotIn("--no-parallel", runs[0])
+        self.assertNotIn("--ignore-lock", runs[0])
         self.assertFalse([argument for argument in runs[0] if argument.startswith("--filter")])
         self.assertEqual(evidence.counted(output), (9, 1))
 

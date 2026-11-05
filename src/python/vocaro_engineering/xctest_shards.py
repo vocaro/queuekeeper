@@ -170,7 +170,9 @@ def planned(directory, options, filters, jobs, timings, label, split=False):
             work.append((f"{label}shard {number} of {len(packed)}, {bundle.stem} (about {estimate:.0f}s)",
                          command, count, estimate, []))
         if suites:
-            command, _ = swift(directory, options, "test", "--skip-build", "--disable-xctest", "--no-parallel",
+            # --ignore-lock: SwiftPM holds the package's .build lock for the whole of a swift test, so without
+            # it each shard's process waits for the one before to end, and the shards run one at a time.
+            command, _ = swift(directory, options, "test", "--skip-build", "--ignore-lock", "--disable-xctest", "--no-parallel",
                                *[f"--filter={pattern}" for pattern in swift_testing_filters(suites, classes, sizes)])
             work.append((f"{label}shard {number} of {len(packed)}, Swift Testing (about {estimate:.0f}s)",
                          command, sum(len(classes[name]) for name in suites), estimate, suites))
