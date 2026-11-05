@@ -111,10 +111,13 @@ class Fixture(unittest.TestCase):
         run(self.repo, "git", "commit", "-qm", f"Add {name}")
         return run(self.repo, "git", "rev-parse", "HEAD")
 
-    def add(self, *branches):
-        """Queue branches with no worker started, so a test holds every order fixed."""
+    def add(self, *branches, checked=True):
+        """Queue branches with no worker started, so a test holds every order fixed. Unchecked, eng land's trial
+        integration (mq.check) is skipped, as when main or the entries ahead change after it, so that a conflict
+        reaches the round, whose send-back such a test exercises."""
         ids = []
-        with patch.object(mq.Queue, "start"), patch("builtins.print"):
+        unchecked = patch.object(mq, "check") if not checked else contextlib.nullcontext()
+        with patch.object(mq.Queue, "start"), patch("builtins.print"), unchecked:
             for branch in branches:
                 mq.add(self.repo, branch)
                 ids.append(next(e["id"] for e in reversed(mq.Queue(self.repo).all()) if e["branch"] == branch))
@@ -243,7 +246,7 @@ class Landing(Fixture):
 
     def test_a_conflict_comes_back_without_costing_the_others_a_gate(self):
         self.commit("same", "one", "one"); self.commit("same", "two", "two"); self.commit("c", "c")
-        ids = self.add("one", "two", "c")
+        ids = self.add("one", "two", "c", checked=False)
         self.work()
         self.assertEqual([self.state(i)["state"] for i in ids], ["landed", "conflict", "landed"])
         self.assertIn("same", self.state(ids[1])["why"])
@@ -256,7 +259,7 @@ class Landing(Fixture):
         self.commit("same", "one", "one")
         run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
         self.commit("same", "two", "two", start)
-        identifier, = self.add("two")
+        identifier, = self.add("two", checked=False)
         self.work()
         why = self.state(identifier)["why"]
         self.assertIn("conflicts with origin/main, in same: rebase onto origin/main", why)
@@ -286,6 +289,194 @@ class Landing(Fixture):
         self.work()
         self.assertLessEqual({"a", "a2"}, self.main_files())
         self.assertEqual(self.gates(), 1)
+
+
+class CheckedWhenQueued(Fixture):
+    """eng land's trial integration finds a conflict with the entries ahead when the entry is queued, not when its
+    round starts (vocaro-engineering#178)."""
+    def land(self, branch, **options):
+        """(the new entry's ID or None, what eng land said, the error it refused with or None), no worker started."""
+        said, error = io.StringIO(), None
+        with patch.object(mq.Queue, "start"), contextlib.redirect_stdout(said), contextlib.redirect_stderr(said):
+            try: mq.add(self.repo, branch, **options)
+            except ValueError as refused: error = str(refused)
+        identifier = next((e["id"] for e in reversed(mq.Queue(self.repo).all())
+                           if e["branch"] == branch and e["state"] in mq.WAITING), None)
+        return identifier, said.getvalue(), error
+
+    def worktrees(self):
+        return run(self.repo, "git", "worktree", "list", "--porcelain").count("worktree ")
+
+    def test_a_conflict_with_an_entry_ahead_is_refused_and_nothing_is_queued(self):
+        self.commit("same", "one", "one"); self.commit("c", "c"); self.commit("same", "two", "two")
+        ahead = self.add("one", "c")
+        before = self.worktrees()
+        identifier, _, error = self.land("two")
+        self.assertIsNone(identifier)
+        self.assertEqual([e["id"] for e in mq.Queue(self.repo).all()], ahead)
+        self.assertEqual(run(self.repo, "git", "for-each-ref", "--format=%(refname)", "refs/eng-queue").split(),
+                         [f"refs/eng-queue/{i}" for i in ahead])
+        # The files and the entries: all it was checked against, in order, and the one that changes the file.
+        self.assertIn("is not queued", error)
+        self.assertIn(f"conflicts with what is ahead of it, origin/main and {ahead[0]}, {ahead[1]}, in same:", error)
+        self.assertIn(f"and, in order, {ahead[0]}, {ahead[1]}; {ahead[0]} changes the files in conflict", error)
+        self.assertNotIn(f"{ahead[1]} change", error)
+        # The scratch worktree is gone, and Git knows of no other.
+        self.assertEqual(self.worktrees(), before)
+        self.assertEqual(run(self.repo, "git", "worktree", "list", "--porcelain").count("locked"), 0)
+        # The session's checkout is untouched: still on the branch it was, at its tip.
+        self.assertEqual(run(self.repo, "git", "symbolic-ref", "--short", "HEAD"), "two")
+        self.assertEqual(run(self.repo, "git", "status", "--porcelain"), "")
+
+    def test_an_entry_that_applies_is_queued_as_now(self):
+        self.commit("a", "a"); self.commit("b", "b"); self.commit("c", "c")
+        ahead = self.add("a", "b")
+        before = self.worktrees()
+        identifier, said, error = self.land("c")
+        self.assertIsNone(error)
+        self.assertEqual(self.state(identifier)["state"], "queued")
+        self.assertIn(f"it applies onto origin/main at", said)
+        self.assertIn(f"after {ahead[0]}, {ahead[1]}, as a round would integrate it now", said)
+        self.assertEqual(self.worktrees(), before)
+        self.assertEqual(self.work(), 0)
+        self.assertEqual([self.state(i)["state"] for i in [*ahead, identifier]], ["landed"] * 3)
+        self.assertEqual(self.gates(), 1)
+
+    def test_an_entry_that_conflicts_with_main_alone_is_refused_naming_no_entry(self):
+        start = run(self.repo, "git", "rev-parse", "origin/main")
+        self.commit("same", "one", "one")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        self.commit("same", "two", "two", start)
+        identifier, _, error = self.land("two")
+        self.assertIsNone(identifier)
+        self.assertIn("conflicts with origin/main, in same: rebase onto origin/main", error)
+        self.assertIn("Checked against origin/main at", error)
+        self.assertNotIn("in order", error)
+
+    def test_a_changelog_conflict_the_worker_settles_is_not_refused(self):
+        start = "# Release notes\n\n## Unreleased\n\n- old\n"
+        self.commit("CHANGELOG.md", "start", start)
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        for name in ("a", "b"): self.commit("CHANGELOG.md", name, start.replace("- old", f"- {name}\n- old"))
+        [first] = self.add("a")
+        identifier, said, error = self.land("b")
+        self.assertIsNone(error)
+        self.assertIn("a round would settle", said)
+        self.assertIn("kept both sides of CHANGELOG.md, the new lines first", said)
+        self.work()
+        self.assertEqual([self.state(i)["state"] for i in (first, identifier)], ["landed"] * 2)
+        run(self.repo, "git", "fetch", "-q", "origin")
+        self.assertIn("- b\n- a\n- old", run(self.repo, "git", "show", "origin/main:CHANGELOG.md"))
+
+    def test_a_changelog_conflict_the_worker_does_not_settle_is_refused(self):
+        start = "# Release notes\n\n## Unreleased\n\n- old\n"
+        self.commit("CHANGELOG.md", "start", start)
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        for name in ("a", "b"): self.commit("CHANGELOG.md", name, start.replace("- old", f"- {name}"))
+        [first] = self.add("a")
+        identifier, _, error = self.land("b")
+        self.assertIsNone(identifier)
+        self.assertIn(f"in CHANGELOG.md:", error)
+        self.assertIn(f"{first} changes the files in conflict", error)
+
+    def test_a_front_entry_is_checked_against_main_alone(self):
+        """--front tests it alone onto main, so the entries behind it are no part of its check; the one behind it
+        that its landing makes conflict comes back from its round, as before."""
+        self.commit("same", "one", "one"); self.commit("same", "fix", "fix")
+        [behind] = self.add("one")
+        identifier, said, error = self.land("fix", front=True, why="a fix every entry needs")
+        self.assertIsNone(error)
+        self.assertIn(", alone, as --front tests it", said)
+        self.assertNotIn(behind, said)
+        self.work()
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual(self.state(behind)["state"], "conflict")
+        # A front entry that conflicts with main itself is refused.
+        start = run(self.repo, "git", "rev-parse", "origin/main~1")
+        self.commit("same", "late", "late", start)
+        late, _, error = self.land("late", front=True)
+        self.assertIsNone(late)
+        self.assertIn("conflicts with origin/main, in same", error)
+
+    def test_the_round_still_sends_back_what_the_check_could_not_see(self):
+        start = run(self.repo, "git", "rev-parse", "origin/main")
+        self.commit("same", "two", "two"); self.commit("c", "c")
+        ids = self.add("two", "c")
+        # main moves after the check, by a hand push.
+        self.commit("same", "pushed", "pushed", start)
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        self.work()
+        self.assertEqual([self.state(i)["state"] for i in ids], ["conflict", "landed"])
+        self.assertIn("conflicts with origin/main, in same", self.state(ids[0])["why"])
+
+    def test_an_entry_ahead_that_a_round_would_leave_out_is_named_and_not_held_against_it(self):
+        start = run(self.repo, "git", "rev-parse", "origin/main")
+        self.commit("same", "ahead", "ahead")
+        [ahead] = self.add("ahead")
+        # main moves under the entry ahead, which its round will send back.
+        self.commit("same", "pushed", "pushed", start)
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        self.commit("same", "behind", "behind")
+        identifier, said, error = self.land("behind")
+        self.assertIsNone(error)
+        self.assertIn(f"left out of the check, as a round would leave it: {ahead}, ", said)
+        self.assertIn("conflicts with origin/main, in same", said)
+        # And named in a refusal too.
+        self.commit("same", "third", "third")
+        third, _, error = self.land("third")
+        self.assertIsNone(third)
+        self.assertIn(f"in order, {identifier}; {identifier} changes the files in conflict; left out, as a round "
+                      f"would leave it: {ahead}", error)
+
+    def test_the_entries_ahead_are_taken_in_the_order_rounds_land_them(self):
+        entries = [{"id": "q-old", "state": "queued", "submitted": 1}, {"id": "t", "state": "testing", "submitted": 3},
+                   {"id": "front", "state": "queued", "submitted": 4, "front": True},
+                   {"id": "p", "state": "passed", "submitted": 5}, {"id": "q-new", "state": "queued", "submitted": 2}]
+        self.assertEqual([e["id"] for e in mq.round_order(entries)], ["p", "t", "front", "q-old", "q-new"])
+
+    def test_a_branch_added_again_is_not_checked_against_what_it_replaces(self):
+        self.commit("same", "a", "one")
+        [first] = self.add("a")
+        self.commit("same", "a", "rewritten")
+        identifier, said, error = self.land("a")
+        self.assertIsNone(error)
+        self.assertEqual(self.state(first)["state"], "removed")
+        self.assertEqual(self.state(identifier)["state"], "queued")
+
+    def test_a_trial_that_cannot_be_made_queues_the_entry(self):
+        self.commit("a", "a")
+        with patch.object(mq, "trial", side_effect=ValueError("`git worktree add` exited 128: no space")):
+            identifier, said, error = self.land("a")
+        self.assertIsNone(error)
+        self.assertEqual(self.state(identifier)["state"], "queued")
+        self.assertIn("could not check it against the entries ahead, so the round finds any conflict: `git worktree "
+                      "add` exited 128: no space", said)
+
+    def test_the_scratch_worktree_goes_when_the_trial_fails_midway(self):
+        self.commit("a", "a")
+        before = self.worktrees()
+        with patch.object(mq.Trial, "integrate", side_effect=RuntimeError("stopped")):
+            identifier, said, _ = self.land("a")
+        self.assertIn("stopped", said)
+        self.assertEqual(self.worktrees(), before)
+        self.assertEqual(self.state(identifier)["state"], "queued")
+
+    def test_eng_land_and_eng_queue_add_exit_1_for_a_refusal_as_for_an_entry_that_came_back(self):
+        import argparse
+        self.commit("same", "one", "one"); self.commit("same", "two", "two")
+        self.add("one")
+        for adder, words, call in ((mq.land_arguments, ["two", "--wait"], mq.land),
+                                   (mq.add_arguments, ["add", "two"], mq.main)):
+            parser = argparse.ArgumentParser()
+            adder(parser)
+            said = io.StringIO()
+            # A queued entry's wait would last as long as no worker runs: here it ends at once, as for a landing.
+            with patch.object(mq.Queue, "start"), patch.object(mq, "wait", return_value=0), \
+                    contextlib.redirect_stdout(said), contextlib.redirect_stderr(said):
+                self.assertEqual(call(self.repo, parser.parse_args(words)), 1)
+            self.assertIn("eng: ", said.getvalue())
+            self.assertIn("is not queued", said.getvalue())
+            self.assertEqual(len(mq.Queue(self.repo).all()), 1)
 
 
 class NoVerdict(Fixture):
@@ -1872,11 +2063,19 @@ class Changelogs(Fixture):
         return self.START.replace("- old\n", f"{line}\n- old\n", 1)
 
     def outcome(self, *contents, name="CHANGELOG.md"):
-        """Land each content of name, on a branch of its own from the same commit, oldest first."""
+        """Land each content of name, on a branch of its own from the same commit, oldest first. Each is queued
+        unchecked, so that the round decides, and eng land's trial of each against those ahead of it must agree
+        with the round: refused just where the round sends it back (vocaro-engineering#178)."""
         for number, content in enumerate(contents): self.commit(name, f"b{number}", content)
-        ids = self.add(*(f"b{number}" for number in range(len(contents))))
+        ids = self.add(*(f"b{number}" for number in range(len(contents))), checked=False)
+        queue = mq.Queue(self.repo)
+        entries, base = queue.all(), run(self.repo, "git", "rev-parse", "origin/main")
+        refused = [mq.trial(queue, entry, entries[:index], base)["why"] is not None
+                   for index, entry in enumerate(entries)]
         self.work()
-        return [self.state(identifier)["state"] for identifier in ids]
+        states = [self.state(identifier)["state"] for identifier in ids]
+        self.assertEqual(refused, [state == "conflict" for state in states], states)
+        return states
 
     def test_each_branch_lands_with_its_line_first_after_one_gate(self):
         self.assertEqual(self.outcome(self.top("- a"), self.top("- b"), self.top("- c")), ["landed"] * 3)
@@ -1935,7 +2134,7 @@ class Changelogs(Fixture):
         self.commit("CHANGELOG.md", "b1", self.top("- b"))
         (self.repo / "CHANGELOG.md").write_text(self.top("- b").replace("- old", "- old, reworded"))
         run(self.repo, "git", "commit", "-qam", "Reword old")
-        ids = self.add("b0", "b1")
+        ids = self.add("b0", "b1", checked=False)
         self.work()
         self.assertEqual([self.state(i)["state"] for i in ids], ["landed", "conflict"])
         self.assertEqual(self.changelog(), self.top("- a"))
@@ -2002,7 +2201,7 @@ class Changelogs(Fixture):
             (self.repo / "same").write_text(line)
             run(self.repo, "git", "add", "same")
             run(self.repo, "git", "commit", "-q", "--amend", "--no-edit")
-        ids = self.add("b0", "b1")
+        ids = self.add("b0", "b1", checked=False)
         self.work()
         self.assertEqual([self.state(i)["state"] for i in ids], ["landed", "conflict"])
         self.assertIn("in CHANGELOG.md, same:", self.state(ids[1])["why"])

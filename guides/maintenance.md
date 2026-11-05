@@ -339,10 +339,33 @@ it where it is, as does a process census that fails or a move Git refuses: the w
 checkout afresh at the new place, locks the old one as `retired by the merge queue: replaced by PATH`,
 and says so in its log, and `eng disk` lists it for the owner's removal once nothing uses it.
 
+**A conflict is found when the entry is queued.** `eng land` and `eng queue add` make the
+integration a round would make, before they queue anything: onto `origin/main`, after every entry
+ahead of it that is waiting, in its gate or passed, in the order rounds land them (a batch that
+passed, one in its gate, those `--front` put first, then the rest, each oldest first), with the
+worker's own code, its changelog resolution among it, in a scratch worktree outside every checkout
+that goes when the check ends. An `--front` entry is tested alone, so it is checked against
+`origin/main` only. An entry that does not apply is refused at once, with nothing queued and exit
+1, as for an entry that came back: the refusal names the files in conflict, every entry ahead it was
+checked against, in order, the ones among them that change those files, and any entry ahead it left
+out because a round would send that one back too. A changelog conflict the worker settles is no
+conflict, and the check says the round would settle it. Before
+[#178](https://github.com/vocaro/vocaro-engineering/issues/178) only the round found a conflict, so an
+entry queued behind a running gate learned of it 15 to 40 minutes later, more on EPUBLib. The check
+is only a hint: `main` and the entries ahead can change before the round, as an entry ahead comes back
+or a hand push lands, so the round integrates again and still sends back what the check could not
+see, below, and an entry ahead that comes back may let a refused entry apply, which `eng land` again
+checks. A check that cannot be made, such as a worktree Git cannot add, queues the entry, says so, and
+leaves any conflict to the round. It costs a worktree checkout and the cherry-picks, measured on
+2026-11-04 on this Mac at a one-minute load of 28 to 45 with six one-commit entries ahead: about
+0.6 s with none ahead and 1.6 s with six on the toolkit's tree of 203 files, and 4.5 s and 6 s on a
+tree of 10,000 files, where each cherry-pick adds about 0.3 s. Whole `eng land` runs, fetch included,
+took 1.5 to 2.7 s and 3 to 9 s.
+
 **What comes back to the author.** `eng queue status` and `eng queue wait` name each entry's state,
-reason and log. An entry that conflicts with what is ahead of it comes back at once and costs the
-others nothing. Its reason names the files in conflict and the entries ahead of it, which may still
-be in their gate: once those land, rebase onto `origin/main` and add it again. A session therefore
+reason and log. An entry that conflicts with what is ahead of it, which the check could not see
+when it was queued, comes back at once and costs the others nothing. Its reason names the files in
+conflict and the entries ahead of it, which may still be in their gate: once those land, rebase onto `origin/main` and add it again. A session therefore
 lands with `eng land --wait` run as a background command, whose end wakes it within seconds of a
 send-back; on 2026-11-03 a session that had run plain `eng land` learned of a conflict only half an
 hour later, from `eng queue status`

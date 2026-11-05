@@ -132,6 +132,8 @@ GIT_TIMEOUT = 600
 # vocaro-engineering#104). The folders beside the main checkout it replaces, NAME-queue and NAME-queue-toolkit,
 # move there once nothing uses them.
 QUEUES = "vocaro-queue"
+# What locks eng land's scratch worktree while its trial integration lasts (trial), so that no sweep takes it.
+TRIAL_REASON = "eng land's trial integration of a new entry, removed when it ends"
 # The file whose conflicts the queue may settle, by its name in any directory and in any case.
 CHANGELOG = "changelog.md"
 HEADING = re.compile(rb"#{1,6}\s")
@@ -199,6 +201,11 @@ class Hold(ValueError):
     def __init__(self, kind, why):
         super().__init__(why)
         self.kind = kind
+
+
+class Refused(ValueError):
+    """An entry eng land queued nothing of, since the round's integration of it does not apply (check). eng land and
+    `eng queue add` exit 1 for it, as `eng land --wait` does for an entry that came back."""
 
 
 def worded(kind, cause):
@@ -542,9 +549,13 @@ def land(root, args):
         if args.reference is None:
             raise ValueError(f"--repo lands a commit you name: `eng land --repo {args.repo} BRANCH`, since HEAD "
                              "there is another session's")
-    identifier = add(target, args.reference or "HEAD", args.note, quiet_wait=args.wait,
-                     front=getattr(args, "front", False), no_gate=getattr(args, "no_gate", False),
-                     why=getattr(args, "why", None))
+    try:
+        identifier = add(target, args.reference or "HEAD", args.note, quiet_wait=args.wait,
+                         front=getattr(args, "front", False), no_gate=getattr(args, "no_gate", False),
+                         why=getattr(args, "why", None))
+    except Refused as error:
+        print(f"eng: {error}", file=sys.stderr)
+        return 1
     status_ = wait(target, identifier, args.limit) if args.wait and identifier is not None else 0
     warn(target)
     return status_
@@ -560,7 +571,8 @@ def warn(root):
 def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False, why=None):
     """Put the commits reference has and origin/main lacks in the queue, and return at once with the
     entry's ID, or None when there is nothing to queue. Whether it may be queued is what a round would
-    find: origin/main's settings, and origin/main's lanes or, until it has any, the commit's. front and
+    find: origin/main's settings, and origin/main's lanes or, until it has any, the commit's, and the round's
+    integration of it after the entries ahead of it, which a conflict refuses before it is queued (check). front and
     no_gate, eng land's emergency options --front and --no-gate, and why, the reason --why gives (ahead), go
     in the entry; an entry already queued with the same tip takes them."""
     flags = ahead(front, no_gate, why)
@@ -594,11 +606,14 @@ def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False
         queue.start()
         return same["id"]
     # A branch added again replaces what it added before; main names nobody's work in particular.
-    if branch and branch not in ("main", "HEAD"):
-        for entry in waiting:
-            if entry.get("branch") == branch:
-                remove(queue, entry["id"], quiet=True)
-                print(f"queue: replaced {entry['id']}, the branch's earlier commits", file=sys.stderr)
+    replaced = [entry for entry in waiting
+                if branch and branch not in ("main", "HEAD") and entry.get("branch") == branch]
+    # What a round would find, before anything is queued or replaced: a refused entry leaves the queue as it was.
+    check(root, queue, {"id": "new", "tip": tip, "commits": commits},
+          [] if front else round_order([entry for entry in waiting if entry not in replaced]), front)
+    for entry in replaced:
+        remove(queue, entry["id"], quiet=True)
+        print(f"queue: replaced {entry['id']}, the branch's earlier commits", file=sys.stderr)
     now = time.time()
     identifier = f"{time.strftime('%Y%m%d-%H%M%S', time.localtime(now))}-{tip[:8]}"
     entry = {"id": identifier, "tip": tip, "base": base, "commits": commits, "branch": branch or None, "note": note,
@@ -616,6 +631,23 @@ def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False
         print("nothing else is needed for it to land; to be told at once if it comes back, run as a background "
               f"command: python3 {shlex.quote(str(root))}/scripts/eng queue wait {identifier}")
     return identifier
+
+
+def check(root, queue, entry, ahead, front):
+    """Refuse entry, queuing nothing, when the trial integration a round would make now does not apply it onto
+    origin/main after ahead, the waiting entries ahead of it: --front tests it alone, so against origin/main only.
+    It is a hint, found while the author still has the context: the round integrates again and sends back what this
+    could not see, as main or the entries ahead change in between. A trial that cannot be made queues the entry, for
+    the round to find any conflict."""
+    base = text(root, "rev-parse", MAIN)
+    began = now()
+    try: found = trial(queue, entry, ahead, base)
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:
+        print(f"queue: could not check it against the entries ahead, so the round finds any conflict: {error}",
+              file=sys.stderr)
+        return
+    if found["why"]: raise Refused(refusal(entry["tip"], found, base))
+    for line in tried(found, base, front, now() - began): print(f"queue: {line}", file=sys.stderr)
 
 
 def asked_for(name):
@@ -1058,6 +1090,7 @@ class Worker:
                 self.say(self.kept[-1])
                 continue
             self.reset(before)
+            self.conflicted = conflicted  # which Trial reads, to name the entries ahead that change those files
             files = ", ".join(conflicted) or picked.stderr.strip()
             if not ahead:
                 return f"{commit[:12]} conflicts with origin/main, in {files}: rebase onto origin/main and add it again"
@@ -1098,22 +1131,31 @@ class Worker:
         return True
 
     def integrate(self, batch, base):
-        """The entries of batch that are now on top of base, in order; the rest are settled."""
+        """The entries of batch that are now on top of base, in order; the rest are settled (left_out). eng land's
+        trial of a new entry runs this same code in a scratch checkout, settling nothing (Trial)."""
         self.reset(base)
         applied = []
         for entry in batch:
             how = landing.contained(lambda *words: git(self.checkout, *words), base, entry["tip"])
             if how:
-                self.queue.settle(entry, LANDED, landedAs=base, why=f"origin/main already holds it ({how})")
+                self.left_out(entry, LANDED, landedAs=base, why=f"origin/main already holds it ({how})")
                 continue
             why = self.pick(entry, [ahead["id"] for ahead in applied])
-            if not why and self.kept: self.queue.record(entry, kept=self.kept)
+            if not why and self.kept: self.noted(entry, kept=self.kept)
             if why:
                 self.say(f"{entry['id']}: {why}")
-                self.queue.settle(entry, CONFLICT, why=why)
+                self.left_out(entry, CONFLICT, why=why)
                 continue
             applied.append(entry)
         return applied
+
+    def left_out(self, entry, state, **fields):
+        """What becomes of an entry that integrate does not put on top: the queue settles it."""
+        self.queue.settle(entry, state, **fields)
+
+    def noted(self, entry, **fields):
+        """What integrate records of an entry it put on top, the changelog conflicts it settled: in the queue."""
+        self.queue.record(entry, **fields)
 
     def gate(self, lanes, round_name):
         """(status of the first of lanes that did not pass or 0, its log). ran_on is the second Mac that ran
@@ -1511,6 +1553,94 @@ class Worker:
             self.rounds += 1
 
 
+class Trial(Worker):
+    """eng land's trial integration of a new entry (trial): the worker's own integrate, pick and changelog
+    resolution, so that the trial and the round cannot disagree on what conflicts, in a scratch checkout, settling,
+    recording and saying nothing."""
+    def __init__(self, queue, checkout):
+        super().__init__(queue)
+        self.checkout = checkout
+        self.outcomes = {}  # (state, why) of each entry integrate left out, by its ID
+        self.notes = {}  # what integrate noted of each entry it put on top, by its ID
+
+    def say(self, words):
+        pass
+
+    def left_out(self, entry, state, **fields):
+        self.outcomes[entry["id"]] = (state, fields.get("why"))
+
+    def noted(self, entry, **fields):
+        self.notes[entry["id"]] = fields
+
+
+def round_order(entries):
+    """Waiting entries in the order rounds put them on main (Worker.choose): a batch that passed, then a batch in
+    its gate, then those eng land --front put first, then the rest, each oldest first."""
+    rank = {PASSED: 0, TESTING: 1, QUEUED: 2}
+    return sorted(entries, key=lambda entry: (rank.get(entry["state"], 2), not entry.get("front"),
+                                              entry["submitted"], entry["id"]))
+
+
+def trial(queue, entry, ahead, base):
+    """What a round would make of entry now: the worker's integrate (Trial) of ahead, the waiting entries ahead of it
+    in round_order, and then entry, onto base, origin/main, in a scratch worktree of the repository outside every
+    checkout, which goes when it ends (vocaro-engineering#178). A dict: why, why entry does not apply, or None when
+    it applies or main holds it already; against, the entries ahead that went on top; left, those ahead that a round
+    would itself leave out, with why; touching, those of against that change a file in conflict; kept, the
+    changelog conflicts of entry that a round would settle."""
+    folder = Path(tempfile.mkdtemp(prefix="eng-land-trial-"))
+    path = folder / queue.main_checkout.name
+    try:
+        git(queue.root, "worktree", "add", "--detach", "--lock", "--reason", TRIAL_REASON, str(path), base,
+            hooks=False, check=True)
+        worker = Trial(queue, path)
+        applied = worker.integrate([*ahead, entry], base)
+        state, why = worker.outcomes.get(entry["id"], (None, None))
+        why = why if state == CONFLICT else None
+        against = [other for other in applied if other["id"] != entry["id"]]
+        touching = []
+        if why:
+            conflicted = set(getattr(worker, "conflicted", ()))
+            for other in against:
+                changed = text(path, "diff", "--name-only", "--no-renames", f"{other['commits'][0]}^", other["tip"])
+                if conflicted & set(changed.splitlines()): touching.append(other["id"])
+        return {"why": why, "against": [other["id"] for other in against], "touching": touching,
+                "left": {other["id"]: worker.outcomes[other["id"]][1] for other in ahead
+                         if other["id"] in worker.outcomes},
+                "kept": worker.notes.get(entry["id"], {}).get("kept", [])}
+    finally:
+        # Unlocked first, so that a worktree the removal leaves registered is one Git's own pruning takes.
+        git(queue.root, "worktree", "unlock", str(path), hooks=False)
+        git(queue.root, "worktree", "remove", "--force", "--force", str(path), hooks=False)
+        shutil.rmtree(folder, ignore_errors=True)
+
+
+def tried(found, base, front, elapsed):
+    """What eng land says of a trial that let its entry through, line by line."""
+    after = f" after {', '.join(found['against'])}" if found["against"] else ""
+    lines = [f"checked in {elapsed:.1f}s: it applies onto origin/main at {base[:12]}{after}"
+             + (", alone, as --front tests it" if front else "") + ", as a round would integrate it now"]
+    lines += [f"a round would settle {kept}" for kept in found["kept"]]
+    lines += [f"left out of the check, as a round would leave it: {identifier}, {why}"
+              for identifier, why in found["left"].items()]
+    return lines
+
+
+def refusal(tip, found, base):
+    """Why eng land queues nothing: the trial's conflict, with what it was checked against."""
+    checked_ = f"origin/main at {base[:12]}" + (f" and, in order, {', '.join(found['against'])}" if found["against"]
+                                                else "")
+    words = f"{tip[:12]} is not queued: {found['why']}. Checked against {checked_}"
+    if found["touching"]:
+        many = len(found["touching"]) > 1
+        words += f"; {', '.join(found['touching'])} change{'' if many else 's'} the files in conflict"
+    if found["left"]:
+        words += f"; left out, as a round would leave {'them' if len(found['left']) > 1 else 'it'}: " + \
+            ", ".join(found["left"])
+    return words + (". An entry ahead that comes back may let it apply: `eng queue status` says, and `eng land` again "
+                    "checks again (guides/maintenance.md, The merge queue)")
+
+
 def run(root):
     """Be the repository's worker until nothing waits. A second worker exits at once. Anything
     unexpected holds the queue, with every entry still waiting, rather than guessing at a verdict; the hold's
@@ -1574,7 +1704,8 @@ def land_arguments(parser):
     parser.add_argument("reference", nargs="?", help="the commit or branch; HEAD by default, and required with --repo")
     parser.add_argument("--repo", help="another project to land in: its path, or its name beside this project")
     parser.add_argument("--wait", action="store_true", help="follow it to its result and print the landed commit: "
-                        "0 landed, 1 came back, 75 held or still waiting at the limit")
+                        "0 landed, 1 came back or was refused, as it conflicts with what is ahead of it, 75 held or "
+                        "still waiting at the limit")
     parser.add_argument("--limit", type=float, default=WAIT_LIMIT, metavar="SECONDS")
     parser.add_argument("--note", help="what the entry is, for `eng queue status`")
     options(parser)
@@ -1616,7 +1747,10 @@ def add_arguments(parser):
 
 def main(root, args):
     if args.operation == "add":
-        add(root, args.reference, args.note, front=args.front, no_gate=args.no_gate, why=args.why)
+        try: add(root, args.reference, args.note, front=args.front, no_gate=args.no_gate, why=args.why)
+        except Refused as error:
+            print(f"eng: {error}", file=sys.stderr)
+            return 1
         return 0
     if args.operation == "status": return status(root, args.json)
     if args.operation == "wait": return wait(root, args.id, args.limit)
