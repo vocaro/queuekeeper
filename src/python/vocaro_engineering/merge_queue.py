@@ -3,10 +3,11 @@
 One worker per repository takes everything waiting, cherry-picks it onto origin/main in a checkout
 of its own, runs the project's queue lanes there once, and pushes on a pass. When the lanes fail on
 a batch it halves the batch until it finds the commit to send back, landing the rest. Only a lane's
-verdict blames a commit: a run the host left unmeasured retries once, when the host has settled, and
-then holds the queue for the owner, with every commit still waiting (guides/maintenance.md, The merge
-queue). A batch whose lanes passed is recorded as passed before its push, so a hold the push meets
-keeps that verdict, and `eng queue resume` pushes the commit that passed instead of gating it again.
+verdict blames a commit: a run the host left unmeasured runs again, each time once the host has settled,
+until queue.noVerdictRuns runs in a row (3 by default) have given none, and then holds the queue for the
+owner, with every commit still waiting (guides/maintenance.md, The merge queue). A batch whose lanes
+passed is recorded as passed before its push, so a hold the push meets keeps that verdict, and
+`eng queue resume` pushes the commit that passed instead of gating it again.
 
 The state is in the repository's common Git directory, so every worktree shares it, and a ref holds
 each waiting commit, so a branch that moves or goes takes nothing with it:
@@ -48,9 +49,13 @@ NO_VERDICT = {evidence.UNMEASURED, resources.BUSY, remote.MISCONFIGURED}
 # Seconds a whole lane may take with its wait for admission: a lane's own limit is 2 h by default
 # (processes.DEFAULT_LIMIT), and this allows another two of them in the host's queue.
 LANE_LIMIT = 3 * processes.DEFAULT_LIMIT
-# A run with no verdict is tried again once, since a busy host clears, before the queue holds.
-RETRIES = 1
-# Seconds the retry waits for the host to settle, by admission's load and memory test (resources.pressure), and
+# How many runs in a row may give no verdict before the queue holds, unless main's queue.noVerdictRuns says
+# otherwise: a busy host clears, so each run after the first waits for it to settle. On 2026-11-04, 8 of 12 of
+# EPUBLib's gates on the second Mac gave none, as the simulators' voices were not ready in time (EPUBLib#946),
+# and with one retry each pair held the queue until a person resumed it. A third run costs at most one gate and
+# one settle wait more, and still holds the queue for a cause that does not clear.
+NO_VERDICT_RUNS = 3
+# Seconds each retry waits for the host to settle, by admission's load and memory test (resources.pressure), and
 # between its looks. A retry started at once met the load that voided the run it repeats, and each such run cost
 # mpm's queue a gate of about an hour (#124); a wait no longer than that run, past which the queue holds as
 # before, costs no more than the retry it saves.
@@ -58,6 +63,8 @@ SETTLE_LIMIT = 3600
 SETTLE_POLL = 15
 # Seconds between the wait's lines in the worker's log while the host stays busy.
 SETTLE_REPORT = 600
+# The most of an unmeasured test's line a hold's reason quotes.
+UNMEASURED_SHOWN = 300
 # Times main may move past a passed batch, in carried-over steps, before the batch is gated again.
 CARRIES = 3
 # What git says, over HTTPS or SSH, when it never reached the remote or the connection ended: a name that did
@@ -290,6 +297,12 @@ def keep_both(base, ours, theirs):
 def named(path, key):
     """Whether a queue setting's key names path: a directory ending in /, or the file itself."""
     return path.startswith(key) if key.endswith("/") else path == key
+
+
+def no_verdict_runs(config):
+    """How many runs in a row may give no verdict before the queue holds: main's queue.noVerdictRuns, or
+    NO_VERDICT_RUNS."""
+    return config.get("queue", {}).get("noVerdictRuns", NO_VERDICT_RUNS)
 
 
 def docs_lanes(config, changed):
@@ -590,7 +603,8 @@ class Worker:
         self.checkout = queue.checkout
         self.limit = None  # how many of the oldest entries the next round takes, while bisecting
         self.suspects = 0  # how many of the oldest entries hold a commit that fails
-        self.retries = 0
+        self.no_verdicts = 0  # the runs in a row that gave no verdict, held at no_verdict_runs
+        self.timed_out = None  # why the last gate's lane reached its limit, or None (gate)
         self.ran_on = None  # the second Mac that ran the last lane the gate ran, or None (gate)
         self.environment = environment()  # what the lanes, the hook and the carry-over checks run in
         self.measured = None  # the passing gate run of the last round, which its landed entries record
@@ -853,7 +867,7 @@ class Worker:
         that lane, by its dispatch's record (remote.dispatched), or None when it ran here or nowhere. A pass of
         the gate lane leaves its wall time and the parts its log reports in self.measured, for the gate's
         budget (budgets.py)."""
-        log, self.ran_on, self.measured = None, None, None
+        log, self.ran_on, self.measured, self.timed_out = None, None, None, None
         for lane in lanes:
             log = self.queue.logs / f"{round_name}-{lane}.log"
             # A lane run here logs to its own file, and one on the second Mac prints here. What an
@@ -868,6 +882,7 @@ class Worker:
                                         timeout=LANE_LIMIT, env=self.environment)
             except processes.TimedOut as error:
                 self.ran_on = remote.dispatched(self.checkout, lane, began)
+                self.timed_out = f"{lane} reached its limit: {error}"
                 self.say(f"{lane}: unmeasured: {error}")
                 return evidence.UNMEASURED, log
             self.ran_on = remote.dispatched(self.checkout, lane, began)
@@ -1063,18 +1078,21 @@ class Worker:
         self.prune()
         if result in NO_VERDICT:
             queue.mark(applied, QUEUED)
-            self.retries += 1
-            if self.retries > RETRIES:
-                queue.hold(f"the lanes gave no verdict, exit {result}, {self.retries} times; see {log}, then run "
+            self.no_verdicts += 1
+            runs = no_verdict_runs(config)
+            gave = (f"the lanes gave no verdict in {self.no_verdicts} run{'' if self.no_verdicts == 1 else 's'} in a "
+                    f"row, the last with exit {result}, {self.no_verdict_cause(result, log)}")
+            if self.no_verdicts >= runs:
+                queue.hold(f"{gave}, the most queue.noVerdictRuns allows ({runs}); see {log}, then run "
                            "`eng queue resume`")
                 return True
-            self.say(f"no verdict (exit {result})" + (f" from {self.ran_on}" if self.ran_on else ""))
+            self.say(f"no verdict (exit {result})" + (f" from {self.ran_on}" if self.ran_on else "")
+                     + f", run {self.no_verdicts} of at most {runs}")
+            # Every retry waits, so that none starts into the load that voided the run before it.
             busy = self.settle("the lanes run", self.ran_on)
-            if busy:
-                queue.hold(f"the lanes gave no verdict, exit {result}, and {busy}; see {log}, then run "
-                           "`eng queue resume`")
+            if busy: queue.hold(f"{gave}, and {busy}; see {log}, then run `eng queue resume`")
             return True
-        self.retries = 0
+        self.no_verdicts = 0
         if result:
             self.failed(applied, log)
             return True
@@ -1088,6 +1106,19 @@ class Worker:
         if self.push(config, applied, base, docs): self.passed(len(applied))
         else: queue.mark(applied, QUEUED)
         return True
+
+    def no_verdict_cause(self, result, log):
+        """Why the gate that exited result gave no verdict, for a hold's reason: the lane's limit it reached, the
+        tests its log reports unmeasured, no admission, or a shared host's configuration."""
+        if self.timed_out: return f"unmeasured: {self.timed_out}"
+        if result == evidence.UNMEASURED:
+            try: found = evidence.unmeasured_tests(log.read_text(errors="replace")) if log else []
+            except OSError: found = []
+            if not found: return "unmeasured, with no test its log names"
+            first = found[0] if len(found[0]) <= UNMEASURED_SHOWN else found[0][:UNMEASURED_SHOWN - 3] + "..."
+            return f"unmeasured: {len(found)} test{'' if len(found) == 1 else 's'}, the first {first}"
+        if result == resources.BUSY: return "no admission: the host stayed at capacity"
+        return "a shared host's configuration stopped it"
 
     def settings(self, base, head):
         """The project's lanes and settings as they stand on main at base, so that no branch chooses its own gate,

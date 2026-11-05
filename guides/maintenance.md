@@ -324,12 +324,20 @@ alone; every entry that passes along the way lands. An entry that comes back kee
 `eng queue remove ID`. Fix it, rebase and land it again.
 
 **A run with no verdict blames nobody.** Exit 3 (unmeasured), 75 (no admission) and 78 (a
-misconfigured host) say nothing about the commits. The worker tries once more and then holds the
-queue, with every entry waiting, as it also does for a push refused for any reason but a race. A
-hold stays until the owner, or a session the owner told to, has dealt with its cause and run
-`eng queue resume`. Nothing fails over to another route.
+misconfigured host) say nothing about the commits. The worker runs the lanes again, and holds the
+queue, with every entry waiting, once three runs in a row have given no verdict, as it also does for a
+push refused for any reason but a race. On 2026-11-04, 8 of 12 of EPUBLib's gates on the second Mac
+gave none, as the simulators' voices were not ready in time
+([EPUBLib#946](https://github.com/vocaro/EPUBLib/issues/946)), and with a single retry each pair held
+the queue until a person resumed it. A project sets another bound on `main`, as
+`"queue": {"noVerdictRuns": N}`, a positive integer; 1 holds at the first. A run with a verdict, a pass
+or a failure, starts the count again, and so does `eng queue resume`. The hold's reason says how many
+runs gave no verdict and why the last did: the lane that reached its limit, the number of tests its log
+reports unmeasured with the first of them, no admission, or the host's configuration. A hold stays
+until the owner, or a session the owner told to, has dealt with its cause and run `eng queue resume`.
+Nothing fails over to another route.
 
-The retry waits first for the host to settle, by the test heavy-work admission applies before it takes
+Each retry waits first for the host to settle, by the test heavy-work admission applies before it takes
 a slot beyond the guaranteed ones (`resources.pressure`; [heavy-work admission](shared-host.md#heavy-work-admission)):
 a one-minute load average below `HEAVY_LOAD_LIMIT`, three quarters of the cores by default, and memory
 pressure at level 1 (normal). A retry that started at once met the load that voided the run it repeated:
@@ -337,9 +345,9 @@ on mpm's queue, two gate runs of about an hour each passed every row but voided 
 of 84 to 222, and the queue held until a manual resume once the load had fallen
 ([#124](https://github.com/vocaro/vocaro-engineering/issues/124)). The worker looks every 15 seconds
 (`SETTLE_POLL`) for up to an hour (`SETTLE_LIMIT`), no longer than the gate run the wait may save. Past
-that it holds, with every entry waiting, as it did before, and the hold names the reason it last read,
-such as `load 40.0 is at or above HEAVY_LOAD_LIMIT=13.5`. Its log names the reason when the wait
-starts, again every ten minutes or when the reason changes, and at the end how long it waited, how many
+that it holds, with every entry waiting, whatever runs the bound has left, and the hold names the
+reason it last read, such as `load 40.0 is at or above HEAVY_LOAD_LIMIT=13.5`. Its log names the
+reason when the wait starts, again every ten minutes or when the reason changes, and at the end how long it waited, how many
 looks it took and the first, highest and last one-minute load. A stop request (SIGTERM, SIGINT or SIGHUP)
 ends the wait at its next look, with the entries still waiting. The test reads the Mac the lane ran
 on, since a lane that the second Mac ran left its load there

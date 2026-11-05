@@ -172,11 +172,15 @@ def budget(name, lane):
 def merge_queue(queue, lanes):
     """The lanes a commit passes in the merge queue, what main may change under a passed result,
     each path with why no such lane reads it, the commands that main's change must pass first, and
-    which of the lanes cover the pre-push hook, each with what of the hook it runs, and the paths a
-    docs-only batch changes, each with why no code lane reads it, with the lanes it runs instead
-    (guides/maintenance.md, The merge queue)."""
-    if not isinstance(queue, dict) or set(queue) - {"lanes", "carryOver", "carryOverChecks", "hookCoveredBy", "docsOnly"}:
-        raise ValueError("queue supports only lanes, carryOver, carryOverChecks, hookCoveredBy and docsOnly")
+    which of the lanes cover the pre-push hook, each with what of the hook it runs, the paths a
+    docs-only batch changes, each with why no code lane reads it, with the lanes it runs instead, and how
+    many runs in a row may give no verdict before the queue holds (guides/maintenance.md, The merge queue)."""
+    if not isinstance(queue, dict) or set(queue) - {"lanes", "carryOver", "carryOverChecks", "hookCoveredBy", "docsOnly",
+                                                    "noVerdictRuns"}:
+        raise ValueError("queue supports only lanes, carryOver, carryOverChecks, hookCoveredBy, docsOnly and noVerdictRuns")
+    if "noVerdictRuns" in queue and (type(queue["noVerdictRuns"]) is not int or queue["noVerdictRuns"] < 1):
+        raise ValueError("queue.noVerdictRuns is how many runs in a row may give no verdict before the queue holds, "
+                         "a positive integer")
     named = queue.get("lanes", [])
     if not isinstance(named, list) or len(set(map(str, named))) != len(named) or any(name not in lanes for name in named):
         raise ValueError("queue.lanes must list distinct configured lanes")

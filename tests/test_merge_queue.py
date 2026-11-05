@@ -244,20 +244,50 @@ class Landing(Fixture):
 
 
 class NoVerdict(Fixture):
-    def test_unmeasured_holds_after_a_retry_and_blames_nobody(self):
+    @contextlib.contextmanager
+    def no_verdict_for(self, runs, status="3"):
+        """The gate gives no verdict, exiting status, for its first runs runs, and passes after."""
+        self.status.write_text(status)
+        real = mq.Worker.gate
+        def gate(worker, *arguments):
+            result = real(worker, *arguments)
+            if self.gates() >= runs: self.status.unlink(missing_ok=True)
+            return result
+        with patch.object(mq.Worker, "gate", gate): yield
+
+    def test_unmeasured_holds_after_the_bound_and_blames_nobody(self):
         self.status.write_text("3")
         self.commit("a", "a")
         [identifier] = self.add("a")
-        self.assertEqual(self.work(), 0)
-        self.assertEqual(self.gates(), 2)
+        with patch("builtins.print"): self.assertEqual(self.work(), 0)
+        self.assertEqual(self.gates(), mq.NO_VERDICT_RUNS)
         self.assertEqual(self.state(identifier)["state"], "queued")
         self.assertNotIn("a", self.main_files())
-        queue = mq.Queue(self.repo)
-        self.assertIn("exit 3", queue.held())
+        held = mq.Queue(self.repo).held()
+        self.assertIn("the lanes gave no verdict in 3 runs in a row, the last with exit 3, unmeasured, with no test "
+                      "its log names, the most queue.noVerdictRuns allows (3); see ", held)
+        self.assertIn("eng queue resume", held)
         self.status.unlink()
         with patch.object(mq.Queue, "start"), patch("builtins.print"): mq.resume(self.repo)
         self.work()
         self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual(self.gates(), mq.NO_VERDICT_RUNS + 1)
+
+    def test_no_verdict_is_retried_up_to_the_bound_and_lands_when_a_retry_passes(self):
+        for status in ("3", "75", "78"):
+            with self.subTest(status=status):
+                start = self.gates()
+                self.commit(f"a{status}", f"a{status}")
+                [identifier] = self.add(f"a{status}")
+                # The bound's last run passes: two runs with no verdict, and the third lands it.
+                with self.no_verdict_for(start + mq.NO_VERDICT_RUNS - 1, status), \
+                        contextlib.redirect_stdout(io.StringIO()) as said:
+                    self.assertEqual(self.work(), 0)
+                self.assertEqual(self.gates() - start, mq.NO_VERDICT_RUNS)
+                self.assertEqual(self.state(identifier)["state"], "landed")
+                self.assertIsNone(mq.Queue(self.repo).held())
+                self.assertIn(f"no verdict (exit {status}), run 1 of at most 3", said.getvalue())
+                self.assertIn(f"no verdict (exit {status}), run 2 of at most 3", said.getvalue())
 
     def test_a_failure_is_not_read_as_no_verdict(self):
         self.status.write_text("1")
@@ -265,7 +295,102 @@ class NoVerdict(Fixture):
         [identifier] = self.add("a")
         self.work()
         self.assertEqual(self.state(identifier)["state"], "failed")
+        # Never retried: one gate, and no hold.
+        self.assertEqual(self.gates(), 1)
         self.assertIsNone(mq.Queue(self.repo).held())
+
+    def test_a_failure_after_no_verdict_comes_back_and_is_not_retried(self):
+        self.status.write_text("3")
+        real = mq.Worker.gate
+        def gate(worker, *arguments):
+            result = real(worker, *arguments)
+            self.status.write_text("1")
+            return result
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        with patch.object(mq.Worker, "gate", gate), patch("builtins.print"): self.assertEqual(self.work(), 0)
+        self.assertEqual(self.gates(), 2)
+        self.assertEqual(self.state(identifier)["state"], "failed")
+        self.assertIsNone(mq.Queue(self.repo).held())
+
+    def test_a_verdict_starts_the_count_again(self):
+        """Two runs with no verdict, a pass, then two more: no hold, though four gave none."""
+        self.commit("a", "a"); self.commit("b", "b")
+        [first] = self.add("a")
+        with self.no_verdict_for(2), patch("builtins.print"): self.work()
+        self.assertEqual(self.state(first)["state"], "landed")
+        [second] = self.add("b")
+        with self.no_verdict_for(5), patch("builtins.print"): self.work()
+        self.assertEqual(self.state(second)["state"], "landed")
+        self.assertEqual(self.gates(), 6)
+        self.assertIsNone(mq.Queue(self.repo).held())
+
+    def test_the_bound_is_mains_queue_no_verdict_runs(self):
+        self.assertEqual(mq.NO_VERDICT_RUNS, 3)
+        self.assertEqual(mq.no_verdict_runs({}), 3)
+        self.assertEqual(mq.no_verdict_runs({"queue": {}}), 3)
+        self.assertEqual(mq.no_verdict_runs(self.config()), 3)
+        for runs in (1, 5):
+            with self.subTest(runs=runs):
+                run(self.repo, "git", "fetch", "-q", "origin")
+                run(self.repo, "git", "checkout", "-q", "-B", "main", "origin/main")
+                config = self.config()
+                config["queue"]["noVerdictRuns"] = runs
+                self.publish(config, f"Allow {runs} runs with no verdict")
+                self.assertEqual(mq.no_verdict_runs(self.config()), runs)
+                with contextlib.suppress(OSError): mq.Queue(self.repo).hold_file.unlink()
+                start = self.gates()
+                self.status.write_text("3")
+                self.commit(f"a{runs}", f"a{runs}")
+                [identifier] = self.add(f"a{runs}")
+                with patch("builtins.print"): self.assertEqual(self.work(), 0)
+                self.assertEqual(self.gates() - start, runs)
+                self.assertEqual(self.state(identifier)["state"], "queued")
+                self.assertIn(f"in {runs} run{'' if runs == 1 else 's'} in a row, the last with exit 3", mq.Queue(self.repo).held())
+                self.assertIn(f"the most queue.noVerdictRuns allows ({runs})", mq.Queue(self.repo).held())
+                mq.remove(mq.Queue(self.repo), identifier, quiet=True)
+
+    def test_a_branch_cannot_raise_its_own_bound(self):
+        """Read from main, as every queue setting is: a batch that sets 5 still holds after main's 3."""
+        self.status.write_text("3")
+        config = self.config()
+        config["queue"]["noVerdictRuns"] = 5
+        run(self.repo, "git", "fetch", "-q", "origin")
+        run(self.repo, "git", "checkout", "-q", "-B", "raise", "origin/main")
+        (self.repo / "engineering.json").write_text(json.dumps(config))
+        run(self.repo, "git", "add", "engineering.json")
+        run(self.repo, "git", "commit", "-qm", "Raise the bound")
+        [identifier] = self.add("raise")
+        with patch("builtins.print"): self.work()
+        self.assertEqual(self.gates(), 3)
+        self.assertEqual(self.state(identifier)["state"], "queued")
+
+    def test_the_setting_must_be_a_positive_integer(self):
+        start = {"schemaVersion": 1, "name": "fixture", "integration": "direct-main",
+                 "lanes": {"gate": {"command": ["true"]}}}
+        for runs in (1, 3, 10):
+            with self.subTest(runs=runs):
+                configuration.parse(json.dumps({**start, "queue": {"noVerdictRuns": runs}}))
+        for runs in (0, -1, 2.5, "3", True, None):
+            with self.subTest(runs=runs), self.assertRaisesRegex(ValueError, "queue.noVerdictRuns"):
+                configuration.parse(json.dumps({**start, "queue": {"noVerdictRuns": runs}}))
+
+    def test_the_hold_says_why_the_last_run_gave_no_verdict(self):
+        worker = mq.Worker(mq.Queue(self.repo))
+        log = self.base / "gate.log"
+        log.write_text("test_voices (m.Voices) ... skipped 'Unmeasured: the voices were not ready in 500 s'\n"
+                       "test_more (m.Voices) ... skipped 'Unmeasured: the voices were not ready in 500 s'\n"
+                       "test_more (m.Voices) ... skipped 'Unmeasured: the voices were not ready in 500 s'\n")
+        self.assertEqual(worker.no_verdict_cause(3, log),
+                         "unmeasured: 2 tests, the first test_voices (m.Voices) ... skipped 'Unmeasured: the voices "
+                         "were not ready in 500 s'")
+        log.write_text("test_voices (m.Voices) ... skipped 'Unmeasured: " + "x" * 400 + "'\n")
+        self.assertEqual(len(worker.no_verdict_cause(3, log).split("the first ", 1)[1]), mq.UNMEASURED_SHOWN)
+        self.assertEqual(worker.no_verdict_cause(3, self.base / "missing.log"), "unmeasured, with no test its log names")
+        self.assertEqual(worker.no_verdict_cause(75, log), "no admission: the host stayed at capacity")
+        self.assertIn("configuration", worker.no_verdict_cause(78, log))
+        worker.timed_out = "gate reached its limit: after 7200 s"
+        self.assertEqual(worker.no_verdict_cause(3, log), "unmeasured: gate reached its limit: after 7200 s")
 
     BUSY = ("load", "load 40.0 is at or above HEAVY_LOAD_LIMIT=13.5")
 
@@ -297,7 +422,8 @@ class NoVerdict(Fixture):
         self.assertEqual(self.gates(), 1)
         self.assertEqual(self.state(identifier)["state"], "queued")
         held = mq.Queue(self.repo).held()
-        self.assertIn(f"exit 3, and the host did not settle in {mq.SETTLE_LIMIT}s (load 40.0 is at or above", held)
+        self.assertIn("the lanes gave no verdict in 1 run in a row, the last with exit 3, unmeasured, with no test its "
+                      f"log names, and the host did not settle in {mq.SETTLE_LIMIT}s (load 40.0 is at or above", held)
         self.assertIn("eng queue resume", held)
         self.assertIn(f"the host did not settle in {mq.SETTLE_LIMIT}s and {len(slept) + 1} looks", said.getvalue())
         # A line every SETTLE_REPORT while it waited, not one per look.
@@ -307,6 +433,27 @@ class NoVerdict(Fixture):
         with patch.object(mq.Queue, "start"), patch("builtins.print"): mq.resume(self.repo)
         self.work()
         self.assertEqual(self.state(identifier)["state"], "landed")
+
+    def test_every_retry_waits_for_the_host_to_settle(self):
+        """Each run after the first starts only once the host settled, never into the load that voided the last."""
+        self.status.write_text("3")
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        started = []
+        real = mq.Worker.gate
+        def gate(worker, *arguments):
+            started.append(self.pressure.call_count)
+            return real(worker, *arguments)
+        with self.host([self.BUSY, None, self.BUSY, self.BUSY, None]) as (slept, said), \
+                patch.object(mq.Worker, "gate", gate):
+            self.assertEqual(self.work(), 0)
+        # The first gate before any look; the second after the second look settled; the third after the fifth.
+        self.assertEqual(started, [0, 2, 5])
+        self.assertEqual(slept, [mq.SETTLE_POLL] * 3)
+        self.assertEqual(self.gates(), 3)
+        self.assertEqual(self.state(identifier)["state"], "queued")
+        self.assertIn("in 3 runs in a row", mq.Queue(self.repo).held())
+        self.assertEqual(said.getvalue().count("settled after"), 2)
 
     def test_a_failure_comes_back_at_once_without_a_wait(self):
         """Negative control: only no verdict waits for the host. A lane's failure, alone or bisected, never does."""
