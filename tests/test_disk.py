@@ -278,7 +278,9 @@ class SimulatorTests(Fixture):
         self.assertIsNone(items[template["udid"]].command)
         self.assertEqual(items[gone["udid"]].status, disk.CANDIDATE)
         self.assertIn("its runtime gone; the next new member of the kind warms another", items[gone["udid"]].reason)
-        self.assertEqual(items[gone["udid"]].command, ["xcrun", "simctl", "delete", gone["udid"]])
+        # Its deletion goes through the pool's prune, which reserves it, checks it again and records it.
+        self.assertEqual(items[gone["udid"]].command[-6:],
+                         ["simulator-pool", "--pool", "Project", "--owner", "eng disk", "prune", gone["udid"]][-6:])
         for other in (stranger, mislabeled):
             self.assertNotIn("warmed template", items[other["udid"]].reason)
 

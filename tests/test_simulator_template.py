@@ -1,7 +1,9 @@
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import unittest
 from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
@@ -11,6 +13,7 @@ from vocaro_engineering.simulators import template
 UDID = "2BBC94CE-0D99-4A08-9763-269B5711AC97"
 RUNTIME = "com.apple.CoreSimulator.SimRuntime.iOS-27-2"
 IDENTITY = {"buildversion": "24B8117", "version": "27.2"}
+TOOL = "/build/simulator-voices"
 
 
 class Clock:
@@ -30,12 +33,16 @@ class Device:
 
     speaks_after: seconds after VoiceOver is switched on when the speech extension logs its first phrase,
     None for never. volumes: what the volume reads after each mute, in turn, then 0. cues: what VoiceOver's
-    sound-cue switch reads after it is written, or a number for a write that exits so."""
-    def __init__(self, clock, speaks_after=50, volumes=(), boot=0, bootstatus=0, stuck_on=False, cues="0"):
+    sound-cue switch reads after it is written, or a number for a write that exits so. voices: the seconds
+    each use of the voices program takes to list the voices, in turn, None for no answer within its limit;
+    reboot: what bootstatus exits after the second boot."""
+    def __init__(self, clock, speaks_after=50, volumes=(), boot=0, bootstatus=0, stuck_on=False, cues="0",
+                 voices=(57.0, 24.0), reboot=0):
         self.clock, self.speaks_after, self.volumes = clock, speaks_after, list(volumes)
         self.calls, self.boot, self.bootstatus, self.stuck_on = [], boot, bootstatus, stuck_on
         self.voiceover, self.volume, self.switched, self.log = False, 60, None, None
         self.cues, self.cue_setting = cues, "1"
+        self.voices, self.reboot, self.boots, self.uses = list(voices), reboot, 0, []
 
     def simctl(self, *arguments, timeout=600):
         self.calls.append(("simctl", *arguments))
@@ -47,7 +54,20 @@ class Device:
                 self.cue_setting = self.cues
                 return subprocess.CompletedProcess(arguments, 0, "", "")
             return subprocess.CompletedProcess(arguments, 0, self.cue_setting + "\n", "")
-        status = {"boot": self.boot, "bootstatus": self.bootstatus}.get(arguments[0], 0)
+        if arguments[:1] == ("spawn",):
+            # The voices program, timed by this clock: its lines, or no answer within the limit.
+            self.assertion(arguments[1:] == (UDID, TOOL), arguments)
+            seconds = self.voices.pop(0) if self.voices else 1.0
+            self.uses.append((self.clock(), self.boots))
+            if seconds is None or seconds > timeout:
+                self.clock.sleep(timeout)
+                return subprocess.CompletedProcess(arguments, 124, "", f"timed out after {timeout} s")
+            self.clock.sleep(seconds + 0.9)
+            return subprocess.CompletedProcess(arguments, 0, f"0.001 start pid 4242\n{seconds:.3f} speechVoices 180\n"
+                                                             f"{seconds + 0.9:.3f} languages 40 of 42 have their own voice\n", "")
+        if arguments[0] == "boot": self.boots += 1
+        if arguments[0] == "bootstatus": self.clock.sleep(2)
+        status = {"boot": self.boot, "bootstatus": self.bootstatus if self.boots < 2 else self.reboot}.get(arguments[0], 0)
         return subprocess.CompletedProcess(arguments, status, "", "failed" if status else "")
 
     @staticmethod
@@ -87,6 +107,7 @@ class Device:
 
 class WarmTests(unittest.TestCase):
     def warm(self, device, clock, **options):
+        options.setdefault("tool", TOOL)
         with mock.patch.object(template.runtime_identity, "runtime_for_device", return_value=IDENTITY):
             return template.warm(UDID, RUNTIME, simctl=device.simctl, devicectl=device.devicectl,
                                  stream=device.stream, clock=clock, sleep=clock.sleep, **options)
@@ -108,10 +129,13 @@ class WarmTests(unittest.TestCase):
         readings = [call for call in device.calls[mute:on] if call[:3] == ("devicectl", "info", "audio")]
         self.assertGreaterEqual(len(readings), template.MUTE_HELD)
         self.assertFalse(device.voiceover)
-        # Nothing here shuts down, erases, clones or deletes: that is the pool's. Its only spawns write
-        # and read VoiceOver's sound-cue switch.
-        self.assertEqual({call[1] for call in device.calls if call[0] == "simctl"}, {"boot", "bootstatus", "spawn"})
-        self.assertEqual({call[4] for call in device.calls if call[:2] == ("simctl", "spawn")}, {"write", "read"})
+        # Nothing here erases, clones or deletes: that is the pool's. Its simctl boots, reads the boot, shuts
+        # down and boots again between the voices' uses, and spawns only the sound-cue switch's write and read
+        # and the voices program.
+        self.assertEqual({call[1] for call in device.calls if call[0] == "simctl"}, {"boot", "bootstatus", "spawn", "shutdown"})
+        self.assertEqual({call[4] for call in device.calls if call[:4] == ("simctl", "spawn", UDID, "defaults")}, {"write", "read"})
+        self.assertEqual([call[3] for call in device.calls if call[:3] == ("simctl", "spawn", UDID) and call[3] != "defaults"],
+                         [TOOL, TOOL])
 
     def test_sound_cues_are_switched_off_before_voiceover_starts(self):
         clock = Clock()
@@ -240,7 +264,7 @@ class WarmTests(unittest.TestCase):
                                side_effect=template.runtime_identity.RuntimeIdentityUnavailable("no root")):
             with self.assertRaisesRegex(template.WarmFailed, "its runtime build could not be read: no root"):
                 template.warm(UDID, RUNTIME, simctl=device.simctl, devicectl=device.devicectl, stream=device.stream,
-                              clock=clock, sleep=clock.sleep)
+                              clock=clock, sleep=clock.sleep, tool=TOOL)
         self.assertFalse([call for call in device.calls if call[0] == "devicectl"])
 
     def test_a_stop_while_voiceover_is_on_switches_it_off(self):
@@ -252,9 +276,133 @@ class WarmTests(unittest.TestCase):
         with mock.patch.object(template.runtime_identity, "runtime_for_device", return_value=IDENTITY):
             with self.assertRaises(KeyboardInterrupt):
                 template.warm(UDID, RUNTIME, simctl=device.simctl, devicectl=device.devicectl, stream=device.stream,
-                              clock=clock, sleep=stop)
+                              clock=clock, sleep=stop, tool=TOOL)
         self.assertFalse(device.voiceover)
         self.assertEqual(device.calls[-1][:3], ("devicectl", "settings", "voiceover"))
+
+    def test_the_voices_are_used_twice_with_a_reboot_between_once_voiceover_is_off(self):
+        clock = Clock()
+        device = Device(clock, voices=(57.0, 24.0))
+        record = self.warm(device, clock)
+        voices = record["voices"]
+        self.assertEqual((voices["settled"], voices["limit"], voices["firstUse"]["seconds"], voices["firstUse"]["count"],
+                          voices["secondUse"]["seconds"], voices["secondUse"]["count"]),
+                         (True, template.VOICES_LIMIT, 57.0, 180, 24.0, 180))
+        self.assertEqual((voices["firstUse"]["languages"], voices["firstUse"]["languagesWithAVoice"],
+                          voices["firstUse"]["languagesSeconds"]), (42, 40, 57.9))
+        self.assertEqual(voices["outcome"], "settled: 180 voices listed 57.0 s into the first use and 24.0 s into the "
+                                            "second, after a reboot")
+        self.assertEqual(voices["rebootSeconds"], 2.0)
+        # VoiceOver was off before the first use; the second use came after a shutdown and a second boot.
+        off = device.order(("devicectl", "settings", "voiceover", "--device", UDID, "--disable"))[0]
+        uses = [index for index, call in enumerate(device.calls) if call[:4] == ("simctl", "spawn", UDID, TOOL)]
+        boots = [index for index, call in enumerate(device.calls) if call[:2] == ("simctl", "boot")]
+        downs = [index for index, call in enumerate(device.calls) if call[:2] == ("simctl", "shutdown")]
+        self.assertEqual((len(uses), len(boots), len(downs)), (2, 2, 1))
+        self.assertTrue(off < uses[0] < downs[0] < boots[1] < uses[1], device.calls)
+        self.assertEqual([boots for _, boots in device.uses], [1, 2])
+        # Both uses ran within the limit given, as the pool's take gives a shorter one.
+        clock = Clock()
+        device = Device(clock)
+        self.warm(device, clock, voices_limit=template.TAKE_VOICES_LIMIT)
+        self.assertEqual([call for call in device.calls if call[:4] == ("simctl", "spawn", UDID, TOOL)], [("simctl", "spawn", UDID, TOOL)] * 2)
+        self.assertEqual(template.TAKE_VOICES_LIMIT, 300)
+
+    def test_a_use_with_no_answer_or_a_reboot_that_fails_leaves_the_voices_unsettled(self):
+        # The first use: no reboot, no second use.
+        clock = Clock()
+        device = Device(clock, voices=(None,))
+        record = self.warm(device, clock, voices_limit=300)
+        voices = record["voices"]
+        self.assertEqual((voices["settled"], voices["firstUse"]["seconds"], voices["outcome"]),
+                         (False, None, "the first use gave no answer: no answer in 300 s"))
+        self.assertNotIn("secondUse", voices)
+        self.assertEqual(len([call for call in device.calls if call[:2] == ("simctl", "shutdown")]), 0)
+        self.assertEqual(len([call for call in device.calls if call[:4] == ("simctl", "spawn", UDID, TOOL)]), 1)
+        self.assertEqual(record["voiceOverWarmed"], True)
+        # The second use.
+        clock = Clock()
+        device = Device(clock, voices=(57.0, None))
+        voices = self.warm(device, clock, voices_limit=300)["voices"]
+        self.assertEqual((voices["settled"], voices["firstUse"]["seconds"], voices["secondUse"]["seconds"], voices["outcome"]),
+                         (False, 57.0, None, "the second use, after a reboot, gave no answer: no answer in 300 s"))
+        # The reboot between them.
+        for reboot, detail in ((124, "reached its limit"), (165, "exited 165: failed")):
+            with self.subTest(reboot=reboot):
+                clock = Clock()
+                device = Device(clock, reboot=reboot)
+                voices = self.warm(device, clock)["voices"]
+                self.assertEqual((voices["settled"], voices["outcome"]), (False, f"the reboot between the uses {detail}"))
+                self.assertNotIn("secondUse", voices)
+                self.assertEqual(len([call for call in device.calls if call[:4] == ("simctl", "spawn", UDID, TOOL)]), 1)
+        # A program that lists no voice exits 1, and its words are kept.
+        answer = lambda *arguments, timeout: subprocess.CompletedProcess(arguments, 1, "0.001 start pid 1\n0.500 speechVoices 0\n", "")
+        self.assertEqual(template.use_voices(UDID, TOOL, simctl=answer, limit=10),
+                         {"seconds": None, "outcome": "the voices program exited 1: 0.001 start pid 1\n0.500 speechVoices 0"})
+
+    def test_the_voices_are_used_whatever_voiceover_did(self):
+        for name, options in (("cues", dict(cues="1")), ("mute", dict(volumes=[60] * 1000)), ("silent", dict(speaks_after=None))):
+            with self.subTest(name):
+                clock = Clock()
+                device = Device(clock, **options)
+                record = self.warm(device, clock, voiceover_limit=30)
+                self.assertNotEqual(record.get("voiceOverWarmed"), True)
+                self.assertEqual(record["voices"]["settled"], True)
+                self.assertEqual(len([call for call in device.calls if call[:4] == ("simctl", "spawn", UDID, TOOL)]), 2)
+
+    def test_a_voices_program_that_cannot_be_built_is_recorded_and_voiceover_still_warms(self):
+        clock = Clock()
+        device = Device(clock)
+        with mock.patch.object(template, "voices_tool", side_effect=template.ToolUnbuilt("the voices program did not build: no SDK")):
+            record = self.warm(device, clock, tool=None)
+        self.assertEqual(record["voices"], {"limit": template.VOICES_LIMIT, "settled": False,
+                                            "outcome": "the voices program did not build: no SDK"})
+        self.assertEqual(record["voiceOverWarmed"], True)
+        self.assertFalse([call for call in device.calls if call[:3] == ("simctl", "spawn", UDID) and call[3] != "defaults"])
+        self.assertFalse([call for call in device.calls if call[:2] == ("simctl", "shutdown")])
+
+    def test_voices_tool_builds_once_per_source_target_and_sdk_and_signs_it(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        build, source = Path(directory.name) / "build", Path(directory.name) / "simulator-voices.swift"
+        source.write_text("print(1)")
+        calls = []
+        def run(*command, timeout):
+            calls.append(command)
+            if command[3:4] == ("--show-sdk-path",):
+                return subprocess.CompletedProcess(command, 0, "/SDKs/iPhoneSimulator.sdk\n", "")
+            if command[3:4] == ("--show-sdk-build-version",):
+                return subprocess.CompletedProcess(command, 0, "23A1\n", "")
+            if command[3:4] == ("swiftc",):
+                Path(command[command.index("-o") + 1]).write_text("binary")
+                return subprocess.CompletedProcess(command, 0, "", "")
+            if command[0] == "codesign":
+                return subprocess.CompletedProcess(command, 0, "", "")
+            raise AssertionError(command)
+        built = template.voices_tool(build, source, run=run)
+        self.assertTrue(built.is_file() and os.access(built, os.X_OK), built)
+        self.assertTrue(built.name.startswith("simulator-voices-"), built)
+        swiftc = [command for command in calls if command[3:4] == ("swiftc",)]
+        self.assertEqual(len(swiftc), 1)
+        self.assertEqual(swiftc[0][:7], ("xcrun", "--sdk", "iphonesimulator", "swiftc", "-O", "-target", template.VOICES_TARGET))
+        self.assertIn(str(source), swiftc[0])
+        self.assertIn(("codesign", "--force", "--sign", "-", "--identifier", "simulator-voices", mock.ANY), calls)
+        # Built once: the second call finds it.
+        self.assertEqual(template.voices_tool(build, source, run=run), built)
+        self.assertEqual(len([command for command in calls if command[3:4] == ("swiftc",)]), 1)
+        # Another source is another program; a compiler that fails is ToolUnbuilt, with its words, and leaves
+        # nothing half made.
+        source.write_text("print(2)")
+        def failing(*command, timeout):
+            if command[3:4] == ("swiftc",):
+                return subprocess.CompletedProcess(command, 1, "", "error: no such module 'AVFAudio'")
+            return run(*command, timeout=timeout)
+        with self.assertRaisesRegex(template.ToolUnbuilt, "did not build: error: no such module 'AVFAudio'"):
+            template.voices_tool(build, source, run=failing)
+        self.assertEqual(sorted(path.name for path in build.iterdir()), [built.name])
+        missing = lambda *command, timeout: subprocess.CompletedProcess(command, 1, "", "xcrun: error: SDK not found")
+        with self.assertRaisesRegex(template.ToolUnbuilt, "no iOS Simulator SDK"):
+            template.voices_tool(build, source, run=missing)
 
 
 if __name__ == "__main__":

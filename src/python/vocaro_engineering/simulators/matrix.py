@@ -5,9 +5,10 @@
         [-- TEST-ARGUMENTS such as -only-testing:T/C]
 
 Each device is a member of the pool, `POOL LABEL N`: a free one of its kind is reserved in the
-host's device record and erased, or, with --keep-state, kept as earlier runs left it, or, when none is
-free, the next is created and kept in the pool, after members unused for 14 days are pruned
-(guides/simulator-testing.md, Reserved simulator pool).
+host's device record and reset from its kind's warmed template (erased with --erase, or when no settled
+template can be copied), or, with --keep-state, kept as earlier runs left it, or, when none is
+free, the next is cloned from that template, or created, and kept in the pool, after members unused
+for 14 days are pruned (guides/simulator-testing.md, Reserved simulator pool).
 Every device boots while the tests build, and is shut down and released however the run ends. The
 build is one `xcodebuild build-for-testing` for the first device's destination; each device
 then runs `xcodebuild test-without-building` on the same .xctestrun, with its own log, result
@@ -74,9 +75,13 @@ def parse(argv):
     parser.add_argument("--workers", type=int, help="xcodebuild's parallel test workers on each device, each a "
                         "clone of it; without this each device runs one test process")
     parser.add_argument("--boot-timeout", type=int, default=600, help="seconds a boot may take (default 600)")
-    parser.add_argument("--keep-state", action="store_true", help="take each member without erasing it, for tests "
-                        "that need no fresh installation: it keeps what earlier runs installed and skips the "
-                        "first boot's migration (guides/simulator-testing.md, Reserved simulator pool)")
+    fresh = parser.add_mutually_exclusive_group()
+    fresh.add_argument("--keep-state", action="store_true", help="take each member without resetting or erasing it, "
+                       "for tests that need no fresh installation: it keeps what earlier runs installed and skips "
+                       "the first boot's migration (guides/simulator-testing.md, Reserved simulator pool)")
+    fresh.add_argument("--erase", action="store_true", help="erase each member in place of the reset from its "
+                       "kind's warmed template, for tests that want pristine data (guides/simulator-testing.md, "
+                       "Warmed templates)")
     parser.add_argument("--build-only", action="store_true", help="build the tests for the first device and "
                         "test nothing, so that a later run with the same options finds the build up to date; the "
                         "member is taken without erasing or booting it, only to name the build's destination")
@@ -319,10 +324,10 @@ def folders_held(folders, say):
 
 
 @contextlib.contextmanager
-def taken(pool, run, kind, runtime, purpose, keep_state=False):
+def taken(pool, run, kind, runtime, purpose, keep_state=False, erase=False):
     """A member of the kind for this run, shut down and released however the run ends."""
     lease = pool.take(qualified(DEVICE_TYPE, kind), qualified(RUNTIME, runtime), purpose=purpose,
-                      keep_state=keep_state)
+                      keep_state=keep_state, erase=erase)
     try:
         yield lease
     finally:
@@ -357,7 +362,7 @@ def main(argv, project=None):
             for kind in kinds:
                 purpose = f"eng simulator-tests {args.scheme}" + (", build only" if args.build_only else "")
                 device = stack.enter_context(taken(pool, run, kind, args.runtime, purpose,
-                                                   args.keep_state or args.build_only))
+                                                   args.keep_state or args.build_only, args.erase))
                 devices.append((kind, device))
             if args.build_only:
                 # The member names the destination alone: nothing boots, installs or runs on it.

@@ -584,10 +584,11 @@ def simulators(host, usage, sizes):
                              item(KEPT, f"a member of the {pool} pool, kept: {why}"))
             elif udid in templated:
                 pool, template = templated[udid]
-                items.append(item(KEPT, f"the {pool} pool's warmed template of its kind, which new members are "
-                                        "cloned from") if device.get("isAvailable", True) else
+                items.append(item(KEPT, f"the {pool} pool's warmed template of its kind, which members are reset "
+                                        "from and new members cloned from") if device.get("isAvailable", True) else
                              item(CANDIDATE, f"the {pool} pool's warmed template of its kind, unavailable, its runtime "
-                                             "gone; the next new member of the kind warms another", command))
+                                             "gone; the next new member of the kind warms another",
+                                  prune_command(pool, udid)))
             elif record: items.append(item(KEPT, f"named in the device record {record}"))
             elif disposable_name(name):
                 if idle is not None and idle >= host.min_idle:

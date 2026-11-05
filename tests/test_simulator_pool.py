@@ -5,6 +5,8 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -25,16 +27,28 @@ NOW = datetime.now(timezone.utc)
 
 class Simctl:
     """A stand-in for xcrun simctl over a dictionary of devices, recording every call. runtimes names each
-    runtime's installed builds; a clone copies its source's entry, data included, under a new name."""
+    runtime's installed builds. Each device has a data folder under root, as CoreSimulator keeps one, whose
+    `origin` file says what the data is: fresh (never booted), erased, or warmed by the template it came from;
+    an erase resets it, and a clone copies its source's entry and data under a new name."""
 
-    def __init__(self):
+    def __init__(self, root=None):
         self.devices, self.calls, self.fail = {}, [], {}
         self.runtimes = {RUNTIME: ["24B8117"]}
+        self.root = Path(root) if root else Path(tempfile.mkdtemp(prefix="pool-devices-"))
 
-    def add(self, name, device_type=DUO, runtime=RUNTIME, state="Shutdown", days=0, available=True):
+    def data(self, udid):
+        return self.root / udid / "data"
+
+    def origin(self, udid):
+        return (self.data(udid) / "origin").read_text()
+
+    def add(self, name, device_type=DUO, runtime=RUNTIME, state="Shutdown", days=0, available=True, origin="fresh"):
         udid = str(uuid.uuid4()).upper()
+        self.data(udid).mkdir(parents=True)
+        (self.data(udid) / "origin").write_text(origin)
         self.devices[udid] = {"name": name, "deviceTypeIdentifier": device_type, "runtime": runtime, "state": state,
-                              "lastUsedAt": (NOW - timedelta(days=days)).isoformat(), "isAvailable": available}
+                              "lastUsedAt": (NOW - timedelta(days=days)).isoformat(), "isAvailable": available,
+                              "dataPath": str(self.data(udid))}
         return udid
 
     def __call__(self, *arguments, timeout=600):
@@ -62,15 +76,24 @@ class Simctl:
             if source["state"] != "Shutdown":
                 return subprocess.CompletedProcess(arguments, 1, "", "Unable to clone device in current state: Booted")
             udid = str(uuid.uuid4()).upper()
-            self.devices[udid] = {**source, "name": rest[1], "lastUsedAt": None}
+            shutil.copytree(self.data(rest[0]), self.data(udid))
+            self.devices[udid] = {**source, "name": rest[1], "lastUsedAt": None, "dataPath": str(self.data(udid))}
             output = udid
+        elif action == "erase":
+            if self.devices[rest[0]]["state"] != "Shutdown":
+                return subprocess.CompletedProcess(arguments, 1, "", "Unable to erase device in current state: Booted")
+            shutil.rmtree(self.data(rest[0]))
+            self.data(rest[0]).mkdir()
+            (self.data(rest[0]) / "origin").write_text("erased")
         elif action == "boot": self.devices[rest[0]]["state"] = "Booted"
         elif action == "spawn" and rest[1:2] == ("defaults",):
             # VoiceOver's sound-cue switch, which reads 1 until it is written.
             if rest[2] == "write": self.devices[rest[0]]["cues"] = rest[-1]
             else: output = {"false": "0", "true": "1"}[self.devices[rest[0]].get("cues", "true")] + "\n"
         elif action == "shutdown": self.devices[rest[0]]["state"] = "Shutdown"
-        elif action == "delete": del self.devices[rest[0]]
+        elif action == "delete":
+            del self.devices[rest[0]]
+            shutil.rmtree(self.root / rest[0], ignore_errors=True)
         return subprocess.CompletedProcess(arguments, 0, output, "")
 
     def deleted(self):
@@ -86,21 +109,31 @@ class Simctl:
 
 
 class Warm:
-    """A stand-in for template.warm: it boots the template through the pool's simctl and says what it heard.
-    off and warmed say whether VoiceOver was confirmed off and spoke; limits records each call's limits."""
+    """A stand-in for template.warm: it boots the template through the pool's simctl, marks its data as warmed
+    and says what it heard. off and warmed say whether VoiceOver was confirmed off and spoke, settled whether
+    the system's voices answered both uses; limits records each call's limits."""
 
-    def __init__(self, build="24B8117", failure=None, off=True, warmed=True):
+    def __init__(self, build="24B8117", failure=None, off=True, warmed=True, settled=True):
         self.calls, self.limits, self.build, self.failure, self.off, self.warmed = [], [], build, failure, off, warmed
+        self.settled = settled
 
-    def __call__(self, udid, runtime, *, simctl, boot_timeout=600, voiceover_limit=600):
+    def __call__(self, udid, runtime, *, simctl, boot_timeout=600, voiceover_limit=600, voices_limit=900):
         self.calls.append((udid, runtime))
-        self.limits.append((boot_timeout, voiceover_limit))
+        self.limits.append((boot_timeout, voiceover_limit, voices_limit))
         if self.failure: raise simulator_pool.warmed.WarmFailed(self.failure)
         simctl("boot", udid)
+        # What the template's data carries after the warm-up, for a reset or a clone to copy.
+        Path(simctl.devices[udid]["dataPath"], "origin").write_text(f"warmed {udid}")
         said = "spoke 50.0 s after it was switched on" if self.warmed else f"silent for {voiceover_limit} s, so it is not warmed"
+        voices = {"limit": voices_limit, "settled": True, "firstUse": {"seconds": 57.0, "count": 180},
+                  "rebootSeconds": 6.0, "secondUse": {"seconds": 24.0, "count": 180},
+                  "outcome": "settled: 180 voices listed 57.0 s into the first use and 24.0 s into the second, after a "
+                             "reboot"} if self.settled else \
+            {"limit": voices_limit, "settled": False, "firstUse": {"seconds": None, "outcome": f"no answer in {voices_limit} s"},
+             "outcome": f"the first use gave no answer: no answer in {voices_limit} s"}
         return {"bootSeconds": 40.0, "runtimeBuild": self.build, "runtimeVersion": "27.1",
                 "voiceOver": said + ("" if self.off else "; it could not be confirmed off"),
-                "voiceOverWarmed": self.warmed, "voiceOverOff": self.off}
+                "voiceOverWarmed": self.warmed, "voiceOverOff": self.off, "voices": voices}
 
 
 class PoolTests(unittest.TestCase):
@@ -111,18 +144,20 @@ class PoolTests(unittest.TestCase):
         patcher = mock.patch.dict(os.environ, {devices.OVERRIDE: str(self.path)})
         patcher.start()
         self.addCleanup(patcher.stop)
-        self.simctl, self.log = Simctl(), []
+        self.simctl, self.log, self.sleeps = Simctl(Path(directory.name) / "Devices"), [], []
         # The pool the command and member() make warms its templates with template.warm, which would reach
-        # the real devicectl: a test that creates a member through either names its own stand-in.
-        patcher = mock.patch.object(simulator_pool.warmed, "warm", side_effect=AssertionError("template.warm ran"))
+        # the real devicectl: they get this stand-in, and a test that needs another names its own.
+        self.warm = Warm()
+        patcher = mock.patch.object(simulator_pool.warmed, "warm", self.warm)
         patcher.start()
         self.addCleanup(patcher.stop)
         self.pool = self.make("me")
 
     def make(self, owner, warm=None):
-        """A pool of these devices; warm, a stand-in for template.warm, makes it clone new members."""
+        """A pool of these devices; warm, a stand-in for template.warm, makes it keep templates: new members are
+        cloned from them and taken ones reset from them. Its waits for a held template are counted, not slept."""
         return simulator_pool.Pool("Project", owner=owner, record=devices.Record(self.path), run=self.simctl,
-                                   log=self.log.append, clock=lambda: NOW, warm=warm)
+                                   log=self.log.append, clock=lambda: NOW, warm=warm, sleep=self.sleeps.append)
 
     def release_entry(self, key, udid, days):
         """A released record entry for a member, released the given number of days ago."""
@@ -492,6 +527,7 @@ class PoolTests(unittest.TestCase):
                         {"spawn": lambda rest: (0, "1\n" if rest[2] == "read" else "", "")}):
             with self.subTest(failure=failure):
                 self.simctl, self.log = Simctl(), []
+                self.warm = Warm()
                 self.pool = self.make("me")
                 udid = self.simctl.add("Project Duo 1")
                 self.simctl.fail.update(failure)
@@ -687,7 +723,8 @@ class PoolTests(unittest.TestCase):
         self.simctl.runtimes = {}
         created = self.make("me", warm=warm).take(DUO, RUNTIME, purpose="Tests")
         self.assertEqual((created.cloned, self.simctl.created("create")[-1]), (None, created.key))
-        self.assertIn(f"no installed build of {RUNTIME} could be read, so no template is warmed or cloned", self.log)
+        self.assertIn(f"no installed build of {RUNTIME} could be read, so no template is warmed or cloned, so the new "
+                      "member is created instead", self.log)
 
     def test_a_stop_while_a_template_warms_shuts_it_down_and_releases_both_names(self):
         def stopped(udid, runtime, *, simctl, **limits):
@@ -760,11 +797,13 @@ class PoolTests(unittest.TestCase):
         status, output, error = command("template", "--device", "iPhone-Duo", "--runtime", "iOS-27-1")
         self.assertEqual(status, 0, error)
         # The pool's own label for the kind names the template.
-        self.assertEqual(output, "Project Duo template (iOS-27-1): warmed on runtime build 24B8117: "
-                                 "spoke 50.0 s after it was switched on\n")
+        self.assertRegex(output, r"^Project Duo template \(iOS-27-1\): warmed on runtime build 24B8117 at \S+: "
+                                 r"spoke 50\.0 s after it was switched on; voices: settled: 180 voices listed 57\.0 s into "
+                                 r"the first use and 24\.0 s into the second, after a reboot\n$")
         status, listed, _ = command("list")
         self.assertIn("Project Duo template (iOS-27-1)", listed)
         self.assertIn("template: warmed on runtime build 24B8117", listed)
+        self.assertIn("; voices: settled: 180 voices", listed)
         # Warming it again finds it current.
         self.assertEqual(command("template", "--device", "iPhone-Duo", "--runtime", "iOS-27-1")[0], 0)
         self.assertEqual(len(warm.calls), 1)
@@ -851,8 +890,10 @@ class PoolTests(unittest.TestCase):
         pool = self.make("me", warm=warm)
         template = "Project iPhone Duo template (iOS-27-1)"
         lease = pool.take(DUO, RUNTIME, purpose="Tests")
-        self.assertEqual(warm.limits, [(simulator_pool.warmed.TAKE_BOOT, simulator_pool.warmed.TAKE_VOICEOVER_LIMIT)])
-        self.assertEqual((simulator_pool.warmed.TAKE_BOOT, simulator_pool.warmed.TAKE_VOICEOVER_LIMIT), (300, 180))
+        self.assertEqual(warm.limits, [(simulator_pool.warmed.TAKE_BOOT, simulator_pool.warmed.TAKE_VOICEOVER_LIMIT,
+                                        simulator_pool.warmed.TAKE_VOICES_LIMIT)])
+        self.assertEqual((simulator_pool.warmed.TAKE_BOOT, simulator_pool.warmed.TAKE_VOICEOVER_LIMIT,
+                          simulator_pool.warmed.TAKE_VOICES_LIMIT), (300, 180, 300))
         # VoiceOver stayed cold within the take's limit, yet the template has had its first boot: it is cloned.
         self.assertEqual(lease.cloned, template)
         self.assertEqual(devices.Record(self.path).entry(template)["template"]["voiceOverWarmed"], False)
@@ -868,12 +909,294 @@ class PoolTests(unittest.TestCase):
         warm.warmed = True
         status, output, error = command("template", "--device", "iPhone-Duo", "--runtime", "iOS-27-1")
         self.assertEqual(status, 0, error)
-        self.assertEqual(warm.limits[-1], (600, simulator_pool.warmed.VOICEOVER_LIMIT))
+        self.assertEqual(warm.limits[-1], (600, simulator_pool.warmed.VOICEOVER_LIMIT, simulator_pool.warmed.VOICES_LIMIT))
         self.assertEqual(self.simctl.deleted(), [cold])
         self.assertIn("spoke 50.0 s after it was switched on", output)
         # Warmed now, it is left as it is by the command and cloned by the next take.
         self.assertEqual(command("template", "--device", "iPhone-Duo", "--runtime", "iOS-27-1")[0], 0)
         self.assertEqual(len(warm.calls), 2)
+    def command(self, warm, *arguments):
+        """`eng simulator-pool` over the fake simctl with warm standing in for template.warm."""
+        out, err = StringIO(), StringIO()
+        with mock.patch.object(simulator_pool, "simctl", self.simctl), \
+                mock.patch.object(simulator_pool.warmed, "warm", warm), redirect_stdout(out), redirect_stderr(err):
+            status = simulator_pool.main(["--pool", "Project", "--owner", "me", *arguments])
+        return status, out.getvalue(), err.getvalue()
+
+    def test_a_take_resets_a_free_member_from_the_kinds_template_in_place_of_an_erase(self):
+        warm = Warm()
+        pool = self.make("me", warm=warm)
+        free = self.simctl.add("Project Duo 1")
+        template = "Project Duo template (iOS-27-1)"
+        lease = pool.take(DUO, RUNTIME, purpose="Tests")
+        # The kind had no template: the take made one within the take's limits, then copied it into the member.
+        self.assertEqual((lease.key, lease.udid, lease.reset, lease.created, lease.kept),
+                         ("Project Duo 1", free, template, False, False))
+        self.assertEqual(warm.limits, [(simulator_pool.warmed.TAKE_BOOT, simulator_pool.warmed.TAKE_VOICEOVER_LIMIT,
+                                        simulator_pool.warmed.TAKE_VOICES_LIMIT)])
+        source, = [udid for udid, device in self.simctl.devices.items() if device["name"] == template]
+        self.assertEqual(self.simctl.origin(free), f"warmed {source}")
+        # The member kept its UDID and was erased first, so that a copy that fails leaves an erased member;
+        # the template was only read, never erased, cloned or deleted.
+        self.assertEqual([call for call in self.simctl.calls if call[0] in ("erase", "clone", "delete")], [("erase", free)])
+        self.assertEqual(self.simctl.devices[free]["name"], "Project Duo 1")
+        entry = devices.Record(self.path).entry("Project Duo 1")
+        self.assertEqual({key: entry["resetFrom"][key] for key in ("template", "udid", "runtimeBuild", "warmedAt", "voices")},
+                         {"template": template, "udid": source, "runtimeBuild": "24B8117", "warmedAt": NOW.isoformat(),
+                          "voices": {"firstUse": 57.0, "secondUse": 24.0}})
+        self.assertEqual(entry["preservation"],
+                         simulator_pool.RESET.format(template=template, at=NOW.isoformat(), build="24B8117"))
+        self.assertNotIn("erasedBecause", entry)
+        self.assertIn(f"TOOK Project Duo 1 ({free}), reset from {template}", self.log)
+        self.assertTrue(any(line.startswith(f"RESET Project Duo 1 ({free}) from {template}, made {NOW.isoformat()} on "
+                                            "runtime build 24B8117, in ") for line in self.log), self.log)
+        # The template was held for the copy alone and released, shut down, and is no member.
+        held = devices.Record(self.path).entry(template)
+        self.assertEqual((held["state"], held["run"]), ("released", "Copied into Project Duo 1 for Tests"))
+        self.assertEqual(self.simctl.devices[source]["state"], "Shutdown")
+        self.assertEqual([member.name for member in pool.members()], ["Project Duo 1"])
+        self.assertTrue(pool.release(lease, outcome="done"))
+        # The next take copies the same template, not warmed again, over what the tests left.
+        (self.simctl.data(free) / "origin").write_text("used by tests")
+        again = pool.take(DUO, RUNTIME, purpose="Tests")
+        self.assertEqual((again.udid, again.reset, len(warm.calls)), (free, template, 1))
+        self.assertEqual(self.simctl.origin(free), f"warmed {source}")
+        self.assertTrue(pool.release(again, outcome="done"))
+        # A take that keeps state copies nothing and never touches the template.
+        before = len(self.simctl.calls)
+        kept = pool.take(DUO, RUNTIME, purpose="VoiceOver", keep_state=True)
+        self.assertEqual((kept.kept, kept.reset), (True, None))
+        self.assertEqual([call for call in self.simctl.calls[before:] if source in call or call[0] == "erase"], [])
+        self.assertEqual(self.simctl.origin(free), f"warmed {source}")
+        self.assertEqual(self.sleeps, [])
+
+    def test_a_take_falls_back_to_an_erase_and_says_why_when_no_template_can_be_copied(self):
+        warm = Warm()
+        pool = self.make("me", warm=warm)
+        free = self.simctl.add("Project Duo 1")
+        template = "Project Duo template (iOS-27-1)"
+        pool.release(pool.take(DUO, RUNTIME, purpose="Tests"), outcome="done")
+        source = devices.Record(self.path).entry(template)["device"]
+        # Held by another session past the wait: erased, and the record and the log say why.
+        self.hold(template, source)
+        lease = pool.take(DUO, RUNTIME, purpose="Tests")
+        self.assertEqual((lease.udid, lease.reset), (free, None))
+        self.assertEqual(self.simctl.origin(free), "erased")
+        self.assertEqual(self.sleeps, [simulator_pool.TEMPLATE_POLL] * (simulator_pool.TEMPLATE_WAIT // simulator_pool.TEMPLATE_POLL))
+        why = f"{template} is held by another session"
+        self.assertEqual(devices.Record(self.path).entry("Project Duo 1")["erasedBecause"], why)
+        self.assertIn(f"TOOK Project Duo 1 ({free}), erased: {why}", self.log)
+        self.assertIn(f"WAITED {simulator_pool.TEMPLATE_WAIT} s for {template}, still held", self.log)
+        self.assertEqual(devices.Record(self.path).entry(template)["ownerChatID"], "another session")
+        self.assertTrue(pool.release(lease, outcome="done"))
+        record = devices.Record(self.path)
+        record.release(template, owner="another session", revision=record.entry(template)["revision"], outcome="done",
+                       restoration="checked")
+        # A copy that fails: erased again, the template released as not copied, with the clone's words in the record.
+        self.sleeps.clear()
+        erases = len([call for call in self.simctl.calls if call[0] == "erase"])
+        with mock.patch.object(simulator_pool, "copy_data", side_effect=OSError(28, "clonefile: No space left on device")):
+            lease = pool.take(DUO, RUNTIME, purpose="Tests")
+        self.assertEqual((lease.reset, self.simctl.origin(free)), (None, "erased"))
+        self.assertEqual(len([call for call in self.simctl.calls if call[0] == "erase"]), erases + 2)
+        self.assertEqual(devices.Record(self.path).entry("Project Duo 1")["erasedBecause"],
+                         f"the copy of {template}'s data into Project Duo 1 failed: [Errno 28] clonefile: No space left on device")
+        self.assertEqual(devices.Record(self.path).entry(template)["run"], "Not copied into Project Duo 1 for Tests")
+        self.assertEqual(self.sleeps, [])
+        self.assertTrue(pool.release(lease, outcome="done"))
+        # A template that will not warm: erased, with the warm-up's words.
+        warm.failure = "the boot did not finish within 300 s"
+        self.simctl.runtimes[RUNTIME] = ["24B8117", "24B9000"]
+        lease = pool.take(DUO, RUNTIME, purpose="Tests")
+        self.assertEqual((lease.reset, self.simctl.origin(free)), (None, "erased"))
+        self.assertRegex(devices.Record(self.path).entry("Project Duo 1")["erasedBecause"],
+                         rf"^{re.escape(template)} \(\S+\) was not warmed: the boot did not finish within 300 s$")
+        self.assertTrue(pool.release(lease, outcome="done"))
+        # Templates off, as for a pool that keeps none: erased, with nothing to say.
+        lease = self.make("me").take(DUO, RUNTIME, purpose="Tests")
+        self.assertIn(f"TOOK Project Duo 1 ({free}), erased", self.log)
+        self.assertNotIn("erasedBecause", devices.Record(self.path).entry("Project Duo 1"))
+        self.assertTrue(self.make("me").release(lease, outcome="done"))
+        # Asked for: erased without a look at the template, and the record says who asked.
+        warm.failure = None
+        pool.release(pool.take(DUO, RUNTIME, purpose="Tests"), outcome="done")
+        source = devices.Record(self.path).entry(template)["device"]
+        self.assertEqual(self.simctl.origin(free), f"warmed {source}")
+        before, self.sleeps[:] = len(self.simctl.calls), []
+        lease = pool.take(DUO, RUNTIME, purpose="Pristine data", erase=True)
+        self.assertEqual((lease.udid, lease.reset, lease.kept, self.simctl.origin(free)), (free, None, False, "erased"))
+        self.assertEqual([call for call in self.simctl.calls[before:] if source in call], [])
+        self.assertEqual((devices.Record(self.path).entry(template)["state"], self.sleeps), ("released", []))
+        self.assertEqual(devices.Record(self.path).entry("Project Duo 1")["erasedBecause"], simulator_pool.ERASE_ASKED)
+        self.assertIn(f"TOOK Project Duo 1 ({free}), erased: {simulator_pool.ERASE_ASKED}", self.log)
+        self.assertTrue(pool.release(lease, outcome="done"))
+        with mock.patch.object(simulator_pool, "simctl", self.simctl):
+            with simulator_pool.member("Project", "iPhone-Duo", "iOS-27-1", purpose="Gate", owner="me",
+                                       log=self.log.append, erase=True) as device:
+                self.assertEqual(device.udid, free)
+        self.assertEqual(devices.Record(self.path).entry("Project Duo 1")["erasedBecause"], simulator_pool.ERASE_ASKED)
+
+    def test_a_template_whose_voices_did_not_settle_is_cloned_from_but_never_copied_until_refreshed(self):
+        warm = Warm(settled=False)
+        pool = self.make("me", warm=warm)
+        free = self.simctl.add("Project Duo 1")
+        template = "Project Duo template (iOS-27-1)"
+        lease = pool.take(DUO, RUNTIME, purpose="Tests")
+        # Warmed within the take, VoiceOver spoke, the voices did not settle: kept, but the member is erased.
+        self.assertEqual((lease.reset, self.simctl.origin(free), len(warm.calls)), (None, "erased", 1))
+        hint = "refresh it with `eng simulator-pool template --device iPhone-Duo --runtime iOS-27-1 --refresh`"
+        why = devices.Record(self.path).entry("Project Duo 1")["erasedBecause"]
+        self.assertIn("its voices did not settle: the first use gave no answer: no answer in 300 s within the take's limits; "
+                      + hint, why)
+        (found, current, reason), = pool.templates()
+        self.assertEqual((found.name, current), (template, True))
+        self.assertIn("voices: its voices did not settle: the first use gave no answer", reason)
+        self.assertTrue(pool.release(lease, outcome="done"))
+        # The next take does not warm it again and says the same; a new member is still cloned from it.
+        again = pool.take(DUO, RUNTIME, purpose="Tests")
+        self.assertEqual((again.reset, len(warm.calls)), (None, 1))
+        self.assertEqual(devices.Record(self.path).entry("Project Duo 1")["erasedBecause"],
+                         f"{template}: its voices did not settle: the first use gave no answer: no answer in 300 s; {hint}")
+        cloned = pool.create(DUO, RUNTIME, purpose="Tests")
+        self.assertEqual((cloned.cloned, len(warm.calls)), (template, 1))
+        for held in (again, cloned): self.assertTrue(pool.release(held, outcome="done"))
+        # The command replaces it, with the full limits, and the next take copies the replacement.
+        old = devices.Record(self.path).entry(template)["device"]
+        warm.settled = True
+        status, output, error = self.command(warm, "template", "--device", "iPhone-Duo", "--runtime", "iOS-27-1")
+        self.assertEqual(status, 0, error)
+        self.assertEqual(self.simctl.deleted(), [old])
+        self.assertEqual(warm.limits[-1], (600, simulator_pool.warmed.VOICEOVER_LIMIT, simulator_pool.warmed.VOICES_LIMIT))
+        self.assertIn("; voices: settled: 180 voices listed 57.0 s into the first use and 24.0 s into the second", output)
+        new = devices.Record(self.path).entry(template)["device"]
+        reset = pool.take(DUO, RUNTIME, purpose="Tests")
+        self.assertEqual((reset.udid, reset.reset, self.simctl.origin(free)), (free, template, f"warmed {new}"))
+        self.assertTrue(pool.release(reset, outcome="done"))
+        # Settled and current, the command leaves it alone, unless asked to refresh it.
+        self.assertEqual(self.command(warm, "template", "--device", "iPhone-Duo", "--runtime", "iOS-27-1")[0], 0)
+        self.assertEqual((len(warm.calls), self.simctl.deleted()), (2, [old]))
+        status, output, error = self.command(warm, "template", "--device", "iPhone-Duo", "--runtime", "iOS-27-1", "--refresh")
+        self.assertEqual(status, 0, error)
+        self.assertEqual((len(warm.calls), self.simctl.deleted()), (3, [old, new]))
+        self.assertIn(f"REPLACED the template {template} ({new}): eng simulator-pool template --refresh asked for a new one",
+                      error)
+        self.assertEqual(devices.Record(self.path).entry(template)["state"], "released")
+
+    def test_a_template_made_before_settled_voices_is_remade_at_the_next_take(self):
+        warm = Warm()
+        pool = self.make("me", warm=warm)
+        free = self.simctl.add("Project Duo 1")
+        template = "Project Duo template (iOS-27-1)"
+        pool.release(pool.take(DUO, RUNTIME, purpose="Tests"), outcome="done")
+        old = devices.Record(self.path).entry(template)["device"]
+        # Its record from before this change: VoiceOver warmed, nothing of the voices.
+        value = json.loads(self.path.read_text())
+        del value["devices"][template]["template"]["voices"]
+        self.path.write_text(json.dumps(value))
+        self.assertEqual([(current, why) for _, current, why in pool.templates()],
+                         [(False, "it was warmed before templates settled the system's voices (vocaro-engineering#172)")])
+        lease = pool.take(DUO, RUNTIME, purpose="Tests")
+        self.assertEqual(self.simctl.deleted(), [old])
+        new = devices.Record(self.path).entry(template)["device"]
+        self.assertNotEqual(new, old)
+        self.assertEqual((lease.reset, self.simctl.origin(free), len(warm.calls)), (template, f"warmed {new}", 2))
+        self.assertTrue(any(line.startswith(f"REPLACED the template {template} ({old}): it was warmed before templates "
+                                            "settled the system's voices") for line in self.log), self.log)
+        self.assertTrue(pool.release(lease, outcome="done"))
+
+    def test_the_command_lists_each_members_template_and_when_it_was_made(self):
+        free = self.simctl.add("Project Duo 1")
+        other = self.simctl.add("Project Duo 2")
+        warm = Warm()
+        template = "Project Duo template (iOS-27-1)"
+        self.assertEqual(self.command(warm, "template", "--device", "iPhone-Duo", "--runtime", "iOS-27-1")[0], 0)
+        made = devices.Record(self.path).entry(template)["template"]["warmedAt"]
+        status, listed, _ = self.command(warm, "list")
+        self.assertRegex(listed, rf"Project Duo 1  {free}  iOS-27-1  Shutdown  kept: .*; no recorded take\n")
+        status, udid, error = self.command(warm, "take", "--device", "iPhone-Duo", "--runtime", "iOS-27-1")
+        self.assertEqual((status, udid.strip()), (0, free), error)
+        self.assertEqual(self.command(warm, "release", free)[0], 0)
+        self.assertEqual(self.simctl.origin(free), f"warmed {devices.Record(self.path).entry(template)['device']}")
+        status, listed, _ = self.command(warm, "list")
+        self.assertRegex(listed, rf"Project Duo 1  {free}  iOS-27-1  Shutdown  kept: .*; last take \S+: reset from "
+                                 rf"{re.escape(template)}, made {re.escape(made)}\n")
+        self.assertRegex(listed, rf"Project Duo 2  {other}  iOS-27-1  Shutdown  kept: .*; no recorded take\n")
+        self.assertRegex(listed, rf"{re.escape(template)}  \S+  iOS-27-1  Shutdown  template: warmed on runtime build "
+                                 rf"24B8117 at {re.escape(made)}: spoke 50\.0 s after it was switched on; voices: settled: ")
+        # A take that kept its state, and one erased because the copy failed, say so.
+        status, udid, error = self.command(warm, "take", "--device", "iPhone-Duo", "--runtime", "iOS-27-1", "--keep-state")
+        self.assertEqual((status, udid.strip()), (0, free), error)
+        self.assertEqual(self.command(warm, "release", free)[0], 0)
+        self.assertRegex(self.command(warm, "list")[1], rf"Project Duo 1  {free}  .*; last take \S+: kept its state, not erased\n")
+        with mock.patch.object(simulator_pool, "copy_data", side_effect=OSError(18, "clonefile: Cross-device link")):
+            status, udid, error = self.command(warm, "take", "--device", "iPhone-Duo", "--runtime", "iOS-27-1")
+        self.assertEqual((status, udid.strip()), (0, free), error)
+        self.assertEqual(self.command(warm, "release", free)[0], 0)
+        self.assertRegex(self.command(warm, "list")[1], rf"Project Duo 1  {free}  .*; last take \S+: erased: the copy of "
+                                                        rf"{re.escape(template)}'s data into Project Duo 1 failed: "
+                                                        r"\[Errno 18\] clonefile: Cross-device link\n")
+        # And one erased because the caller asked.
+        status, udid, error = self.command(warm, "take", "--device", "iPhone-Duo", "--runtime", "iOS-27-1", "--erase")
+        self.assertEqual((status, udid.strip()), (0, free), error)
+        self.assertEqual(self.command(warm, "release", free)[0], 0)
+        self.assertRegex(self.command(warm, "list")[1], rf"Project Duo 1  {free}  .*; last take \S+: erased: asked for with --erase\n")
+        with self.assertRaises(SystemExit) as refused:
+            self.command(warm, "take", "--device", "iPhone-Duo", "--runtime", "iOS-27-1", "--erase", "--keep-state")
+        self.assertEqual(refused.exception.code, 2)
+        # An entry from before the template's details were recorded names the template alone.
+        value = json.loads(self.path.read_text())
+        value["devices"]["Project Duo 2"] = {"device": other, "state": "released", "reservedAt": "2026-11-01T00:00:00+00:00",
+                                             "clonedFrom": "Project Duo template (iOS-27-1)", "revision": 1}
+        self.path.write_text(json.dumps(value))
+        self.assertRegex(self.command(warm, "list")[1], rf"Project Duo 2  {other}  .*; last take 2026-11-01T00:00:00\+00:00: "
+                                                        rf"cloned from {re.escape(template)}\n")
+        self.assertEqual(simulator_pool.origin({"reservedAt": "T", "resetFrom": "Old template"}), "last take T: reset from Old template")
+        # A template whose runtime is gone is a stale one that pruning may delete.
+        source = devices.Record(self.path).entry(template)["device"]
+        self.simctl.devices[source]["isAvailable"] = False
+        self.assertRegex(self.command(warm, "list")[1], rf"{re.escape(template)}  {source}  iOS-27-1  Shutdown  stale template, "
+                                                        "prunable: its runtime is no longer installed\n")
+
+    def test_pruning_and_reaping_leave_a_template_alone_until_its_runtime_is_gone(self):
+        warm = Warm()
+        pool = self.make("me", warm=warm)
+        self.simctl.add("Project Duo 1", days=40)
+        pool.release(pool.take(DUO, RUNTIME, purpose="Tests"), outcome="done")
+        template = "Project Duo template (iOS-27-1)"
+        source = devices.Record(self.path).entry(template)["device"]
+        self.simctl.devices[source]["lastUsedAt"] = (NOW - timedelta(days=40)).isoformat()
+        # Unused for 40 days, and no member: never prunable, even by UDID, and never listed among the members.
+        self.assertEqual((pool.prune(), pool.prune(udids={source}), self.simctl.deleted()), ([], [], []))
+        self.assertEqual([member.name for member in pool.members()], ["Project Duo 1"])
+        self.assertEqual([(found.name, current) for found, current, _ in pool.templates()], [(template, True)])
+        # Its runtime gone, its kind's member with it: a booted or held template stays, a shut-down one nobody
+        # holds is deleted under a reservation, and the deletion is recorded.
+        del self.simctl.runtimes[RUNTIME]
+        for udid in (source, *[member.udid for member in pool.members()]):
+            self.simctl.devices[udid]["isAvailable"] = False
+        self.assertEqual([(current, why) for _, current, why in pool.templates()], [(False, "its runtime is no longer installed")])
+        self.simctl.devices[source]["state"] = "Booted"
+        self.assertEqual(pool.prune(), [])
+        self.simctl.devices[source]["state"] = "Shutdown"
+        self.hold(template, source)
+        self.assertEqual(pool.prune(), [])
+        self.assertEqual(self.simctl.deleted(), [])
+        record = devices.Record(self.path)
+        record.release(template, owner="another session", revision=record.entry(template)["revision"], outcome="done",
+                       restoration="checked")
+        # A take prunes only its kind's members: the template waits for `prune`.
+        self.simctl.runtimes[OTHER_RUNTIME] = ["24C5000"]
+        self.simctl.add("Project Duo 2", runtime=OTHER_RUNTIME)
+        pool.release(pool.take(DUO, OTHER_RUNTIME, purpose="Tests"), outcome="done")
+        self.assertEqual(self.simctl.deleted(), [])
+        self.assertEqual(pool.prune(), [template])
+        self.assertEqual(self.simctl.deleted(), [source])
+        entry = devices.Record(self.path).entry(template)
+        self.assertEqual((entry["state"], entry["pruned"]["udid"], entry["pruned"]["why"], entry["pruned"]["runtime"]),
+                         ("released", source, "its runtime is no longer installed", RUNTIME))
+        self.assertIn(f"PRUNED the template {template} ({source}): its runtime is no longer installed", self.log)
+        self.assertEqual([found.runtime for found, _, _ in pool.templates()], [OTHER_RUNTIME])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -259,6 +259,15 @@ class SimulatorMatrixTests(unittest.TestCase):
         self.assertEqual(sorted(line.split()[1] for line in simctl if line.startswith("erase ")), sorted([iphone, ipad]))
         self.assertNotIn("keptState", self.entries()["Project iPhone 17 Pro 1"])
         self.assert_every_device_returned()
+        # And --erase erases both on request, which their entries record.
+        (self.state / "simctl.log").unlink()
+        status, output = self.run_matrix("--erase", FAKE_MEET="2")
+        self.assertEqual(status, 0, output)
+        simctl = (self.state / "simctl.log").read_text().splitlines()
+        self.assertEqual(sorted(line.split()[1] for line in simctl if line.startswith("erase ")), sorted([iphone, ipad]))
+        self.assertIn(f"TOOK Project iPhone 17 Pro 1 ({iphone}), erased: asked for with --erase", output)
+        self.assertEqual(self.entries()["Project iPhone 17 Pro 1"]["erasedBecause"], "asked for with --erase")
+        self.assert_every_device_returned()
 
     def planted_modules(self):
         derived = self.root / ".build/simulator-tests/derived"

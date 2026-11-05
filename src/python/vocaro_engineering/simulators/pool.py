@@ -2,24 +2,31 @@
 
 A member is a simulator named `POOL LABEL N`, such as `Pagepour Duo 2`; its kind is its device type
 and runtime. Taking one reserves a shut-down member whose record entries are released, observes it
-still shut down and erases it, which keeps its UDID and the simulator tool's approval. When no
-member of the kind is free, the next one is created under the naming scheme, taking the lowest free
-number, and stays in the pool: a clone of the kind's warmed template, `POOL LABEL template (RUNTIME)`,
-which is made, or remade when the runtime's installed builds change, under its own reservation
-(template.py). A take with keep_state reserves and boots a member without erasing it. Pruning deletes
-a member unused for 14 days, never the lowest-numbered of its kind, and records the deletion
-(guides/simulator-testing.md, Reserved simulator pool). Nothing else here deletes or renames a
-simulator, except a template whose runtime moved, which is replaced. Reaping shuts down a member, or a
-template, left booted past its time, such as by a killed warm-up (offload_host.reap; guides/shared-host.md,
-Stale pool simulators).
+still shut down and resets it: a copy of the kind's warmed template's data into the member's data
+folder, which keeps its UDID and the simulator tool's approval, so that the member, and xcodebuild's
+clones of it, boot with the template's finished first boot, VoiceOver's voice and the system's voices
+settled (vocaro-engineering#172); when the pool has no settled template to copy, the member is erased
+instead and the log says why. When no member of the kind is free, the next one is created under the
+naming scheme, taking the lowest free number, and stays in the pool: a clone of the kind's warmed
+template, `POOL LABEL template (RUNTIME)`, which is made, or remade when the runtime's installed builds
+change or `eng simulator-pool template --refresh` asks, under its own reservation (template.py). A take
+with erase erases the member as before, and one with keep_state reserves and boots it without resetting
+or erasing it. Pruning deletes a member
+unused for 14 days, never the lowest-numbered of its kind, and a template whose runtime is no longer
+installed, and records each deletion (guides/simulator-testing.md, Reserved simulator pool). Nothing
+else here deletes or renames a simulator, except a template whose runtime moved, which is replaced.
+Reaping shuts down a member, or a template, left booted past its time, such as by a killed warm-up
+(offload_host.reap; guides/shared-host.md, Stale pool simulators).
 Checking a UDID refuses any device outside the pool, such as one of Xcode's default devices, which a
 script that picks a device by name finds instead of a member (vocaro-engineering#91); checking it
 as held also refuses a member that the caller holds no live reservation of (vocaro-engineering#122).
 
-    eng simulator-pool list|take|release|prune|reap|check [--pool NAME] ...; eng simulator-pool -h for the rest
+    eng simulator-pool list|take|release|prune|reap|template|check [--pool NAME] ...; eng simulator-pool -h for the rest
 """
 import argparse
 import contextlib
+import ctypes
+import ctypes.util
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import json
@@ -27,9 +34,11 @@ import os
 from pathlib import Path
 import plistlib
 import re
+import shutil
 import signal
 import subprocess
 import sys
+import time
 import uuid
 
 from .. import devices as device_record, evidence
@@ -49,8 +58,21 @@ KEPT_STATE = ("Synthetic test state kept from earlier holders, not erased: their
 # A new member cloned from its kind's warmed template.
 CLONED = ("Synthetic test state: a clone of the warmed template {template}, booted once on runtime build {build} "
           "with VoiceOver started, and nothing installed; the next holder may erase this pool member")
+# A member reset from its kind's warmed template, whose voices had settled.
+RESET = ("Synthetic test state: a copy of the warmed template {template}, made {at} on runtime build {build} (booted, "
+         "VoiceOver started once, the system's voices used twice with a reboot between), with nothing installed; the "
+         "next holder may reset or erase this pool member")
 # How long a reservation is expected to last; an overdue one releases nothing.
 HOLD = timedelta(hours=8)
+# Seconds a take or a creation waits for the kind's template while another session holds it, as for its
+# own copy or clone of a few seconds, polling every TEMPLATE_POLL, before it erases or creates instead.
+TEMPLATE_WAIT, TEMPLATE_POLL = 60, 2
+# Where CoreSimulator's default device set keeps a device's folders, when simctl does not say.
+DEVICES = Path.home() / "Library/Developer/CoreSimulator/Devices"
+# clonefile(2)'s flag: symbolic links are cloned as links, never followed.
+CLONE_NOFOLLOW = 0x0001
+# What a take records when the caller asked for an erase in place of the reset.
+ERASE_ASKED = "asked for with --erase"
 
 
 def qualified(prefix, name):
@@ -122,6 +144,7 @@ class Member:
     state: str
     last_used: datetime = None
     available: bool = True
+    data: str = None
 
     @property
     def kind(self):
@@ -139,7 +162,7 @@ def members(pool, listing):
             found.append(Member(name, entry["udid"].upper(), match["label"], int(match["number"]),
                                 entry.get("deviceTypeIdentifier", ""), runtime, entry.get("state", ""),
                                 instant(entry.get("lastUsedAt") or entry.get("lastBootedAt")),
-                                entry.get("isAvailable", True)))
+                                entry.get("isAvailable", True), entry.get("dataPath")))
     return sorted(found, key=lambda member: (member.kind, member.number))
 
 
@@ -153,6 +176,7 @@ class Template:
     runtime: str
     state: str
     available: bool = True
+    data: str = None
 
     @property
     def kind(self):
@@ -172,15 +196,28 @@ def templates(pool, listing):
             match = TEMPLATE.fullmatch(name[len(pool) + 1:]) if name.startswith(pool + " ") else None
             if match is None or match["runtime"] != runtime.rsplit(".", 1)[-1]: continue
             found.append(Template(name, entry["udid"].upper(), match["label"], entry.get("deviceTypeIdentifier", ""),
-                                  runtime, entry.get("state", ""), entry.get("isAvailable", True)))
+                                  runtime, entry.get("state", ""), entry.get("isAvailable", True), entry.get("dataPath")))
     return sorted(found, key=lambda template: (template.kind, template.name))
 
 
+def template_settled(entry):
+    """(True, why) when the template's record entry says its voices settled, else (False, why)."""
+    voices = ((entry or {}).get("template") or {}).get("voices") or {}
+    if voices.get("settled"):
+        return True, voices.get("outcome") or "its voices settled"
+    return False, "its voices did not settle" + (f": {voices['outcome']}" if voices.get("outcome") else "")
+
+
 def template_current(template, entry, builds):
-    """(True, why) when the pool may clone new members from the template, else (False, why)."""
+    """(True, why) when the pool may clone new members from the template, else (False, why). A current
+    template whose voices did not settle is cloned from, but never copied into a member (template_settled)."""
     details = (entry or {}).get("template") or {}
+    if not template.available:
+        return False, "its runtime is no longer installed"
     if (entry or {}).get("device") != template.udid or details.get("udid") != template.udid:
         return False, "it was never warmed to the end"
+    if "voices" not in details:
+        return False, "it was warmed before templates settled the system's voices (vocaro-engineering#172)"
     # VoiceOver's setting is in the data container: a clone of a template it was left on in boots with it
     # on, and speaks through the Mac's output once the volume comes back. A record from before
     # voiceOverOff was written says so in its voiceOver.
@@ -188,12 +225,60 @@ def template_current(template, entry, builds):
     if off is None: off = "could not be confirmed off" not in str(details.get("voiceOver") or "")
     if not off:
         return False, "VoiceOver could not be confirmed off, so a clone would boot with it on"
-    if not template.available:
-        return False, "its runtime is no longer installed"
     if builds is not None and details.get("installedBuilds") != builds:
         return False, (f"the runtime moved: warmed on {details.get('runtimeBuild')} among builds "
                        f"{', '.join(details.get('installedBuilds') or []) or 'none'}, now {', '.join(builds) or 'none'}")
-    return True, f"warmed on runtime build {details.get('runtimeBuild')} at {details.get('warmedAt')}: {details.get('voiceOver')}"
+    return True, (f"warmed on runtime build {details.get('runtimeBuild')} at {details.get('warmedAt')}: "
+                  f"{details.get('voiceOver')}; voices: {template_settled(entry)[1]}")
+
+
+def origin(entry):
+    """What a member's last take left it with, from its record entry: the template it was reset from or
+    cloned from and when that was made, the state it kept, or that it was erased and why."""
+    if not entry:
+        return "no recorded take"
+    when = f"last take {entry.get('reservedAt')}: "
+    for key, verb in (("resetFrom", "reset from"), ("clonedFrom", "cloned from")):
+        found = entry.get(key)
+        # An entry written before 2026-11-04 names the template alone.
+        if isinstance(found, str):
+            return when + f"{verb} {found}"
+        if found:
+            return when + f"{verb} {found.get('template')}, made {found.get('warmedAt')}"
+    if entry.get("keptState"):
+        return when + "kept its state, not erased"
+    if entry.get("erasedBecause"):
+        return when + f"erased: {entry['erasedBecause']}"
+    if entry.get("preservation") == PRESERVATION:
+        return when + "erased"
+    return "no recorded take"
+
+
+def data_path(entry, udid):
+    """A device's data folder, as simctl lists it, else where CoreSimulator's default device set keeps it."""
+    return Path(entry.get("dataPath") or DEVICES / udid / "data")
+
+
+def libc():
+    found = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+    found.clonefile.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint32)
+    found.clonefile.restype = ctypes.c_int
+    return found
+
+
+def copy_data(source, target):
+    """Replace the folder target with a clone of the folder source: clonefile(2), which APFS makes in a
+    moment whatever the size, the files sharing their blocks with the source until written, every mode,
+    owner, time, flag and extended attribute kept, and symbolic links as they are. A 2.2 GB template of
+    16,810 entries cloned in 0.24 s where `cp -c -R` took 2.3 s and `cp -c -R -p` 12.5 s, adding a
+    provenance attribute to 9,209 files (2026-11-04). OSError when the clone fails, as across volumes;
+    the old target is gone by then, so the caller erases the device."""
+    source, target = Path(source), Path(target)
+    if target.is_symlink() or target.is_file(): target.unlink()
+    elif target.exists(): shutil.rmtree(target)
+    if libc().clonefile(os.fsencode(str(source)), os.fsencode(str(target)), CLONE_NOFOLLOW) != 0:
+        number = ctypes.get_errno()
+        raise OSError(number, f"clonefile: {os.strerror(number)}", str(source), None, str(target))
 
 
 def entries_for(member, record):
@@ -226,18 +311,21 @@ def prunable(member, pool_members, entries, now):
 @dataclass
 class Lease:
     """A member this owner holds: its record key and the revision its last change left. kept says the take
-    did not erase it, and cloned names the template a new member was cloned from."""
+    did not erase it, reset names the template the take copied into it, and cloned names the template a new
+    member was cloned from."""
     key: str
     udid: str
     revision: int
     created: bool = False
     kept: bool = False
     cloned: str = None
+    reset: str = None
 
 
 class Pool:
-    def __init__(self, name, *, owner, record=None, run=None, log=None, clock=None, warm=True):
-        """warm warms a new template, by default template.warm; None creates new members instead of cloning them."""
+    def __init__(self, name, *, owner, record=None, run=None, log=None, clock=None, warm=True, sleep=time.sleep):
+        """warm warms a new template, by default template.warm; None keeps no templates: it creates new members
+        instead of cloning them and erases taken ones instead of resetting them. sleep waits for a held template."""
         if not name:
             raise ValueError("a pool needs its name")
         self.name, self.owner, self.run = name, owner, run or simctl
@@ -245,6 +333,7 @@ class Pool:
         self.log = log or (lambda message: print(message, file=sys.stderr, flush=True))
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.warm = warmed.warm if warm is True else warm
+        self.sleep = sleep
 
     def listing(self):
         result = self.run("list", "devices", "-j", timeout=120)
@@ -306,6 +395,11 @@ class Pool:
         return next((entry.get("state") for entries in self.listing().get("devices", {}).values()
                      for entry in entries if entry["udid"].upper() == udid), None)
 
+    def entries(self, listing=None):
+        """Each listed device's `simctl list devices` entry, by UDID."""
+        return {entry["udid"].upper(): entry for entries in (listing or self.listing()).get("devices", {}).values()
+                for entry in entries}
+
     def label(self, device_type):
         """A new member's label: its device type's display name, such as iPhone 17 Pro."""
         result = self.run("list", "devicetypes", "-j", timeout=120)
@@ -341,59 +435,72 @@ class Pool:
                 for template in templates(self.name, listing)]
 
     def template(self, device_type, runtime, label, purpose, *, boot_timeout=warmed.TAKE_BOOT,
-                 voiceover_limit=warmed.TAKE_VOICEOVER_LIMIT, require_voiceover=False):
-        """A held, shut-down, current template of the kind to clone a new member from, warming one first
-        when the kind has none current, as when its runtime's installed builds changed; None when there is
-        none to clone, such as while another session holds the template, and the member is created.
+                 voiceover_limit=warmed.TAKE_VOICEOVER_LIMIT, voices_limit=warmed.TAKE_VOICES_LIMIT,
+                 require_voiceover=False, settled=False, refresh=False, wait=TEMPLATE_WAIT, use="clone"):
+        """(lease, None): a held, shut-down, current template of the kind, to clone a new member from or to
+        copy into a taken one, warmed first when the kind has none current, as when its runtime's installed
+        builds changed or it predates settled voices; else (None, why), why None only while the pool keeps
+        no templates. The caller releases the lease once it has cloned or copied.
 
-        A take warms within the shorter template.TAKE_* limits, so that a kind's first creation does not
-        eat a lane's time; require_voiceover also replaces a current template whose VoiceOver stayed
-        cold, as `eng simulator-pool template` does with the full limits."""
-        if self.warm is None: return None
+        settled asks for a template whose voices settled, as a reset does: a current one whose voices did
+        not settle within its limits is left as it is, for `eng simulator-pool template --refresh`, and why
+        says so. refresh replaces the template whatever its state. While another session holds the template,
+        as for its own copy or clone of a few seconds, this waits up to wait seconds. A take warms within the
+        shorter template.TAKE_* limits, so that a kind's first creation or reset does not eat a lane's time;
+        require_voiceover, as `eng simulator-pool template` passes it with the full limits, also replaces a
+        current template whose VoiceOver stayed cold or whose voices did not settle. use, clone or copy,
+        names what the caller does with the template, for the reasons."""
+        if self.warm is None: return None, None
         device_type, runtime = qualified(DEVICE_TYPE, device_type), qualified(RUNTIME, runtime)
         builds = self.installed_builds(runtime)
         if not builds:
-            self.log(f"no installed build of {runtime} could be read, so no template is warmed or cloned")
-            return None
+            return None, f"no installed build of {runtime} could be read, so no template is warmed or {use}d"
         key = template_name(self.name, label, runtime)
         found = [template for template in templates(self.name, self.listing()) if template.name == key]
         if len(found) > 1:
-            self.log(f"{len(found)} simulators are named {key}; none is cloned or replaced")
-            return None
+            return None, f"{len(found)} simulators are named {key}; none is {use}d or replaced"
         existing = found[0] if found else None
-        current = self.record.entry(key)
+        current, waited = self.record.entry(key), 0
+        while current is not None and device_record.condition(current) != "released" and waited < wait:
+            self.sleep(TEMPLATE_POLL)
+            waited += TEMPLATE_POLL
+            current = self.record.entry(key)
         if current is not None and device_record.condition(current) != "released":
-            self.log(f"{key} is {device_record.condition(current)} by {current.get('ownerChatID')}, so the new "
-                     "member is created instead")
-            return None
+            if waited: self.log(f"WAITED {waited} s for {key}, still held")
+            return None, f"{key} is {device_record.condition(current)} by {current.get('ownerChatID')}"
         current_now, why = template_current(existing, current, builds) if existing is not None else (False, None)
+        if refresh and existing is not None:
+            current_now, why = False, "eng simulator-pool template --refresh asked for a new one"
         if current_now and require_voiceover and not ((current or {}).get("template") or {}).get("voiceOverWarmed"):
             current_now, why = False, "its VoiceOver was not warmed"
+        if current_now and require_voiceover and not template_settled(current)[0]:
+            current_now, why = False, template_settled(current)[1]
+        if current_now and settled and not template_settled(current)[0]:
+            return None, f"{key}: {template_settled(current)[1]}; {self.refresh_hint(device_type, runtime)}"
         usable = existing is not None and existing.kind == (device_type, runtime) and current_now
         details = {"template": current["template"]} if usable else {}
         try:
-            revision = self._reserve(key, f"{'Clone' if usable else 'Warm'} the template for {purpose}",
+            revision = self._reserve(key, (f"{'Copy' if use == 'copy' else 'Clone'} the template for {purpose}" if usable
+                                           else f"Warm the template for {purpose}"),
                                      existing.udid if existing else None,
                                      revision=(current or {}).get("revision", 0), **details)
         except device_record.Refused as error:
-            self.log(f"{key}: {error}; the new member is created instead")
-            return None
+            return None, f"{key}: {error}"
         lease = Lease(key, existing.udid if existing else None, revision)
         try:
             # A fresh observation under the reservation: never clone, delete or boot a device booted since.
             if existing is not None and self.state(existing.udid) != "Shutdown":
-                self.log(f"{key} is no longer shut down; its reservation is kept for recovery")
-                return None
+                return None, f"{key} is no longer shut down; its reservation is kept for recovery"
             if usable:
-                return lease
+                return lease, None
             if existing is not None:
                 if existing.kind != (device_type, runtime): why = f"it is a {existing.device_type}, not a {device_type}"
                 deleted = self.run("delete", existing.udid, timeout=300)
                 if deleted.returncode != 0 or self.state(existing.udid) is not None:
-                    self.log(f"{key} ({existing.udid}) could not be replaced: simctl delete exited {deleted.returncode}")
                     self.release(lease, outcome=f"Not replaced: simctl delete exited {deleted.returncode}",
                                  shutdown=False)
-                    return None
+                    return None, (f"{key} ({existing.udid}) could not be replaced: simctl delete exited "
+                                  f"{deleted.returncode}")
                 self.log(f"REPLACED the template {key} ({existing.udid}): {why}")
                 lease.revision = self.record.update(key, owner=self.owner, revision=lease.revision, device=None,
                                                     replaced={"udid": existing.udid, "why": why,
@@ -405,41 +512,46 @@ class Pool:
                 stored = [entry["udid"].upper() for entries in self.listing().get("devices", {}).values()
                           for entry in entries if entry.get("name") == key]
                 if len(stored) != 1:
-                    self.log(f"simctl create {key} failed with status {created.returncode}: {created.stderr.strip()}")
                     if not stored:
                         self.record.release(key, owner=self.owner, revision=lease.revision,
                                             outcome="Not warmed: the template was not created",
                                             restoration="Nothing was created")
-                    return None
+                    return None, f"simctl create {key} failed with status {created.returncode}: {created.stderr.strip()}"
                 udid = stored[0]
             lease.udid = udid
             lease.revision = self.record.update(key, owner=self.owner, revision=lease.revision, device=udid,
                                                 createdAt=self.clock().isoformat())["revision"]
-            self.log(f"WARMING the template {key} ({udid}): boot, then VoiceOver until it speaks")
+            self.log(f"WARMING the template {key} ({udid}): boot, VoiceOver until it speaks, then the system's voices "
+                     "twice with a reboot between")
             try:
                 warmth = self.warm(udid, runtime, simctl=self.run, boot_timeout=boot_timeout,
-                                   voiceover_limit=voiceover_limit)
+                                   voiceover_limit=voiceover_limit, voices_limit=voices_limit)
             except warmed.WarmFailed as error:
-                self.log(f"{key} ({udid}) was not warmed: {error}")
                 self.release(lease, outcome=f"Not warmed: {error}")
-                return None
+                return None, f"{key} ({udid}) was not warmed: {error}"
             lease.revision = self.record.update(key, owner=self.owner, revision=lease.revision, template={
                 "udid": udid, "deviceType": device_type, "runtime": runtime, "installedBuilds": builds,
                 "warmedAt": self.clock().isoformat(), **warmth})["revision"]
             self.run("shutdown", udid, timeout=300)
             if self.state(udid) != "Shutdown":
                 self.release(lease, outcome="Warmed, but its shutdown could not be confirmed", shutdown=False)
-                return None
+                return None, f"{key} ({udid}) was warmed, but its shutdown could not be confirmed"
             clonable, reason = template_current(Template(key, udid, label, device_type, runtime, "Shutdown"),
                                                 self.record.entry(key), builds)
             if not clonable:
                 # Never cloned: the next creation replaces it.
-                self.log(f"{key} ({udid}) is not cloned: {reason}")
                 self.release(lease, outcome=f"Warmed, not cloned: {reason}", shutdown=False)
-                return None
+                return None, f"{key} ({udid}) is not {use}d: {reason}"
+            voices = warmth.get("voices") or {}
             self.log(f"WARMED the template {key} ({udid}) on runtime build {warmth['runtimeBuild']}: "
-                     f"{warmth.get('voiceOver')}")
-            return lease
+                     f"{warmth.get('voiceOver')}; voices: {voices.get('outcome')}")
+            if settled and not voices.get("settled"):
+                # A reset needs settled voices. The template keeps its first boot and VoiceOver's start, so new
+                # members are cloned from it; the command, with the full limits, replaces it.
+                self.release(lease, outcome=f"Warmed, voices not settled: {voices.get('outcome')}", shutdown=False)
+                return None, (f"{key} ({udid}): {template_settled(self.record.entry(key))[1]} within the take's "
+                              f"limits; {self.refresh_hint(device_type, runtime)}")
+            return lease, None
         except BaseException as error:
             if lease.udid is not None:
                 self.release(lease, outcome=f"Stopped while preparing the template for {purpose}")
@@ -456,6 +568,49 @@ class Pool:
                     self.log(f"{key}: stopped with a device of its name stored but not recorded; its reservation "
                              "is kept for recovery")
             raise
+
+    @staticmethod
+    def refresh_hint(device_type, runtime):
+        return (f"refresh it with `eng simulator-pool template --device {device_type.rsplit('.', 1)[-1]} --runtime "
+                f"{runtime.rsplit('.', 1)[-1]} --refresh`")
+
+    def reset(self, lease, source, *, purpose):
+        """Copy the template source holds into the member lease holds, in place of an erase: (True, None) once
+        the member carries the template's data, else (False, why), the member left for the caller to erase.
+
+        The copy keeps the member's identity: its device.plist, and with it its UDID, name and the simulator
+        tool's approval, stay, and only its data folder changes, to a clone of the template's (copy_data,
+        clonefile(2), a moment for 2 GB). `simctl clone` would make a device with a new UDID, which the device
+        record keys on and the simulator tool asks the owner to approve again. `simctl erase` runs first, so
+        that the member starts from its own pristine state and a copy that fails leaves it erased, or the
+        caller's erase after a failed copy does."""
+        found = self.entries()
+        member, template = found.get(lease.udid), found.get(source.udid)
+        details = (self.record.entry(source.key) or {}).get("template") or {}
+        if member is None or template is None:
+            return False, f"simctl no longer lists {lease.key if member is None else source.key}"
+        if member.get("state") != "Shutdown" or template.get("state") != "Shutdown":
+            return False, f"{lease.key if member.get('state') != 'Shutdown' else source.key} is no longer shut down"
+        started = time.monotonic()
+        erased = self.run("erase", lease.udid)
+        if erased.returncode != 0:
+            return False, f"simctl erase {lease.key} exited {erased.returncode}: {erased.stderr.strip()}"
+        try:
+            copy_data(data_path(template, source.udid), data_path(member, lease.udid))
+        except OSError as error:
+            return False, f"the copy of {source.key}'s data into {lease.key} failed: {error}"
+        seconds = round(time.monotonic() - started, 1)
+        voices = details.get("voices") or {}
+        lease.revision = self.record.update(lease.key, owner=self.owner, revision=lease.revision, resetFrom={
+            "template": source.key, "udid": source.udid, "runtimeBuild": details.get("runtimeBuild"),
+            "warmedAt": details.get("warmedAt"), "at": self.clock().isoformat(), "seconds": seconds,
+            "voices": {use: (voices.get(use) or {}).get("seconds") for use in ("firstUse", "secondUse")}},
+            preservation=RESET.format(template=source.key, at=details.get("warmedAt"),
+                                      build=details.get("runtimeBuild")))["revision"]
+        lease.reset = source.key
+        self.log(f"RESET {lease.key} ({lease.udid}) from {source.key}, made {details.get('warmedAt')} on runtime build "
+                 f"{details.get('runtimeBuild')}, in {seconds} s")
+        return True, None
 
     @staticmethod
     def _release_by():
@@ -482,12 +637,15 @@ class Pool:
                                     release_by=self._release_by(), details=details)
         return entry["revision"]
 
-    def take(self, device_type, runtime, *, purpose, label=None, preservation=None, prune=True, keep_state=False):
-        """A free member of the kind, reserved and erased, or a new one; the caller boots it.
+    def take(self, device_type, runtime, *, purpose, label=None, preservation=None, prune=True, keep_state=False,
+             erase=False):
+        """A free member of the kind, reserved and reset from the kind's warmed template, or erased when no
+        settled template can be copied, or a new one; the caller boots it.
 
-        keep_state reserves the member without erasing it, for a lane that needs no fresh installation:
-        it keeps what earlier holders left, their apps and data among it, and boots without the first
-        boot's data migration. Its preservation note says so."""
+        erase erases the member as before this reset existed, for a lane that wants pristine data, and the
+        record says it was asked for. keep_state reserves the member without resetting or erasing it, for a
+        lane that needs no fresh installation: it keeps what earlier holders left, their apps and data among
+        it, and boots without the first boot's data migration. Its preservation note says so."""
         device_type, runtime = qualified(DEVICE_TYPE, device_type), qualified(RUNTIME, runtime)
         if prune: self.prune(device_type, runtime)
         listing = self.listing()
@@ -503,12 +661,26 @@ class Pool:
             except device_record.Refused:
                 continue  # Another session reserved it first, perhaps under another key.
             lease = Lease(member.name, member.udid, revision, kept=keep_state)
+            erased, why = None, None
             try:
-                # The listing predates the reservation. Never erase or boot a device booted since then.
+                # The listing predates the reservation. Never reset, erase or boot a device booted since then.
                 if self.state(member.udid) != "Shutdown":
                     self.log(f"{member.name} is no longer shut down; its reservation is kept for recovery")
                     continue
-                erased = None if keep_state else self.run("erase", member.udid)
+                if erase:
+                    erased, why = self.run("erase", member.udid), ERASE_ASKED
+                elif not keep_state:
+                    source, why = self.template(device_type, runtime, member.label, purpose, settled=True, use="copy")
+                    done = False
+                    if source is not None:
+                        try:
+                            done, why = self.reset(lease, source, purpose=purpose)
+                        finally:
+                            # The copy reads the shut-down template and changes nothing in it.
+                            self.release(source, outcome=f"{'Copied' if done else 'Not copied'} into {member.name} "
+                                                         f"for {purpose}", shutdown=False)
+                    if not done:
+                        erased = self.run("erase", member.udid)
             except BaseException:
                 # A stop before the lease is handed back releases it once the member is shut down.
                 self.release(lease, outcome=f"Stopped before {purpose}", shutdown=False)
@@ -516,7 +688,15 @@ class Pool:
             if erased is not None and erased.returncode != 0:
                 self.release(lease, outcome=f"Erase failed before {purpose}: {erased.stderr.strip()}", shutdown=False)
                 continue
-            self.log(f"TOOK {member.name} ({member.udid})" + (", not erased: it keeps its state" if keep_state else ""))
+            if keep_state:
+                self.log(f"TOOK {member.name} ({member.udid}), not erased: it keeps its state")
+            elif lease.reset is not None:
+                self.log(f"TOOK {member.name} ({member.udid}), reset from {lease.reset}")
+            else:
+                if why:
+                    lease.revision = self.record.update(member.name, owner=self.owner, revision=lease.revision,
+                                                        erasedBecause=why)["revision"]
+                self.log(f"TOOK {member.name} ({member.udid}), erased" + (f": {why}" if why else ""))
             return lease
         return self.create(device_type, runtime, purpose=purpose, label=label, preservation=preservation or PRESERVATION)
 
@@ -558,7 +738,9 @@ class Pool:
             self.record.release(key, owner=self.owner, revision=revision, outcome="Not created: the name appeared",
                                 restoration="Nothing was created")
             return self.create(device_type, runtime, purpose=purpose, label=label, preservation=preservation)
-        source = self.template(device_type, runtime, label, purpose)
+        source, why = self.template(device_type, runtime, label, purpose)
+        if source is None and why:
+            self.log(f"{why}, so the new member is created instead")
         if source is not None:
             details = (self.record.entry(source.key) or {}).get("template") or {}
             try:
@@ -670,6 +852,44 @@ class Pool:
                                 restoration="simctl no longer lists the device")
             self.log(f"PRUNED {member.name} ({member.udid}), unused since {member.last_used:%Y-%m-%d}")
             pruned.append(member.name)
+        if device_type is None:
+            pruned += self.prune_templates(udids)
+        return pruned
+
+    def prune_templates(self, udids=None):
+        """Delete the shut-down, unheld templates whose runtime is no longer installed, and return their
+        names. Nothing else prunes a template: one outlives every member of its kind while its runtime is
+        installed, and only its replacement deletes it then."""
+        pruned = []
+        for template, _, why in self.templates():
+            if template.available or (udids is not None and template.udid not in udids): continue
+            if template.state != "Shutdown":
+                self.log(f"{template.name}: not pruned: it is {template.state}")
+                continue
+            entry = self.record.entry(template.name)
+            try:
+                revision = self._reserve(template.name, "Prune a template whose runtime is gone", template.udid,
+                                         revision=(entry or {}).get("revision", 0))
+            except device_record.Refused as error:
+                self.log(f"{template.name}: not pruned: {error}")
+                continue
+            lease = Lease(template.name, template.udid, revision)
+            if self.state(template.udid) != "Shutdown":
+                self.release(lease, outcome="Not pruned: it changed before deletion", shutdown=False)
+                continue
+            deleted = self.run("delete", template.udid, timeout=300)
+            if deleted.returncode != 0 or self.state(template.udid) is not None:
+                self.log(f"{template.name}: simctl delete failed: {deleted.stderr.strip()}")
+                self.release(lease, outcome=f"Pruning failed: simctl delete exited {deleted.returncode}", shutdown=False)
+                continue
+            revision = self.record.update(template.name, owner=self.owner, revision=revision, pruned={
+                "udid": template.udid, "at": self.clock().isoformat(), "deviceType": template.device_type,
+                "runtime": template.runtime, "why": why})["revision"]
+            self.record.release(template.name, owner=self.owner, revision=revision,
+                                outcome=f"Pruned: deleted the template {template.udid}; {why}",
+                                restoration="simctl no longer lists the device")
+            self.log(f"PRUNED the template {template.name} ({template.udid}): {why}")
+            pruned.append(template.name)
         return pruned
 
 
@@ -682,14 +902,15 @@ class ReleaseUnconfirmed(RuntimeError):
 
 
 @contextlib.contextmanager
-def member(name, device_type, runtime, *, purpose, owner=None, boot_timeout=600, log=None, keep_state=False):
+def member(name, device_type, runtime, *, purpose, owner=None, boot_timeout=600, log=None, keep_state=False,
+           erase=False):
     """A booted member of the pool for the block, then shut down and released however it ends; keep_state
-    takes it without erasing it (Pool.take).
+    takes it without resetting or erasing it, erase erases it in place of the reset (Pool.take).
 
     It raises BootTimedOut when the boot reaches its limit, RuntimeError when it fails, and
     ReleaseUnconfirmed after a block that ended normally when the release cannot confirm shutdown."""
     pool = Pool(name, owner=owner or default_owner() or f"{name}-{uuid.uuid4()}", log=log)
-    lease = pool.take(device_type, runtime, purpose=purpose, keep_state=keep_state)
+    lease = pool.take(device_type, runtime, purpose=purpose, keep_state=keep_state, erase=erase)
     status = "stopped"
     try:
         booted = boot(pool, lease, boot_timeout)
@@ -774,33 +995,40 @@ def main(argv, project=None):
                         "agent's session)")
     commands = parser.add_subparsers(dest="action", required=True)
     commands.add_parser("list", help="every member, its state and whether pruning may delete it")
-    take = commands.add_parser("take", help="reserve, erase (unless --keep-state) and boot a free member of a "
-                               "kind, or create the next; prints its UDID")
+    take = commands.add_parser("take", help="reserve, reset from the kind's template (or erase: --erase, or when "
+                               "no settled template can be copied; neither with --keep-state) and boot a free "
+                               "member of a kind, or create the next; prints its UDID")
     take.add_argument("--device", required=True, metavar="TYPE", help="a device type, such as iPhone-17-Pro")
     take.add_argument("--runtime", required=True, help="a runtime, such as iOS-27-1")
     take.add_argument("--label", help="a new member's label (default: the device type's name)")
     take.add_argument("--purpose", default="Simulator tests")
-    take.add_argument("--keep-state", action="store_true", help="reserve and boot the member without erasing it, "
-                      "for a lane that needs no fresh installation: it keeps earlier holders' apps, data and "
-                      "settings, and skips the first boot's migration")
+    fresh = take.add_mutually_exclusive_group()
+    fresh.add_argument("--keep-state", action="store_true", help="reserve and boot the member without resetting or "
+                       "erasing it, for a lane that needs no fresh installation: it keeps earlier holders' apps, "
+                       "data and settings, and skips the first boot's migration")
+    fresh.add_argument("--erase", action="store_true", help="erase the member in place of the reset from its kind's "
+                       "template, for a lane that wants pristine data")
     take.add_argument("--boot-timeout", type=int, default=600, help="seconds the boot may take (default 600); "
                       f"past it the member is released and the command exits {evidence.UNMEASURED}")
     release = commands.add_parser("release", help="shut a member you hold down and release it")
     release.add_argument("udid")
     release.add_argument("--outcome", default="Released")
-    prune = commands.add_parser("prune", help="delete members unused for 14 days, never the lowest of a kind")
-    prune.add_argument("udids", nargs="*", metavar="UDID", help="only these members")
+    prune = commands.add_parser("prune", help="delete members unused for 14 days, never the lowest of a kind, and "
+                                "templates whose runtime is no longer installed")
+    prune.add_argument("udids", nargs="*", metavar="UDID", help="only these members or templates")
     reap = commands.add_parser("reap", help="shut down members and warmed templates left booted for 2 hours that "
                                "nothing accounts for, on this Mac and the second Mac (guides/shared-host.md, Stale "
                                "pool simulators)")
     reap.add_argument("--dry-run", action="store_true", help="say what it would stop and keep, and stop nothing")
     reap.add_argument("--here", action="store_true", help="only this Mac")
-    template = commands.add_parser("template", help="warm the kind's template now, with VoiceOver's full start "
-                                   "limit, or remake it when its runtime moved or its VoiceOver stayed cold, so that "
-                                   "a lane's new members are cloned from it")
+    template = commands.add_parser("template", help="warm the kind's template now, with the full limits for VoiceOver's "
+                                   "start and each use of the system's voices, or remake it when its runtime moved, its "
+                                   "VoiceOver stayed cold or its voices did not settle, so that a lane's members are "
+                                   "reset from it and new ones cloned from it")
     template.add_argument("--device", required=True, metavar="TYPE", help="a device type, such as iPhone-17-Pro")
     template.add_argument("--runtime", required=True, help="a runtime, such as iOS-27-1")
     template.add_argument("--label", help="the kind's label (default: the pool's own, else the device type's name)")
+    template.add_argument("--refresh", action="store_true", help="remake the template whatever its state")
     check = commands.add_parser("check", help="print a pool member's canonical UDID; exit 1 for any other device, "
                                 "such as one of Xcode's default devices, a name or `booted`")
     check.add_argument("--held", action="store_true", help="also exit 1 unless the owner holds a live "
@@ -823,33 +1051,38 @@ def main(argv, project=None):
         pool = Pool(name, owner=owner)
         if args.action == "list":
             listing = pool.listing()
+            record = pool.record.load().get("devices", {})
             for member, allowed, reason in pool.eligible(listing=listing):
                 print(f"{member.name}  {member.udid}  {member.runtime.rsplit('.', 1)[-1]}  {member.state}  "
-                      f"{'prunable' if allowed else 'kept'}: {reason}")
+                      f"{'prunable' if allowed else 'kept'}: {reason}; {origin(record.get(member.name))}")
             for found, current, reason in pool.templates(listing):
-                print(f"{found.name}  {found.udid}  {found.runtime.rsplit('.', 1)[-1]}  {found.state}  "
-                      f"{'template' if current else 'stale template'}: {reason}")
+                kind = "template" if current else "stale template" + (", prunable" if not found.available else "")
+                print(f"{found.name}  {found.udid}  {found.runtime.rsplit('.', 1)[-1]}  {found.state}  {kind}: {reason}")
         elif args.action == "template":
             for number in (signal.SIGTERM, signal.SIGHUP):
                 signal.signal(number, stopped)
             device_type, runtime = qualified(DEVICE_TYPE, args.device), qualified(RUNTIME, args.runtime)
-            lease = pool.template(device_type, runtime, args.label or pool.kind_label(device_type, runtime),
-                                  "eng simulator-pool template", boot_timeout=600,
-                                  voiceover_limit=warmed.VOICEOVER_LIMIT, require_voiceover=True)
+            lease, why = pool.template(device_type, runtime, args.label or pool.kind_label(device_type, runtime),
+                                       "eng simulator-pool template", boot_timeout=600,
+                                       voiceover_limit=warmed.VOICEOVER_LIMIT, voices_limit=warmed.VOICES_LIMIT,
+                                       require_voiceover=True, refresh=args.refresh, use="copy")
             if lease is None:
-                print(f"eng simulator-pool: no current template of {args.device} on {args.runtime}; new members are "
-                      "created instead", file=sys.stderr)
+                print(f"eng simulator-pool: no current template of {args.device} on {args.runtime}"
+                      + (f": {why}" if why else "") + "; members are erased and new ones created instead",
+                      file=sys.stderr)
                 return 1
             details = (pool.record.entry(lease.key) or {}).get("template") or {}
             released = pool.release(lease, outcome="Warmed or confirmed current", shutdown=False)
-            print(f"{lease.key}: warmed on runtime build {details.get('runtimeBuild')}: {details.get('voiceOver')}")
+            voices = details.get("voices") or {}
+            print(f"{lease.key}: warmed on runtime build {details.get('runtimeBuild')} at {details.get('warmedAt')}: "
+                  f"{details.get('voiceOver')}; voices: {voices.get('outcome')}")
             return 0 if released else 1
         elif args.action == "take":
             # A stop runs the cleanup below rather than leaving a held, booted member.
             for number in (signal.SIGTERM, signal.SIGHUP):
                 signal.signal(number, stopped)
             lease = pool.take(args.device, args.runtime, purpose=args.purpose, label=args.label,
-                              keep_state=args.keep_state)
+                              keep_state=args.keep_state, erase=args.erase)
             try:
                 status = boot(pool, lease, args.boot_timeout)
             except BaseException:
