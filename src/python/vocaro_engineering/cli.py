@@ -157,8 +157,7 @@ def delete_defaults(run=subprocess.run):
         host, items = defaults()
         if not items: return []
         said = []
-        disk.delete(items, lambda category: defaults()[1], disk.ledger_path(host.home), out=said.append, run=run,
-                    terminal=False)
+        disk.delete(items, lambda category: defaults()[1], disk.ledger_path(host.home), out=said.append, run=run)
         return said
     except (OSError, RuntimeError, subprocess.SubprocessError, ValueError) as error:
         return [f"could not delete Xcode's default simulators: {type(error).__name__}: {error}"]

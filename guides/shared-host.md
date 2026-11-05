@@ -1363,14 +1363,14 @@ the scratch builds and results their sessions leave in `/private/tmp` and the us
 directory. It never surveys the home
 directory or the rest of the volume. It prints each item's size, the reason for its status and
 the exact command that would remove it.
-A **candidate** is proven unowned by the rules below. An **owner** item shows no sign of a
-session using it, but only the owner can say whether it is still wanted: test results, a
-directory no repository has registered and a worktree outside the session directories.
-Simulators and runtimes are never owner items: Xcode makes its simulators again and downloads its
-runtimes again, so eng deletes them when the rules allow, without asking (the owner's decision,
-2026-11-03). Everything else is **kept**: in use, owned, of
-unclear ownership, or holding work or evidence. `eng disk --dry-run` lists only the candidates,
-with their commands: exactly what `--delete` would offer to remove.
+A **candidate** is proven unowned by the rules below, and `--delete` removes it without asking
+(the owner's decision, 2026-11-05). An **owner** item shows no sign of a session using it, but
+only the owner can say whether it is still wanted: test results, a directory no repository has
+registered and a worktree outside the session directories. Simulators and runtimes are never
+owner items: Xcode makes its simulators again and downloads its runtimes again (the owner's
+decision, 2026-11-03, the first to let eng delete without asking). Everything else is **kept**:
+in use, owned, of unclear ownership, or holding work or evidence. `eng disk --dry-run` lists only
+the candidates, with their commands: exactly what `--delete` removes.
 
 - **In use.** One `lsof` and `ps` census of the account's processes is taken first. A path is in
   use when a process's working directory, an open file or a path in its arguments lies inside
@@ -1455,15 +1455,13 @@ with their commands: exactly what `--delete` would offer to remove.
   archive listed here moves without a person unless it is in use, still changing, or its offload
   failed for a reason other than the second Mac being away.
 
-`eng disk --delete` removes simulator and runtime candidates at once, on a terminal or not, so a
-script can run it. Every other category it removes only on a terminal, after asking once for
-that category; off a terminal it keeps them and says so. When the owner has approved a run's
-removal in chat, `eng disk --delete --yes 'owner, 2026-11-04 chat'` carries his approval into
-it: every candidate category is removed as if he had typed y to each, on a terminal or not, and
-each ledger entry records the approval (`--yes` alone records only the flag). A session gives
-`--yes` only on his explicit word for that run, never on its own judgment, and without
-`--delete` it is refused. It answers only the candidate questions: owner items, evidence
-archives among them, are never removed. Immediately before each
+`eng disk --delete` removes every candidate category at once, on a terminal or not, without
+asking: any session runs it when the volume runs short (the owner's decision, 2026-11-05; until
+then it asked him on a terminal for every category but simulators and runtimes, and
+`--yes 'owner, 2026-11-04 chat'` carried an approval he gave in chat into a run without one).
+`--yes 'WHO ASKED'` now only names, in each ledger entry, who asked for the run, and without
+`--delete` it is refused. Owner items, evidence archives among them, are never removed, and
+their commands are only printed. Immediately before each
 removal it takes a fresh census and checks that candidate again, refuses an `rm` inside any
 working tree or reached through a link, and appends every decision to
 `~/Library/Application Support/vocaro-engineering/disk-reclaimed.jsonl`. It never runs an owner

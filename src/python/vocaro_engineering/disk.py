@@ -4,11 +4,11 @@
 simulators and runtimes, the build caches their builds fill, and the scratch builds and results
 their sessions leave in the temporary directories. It reads nothing else, and classifies each item:
 
-- candidate: the rules prove that no session's live work is in it. `--delete` removes it after
-  the owner confirms its category on a terminal, checking it again first. Simulators and runtimes,
-  which Xcode makes or downloads again, it removes without asking, on a terminal or not (the
-  owner's decision, 2026-11-03). `--yes`, given only on the owner's approval of that run, answers
-  for him, so an agent can carry an approval he gave in chat into a run without a terminal.
+- candidate: the rules prove that no session's live work is in it. `--delete` removes it, checking
+  it again first, without asking and on a terminal or not: any session runs it when the volume
+  runs short (the owner's decision, 2026-11-05, widening that of 2026-11-03, which had asked him
+  for every category but simulators and runtimes). `--yes WHO` only names, in the ledger, who
+  asked for the run.
 - owner: nothing shows a session using it, but only the owner can say whether it is still
   wanted. The command that would remove it is printed; `--delete` never runs it. An evidence
   archive's command moves it to the second Mac, and eng's offload retry runs it by itself once the
@@ -45,9 +45,9 @@ CATEGORIES = {"worktree": "Linked worktrees", "simulator": "Simulators", "runtim
               "swiftpm-cache": "SwiftPM shared cache", "results": "Result directories",
               "failures": "Kept failure records (pruned by their rule)",
               "evidence": "Evidence archives (offload to the second Mac)"}
-# The categories --delete removes without asking: Xcode makes simulators and downloads runtimes again, so
-# deleting one is no longer the owner's call (the owner's decision, 2026-11-03).
-UNASKED = {"simulator", "runtime"}
+# --delete removes every candidate category without asking (the owner's decision, 2026-11-05, widening that
+# of 2026-11-03 from simulators and runtimes to every candidate): a candidate is what the rules prove nobody
+# owns, so it needs no second judgment; what only the owner can judge is an owner item, never removed.
 # A runtime no device uses is removed once it has gone unused this long, as a pool member is pruned: a
 # lane may make its devices on it next.
 RUNTIME_IDLE_DAYS = 14
@@ -981,29 +981,17 @@ def outside_checkouts(path):
     return not any((ancestor / ".git").exists() for ancestor in [path, *path.parents])
 
 
-def delete(items, fresh, ledger, ask=input, out=print, run=subprocess.run, terminal=None, approval=None):
-    """Remove candidates category by category after a fresh check of each: those of UNASKED at once,
-    any other category once the owner confirms it on a terminal. Off a terminal, the others stay,
-    unless approval (the text given to --yes, "" when none) answers for the owner: each is then
-    removed as if he had typed y, and the ledger records the approval."""
-    terminal = sys.stdin.isatty() if terminal is None else terminal
+def delete(items, fresh, ledger, out=print, run=subprocess.run, approval=None):
+    """Remove the candidates category by category, each checked again first, without asking: a
+    candidate is what the rules prove nobody owns (the owner's decision, 2026-11-05). approval, the
+    text given to --yes ("" when given bare), names in each ledger entry who asked for the run."""
     removed = 0
+    answered = None if approval is None else "--yes" + (f": {approval}" if approval else "")
     for category, title in CATEGORIES.items():
         group = [item for item in items if item.category == category and item.status == CANDIDATE]
         if not group: continue
-        answered = None  # who approved removing the category, when the owner had to
-        if category not in UNASKED and approval is not None:
-            answered = "--yes" + (f": {approval}" if approval else "")
-            out(f"Removing {len(group)} {title.lower()} candidates without asking, on the owner's approval ({answered}).")
-        elif category not in UNASKED:
-            answered = "y on a terminal"
-            if not terminal:
-                out(f"Kept every {title.lower()} candidate: removing them asks the owner on a terminal.")
-                continue
-            answer = ask(f"Remove {len(group)} {title.lower()} candidates, {human(sum(item.size for item in group))}? [y/N] ")
-            if answer.strip().lower() not in ("y", "yes"):
-                out(f"Kept every {title.lower()} candidate.")
-                continue
+        out(f"Removing {len(group)} {title.lower()} candidates, {human(sum(item.size for item in group))}"
+            + (f", on the approval {answered}." if answered else "."))
         current = {item.path: item for item in fresh(category)}
         for item in group:
             now = current.get(item.path)
@@ -1028,13 +1016,11 @@ def delete(items, fresh, ledger, ask=input, out=print, run=subprocess.run, termi
 def add_arguments(parser):
     action = parser.add_mutually_exclusive_group()
     action.add_argument("--dry-run", action="store_true", help="list only what --delete would remove, and remove nothing")
-    action.add_argument("--delete", action="store_true", help="remove candidates: simulators and runtimes at once, "
-                        "any other category after the owner confirms it on a terminal")
-    parser.add_argument("--yes", nargs="?", const="", metavar="APPROVAL",
-                        help="with --delete, remove every candidate category without asking, as if the owner had "
-                        "typed y to each, on a terminal or not; give it only on the owner's explicit approval of "
-                        "this run, naming that approval (such as 'owner, 2026-11-04 chat'), which the ledger "
-                        "records. It never runs an owner item's command")
+    action.add_argument("--delete", action="store_true", help="remove every candidate, checking each again first, "
+                        "without asking; owner items are only listed, with their commands")
+    parser.add_argument("--yes", nargs="?", const="", metavar="WHO",
+                        help="with --delete, name in each ledger entry who asked for this run (such as 'owner, "
+                        "2026-11-05 chat'); --delete asks nobody since 2026-11-05, so this only records the ask")
     parser.add_argument("--json", action="store_true", help="print the items as JSON")
     parser.add_argument("--min-idle-hours", type=float, default=24.0,
                         help="how long a candidate must have been unchanged (default 24)")
@@ -1051,7 +1037,7 @@ def prime_items(host, sizes):
 
 def execute(args, run=subprocess.run, out=print):
     if args.yes is not None and not args.delete:
-        print("eng disk: --yes answers the questions --delete asks, so it needs --delete", file=sys.stderr)
+        print("eng disk: --yes names who asked for --delete's removals, so it needs --delete", file=sys.stderr)
         return 2
     def collect(categories=None, measure=True):
         host = Host.current(args.min_idle_hours * 3600, args.development, run)
