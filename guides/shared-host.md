@@ -30,7 +30,9 @@ work, then admit the timed run alone with `--exclusive`, as a separate command, 
 `xcodebuild build-for-testing` and then `test-without-building`. Setup, recovery and a functional
 run whose seconds are not meant as figures are heavy work. An exclusive request inside heavy
 admission is refused, so a lane whose run needs both is `light`, and its script admits each part.
-A gate suite is heavy work.
+A gate suite is heavy work, never exclusive: one that runs the project's suites side by side says
+`"wholeHost": true`, which keeps a second gate off its Mac while other heavy work still shares it
+and nothing queues behind it ([heavy-work admission](#heavy-work-admission)).
 `--timeout` bounds the wait for admission. The command runs in the current directory with
 its output on the terminal. Like a heavy lane, `eng admit` first refreshes the operating policy,
 printing it to standard error, and records the command's receipt in
@@ -101,6 +103,18 @@ one Mac at once; a lighter heavy lane still shares the Mac, in a slot beyond the
 while the host shows spare capacity, and eng sends each lane to the Mac that has the slots it needs
 ([which Mac runs a lane](#which-mac-runs-a-lane)). Nested work reuses its inherited admission,
 whole-host or not.
+
+Whole-host and exclusive differ in what they hold and whom they make wait. A whole-host lane holds
+the guaranteed slots and no more: a lighter heavy lane is still admitted beside it, in a slot beyond
+them, and a heavy request that arrives while it waits is not held back. It is for a gate, whose
+suites fill a Mac but tolerate company and whose wait must not stall every other session. Exclusive
+work holds every slot up to the maximum, is admitted one request at a time in arrival order, and
+holds every later request back until it ends, as the exclusive paragraphs below say. It is for a
+timed measurement that needs a quiet host and nothing else. A whole-host lane cannot be exclusive,
+since exclusive admission holds the host already. In the choice of Mac the two count alike: a Mac
+running either has no spare capacity for any heavy lane, which goes to the other Mac first and is
+offered to both, to share where admission allows, only when neither has capacity
+([which Mac runs a lane](#which-mac-runs-a-lane)).
 
 A host's own limits go in its limits file, `admission-limits.json` beside the admission log
 (`~/Library/Application Support/vocaro-engineering/`; an isolated HEAVY_SLOT_DIR namespace keeps
