@@ -68,6 +68,9 @@ EVIDENCE_NAMES = ignored.EVIDENCE_NAMES
 # archive Closeout used to keep in a main checkout; each belongs on the second Mac.
 EVIDENCE_ARCHIVE = re.compile(r".+-(evidence|measurements)|session-evidence")
 DATA_VOLUME = "/System/Volumes/Data"
+# The Claude desktop app's session records, under the account's home: each names its folder (cwd) and
+# whether the session is archived.
+SESSION_RECORDS = "Library/Application Support/Claude/claude-code-sessions"
 # The lock reason the merge queue gives a checkout of its old layout that it could not move while a process
 # used it, once it has made the checkout afresh in its place (merge_queue.Worker.place).
 RETIRED = "retired by the merge queue"
@@ -260,6 +263,9 @@ class Host:
     pools: frozenset = frozenset()
     offload_host: str = None  # the second Mac, when this Mac sends work to one
     run: object = subprocess.run
+    sessions: dict = field(default_factory=dict)  # the desktop app's session records: path to record, None if unreadable
+    matches: dict = None  # `simctl runtime match list -j`: the runtime build chosen for each SDK
+    pinned: dict = field(default_factory=dict)  # runtime builds the toolkit names, each with where
 
     @classmethod
     def current(cls, min_idle, development=None, run=subprocess.run):
@@ -274,7 +280,8 @@ class Host:
                    device_directory=devices, records=device_records(), temp_roots=temp,
                    session_scratch=Path(f"/private/tmp/claude-{os.getuid()}"),
                    pools=pools(development or home / "Development", run),
-                   offload_host=second_mac(), run=run)
+                   offload_host=second_mac(), run=run, sessions=desktop_sessions(home),
+                   matches=_json(run, "runtime", "match", "list", "-j"), pinned=pinned_builds())
 
 
 def _json(run, *arguments):
@@ -322,6 +329,41 @@ def device_records():
         try: records[str(path)] = path.read_text(errors="replace")
         except OSError: records[str(path)] = None
     return records
+
+
+def desktop_sessions(home):
+    """Every Claude desktop session record, by path: the record, or None when it cannot be read."""
+    found = {}
+    for path in sorted(glob.glob(str(Path(home) / SESSION_RECORDS / "*/*/local_*.json"))):
+        try:
+            record = json.loads(Path(path).read_text())
+            found[path] = record if isinstance(record, dict) else None
+        except (OSError, ValueError):
+            found[path] = None
+    return found
+
+
+def live_sessions(host, path):
+    """Why a worktree is the folder of a desktop session not yet archived, if it is; a record that cannot be
+    read keeps every worktree, as nothing then shows which session works where."""
+    unreadable = [record for record, value in host.sessions.items() if value is None]
+    if unreadable: return "a desktop session record could not be read: " + ", ".join(unreadable[:3])
+    for value in host.sessions.values():
+        cwd = value.get("cwd")
+        if cwd and not value.get("isArchived") and (within(cwd, path) or within(os.path.realpath(cwd), os.path.realpath(path))):
+            return f"the folder of the desktop session {value.get('sessionId', '?')} ({value.get('title', 'untitled')}), not archived"
+    return None
+
+
+def session_activity(host, path):
+    """When a Claude Code session working in path last wrote its transcript or its desktop record, or 0."""
+    times = []
+    try: times += [entry.stat().st_mtime for entry in os.scandir(host.home / ".claude/projects" / encoded(path))]
+    except OSError: pass
+    for value in host.sessions.values():
+        if value and value.get("cwd") and within(value["cwd"], path) and isinstance(value.get("lastActivityAt"), (int, float)):
+            times.append(value["lastActivityAt"] / 1000)
+    return max(times, default=0.0)
 
 
 def git_environment():
@@ -430,22 +472,29 @@ def worktree(host, usage, sizes, main, entry, base, name):
     if status.returncode: return item(KEPT, "git status failed: " + status.stderr.strip()[:200])
     changed = status.stdout.splitlines()
     if changed: return item(KEPT, f"dirty: {len(changed)} modified or untracked paths")
-    try: evidence = ignored.keeps(path)
+    try: evidence, results = ignored.held(path)
     except (ignored.Refusal, OSError) as error: return item(KEPT, f"could not list its ignored files: {error}")
     if evidence: return item(KEPT, "ignored files that may be evidence: " + ", ".join(evidence[:3]))
     if not entry.get("HEAD") or not base: return item(KEPT, "no HEAD or no origin/main to compare it with")
     done, why, how = landed(host.run, main, entry["HEAD"], base, name)
-    if not done: return item(KEPT, "unlanded: " + why)
+    if not done:
+        return item(KEPT, "unlanded: " + why + (f"; its lane results {', '.join(results[:3])} stay with it" if results else ""))
     # Removing a detached worktree removes the last ref to commits origin/main holds only under other
     # IDs. Whether evidence cites them takes the project's open issues, which the inventory never reads.
     if how != landing.ANCESTOR and "branch" not in entry:
         return item(KEPT, f"landed ({why}), but its detached HEAD is the last ref to commits origin/main does not "
                           "reach, and whether the project's open issues cite them takes the network; Closeout's "
                           "landed.sh checks")
-    idle = host.now - last_activity(path)
+    session = live_sessions(host, path)
+    if session: return item(KEPT, f"landed ({why}), but {session}")
+    idle = host.now - max(last_activity(path), session_activity(host, path))
     if idle < host.min_idle: return item(KEPT, f"clean and landed ({why}), but changed {age(idle)} ago", idle=idle)
+    # eng's results go with a worktree whose HEAD is landed: its work is on origin/main, where a lane runs it
+    # again, and what a result showed that matters is on its issue (vocaro-engineering#187). Git removes
+    # ignored files with the worktree, and without --force refuses one that gained a change since.
     command = ["git", "-C", str(main), "worktree", "remove", path]
-    reason = f"clean, unlocked, no process; {why}; idle {age(idle)}"
+    reason = f"clean, unlocked, no process or live session; {why}; idle {age(idle)}"
+    if results: reason += f"; its lane results ({', '.join(results[:3])}) go with it, the work being landed"
     if session_root(host, main, path) is None:
         return item(OWNER, reason + "; outside the session worktree directories, so a persistent or shared checkout",
                     command, idle)
@@ -647,30 +696,103 @@ def simulators(host, usage, sizes):
     return items
 
 
+def pinned_builds():
+    """The runtime builds the toolkit names, each with where: those qualified for guarded VoiceOver activation."""
+    try: from .voiceover import activation
+    except ImportError: return {}
+    return {build: "qualified for guarded VoiceOver activation (voiceover/activation.py QUALIFIED)"
+            for build in activation.QUALIFIED}
+
+
+def recorded_builds(text):
+    """Every string a device record holds but under installedBuilds, the census of builds installed when a
+    template was warmed: a build the census names runs nothing, and leaving it only makes the pool warm that
+    template again (simulators.pool.template_current). A record that is not JSON is taken whole, word by word."""
+    try: value = json.loads(text)
+    except ValueError: return set(re.findall(r"[A-Za-z0-9]+", text))
+    found, stack = set(), [value]
+    while stack:
+        value = stack.pop()
+        if isinstance(value, dict): stack += [item for key, item in value.items() if key != "installedBuilds"]
+        elif isinstance(value, list): stack += value
+        elif isinstance(value, str): found.update(re.findall(r"[A-Za-z0-9]+", value))
+    return found
+
+
+def chosen_builds(host):
+    """For each runtime identifier with several installed builds, the build CoreSimulator resolves its devices
+    to and how that is known: the build `simctl runtime match list` chooses for an installed SDK, else the build
+    whose image CoreSimulator last used. An identifier whose choice neither shows is left out."""
+    groups = {}
+    for image in host.runtimes.values():
+        groups.setdefault(image.get("runtimeIdentifier", ""), []).append(image)
+    sdks = {}
+    for sdk, match in (host.matches or {}).items():
+        if isinstance(match, dict) and match.get("chosenRuntimeBuild"): sdks.setdefault(match["chosenRuntimeBuild"], sdk)
+    chosen = {}
+    for identifier, images in groups.items():
+        builds = {image.get("build") for image in images}
+        if len(images) < 2 or None in builds or len(builds) < len(images): continue
+        matched = [image for image in images if image["build"] in sdks]
+        if len(matched) == 1:
+            build = matched[0]["build"]
+            chosen[identifier] = (build, f"`simctl runtime match list` chooses for the {sdks[build]} SDK")
+            continue
+        if matched: continue
+        stamps = sorted(((idle_since(image.get("lastUsedAt"), host.now), image["build"]) for image in images
+                         if idle_since(image.get("lastUsedAt"), host.now) is not None))
+        if stamps and (len(stamps) == 1 or stamps[0][0] != stamps[1][0]):
+            chosen[identifier] = (stamps[0][1], "CoreSimulator used last, no installed SDK choosing a build")
+    return chosen
+
+
 def runtimes(host):
     if host.runtimes is None or host.simulators is None: return []
     used = {}
     for runtime, devices in host.simulators.get("devices", {}).items():
         used[runtime] = used.get(runtime, 0) + len(devices)
+    chosen = chosen_builds(host)
+    unreadable = [path for path, text in host.records.items() if text is None]
     items = []
     for key, image in host.runtimes.items():
         identifier = image.get("runtimeIdentifier", "")
         label = f"{image.get('identifier', key)} {identifier.rsplit('.', 1)[-1]} ({image.get('build', '?')})"
-        size, stamp = int(image.get("sizeBytes") or 0), image.get("lastUsedAt")
-        if used.get(identifier):
-            items.append(Item("runtime", label, KEPT, f"{used[identifier]} devices use it", size))
+        size, stamp, build = int(image.get("sizeBytes") or 0), image.get("lastUsedAt"), image.get("build")
+        command = ["xcrun", "simctl", "runtime", "delete", image.get("identifier", key)]
+        idle = idle_since(stamp, host.now)
+        if identifier in chosen and chosen[identifier][0] != build:
+            # A superseded build: CoreSimulator resolves the identifier's devices to another build, so none runs
+            # on this one (vocaro-engineering#188), unless the toolkit or a reservation names it.
+            other, how = chosen[identifier]
+            superseded = f"superseded by {other}, the build of {identifier.rsplit('.', 1)[-1]} {how}"
+            record = next((path for path, text in host.records.items() if text and build in recorded_builds(text)), None)
+            if build in host.pinned: items.append(Item("runtime", label, KEPT, f"{superseded}, but {host.pinned[build]}", size))
+            elif unreadable:
+                items.append(Item("runtime", label, KEPT, f"{superseded}, but a device record could not be read: "
+                                  + ", ".join(unreadable), size))
+            elif record: items.append(Item("runtime", label, KEPT, f"{superseded}, but the device record {record} names it", size))
+            elif image.get("deletable") is False:
+                items.append(Item("runtime", label, KEPT, f"{superseded}, but not deletable: it came with Xcode", size))
+            elif idle is not None and idle < RUNTIME_IDLE_DAYS * 86400:
+                items.append(Item("runtime", label, KEPT, f"{superseded}, but used {age(idle)} ago, within "
+                                  f"{RUNTIME_IDLE_DAYS} days", size, idle=idle))
+            else:
+                items.append(Item("runtime", label, CANDIDATE, f"{superseded}, so no device runs on it; no pin or "
+                                  f"reservation names it; last used {stamp or 'never'}, over {RUNTIME_IDLE_DAYS} days "
+                                  "ago or never", size, command, idle))
+        elif used.get(identifier):
+            items.append(Item("runtime", label, KEPT, f"{used[identifier]} devices use it" +
+                              (f": the build of its identifier {chosen[identifier][1]}" if identifier in chosen else ""), size))
+        elif build in host.pinned: items.append(Item("runtime", label, KEPT, f"no device uses it, but {host.pinned[build]}", size))
         elif image.get("deletable") is False:
             items.append(Item("runtime", label, KEPT, "not deletable: it came with Xcode", size))
+        elif idle is not None and idle < RUNTIME_IDLE_DAYS * 86400:
+            items.append(Item("runtime", label, KEPT, f"no device uses it, but it was used {age(idle)} ago, within "
+                              f"{RUNTIME_IDLE_DAYS} days; a lane may create its devices on it next", size, idle=idle))
         else:
-            idle = idle_since(stamp, host.now)
-            command = ["xcrun", "simctl", "runtime", "delete", image.get("identifier", key)]
-            if idle is not None and idle < RUNTIME_IDLE_DAYS * 86400:
-                items.append(Item("runtime", label, KEPT, f"no device uses it, but it was used {age(idle)} ago, within "
-                                  f"{RUNTIME_IDLE_DAYS} days; a lane may create its devices on it next", size, idle=idle))
-            else:
-                items.append(Item("runtime", label, CANDIDATE, f"no device uses it; last used {stamp or 'never'}, "
-                                  f"over {RUNTIME_IDLE_DAYS} days ago or never; xcodebuild downloads it again", size,
-                                  command, idle))
+            items.append(Item("runtime", label, CANDIDATE, f"no device uses it; last used {stamp or 'never'}, "
+                              f"over {RUNTIME_IDLE_DAYS} days ago or never; xcodebuild downloads it again", size,
+                              command, idle))
     return items
 
 

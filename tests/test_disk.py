@@ -124,7 +124,7 @@ class WorktreeTests(Fixture):
         self.assertIsNone(items[str(detached)].command)
         self.assertEqual(items[str(on_branch)].status, disk.CANDIDATE, items[str(on_branch)].reason)
 
-    def test_eng_results_under_build_keep_a_worktree_and_swiftpm_output_does_not(self):
+    def test_eng_results_and_swiftpm_output_go_with_a_landed_worktree(self):
         commit(self.main, ".gitignore", ".build/\n")
         self.publish()
         swiftpm = self.worktree("swiftpm")
@@ -140,8 +140,78 @@ class WorktreeTests(Fixture):
         items = self.items(self.host(), ["worktree"])
         self.assertEqual(items[str(swiftpm)].status, disk.CANDIDATE, items[str(swiftpm)].reason)
         self.assertEqual(items[str(emptied)].status, disk.CANDIDATE, items[str(emptied)].reason)
-        self.assertEqual(items[str(results)].status, disk.KEPT)
-        self.assertEqual(items[str(results)].reason, "ignored files that may be evidence: .build/engineering/")
+        self.assertEqual(items[str(results)].status, disk.CANDIDATE, items[str(results)].reason)
+        self.assertIn("its lane results (.build/engineering/) go with it", items[str(results)].reason)
+        self.assertEqual(items[str(results)].command, ["git", "-C", str(self.main), "worktree", "remove", str(results)])
+
+    def test_a_landed_subagent_worktree_holding_swiftpm_6_state_and_lane_results_is_a_candidate(self):
+        # vocaro-engineering#187: 44 such worktrees, 90 GiB, were kept for these files.
+        commit(self.main, ".gitignore", ".build/\n")
+        self.publish()
+        agent = self.worktree("agent-a1b2c3")
+        for name in (".buildSystem_debug/state.db", ".buildSystem_release", "CACHEDIR.TAG",
+                     "engineering/suites/RESULTS", "engineering/suites/lanes/run.log"):
+            (agent / ".build" / name).parent.mkdir(parents=True, exist_ok=True)
+            (agent / ".build" / name).write_text("x\n")
+        unknown = self.worktree("unknown")
+        (unknown / ".build/notes.txt").parent.mkdir(parents=True)
+        (unknown / ".build/notes.txt").write_text("not SwiftPM's\n")
+        unlanded = self.worktree("unlanded")
+        (unlanded / ".build/engineering").mkdir(parents=True)
+        (unlanded / ".build/engineering/RESULTS").write_text("x\n")
+        commit(unlanded, "work", "not on main\n")
+        dirty = self.worktree("dirty")
+        (dirty / ".build/engineering").mkdir(parents=True)
+        (dirty / ".build/engineering/RESULTS").write_text("x\n")
+        (dirty / "notes.txt").write_text("untracked work\n")
+        used = self.worktree("used")
+        (used / ".build/engineering").mkdir(parents=True)
+        (used / ".build/engineering/RESULTS").write_text("x\n")
+        items = self.items(self.host([disk.Process(105, "swift-build", cwd=str(used))]), ["worktree"])
+        self.assertEqual(items[str(agent)].status, disk.CANDIDATE, items[str(agent)].reason)
+        self.assertIn(".build/engineering/", items[str(agent)].reason)
+        self.assertNotIn(".buildSystem", items[str(agent)].reason)
+        self.assertEqual(items[str(unknown)].reason, "ignored files that may be evidence: .build/notes.txt")
+        self.assertIn("unlanded: 1 commits", items[str(unlanded)].reason)
+        self.assertIn("its lane results .build/engineering/ stay with it", items[str(unlanded)].reason)
+        self.assertIn("dirty: 1", items[str(dirty)].reason)
+        self.assertIn("PID 105", items[str(used)].reason)
+        for path in (unknown, unlanded, dirty, used):
+            self.assertEqual(items[str(path)].status, disk.KEPT, path.name)
+            self.assertIsNone(items[str(path)].command)
+
+    def test_a_live_desktop_session_keeps_a_landed_worktree_and_an_archived_one_does_not(self):
+        live, archived, recent = self.worktree("live"), self.worktree("archived"), self.worktree("recent")
+        records = self.home / disk.SESSION_RECORDS / "account/org"
+        records.mkdir(parents=True)
+        for name, path, archived_flag, when in (("local_1", live, False, 0), ("local_2", archived, True, 0),
+                                                 ("local_3", recent, True, (time.time() + 2 * 86400 - 3600) * 1000)):
+            (records / f"{name}.json").write_text(json.dumps({"sessionId": name, "cwd": str(path / "Sources"),
+                                                               "title": name, "isArchived": archived_flag,
+                                                               "lastActivityAt": when}))
+        items = self.items(self.host(sessions=disk.desktop_sessions(self.home), now=time.time() + 2 * 86400),
+                           ["worktree"])
+        self.assertEqual(items[str(live)].status, disk.KEPT)
+        self.assertIn("the folder of the desktop session local_1 (local_1), not archived", items[str(live)].reason)
+        self.assertEqual(items[str(archived)].status, disk.CANDIDATE, items[str(archived)].reason)
+        self.assertEqual(items[str(recent)].status, disk.KEPT)  # its session wrote within the idle window
+        self.assertIn("changed", items[str(recent)].reason)
+        (records / "local_4.json").write_text("{not json")
+        items = self.items(self.host(sessions=disk.desktop_sessions(self.home), now=time.time() + 2 * 86400),
+                           ["worktree"])
+        self.assertEqual(items[str(archived)].status, disk.KEPT)
+        self.assertIn("a desktop session record could not be read", items[str(archived)].reason)
+
+    def test_a_cli_sessions_transcript_counts_as_activity_in_its_worktree(self):
+        worktree = self.worktree("cli")
+        transcripts = self.home / ".claude/projects" / disk.encoded(worktree)
+        transcripts.mkdir(parents=True)
+        (transcripts / "session.jsonl").write_text("{}\n")
+        later = time.time() + 2 * 86400
+        os.utime(transcripts / "session.jsonl", (later - 3600, later - 3600))
+        item = self.items(self.host(now=later), ["worktree"])[str(worktree)]
+        self.assertEqual(item.status, disk.KEPT)
+        self.assertIn("changed 60 min ago", item.reason)
 
     def test_the_inventory_and_landed_sh_share_one_containment_proof(self):
         self.assertIs(disk.landing, landing)
@@ -413,6 +483,57 @@ class SimulatorTests(Fixture):
         self.assertEqual(items["D"].status, disk.KEPT)
         self.assertIn("within 14 days", items["D"].reason)
         self.assertEqual(items["E"].status, disk.KEPT)
+
+    def test_a_superseded_runtime_build_is_a_candidate_unless_chosen_pinned_reserved_or_recent(self):
+        # vocaro-engineering#188: devices of an identifier run on one build, so another build of it is idle.
+        stamp = lambda days: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(LATER - days * 86400))
+        ios = lambda version: f"com.apple.CoreSimulator.SimRuntime.iOS-{version}"
+        listing = {"devices": {ios(version): [device("iPhone 17")] for version in ("27-0", "27-2", "27-3", "27-4")}}
+        runtime = lambda key, version, build, **values: {"identifier": key, "sizeBytes": 8, "build": build,
+                                                          "runtimeIdentifier": ios(version), **values}
+        images = {"old": runtime("old", "27-2", "24B5000", lastUsedAt=stamp(30)),
+                  "chosen": runtime("chosen", "27-2", "24B8117", lastUsedAt=stamp(40)),
+                  "pinned": runtime("pinned", "27-2", "24B5110a", lastUsedAt=stamp(30)),
+                  "beta": runtime("beta", "27-0", "24A5423a"),
+                  "release": runtime("release", "27-0", "24A434", lastUsedAt=stamp(1)),
+                  "recent": runtime("recent", "27-3", "24C10", lastUsedAt=stamp(6)),
+                  "newer": runtime("newer", "27-3", "24C20", lastUsedAt=stamp(1)),
+                  "reserved": runtime("reserved", "27-4", "24D10", lastUsedAt=stamp(30)),
+                  "current": runtime("current", "27-4", "24D20", lastUsedAt=stamp(1)),
+                  "only": runtime("only", "27-5", "24E10", lastUsedAt=stamp(30))}
+        matches = {"iphoneos27.2": {"chosenRuntimeBuild": "24B8117", "sdkVersion": "27.2"}}
+        pinned = {"24B5110a": "qualified for guarded VoiceOver activation", "24E10": "named by a test pin"}
+        records = {"/record.json": json.dumps({"devices": {"x": {"runtimeBuild": "24D10"},
+                   # A warmed template's census of installed builds names a build it does not run.
+                   "y": {"template": {"runtimeBuild": "24A434", "installedBuilds": ["24A434", "24A5423a"]}}}})}
+        def items(**values):
+            host = self.host(simulators=listing, runtimes=images, matches=matches, pinned=pinned, records=records)
+            for name, value in values.items(): setattr(host, name, value)
+            return {item.path.split(" ")[0]: item for item in disk.inventory(host, disk.Sizes(measure=False), ["runtime"])}
+        found = items()
+        for key in ("old", "beta"):
+            self.assertEqual(found[key].status, disk.CANDIDATE, found[key].reason)
+            self.assertEqual(found[key].command, ["xcrun", "simctl", "runtime", "delete", key])
+        self.assertIn("superseded by 24B8117", found["old"].reason)
+        self.assertIn("iphoneos27.2 SDK", found["old"].reason)
+        self.assertIn("superseded by 24A434", found["beta"].reason)
+        self.assertIn("CoreSimulator used last", found["beta"].reason)
+        expected = {"chosen": "devices use it", "release": "devices use it", "newer": "devices use it",
+                    "current": "devices use it", "pinned": "qualified for guarded VoiceOver activation",
+                    "recent": "within 14 days", "reserved": "the device record /record.json names it",
+                    "only": "named by a test pin"}
+        for key, why in expected.items():
+            self.assertEqual(found[key].status, disk.KEPT, key)
+            self.assertIn(why, found[key].reason, key)
+            self.assertIsNone(found[key].command, key)
+        # Without the SDK's choice, two builds CoreSimulator used last at once leave the choice unknown.
+        self.assertEqual(items(matches=None)["old"].status, disk.KEPT)
+        self.assertIn("devices use it", items(matches=None)["old"].reason)
+        # A record that cannot be read keeps every superseded build.
+        self.assertIn("could not be read", items(records={"/record.json": None})["old"].reason)
+        # When neither the SDK nor any use shows the choice, no build of the identifier is superseded.
+        unused = {key: {**image, "lastUsedAt": None} for key, image in images.items()}
+        self.assertEqual(items(runtimes=unused, matches=None)["beta"].status, disk.KEPT)
 
 
 class CacheTests(Fixture):
@@ -754,7 +875,7 @@ class FailureRecordTests(Fixture):
         self.assertEqual(ran, [item.command])
         self.assertEqual((old.exists(), young.exists()), (False, True))
 
-    def test_records_alone_do_not_keep_a_landed_worktree_and_a_lanes_results_do(self):
+    def test_records_and_a_lanes_results_alone_do_not_keep_a_landed_worktree(self):
         commit(self.main, ".gitignore", ".build/\n")
         self.publish()
         records = self.worktree("records")
@@ -764,7 +885,7 @@ class FailureRecordTests(Fixture):
         (results / ".build/engineering/ways-in/results/failures/R/failures.json").write_text("{}")
         items = self.items(self.host(), ["worktree"])
         self.assertEqual(items[str(records)].status, disk.CANDIDATE, items[str(records)].reason)
-        self.assertEqual(items[str(results)].status, disk.KEPT)
+        self.assertEqual(items[str(results)].status, disk.CANDIDATE, items[str(results)].reason)
 
 
 class CommandTests(Fixture):

@@ -1388,8 +1388,18 @@ the candidates, with their commands: exactly what `--delete` removes.
   citations. So a detached worktree that origin/main reaches only by equal patches or a squash is
   kept: it is the last ref to those commits, and removing it would leave them to `git gc`. One on
   a branch is not, since the branch remains. Ignored files under a `measurements` or `evidence`
-  directory keep it, as eng's results under `.build/engineering` (lane logs, receipts, remote
-  results) do; the rest of `.build` is a cache. The inventory reads
+  directory keep it, as any ignored file `ignored.py` cannot name a cache does. The rest of
+  `.build` is SwiftPM's, SwiftPM 6's `.buildSystem_debug`, `.buildSystem_release` and
+  `CACHEDIR.TAG` among it. eng's results under `.build/engineering` (lane logs, receipts, remote
+  results) keep an unlanded worktree, but go with a landed one, since its work is on origin/main
+  where a lane runs it again; the reason says so. Closeout still keeps a worktree for them. 44
+  landed subagent worktrees (`.claude/worktrees/agent-*`), 90 GiB, had to be removed by hand on
+  2026-11-05 before this
+  ([#187](https://github.com/vocaro/vocaro-engineering/issues/187)). A worktree that is the
+  folder (`cwd`) of a Claude desktop session not yet archived, by the app's session records in
+  `~/Library/Application Support/Claude/claude-code-sessions`, is kept; an unreadable record
+  keeps every landed worktree. A session's last activity there, and its transcript in
+  `~/.claude/projects`, count toward the idle time. The inventory reads
   origin/main once per repository and does not fetch, so work that landed after the last fetch
   stays kept. Its `git status` runs with `GIT_OPTIONAL_LOCKS=0`, so it never refreshes another
   session's index. The command is `git worktree remove` without `--force`, which itself refuses
@@ -1415,6 +1425,19 @@ the candidates, with their commands: exactly what `--delete` removes.
   may be another pool's member on a checkout eng cannot see, is kept. A runtime no device uses
   is a candidate once simctl's `lastUsedAt` is over 14 days old, or absent, so a pool that will
   create its members on it next keeps it meanwhile; one that came with Xcode is kept.
+  CoreSimulator resolves a runtime identifier's devices to one build, so when several builds of
+  an identifier are installed, the devices count only for the chosen one: the build
+  `xcrun simctl runtime match list -j` gives as `chosenRuntimeBuild` for an installed SDK, else
+  the build whose image CoreSimulator used last. Any other build of the identifier is superseded
+  and a candidate once its own `lastUsedAt` is over 14 days old or absent, unless the toolkit
+  pins it (the builds qualified for
+  [guarded VoiceOver activation](voiceover-simulator.md), `voiceover/activation.py`'s
+  `QUALIFIED`) or a device record names it, for instance as a pool template's `runtimeBuild`. A
+  template's `installedBuilds`, the builds installed when it was warmed, pins none: removing one
+  only makes the pool warm that template again. An
+  unreadable record keeps every superseded build, and an identifier whose choice neither the SDK
+  nor a single last use shows has no superseded build. A pinned build is kept even with no
+  device ([#188](https://github.com/vocaro/vocaro-engineering/issues/188)).
 - **Build caches.** A DerivedData folder in `~/Library/Developer/Xcode` (named
   `NAME-<28 letters>`) whose `info.plist` names a workspace in `~/Development` or a temporary
   directory is a candidate when that workspace no longer exists; a folder for any other
