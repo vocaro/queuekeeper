@@ -2265,6 +2265,10 @@ Background a long run with its output redirected to a log.
 - In zsh, the shell agents' commands run in, `status` is a read-only parameter. `status=$?`
   after a run fails, stops the wrapper and loses the run's exit code: a 48-minute gate's result
   had to be read back from its log (October 2026). Capture it as `rc=$?`.
+- zsh does not split an unquoted variable into words. `A="-only-testing:X -only-testing:Y"`
+  passed as `$A` reached xcodebuild as one argument, "Unknown build action", and an
+  `eng run ios-tests` ran no test (2026-11-05). Build an array, `A+=("-only-testing:$n")`, and
+  pass `"${A[@]}"`.
 - Apple's `git grep -E` has no `\b`: a pattern using it matches nothing and exits 1, exactly as
   a search that found nothing does. A sweep for British spellings read that silence as a clean
   tree (October 2026). Use `git grep -w`, or `grep -E`, which honors `\b`.
