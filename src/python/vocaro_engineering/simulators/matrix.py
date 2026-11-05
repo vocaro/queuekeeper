@@ -343,21 +343,49 @@ class Run:
         if unmeasured: self.say(*unmeasured)
 
     def listed(self, device, xctestrun):
-        """(enabled test ids, partial units) for the run's selection, listed once, on the first member to ask."""
+        """(enabled test ids, partial units) for the run's selection, listed once, on the first member to ask.
+
+        The shards start as soon as the listing is written: the xcodebuild that wrote it can outlive it by
+        a minute and a half while its leftover programs are stopped (EPUBLib, 2026-11-05, 95 s), and is
+        waited for at the run's end (listing_done). It has a derived data folder and result bundle of its
+        own, removed then, as each test run has (vocaro-engineering#158)."""
         with self.listing_lock:
             if self.listing is not None: return self.listing
             path, log = self.logs / "enumerated.json", self.logs / "enumerate.log"
+            scratch, bundle = self.logs / "enumerate.derived", self.logs / "enumerate.xcresult"
+            for stale in (scratch, bundle): shutil.rmtree(stale, ignore_errors=True)
             path.unlink(missing_ok=True)
             command = ["xcodebuild", "test-without-building", "-xctestrun", str(xctestrun),
                        "-destination", f"platform=iOS Simulator,id={device.udid}", "-destination-timeout", "600",
                        "-enumerate-tests", "-test-enumeration-style", "flat", "-test-enumeration-format", "json",
-                       "-test-enumeration-output-path", str(path), *[a for a in self.args.passed if selecting(a)]]
-            status = processes.run(command, cwd=Path.cwd(), log_path=log, timeout=self.args.test_timeout)
-            try: self.listing = enumerated(json.loads(path.read_text())) if status == 0 else ([], set())
-            except (OSError, ValueError): self.listing = ([], set())
+                       "-test-enumeration-output-path", str(path), "-derivedDataPath", str(scratch),
+                       "-resultBundlePath", str(bundle), *[a for a in self.args.passed if selecting(a)]]
+            ended = []
+            def enumerate_tests():
+                try: ended.append(processes.run(command, cwd=Path.cwd(), log_path=log, timeout=self.args.test_timeout))
+                except Exception as error: ended.append(error)
+                finally:
+                    for folder in (scratch, bundle): shutil.rmtree(folder, ignore_errors=True)
+            self.listing_thread = threading.Thread(target=enumerate_tests, daemon=True)
+            self.listing_thread.start()
+            listing = None
+            while listing is None:
+                try: listing = enumerated(json.loads(path.read_text()))
+                except (OSError, ValueError):
+                    if not self.listing_thread.is_alive():
+                        # Ended: one last read, in case it wrote the file as it ended.
+                        try: listing = enumerated(json.loads(path.read_text())) if ended == [0] else ([], set())
+                        except (OSError, ValueError): listing = ([], set())
+                    else: time.sleep(0.5)
+            self.listing = listing
             self.say(f"LISTED {len(self.listing[0])} tests to share among {self.args.shards} members of each device; "
                      f"log: {log}")
             return self.listing
+
+    def listing_done(self):
+        """Wait for the listing's xcodebuild, which the shards did not wait for, before the members go back."""
+        thread = getattr(self, "listing_thread", None)
+        if thread is not None: thread.join()
 
     def shard(self, kind, number, device, built):
         """Run one member's share of a sharded device's tests; its outcome goes to self.shards[kind]."""
@@ -518,6 +546,7 @@ def main(argv, project=None):
                 futures = [testers.submit(run.shard, kind, number, device, built) if args.shards else
                            testers.submit(run.device, kind, device, built) for kind, number, device in devices]
             if args.shards:
+                run.listing_done()
                 for kind in kinds: run.shards_finished(kind)
                 run.keep_timings()
             errors = [future.exception() for future in [built, *futures] if future.exception() is not None]

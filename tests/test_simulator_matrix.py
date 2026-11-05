@@ -161,7 +161,11 @@ XCODEBUILD = textwrap.dedent("""\
         pathlib.Path(value("-test-enumeration-output-path")).write_text(json.dumps({"errors": [], "values": [{
             "enabledTests": [{"identifier": test} for test in selected],
             "disabledTests": [{"identifier": test} for test in every if test not in selected]}]}))
+        (state / "listed").write_text(str(time.monotonic()))
+        time.sleep(float(os.environ.get("FAKE_ENUMERATE_LINGER", "0")))
         sys.exit(0)
+    if os.environ.get("FAKE_SHARD_STARTS"):
+        with open(os.environ["FAKE_SHARD_STARTS"], "a") as starts: starts.write(f"{time.monotonic()}\\n")
     bundle = pathlib.Path(value("-resultBundlePath"))
     if bundle.exists(): sys.exit(f"Existing file at -resultBundlePath {bundle}")
     bundle.mkdir(parents=True)
@@ -717,8 +721,25 @@ class SimulatorMatrixTests(unittest.TestCase):
         self.assertIn("PASS iPhone-17-Pro: Executed 5 tests in 2 shards", output)
         # A lane counts each device once, not its shards.
         self.assertEqual(evidence.executed_tests(output), 10, output)
-        self.assertEqual(len([call for call in self.calls() if "-enumerate-tests" in call]), 1)
+        listings = [call for call in self.calls() if "-enumerate-tests" in call]
+        self.assertEqual(len(listings), 1)
+        # The listing has its own derived data and result bundle, both gone once the run ends.
+        scratch = Path(listings[0][listings[0].index("-derivedDataPath") + 1])
+        self.assertEqual(scratch.name, "enumerate.derived")
+        self.assertFalse(scratch.exists())
+        self.assertFalse(Path(listings[0][listings[0].index("-resultBundlePath") + 1]).exists())
         self.assert_every_device_returned()
+
+    def test_the_shards_start_once_the_listing_is_written_without_waiting_for_its_xcodebuild_to_end(self):
+        # The fake listing's xcodebuild lingers 20 s after it writes the list; the shards must not wait for it.
+        started = time.monotonic()
+        status, output = self.run_matrix("--shards", "2", FAKE_TESTS=json.dumps(self.SHARDED), FAKE_ENUMERATE_LINGER="20",
+                                         FAKE_SHARD_STARTS=str(self.state / "starts"))
+        self.assertEqual(status, 0, output)
+        starts = [float(line) for line in (self.state / "starts").read_text().split()]
+        listed = float((self.state / "listed").read_text())
+        self.assertLess(max(starts) - listed, 15, output)
+        self.assertGreaterEqual(time.monotonic() - started, 20, "the run still ends after the listing's xcodebuild")
 
     def devices_by_udid(self):
         return {device["udid"]: device["type"].rsplit(".", 1)[-1] for device in self.devices().values()}
