@@ -13,6 +13,7 @@ import sys
 import tempfile
 import time
 import unittest
+import unittest.mock
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 from vocaro_engineering import devices, offload_host, remote
@@ -72,6 +73,8 @@ class ReapTests(unittest.TestCase):
         self.table, self.directories, self.names, self.runtimes = {}, {}, {UDID: NAME}, {}
         self.states, self.looks, self.between, self.stops, self.outcome = {}, 0, None, [], Process()
         self.simctl_fails, self.listed_self = False, True
+        # Each process's environment, by PID, as `ps -E` appends it to its command line.
+        self.environments = {os.getpid(): "PATH=/usr/bin:/bin"}
         self.simulator()
 
     def simulator(self, udid=UDID, pid=LAUNCHD, age=3 * 3600):
@@ -83,6 +86,10 @@ class ReapTests(unittest.TestCase):
         self.table[pid] = (parent, self.uid, start or ago(age), args)
 
     def listed(self, command):
+        if command == list(offload_host.ENVIRONMENTS):
+            own = {os.getpid(): (1, self.uid, ago(60), "python3 -m unittest")} if self.listed_self else {}
+            return "".join(f"{pid:>6} {parent:>6} {uid:>5} {start} {args} {self.environments.get(pid, '')}\n"
+                           for pid, (parent, uid, start, args) in {**own, **self.table}.items())
         if command[0] == "ps":
             self.looks += 1
             if self.looks == 2 and self.between: self.between()
@@ -254,7 +261,10 @@ class ReapTests(unittest.TestCase):
                 before = self.record.read_bytes()
                 for dry_run in (True, False):
                     report = self.reap(dry_run=dry_run)
-                    self.assertEqual((report["recoverable"], report["released"]), ([], []), report)
+                    # One not yet due is named in a listing, as a take's still held by its session.
+                    named = [item for item in report["recoverable"] if not (name == "release not due" and
+                             item.get("early") and "does not record that only its holder" in item["hold"])]
+                    self.assertEqual((named, report["released"]), ([], []), report)
                 self.assertEqual(self.record.read_bytes(), before)
 
     def test_what_reap_cannot_prove_dead_here_is_named_with_why_and_left(self):
@@ -358,6 +368,168 @@ class ReapTests(unittest.TestCase):
         report = self.reap()
         self.assertEqual(remote.reap_lines("fake", report, listing=False), [])
         self.assertIn("stays held", "\n".join(remote.reap_lines("fake", report, listing=False, held=True)))
+
+    # Before its expected release (vocaro-engineering#156, the owner's decision of 2026-11-04 in chat).
+
+    OWNER = "5f9a6753-0000-4000-8000-000000000001"
+
+    def early_entry(self, **more):
+        """A run's reservation, which only its holder held, not due for an hour, whose holder is gone."""
+        future = time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(time.time() + 3600))
+        return self.held_entry(due=future, ownerChatID=self.OWNER, **{offload_host.ALONE: True, **more})
+
+    def early(self, **more):
+        """setUp's member shut down, with nothing else running, and its early entry reserved."""
+        self.table.clear()
+        self.process(5000, 1, "/usr/bin/other")
+        self.states[UDID] = "Shutdown"
+        self.reserve(**self.early_entry(**more))
+        return self.record.read_bytes()
+
+    def assertHeldEarly(self, report, hold, before):
+        self.assertEqual(report["released"], [], report)
+        self.assertEqual([item["key"] for item in report["recoverable"]], [NAME], report)
+        self.assertTrue(report["recoverable"][0]["early"])
+        self.assertRegex(report["recoverable"][0]["hold"], hold)
+        self.assertEqual(self.record.read_bytes(), before)
+        listed = "\n".join(remote.reap_lines(remote.HERE, report))
+        self.assertIn("its release is due", listed)
+        self.assertRegex(listed, "reap did not release it: .*" + hold)
+        # Only a listing names one not yet due: before a dispatch and in doctor most are a take's, still held.
+        self.assertNotIn("stays held", "\n".join(remote.reap_lines(remote.HERE, report, listing=False, held=True)))
+
+    def test_a_dead_runs_reservation_is_released_before_its_release_when_nothing_accounts_for_its_owner(self):
+        self.early()
+        report = self.reap()
+        self.assertEqual(([item["key"] for item in report["released"]], report["recoverable"], report["problem"]),
+                         ([NAME], [], None), report)
+        entry = devices.Record(self.record).entry(NAME)
+        self.assertEqual((devices.condition(entry), entry["revision"], entry["lastOwnerChatID"]),
+                         ("released", 8, self.OWNER))
+        recovery = entry["recovery"]
+        self.assertEqual((recovery["by"], recovery["qualified"]), ("reap", "early: nothing accounts for its owner"))
+        self.assertIn("had not passed, but it recorded that only its holder held it", recovery["verified"])
+        self.assertIn(f"no live admission or other process of the account names its owner {self.OWNER}",
+                      recovery["verified"])
+        self.assertIn(f"simctl showed {UDID} Shutdown", recovery["verified"])
+        lines = [json.loads(line) for line in self.log.read_text().splitlines()]
+        self.assertEqual([(line["event"], line["qualified"]) for line in lines],
+                         [("releasing", "early: nothing accounts for its owner"),
+                          ("released", "early: nothing accounts for its owner")])
+        self.assertIn(f"released {NAME}", "\n".join(remote.reap_lines("fake", report, listing=False)))
+
+    def test_one_whose_release_passed_says_so(self):
+        self.table.clear()
+        self.process(5000, 1, "/usr/bin/other")
+        self.states[UDID] = "Shutdown"
+        self.reserve(**self.held_entry())
+        self.reap()
+        self.assertEqual(self.assertReleased()["recovery"]["qualified"], "its release passed")
+        self.assertEqual(json.loads(self.log.read_text().splitlines()[-1])["qualified"], "its release passed")
+
+    def test_a_dry_run_says_it_would_release_one_early_and_changes_nothing(self):
+        before = self.early()
+        report = self.reap(dry_run=True)
+        self.assertEqual([item["key"] for item in report["released"]], [NAME])
+        self.assertIn(f"would release {NAME}", "\n".join(remote.reap_lines("fake", report)))
+        self.assertEqual(self.record.read_bytes(), before)
+        self.assertFalse(self.log.exists())
+
+    def test_a_take_that_its_session_still_holds_is_never_released_early(self):
+        # `eng simulator-pool take` records no ALONE: its session holds the member by its word between commands.
+        before = self.early(**{offload_host.ALONE: None})
+        self.assertHeldEarly(self.reap(), "does not record that only its holder held it", before)
+
+    def test_a_live_admission_that_names_the_owner_keeps_it(self):
+        before = self.early()
+        self.process(6100, 900, "python3 scripts/eng admit -- swift test")
+        self.process(6101, 6100, "swift test")
+        self.environments[6101] = f"PATH=/usr/bin CLAUDE_CODE_SESSION_ID={self.OWNER}"
+        self.guard.write_text(json.dumps({"vocaroEngineering": 1, "owners": {"a" * 32: {
+            "pid": 6100, "start": self.table[6100][2], "label": "swift test"}}}))
+        self.assertHeldEarly(self.reap(), "live admission PID 6100 accounts for its owner: PID 6101 names", before)
+
+    def test_an_unended_admission_in_the_log_that_names_the_owner_keeps_it(self):
+        before = self.early()
+        self.process(6100, 900, "python3 scripts/eng run gate", age=600)
+        self.environments[6100] = f"VOCARO_DEVICE_OWNER={self.OWNER}"
+        (self.slots / "admissions.jsonl").write_text(json.dumps({
+            "event": "admitted", "identity": "b" * 32, "pid": 6100,
+            "time": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime())}) + "\n")
+        self.assertHeldEarly(self.reap(), "live admission PID 6100 accounts for its owner", before)
+
+    def test_any_process_naming_the_owner_or_the_device_keeps_it(self):
+        for name, arrange, hold in (
+                ("its environment", lambda: self.environments.update({5000: f"CODEX_THREAD_ID={self.OWNER}"}),
+                 f"PID 5000 names its owner {self.OWNER}"),
+                ("its command line", lambda: self.process(5100, 1, f"tool --owner {self.OWNER}"),
+                 f"PID 5100 names its owner"),
+                ("this reap's own", lambda: self.environments.update({os.getpid(): f"PATH=/bin X={self.OWNER}"}),
+                 "names its owner"),
+                ("the device", lambda: self.process(5100, 1, f"xcrun simctl io {UDID.lower()} screenshot x.png"),
+                 f"PID 5100 names its device {UDID}")):
+            with self.subTest(name):
+                self.setUp()
+                before = self.early()
+                arrange()
+                self.assertHeldEarly(self.reap(), hold, before)
+
+    def test_what_cannot_be_checked_keeps_it(self):
+        def unreadable_log(): (self.slots / "admissions.jsonl").mkdir()
+        def no_environments(): self.environments[os.getpid()] = ""
+        def short_owner():
+            entry = json.loads(self.record.read_text())
+            entry["devices"][NAME]["ownerChatID"] = "session"
+            self.record.write_text(json.dumps(entry))
+        for name, arrange, hold in (
+                ("an unreadable admission log", unreadable_log, "this reap met a problem"),
+                ("a listing without environments", no_environments, "ps did not show this reap's own environment"),
+                ("an owner too short to search for", short_owner, "too short to search processes for")):
+            with self.subTest(name):
+                self.setUp()
+                self.early()
+                arrange()
+                before = self.record.read_bytes()
+                self.assertHeldEarly(self.reap(), hold, before)
+
+    def test_admissions_that_cannot_be_read_for_the_owner_keep_it(self):
+        before = self.early()
+        with patch.object(offload_host, "live_admissions", side_effect=offload_host.ReapProblem("the admission log broke")):
+            report = self.reap()
+        self.assertHeldEarly(report, "its owner could not be checked: the admission log broke", before)
+
+    def test_an_early_one_still_booted_is_kept_running_and_held(self):
+        before = self.early()
+        self.simulator()
+        self.states[UDID] = "Booted"
+        report = self.reap()
+        self.assertEqual(self.stops, [])
+        self.assertKept(report, "not due for release")
+        self.assertHeldEarly(report, "simctl shows it Booted", before)
+
+    def test_a_runs_pool_marks_its_reservations_alone_and_a_take_does_not(self):
+        future = time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(time.time() + 3600))
+        for alone in (True, False):
+            with self.subTest(alone=alone):
+                pool = simulator_pool.Pool("Pagepour", owner=self.OWNER, record=devices.Record(self.record),
+                                           alone=alone)
+                key = f"Pagepour Duo {2 if alone else 3}"
+                with patch.object(simulator_pool.Pool, "_release_by", staticmethod(lambda: future)):
+                    pool._reserve(key, "tests")
+                entry = devices.Record(self.record).entry(key)
+                self.assertIn(devices.HOLDER, entry)
+                self.assertEqual(entry.get(devices.ALONE), True if alone else None)
+        made = []
+
+        class Recording:
+            def __init__(self, *arguments, **options): made.append(options.get("alone"))
+            take = lambda self, *arguments, **options: unittest.mock.Mock(udid=UDID)
+
+        with patch.object(simulator_pool, "Pool", Recording), patch.object(simulator_pool, "boot", return_value=None), \
+                redirect_stdout(StringIO()):
+            simulator_pool.main(["--pool", "Pagepour", "--owner", self.OWNER, "take", "--device", "iPhone-17-Pro",
+                                 "--runtime", "iOS-27-2"])
+        self.assertEqual(made, [False])
 
     def test_an_unlistable_host_names_nothing_and_says_so(self):
         self.reserve(**self.held_entry())
