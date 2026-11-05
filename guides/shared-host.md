@@ -1452,7 +1452,13 @@ the candidates, with their commands: exactly what `--delete` removes.
   only makes the pool warm that template again. An
   unreadable record keeps every superseded build, and an identifier whose choice neither the SDK
   nor a single last use shows has no superseded build. A pinned build is kept even with no
-  device ([#188](https://github.com/vocaro/vocaro-engineering/issues/188)).
+  device ([#188](https://github.com/vocaro/vocaro-engineering/issues/188)). With a second Mac, a
+  runtime candidate's reason names the second Mac's copy, read as `eng remote setup --runtimes`
+  reads it. The two Macs keep the same runtimes
+  ([#123](https://github.com/vocaro/vocaro-engineering/issues/123)): that command deletes a runtime
+  only one Mac lists when no simulator on its identifier uses it there, and otherwise copies it to
+  the other Mac. So a runtime stays kept here while the second Mac holds a copy its simulators
+  count as used, or while its runtimes cannot be read; removing it would only bring it back.
 - **Build caches.** A DerivedData folder in `~/Library/Developer/Xcode` (named
   `NAME-<28 letters>`) whose `info.plist` names a workspace in `~/Development` or a temporary
   directory is a candidate when that workspace no longer exists; a folder for any other

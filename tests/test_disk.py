@@ -536,6 +536,60 @@ class SimulatorTests(Fixture):
         self.assertEqual(items(runtimes=unused, matches=None)["beta"].status, disk.KEPT)
 
 
+    def test_a_runtime_candidate_names_the_second_macs_copy_and_stays_while_that_copy_would_come_back(self):
+        # vocaro-engineering#188 and #123: `eng remote setup --runtimes` keeps both Macs' runtimes alike.
+        stamp = lambda days: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(LATER - days * 86400))
+        ios = lambda version: f"com.apple.CoreSimulator.SimRuntime.iOS-{version}"
+        listing = {"devices": {ios("27-0"): [device("iPhone 17")]}}
+        images = {"beta": {"identifier": "beta", "sizeBytes": 8, "build": "24A5423a", "runtimeIdentifier": ios("27-0")},
+                  "release": {"identifier": "release", "sizeBytes": 8, "build": "24A434", "runtimeIdentifier": ios("27-0"),
+                              "lastUsedAt": stamp(1)},
+                  "unused": {"identifier": "unused", "sizeBytes": 8, "build": "24A100", "runtimeIdentifier": ios("26-0")}}
+        def found(there, second="build-host"):
+            host = self.host(simulators=listing, runtimes=images, offload_host=second, remote_runtimes=there)
+            return {item.path.split(" ")[0]: item for item in disk.inventory(host, disk.Sizes(measure=False), ["runtime"])}
+        copy = lambda build, users: {"build": build, "users": users}
+        items = found({"images": [copy("24A434", ["A"])]})
+        for key in ("beta", "unused"):
+            self.assertEqual(items[key].status, disk.CANDIDATE, items[key].reason)
+            self.assertIn("build-host holds no copy, so removing it here also leaves the two Macs alike", items[key].reason)
+        items = found({"images": [copy("24A5423a", []), copy("24A100", [])]})
+        for key in ("beta", "unused"):
+            self.assertEqual(items[key].status, disk.CANDIDATE, items[key].reason)
+            self.assertIn("build-host holds a copy no simulator uses there", items[key].reason)
+        items = found({"images": [copy("24A5423a", ["A", "B"]), copy("24A100", None)]})
+        self.assertEqual(items["beta"].status, disk.KEPT)
+        self.assertIn("superseded by 24A434", items["beta"].reason)
+        self.assertIn("the 2 simulators on its identifier there count as used, so `eng remote setup --runtimes` "
+                      "would copy it back here", items["beta"].reason)
+        self.assertEqual(items["unused"].status, disk.KEPT)
+        self.assertIn("could not be listed", items["unused"].reason)
+        items = found({"error": "it did not answer in 180s"})
+        for key in ("beta", "unused"):
+            self.assertEqual(items[key].status, disk.KEPT)
+            self.assertIsNone(items[key].command)
+            self.assertIn("build-host's runtimes could not be read (it did not answer in 180s)", items[key].reason)
+        self.assertEqual(items["release"].status, disk.KEPT)  # the chosen build is untouched
+        # Without a second Mac the reason names none.
+        items = found(None, second=None)
+        self.assertEqual(items["beta"].status, disk.CANDIDATE)
+        self.assertNotIn("build-host", items["beta"].reason)
+
+    def test_the_second_macs_runtimes_are_read_as_eng_remote_reads_them(self):
+        from vocaro_engineering import remote
+        self.assertIsNone(disk.runtimes_there(None))
+        with patch.object(remote, "developer_directory", return_value="/X.app"), \
+                patch.object(remote, "runtime_images", return_value={"images": [{"build": "B", "users": []}]}) as read:
+            self.assertEqual(disk.runtimes_there("build-host"), {"images": [{"build": "B", "users": []}]})
+        read.assert_called_once_with("build-host", "build-host", "/X.app")
+        with patch.object(remote, "developer_directory", return_value="/X.app"), \
+                patch.object(remote, "runtime_images", side_effect=remote.Misconfigured("unreachable", "fix")):
+            self.assertIn("error", disk.runtimes_there("build-host"))
+        with patch.object(remote, "developer_directory", return_value="/X.app"), \
+                patch.object(remote, "runtime_images", return_value={"images": None}):
+            self.assertEqual(disk.runtimes_there("build-host"), {"error": "simctl did not list its runtime images"})
+
+
 class CacheTests(Fixture):
     def derived(self, name, workspace=None):
         directory = self.home / "Library/Developer/Xcode/DerivedData" / name

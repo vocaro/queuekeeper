@@ -266,6 +266,9 @@ class Host:
     sessions: dict = field(default_factory=dict)  # the desktop app's session records: path to record, None if unreadable
     matches: dict = None  # `simctl runtime match list -j`: the runtime build chosen for each SDK
     pinned: dict = field(default_factory=dict)  # runtime builds the toolkit names, each with where
+    # The second Mac's runtime images as `eng remote setup --runtimes` reads them (remote.runtime_images), or
+    # {"error": why} when they cannot be read; None without a second Mac.
+    remote_runtimes: dict = None
 
     @classmethod
     def current(cls, min_idle, development=None, run=subprocess.run):
@@ -274,14 +277,16 @@ class Host:
         temp = [(Path("/private/tmp"), 6)]
         user_temp = run(["getconf", "DARWIN_USER_TEMP_DIR"], capture_output=True, text=True).stdout.strip()
         if user_temp: temp.append((Path(os.path.realpath(user_temp)), 2))
+        second = second_mac()
         return cls(home=home, development=Path(development or home / "Development"), now=time.time(),
                    min_idle=min_idle, processes=census(run), simulators=_json(run, "list", "-j"),
                    runtimes=_json(run, "runtime", "list", "-j"), default_devices=default_devices(devices),
                    device_directory=devices, records=device_records(), temp_roots=temp,
                    session_scratch=Path(f"/private/tmp/claude-{os.getuid()}"),
                    pools=pools(development or home / "Development", run),
-                   offload_host=second_mac(), run=run, sessions=desktop_sessions(home),
-                   matches=_json(run, "runtime", "match", "list", "-j"), pinned=pinned_builds())
+                   offload_host=second, run=run, sessions=desktop_sessions(home),
+                   matches=_json(run, "runtime", "match", "list", "-j"), pinned=pinned_builds(),
+                   remote_runtimes=runtimes_there(second))
 
 
 def _json(run, *arguments):
@@ -696,6 +701,50 @@ def simulators(host, usage, sizes):
     return items
 
 
+def runtimes_there(second):
+    """The second Mac's runtime images, read as `eng remote setup --runtimes` reads them, each with its build and
+    the simulators on its runtime identifier there (users); {"error": why} when they cannot be read, and None
+    without a second Mac."""
+    if not second: return None
+    from . import remote  # remote imports this module
+    try:
+        developer = remote.developer_directory()
+        if developer is None: return {"error": "this Mac has no Xcode selected"}
+        found = remote.runtime_images(second, second, developer)
+    except Exception as error:  # an unreachable or misconfigured second Mac, whatever it raises
+        return {"error": str(error).splitlines()[0][:200] if str(error) else type(error).__name__}
+    if not isinstance(found, dict) or not isinstance(found.get("images"), list):
+        return {"error": "simctl did not list its runtime images"}
+    return {"images": found["images"]}
+
+
+def across(host, item, build):
+    """A runtime candidate as the second Mac's copy of it leaves it. The two Macs keep the same runtimes
+    (vocaro-engineering#123): `eng remote setup --runtimes` deletes a runtime only one Mac lists from that Mac
+    when no simulator on its identifier uses it there, and copies it to the other Mac otherwise. So a build
+    removed here while the second Mac's copy counts as used would only be copied back."""
+    if not host.offload_host or item.status != CANDIDATE: return item
+    there, second = host.remote_runtimes or {"error": "not read"}, host.offload_host
+    def kept(why): return Item(item.category, item.path, KEPT, f"{item.reason}; but {why}", item.size, None, item.idle)
+    if "error" in there:
+        return kept(f"{second}'s runtimes could not be read ({there['error']}), so whether `eng remote setup "
+                    "--runtimes` would copy it back is unknown")
+    copies = [image for image in there["images"] if isinstance(image, dict) and image.get("build") == build]
+    if not copies:
+        item.reason += f"; {second} holds no copy, so removing it here also leaves the two Macs alike"
+    elif any(image.get("users") is None for image in copies):
+        return kept(f"{second} holds a copy whose simulators could not be listed, so whether `eng remote setup "
+                    "--runtimes` would copy it back is unknown")
+    elif any(image["users"] for image in copies):
+        users = max(len(image["users"]) for image in copies)
+        return kept(f"{second} holds a copy, which the {users} simulators on its identifier there count as used, so "
+                    f"`eng remote setup --runtimes` would copy it back here; it can go once {second}'s copy can")
+    else:
+        item.reason += (f"; {second} holds a copy no simulator uses there, which `eng remote setup --runtimes` then "
+                        "deletes, leaving the two Macs alike")
+    return item
+
+
 def pinned_builds():
     """The runtime builds the toolkit names, each with where: those qualified for guarded VoiceOver activation."""
     try: from .voiceover import activation
@@ -777,9 +826,9 @@ def runtimes(host):
                 items.append(Item("runtime", label, KEPT, f"{superseded}, but used {age(idle)} ago, within "
                                   f"{RUNTIME_IDLE_DAYS} days", size, idle=idle))
             else:
-                items.append(Item("runtime", label, CANDIDATE, f"{superseded}, so no device runs on it; no pin or "
-                                  f"reservation names it; last used {stamp or 'never'}, over {RUNTIME_IDLE_DAYS} days "
-                                  "ago or never", size, command, idle))
+                items.append(across(host, Item("runtime", label, CANDIDATE, f"{superseded}, so no device runs on it; "
+                                  f"no pin or reservation names it; last used {stamp or 'never'}, over "
+                                  f"{RUNTIME_IDLE_DAYS} days ago or never", size, command, idle), build))
         elif used.get(identifier):
             items.append(Item("runtime", label, KEPT, f"{used[identifier]} devices use it" +
                               (f": the build of its identifier {chosen[identifier][1]}" if identifier in chosen else ""), size))
@@ -790,9 +839,9 @@ def runtimes(host):
             items.append(Item("runtime", label, KEPT, f"no device uses it, but it was used {age(idle)} ago, within "
                               f"{RUNTIME_IDLE_DAYS} days; a lane may create its devices on it next", size, idle=idle))
         else:
-            items.append(Item("runtime", label, CANDIDATE, f"no device uses it; last used {stamp or 'never'}, "
-                              f"over {RUNTIME_IDLE_DAYS} days ago or never; xcodebuild downloads it again", size,
-                              command, idle))
+            items.append(across(host, Item("runtime", label, CANDIDATE, f"no device uses it; last used "
+                                           f"{stamp or 'never'}, over {RUNTIME_IDLE_DAYS} days ago or never; xcodebuild "
+                                           "downloads it again", size, command, idle), build))
     return items
 
 
