@@ -708,12 +708,25 @@ def member(name, device_type, runtime, *, purpose, owner=None, boot_timeout=600,
 
 
 def boot(pool, lease, timeout):
-    """Boot a member to bootstatus -b; None when it booted, else a status (UNMEASURED for a timeout)."""
+    """Boot a member to bootstatus -b; None when it booted, else a status (UNMEASURED for a timeout).
+
+    A booted member then has VoiceOver's sound cues switched off: an erase clears the setting, and
+    the mute leaves the cues audible through the Mac (guides/voiceover-simulator.md, Muted speech
+    capture). A setting that does not read off is logged, not a failed boot: a lane without VoiceOver
+    plays no cues."""
     started = pool.run("boot", lease.udid, timeout=120)
     if started.returncode != 0:
         return started.returncode
     finished = pool.run("bootstatus", lease.udid, "-b", timeout=timeout)
-    return None if finished.returncode == 0 else evidence.UNMEASURED if finished.returncode == 124 else finished.returncode
+    if finished.returncode != 0:
+        return evidence.UNMEASURED if finished.returncode == 124 else finished.returncode
+    written = pool.run("spawn", lease.udid, "defaults", "write", warmed.CUE_DOMAIN, warmed.CUE_KEY, "-bool", "false",
+                       timeout=30)
+    read = pool.run("spawn", lease.udid, "defaults", "read", warmed.CUE_DOMAIN, warmed.CUE_KEY, timeout=30)
+    if written.returncode != 0 or read.returncode != 0 or read.stdout.strip() != "0":
+        pool.log(f"CUES {lease.key}: VoiceOver's sound cues could not be switched off, so VoiceOver would play "
+                 f"them through the Mac: {(written.stderr or read.stderr or read.stdout).strip() or 'no reading'}")
+    return None
 
 
 class Stopped(BaseException):

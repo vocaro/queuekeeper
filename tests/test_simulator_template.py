@@ -29,16 +29,31 @@ class Device:
     """Stand-ins for simctl, devicectl and the log stream of one simulator, recording each call in order.
 
     speaks_after: seconds after VoiceOver is switched on when the speech extension logs its first phrase,
-    None for never. volumes: what the volume reads after each mute, in turn, then 0."""
-    def __init__(self, clock, speaks_after=50, volumes=(), boot=0, bootstatus=0, stuck_on=False):
+    None for never. volumes: what the volume reads after each mute, in turn, then 0. cues: what VoiceOver's
+    sound-cue switch reads after it is written, or a number for a write that exits so."""
+    def __init__(self, clock, speaks_after=50, volumes=(), boot=0, bootstatus=0, stuck_on=False, cues="0"):
         self.clock, self.speaks_after, self.volumes = clock, speaks_after, list(volumes)
         self.calls, self.boot, self.bootstatus, self.stuck_on = [], boot, bootstatus, stuck_on
         self.voiceover, self.volume, self.switched, self.log = False, 60, None, None
+        self.cues, self.cue_setting = cues, "1"
 
     def simctl(self, *arguments, timeout=600):
         self.calls.append(("simctl", *arguments))
+        if arguments[:1] == ("spawn",) and arguments[2:3] == ("defaults",):
+            self.assertion(arguments[4:6] == (template.CUE_DOMAIN, template.CUE_KEY), arguments)
+            if arguments[3] == "write":
+                if isinstance(self.cues, int):
+                    return subprocess.CompletedProcess(arguments, self.cues, "", "failed")
+                self.cue_setting = self.cues
+                return subprocess.CompletedProcess(arguments, 0, "", "")
+            return subprocess.CompletedProcess(arguments, 0, self.cue_setting + "\n", "")
         status = {"boot": self.boot, "bootstatus": self.bootstatus}.get(arguments[0], 0)
         return subprocess.CompletedProcess(arguments, status, "", "failed" if status else "")
+
+    @staticmethod
+    def assertion(holds, detail):
+        if not holds:
+            raise AssertionError(f"an unexpected defaults call: {detail}")
 
     def devicectl(self, *arguments, timeout=30):
         self.calls.append(("devicectl", *arguments))
@@ -93,8 +108,38 @@ class WarmTests(unittest.TestCase):
         readings = [call for call in device.calls[mute:on] if call[:3] == ("devicectl", "info", "audio")]
         self.assertGreaterEqual(len(readings), template.MUTE_HELD)
         self.assertFalse(device.voiceover)
-        # Nothing here shuts down, erases, clones or deletes: that is the pool's.
-        self.assertEqual({call[1] for call in device.calls if call[0] == "simctl"}, {"boot", "bootstatus"})
+        # Nothing here shuts down, erases, clones or deletes: that is the pool's. Its only spawns write
+        # and read VoiceOver's sound-cue switch.
+        self.assertEqual({call[1] for call in device.calls if call[0] == "simctl"}, {"boot", "bootstatus", "spawn"})
+        self.assertEqual({call[4] for call in device.calls if call[:2] == ("simctl", "spawn")}, {"write", "read"})
+
+    def test_sound_cues_are_switched_off_before_voiceover_starts(self):
+        clock = Clock()
+        device = Device(clock)
+        record = self.warm(device, clock)
+        self.assertIs(record["cueSoundsOff"], True)
+        status, write, read, on = device.order(
+            ("simctl", "bootstatus"), ("simctl", "spawn", UDID, "defaults", "write"),
+            ("simctl", "spawn", UDID, "defaults", "read"),
+            ("devicectl", "settings", "voiceover", "--device", UDID, "--enable"))
+        self.assertTrue(status < write < read < on, device.calls)
+        self.assertEqual(device.calls[write][4:], ("write", template.CUE_DOMAIN, template.CUE_KEY, "-bool", "false"))
+        self.assertEqual(device.cue_setting, "0")
+
+    def test_voiceover_never_starts_unless_the_sound_cues_read_off(self):
+        # Negative controls: a switch that reads on after the write, and a write that fails.
+        for cues in ("1", 1):
+            with self.subTest(cues=cues):
+                clock = Clock()
+                device = Device(clock, cues=cues)
+                record = self.warm(device, clock)
+                self.assertIs(record["cueSoundsOff"], False)
+                self.assertEqual(record["voiceOver"], "not started: VoiceOver's sound cues could not be switched off")
+                self.assertIs(record["voiceOverOff"], True)
+                self.assertNotIn("voiceOverWarmed", record)
+                self.assertFalse([call for call in device.calls
+                                  if call[:3] == ("devicectl", "settings", "voiceover") and "--enable" in call])
+                self.assertFalse([call for call in device.calls if call[0] == "stream"])
 
     def test_a_volume_that_comes_back_is_muted_again_before_voiceover_starts(self):
         clock = Clock()

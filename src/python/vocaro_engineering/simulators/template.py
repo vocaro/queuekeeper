@@ -6,7 +6,8 @@ A new simulator's first boot migrates its data, and VoiceOver's first start on i
 database, which took 40 to 60 s on a quiet Mac and minutes on a loaded one. `simctl clone` copies a
 shut-down device's data, so a member cloned from a warmed template boots past both. warm() does the
 warming on a template the pool holds and has created: boot to `bootstatus -b`, read the guest's
-runtime build, mute it, switch VoiceOver on until it speaks and off again. The pool shuts it down,
+runtime build, switch VoiceOver's sound cues off, mute it, switch VoiceOver on until it speaks and off
+again. The pool shuts it down,
 records what warm() returns in the template's device-record entry and releases it. Nothing here
 reserves, creates, clones or deletes a device.
 """
@@ -17,6 +18,7 @@ import time
 from pathlib import Path
 
 from . import runtime_identity
+from .speech import CUE_DOMAIN, CUE_KEY
 
 # What the speech extension logs for each phrase VoiceOver speaks (guides/voiceover-simulator.md,
 # VoiceOver's vot log); the first one says VoiceOver has its voice.
@@ -81,7 +83,8 @@ def warm(udid, runtime, *, simctl, devicectl=devicectl, stream=log_stream, boot_
 
     It raises WarmFailed when the boot fails or reaches its limit, or the guest's runtime build cannot
     be read. VoiceOver that stays silent past voiceover_limit, or a volume that cannot be set to 0,
-    leaves the template booted and migrated but VoiceOver cold, and the record says so. VoiceOver
+    leaves the template booted and migrated but VoiceOver cold, and the record says so, as do sound
+    cues that do not read off once switched off (cueSoundsOff). VoiceOver
     speaks through the Mac's own output device, so it starts only once the volume has read 0 MUTE_HELD
     times in a row, a reading with no answer neither counting nor breaking the run, within MUTE_LIMIT
     seconds, and the volume is read again each second while it is on. voiceOverOff records whether
@@ -108,6 +111,15 @@ def warm(udid, runtime, *, simctl, devicectl=devicectl, stream=log_stream, boot_
     except runtime_identity.RuntimeIdentityUnavailable as error:
         raise WarmFailed(f"its runtime build could not be read: {error}") from None
     record.update(runtimeBuild=found["buildversion"], runtimeVersion=found["version"])
+    # The mute leaves VoiceOver's sound cues audible; with the switch off they do not play at all, and
+    # every member cloned from this template keeps it.
+    written = simctl("spawn", udid, "defaults", "write", CUE_DOMAIN, CUE_KEY, "-bool", "false", timeout=30)
+    read = simctl("spawn", udid, "defaults", "read", CUE_DOMAIN, CUE_KEY, timeout=30)
+    record["cueSoundsOff"] = written.returncode == 0 and read.returncode == 0 and read.stdout.strip() == "0"
+    if not record["cueSoundsOff"]:
+        record["voiceOver"] = "not started: VoiceOver's sound cues could not be switched off"
+        record["voiceOverOff"] = confirmed_off(devicectl, udid)
+        return record
     unmuted, held, muting = [], 0, clock()
     devicectl("settings", "audio", "--device", udid, "--volume", "0")
     while held < MUTE_HELD and clock() - muting < MUTE_LIMIT:

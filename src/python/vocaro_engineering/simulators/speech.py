@@ -13,6 +13,11 @@ TEST_ENDED = re.compile(r"^Test Case '.*testCaptureNavigation\]' (passed|failed)
 FAILURES = re.compile(r"^.* error: (?:-\[.*?\] : )?(.*)$", re.M)
 # The apps that show a simulator live, by process name: Device Hub from Xcode 27, Simulator.app before.
 SIMULATOR_VIEWS = {"DeviceHub": "Device Hub", "Simulator": "Simulator.app"}
+# VoiceOver's Sounds switch (Settings > Accessibility > VoiceOver > Audio > Sounds & Haptics), which
+# its process reads at start from its own preferences domain. Its sound cues play through the
+# simulator's system-sound server, which ignores the volume the mute sets, so a muted simulator still
+# plays them through the Mac (guides/voiceover-simulator.md, Muted speech capture).
+CUE_DOMAIN, CUE_KEY = "com.apple.VoiceOverTouch", "VoiceOverUseSoundEffects"
 
 def now():
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
@@ -36,6 +41,17 @@ def state(udid, kind, *change, timeout=20, run_command=None):
         run("xcrun", "devicectl", "device", "settings", kind, "--device", udid, *change, timeout=timeout)
     answer = run("xcrun", "devicectl", "device", "info", kind, "--device", udid, "--quiet", "--json-output", "-", timeout=timeout)
     return json.loads(answer)["result"]
+
+
+def silence_cues(udid, run_command=None):
+    """Switch VoiceOver's sound cues off on the booted simulator udid; whether they then read off.
+
+    VoiceOver reads the switch when it starts, so call this before VoiceOver is switched on. The
+    setting is in the simulator's data container: a member cloned from a template that has it keeps
+    it. A command that fails raises RuntimeError, as run does."""
+    run = run_command or globals()["run"]
+    run("xcrun", "simctl", "spawn", udid, "defaults", "write", CUE_DOMAIN, CUE_KEY, "-bool", "false", timeout=30)
+    return run("xcrun", "simctl", "spawn", udid, "defaults", "read", CUE_DOMAIN, CUE_KEY, timeout=30).strip() == "0"
 
 
 def keep_muted(session, state_reader=None):

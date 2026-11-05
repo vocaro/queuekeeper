@@ -8,6 +8,37 @@ from vocaro_engineering.simulators import speech
 import host_isolation
 
 
+class SilenceCuesTests(unittest.TestCase):
+    UDID = "2BBC94CE-0D99-4A08-9763-269B5711AC97"
+
+    def silence(self, reads="0\n", fail=None):
+        calls = []
+        def run(*command, timeout=60):
+            calls.append(command)
+            if fail and command[5] == fail:
+                raise RuntimeError(f"{' '.join(command)}: failed")
+            return reads if command[5] == "read" else ""
+        return speech.silence_cues(self.UDID, run_command=run), calls
+
+    def test_the_switch_is_written_off_then_read_back_on_the_named_simulator(self):
+        silenced, calls = self.silence()
+        self.assertIs(silenced, True)
+        self.assertEqual(calls, [
+            ("xcrun", "simctl", "spawn", self.UDID, "defaults", "write", "com.apple.VoiceOverTouch",
+             "VoiceOverUseSoundEffects", "-bool", "false"),
+            ("xcrun", "simctl", "spawn", self.UDID, "defaults", "read", "com.apple.VoiceOverTouch",
+             "VoiceOverUseSoundEffects")])
+
+    def test_a_switch_that_still_reads_on_is_not_silenced(self):
+        self.assertIs(self.silence(reads="1\n")[0], False)
+        self.assertIs(self.silence(reads="")[0], False)
+
+    def test_a_failed_write_or_read_raises(self):
+        for step in ("write", "read"):
+            with self.subTest(step=step), self.assertRaises(RuntimeError):
+                self.silence(fail=step)
+
+
 class SimulatorViewTests(unittest.TestCase):
     def check(self, running):
         calls = []

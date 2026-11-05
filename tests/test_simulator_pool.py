@@ -65,6 +65,10 @@ class Simctl:
             self.devices[udid] = {**source, "name": rest[1], "lastUsedAt": None}
             output = udid
         elif action == "boot": self.devices[rest[0]]["state"] = "Booted"
+        elif action == "spawn" and rest[1:2] == ("defaults",):
+            # VoiceOver's sound-cue switch, which reads 1 until it is written.
+            if rest[2] == "write": self.devices[rest[0]]["cues"] = rest[-1]
+            else: output = {"false": "0", "true": "1"}[self.devices[rest[0]].get("cues", "true")] + "\n"
         elif action == "shutdown": self.devices[rest[0]]["state"] = "Shutdown"
         elif action == "delete": del self.devices[rest[0]]
         return subprocess.CompletedProcess(arguments, 0, output, "")
@@ -466,6 +470,45 @@ class PoolTests(unittest.TestCase):
         # The lowest member is never pruned, even when asked for by UDID.
         self.assertEqual(command("prune", udid.strip())[0], 1)
 
+
+    def test_a_booted_member_has_voiceovers_sound_cues_switched_off(self):
+        udid = self.simctl.add("Project Duo 1")
+        lease = self.pool.take(DUO, RUNTIME, purpose="VoiceOver")
+        self.assertIsNone(simulator_pool.boot(self.pool, lease, 600))
+        calls = self.simctl.named(udid)
+        status = calls.index(("bootstatus", udid, "-b"))
+        write = calls.index(("spawn", udid, "defaults", "write", "com.apple.VoiceOverTouch",
+                             "VoiceOverUseSoundEffects", "-bool", "false"))
+        read = calls.index(("spawn", udid, "defaults", "read", "com.apple.VoiceOverTouch", "VoiceOverUseSoundEffects"))
+        # After the erase, which clears the setting, and once the boot has finished.
+        self.assertLess(calls.index(("erase", udid)), status)
+        self.assertTrue(status < write < read, calls)
+        self.assertFalse([line for line in self.log if line.startswith("CUES")])
+        self.assertTrue(self.pool.release(lease, outcome="done"))
+
+    def test_sound_cues_that_will_not_read_off_are_logged_and_the_boot_still_counts(self):
+        # Negative controls: a write that fails, and one that leaves the switch reading on.
+        for failure in ({"spawn": lambda rest: (1, "", "spawn failed")},
+                        {"spawn": lambda rest: (0, "1\n" if rest[2] == "read" else "", "")}):
+            with self.subTest(failure=failure):
+                self.simctl, self.log = Simctl(), []
+                self.pool = self.make("me")
+                udid = self.simctl.add("Project Duo 1")
+                self.simctl.fail.update(failure)
+                lease = self.pool.take(DUO, RUNTIME, purpose="VoiceOver")
+                self.assertIsNone(simulator_pool.boot(self.pool, lease, 600))
+                cues = [line for line in self.log if line.startswith("CUES")]
+                self.assertEqual(len(cues), 1, self.log)
+                self.assertIn("Project Duo 1: VoiceOver's sound cues could not be switched off", cues[0])
+                self.assertTrue(self.pool.release(lease, outcome="done"))
+
+    def test_a_boot_that_does_not_finish_never_writes_the_cue_setting(self):
+        udid = self.simctl.add("Project Duo 1")
+        self.simctl.fail["bootstatus"] = lambda rest: (124, "", "timed out")
+        lease = self.pool.take(DUO, RUNTIME, purpose="VoiceOver")
+        self.assertEqual(simulator_pool.boot(self.pool, lease, 600), simulator_pool.evidence.UNMEASURED)
+        self.assertFalse([call for call in self.simctl.named(udid) if call[0] == "spawn"])
+        self.assertTrue(self.pool.release(lease, outcome="done"))
 
     def test_a_take_that_keeps_state_reserves_and_boots_without_erasing(self):
         booted = self.simctl.add("Project Duo 1", state="Booted")
