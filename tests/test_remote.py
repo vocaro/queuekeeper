@@ -1834,35 +1834,105 @@ class RemoteTests(unittest.TestCase):
                 self.assertEqual(status, 0, output + error)
                 self.assertIn(f"Ran 2 tests in {self.project.resolve()}", (local / "run.log").read_text())
 
-    def test_a_push_that_loses_the_race_for_a_ref_the_second_mac_holds_has_sent_the_commit(self):
-        # Stands in for git: with FAKE_PUSH push lands the ref and then fails, as the push that loses
-        # to another session's push of the same commit does, and with FAKE_PUSH=fail it lands nothing.
+    def racing_git(self):
+        """Put a stand-in for git first on PATH. With FAKE_PUSH set, a push to a repository whose path holds
+        FAKE_PUSH_ONLY (any, unset) fails as one that loses the race for the commit's ref to another session's
+        push of the same commit does, after the winner's push lands the ref (race); after that and the winner's
+        dispatch placing the commit, which deletes the ref, before it names the commit as a checkout's (placed),
+        and once it has (cached); or with the ref naming another commit (other). With fail it lands nothing, and with full it
+        fails as a full disk does. FAKE_PUSH_RACES (1) of the pushes do so; the later ones are git's own."""
         real = shutil.which("git")
         wrapper = self.tools / "git"
         wrapper.write_text(f"""#!/bin/sh
 if [ "$3" = push ] && [ -n "$FAKE_PUSH" ]; then
-    [ "$FAKE_PUSH" = fail ] || {shlex.quote(real)} "$@" || exit
-    echo "error: cannot lock ref 'refs/vocaro/build-host/x': reference already exists" >&2
+    for word; do target=$refspec; refspec=$word; done
+    case "$target" in *"${{FAKE_PUSH_ONLY:-}}"*) ;; *) exec {shlex.quote(real)} "$@" ;; esac
+    bare="$FAKE_HOME/${{target#*:}}" commit="${{refspec%%:*}}" ref="${{refspec#*:}}"
+    count="$bare.races"
+    races=$(cat "$count" 2>/dev/null || echo 0)
+    [ "$races" -lt "${{FAKE_PUSH_RACES:-1}}" ] || exec {shlex.quote(real)} "$@"
+    echo $((races + 1)) > "$count"
+    case "$FAKE_PUSH" in
+    fail) ;;
+    full) echo "error: unpack failed: unpack-objects abnormal exit: No space left on device" >&2; exit 1 ;;
+    *) {shlex.quote(real)} "$@" || exit ;;
+    esac
+    case "$FAKE_PUSH" in
+    placed|cached) {shlex.quote(real)} --git-dir "$bare" update-ref -d "$ref"
+        {shlex.quote(real)} --git-dir "$bare" update-ref -d "refs/vocaro/checkouts/$commit" ;;
+    other) {shlex.quote(real)} --git-dir "$bare" update-ref "$ref" "$commit^" ;;
+    esac
+    [ "$FAKE_PUSH" = cached ] && {shlex.quote(real)} --git-dir "$bare" update-ref "refs/vocaro/checkouts/$commit" "$commit"
+    echo "error: cannot lock ref '$ref': reference already exists" >&2
     exit 1
 fi
 exec {shlex.quote(real)} "$@"
 """)
         wrapper.chmod(0o755)
-        with patch.dict(os.environ, {"FAKE_PUSH": "race"}):
-            status, output, error = self.run_here("gate")
-        self.assertEqual(status, 0, output + error)
-        self.assertIn(f"Ran 2 tests in {self.checkout(0).resolve()}",
-                      (self.project / ".build/engineering/remote/gate/run.log").read_text())
-        # A push that lands nothing is still a configuration problem, and nothing runs here.
-        settings = json.loads((self.project / "engineering.json").read_text())
-        settings["lanes"]["gate"]["minimumTests"] = 1
-        (self.project / "engineering.json").write_text(json.dumps(settings, indent=2))
+
+    def raced(self, mode, *, races=1, only="", pushes=None):
+        """eng run gate with racing_git's mode, from a new commit, so that each race starts afresh."""
+        for count in (self.home / remote.ROOT / "repositories").glob("*.races"): count.unlink()
+        (self.project / "README.md").write_text(f"{mode} {races} {only} {pushes}\n")
         commit = commit_all(self.project)
-        with patch.dict(os.environ, {"FAKE_PUSH": "fail"}):
+        variables = {"FAKE_PUSH": mode, "FAKE_PUSH_RACES": str(races), "FAKE_PUSH_ONLY": only}
+        with patch.dict(os.environ, variables), patch.object(remote, "RACE_PAUSE", 0.01), \
+                patch.object(remote, "RACE_PUSHES", pushes or remote.RACE_PUSHES):
             status, output, error = self.run_here("gate")
-        self.assertEqual(status, remote.MISCONFIGURED, output + error)
-        self.assertIn(f"fake did not receive {commit[:12]}", error)
-        self.assertFalse((self.project / ".build/engineering/gate").exists())
+        return commit, status, output + error
+
+    def test_a_push_that_loses_the_race_for_a_ref_the_second_mac_holds_has_sent_the_commit(self):
+        self.racing_git()
+        self.eng("remote", "run", "gate")  # the repositories there, and a commit with a parent there
+        ran = self.project / ".build/engineering/remote/gate"
+        for mode, only in [("race", ""), ("cached", ""), ("placed", ""), ("placed", "vocaro-engineering.git")]:
+            with self.subTest(mode=mode, only=only):
+                commit, status, said = self.raced(mode, only=only)
+                self.assertEqual(status, 0, said)
+                self.assertEqual(git(self.checkout(0), "rev-parse", "HEAD"), commit)
+                self.assertIn(f"Ran 2 tests in {self.checkout(0).resolve()}", (ran / "run.log").read_text())
+                sends = json.loads((ran / "source.json").read_text())["preparation"]["sends"]
+                raced = [sent for sent in sends if only in sent["repository"]]
+                # The ref gone with neither ref naming the commit, it is pushed again, and that push lands it.
+                again = mode == "placed"
+                self.assertEqual("pushing it again" in said, again, said)
+                self.assertEqual("all the same: another session's push of the commit took its ref first" in said,
+                                 not again, said)
+                for sent in raced:
+                    self.assertEqual(sent.get("attempts"), 2 if again else None, sent)
+                    self.assertEqual("race" in sent, not again, sent)
+                    if again:
+                        self.assertEqual(sent["status"], 0)
+                        self.assertTrue(any("reference already exists" in line for line in sent["raced"][0]), sent)
+        # The regression, vocaro-engineering#152: with one push, as before, the toolkit's commit placed by the
+        # winning dispatch stopped the lane with exit 78, advising a repair.
+        commit, status, said = self.raced("placed", only="vocaro-engineering.git", pushes=1)
+        self.assertEqual(status, remote.MISCONFIGURED, said)
+        self.assertIn("lost the race for the commit's ref", said)
+        # Each push losing the race and landing nothing names the race, not a repair, and nothing runs.
+        local = self.project / ".build/engineering/gate"
+        commit, status, said = self.raced("fail", races=remote.RACE_PUSHES)
+        self.assertEqual(status, remote.MISCONFIGURED, said)
+        self.assertIn(f"fake did not receive {commit[:12]} into ~/", said)
+        self.assertIn(f"each of its {remote.RACE_PUSHES} pushes lost the race for the commit's ref", said)
+        self.assertIn("`git ls-remote` listed neither ref", said)
+        self.assertIn("start dispatches of one commit a few seconds apart; nothing on fake needs repair", said)
+        self.assertNotIn("free space", said)
+        self.assertEqual(said.count("pushing it again"), remote.RACE_PUSHES - 1, said)
+        self.assertFalse(local.exists())
+        # A ref that names another commit is no race won, and a failure that is no race is not pushed again.
+        commit, status, said = self.raced("other")
+        self.assertEqual(status, remote.MISCONFIGURED, said)
+        self.assertIn(f"names {git(self.project, 'rev-parse', commit + '^')[:12]} instead", said)
+        self.assertNotIn("pushing it again", said)
+        commit, status, said = self.raced("full")
+        self.assertEqual(status, remote.MISCONFIGURED, said)
+        self.assertIn(f"fake did not receive {commit[:12]}", said)
+        self.assertIn("No space left on device", said)
+        self.assertIn("or free space there, until the push succeeds", said)
+        self.assertNotIn("pushing it again", said)
+        self.assertNotIn("lost the race", said)
+        self.assertFalse(local.exists())
 
     def test_offload_only_passes_the_second_macs_status_through_and_never_runs_the_lane_here(self):
         status, output, error = self.run_here("--offload-only", "gate")

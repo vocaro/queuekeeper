@@ -106,6 +106,16 @@ REF = "refs/vocaro/build-host/"
 SEND_TIMEOUT = 1800
 # Seconds a stopped push has to end, with everything it started, before it is killed.
 SEND_STOP_WAIT = 10
+# What Git's receive-pack says when the ref a push creates already exists: another session's push of the
+# same commit took it first (Git 2.54.0, files backend).
+RACED = re.compile(r"cannot lock ref .*reference already exists")
+# Pushes of one commit a send makes when each loses that race and the second Mac then names the commit
+# neither by its pushed ref nor by a checkout's: the winning dispatch places the commit, which deletes
+# the pushed ref, and names it as a checkout's a moment later (offload_host.place). A push that finds
+# neither ref creates the pushed one again, sending nothing, so a second push settles it; a third covers
+# a second dispatch that wins and places in that moment too. RACE_PAUSE seconds before each, times its
+# number (vocaro-engineering#152).
+RACE_PUSHES, RACE_PAUSE = 3, 0.5
 # What `git push --progress` prints of the pack it sends (Git 2.54.0): its progress lines, the last
 # line of writing it, with the bytes written as Git rounds them, and its count of objects.
 PROGRESS = re.compile(r"^(Enumerating objects|Counting objects|Delta compression|Compressing objects|Writing objects|"
@@ -649,7 +659,12 @@ def send(root, host, repository, commit, advertised=None, sends=None):
     of them and cold, sending the commit's whole history, when it has none.
 
     Sessions that send one commit at once race for its ref, and the push that loses fails with
-    "reference already exists". The commit is then there all the same, so that push has sent it.
+    "reference already exists" (RACED). The commit is then there all the same, so that push has sent
+    it, once the second Mac names it by the pushed ref or by a checkout's (holds). The winner's
+    dispatch may already have placed it, deleting the pushed ref, and not yet named it as a
+    checkout's; the push is then made again, up to RACE_PUSHES in all, and the record's attempts says
+    how many it took and raced what the earlier ones said (vocaro-engineering#152). A ref that names
+    another commit, or a failure that is no race, stops the send.
     A push still running after SEND_TIMEOUT seconds, or when a stop is requested, ends with
     everything it started, and nothing of it enters the second Mac's repository."""
     variables = {**environment(), "GIT_SSH_COMMAND": shlex.join([*SSH, *moved(host)])}
@@ -659,6 +674,42 @@ def send(root, host, repository, commit, advertised=None, sends=None):
               "advertised": len(advertised["commits"]) if known else None, "held": len(have),
               "transfer": ("warm" if have else "cold") if known else "unknown"}
     if sends is not None: sends.append(record)
+    began, attempt = time.monotonic(), 0
+    while True:
+        attempt += 1
+        if attempt > 1:
+            record.setdefault("raced", []).append(record["said"])
+            record["attempts"] = attempt
+            time.sleep(RACE_PAUSE * (attempt - 1))
+        if not push_once(root, host, repository, commit, variables, record, began): return record
+        raced = any(RACED.search(line) for line in record["said"])
+        found = holds(root, host, repository, commit, variables)
+        if found["commit"]:
+            record["race"] = "another session's push of the commit took its ref first"
+            print(f"remote: {host} holds {commit[:12]} all the same: {record['race']}", file=sys.stderr, flush=True)
+            return record
+        if found["other"]:
+            raise Misconfigured(f"{host} did not receive {commit[:12]} into ~/{repository}: its ref {REF}{commit} "
+                                f"names {found['other'][:12]} instead",
+                                f"delete that ref with `git --git-dir ~/{repository} update-ref -d {REF}{commit}` on "
+                                f"{host} and send the work again (guides/shared-host.md, How a run reaches the second Mac)")
+        if not raced or attempt >= RACE_PUSHES: break
+        print(f"remote: {commit[:12]} lost the race for its ref on {host}, which names it nowhere yet "
+              f"({found['seen']}); pushing it again", file=sys.stderr, flush=True)
+    if raced:
+        raise Misconfigured(f"{host} did not receive {commit[:12]} into ~/{repository}: each of its {attempt} pushes lost "
+                            f"the race for the commit's ref to another session's push of it, and then {host} named "
+                            f"it neither by that ref nor by a checkout's ({found['seen']})",
+                            "send the work again, or start dispatches of one commit a few seconds apart; nothing on "
+                            f"{host} needs repair (guides/shared-host.md, How a run reaches the second Mac)")
+    raise Misconfigured(f"{host} did not receive {commit[:12]} into ~/{repository} (git push exited "
+                        f"{record['status']}): {(record['said'] or ['no output'])[-1]}",
+                        f"repair ~/{repository} on {host}, or free space there, until the push succeeds")
+
+
+def push_once(root, host, repository, commit, variables, record, began):
+    """Make one of send's pushes, updating its record, and return its exit status; a push stopped or
+    timed out, SEND_TIMEOUT seconds after began, raises, as send says."""
     lines, started, stop = [], time.monotonic(), None
     pushing = subprocess.Popen(["git", "-C", str(root), "push", "--no-verify", "--progress",
                                 "--receive-pack=git receive-pack", f"{host}:{repository}", f"{commit}:{REF}{commit}"],
@@ -674,14 +725,14 @@ def send(root, host, repository, commit, advertised=None, sends=None):
             except subprocess.TimeoutExpired:
                 pass
             if processes.requested() is not None: stop = "stopped"
-            elif time.monotonic() - started >= SEND_TIMEOUT: stop = "timedOut"
+            elif time.monotonic() - began >= SEND_TIMEOUT: stop = "timedOut"
     finally:
         # In a session of its own, a terminal's interrupt reaches only eng, which ends the push here.
         if pushing.poll() is None: end(pushing)
     # What the push started could hold its output open; its record then ends with what came so far.
     reader.join(SEND_STOP_WAIT)
     if not reader.is_alive(): pushing.stdout.close()
-    record.update(pushed(list(lines)), status=pushing.returncode, seconds=round(time.monotonic() - started, 3))
+    record.update(pushed(list(lines)), status=pushing.returncode, seconds=round(time.monotonic() - began, 3))
     if stop: record[stop] = True
     # A push that succeeds says nothing beyond its progress unless something is worth reading, such as
     # push.negotiate's failure.
@@ -696,21 +747,28 @@ def send(root, host, repository, commit, advertised=None, sends=None):
                             f"see whether the link between the Macs is slow, as Wi-Fi can be, or what keeps {host} from "
                             "taking the pack, as its disk or load; a push that completes leaves what it sent there, "
                             "so the next sends only what is new (guides/shared-host.md, How a run reaches the second Mac)")
-    if pushing.returncode:
-        try:
-            listed = subprocess.run(["git", "-C", str(root), "ls-remote", "--upload-pack=git upload-pack",
-                                     f"{host}:{repository}", f"{REF}{commit}"], env=variables, capture_output=True,
-                                    text=True, timeout=REACH_SECONDS)
-        except subprocess.TimeoutExpired:
-            listed = None
-        if listed is not None and listed.returncode == 0 and listed.stdout.split()[:1] == [commit]:
-            record["race"] = "another session's push of the commit took its ref first"
-            print(f"remote: {host} holds {commit[:12]} all the same: {record['race']}", file=sys.stderr, flush=True)
-            return record
-        raise Misconfigured(f"{host} did not receive {commit[:12]} into ~/{repository} (git push exited "
-                            f"{pushing.returncode}): {(record['said'] or ['no output'])[-1]}",
-                            f"repair ~/{repository} on {host}, or free space there, until the push succeeds")
-    return record
+    return pushing.returncode
+
+
+def holds(root, host, repository, commit, variables):
+    """What the second Mac's repository names commit by, after a push of it failed: commit, whether its
+    pushed ref or a checkout's (offload_host.CACHE) names it; other, the commit its pushed ref names
+    instead, if any; and seen, what `git ls-remote` showed, as eng says it."""
+    refs = [f"{REF}{commit}", f"{offload_host.CACHE}{commit}"]
+    try:
+        listed = subprocess.run(["git", "-C", str(root), "ls-remote", "--upload-pack=git upload-pack",
+                                 f"{host}:{repository}", *refs], env=variables, capture_output=True,
+                                text=True, timeout=REACH_SECONDS)
+    except subprocess.TimeoutExpired:
+        return {"commit": False, "other": None, "seen": f"`git ls-remote` did not finish in {REACH_SECONDS}s"}
+    if listed.returncode:
+        said = last_line(listed.stderr) or "no output"
+        return {"commit": False, "other": None, "seen": f"`git ls-remote` exited {listed.returncode}: {said}"}
+    named = {words[1]: words[0] for words in map(str.split, listed.stdout.splitlines()) if len(words) >= 2}
+    pushed_ref = named.get(refs[0])
+    return {"commit": commit in named.values(), "other": pushed_ref if pushed_ref not in (None, commit) else None,
+            "seen": "; ".join(f"{ref} at {oid[:12]}" for ref, oid in sorted(named.items()))
+                    or "`git ls-remote` listed neither ref"}
 
 
 def collect(stream, lines, started):

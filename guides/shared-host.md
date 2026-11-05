@@ -774,6 +774,23 @@ Mac named, and cold when it has none, as for a project's first push or once its 
 gone. A cold push sends the whole history although the objects of earlier pushes may still be
 there, unreferenced.
 
+Dispatches that send one commit at once, as two lanes started together from one checkout do with
+the toolkit's commit, race for its ref, and the push that loses fails with `cannot lock ref …:
+reference already exists`. eng then asks the repository with `git ls-remote` for both names the
+commit can have there, the pushed ref and the checkout's, and when either names it, the push has
+sent it: eng says `holds COMMIT all the same` and the dispatch goes on. The winner's dispatch may
+already have placed the commit, deleting the pushed ref, and not yet named it as a checkout's; on
+2026-11-04 that left neither name, and a BreezEPUB lane stopped with exit 78 and the advice to
+repair the repository or free space
+([vocaro-engineering#152](https://github.com/vocaro/vocaro-engineering/issues/152)). So a push
+that lost the race to a commit named nowhere is made again, three pushes in all, half a second
+apart and then a second: one that finds the ref gone creates it, sending nothing. When each loses
+and the commit is still named nowhere, the lane stops naming the race, with nothing on the second
+Mac to repair: send it again, or start such dispatches a few seconds apart. A pushed ref that names
+another commit, or a failure that is no race, such as a full disk, is not pushed again and stops
+the lane as before. The push's record gives `race` when an earlier push took the ref, and
+`attempts` and the earlier pushes' lines (`raced`) when it was made again.
+
 `push.negotiate=true` finds such objects too, through a fetch exchange before the push, but only
 over protocol v2, which reaches the second Mac only as the `GIT_PROTOCOL` variable that ssh sends.
 A stock macOS sshd accepts only `LANG` and `LC_*` (`AcceptEnv` in
