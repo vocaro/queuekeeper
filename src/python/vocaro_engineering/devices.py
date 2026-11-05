@@ -10,7 +10,10 @@ and TMPDIR so that every session finds the same one. A change takes an exclusive
 record fresh, refuses unless the entry is still at the revision the caller read, and replaces the
 file whole. The lock covers one change, never a reservation, and the kernel drops it with its
 process. Like a heavy-work guard, an entry is never released by a deadline or a vanished process:
-an active run whose recorded process is gone is an orphan, kept for attended recovery.
+an active run whose recorded process is gone is an orphan, kept for attended recovery. The one
+exception is a simulator pool's reservation that `eng simulator-pool reap` proves dead, every process
+it records gone, its expected release passed and its simulator shut down, which reap releases as a
+recovery by reap (offload_host.release_dead; vocaro-engineering#156).
 
 The mac-foreground entry reserves the owner's screen, keyboard, pointer, focus and speech. It
 names no device and records the owner's approval window, which no update changes. Foreground

@@ -45,6 +45,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 
@@ -144,6 +145,9 @@ LAUNCHD_SIM = re.compile(r"(?:\S*/)?launchd_sim\s")
 MEMBER = re.compile(r".+ [1-9][0-9]*")
 TEMPLATE = re.compile(r"(?P<label>.+) template \((?P<runtime>[^()]+)\)")
 SIMULATORS = ("xcrun", "simctl", "list", "devices", "-j")
+# The toolkit's checkout on each Mac, as a shell path from the home, where a recovery that the second Mac's
+# record needs runs.
+TOOLKIT = "~/Development/vocaro-engineering/src/python"
 
 _output = threading.Lock()
 _stop = threading.Event()
@@ -1232,13 +1236,14 @@ def reservation_hold(key, entry, table):
             return f"its reservation {key} records PID {pid}, which runs, with no start to compare", None
         if " ".join(start.split()) == table[pid]["start"]:
             return f"its reservation {key} is live: PID {pid} still runs", None
-    return None, f"reservation {key}'s recorded process is gone, and its entry stays for its owner or recovery"
+    return None, f"reservation {key}'s recorded process is gone, and reap releases its entry once it proves it dead"
 
 
 def recoverable(entries, table):
     """The record's held entries that nothing keeps: each records a process, known to be gone, and an
-    expected release that has passed (reservation_hold says the rest). Reap leaves them, for their owner or
-    recovery, and only says so, with the command that recovers each (vocaro-engineering#97)."""
+    expected release that has passed (reservation_hold says the rest). Reap releases each that it proves
+    dead (release_dead) and names the rest, with why it left each and the command that recovers it
+    (vocaro-engineering#97, #156)."""
     found = []
     for key, entry in entries.items():
         hold, gone = reservation_hold(key, entry, table)
@@ -1248,16 +1253,156 @@ def recoverable(entries, table):
         recorded = [entry.get(HOLDER), *run, *(owned if isinstance(owned, list) else [owned])]
         found.append({"key": key, "device": entry.get("device"), "owner": entry.get("ownerChatID"),
                       "due": entry.get("expectedReleaseBy"), "pids": [item[0] for item in identities(recorded)],
+                      "revision": entry.get("revision", 0),
                       "command": f"python3 -m vocaro_engineering.devices recover {shlex.quote(key)} --by SESSION "
                                  f"--revision {entry.get('revision', 0)} --verified 'WHAT YOU CHECKED'"})
     return found
 
 
-def recoverable_line(item):
-    """What is said of one entry recoverable found."""
+def recoverable_line(item, host=None):
+    """What is said of one entry recoverable found and reap left, with why it left it when it says. For an
+    entry in another Mac's record, host, the command runs there, in its toolkit checkout, since a recovery
+    here would read this Mac's record and refuse its revision (vocaro-engineering#156)."""
+    command = item["command"]
+    if host:
+        command = f"ssh {shlex.quote(host)} {shlex.quote('cd ' + TOOLKIT + ' && ' + command)}"
+    left = f"; reap did not release it: {item['hold']}" if item.get("hold") else ""
     return (f"{item['key']} stays held for owner {item['owner']}, though its process "
-            f"{', '.join(map(str, item['pids']))} is gone and its release was due {item['due']}. Once its work has "
-            f"stopped, its owner or a session they agreed recovers it: {item['command']}")
+            f"{', '.join(map(str, item['pids']))} is gone and its release was due {item['due']}{left}. Once its "
+            f"work has stopped, its owner or a session they agreed recovers it: {command}")
+
+
+def released_line(item):
+    """What is said of one entry release_dead released, or in a dry run would release."""
+    done = "would release" if item.get("dryRun") else "released"
+    return (f"{done} {item['key']} ({item['device']}), held for owner {item['owner']}: {item['verified']} "
+            f"(a recovery by reap in the device record; {REAP_LOG})")
+
+
+def device_record_whole():
+    """The device record as a whole, for a change; none yet is an empty one, as devices.Record.load reads it.
+    One that cannot be read raises."""
+    path = record_path()
+    try:
+        record = json.loads(path.read_text())
+    except FileNotFoundError:
+        return {"vocaroDeviceHandoff": 1, "revision": 0, "devices": {}}
+    except (OSError, ValueError) as error:
+        raise ReapProblem(f"the device record {path} could not be read ({error})") from None
+    if not isinstance(record, dict) or record.get("vocaroDeviceHandoff") != 1 or \
+            not isinstance(record.get("devices"), dict):
+        raise ReapProblem(f"{path} is no version 1 device record")
+    return record
+
+
+def replace_record(record):
+    """Write the record whole, as devices.Record._replace does, which this file cannot import: its revision
+    one higher, staged beside it, synced, and moved into place."""
+    path = record_path()
+    record["revision"] = record.get("revision", 0) + 1
+    record["updatedAt"] = datetime.now(timezone.utc).isoformat()
+    staged = None
+    try:
+        with tempfile.NamedTemporaryFile("w", dir=path.parent, prefix=".device-handoff-", delete=False) as stream:
+            staged = Path(stream.name)
+            json.dump(record, stream, indent=2)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(staged, path)
+        staged = None
+    finally:
+        if staged is not None:
+            with contextlib.suppress(OSError): staged.unlink()
+    directory = os.open(path.parent, os.O_RDONLY)
+    try: os.fsync(directory)
+    finally: os.close(directory)
+
+
+def release_hold(item, entries, table, simulators, pools):
+    """Why release_dead must leave one entry recoverable found, or None when this Mac proves it dead: a pool
+    simulator's reservation, of the device simctl here lists under that name and shows Shutdown, whose run
+    went to no other Mac, and which no other entry of the device still holds, with this reap's own process
+    in the listing that shows the others gone. recoverable has already shown that every process the entry
+    records is gone, by PID and start, and that its expected release has passed."""
+    key, entry = item["key"], entries[item["key"]]
+    udid = str(entry.get("device") or "").upper()
+    if not DEVICE.fullmatch(udid) or PHYSICAL.fullmatch(udid):
+        return "it records no simulator, and reap releases only a simulator pool's reservations"
+    run = entry.get("run")
+    if isinstance(run, dict) and run.get("host"):
+        return f"its run went to {run['host']}, whose processes this Mac cannot check"
+    device = simulators.get(udid)
+    if device is None: return f"simctl here does not list {udid}"
+    if device.get("name") != key: return f"simctl lists {udid} as {device.get('name')!r}, not {key!r}"
+    if pool_of(key, pools, device.get("runtime") or "")[0] is None:
+        return "it is neither a member nor a warmed template of the pools " + ", ".join(sorted(pools))
+    if device.get("state") != "Shutdown":
+        return f"simctl shows it {device.get('state') or 'in no state'}, not Shutdown"
+    for other, held in entries.items():
+        if other != key and str(held.get("device") or "").upper() == udid and \
+                (held.get("state") != "released" or held.get("activeRun") or held.get("uncertain")):
+            return f"its device is also held as {other}"
+    if os.getpid() not in table:
+        return "the process listing does not show this reap's own process, so it cannot show another is gone"
+    return None
+
+
+def release_dead(found, entries, table, pools, listed, dry_run):
+    """Release each entry of found that release_hold proves dead, as `devices recover --by reap` would, and
+    log it; the rest come back with why each stays (owner's decision, 2026-11-04, vocaro-engineering#156).
+    entries is the record as read before table's ps listing, so that a process gone from that listing was
+    gone after the entry recorded it; under the record's lock, an entry whose revision has moved since is
+    left. Return (released, left)."""
+    try:
+        groups = json.loads(listed(list(SIMULATORS)) or "")["devices"]
+        simulators = {device["udid"].upper(): {**device, "runtime": runtime}
+                      for runtime, group in groups.items() for device in group}
+    except (TypeError, ValueError, KeyError, AttributeError) as error:
+        why = f"simctl did not list its devices ({error!r}), so no device can be shown Shutdown"
+        return [], [{**item, "hold": why} for item in found]
+    released, left, ready = [], [], []
+    for item in found:
+        hold = release_hold(item, entries, table, simulators, pools)
+        if hold: left.append({**item, "hold": hold})
+        else: ready.append(item)
+    for item in ready:
+        entry = entries[item["key"]]
+        owned = entry.get("ownedProcesses") or []
+        recorded = [entry.get(HOLDER), *([{"pid": entry.get("hostProcessIdentifier"),
+                                            "start": entry.get("hostProcessStart")}] if entry.get("activeRun") else []),
+                    *(owned if isinstance(owned, list) else [owned])]
+        pids = ", ".join(f"PID {pid}" + (f" (started {start})" if start else "") for pid, start in identities(recorded))
+        item.update(verified=f"reap on this Mac found {pids} no longer running, by PID and start in ps; its "
+                             f"expected release, {item['due']}, had passed; and simctl showed "
+                             f"{str(entry['device']).upper()} Shutdown",
+                    condition="orphan" if entry.get("activeRun") else "held")
+    if dry_run:
+        return [{**item, "dryRun": True} for item in ready], left
+    if not ready: return [], left
+    with record_lock():
+        record = device_record_whole()
+        current, moment = record["devices"], datetime.now(timezone.utc).isoformat()
+        for item in ready:
+            entry = current.get(item["key"])
+            if not isinstance(entry, dict) or entry.get("revision", 0) != item["revision"]:
+                left.append({**item, "hold": "its entry changed after reap read it"})
+                continue
+            changed = {name: value for name, value in entry.items()
+                       if name not in ("revision", "uncertain", "uncertainReason")}
+            changed.update({"state": "released", "activeRun": False, "ownerChatID": None,
+                            "lastOwnerChatID": entry.get("ownerChatID"), "releasedAt": moment,
+                            "recovery": {"by": "reap", "at": moment, "verified": item["verified"],
+                                         "condition": item["condition"], "state": entry.get("state"),
+                                         "uncertainReason": entry.get("uncertainReason")}})
+            current[item["key"]] = {"revision": item["revision"] + 1, **changed}
+            released.append(item)
+        if not released: return [], left
+        # Logged first, as a stop is: a log that cannot be written releases nothing.
+        for item in released: log_release("releasing", item)
+        replace_record(record)
+    for item in released: log_release("released", item)
+    return released, left
 
 
 def observe(root, pools, listed):
@@ -1347,6 +1492,17 @@ def log_reap(event, item, **more):
     finally: os.close(descriptor)
 
 
+def log_release(event, item):
+    """Append one release of an entry to the log of stops, with what reap checked."""
+    line = {"time": datetime.now(timezone.utc).isoformat(timespec="seconds"), "event": event,
+            **{key: item.get(key) for key in ("key", "device", "owner", "due", "pids", "revision", "verified")}}
+    path = admission_directory() / REAP_LOG
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NONBLOCK, 0o644)
+    try: os.write(descriptor, (json.dumps(line) + "\n").encode())
+    finally: os.close(descriptor)
+
+
 def stop_simulator(item, reader, budget, begin, report):
     """Check item once more under the device record's lock, and if it is still the same stale simulator,
     log it and start its one shutdown; then report how that ended. Nothing retries it."""
@@ -1379,17 +1535,31 @@ def stop_simulator(item, reader, budget, begin, report):
 
 
 def reap(root, pools, dry_run=False, scan=True, listed=None, begin=None, clock=time.monotonic):
-    """stop_stale, and in recoverable, the record's entries that stay held with nothing keeping them,
-    which it never releases. It never raises."""
+    """stop_stale, then release_dead: each held entry of the record that it proves dead it releases, in
+    released (in a dry run, says it would), and the others that nothing keeps it names in recoverable, each
+    with why it stays. A problem in stop_stale releases nothing. It never raises."""
     report = stop_stale(root, pools, dry_run, scan, listed, begin, clock)
-    report["recoverable"] = []
+    report["recoverable"], report["released"] = [], []
     try:
+        # Read before the processes are listed: an entry that records a process the listing then lacks
+        # recorded it before it was gone.
         entries = device_entries()
         # As if no process ran: what could be named at all, without which nothing need be listed.
         if recoverable(entries, {}):
-            processes = (listed or listing)(["ps", "-axww", "-o", "pid=,ppid=,uid=,lstart=,args="])
+            look = listed or (lambda command: listing(command, REAP_CHECK_SECONDS))
+            processes = look(["ps", "-axww", "-o", "pid=,ppid=,uid=,lstart=,args="])
             if not processes: raise ReapProblem("the processes could not be listed, so no held entry can be named")
-            report["recoverable"] = recoverable(entries, process_table(processes))
+            table = process_table(processes)
+            found = recoverable(entries, table)
+            if found and report["problem"]:
+                why = "this reap met a problem, so it releases nothing"
+                report["recoverable"] = [{**item, "hold": why} for item in found]
+            elif found and not report["pools"]:
+                report["recoverable"] = [{**item, "hold": "no simulator pool was named or found"} for item in found]
+            elif found:
+                report["recoverable"] = found
+                report["released"], report["recoverable"] = release_dead(found, entries, table, report["pools"],
+                                                                         look, dry_run)
     except Exception as error:
         report["problem"] = report["problem"] or (str(error) if isinstance(error, ReapProblem)
                                                   else f"{type(error).__name__}: {error}")
