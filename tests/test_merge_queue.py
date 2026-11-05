@@ -2082,10 +2082,11 @@ class Changelogs(Fixture):
         self.assertEqual(self.changelog(), self.START.replace("- old\n", "- c\n- b\n- a\n- old\n", 1))
         self.assertEqual(self.gates(), 1)
         self.assertIsNone(mq.Queue(self.repo).held())
-        # What guides/maintenance.md warns of: the first went in as it was, and a settled one proves nothing.
+        # The first went in as it was; each settled one adds its very line beside other neighbors, which
+        # Closeout's landed.sh proves resolved, so its branch goes unasked (#164, guides/maintenance.md).
         contained = lambda branch: mq.landing.contained(lambda *words: mq.git(self.repo, *words), "origin/main", branch)
-        self.assertIsNotNone(contained("b0"))
-        self.assertIsNone(contained("b1"))
+        self.assertNotIn(contained("b0"), (None, mq.landing.RESOLVED))
+        self.assertEqual([contained("b1"), contained("b2")], [mq.landing.RESOLVED] * 2)
 
     def test_a_settled_commit_keeps_its_message_and_author(self):
         for name, start in (("b0", self.top("- a")), ("b1", self.top("- b"))):

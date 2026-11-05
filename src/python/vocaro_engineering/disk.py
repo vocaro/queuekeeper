@@ -356,8 +356,10 @@ def landing_base(run, main):
 
 def landed(run, main, head, base, name):
     """(whether HEAD's work is in BASE, why, how), by the proof Closeout's landed.sh uses
-    (landing.contained): contained in it, an equal patch there for every commit, or a merge that
-    would change nothing. The inventory never fetches, so it has no pull request proof."""
+    (landing.contained): contained in it, an equal patch there for every commit, a merge that
+    would change nothing, or for each commit one that adds and removes its very lines where a
+    conflict resolution kept both sides. The inventory never fetches, so it has no pull request
+    proof."""
     short = f"HEAD {head[:10]}"
     how = landing.contained(lambda *arguments: git(run, main, *arguments), base, head)
     if how == landing.ANCESTOR: return True, f"{short} is in {name} {base[:10]}", how
@@ -369,6 +371,9 @@ def landed(run, main, head, base, name):
     commits = marks.stdout.split()
     if how == landing.PATCH_EQUIVALENT:
         return True, f"each of the {len(commits)} commits on {short} has an equal patch in {name}", how
+    if how == landing.RESOLVED:
+        return True, (f"each of the {len(commits)} commits on {short} is in {name}, some with their lines among other "
+                      "neighbors after a conflict resolution kept both sides"), how
     if merges.returncode or marks.returncode: return False, f"could not compare {short} with {name}", how
     if merges.stdout.strip(): return False, f"merge commits on {short} are not in {name} {base[:10]}", how
     pending = [commit for commit in commits if not commit.startswith("=")]

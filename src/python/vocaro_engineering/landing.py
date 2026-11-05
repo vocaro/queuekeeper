@@ -2,7 +2,8 @@
 that Closeout's landed.sh (skills/closeout/scripts) and `eng disk` share, so that they never
 disagree about the same commits.
 
-When main holds a branch's work only as equal patches, a squash or a pull request, the branch is
+When main holds a branch's work only as equal patches, a squash, a pull request or commits that the
+merge queue rebased past a conflict it settled by keeping both sides (resolved), the branch is
 the last ref to its own commits, and deleting it leaves them to git gc. Evidence names commits by
 their IDs, so such a ref stays while main's tree or the project's open issues cite one of its
 commits, while an open issue names the branch, or while either could not be read.
@@ -15,7 +16,7 @@ already claimed by a commit main holds and is closed now.
 landed.sh adds what needs the network: a merged pull request, and the open issues, read with gh.
 `eng disk` never fetches and reads neither. landed.sh and retire.sh run this file as a script:
 
-    python3 -I landing.py contained BASE TIP
+    python3 -I landing.py contained BASE TIP     (the method, for resolved with what it rests on)
     python3 -I landing.py citations TIP --base REF [--base REF] [--branch NAME] [--issues]
     python3 -I landing.py claims BASE TIP...
 
@@ -29,7 +30,7 @@ import re
 import subprocess
 import sys
 
-ANCESTOR, PATCH_EQUIVALENT, CONTENT_MERGED = "ancestor", "patch-equivalent", "content-merged"
+ANCESTOR, PATCH_EQUIVALENT, CONTENT_MERGED, RESOLVED = "ancestor", "patch-equivalent", "content-merged", "resolved"
 # A commit is cited by a prefix of its ID: 7 to 40 hexadecimal digits that stand as a word.
 CITATION = r"[0-9a-fA-F]{7,40}"
 WORD = re.compile(rf"(?<![0-9A-Za-z_]){CITATION}(?![0-9A-Za-z_])")
@@ -53,19 +54,110 @@ def contained(git, base, tip):
       cherry-pick), and none is a merge, whose own change a patch comparison never sees.
     - content-merged: merging tip into base would change nothing (a squash). A squash that base
       has since edited over proves none of these.
+    - resolved: every commit has an equal patch in base, or one that a rebase moved past a
+      conflict it settled by keeping both sides (see resolutions).
 
     git(*arguments) runs git in the repository and returns its CompletedProcess."""
-    if git("merge-base", "--is-ancestor", tip, base).returncode == 0: return ANCESTOR
+    return proof(git, base, tip)[0]
+
+
+def proof(git, base, tip):
+    """(how, what it rests on) for contained: the second is empty but for resolved, where it names
+    each commit, the commit base holds it as, and the files where only the lines around differ."""
+    if git("merge-base", "--is-ancestor", tip, base).returncode == 0: return ANCESTOR, ""
     merges = git("rev-list", "--count", "--merges", f"{base}..{tip}")
     cherry = git("cherry", base, tip)
-    if merges.returncode or cherry.returncode: return None
-    if merges.stdout.strip() == "0" and not any(line.startswith("+") for line in cherry.stdout.splitlines()):
-        return PATCH_EQUIVALENT
+    if merges.returncode or cherry.returncode: return None, ""
+    pending = [line.split()[1] for line in cherry.stdout.splitlines() if line.startswith("+")]
+    if merges.stdout.strip() == "0" and not pending: return PATCH_EQUIVALENT, ""
     merged = git("merge-tree", "--write-tree", base, tip)
     tree = git("rev-parse", f"{base}^{{tree}}")
     if merged.returncode == 0 and tree.returncode == 0 and merged.stdout.split("\n", 1)[0] == tree.stdout.strip():
-        return CONTENT_MERGED
-    return None
+        return CONTENT_MERGED, ""
+    if merges.stdout.strip() != "0": return None, ""
+    found = resolutions(git, base, tip, pending)
+    if not found: return None, ""
+    return RESOLVED, "; ".join(f"{commit[:12]} as {landed[:12]}, whose patch differs only in where its lines sit in "
+                               + ", ".join(paths) for commit, landed, paths in found)
+
+
+def changes(git, commit):
+    """{path: (status, old mode, new mode, old blob, new blob, binary)} for what a commit that is not
+    a merge changes against its parent, or None when git could not say."""
+    raw = git("diff-tree", "-r", "--no-renames", "--no-commit-id", "-z", "--raw", f"{commit}^", commit)
+    counts = git("diff-tree", "-r", "--no-renames", "--no-commit-id", "-z", "--numstat", f"{commit}^", commit)
+    if raw.returncode or counts.returncode: return None
+    fields = raw.stdout.split("\0")
+    found = {}
+    for index in range(0, len(fields) - 1, 2):
+        meta, path = fields[index].split(), fields[index + 1]
+        if len(meta) != 5: return None
+        found[path] = [meta[4], meta[0].lstrip(":"), meta[1], meta[2], meta[3], False]
+    for entry in counts.stdout.split("\0"):
+        added, _, rest = entry.partition("\t")
+        removed, _, path = rest.partition("\t")
+        if path in found: found[path][5] = added == "-" or removed == "-"
+    return {path: tuple(entry) for path, entry in found.items()}
+
+
+def hunks(git, commit, path):
+    """The lines a commit adds and removes in path, hunk by hunk, with their signs and with nothing
+    around them, or None when git could not say."""
+    diff = git("--literal-pathspecs", "diff-tree", "-p", "-U0", "--no-renames", "--no-color", "--no-ext-diff",
+               "--no-commit-id", f"{commit}^", commit, "--", path)
+    if diff.returncode: return None
+    found = None
+    for line in diff.stdout.splitlines():
+        if line.startswith("@@"): found = (found or []) + [[]]
+        elif found is not None and line[:1] in ("+", "-", "\\"): found[-1].append(line)
+    return found or []
+
+
+def same_change(git, commit, landed):
+    """The files where commit and landed, two commits that are not merges, add and remove the same
+    lines but between different ones, or None when they differ in anything else: a file one of
+    them changes and the other does not, a mode, a binary file, or a line either adds or removes."""
+    mine, theirs = changes(git, commit), changes(git, landed)
+    if mine is None or theirs is None or set(mine) != set(theirs): return None
+    differing = []
+    for path in sorted(mine):
+        if mine[path] == theirs[path]: continue
+        if mine[path][:3] != theirs[path][:3] or mine[path][5] or theirs[path][5]: return None
+        own = hunks(git, commit, path)
+        if own is None or own != hunks(git, landed, path): return None
+        differing.append(path)
+    return differing
+
+
+def resolutions(git, base, tip, pending):
+    """[(commit, landed, paths)] when each pending commit, one of tip's with no equal patch in base, is
+    in base as landed: a commit base holds and tip does not, with the same subject and author, that
+    adds and removes the same lines, file for file and hunk by hunk, and differs only in the lines
+    around them in paths. Each landed commit stands for one pending commit. None when any is not.
+
+    This is the merge queue's rebase of an entry past one ahead of it, settled by keeping both sides
+    (two changelog entries, say; guides/maintenance.md): the branch's line then lands beside other
+    neighbors, so its patch is not the branch's. Comparing each commit with its own landed copy, and
+    not with base's tree, keeps it landed when later work in base rewrites a line it added."""
+    if not pending: return None
+    log = git("log", "--no-merges", "--format=%H%x00%ae%x00%s", base, f"^{tip}")
+    if log.returncode: return None
+    candidates = [line.split("\0") for line in log.stdout.splitlines() if line.count("\0") == 2]
+    used, found = set(), []
+    for commit in pending:
+        shown = git("log", "-1", "--format=%ae%x00%s", commit)
+        if shown.returncode: return None
+        author, _, subject = shown.stdout.rstrip("\n").partition("\0")
+        for landed, landed_author, landed_subject in candidates:
+            if landed in used or (landed_author, landed_subject) != (author, subject): continue
+            paths = same_change(git, commit, landed)
+            if paths is not None:
+                used.add(landed)
+                found.append((commit, landed, paths))
+                break
+        else:
+            return None
+    return found
 
 
 def cites(text, commits):
@@ -214,9 +306,9 @@ def claims(git, base, tips):
 
 def main(argv):
     if argv[:1] == ["contained"] and len(argv) == 3:
-        how = contained(lambda *arguments: subprocess.run(["git", *arguments], capture_output=True, text=True),
-                        argv[1], argv[2])
-        if how: print(how)
+        how, basis = proof(lambda *arguments: subprocess.run(["git", *arguments], capture_output=True, text=True),
+                           argv[1], argv[2])
+        if how: print(f"{how} ({basis})" if basis else how)
         return 0
     if argv[:1] == ["citations"]:
         parser = argparse.ArgumentParser(prog="landing.py citations")

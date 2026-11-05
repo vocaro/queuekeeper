@@ -256,7 +256,13 @@ added is still that line added. Anything else comes back, naming each file in co
 line ahead of it, lines below a paragraph or inside a wrapped entry, or a conflict in another file
 above all. Each settled commit is listed under `kept` in the entry's record, which `eng queue status`
 and `eng queue wait` show. The commit keeps its message and author. Its patch is then not the
-branch's, so `landed.sh` proves no such branch landed, and it stays until its author removes it.
+branch's, so `landed.sh` proves the branch landed another way, `resolved`: each branch commit has a
+commit on main with its subject and author that adds and removes exactly its lines, file for file
+and hunk by hunk, and differs only in the lines around them. It compares each commit with the one
+it landed as, so a line later work on main rewrote still counts. Closeout and its sweep then delete
+the branch like any other landed one (the owner's decision of 2026-11-04,
+[#164](https://github.com/vocaro/vocaro-engineering/issues/164)). A resolution that dropped or
+changed one of the branch's lines proves nothing, and that branch stays for its author.
 
 **Which toolkit a gate runs.** Each round, a project's worker moves
 `~/Development/vocaro-queue/NAME/vocaro-engineering`, a locked worktree of the toolkit with no session's
