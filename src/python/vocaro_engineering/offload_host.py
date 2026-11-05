@@ -71,6 +71,10 @@ ADMISSION_LOGS = ("admissions.1.jsonl", "admissions.jsonl")
 # namespace unless HEAVY_SLOT_DIR names one, as resources.py names them (#49).
 ADMISSION_LIMITS = "admission-limits.json"
 SLOTS = "pdfreflow-heavy-slots"
+# The queue of exclusive and whole-host requests in the slot directory, and HEAVY_PLACE_SECONDS's default, how
+# long a whole-host request that last asked then keeps the guaranteed slots, as resources.QUEUE and
+# resources.PLACE_SECONDS have them (vocaro-engineering#174, #186).
+QUEUE, PLACE_SECONDS = "exclusive-queue.json", 180
 # Each admission limit the capacity reading needs, by its key in the limits file: its environment variable,
 # whether it counts slots, and its default given the cores and the guaranteed slots, as resources.LIMIT_KEYS
 # has them. The two must agree: eng chooses a Mac by what each Mac's admission would admit.
@@ -948,25 +952,85 @@ def alive(owner):
     return bool(found) and " ".join(found.split()) == " ".join(owner["start"].split())
 
 
-def capacity():
+def names(path, identity):
+    """Whether the slot file at path names identity as its last holder, as admission writes it (resources.Admission._names)."""
+    try: written = Path(path).read_text(errors="replace").split(" ", 2)
+    except OSError: return False
+    return len(written) > 1 and written[1] == identity
+
+
+def stranded_slots(directory, maximum, owners):
+    """The slots admission counts the dead or uncertain guard entries among owners as holding, as
+    resources.Admission._count_stranded counts them: every slot for exclusive work, else the slots whose files
+    name the entry, else the lowest slot not already counted. Admission first recovers each such entry and counts
+    only those recovery leaves; this reading runs no census, so it counts every one, and an entry the next
+    admission removes may be counted once more here."""
+    reserved, unnamed = set(), 0
+    for owner in owners:
+        if not owner.get("uncertain") and alive(owner): continue
+        if owner.get("exclusive"):
+            reserved.update(range(maximum))
+            continue
+        slots = [slot for slot in range(maximum) if names(directory / f"slot{slot}", owner["identity"])]
+        if slots: reserved.update(slots)
+        else: unnamed += 1
+    for _ in range(unnamed):
+        free = next((slot for slot in range(maximum) if slot not in reserved), None)
+        if free is not None: reserved.add(free)
+    return reserved
+
+
+def kept_for(directory, slots, maximum, owners, own=None):
+    """The label of the whole-host request queued ahead for which this Mac's admission keeps the guaranteed slots
+    now, or None, by the rule resources.Admission._attempt applies (vocaro-engineering#174, #186): the first
+    queued request that holds later work back, an exclusive one whose process runs or a whole-host one whose
+    process runs and last asked within HEAVY_PLACE_SECONDS, when it is a whole-host one and no dead or uncertain
+    guard entry is counted as a guaranteed slot, which it would wait for. A request whose process ended, one that
+    has not asked lately, and one queued behind exclusive work keep nothing. own is the identity of the asking
+    work's own place in this queue (resources.Place): what is queued behind it keeps nothing from it."""
+    try: recorded = json.loads((directory / QUEUE).read_text())["waiters"]
+    except (OSError, ValueError, KeyError, TypeError): return None
+    if not isinstance(recorded, list): return None
+    try: hold = float(os.environ.get("HEAVY_PLACE_SECONDS", str(PLACE_SECONDS)))
+    except ValueError: hold = PLACE_SECONDS
+    for waiter in recorded:
+        if not isinstance(waiter, dict) or not isinstance(waiter.get("pid"), int) or not isinstance(waiter.get("start"), str):
+            continue
+        # The asking work's own place: nothing queued behind it holds it back.
+        if own is not None and waiter.get("identity") == own: return None
+        if not alive(waiter): continue
+        if not waiter.get("wholeHost"):
+            # Exclusive work queued ahead holds every request back; the slots are not kept for a whole-host lane.
+            return None
+        seen = waiter.get("seen")
+        if not (isinstance(seen, (int, float)) and not isinstance(seen, bool) and time.time() - seen < hold): continue
+        if any(slot < slots for slot in stranded_slots(directory, maximum, owners)): return None
+        return str(waiter.get("label") or "an unnamed request")
+    return None
+
+
+def capacity(own=None):
     """This Mac's spare capacity for heavy work, which `eng run` reads on both Macs before it chooses one
     (remote.spare; vocaro-engineering#168): its guaranteed slots and their maximum; the slots busy among those
     up to the maximum; its one-minute load, None when unavailable, and the limit at or above which its admission
     finds no spare capacity; and the labels of the whole-host lanes and the exclusive work its guard records as
-    running; and its console screen (screen), which a lane that needs it unlocked reads. A reading it cannot take
-    says why, as error, as pressure does."""
+    running; the label of the whole-host request queued ahead for which admission keeps the guaranteed slots, or
+    None (kept_for; own is the asking work's own place, vocaro-engineering#186); and its console screen (screen),
+    which a lane that needs it unlocked reads. A reading it cannot take says why, as error, as pressure does."""
     try: found = limits()
     except ValueError as error: return {"error": str(error)}
     try: directory = slot_directory()
     except RuntimeError as error: return {"error": str(error)}
     try: load = round(os.getloadavg()[0], 2)
     except OSError: load = None
-    running = [owner for owner in guard_entries() if alive(owner)]
+    owners = guard_entries()
+    running = [owner for owner in owners if alive(owner)]
     label = lambda owner: str(owner.get("label") or "an unnamed owner")
     return {"slots": found["slots"], "slotsMax": found["slotsMax"], "busy": busy_slots(directory, found["slotsMax"]),
             "load": load, "limit": found["loadLimit"],
             "wholeHost": [label(owner) for owner in running if owner.get("wholeHost") and not owner.get("exclusive")],
-            "exclusive": [label(owner) for owner in running if owner.get("exclusive")], "screen": screen()}
+            "exclusive": [label(owner) for owner in running if owner.get("exclusive")],
+            "kept": kept_for(directory, found["slots"], found["slotsMax"], owners, own), "screen": screen()}
 
 
 def unended():

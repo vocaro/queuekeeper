@@ -2837,6 +2837,65 @@ exec {shlex.quote(real)} "$@"
                 self.assertEqual({git(self.checkout(slot), "rev-parse", "HEAD") for slot in (0, 1)}, {commit})
 
 
+class KeptSlotsTests(unittest.TestCase):
+    """remote.spare treats a Mac whose admission keeps the guaranteed slots for a whole-host lane queued ahead as
+    admission does, so that eng offers no work there that would be held back or compete with it (#186)."""
+    IDLE = {"slots": 3, "slotsMax": 5, "busy": [], "load": 2.0, "limit": 7.5, "wholeHost": [], "exclusive": []}
+    HELD = "the guaranteed slots of the second Mac are kept for a whole-host lane queued ahead: EPUBLib gate"
+
+    def test_kept_guaranteed_slots_leave_only_the_slots_beyond_them(self):
+        kept = {**self.IDLE, "kept": "EPUBLib gate"}
+        cases = [
+            # A lighter lane still goes beyond the guaranteed slots, as admission admits it, while one is free.
+            (kept, {}, None),
+            ({**kept, "busy": [3]}, {}, None),
+            ({**kept, "busy": [3, 4]}, {}, f"{self.HELD}, and every slot beyond them up to HEAVY_SLOTS_MAX=5 is busy"),
+            ({**kept, "slotsMax": 3}, {}, f"{self.HELD}, and every slot beyond them up to HEAVY_SLOTS_MAX=3 is busy"),
+            # Beyond them, the load still bounds it.
+            ({**kept, "load": 8.0}, {}, "the second Mac is loaded (load 8.0, at or above its HEAVY_LOAD_LIMIT=7.5)"),
+            # A whole-host or exclusive lane waits its turn behind it, however idle the Mac is.
+            (kept, {"whole_host": True}, f"{self.HELD}, which the lane would wait behind"),
+            (kept, {"exclusive": True}, f"{self.HELD}, which the lane would wait behind"),
+            # The negative controls: a reading that keeps nothing, an older toolkit's without kept and a malformed
+            # one judge the slots as before, every guaranteed one busy refusing a lighter lane.
+            ({**self.IDLE, "kept": None}, {"whole_host": True}, None),
+            (self.IDLE, {"whole_host": True}, None),
+            ({**self.IDLE, "kept": ""}, {"exclusive": True}, None),
+            ({**self.IDLE, "kept": 7, "busy": [3, 4]}, {}, None),
+            ({**self.IDLE, "kept": None, "busy": [0, 1, 2]}, {},
+             "every guaranteed slot of the second Mac is busy (HEAVY_SLOTS=3)"),
+        ]
+        for reading, need, expected in cases:
+            with self.subTest(reading=reading, need=need):
+                self.assertEqual(remote.spare(reading, "the second Mac", **need), expected)
+        # A whole-host lane running there, or exclusive work, still says so first.
+        self.assertEqual(remote.spare({**kept, "wholeHost": ["Pagepour gate"]}, "the second Mac"),
+                         "the second Mac is running a whole-host lane: Pagepour gate")
+
+    def test_this_macs_reading_does_not_count_the_works_own_place(self):
+        """A whole-host lane that waits here keeps its place in this Mac's queue between offers (resources.Place);
+        eng's reading of this Mac for it does not count that place as a request queued ahead of it."""
+        offered = remote.Offer("gate", "", lambda host, sent: 0, whole_host=True)
+        loaded = {**self.IDLE, "load": 9.0, "screen": None}
+        with patch.object(remote, "capacity_there", return_value=loaded), \
+                patch.object(remote.offload_host, "capacity", return_value={**self.IDLE, "screen": None}) as here:
+            self.assertIsNotNone(offered.choose())
+            here.assert_called_once_with(own=None)
+            here.reset_mock()
+            offered.place = resources.Place()
+            offered.choose()
+            here.assert_called_once_with(own=offered.place.identity)
+        # Its admission here hands it the place it keeps.
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
+                "HEAVY_SLOT_DIR": directory, "SW_GATE_LOCK_FILE": str(Path(directory) / "gate"), "HEAVY_SLOTS": "1",
+                "HEAVY_SLOTS_MAX": "1"}), contextlib.ExitStack() as stack:
+            os.environ.pop(resources.TOKEN, None)
+            offered.place = None
+            with patch.object(cli, "screen_wait", return_value=None), contextlib.redirect_stderr(StringIO()):
+                cli.admitted_here(stack, "gate", "gate", 0, offered=offered, once=True, whole_host=True)
+            self.assertIsInstance(offered.place, resources.Place)
+
+
 class SimulatorPositionTests(unittest.TestCase):
     """admit --verify keeps a command here for a UUID only where a simulator goes (#142)."""
 

@@ -2010,6 +2010,9 @@ class Offer:
         # --offload-only's, which never runs the work here, does not. Set by make.
         self.choosing = False
         self.neither = None
+        # This Mac's queue place of the work, a whole-host lane's while it waits here (resources.Place), set by
+        # its admission here: this Mac's capacity reading does not count it as a request queued ahead (#186).
+        self.place = None
 
     def attempt(self):
         """Offer the work once: its status there, or Busy, Unreachable or Unavailable raised; Loaded, a Busy,
@@ -2031,7 +2034,7 @@ class Offer:
         (vocaro-engineering#168)."""
         there = spare(capacity_there(self.host), "the second Mac", self.whole_host, self.exclusive, self.screen)
         if there is None: return None
-        reading = offload_host.capacity()
+        reading = offload_host.capacity(own=self.place.identity if self.place is not None else None)
         here = (f"this Mac's capacity cannot be read: {reading['error']}" if reading.get("error")
                 else spare(reading, HERE, self.whole_host, self.exclusive, self.screen))
         if here is None: return there
@@ -2216,8 +2219,11 @@ def spare(reading, mac, whole_host=False, exclusive=False, screen=False):
     """Why mac, read as reading (offload_host.capacity), has no spare capacity now for the work, or None while
     it has (vocaro-engineering#168). The work needs a guaranteed slot free there, every guaranteed slot for a
     whole-host lane and every slot up to the maximum for exclusive work, a one-minute load under the Mac's own
-    HEAVY_LOAD_LIMIT, and no whole-host lane or exclusive work running there. The reason names the Mac and,
-    for its load, the load read and the limit; the receipt's hereBecause carries it. With screen, for a lane
+    HEAVY_LOAD_LIMIT, and no whole-host lane or exclusive work running there. While the Mac's admission keeps the
+    guaranteed slots for a whole-host lane queued ahead (kept), a whole-host or exclusive lane waits its turn
+    behind it and other work needs a slot beyond them free, as admission rules (vocaro-engineering#174, #186).
+    The reason names the Mac and, for its load, the load read and the limit, and the lane queued ahead for which
+    the slots are kept; the receipt's hereBecause carries it. With screen, for a lane
     that needs an unlocked screen, a Mac whose screen is locked or unknown has none (screen_refusal)."""
     if screen:
         refused = screen_refusal(reading.get("screen"), mac)
@@ -2231,11 +2237,19 @@ def spare(reading, mac, whole_host=False, exclusive=False, screen=False):
     if exclusive and busy:
         return (f"exclusive work needs every slot of {mac} up to HEAVY_SLOTS_MAX={maximum} free, and {len(busy)} "
                 f"{'is' if len(busy) == 1 else 'are'} busy")
+    # An older toolkit's reading has no kept, and keeps nothing by it.
+    kept = reading.get("kept") if isinstance(reading.get("kept"), str) and reading.get("kept") else None
+    if kept is not None:
+        held = f"the guaranteed slots of {mac} are kept for a whole-host lane queued ahead: {kept}"
+        if exclusive or whole_host:
+            return f"{held}, which the lane would wait behind"
+        if len([slot for slot in busy if slot >= slots]) >= maximum - slots:
+            return f"{held}, and every slot beyond them up to HEAVY_SLOTS_MAX={maximum} is busy"
     taken = [slot for slot in busy if slot < slots]
     if whole_host and taken:
         return (f"a whole-host lane needs every guaranteed slot of {mac} (HEAVY_SLOTS={slots}) free, and {len(taken)} "
                 f"{'is' if len(taken) == 1 else 'are'} busy")
-    if not exclusive and not whole_host and len(taken) >= slots:
+    if not exclusive and not whole_host and kept is None and len(taken) >= slots:
         return f"every guaranteed slot of {mac} is busy (HEAVY_SLOTS={slots})"
     load, limit = reading.get("load"), reading["limit"]
     if not isinstance(load, (int, float)):

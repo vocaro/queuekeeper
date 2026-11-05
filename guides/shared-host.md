@@ -521,6 +521,20 @@ EPUBLib gates side by side at a load of 719 while this Mac, 18 cores, idled at 3
 guaranteed slots admitted the second gate whatever the load, and 8 of 12 gates there that day
 ended with no verdict; the rule above is what that cost.
 
+The reading applies admission's rule for a whole-host request queued there
+([heavy-work admission](#heavy-work-admission)): while one whose process runs has asked within
+HEAVY_PLACE_SECONDS, the Mac keeps its guaranteed slots for it, so a whole-host or exclusive lane
+has no spare capacity there (`the guaranteed slots of the second Mac are kept for a whole-host
+lane queued ahead: LABEL, which the lane would wait behind`), and a lighter heavy lane has it only
+in a free slot beyond them (`…: LABEL, and every slot beyond them up to HEAVY_SLOTS_MAX=5 is
+busy`). A queued request whose process has ended, one that has not asked lately, one behind
+exclusive work queued ahead, and one that waits for a dead or uncertain guard entry counted as a
+guaranteed slot keep nothing, as in admission; the reading runs no recovery census, so it counts
+every such entry, and the next admission may remove one. A lane's own place in this Mac's queue,
+which it keeps between offers, is not counted against it. Until vocaro-engineering#186 the reading
+counted a guaranteed slot such a request kept as free, and eng offered work there that admission
+then held back or that competed with the gate.
+
 1. The second Mac runs the lane when its reading shows spare capacity and it can start the lane
    now: its queue admits the lane within five seconds (`eng run --if-free` there, which exits 75
    without running otherwise) and one of the project's four checkouts there is free.
@@ -528,7 +542,8 @@ ended with no verdict; the rule above is what that cost.
    to this Mac's queue at once, and nothing is offered: `eng: trying LANE on this Mac:` says why,
    and the receipt's `hereBecause` records it, naming the second Mac's load when that is it, as
    `the second Mac is loaded (load 719.0, at or above its HEAVY_LOAD_LIMIT=7.5)`, else the
-   whole-host lane or exclusive work running there, or its guaranteed slots all busy. A second
+   whole-host lane or exclusive work running there, its guaranteed slots all busy, or those slots
+   kept for a whole-host lane queued there. A second
    Mac whose reading shows capacity may still decline the lane as busy once it is offered, as
    when every checkout of the project there is in use or the model is held: this Mac's own
    admission then gets the same five seconds, and the lane runs here if it admits it, the receipt

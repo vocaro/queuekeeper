@@ -463,6 +463,8 @@ def admitted_here(stack, name, label, timeout, offered=None, once=False, exclusi
     for it as for a slot (screen_wait)."""
     refused, said = [], []
     place = resources.Place() if whole_host and not exclusive else None
+    # Its own place is no request queued ahead of it when eng reads this Mac's capacity for it (#186).
+    if offered is not None: offered.place = place
 
     def admit(seconds):
         if screen:
