@@ -1,9 +1,11 @@
 """The merge queue against real Git repositories: a bare origin, a clone, and lanes that read the tree."""
 import contextlib
+import importlib.util
 import io
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
 import sys
@@ -39,10 +41,25 @@ def run(directory, *words):
     return subprocess.run(words, cwd=directory, check=True, capture_output=True, text=True).stdout.strip()
 
 
+def never_exec(command, env):
+    """What a test's worker must never do: replace the test process (merge_queue.execute)."""
+    raise AssertionError(f"the worker would exec {shlex.join(command)}")
+
+
+class Replaced(Exception):
+    """A worker's move to a newer toolkit, as a test's fake exec sees it: the command and environment it asked for."""
+    def __init__(self, command, env):
+        super().__init__(shlex.join(command))
+        self.command, self.env = command, env
+
+
 class Fixture(unittest.TestCase):
     def setUp(self):
         self.base = Path(tempfile.mkdtemp()).resolve()
         self.addCleanup(shutil.rmtree, self.base, ignore_errors=True)
+        guard = patch.object(mq, "execute", never_exec)
+        guard.start()
+        self.addCleanup(guard.stop)
         patcher = patch.dict(os.environ, {"VOCARO_OFFLOAD_HOST": "none", "GIT_CONFIG_GLOBAL": "/dev/null",
                                           "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com",
                                           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com",
@@ -523,6 +540,160 @@ class NoVerdict(Fixture):
         self.assertEqual(self.state(identifier)["state"], "queued")
 
 
+class HoldKinds(Fixture):
+    """Whom a hold is for, in its reason's first words, and the tries a cause that clears by itself gets first: no
+    hold waits for the owner unless nobody else can fix its cause (owner's decision, 2026-11-04,
+    vocaro-engineering#173)."""
+    FOR_OWNER = "for the owner, since nobody else can fix it: "
+    FOR_SESSION = "for a session, not the owner: "
+    SESSION_RESUMES = ("; the session that fixes it, or any session that finds it gone, runs `eng queue resume` itself "
+                       "and says so")
+    OWNER_FIXES = "; once it is fixed, any session that finds the cause gone runs `eng queue resume` and says so"
+
+    def test_a_remote_out_of_reach_past_its_backoff_is_tried_again_and_lands(self):
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        # The round's own fetch fails every try of its backoff; the next round's goes through.
+        with self.remote_says(UNREACHED["https name"], range(1, len(mq.BACKOFF) + 2)) as (fetches, slept), \
+                contextlib.redirect_stdout(io.StringIO()) as said:
+            self.assertEqual(self.work(), 0)
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertIn("a", self.main_files())
+        self.assertIsNone(mq.Queue(self.repo).held())
+        self.assertEqual(slept, [*mq.BACKOFF, mq.CLEARING_WAITS[0]])
+        self.assertIn(f"exited 128 {len(mq.BACKOFF) + 1} times: {UNREACHED['https name']}: a cause that clears by itself, "
+                      f"so the round runs again in {mq.CLEARING_WAITS[0]}s, try 1 of {len(mq.CLEARING_WAITS)}",
+                      said.getvalue())
+        self.assertEqual(self.gates(), 1)
+
+    def test_a_cause_that_does_not_clear_holds_for_a_session_after_the_last_try(self):
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        with self.remote_says(UNREACHED["https name"], range(1, 999)) as (fetches, slept), patch("builtins.print"):
+            self.assertEqual(self.work(), 1)
+        expected = []
+        for wait in mq.CLEARING_WAITS: expected += [*mq.BACKOFF, wait]
+        self.assertEqual(slept, expected + list(mq.BACKOFF))
+        self.assertEqual(len(fetches), (len(mq.CLEARING_WAITS) + 1) * (len(mq.BACKOFF) + 1))
+        held = mq.Queue(self.repo).held()
+        self.assertTrue(held.startswith(f"{self.FOR_SESSION}`git fetch"), held)
+        self.assertIn(f"exited 128 {len(mq.BACKOFF) + 1} times", held)
+        self.assertTrue(held.endswith(f", after {len(mq.CLEARING_WAITS)} more tries of the round over "
+                                      f"{sum(mq.CLEARING_WAITS)}s did not clear it{self.SESSION_RESUMES}"), held)
+        self.assertNotIn("owner,", held.split(":", 1)[1])
+        self.assertEqual(self.state(identifier)["state"], "queued")
+        self.assertEqual(self.gates(), 0)
+
+    def test_a_round_that_went_through_starts_the_tries_again(self):
+        """Two outages, each past the backoff but within the tries, with a landing between: no hold."""
+        self.commit("a", "a"); self.commit("b", "b")
+        ids = self.add("a", "b")
+        tries = len(mq.BACKOFF) + 1
+        failing = set(range(1, tries * len(mq.CLEARING_WAITS) + 1))
+        # Every fetch of the first round's tries fails; then, once a and b have landed and c is added, as many again.
+        real = mq.Worker.round
+        def round_(worker):
+            went = real(worker)
+            if went and self.state(ids[1])["state"] == "landed" and not self.state_of("c"):
+                self.commit("c", "c")
+                self.add("c")
+                failing.update(range(len(fetches) + 1, len(fetches) + 1 + tries * len(mq.CLEARING_WAITS)))
+            return went
+        with self.remote_says(UNREACHED["ssh name"], failing) as (fetches, slept), patch("builtins.print"), \
+                patch.object(mq.Worker, "round", round_):
+            self.assertEqual(self.work(), 0)
+        self.assertEqual([self.state(i)["state"] for i in ids], ["landed"] * 2)
+        self.assertEqual(self.state_of("c")["state"], "landed")
+        self.assertIsNone(mq.Queue(self.repo).held())
+        self.assertEqual(slept.count(mq.CLEARING_WAITS[-1]), 2)
+
+    def state_of(self, branch):
+        return next((entry for entry in mq.Queue(self.repo).all() if entry["branch"] == branch), None)
+
+    def test_a_refused_push_holds_for_the_owner_at_once_and_says_so(self):
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        hook = self.origin / "hooks/pre-receive"
+        hook.write_text("#!/bin/sh\necho declined by the remote >&2\nexit 1\n")
+        hook.chmod(0o755)
+        with patch.object(mq, "pause") as slept, patch("builtins.print"): self.assertEqual(self.work(), 1)
+        slept.assert_not_called()
+        held = mq.Queue(self.repo).held()
+        self.assertTrue(held.startswith(f"{self.FOR_OWNER}the push of "), held)
+        self.assertIn(" was refused: ", held)
+        self.assertTrue(held.endswith(f"which the resume pushes without gating again{self.OWNER_FIXES}"), held)
+        self.assertNotIn(self.FOR_SESSION, held)
+        self.assertEqual(self.state(identifier)["state"], "passed")
+        with contextlib.redirect_stdout(io.StringIO()) as shown: mq.status(self.repo)
+        self.assertIn(f"worker: none; held {self.FOR_OWNER}the push of ", shown.getvalue())
+        with contextlib.redirect_stdout(io.StringIO()) as told:
+            self.assertEqual(mq.wait(self.repo, identifier, 1), mq.resources.BUSY)
+        self.assertIn(f"{identifier} is waiting, and the queue is held {self.FOR_OWNER}the push of ", told.getvalue())
+        self.commit("b", "b")
+        with patch.object(mq.Queue, "start"), contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()) as said:
+            later = mq.add(self.repo, "b")
+        self.assertIn(f"queue: {later} waits, since the queue is held {self.FOR_OWNER}the push of ", said.getvalue())
+
+    def test_a_refused_fetch_holds_for_the_owner_and_a_dropped_one_is_a_sessions_past_the_tries(self):
+        """The negative control of the retry: a refusal is tried no further and names the owner."""
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        with self.remote_says(REFUSED["https authentication"], range(1, 999)) as (fetches, slept), patch("builtins.print"):
+            self.assertEqual(self.work(), 1)
+        self.assertEqual((len(fetches), slept), (1, []))
+        held = mq.Queue(self.repo).held()
+        self.assertTrue(held.startswith(f"{self.FOR_OWNER}`git fetch"), held)
+        self.assertTrue(held.endswith(self.OWNER_FIXES), held)
+        self.assertNotIn("did not clear it", held)
+
+    def test_what_a_session_can_fix_holds_for_a_session_not_the_owner(self):
+        """A path where the worker's checkout goes, and a hook that refuses what the gate passed."""
+        checkout = self.base / "vocaro-queue/project/project"
+        checkout.mkdir(parents=True)
+        (checkout / "kept").write_text("x")
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        with patch("builtins.print"): self.assertEqual(self.work(), 1)
+        held = mq.Queue(self.repo).held()
+        self.assertEqual(held, f"{self.FOR_SESSION}{checkout} exists and is no worktree of {self.repo}: move it"
+                               f"{self.SESSION_RESUMES}")
+        self.assertEqual(self.state(identifier)["state"], "queued")
+        shutil.rmtree(checkout)
+        mq.Queue(self.repo).hold_file.unlink()
+        hook = self.repo / ".git/hooks/pre-push"
+        hook.write_text("#!/bin/sh\necho the reason >&2\nexit 1\n")
+        hook.chmod(0o755)
+        with patch("builtins.print"): self.assertEqual(self.work(), 1)
+        held = mq.Queue(self.repo).held()
+        self.assertTrue(held.startswith(f"{self.FOR_SESSION}the pre-push hook refused "), held)
+        self.assertTrue(held.endswith(f"which the resume pushes without gating again{self.SESSION_RESUMES}"), held)
+        self.assertEqual(self.state(identifier)["state"], "passed")
+
+    def test_no_verdict_from_a_misconfigured_host_is_the_owners_and_any_other_a_sessions(self):
+        for status, kind in (("78", self.FOR_OWNER), ("3", self.FOR_SESSION), ("75", self.FOR_SESSION)):
+            with self.subTest(status=status):
+                with contextlib.suppress(OSError): mq.Queue(self.repo).hold_file.unlink()
+                self.status.write_text(status)
+                self.commit(f"a{status}", f"a{status}")
+                [identifier] = self.add(f"a{status}")
+                with patch("builtins.print"): self.assertEqual(self.work(), 0)
+                held = mq.Queue(self.repo).held()
+                self.assertTrue(held.startswith(f"{kind}the lanes gave no verdict in {mq.NO_VERDICT_RUNS} runs in a row, "
+                                                f"the last with exit {status}, "), held)
+                self.assertTrue(held.endswith(self.OWNER_FIXES if kind == self.FOR_OWNER else self.SESSION_RESUMES), held)
+                self.assertEqual(self.state(identifier)["state"], "queued")
+                mq.remove(mq.Queue(self.repo), identifier, quiet=True)
+
+    def test_the_kinds_are_told_apart_in_words(self):
+        self.assertTrue(mq.worded(mq.OWNER, "x").startswith(self.FOR_OWNER + "x; "))
+        self.assertTrue(mq.worded(mq.SESSION, "x").startswith(self.FOR_SESSION + "x; "))
+        self.assertNotIn("for the owner", mq.worded(mq.SESSION, "x"))
+        hold = mq.Hold(mq.CLEARS, "why")
+        self.assertIsInstance(hold, ValueError)
+        self.assertEqual((hold.kind, str(hold)), (mq.CLEARS, "why"))
+
+
 # Files, as `eng run` does for a lane the second Mac ran, a dispatch record in the checkout's
 # .build/engineering/remote/.dispatches/LANE/, named for the second it started unless the receipt names
 # one, and holding the receipt that sys.argv[1] holds, if any; then runs lane.py with the rest.
@@ -930,6 +1101,7 @@ class PrePushHooks(Fixture):
         self.assertEqual(len(self.runs()), 1)
         held = mq.Queue(self.repo).held()
         self.assertIn("refused", held)
+        self.assertTrue(held.startswith("for a session, not the owner: "), held)
         self.assertNotIn("the reason", held)
         self.assertIn("the reason", Path(held.split("see ")[1].split(";")[0]).read_text())
 
@@ -1683,6 +1855,34 @@ class ToolkitCopy(Fixture):
         toolkit = patch.object(mq, "TOOLKIT_ROOT", self.kit)
         toolkit.start()
         self.addCleanup(toolkit.stop)
+        # The worker's move to the copy, through its seam rather than a real exec, which would replace this process.
+        self.moves = []
+        def execute(command, env): raise Replaced(command, env)
+        for patcher in (patch.object(mq, "execute", execute), patch.object(mq, "load", mq.load)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def work(self):
+        """The worker, then the one that replaces it when it moves to the copy: a process of its own in use
+        (merge_queue.execute), here the same module started again with the copy as its toolkit, the copy's config
+        module judging main, and the environment the move carried."""
+        while True:
+            try: return mq.run(self.repo)
+            except Replaced as moved:
+                self.moves.append(moved)
+                self.assertEqual(moved.command, mq.Queue(self.repo).command(self.copy))
+                self.assertNotIn("VOCARO_ENGINEERING_ROOT", moved.env)
+                mq.TOOLKIT_ROOT = self.copy
+                mq.load = self.code_of(self.copy).load
+                os.environ[mq.PROGRESS_VARIABLE] = moved.env[mq.PROGRESS_VARIABLE]
+
+    def code_of(self, checkout):
+        """A toolkit checkout's config module, loaded apart from this process's."""
+        source = checkout / "src/python/vocaro_engineering/config.py"
+        spec = importlib.util.spec_from_file_location(f"config_of_{len(self.moves)}", source)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
 
     def advance_origin(self, name):
         """A landed toolkit commit the shared checkout has not pulled."""
@@ -1703,11 +1903,108 @@ class ToolkitCopy(Fixture):
     def test_a_gate_runs_the_toolkit_origin_has_not_the_lagging_shared_checkout(self):
         behind = run(self.kit, "git", "rev-parse", "HEAD")
         landed = self.advance_origin("landed")
-        identifier, status = self.gate_once("a")
+        with contextlib.redirect_stdout(io.StringIO()) as said: identifier, status = self.gate_once("a")
         self.assertEqual(status, 0)
         self.assertEqual(self.state(identifier)["state"], "landed")
         self.assertEqual(self.seen.read_text().split("\n"), [str(self.copy), landed, ""])
         self.assertEqual(run(self.kit, "git", "rev-parse", "HEAD"), behind)
+        # And so does the worker itself, once, from the copy (vocaro-engineering#173).
+        self.assertEqual(len(self.moves), 1)
+        self.assertIn(f"moving to the toolkit at {landed[:12]}, origin/main, from {behind[:12]}, which this worker was "
+                      "started from: the next worker is started from the copy", said.getvalue())
+        self.assertEqual(json.loads(self.moves[0].env[mq.PROGRESS_VARIABLE]), {"limit": None, "suspects": 0, "no_verdicts": 0})
+        self.assertNotIn(mq.PROGRESS_VARIABLE, os.environ)
+
+    def test_a_worker_started_from_the_copy_stays(self):
+        """The negative control: the toolkit at origin is the code the worker runs, so it does not move."""
+        self.gate_once("a")
+        self.assertEqual(self.moves, [])
+        mq.TOOLKIT_ROOT = self.copy
+        with contextlib.redirect_stdout(io.StringIO()) as said: identifier, status = self.gate_once("b")
+        self.assertEqual((status, self.state(identifier)["state"], self.moves), (0, "landed", []))
+        self.assertNotIn("moving to the toolkit", said.getvalue())
+        self.assertEqual(self.seen.read_text().split("\n")[0], str(self.copy))
+
+    def knowing(self, key):
+        """A landed toolkit commit whose config module accepts the lane key that this toolkit's own refuses."""
+        other = self.base / f"other-knows-{key}"
+        run(self.base, "git", "clone", "-q", str(self.kit_origin), str(other))
+        source = other / "src/python/vocaro_engineering/config.py"
+        edited = source.read_text().replace('"wholeHost"}', f'"wholeHost", "{key}"}}')
+        self.assertNotEqual(edited, source.read_text())
+        source.write_text(edited)
+        run(other, "git", "add", "src/python/vocaro_engineering/config.py")
+        run(other, "git", "commit", "-qm", f"Accept {key}")
+        run(other, "git", "push", "-q", "origin", "HEAD:main")
+        return run(other, "git", "rev-parse", "HEAD")
+
+    def set_on_main(self, key):
+        """main's gate lane with the key set, published after the entry was added, as EPUBLib's 41f46e94 landed it."""
+        config = json.loads((self.repo / "engineering.json").read_text())
+        config["lanes"]["gate"][key] = True
+        run(self.repo, "git", "checkout", "-q", "-B", "start", "origin/main")
+        self.publish(config, f"Set {key} on the gate lane")
+        return config
+
+    def test_the_worker_judges_main_with_the_toolkit_at_origin_not_its_own_older_code(self):
+        """EPUBLib's hold of 2026-11-04: main's gate lane set a key the copy accepted and the worker's own config
+        module, from an older checkout, refused (vocaro-engineering#173)."""
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        config = self.set_on_main("newKey")
+        behind = run(self.kit, "git", "rev-parse", "HEAD")
+        landed = self.knowing("newKey")
+        # The control: the code this worker is started from refuses main.
+        with self.assertRaisesRegex(ValueError, "Invalid lane gate"): configuration.parse(json.dumps(config))
+        with contextlib.redirect_stdout(io.StringIO()) as said: status = self.work()
+        self.assertEqual(status, 0)
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertIn("a", self.main_files())
+        self.assertIsNone(mq.Queue(self.repo).held())
+        self.assertEqual(len(self.moves), 1)
+        self.assertIn(f"moving to the toolkit at {landed[:12]}, origin/main, from {behind[:12]}", said.getvalue())
+        self.assertEqual(self.seen.read_text().split("\n"), [str(self.copy), landed, ""])
+        self.assertEqual(self.code_of(self.copy).parse(json.dumps(config))["lanes"]["gate"]["newKey"], True)
+        self.assertEqual(run(self.kit, "git", "rev-parse", "HEAD"), behind)
+
+    def test_main_that_the_newest_toolkit_refuses_holds_for_a_session_naming_the_toolkit(self):
+        """The negative control: with nothing newer at origin, the worker stays, and the hold is a session's, since
+        a session lands the fix, in the toolkit or on main; it never waits for the owner."""
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        self.set_on_main("newKey")
+        code = run(self.kit, "git", "rev-parse", "HEAD")
+        with patch("builtins.print"): status = self.work()
+        self.assertEqual(status, 1)
+        self.assertEqual(self.moves, [])
+        self.assertEqual(self.state(identifier)["state"], "queued")
+        self.assertFalse(self.seen.exists())
+        held = mq.Queue(self.repo).held()
+        base = run(self.repo, "git", "rev-parse", "origin/main")
+        self.assertEqual(held, f"for a session, not the owner: Invalid lane gate, judging main at {base[:12]} with the "
+                               f"toolkit at {code[:12]}; the session that fixes it, or any session that finds it gone, "
+                               "runs `eng queue resume` itself and says so")
+
+    def test_a_bisect_goes_on_from_where_the_worker_that_moved_left_it(self):
+        """Two entries that fail together, the toolkit landing between the rounds: the worker that takes over
+        tests the oldest alone, as the one it replaces was about to, costing no gate."""
+        config = json.loads((self.repo / "engineering.json").read_text())
+        config["lanes"]["gate"]["command"] = ["python3", "lane.py", str(self.counter), str(self.status)]
+        run(self.repo, "git", "checkout", "-q", "-B", "start", "origin/main")
+        self.publish(config, "Fail on bad files")
+        self.commit("a", "a"); self.commit("bad", "bad")
+        ids = self.add("a", "bad")
+        real = mq.Worker.gate
+        def gate(worker, *arguments):
+            result = real(worker, *arguments)
+            if self.gates() == 1: self.advance_origin("between")
+            return result
+        with patch.object(mq.Worker, "gate", gate), patch("builtins.print"): self.assertEqual(self.work(), 0)
+        self.assertEqual([self.state(i)["state"] for i in ids], ["landed", "failed"])
+        self.assertEqual(len(self.moves), 1)
+        self.assertEqual(json.loads(self.moves[0].env[mq.PROGRESS_VARIABLE]), {"limit": 1, "suspects": 2, "no_verdicts": 0})
+        # Both together, then a alone, then bad alone: not both together again.
+        self.assertEqual(self.gates(), 3)
 
     def test_a_dirty_shared_checkout_neither_reaches_a_gate_nor_is_touched(self):
         edited = self.kit / "src/python/vocaro_engineering/cli.py"
@@ -2037,13 +2334,15 @@ class Unreachable(Fixture):
                 self.assertEqual(self.state(identifier)["state"], "landed")
                 self.assertEqual(len(pushes), 2)
 
-    def test_a_remote_that_stays_out_of_reach_holds_after_the_last_backoff(self):
+    def test_a_remote_that_stays_out_of_reach_holds_after_the_last_backoff_of_the_last_try(self):
+        """Each round's fetch gets its backoff, and the round its tries (HoldKinds); then it holds."""
         self.commit("a", "a")
         [identifier] = self.add("a")
-        with self.remote_says(UNREACHED["https name"], range(1, 99)) as (fetches, slept):
+        with self.remote_says(UNREACHED["https name"], range(1, 999)) as (fetches, slept), patch("builtins.print"):
             self.assertEqual(self.work(), 1)
         self.assertEqual(self.state(identifier)["state"], "queued")
-        self.assertEqual((len(fetches), slept), (len(mq.BACKOFF) + 1, list(mq.BACKOFF)))
+        rounds = len(mq.CLEARING_WAITS) + 1
+        self.assertEqual((len(fetches), slept.count(mq.BACKOFF[-1])), (rounds * (len(mq.BACKOFF) + 1), rounds))
         self.assertIn(f"{len(mq.BACKOFF) + 1} times", mq.Queue(self.repo).held())
         self.assertEqual(self.gates(), 0)
 
@@ -2384,14 +2683,20 @@ class Refusals(Fixture):
         self.assertEqual(self.gates(), 1)
         self.assertEqual((len(pushes), slept), (2, [mq.BACKOFF[0]]))
 
-    def test_a_push_that_keeps_dropping_holds(self):
+    def test_a_push_that_keeps_dropping_holds_after_the_rounds_tries(self):
         self.commit("a", "a")
         [identifier] = self.add("a")
-        with self.remote_says("fatal: the remote end hung up unexpectedly", range(1, 99), "push") as (pushes, slept):
+        with self.remote_says("fatal: the remote end hung up unexpectedly", range(1, 999), "push") as (pushes, slept), \
+                patch("builtins.print"):
             self.assertEqual(self.work(), 1)
         self.assertEqual(self.state(identifier)["state"], "passed")
-        self.assertIn("did not reach the remote", mq.Queue(self.repo).held())
-        self.assertEqual((len(pushes), slept), (len(mq.BACKOFF) + 1, list(mq.BACKOFF)))
+        held = mq.Queue(self.repo).held()
+        self.assertIn("did not reach the remote", held)
+        self.assertTrue(held.startswith("for a session, not the owner: "), held)
+        rounds = len(mq.CLEARING_WAITS) + 1
+        self.assertEqual((len(pushes), slept.count(mq.BACKOFF[-1])), (rounds * (len(mq.BACKOFF) + 1), rounds))
+        # The pass stays through the tries: one gate.
+        self.assertEqual(self.gates(), 1)
 
     def test_a_remote_that_refuses_a_push_holds_at_once_whatever_else_it_says(self):
         """The remote answered: its hook's message is no dropped connection, which Git would print the same."""

@@ -552,7 +552,10 @@ it does not accept or a host key that changed, its login shell fails, it cannot 
 commit or run the toolkit, it refuses the lane for any reason but being busy, as when its Xcode
 at this Mac's developer directory differs or every checkout holds changes a run left, or it fails
 the project's `provision` lane. `eng run` runs nothing here then. It says what is wrong and what
-fixing it takes, and exits 78 (`EX_CONFIG`). A run that was sent finishes there: a connection
+fixing it takes, and exits 78 (`EX_CONFIG`). In the merge queue that exit is a run with no verdict,
+run again once the host has settled, and the hold after the bound is for the owner, the one kind
+whose cause is his to fix; a session that finds the cause gone still resumes it
+([the merge queue](maintenance.md#the-merge-queue)). A run that was sent finishes there: a connection
 lost once the work was sent leaves the run unmeasured rather than running the lane a second time
 here, since it may still run there.
 

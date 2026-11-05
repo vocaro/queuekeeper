@@ -264,9 +264,18 @@ edits, to the toolkit's `origin/main`, and runs the lanes, the pre-push hook and
 with `VOCARO_ENGINEERING_ROOT` naming it (owner's decision, 2026-11-01). A landed toolkit commit
 therefore reaches the next round of every project's gate, and a shared toolkit checkout that lags or
 holds a session's changes reaches none of them. Each worker has its own copy, so moving it changes no
-other project's running gate. The toolkit's own queue tests its batch instead, and a
-`VOCARO_ENGINEERING_ROOT` set where the worker started stands. A copy that cannot be fetched, after the
-retries a remote out of reach gets, or moved holds the queue and blames no commit. Anything else still
+other project's running gate. The worker follows its copy: once the copy is at `origin/main`, a worker
+whose own code came from another commit starts itself again from the copy, with the same arguments and
+environment and the bisect it had reached, before the round touches any entry, and its log says
+`moving to the toolkit at COMMIT, origin/main, from COMMIT, which this worker was started from`. So what
+judges `main`, its `engineering.json` above all, is the toolkit the lanes run, not the older code of the
+checkout the worker was started from. On 2026-11-04 EPUBLib's worker, started before
+[#168](https://github.com/vocaro/vocaro-engineering/issues/168) added the lane key `wholeHost`, landed
+a commit whose gate lane set it and then held the queue on `Invalid lane gate`, as its own code refused
+the key its copy had accepted, until a person resumed it ([#173](https://github.com/vocaro/vocaro-engineering/issues/173)). The toolkit's own queue tests its
+batch instead, and a `VOCARO_ENGINEERING_ROOT` set where the worker started stands; neither moves the
+worker. A copy that cannot be fetched is a remote out of reach, tried again as any is, and one that
+cannot be moved holds the queue for a session; neither blames a commit. Anything else still
 reads the shared checkout: a session's own `eng`. So a project commit that needs a new toolkit option lands after the toolkit's commit, and runs
 by hand only once that checkout has it.
 
@@ -281,7 +290,8 @@ lane that starts another `eng` reads the tree as it is then, so a run spanning t
 toolkits. Otherwise the worker leaves the checkout as it is and its log says why, such as
 `left ~/Development/vocaro-engineering as it is: it is on BRANCH, not main`; nothing of this holds
 the queue, and the next landing tries again. A project worker whose code came from that checkout is
-such a process while it runs. A process that loaded the toolkit from it without keeping a path there,
+such a process until its first round after a toolkit landing, when it starts itself again from its
+copy, above. A process that loaded the toolkit from it without keeping a path there,
 as a project's launcher does, cannot be seen, and a process that starts between the check and the
 fast-forward is not either. A session never stashes, resets or edits that checkout by hand to make it
 follow.
@@ -336,8 +346,9 @@ the queue until a person resumed it. A project sets another bound on `main`, as
 or a failure, starts the count again, and so does `eng queue resume`. The hold's reason says how many
 runs gave no verdict and why the last did: the lane that reached its limit, the number of tests its log
 reports unmeasured with the first of them, no admission, or the host's configuration. A hold stays
-until the owner, or a session the owner told to, has dealt with its cause and run `eng queue resume`.
-Nothing fails over to another route.
+until whoever its reason names has dealt with its cause, or found it gone, and run `eng queue resume`:
+the owner only when the last run's exit was 78, a shared host's configuration, and otherwise a session,
+as [a hold says whom it is for](#the-merge-queue) below. Nothing fails over to another route.
 
 Each retry waits first for the host to settle, by the test heavy-work admission applies before it takes
 a slot beyond the guaranteed ones (`resources.pressure`; [heavy-work admission](shared-host.md#heavy-work-admission)):
@@ -365,16 +376,34 @@ no Mac ran, reads this Mac only. A lane that fails blames its commits at once, w
 hook's no verdict waits the same way before it runs again, reading this Mac, where the worker runs the
 hook.
 
+**A hold says whom it is for, and a session resumes it.** Every hold's reason begins with its kind.
+`for the owner, since nobody else can fix it` is for a cause only he can fix: a shared host's
+configuration (exit 78 past the bound), a push the remote refused, a key or token a remote refused. `for
+a session, not the owner` is every other: a host that stayed busy or tests left unmeasured past the
+bound, the pre-push hook's refusal or its no verdict, a path where the worker's checkout goes, a `main`
+whose `engineering.json` the toolkit at `origin/main` refuses (the reason names the toolkit commit that
+judged it), a remote out of reach past the tries below, and anything unexpected. The reason ends with
+who runs `eng queue resume`: the session that has dealt with the cause, or any session that finds it
+gone, runs it itself and says so, in its report, and never asks the owner for it. The owner is asked
+only for a hold that says it is his, and once he has fixed its cause any session that finds the cause
+gone resumes (owner's decision, 2026-11-04, [#173](https://github.com/vocaro/vocaro-engineering/issues/173): "why do you need my approval to resume the queue?
+this should never need my approval"). `eng queue status`, `eng land --wait` and `eng land` print the
+reason with its kind. A hold whose cause a session cannot find is still a session's: say what was
+looked at, and what remains, rather than asking the owner to resume.
+
 **A remote out of reach is tried again.** A fetch or push that never reached the remote, or whose
 connection ended, says nothing of the commits, and a brief outage clears by itself: a name that did not
 resolve, a connection refused, timed out, reset or dropped, over HTTPS or SSH. The worker tries it again
-after 10, 30, 90 and 270 seconds (`BACKOFF`), and holds only when the fifth try fails too, so a gate
+after 10, 30, 90 and 270 seconds (`BACKOFF`); when the fifth try fails too, it runs the round again after
+1, 5 and 15 minutes (`CLEARING_WAITS`), staying the worker through the waits, with every entry and a
+batch's pass kept, and holds for a session only when the last round's fifth try fails too, about an hour
+after the first ([#173](https://github.com/vocaro/vocaro-engineering/issues/173)). A round that went through starts the tries again. So a gate
 that passed is not discarded because GitHub could not be reached for a moment
 ([#113](https://github.com/vocaro/vocaro-engineering/issues/113)). `eng land`'s own fetch retries the
-same way. Git's message decides: one that says the remote answered and refused, an authentication
+backoff the same way. Git's message decides: one that says the remote answered and refused, an authentication
 failure, a 4xx status, an SSH key or host key refused, a missing repository or a rejected push, holds
-at once, though SSH ends a refused key with the same `Could not read from remote repository` as a
-dropped connection. So does any other error.
+at once, for the owner, though SSH ends a refused key with the same `Could not read from remote repository` as a
+dropped connection. Any other error holds at once, for a session.
 
 **A push refused for its credentials is tried again.** During GitHub's incident of 2026-11-04 its
 SSH refused the owner's key from one second to the next for over an hour, while the same key fetched
@@ -394,8 +423,8 @@ log in `eng-queue/logs`, and then pushes with `--no-verify`. A connection that d
 leaves the commit unchanged pushes again without running the hook again; a carried-over commit is a
 new commit and runs it again. A hook's exit 3, 75 or 78 is no verdict, as a lane's is: it is tried
 once more, once the host has settled, and then holds. Git passes the hook's status through, so a hook that waits for admission
-should exit with the status it got rather than 1. Any other refusal holds at once, since the gate
-passed and the hook disagrees, which is for the owner to read; it blames no commit.
+should exit with the status it got rather than 1. Any other refusal holds at once, for a session, since the gate
+passed and the hook disagrees, which is for a session to read; it blames no commit.
 
 **A hook that repeats the queue's lanes may be covered by them.** A project opts in on `main`, naming
 each lane that covers the hook and what of the hook it runs. A branch cannot opt itself in, since the

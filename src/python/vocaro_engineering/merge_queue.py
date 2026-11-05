@@ -7,7 +7,11 @@ verdict blames a commit: a run the host left unmeasured runs again, each time on
 until queue.noVerdictRuns runs in a row (3 by default) have given none, and then holds the queue for the
 owner, with every commit still waiting (guides/maintenance.md, The merge queue). A batch whose lanes
 passed is recorded as passed before its push, so a hold the push meets keeps that verdict, and
-`eng queue resume` pushes the commit that passed instead of gating it again.
+`eng queue resume` pushes the commit that passed instead of gating it again. Each round the worker moves to
+the toolkit at origin/main, starting itself again from its copy, so that it judges main with the toolkit the
+lanes run rather than the code it was started from (vocaro-engineering#173). A hold says whom it is for: the
+owner only for a cause nobody else can fix; a session for every other, which resumes the queue itself once the
+cause is dealt with or gone, after the tries a cause that clears by itself gets (worded, run).
 
 The state is in the repository's common Git directory, so every worktree shares it, and a ref holds
 each waiting commit, so a branch that moves or goes takes nothing with it:
@@ -46,6 +50,11 @@ WAITING = {QUEUED, TESTING, PASSED}
 # What a lane exits with when it says nothing about the commits: unmeasured, no admission, and a
 # shared host's configuration, which stops for the owner.
 NO_VERDICT = {evidence.UNMEASURED, resources.BUSY, remote.MISCONFIGURED}
+# Whom a hold is for, in its reason's first words (worded): the owner only for a cause nobody else can fix, a
+# misconfigured shared host, a refused push or credentials; a session for every other, and the session that deals
+# with the cause, or finds it gone, clears it with `eng queue resume` itself, never asking the owner (owner's
+# decision, 2026-11-04, vocaro-engineering#173). CLEARS, a cause that clears by itself, is tried again first (run).
+OWNER, SESSION, CLEARS = "owner", "session", "clears"
 # Seconds a whole lane may take with its wait for admission: a lane's own limit is 2 h by default
 # (processes.DEFAULT_LIMIT), and this allows another two of them in the host's queue.
 LANE_LIMIT = 3 * processes.DEFAULT_LIMIT
@@ -78,8 +87,12 @@ UNREACHED = re.compile(r"Could not resolve host|Temporary failure in name resolu
 # repository, a rejected push. SSH ends a refused key with the "Could not read from remote" of a dropped connection.
 REFUSED = re.compile(r"denied|Authentication failed|could not read Username|returned error: 4\d\d|not found|"
                      r"rejected|Host key verification failed|does not appear to be a git repository")
-# Seconds before each further try of a fetch or push that did not reach the remote; after the last, it holds.
+# Seconds before each further try of a fetch or push that did not reach the remote; after the last, the round fails.
 BACKOFF = (10, 30, 90, 270)
+# Seconds before the round runs again after a cause that clears by itself, a remote out of reach past its backoff:
+# one, five and fifteen minutes, about an hour with the backoffs, no longer than the gate a hold costs; after the
+# last, the queue holds for a session (run).
+CLEARING_WAITS = (60, 300, 900)
 # What a remote says when it refused the key or the token. During GitHub's incident of 2026-11-04 its SSH said so of
 # the owner's key from one second to the next, for over an hour, while the same key fetched (vocaro-engineering#151).
 # A push refused so, seconds after a fetch from the same URL went through, is tried again (Worker.push_again).
@@ -94,6 +107,8 @@ REFUSAL_POLL = 60
 POLL = 5
 # What a project's launcher reads first to find the toolkit.
 TOOLKIT_VARIABLE = "VOCARO_ENGINEERING_ROOT"
+# What carries a worker's bisect progress to the worker that replaces it on a newer toolkit (Worker.move_to).
+PROGRESS_VARIABLE = "VOCARO_QUEUE_PROGRESS"
 BEFORE_GATE = ["spelling", "provision"]
 WAIT_LIMIT = 6 * 3600
 KEPT_LOGS = 200
@@ -166,10 +181,32 @@ def git(directory, *arguments, hooks=True, check=False, timeout=GIT_TIMEOUT):
     return done
 
 
+class Hold(ValueError):
+    """Why the worker stops, and for whom: OWNER, SESSION or CLEARS (worded, run)."""
+    def __init__(self, kind, why):
+        super().__init__(why)
+        self.kind = kind
+
+
+def worded(kind, cause):
+    """A hold's reason: whom it is for, in its first words, then its cause, then who runs `eng queue resume`. A hold
+    is for the owner only when nobody else can fix its cause; every other is a session's, and the session that deals
+    with the cause, or finds it gone, resumes the queue itself and says so, never asking the owner, whose standing
+    instruction is that landings keep moving without him (2026-11-04, vocaro-engineering#173)."""
+    if kind == OWNER:
+        return (f"for the owner, since nobody else can fix it: {cause}; once it is fixed, any session that finds the "
+                "cause gone runs `eng queue resume` and says so")
+    return (f"for a session, not the owner: {cause}; the session that fixes it, or any session that finds it gone, "
+            "runs `eng queue resume` itself and says so")
+
+
+def failure(done, arguments, tries=1):
+    return (f"`git {shlex.join(arguments)}` exited {done.returncode}{f' {tries} times' if tries > 1 else ''}: "
+            f"{done.stderr.strip() or 'no output'}")
+
+
 def checked(done, arguments, tries=1):
-    if done.returncode:
-        raise ValueError(f"`git {shlex.join(arguments)}` exited {done.returncode}"
-                         f"{f' {tries} times' if tries > 1 else ''}: {done.stderr.strip() or 'no output'}")
+    if done.returncode: raise ValueError(failure(done, arguments, tries))
     return done
 
 
@@ -190,14 +227,17 @@ def now():
 
 def reach(directory, *arguments, say=print, check=False):
     """Git in directory for what talks to the remote, a fetch or a push: one that did not reach it is tried
-    again after each of BACKOFF, and only then fails, as anything else does at once."""
+    again after each of BACKOFF, and only then fails, as anything else does at once. With check, a failure is a
+    Hold: one that clears by itself for a remote still out of reach, the owner's for a refusal, which only he
+    can fix, and a session's for anything else."""
     for tries, delay in enumerate((*BACKOFF, None), start=1):
         done = git(directory, *arguments)
         said = done.stderr.strip()
         if done.returncode == 0 or delay is None or not unreached(said): break
         say(f"`git {arguments[0]}` did not reach the remote, so trying again in {delay}s: {said.splitlines()[-1]}")
         pause(delay)
-    if check: checked(done, arguments, tries)
+    if check and done.returncode:
+        raise Hold(CLEARS if unreached(said) else OWNER if REFUSED.search(said) else SESSION, failure(done, arguments, tries))
     return done
 
 
@@ -429,17 +469,21 @@ class Queue:
     def working(self):
         with self.worker() as free: return not free
 
+    def command(self, toolkit):
+        """What runs this repository's worker on the toolkit at toolkit: `eng queue run` for the main checkout, from
+        that toolkit's Python, as start starts one and as a worker starts itself again on a newer toolkit
+        (Worker.move_to)."""
+        script = ("import sys; sys.path.insert(0, sys.argv[1]); from vocaro_engineering.cli import main; "
+                  "sys.exit(main(['--project', sys.argv[2], 'queue', 'run']))")
+        return [sys.executable, "-c", script, str(Path(toolkit) / "src/python"), str(self.main_checkout)]
+
     def start(self):
         """Start a worker apart from this session, so that it outlives the session's turn and its
         task stop. One that finds another working exits at once."""
         if self.held() or not self.waiting() or self.working(): return
-        source = str(TOOLKIT_ROOT / "src/python")
-        script = ("import sys; sys.path.insert(0, sys.argv[1]); from vocaro_engineering.cli import main; "
-                  "sys.exit(main(['--project', sys.argv[2], 'queue', 'run']))")
         with (self.directory / "worker.log").open("a") as log:
-            started = subprocess.Popen([sys.executable, "-c", script, source, str(self.main_checkout)], cwd=self.main_checkout,
-                             stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, env=environment(),
-                             start_new_session=True)
+            started = subprocess.Popen(self.command(TOOLKIT_ROOT), cwd=self.main_checkout, stdin=subprocess.DEVNULL,
+                                       stdout=log, stderr=subprocess.STDOUT, env=environment(), start_new_session=True)
             # It is meant to outlive this process, which must not wait for it, but one that ends first
             # stays a zombie child until reaped: a long-lived caller, `eng land --wait` or a test run, sees it.
             threading.Thread(target=started.wait, daemon=True).start()
@@ -526,7 +570,7 @@ def add(root, reference, note=None, quiet_wait=False):
     with queue.locked(): queue.save(entry)
     print(f"queued {identifier}: {len(commits)} commit(s), {entry['subject']}")
     why = queue.held()
-    if why: print(f"queue: held, so it waits until the owner runs `eng queue resume`: {why}", file=sys.stderr)
+    if why: print(f"queue: {identifier} waits, since the queue is held {why}", file=sys.stderr)
     queue.start()
     if not quiet_wait:
         print("nothing else is needed for it to land; to be told at once if it comes back, run as a background "
@@ -567,7 +611,7 @@ def status(root, as_json=False, recent=5):
     if as_json:
         print(json.dumps({"worker": working, "held": why, "waiting": waiting, "recent": done}, indent=2))
         return 0
-    print(f"worker: {'running' if working else 'none'}" + (f"; held: {why}" if why else ""))
+    print(f"worker: {'running' if working else 'none'}" + (f"; held {why}" if why else ""))
     if waiting and not working and not why: print("waiting with no worker: `eng queue resume` starts one")
     for entry in waiting + done: print(describe(entry))
     return 0
@@ -588,7 +632,7 @@ def wait(root, identifier, limit=WAIT_LIMIT):
             return 0 if entry["state"] == LANDED else 1
         why = queue.held()
         if why:
-            print(f"{identifier} is waiting, and the queue is held for the owner: {why}")
+            print(f"{identifier} is waiting, and the queue is held {why}")
             return resources.BUSY
         if time.monotonic() >= deadline:
             print(f"{identifier} is still {entry['state']} after {limit:g}s")
@@ -597,13 +641,41 @@ def wait(root, identifier, limit=WAIT_LIMIT):
         time.sleep(POLL)
 
 
+def running():
+    """The commit the worker's own code came from: HEAD of the toolkit checkout that scripts/eng resolved, or
+    None where that is no repository."""
+    head = git(TOOLKIT_ROOT, "rev-parse", "--verify", "-q", "HEAD")
+    return head.stdout.strip() if head.returncode == 0 and head.stdout.strip() else None
+
+
+def execute(command, env):
+    """Replace this process with command in env, for a test to replace: a worker's move to a newer toolkit
+    (Worker.move_to). It returns only when the exec failed."""
+    os.execve(command[0], command, env)
+
+
+def carried():
+    """The bisect progress the worker this one replaces left in the environment (Worker.move_to), taken out of it
+    so that no lane inherits it, or None."""
+    kept = os.environ.pop(PROGRESS_VARIABLE, None)
+    if not kept: return None
+    try: progress = json.loads(kept)
+    except ValueError: return None
+    return progress if isinstance(progress, dict) else None
+
+
 class Worker:
-    def __init__(self, queue):
+    def __init__(self, queue, progress=None):
         self.queue = queue
         self.checkout = queue.checkout
         self.limit = None  # how many of the oldest entries the next round takes, while bisecting
         self.suspects = 0  # how many of the oldest entries hold a commit that fails
         self.no_verdicts = 0  # the runs in a row that gave no verdict, held at no_verdict_runs
+        if progress:  # what the worker this one replaces had reached (progress)
+            self.limit, self.suspects = progress.get("limit"), progress.get("suspects", 0)
+            self.no_verdicts = progress.get("no_verdicts", 0)
+        self.code = running()  # the commit this worker's code came from, which toolkit compares with the copy's
+        self.rounds = 0  # the rounds this worker has finished, which run reads to count its tries
         self.timed_out = None  # why the last gate's lane reached its limit, or None (gate)
         self.ran_on = None  # the second Mac that ran the last lane the gate ran, or None (gate)
         self.environment = environment()  # what the lanes, the hook and the carry-over checks run in
@@ -611,6 +683,11 @@ class Worker:
 
     def say(self, words):
         print(f"queue: {time.strftime('%H:%M:%S')} {words}", flush=True)
+
+    def progress(self):
+        """What a worker that takes over from this one, on a newer toolkit or after a cause that cleared, goes on
+        from: its bisect and its count of runs with no verdict. Every entry's state is on disk already."""
+        return {"limit": self.limit, "suspects": self.suspects, "no_verdicts": self.no_verdicts}
 
     def look(self, host, said):
         """(pressure, one-minute load, where it was read) of the Mac a lane ran on: host, the second Mac, by
@@ -673,7 +750,7 @@ class Worker:
         listed = text(repository, "worktree", "list", "--porcelain").splitlines()
         if f"worktree {path}" in listed: return
         if path.exists():
-            raise ValueError(f"{path} exists and is no worktree of {repository}: move it, then run `eng queue resume`")
+            raise Hold(SESSION, f"{path} exists and is no worktree of {repository}: move it")
         path.parent.mkdir(parents=True, exist_ok=True)
         if f"worktree {old}" in listed:
             why = self.move(repository, old, path)
@@ -707,7 +784,10 @@ class Worker:
         checkout that lags, or holds a session's changes, says nothing of the commits (guides/maintenance.md,
         The merge queue). Each worker has its own, so that moving it changes no other project's running
         gate. The toolkit's own queue tests its batch, and an explicit VOCARO_ENGINEERING_ROOT stands.
-        A copy that cannot be made or moved holds the queue, as a fetch of the project that keeps failing does."""
+        A copy that cannot be made or moved holds the queue, as a fetch of the project that keeps failing does.
+        A copy at another commit than this worker's own code then replaces the worker with one started from it
+        (move_to): what judges main, config.load among it, is the copy's code too, not the older code the worker was
+        started from. A toolkit that is no repository, or an explicit root, keeps the code the worker runs."""
         self.environment = environment()
         if os.environ.get(TOOLKIT_VARIABLE): return
         common = git(TOOLKIT_ROOT, "rev-parse", "--path-format=absolute", "--git-common-dir")
@@ -722,8 +802,25 @@ class Worker:
         self.place(TOOLKIT_ROOT, copy, old, "the merge queue's copy of the toolkit")
         git(copy, "checkout", "--force", "--detach", text(TOOLKIT_ROOT, "rev-parse", MAIN), hooks=False, check=True)
         git(copy, "clean", "-fdq", hooks=False, check=True)
-        self.say(f"toolkit {text(copy, 'rev-parse', 'HEAD')[:12]} in {copy}")
+        head = text(copy, "rev-parse", "HEAD")
+        self.say(f"toolkit {head[:12]} in {copy}")
         self.environment = {**environment(), TOOLKIT_VARIABLE: str(copy)}
+        if self.code and head != self.code: self.move_to(copy, head)
+
+    def move_to(self, copy, head):
+        """Go on as a worker started from copy, the toolkit at origin/main, in place of this process: the same
+        command as Queue.start's, this process's environment, and this worker's progress. The worker judged main
+        with the code it was started from, which lags origin/main once the toolkit lands under it: on 2026-11-04
+        EPUBLib's worker, from a checkout older than vocaro-engineering#168, landed a commit whose gate lane set
+        `wholeHost`, a key the copy accepted, and then held the queue on it, as its own config module refused it,
+        until a person resumed it (vocaro-engineering#173). Nothing of a round is in flight here: it runs before
+        the round's entries are touched, so every entry's state is on disk, and the new process takes the worker's
+        lock as this one's closes with the exec. One that returns is a failed exec, which holds."""
+        self.say(f"moving to the toolkit at {head[:12]}, origin/main, from {self.code[:12]}, which this worker was "
+                 "started from: the next worker is started from the copy")
+        sys.stdout.flush()
+        execute(self.queue.command(copy), {**environment(), PROGRESS_VARIABLE: json.dumps(self.progress())})
+        raise RuntimeError(f"the worker could not start itself again from {copy}")
 
     def toolkits_own(self):
         """Whether this is the toolkit's own queue: the toolkit running the worker is a checkout of its repository."""
@@ -974,12 +1071,12 @@ class Worker:
                     self.say(f"the pre-push hook gave no verdict (exit {result})")
                     busy = self.settle("the pre-push hook runs")
                     if busy:
-                        raise ValueError(f"the pre-push hook gave no verdict, exit {result}, on {head[:12]}, and {busy}; "
-                                         f"see {log}")
+                        raise Hold(SESSION, f"the pre-push hook gave no verdict, exit {result}, on {head[:12]}, and "
+                                            f"{busy}; see {log}")
                     continue
                 if result in NO_VERDICT:
-                    raise ValueError(f"the pre-push hook gave no verdict, exit {result}, twice on {head[:12]}; see {log}")
-                if result: raise ValueError(f"the pre-push hook refused {head[:12]}, exit {result}; see {log}")
+                    raise Hold(SESSION, f"the pre-push hook gave no verdict, exit {result}, twice on {head[:12]}; see {log}")
+                if result: raise Hold(SESSION, f"the pre-push hook refused {head[:12]}, exit {result}; see {log}")
                 checked = head
             # A connection that dropped pushes again here, without running the hook again.
             pushed = reach(self.checkout, "push", "--no-verify", "origin", "HEAD:refs/heads/main", say=self.say)
@@ -995,8 +1092,8 @@ class Worker:
             said = pushed.stderr.strip()
             if "rejected" in said and ("fetch first" in said or "non-fast-forward" in said): continue
             if unreached(said):
-                raise ValueError(f"the push of {head[:12]} did not reach the remote in {len(BACKOFF) + 1} tries: {said}")
-            raise ValueError(f"the push of {head[:12]} was refused: {said or 'no output'}{status}")
+                raise Hold(CLEARS, f"the push of {head[:12]} did not reach the remote in {len(BACKOFF) + 1} tries: {said}")
+            raise Hold(OWNER, f"the push of {head[:12]} was refused: {said or 'no output'}{status}")
         return False
 
     def push_again(self, pushed):
@@ -1096,15 +1193,17 @@ class Worker:
             runs = no_verdict_runs(config)
             gave = (f"the lanes gave no verdict in {self.no_verdicts} run{'' if self.no_verdicts == 1 else 's'} in a "
                     f"row, the last with exit {result}, {self.no_verdict_cause(result, log)}")
+            # A shared host's configuration is the owner's; a host that stays busy, or tests left unmeasured, a
+            # session reads, and resumes once the host has settled or the cause is gone.
+            kind = OWNER if result == remote.MISCONFIGURED else SESSION
             if self.no_verdicts >= runs:
-                queue.hold(f"{gave}, the most queue.noVerdictRuns allows ({runs}); see {log}, then run "
-                           "`eng queue resume`")
+                queue.hold(worded(kind, f"{gave}, the most queue.noVerdictRuns allows ({runs}); see {log}"))
                 return True
             self.say(f"no verdict (exit {result})" + (f" from {self.ran_on}" if self.ran_on else "")
                      + f", run {self.no_verdicts} of at most {runs}")
             # Every retry waits, so that none starts into the load that voided the run before it.
             busy = self.settle("the lanes run", self.ran_on)
-            if busy: queue.hold(f"{gave}, and {busy}; see {log}, then run `eng queue resume`")
+            if busy: queue.hold(worded(kind, f"{gave}, and {busy}; see {log}"))
             return True
         self.no_verdicts = 0
         if result:
@@ -1139,15 +1238,24 @@ class Worker:
         with the checkout left at head. Until main names any lanes, the batch's: the commit that first names a
         project's lanes has to land."""
         self.reset(base)
-        config = load(self.checkout)
+        config = self.judged(f"main at {base[:12]}")
         self.reset(head)
         try: lanes_of(config)
         except ValueError:
-            config = load(self.checkout)
+            config = self.judged(f"the batch at {head[:12]}")
             # The batch may name its lanes, but only main may say the hook need not run, or which paths are docs.
             config.get("queue", {}).pop("hookCoveredBy", None)
             config.get("queue", {}).pop("docsOnly", None)
         return config
+
+    def judged(self, what):
+        """The checkout's configuration as this worker's code judges it: the toolkit at origin/main where a copy
+        exists (toolkit, move_to), which the hold names. What it refuses, a session fixes, on main or in the
+        toolkit, and nobody has to ask the owner."""
+        try: return load(self.checkout)
+        except ValueError as error:
+            raise Hold(SESSION, f"{error}, judging {what} with the toolkit at "
+                                f"{self.code[:12] if self.code else 'no commit'}") from error
 
     def keep(self, batch, base, head, docs):
         """Record a batch's pass before its push. A hold the push meets, a refusal or a remote out of reach, then
@@ -1187,25 +1295,45 @@ class Worker:
             with contextlib.suppress(OSError): path.unlink()
 
     def drain(self):
-        while not self.queue.held() and self.round(): pass
+        while not self.queue.held() and self.round(): self.rounds += 1
 
 
 def run(root):
     """Be the repository's worker until nothing waits. A second worker exits at once. Anything
-    unexpected holds the queue, with every entry still waiting, rather than guessing at a verdict."""
+    unexpected holds the queue, with every entry still waiting, rather than guessing at a verdict; the hold's
+    reason says whom it is for (worded). A cause that clears by itself, a remote out of reach past its backoff,
+    runs the round again after each of CLEARING_WAITS first, this process staying the worker through the wait,
+    and holds for a session only when the last try fails too."""
     queue = Queue(root)
+    progress, tries = carried(), 0
     while True:
         with queue.worker() as free:
             if not free: return 0
             # Whatever a worker that died left testing was never pushed. What it left passed is pushed first,
             # and a push that had gone through lands it then, as a push of what main already has.
             queue.mark([entry for entry in queue.all() if entry["state"] == TESTING], QUEUED)
-            worker = Worker(queue)
+            worker = Worker(queue, progress)
+            progress = None
             try:
                 with processes.forwarding_signals(): worker.drain()
             except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
                 queue.mark([entry for entry in queue.all() if entry["state"] == TESTING], QUEUED)
-                queue.hold(f"{error}{passed_push(queue)}; then run `eng queue resume`")
+                if worker.rounds: tries = 0  # a round that went through since the last try starts the count again
+                kind = error.kind if isinstance(error, Hold) else SESSION
+                if kind == CLEARS and tries < len(CLEARING_WAITS):
+                    delay = CLEARING_WAITS[tries]
+                    tries += 1
+                    worker.say(f"{error}: a cause that clears by itself, so the round runs again in {delay}s, "
+                               f"try {tries} of {len(CLEARING_WAITS)}")
+                    progress = worker.progress()
+                    pause(delay)
+                    continue
+                cause = f"{error}{passed_push(queue)}"
+                if kind == CLEARS:
+                    kind = SESSION
+                    cause = (f"{error}, after {tries} more tr{'y' if tries == 1 else 'ies'} of the round over "
+                             f"{sum(CLEARING_WAITS[:tries])}s did not clear it{passed_push(queue)}")
+                queue.hold(worded(kind, cause))
                 return 1
         # An entry added after the last look, while its adder found this worker running, is this
         # worker's to take: its adder's own worker has already exited.
@@ -1218,7 +1346,7 @@ def passed_push(queue):
     if not passed: return ""
     verdict = passed[0]["passed"]
     return (f"; passed {verdict['head'][:12]} on {verdict['base'][:12]} ({len(passed)} "
-            f"entr{'y' if len(passed) == 1 else 'ies'}), whose push waits for the owner and needs no gate again")
+            f"entr{'y' if len(passed) == 1 else 'ies'}), which the resume pushes without gating again")
 
 
 def resume(root):
@@ -1243,7 +1371,8 @@ def add_arguments(parser):
     adding = operations.add_parser("add", help="queue the commits a ref has and origin/main lacks, and return at once")
     adding.add_argument("reference", nargs="?", default="HEAD")
     adding.add_argument("--note", help="what the entry is, for `eng queue status`")
-    state = operations.add_parser("status", help="say what is waiting, what is running and what came back")
+    state = operations.add_parser("status", help="say what is waiting, what is running, what came back and, when the "
+                                  "queue is held, why and for whom")
     state.add_argument("--json", action="store_true")
     following = operations.add_parser("wait", help="follow an entry to its result: 0 landed, 1 came back, 75 "
                                       "held or still waiting at the limit")
@@ -1251,7 +1380,8 @@ def add_arguments(parser):
     following.add_argument("--limit", type=float, default=WAIT_LIMIT, metavar="SECONDS")
     removing = operations.add_parser("remove", help="take an entry out; a run in progress finishes, and lands nothing")
     removing.add_argument("id")
-    operations.add_parser("resume", help="clear a hold and start the worker")
+    operations.add_parser("resume", help="clear a hold and start the worker: any session does this itself once the "
+                          "hold's cause is dealt with or gone, and asks the owner only for a hold that says it is his")
     operations.add_parser("run", help="be the worker in the foreground; `add` starts one by itself")
 
 
