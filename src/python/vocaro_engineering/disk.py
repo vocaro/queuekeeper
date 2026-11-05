@@ -10,7 +10,9 @@ their sessions leave in the temporary directories. It reads nothing else, and cl
   owner's decision, 2026-11-03). `--yes`, given only on the owner's approval of that run, answers
   for him, so an agent can carry an approval he gave in chat into a run without a terminal.
 - owner: nothing shows a session using it, but only the owner can say whether it is still
-  wanted. The command that would remove it is printed; `--delete` never runs it.
+  wanted. The command that would remove it is printed; `--delete` never runs it. An evidence
+  archive's command moves it to the second Mac, and eng's offload retry runs it by itself once the
+  archive is quiet and unused (evidence_offload).
 - kept: it is in use, owned, of unclear ownership, or holds work or evidence.
 
 `--dry-run` lists what `--delete` would remove. Without --delete nothing is changed.
@@ -703,19 +705,30 @@ def swiftpm_cache(host, usage, sizes):
     return items
 
 
-def evidence_archives(host, sizes):
-    """Durable evidence kept here when a second Mac could hold it. Offloading deletes it here only once
-    every file verified there."""
-    if not host.offload_host or not host.development.is_dir(): return []
-    command = ["python3", "scripts/eng", "evidence", "offload"]
-    folders = [(path, [*command, str(path)]) for path in sorted(host.development.iterdir())
+def archive_folders(development):
+    """The durable evidence archives in development that belong on the second Mac, each with the path
+    `eng evidence offload --to` names for it there, or None for the same path under its home: a folder
+    named as EVIDENCE_ARCHIVE says that is not a Git checkout, and a main checkout's
+    .build/session-evidence, which goes to the shared session-evidence folder there, not into that
+    project's checkout. `eng disk` lists them, and the offload's retry offers them unasked."""
+    development = Path(development)
+    if not development.is_dir(): return []
+    folders = [(path, None) for path in sorted(development.iterdir())
                if path.is_dir() and not path.is_symlink() and EVIDENCE_ARCHIVE.fullmatch(path.name)
                and not (path / ".git").exists()]
-    # A main checkout's archive goes to the shared session-evidence folder there, not into that
-    # project's checkout on the second Mac.
-    folders += [(path, [*command, str(path), "--to", f"Development/session-evidence/{main.name}"])
-                for main in main_checkouts(host) for path in [main / ".build/session-evidence"]
-                if path.is_dir() and not path.is_symlink()]
+    return folders + [(path, f"Development/session-evidence/{main.name}")
+                      for main in sorted(path for path in development.iterdir() if (path / ".git").is_dir())
+                      for path in [main / ".build/session-evidence"] if path.is_dir() and not path.is_symlink()]
+
+
+def evidence_archives(host, sizes):
+    """Durable evidence kept here when a second Mac could hold it. Offloading deletes it here only once
+    every file verified there, and eng's retry offloads each by itself once it is quiet and unused
+    (evidence_offload.retry)."""
+    if not host.offload_host or not host.development.is_dir(): return []
+    command = ["python3", "scripts/eng", "evidence", "offload"]
+    folders = [(path, [*command, str(path), *(["--to", to] if to else [])])
+               for path, to in archive_folders(host.development)]
     # A folder whose offload found the second Mac unreachable is listed wherever it is, with what eng does next.
     from . import evidence_offload  # it imports remote, which imports this module
     try: queued = evidence_offload.Queue(host.home).read()["folders"]
@@ -730,7 +743,11 @@ def evidence_archives(host, sizes):
         said = (f"durable evidence; it belongs on {host.offload_host} (guides/evidence.md): offloading moves it, "
                 "deleting it here once it verified there")
         entry = queued.get(canonical(path))
-        if not entry: return said
+        if not entry:
+            return (f"{said}; eng offloads it by itself once nothing in it has changed for "
+                    f"{evidence_offload.QUIET // 3600} h and no process uses it")
+        if evidence_offload.reoffered(entry):
+            return f"{said}; a retry of its offload found the second Mac away, and eng offers it again once it answers: {entry['failed']}"
         if entry.get("failed"): return f"{said}; a retry of its offload failed, so it waits for a person: {entry['failed']}"
         return f"{said}; its offload found the second Mac unreachable on {entry.get('queued')}, and eng retries it"
     return [Item("evidence", str(path), OWNER, reason(path), sizes.of(path), offload, host.now - last_activity(path))

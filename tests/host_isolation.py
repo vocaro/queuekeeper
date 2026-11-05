@@ -13,6 +13,8 @@ sets its own; the process removes this one when it exits.
 shuts down stale pool simulators (cli.fix_hosts). Most doctor tests compare this Mac with the real
 second Mac, so cli.fix_hosts is replaced here by one that changes nothing; a test of the fixes calls
 FIX_HOSTS, the real one, against fakes.
+
+VOCARO_EVIDENCE_RETRY is set to off, so no eng a test runs offloads this Mac's evidence archives.
 """
 import atexit
 import os
@@ -55,6 +57,11 @@ crash_alerts.change = lambda value: True
 
 
 FIX_HOSTS = cli.fix_hosts
+
+# Nor does any eng a test runs, in this process or a child, start the evidence offload's background retry,
+# which would offer this Mac's real evidence archives to the real second Mac (vocaro-engineering#157). A test
+# of retry_soon clears it.
+os.environ["VOCARO_EVIDENCE_RETRY"] = "off"
 
 
 def unfixed(root, hosts):

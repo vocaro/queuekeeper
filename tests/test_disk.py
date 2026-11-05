@@ -631,6 +631,10 @@ class EvidenceArchiveTests(Fixture):
         self.assertEqual(items[str(measurements)].command,
                          ["python3", "scripts/eng", "evidence", "offload", str(measurements)])
         self.assertEqual(items[str(kept)].command[-2:], ["--to", "Development/session-evidence/Project"])
+        self.assertIn("eng offloads it by itself once nothing in it has changed for 24 h", items[str(session)].reason)
+        # The retry offers the same folders, each with the destination the listing names.
+        self.assertEqual(disk.archive_folders(self.development),
+                         [(measurements, None), (session, None), (kept, "Development/session-evidence/Project")])
 
     def test_a_folder_waiting_for_the_second_mac_says_so_wherever_it_is(self):
         from vocaro_engineering import evidence_offload
@@ -644,8 +648,13 @@ class EvidenceArchiveTests(Fixture):
         queue.add(failed, None, False, "second cannot be reached")
         queue.fail(failed, "FAILED: 1 files did not verify")
         queue.add(self.home / "gone", None, False, "second cannot be reached")
+        away = self.development / "away-evidence"
+        away.mkdir()
+        queue.add(away, None, False, "second cannot be reached")
+        queue.fail(away, "FAILED: 1 files did not verify", away=True)
         items = self.items(self.host(offload_host="build-host"), ["evidence"])
-        self.assertEqual(set(items), {str(measurements), str(elsewhere), str(failed)})
+        self.assertEqual(set(items), {str(measurements), str(elsewhere), str(failed), str(away)})
+        self.assertIn("found the second Mac away, and eng offers it again once it answers", items[str(away)].reason)
         self.assertIn("found the second Mac unreachable", items[str(measurements)].reason)
         self.assertIn("eng retries it", items[str(elsewhere)].reason)
         self.assertEqual(items[str(elsewhere)].command,

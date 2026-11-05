@@ -1313,7 +1313,10 @@ with their commands: exactly what `--delete` would offer to remove.
   checkout's `.build/session-evidence`, are owner items. Their command is
   `eng evidence offload`, which deletes a folder here only once every file verified there
   ([evidence](evidence.md#public-and-private-destinations)). A main checkout's archive goes to
-  `Development/session-evidence/<project>` there.
+  `Development/session-evidence/<project>` there. eng's background offload retry runs that command
+  by itself once nothing in the folder has changed for 24 hours and no process uses it, so an
+  archive listed here moves without a person unless it is in use, still changing, or its offload
+  failed for a reason other than the second Mac being away.
 
 `eng disk --delete` removes simulator and runtime candidates at once, on a terminal or not, so a
 script can run it. Every other category it removes only on a terminal, after asking once for
