@@ -306,7 +306,8 @@ fast-forwards its main checkout, `~/Development/vocaro-engineering`, to `origin/
 but only when that checkout is on `main`, clean (no changed or untracked path), holds no commit of its
 own, is behind, and no process started from it still runs: one whose working directory, an open file
 or an argument is below the checkout, in its tree, outside the session worktrees inside it and Git's
-own directory, where an argument relative to its working directory counts when it names a path there
+own directory, where an argument relative to its working directory counts when it names a file there,
+or a folder by a path with a slash
 (owner's decision, 2026-11-02, [vocaro-engineering#104](https://github.com/vocaro/vocaro-engineering/issues/104)).
 The checkout itself is no such use: every Claude session in a worktree inside it passes it as
 `--project-config-root`, and the session's MCP servers and language servers start there, while a run

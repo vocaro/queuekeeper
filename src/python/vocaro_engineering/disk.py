@@ -188,7 +188,7 @@ def users(processes, path, apart=()):
 def runners(processes, root, apart=()):
     """(process, how, path) for each process that may run code from root's own tree: its working directory, an open
     file or an argument is below root, not at root itself and not below any of apart, where an argument relative to
-    its working directory counts when it names a path that exists there. A process whose only tie is root itself, a
+    its working directory counts when it names a file there, or a folder by a path with a slash. A process whose only tie is root itself, a
     session's project root passed as an argument or a helper it started there, runs nothing from the tree; a run
     from root, such as `python3 scripts/eng`, names a file below it (vocaro-engineering#182)."""
     top = canonical(root)
@@ -201,8 +201,9 @@ def runners(processes, root, apart=()):
         for token in SEPARATORS.split(process.args):
             if token.startswith("/"): uses.append((token, "argument"))
             elif token and not token.startswith("-") and process.cwd and within(process.cwd, root):
+                # A bare word that happens to name a folder there, as a session's options name `skills`, is not a path.
                 named = os.path.join(process.cwd, token)
-                if os.path.exists(named): uses.append((named, "argument"))
+                if os.path.isfile(named) or ("/" in token and os.path.exists(named)): uses.append((named, "argument"))
         hit = next(((how, value) for value, how in uses if below(value)), None)
         if hit: found.append((process, *hit))
     return found

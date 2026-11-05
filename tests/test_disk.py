@@ -222,6 +222,7 @@ class WorktreeTests(Fixture):
         nested = checkout / ".claude/worktrees/agent"
         (checkout / "scripts").mkdir(parents=True)
         (checkout / "scripts/eng").write_text("")
+        (checkout / "skills/closeout").mkdir(parents=True)
         processes = [
             # The negative controls.
             disk.Process(1, cwd=str(nested), args=f"claude --project-config-root {checkout}"),
@@ -229,19 +230,21 @@ class WorktreeTests(Fixture):
             disk.Process(3, paths=(str(checkout),)),
             disk.Process(4, cwd=str(self.root), args="python3 scripts/eng run lane"),
             disk.Process(5, cwd=str(nested), args="python3 scripts/eng run lane"),
+            disk.Process(10, cwd=str(checkout), args="claude --setting-sources user,project --add-dir skills"),
             # The positive controls.
             disk.Process(6, cwd=str(checkout), args="python3 scripts/eng run lane"),
             disk.Process(7, cwd=str(checkout / "scripts"), args="sleep 300"),
             disk.Process(8, paths=(str(checkout / "skills/closeout/landed.sh"),)),
-            disk.Process(9, cwd=str(self.root), args=f"python3 {checkout}/scripts/eng land")]
+            disk.Process(9, cwd=str(self.root), args=f"python3 {checkout}/scripts/eng land"),
+            disk.Process(11, cwd=str(checkout), args="sh -c ./run skills/closeout")]
         found = disk.runners(processes, checkout, apart=[nested])
-        self.assertEqual([process.pid for process, _, _ in found], [6, 7, 8, 9])
+        self.assertEqual([process.pid for process, _, _ in found], [6, 7, 8, 9, 11])
         self.assertEqual(found[0][1:], ("argument", str(checkout / "scripts/eng")))
         self.assertEqual(found[1][1], "working directory")
         self.assertEqual(found[2][1], "open file")
         # users, which keeps a checkout from being moved, still counts each use at its root.
         self.assertEqual([process.pid for process in disk.users(processes, checkout, apart=[nested])],
-                         [1, 2, 3, 6, 7, 8, 9])
+                         [1, 2, 3, 10, 6, 7, 8, 9, 11])
 
     def test_a_worktree_outside_the_session_directories_is_only_an_owner_decision(self):
         shared = self.worktree("Project", parent=self.root / "share")
