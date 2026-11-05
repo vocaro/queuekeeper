@@ -1,0 +1,128 @@
+"""Which copy of the toolkit `scripts/eng` runs, in the toolkit's own repository (vocaro-engineering#189).
+
+A session worktree of vocaro-engineering (.claude/worktrees/*) holds a toolkit copy of its own, which
+falls behind origin/main as other sessions land: on 2026-11-05 one 63 commits behind ran `eng disk`
+rules two days old, found nothing to delete on a Mac at 20 GiB free, and said nothing. Project
+repositories are not affected: their launcher finds the toolkit beside their main checkout, from a
+worktree too (integrations/shared.py), and that shared checkout follows main (#182).
+
+choose decides, before any of the package is imported, so it imports nothing of it: scripts/eng loads
+this file by its path.
+
+- A copy that is not behind origin/main, or whose repository has no origin/main, runs silently.
+- A linked worktree's copy that is behind, changes no toolkit file of its own (TOOLKIT_PATHS, against
+  its merge base with origin/main, uncommitted and untracked files included) and runs a command that
+  acts on state the host shares (HOST_COMMANDS) runs the main checkout's copy instead, when that copy
+  is nearer origin/main, and says so in one line. Host state is everyone's, so the newest rules apply.
+- Any other copy that is behind runs its own code, with one line naming the gap: a worktree testing its
+  own toolkit change must run that change (`eng unittest`, its lanes, `eng land` of its branch), and a
+  stale copy's tests and lanes belong to its own commit, which a newer runner may not read.
+
+VOCARO_ENGINEERING_ROOT, which names the copy outright, skips all of this.
+"""
+import os
+from pathlib import Path
+import subprocess
+
+UPSTREAM = "refs/remotes/origin/main"
+# What the runner itself is made of. A change to tests, guides or agents leaves the runner main's.
+TOOLKIT_PATHS = ("src/python", "scripts/eng", "integrations")
+# Commands that act on what every session on the host shares: its disk, admission slots and log, the
+# merge queue, both Macs and their keychains, the simulator pool and the policy file.
+HOST_COMMANDS = frozenset({"admissions", "admit", "disk", "host", "keychain", "land", "policy", "queue", "remote",
+                           "simulator-pool"})
+GIT_TIMEOUT = 10
+
+
+def environment():
+    """The environment without a hook's GIT_DIR and the like, which would aim Git at another checkout."""
+    try:
+        names = subprocess.run(["git", "rev-parse", "--local-env-vars"], capture_output=True, text=True,
+                               stdin=subprocess.DEVNULL, timeout=GIT_TIMEOUT).stdout.split()
+    except (OSError, subprocess.SubprocessError):
+        names = []
+    return {key: value for key, value in os.environ.items() if key not in set(names)}
+
+
+def git(directory, *arguments):
+    """Git's standard output, stripped, or None when it failed."""
+    try:
+        done = subprocess.run(["git", "-C", str(directory), *arguments], capture_output=True, text=True,
+                              stdin=subprocess.DEVNULL, env=environment(), timeout=GIT_TIMEOUT)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return done.stdout.strip() if done.returncode == 0 else None
+
+
+def command(argv):
+    """The subcommand argv names, skipping --project and its value, or None."""
+    words = iter(argv)
+    for word in words:
+        if word == "--project":
+            next(words, None)
+        elif not word.startswith("-"):
+            return word
+    return None
+
+
+def main_checkout(toolkit):
+    """The main checkout of the repository toolkit is a linked worktree of, or None."""
+    own = git(toolkit, "rev-parse", "--path-format=absolute", "--git-dir")
+    common = git(toolkit, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    if own is None or common is None or Path(own).resolve() == Path(common).resolve():
+        return None
+    return Path(common).resolve().parent
+
+
+def behind(toolkit):
+    """How many commits origin/main has that this copy's HEAD lacks, or None without origin/main."""
+    count = git(toolkit, "rev-list", "--count", f"HEAD..{UPSTREAM}")
+    return int(count) if count and count.isdigit() else None
+
+
+def own_changes(toolkit):
+    """The toolkit files this copy changes against its merge base with origin/main, committed or not,
+    untracked ones included; None when that cannot be read, which counts as changes."""
+    base = git(toolkit, "merge-base", "HEAD", UPSTREAM)
+    if base is None: return None
+    changed = git(toolkit, "diff", "--name-only", base, "--", *TOOLKIT_PATHS)
+    untracked = git(toolkit, "ls-files", "--others", "--exclude-standard", "--", *TOOLKIT_PATHS)
+    if changed is None or untracked is None: return None
+    return sorted({line for line in (changed + "\n" + untracked).splitlines() if line.strip()})
+
+
+def last_landed(toolkit):
+    return git(toolkit, "log", "-1", "--format=%s", UPSTREAM) or "unknown"
+
+
+def gap_line(toolkit, count):
+    return (f"eng: this toolkit copy ({toolkit}) is {count} commit{'s' * (count != 1)} behind origin/main (last "
+            f"landed: {last_landed(toolkit)}); `git merge --ff-only origin/main` there brings it up to date")
+
+
+def choose(toolkit, argv):
+    """(the toolkit checkout to run, the line to say first or None) for scripts/eng in toolkit, run with argv."""
+    toolkit = Path(toolkit).resolve()
+    count = behind(toolkit)
+    if not count: return toolkit, None
+    name = command(argv)
+    main = main_checkout(toolkit)
+    changes = own_changes(toolkit)
+    if name in HOST_COMMANDS and main is not None and changes == [] \
+            and (main / "src/python/vocaro_engineering/cli.py").is_file():
+        theirs = behind(main)
+        if theirs is not None and theirs < count:
+            return main, (f"eng: `{name}` acts on state this host shares, so it runs the main checkout's toolkit "
+                          f"({main}, {theirs} behind origin/main): this worktree's copy is {count} behind and "
+                          "changes no toolkit file; VOCARO_ENGINEERING_ROOT=. runs this copy instead")
+    line = gap_line(toolkit, count)
+    if changes:
+        shown = ", ".join(changes[:3]) + (f" and {len(changes) - 3} more" if len(changes) > 3 else "")
+        line += f"; it runs its own code, since it changes {shown}"
+    return toolkit, line
+
+
+def doctor_warnings(toolkit):
+    """`eng doctor`'s warning for a toolkit copy behind origin/main, from any project."""
+    count = behind(toolkit)
+    return [gap_line(Path(toolkit).resolve(), count)] if count else []

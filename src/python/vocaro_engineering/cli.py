@@ -12,7 +12,7 @@ import sys
 import time
 
 from . import __version__, app_registrations, budgets, crash_alerts, devices, disk, docs, evidence, evidence_offload, failure_records, foreground, github_artifacts, keychain, merge_queue, \
-    offload_host, parallel, processes, release, remote, resources, skills, spelling, xctest_shards
+    offload_host, parallel, processes, release, remote, resources, skills, spelling, toolkit_copy, xctest_shards
 from .config import TOOLKIT_ROOT, CAPABILITIES, DEFAULT_TOOLKIT, load, source_identity, stays, unlocked_screen
 from .resources import BUSY, FREE_WAIT
 from .simulators import matrix, pool as simulator_pool
@@ -917,6 +917,7 @@ def main(argv=None):
             warnings += temporary_model_storage(root, config)
             warnings += unlinked_packages(root, config)
             warnings += stale_copies(root)
+            warnings += toolkit_copy.doctor_warnings(TOOLKIT_ROOT)
             warnings += agent_entry(root, config)
             warnings += skills.warnings(named_checkout(TOOLKIT_ROOT))
             # A difference between the two Macs is an error; a second Mac that cannot be reached is unchecked.
