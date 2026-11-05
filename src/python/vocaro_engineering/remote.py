@@ -57,7 +57,7 @@ import threading
 import time
 
 from . import devices, disk, offload_host, processes, resources
-from .config import TOOLKIT_ROOT
+from .config import TOOLKIT_ROOT, unlocked_screen
 from .resources import BUSY, FREE_WAIT
 from .simulators import pool as simulator_pool
 
@@ -1156,6 +1156,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     returns = [*(members or []), RESULTS] if lane is not None else None
     plan = {"root": ROOT, "checkouts": CHECKOUTS, "project": project, "toolkit": kit, "work": work,
             "decline": decline, "busy": BUSY,
+            "unlockedScreen": lane is not None and unlocked_screen(config.get("lanes", {}), lane),
             "provision": "provision" in config.get("lanes", {}) and lane != "provision",
             "developerDir": developer, "xcode": local["xcode"],
             "log": f".build/engineering/{lane}/run.log" if lane is not None else None,
@@ -1922,7 +1923,8 @@ def first(root, config, lane, arguments, expect, fallback=True):
     settings = config.get("lanes", {}).get(lane, {})
     offered = Offer(lane, f"`eng run --here {lane}`", lambda host, sent: execute(
         root, config, host, work, lane=lane, arguments=arguments, expect=expect, decline=True, sent=sent), refused,
-        whole_host=bool(settings.get("wholeHost")), exclusive=settings.get("resource") == "exclusive")
+        whole_host=bool(settings.get("wholeHost")), exclusive=settings.get("resource") == "exclusive",
+        screen=unlocked_screen(config.get("lanes", {}), lane))
     offered.make(fallback)
     return offered
 
@@ -1995,14 +1997,14 @@ class Offer:
     can be offered again without a second snapshot or push. refused is why the second Mac cannot run
     the work, if it cannot, and instead the command that runs it here when the owner so decides after a
     configuration problem stopped it. whole_host says the work needs every guaranteed slot of its Mac,
-    and exclusive every slot (spare). status, once made, is the work's status there, MISCONFIGURED or
+    exclusive every slot, and screen an unlocked console screen (spare). status, once made, is the work's status there, MISCONFIGURED or
     BUSY, or why the work runs on this Mac instead; busy is why the second Mac did not take it, as the
     receipt gives it, while it has not: declined as busy, or not offered while it has no spare capacity
     and this Mac has (Loaded); and None once it ran there or can no longer take it."""
 
-    def __init__(self, name, instead, send, refused=None, whole_host=False, exclusive=False):
+    def __init__(self, name, instead, send, refused=None, whole_host=False, exclusive=False, screen=False):
         self.name, self.instead, self.send, self.refused = name, instead, send, refused
-        self.whole_host, self.exclusive = whole_host, exclusive
+        self.whole_host, self.exclusive, self.screen = whole_host, exclusive, screen
         self.sent, self.host, self.status, self.busy, self.away = {}, None, None, None, None
         # Whether each offer first reads both Macs' capacity (choose): an offer this Mac may take does, and
         # --offload-only's, which never runs the work here, does not. Set by make.
@@ -2027,11 +2029,11 @@ class Offer:
         work goes to whichever admits it first, the second Mac asked first, as before the choice existed. Both
         Macs are for work: a session uses the one with capacity and never asks the owner which
         (vocaro-engineering#168)."""
-        there = spare(capacity_there(self.host), "the second Mac", self.whole_host, self.exclusive)
+        there = spare(capacity_there(self.host), "the second Mac", self.whole_host, self.exclusive, self.screen)
         if there is None: return None
         reading = offload_host.capacity()
         here = (f"this Mac's capacity cannot be read: {reading['error']}" if reading.get("error")
-                else spare(reading, HERE, self.whole_host, self.exclusive))
+                else spare(reading, HERE, self.whole_host, self.exclusive, self.screen))
         if here is None: return there
         if self.neither != (there, here):
             print(f"eng: neither Mac has spare capacity for {self.name} now ({there}; {here}), so it goes to "
@@ -2178,6 +2180,12 @@ def survey(host, developer):
     return ask(host, {"toolchain": developer})
 
 
+def screen_there(host):
+    """The second Mac's console screen, as offload_host.screen reads it there, for `eng host screen --remote`. A
+    second Mac that cannot be reached raises Misconfigured or Unreachable, as ask does."""
+    return ask(host, {"screen": True}, timeout=CENSUS_TIMEOUT)
+
+
 def capacity_there(host):
     """The second Mac's capacity for heavy work, as offload_host.capacity reads it there, in its login shell as a
     run there reads it. A second Mac that cannot be reached raises Unreachable, as the connection that prepares
@@ -2194,12 +2202,26 @@ def capacity_there(host):
     return answered
 
 
-def spare(reading, mac, whole_host=False, exclusive=False):
+def screen_refusal(found, mac):
+    """Why a Mac whose screen eng read as found (offload_host.screen) cannot take a lane that needs an unlocked
+    screen, or None when its screen is unlocked. A reading that is missing or unknown refuses too: eng never
+    guesses that a screen is unlocked (vocaro-engineering#185)."""
+    if isinstance(found, dict) and found.get("state") == "unlocked": return None
+    if not isinstance(found, dict) or found.get("state") not in ("locked", "unknown"):
+        return f"the lane needs an unlocked screen, and {mac} did not report its screen"
+    return f"the lane needs an unlocked screen, and {mac}'s is {found['state']} ({offload_host.screen_line(found)})"
+
+
+def spare(reading, mac, whole_host=False, exclusive=False, screen=False):
     """Why mac, read as reading (offload_host.capacity), has no spare capacity now for the work, or None while
     it has (vocaro-engineering#168). The work needs a guaranteed slot free there, every guaranteed slot for a
     whole-host lane and every slot up to the maximum for exclusive work, a one-minute load under the Mac's own
     HEAVY_LOAD_LIMIT, and no whole-host lane or exclusive work running there. The reason names the Mac and,
-    for its load, the load read and the limit; the receipt's hereBecause carries it."""
+    for its load, the load read and the limit; the receipt's hereBecause carries it. With screen, for a lane
+    that needs an unlocked screen, a Mac whose screen is locked or unknown has none (screen_refusal)."""
+    if screen:
+        refused = screen_refusal(reading.get("screen"), mac)
+        if refused is not None: return refused
     slots, maximum, busy = reading["slots"], reading["slotsMax"], sorted(reading["busy"])
     running, holding = reading.get("wholeHost") or [], reading.get("exclusive") or []
     if running:

@@ -400,8 +400,10 @@ gave none, as the simulators' voices were not ready in time
 the queue until a person resumed it. A project sets another bound on `main`, as
 `"queue": {"noVerdictRuns": N}`, a positive integer; 1 holds at the first. A run with a verdict, a pass
 or a failure, starts the count again, and so does `eng queue resume`. The hold's reason says how many
-runs gave no verdict and why the last did: the lane that reached its limit, the number of tests its log
-reports unmeasured with the first of them, no admission, or the host's configuration. A hold stays
+runs gave no verdict, on which Mac the last ran (`on this Mac (NAME)` or `on the second Mac (HOST)`, when
+its receipt or dispatch says), and why it gave none: the lane that reached its limit, the number of tests
+its log reports unmeasured with the first of them and the last screen reading eng logged
+(vocaro-engineering#185), no admission, or the host's configuration. A hold stays
 until whoever its reason names has dealt with its cause, or found it gone, and run `eng queue resume`:
 the owner only when the last run's exit was 78, a shared host's configuration, and otherwise a session,
 as [a hold says whom it is for](#the-merge-queue) below. Nothing fails over to another route.

@@ -13,7 +13,7 @@ import time
 
 from . import __version__, app_registrations, budgets, crash_alerts, devices, disk, docs, evidence, evidence_offload, failure_records, foreground, github_artifacts, keychain, merge_queue, \
     offload_host, parallel, processes, release, remote, resources, skills, spelling, xctest_shards
-from .config import TOOLKIT_ROOT, CAPABILITIES, DEFAULT_TOOLKIT, load, source_identity, stays
+from .config import TOOLKIT_ROOT, CAPABILITIES, DEFAULT_TOOLKIT, load, source_identity, stays, unlocked_screen
 from .resources import BUSY, FREE_WAIT
 from .simulators import matrix, pool as simulator_pool
 
@@ -414,18 +414,65 @@ def placement(reason):
     return {"ranOn": "this Mac", "mac": offload_host.mac_name(), "hereBecause": reason}
 
 
-def admitted_here(stack, name, label, timeout, offered=None, once=False, exclusive=False, model=False, whole_host=False):
+def this_mac():
+    """The Mac this eng runs on, as messages name it: `this Mac (NAME)`, or `the second Mac (NAME)` for work the
+    second Mac runs for the Mac that sent it (remote.DISPATCHER), so that a log never leaves the Mac to be guessed
+    (vocaro-engineering#185)."""
+    return f"{'the second Mac' if os.environ.get(remote.DISPATCHER) else 'this Mac'} ({offload_host.mac_name()})"
+
+
+# Seconds between readings of this Mac's screen while a lane that needs it unlocked waits for it.
+SCREEN_POLL = 30
+# A test's own report that a lock left it unmeasured, such as Pagepour's `Unmeasured: the screen is locked`.
+SCREEN_LOCKED = re.compile(r"(?i)\bscreen is locked\b")
+
+
+def screen_reading(stream=None):
+    """This Mac's screen, read now (offload_host.screen) and said in one line naming the Mac (this_mac)."""
+    found = offload_host.screen()
+    print(f"eng: {offload_host.screen_line(found, this_mac())}", file=stream or sys.stderr, flush=True)
+    return found
+
+
+def screen_wait(name, seconds, said):
+    """None once this Mac's screen reads unlocked, within seconds, for a lane that needs it unlocked; otherwise why
+    not, after the wait. Each new reading that refuses is said once (said keeps the last); the lane waits instead
+    of running unmeasured (vocaro-engineering#185)."""
+    deadline = time.monotonic() + max(seconds, 0)
+    while True:
+        found = offload_host.screen()
+        if found["state"] == "unlocked": return None
+        refused, key = remote.screen_refusal(found, this_mac()), (found["state"], found.get("reason"))
+        if not said or said[-1] != key:
+            print(f"eng: {name} waits: {refused}", file=sys.stderr, flush=True)
+            said.append(key)
+        left = deadline - time.monotonic()
+        if left <= 0: return refused
+        time.sleep(min(SCREEN_POLL, left))
+
+
+def admitted_here(stack, name, label, timeout, offered=None, once=False, exclusive=False, model=False, whole_host=False,
+                  screen=False):
     """This Mac's heavy-work admission of the work label names, entered in stack, or the work's status
     instead: its status on the second Mac when the second Mac took it after all, MISCONFIGURED, or
     BUSY when no admission came, after saying so. Work the second Mac did not take (offered), declined
     as busy or not offered while it had no spare capacity and this Mac had, goes to whichever Mac admits
     it first, this Mac asked first (remote.overflow). Other work waits in this Mac's queue for timeout
     seconds, or with once FREE_WAIT, and only once declines. A whole-host lane takes every guaranteed slot,
-    and keeps one place in this Mac's queue across its waits until it no longer waits here (resources.Place)."""
-    refused = []
+    and keeps one place in this Mac's queue across its waits until it no longer waits here (resources.Place). A
+    lane that needs an unlocked screen (screen) is admitted only while this Mac's screen reads unlocked, and waits
+    for it as for a slot (screen_wait)."""
+    refused, said = [], []
     place = resources.Place() if whole_host and not exclusive else None
 
     def admit(seconds):
+        if screen:
+            began = time.monotonic()
+            locked = screen_wait(name, seconds, said)
+            if locked is not None:
+                refused.append(locked)
+                return None
+            seconds = max(seconds - (time.monotonic() - began), 0)
         try:
             return stack.enter_context(resources.Admission(label, exclusive=exclusive, timeout=seconds, model=model,
                                                            whole_host=whole_host, place=place))
@@ -436,16 +483,60 @@ def admitted_here(stack, name, label, timeout, offered=None, once=False, exclusi
     try:
         if offered is not None and offered.busy is not None:
             return remote.overflow(offered, admit, timeout, once)
-        if not once: return stack.enter_context(resources.Admission(label, exclusive=exclusive, timeout=timeout,
-                                                                    model=model, whole_host=whole_host, place=place))
-        admission = admit(FREE_WAIT)
+        if not once and not screen:
+            return stack.enter_context(resources.Admission(label, exclusive=exclusive, timeout=timeout, model=model,
+                                                           whole_host=whole_host, place=place))
+        admission = admit(FREE_WAIT if once else timeout)
+        if admission is None and not once and not isinstance(refused[-1], str): raise refused[-1]
         if admission is None:
-            print(f"eng: {name} not run: {refused[-1]}", file=sys.stderr)
+            print(f"eng: {name} not run on {this_mac()}: {refused[-1]}", file=sys.stderr)
             return BUSY
         return admission
     finally:
         # Admitted, admission took the place out of the queue; otherwise the work no longer waits here.
         if place is not None: place.leave()
+
+
+def fell_back(name, offered):
+    """Say in one line, before the run starts, that work offered to the second Mac runs on this Mac, and why, so
+    that the second Mac's lines a declined offer left above are not read as the run's (vocaro-engineering#185)."""
+    above = "; the second Mac's lines above are from the offer it did not take" if offered.sent else ""
+    print(f"eng: {name} runs on {this_mac()}, not the second Mac: {offered.status}{above}", file=sys.stderr, flush=True)
+
+
+def unmeasured_screen(name, receipt):
+    """Read the screen again once a lane whose result depends on it ends unmeasured, and say on which Mac, so
+    that the verdict and the hold it leads to name the Mac whose screen was read (vocaro-engineering#185)."""
+    print(f"eng: {name} unmeasured on {this_mac()}", file=sys.stderr, flush=True)
+    receipt["screenAfter"] = screen_reading()
+
+
+SCREEN_STATUS = {"unlocked": 0, "locked": 1, "unknown": 2}
+
+
+def host_screen(args):
+    """`eng host screen [--remote]`: one line, or the reading as JSON, saying whether this Mac's or the second
+    Mac's console screen is locked (offload_host.screen), exiting 0 unlocked, 1 locked and 2 unknown. The
+    second Mac is read over SSH by the same code, so either Mac's answer is read, never assumed."""
+    if args.host and not args.remote: raise ValueError("--host names the second Mac that --remote reads")
+    if args.remote:
+        host = args.host or remote.configured()
+        if host is None:
+            raise ValueError(f"no second Mac is configured ({remote.HOST_VARIABLE}, or the ssh alias "
+                             f"{' or '.join(remote.ALIASES)} in ~/.ssh/config)")
+        try:
+            found = remote.screen_there(host)
+        except remote.Unavailable as error:
+            found = {"mac": host, "at": time.strftime("%H:%M:%S"), "state": "unknown",
+                     "reason": f"{host} could not be read: {getattr(error, 'problem', None) or error}"}
+        if not isinstance(found, dict) or found.get("state") not in SCREEN_STATUS:
+            found = {"mac": host, "at": time.strftime("%H:%M:%S"), "state": "unknown",
+                     "reason": f"{host} answered {found!r}"}
+        where = f"the second Mac ({found.get('mac')})"
+    else:
+        found, where = offload_host.screen(), this_mac()
+    print(json.dumps(found, indent=2) if args.json else offload_host.screen_line(found, where))
+    return SCREEN_STATUS[found["state"]]
 
 
 def admitted_tree(root, name, offered, receipt):
@@ -518,7 +609,9 @@ def admit(root, args, config=None):
         stopped = admitted_tree(root, "the command", offered, receipt)
         if stopped is not None: return stopped
         receipt["queueSeconds"] = round(time.monotonic() - asked, 3)
-        if offered is not None: receipt["hereBecause"] = offered.status
+        if offered is not None:
+            receipt["hereBecause"] = offered.status
+            fell_back("the command", offered)
         alerts = guarded_alerts(stack, " ".join(command), receipt) if args.foreground else None
         if isinstance(alerts, int): return alerts
         def work():
@@ -726,6 +819,13 @@ def main(argv=None):
         "keychain the work needs and print commands that run only there (recover); keep the second Mac's login "
         "keychain unlocked for every eng remote run (keep-unlocked); where the automation runs, check the keychain, "
         "the signing identity and signing with it, without a prompt (check)"))
+    hosts = commands.add_parser("host", help="read a Mac's state as eng reads it")
+    reads = hosts.add_subparsers(dest="operation", required=True)
+    screen = reads.add_parser("screen", help="say whether a Mac's console screen is locked, from both keys the "
+        "IORegistry holds and the console user, and exit 0 unlocked, 1 locked or 2 unknown")
+    screen.add_argument("--remote", action="store_true", help="read the second Mac's screen over SSH")
+    screen.add_argument("--host", help="the second Mac's SSH name, when not the configured one")
+    screen.add_argument("--json", action="store_true", help="print the reading as JSON")
     linking = commands.add_parser("skills", help="check that Claude Code and Codex load the toolkit's agent skills "
         "through links to its main checkout; changes nothing without --link")
     linking.add_argument("--link", action="store_true", help="link each installed host's missing skills, and those "
@@ -768,6 +868,8 @@ def main(argv=None):
         # A keychain's Mac and its session are the host's, not a project's.
         if args.action == "keychain": return keychain.execute(args)
         if args.action == "skills": return skills.main(named_checkout(TOOLKIT_ROOT), args.link)
+        # A Mac's screen is the host's, not a project's.
+        if args.action == "host": return host_screen(args)
         if args.action == "admissions": return resources.report(args.logs or None, args.since, args.until)
         # Offloaded evidence goes to the host's second Mac, whatever project holds it.
         if args.action == "evidence" and args.operation == "offload":
@@ -887,6 +989,11 @@ def main(argv=None):
                 if not isinstance(offered.status, str): return offered.status
                 reason = offered.status
             resource = lane.get("resource", "light")
+            # A lane whose result depends on the screen has it read on the Mac that runs it, at its start and again
+            # when it ends unmeasured (vocaro-engineering#185). One that needs it unlocked waits for that, unless it
+            # is nested in an admission that placed it already.
+            needs = unlocked_screen(config["lanes"], args.lane)
+            reads_screen = needs or any(config["lanes"][name].get("display") for name in (group or [args.lane]))
             policy_commit = refresh_policy(root) if resource != "light" else None
             directory = root / ".build/engineering" / args.lane
             receipt = {"project": source_identity(root), "toolkit": source_identity(TOOLKIT_ROOT),
@@ -929,13 +1036,17 @@ def main(argv=None):
                             admission = admitted_here(stack, args.lane, lane_label(root, config, args.lane),
                                                       remote.OVERFLOW_TIMEOUT, offered, args.if_free,
                                                       resource == "exclusive", lane.get("model", False),
-                                                      lane.get("wholeHost", False))
+                                                      lane.get("wholeHost", False),
+                                                      needs and not os.environ.get(resources.TOKEN))
                             if isinstance(admission, int): return admission
                             stopped = admitted_tree(root, args.lane, offered, receipt)
                             if stopped is not None: return stopped
                             # The wait in the queue, apart from what came before it (remote.execute).
                             receipt["queueSeconds"] = round(time.monotonic() - asked, 3)
-                            if offered is not None: receipt["hereBecause"] = offered.status
+                            if offered is not None:
+                                receipt["hereBecause"] = offered.status
+                                fell_back(args.lane, offered)
+                            if reads_screen: receipt["screen"] = screen_reading()
                             alerts = guarded_alerts(stack, args.lane, receipt) if lane.get("foreground") else None
                             if isinstance(alerts, int): return alerts
                             result = execute(admission.interrupted)
@@ -947,6 +1058,7 @@ def main(argv=None):
                 return evidence.UNMEASURED
             # A group's lanes were each judged by their own logs.
             if "parallel" in lane:
+                if reads_screen and result == evidence.UNMEASURED: unmeasured_screen(args.lane, receipt)
                 conclude(directory, receipt, result)
                 return result
             # The command has a confirmed terminal result. Coverage validation cannot turn
@@ -957,6 +1069,8 @@ def main(argv=None):
             except ValueError as error:
                 conclude(directory, receipt, 2, error=str(error))
                 raise
+            if status == evidence.UNMEASURED and (reads_screen or SCREEN_LOCKED.search(log)):
+                unmeasured_screen(args.lane, receipt)
             conclude(directory, receipt, status, **({"unmeasured": unmeasured} if status == evidence.UNMEASURED else {}))
             return status
         return 0

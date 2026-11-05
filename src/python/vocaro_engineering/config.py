@@ -70,9 +70,10 @@ def parse(source):
             group(name, lane, lanes)
             continue
         if not isinstance(lane, dict) or set(lane) - {"command", "resource", "minimumTests", "timeout", "foreground",
-                                                       "here", "model", "display", "budgetMinutes", "wholeHost"}:
+                                                       "here", "model", "display", "budgetMinutes", "wholeHost",
+                                                       "unlockedScreen"}:
             raise ValueError(f"Invalid lane {name}")
-        for key in ["foreground", "model", "display", "wholeHost"]:
+        for key in ["foreground", "model", "display", "wholeHost", "unlockedScreen"]:
             if key in lane and type(lane[key]) is not bool:
                 raise ValueError(f"{name}.{key} must be true or false")
         if lane.get("foreground") and lane.get("resource", "light") == "light":
@@ -81,6 +82,7 @@ def parse(source):
         place(name, lane)
         model(name, lane)
         whole_host(name, lane)
+        screen(name, lane)
         if lane.get("display") and lane.get("resource", "light") == "light":
             raise ValueError(f"{name}.display needs a heavy or exclusive lane: only an admitted test run holds the "
                              "display's assertions, and a light lane is not admitted")
@@ -253,6 +255,22 @@ def whole_host_lane(lanes, name):
     return bool(lanes[name].get("wholeHost"))
 
 
+def screen(name, lane):
+    """A lane that needs an unlocked console screen, "unlockedScreen": true, such as a Mac suite whose tests read
+    their own window through the accessibility API, which a lock hides, runs only on a Mac whose screen eng reads
+    as unlocked when it places the lane, and otherwise waits for one, instead of running unmeasured
+    (vocaro-engineering#185; guides/shared-host.md, Which Mac runs a lane). A light lane is not placed."""
+    if lane.get("unlockedScreen") and lane.get("resource", "light") == "light":
+        raise ValueError(f"{name}.unlockedScreen needs a heavy or exclusive lane: eng places only an admitted lane on "
+                         "a Mac, and a light lane runs where it starts")
+
+
+def unlocked_screen(lanes, name):
+    """Whether the lane name needs an unlocked console screen on the Mac it runs on: a lane, or a group, that says
+    "unlockedScreen": true. A group that runs such a lane says so itself, as validation requires."""
+    return bool(lanes.get(name, {}).get("unlockedScreen"))
+
+
 def stays(lanes, name):
     """Why the lane name runs only on this Mac, as its configuration says, or None for a lane that goes to the
     second Mac: a light lane runs where it starts, and a lane, or a lane of a group, says why with "here". A
@@ -289,9 +307,9 @@ def group(name, lane, lanes):
     """A lane group names other lanes to run side by side under its one admission, so it needs
     the heaviest resource among them, the model when one of them runs a model, and one lane at a
     time when several do (guides/parallel-tests.md)."""
-    if set(lane) - {"parallel", "jobs", "resource", "here", "model", "budgetMinutes", "wholeHost"}:
-        raise ValueError(f"Lane group {name} takes only parallel, jobs, resource, here, model, wholeHost and "
-                         "budgetMinutes")
+    if set(lane) - {"parallel", "jobs", "resource", "here", "model", "budgetMinutes", "wholeHost", "unlockedScreen"}:
+        raise ValueError(f"Lane group {name} takes only parallel, jobs, resource, here, model, wholeHost, "
+                         "unlockedScreen and budgetMinutes")
     members = lane["parallel"]
     if not isinstance(members, list) or not members or len(set(members)) != len(members) \
             or any(not isinstance(member, str) for member in members):
@@ -314,6 +332,9 @@ def group(name, lane, lanes):
         if other.get("wholeHost") and not lane.get("wholeHost") and resource != "exclusive":
             raise ValueError(f"{name} runs {member} under its own admission, so it needs \"wholeHost\": true or an "
                              "exclusive resource")
+        if other.get("unlockedScreen") and not lane.get("unlockedScreen"):
+            raise ValueError(f"{name} runs {member}, which needs an unlocked screen, on the Mac it is placed on, so it "
+                             "needs \"unlockedScreen\": true too")
     if "jobs" in lane and (type(lane["jobs"]) is not int or not 1 <= lane["jobs"] <= len(members)):
         raise ValueError(f"{name}.jobs must be from 1 to the number of its lanes")
     # One model workload per machine: the group's one model lock cannot keep its own lanes apart.
@@ -321,12 +342,13 @@ def group(name, lane, lanes):
     if len(models) > 1 and lane.get("jobs", len(members)) != 1:
         raise ValueError(f"{name} runs the model lanes {', '.join(models)}, which would drive the model at once, "
                          "so it needs \"jobs\": 1")
-    for key in ["model", "wholeHost"]:
+    for key in ["model", "wholeHost", "unlockedScreen"]:
         if key in lane and type(lane[key]) is not bool:
             raise ValueError(f"{name}.{key} must be true or false")
     place(name, lane)
     model(name, lane)
     whole_host(name, lane)
+    screen(name, lane)
 
 
 def source_identity(root):

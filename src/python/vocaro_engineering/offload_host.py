@@ -26,7 +26,8 @@ keep-unlocked`; given `{"foreground": true}`, what the Mac lacks for foreground 
 SSH and who holds its mac-foreground, for `eng remote foreground`; given `{"pressure": true}`, its
 load, the limit admission sets on it and its memory pressure, for the merge queue's settle wait;
 given `{"capacity": true}`, its spare capacity for heavy work, which `eng run` reads on both Macs
-before it chooses one (remote.spare).
+before it chooses one (remote.spare); given `{"screen": true}`, whether its console screen is locked, for
+`eng host screen --remote` (screen).
 """
 import base64
 import contextlib
@@ -202,6 +203,75 @@ def xcode(developer_dir):
 
 def mac_name():
     return output(["scutil", "--get", "LocalHostName"]) or os.uname().nodename
+
+
+SCREEN_GUIDE = "guides/background-mac-testing.md, Checking a Mac's screen"
+SCREEN_KEYS = ("CGSSessionScreenIsLocked", "IOConsoleLocked")
+# A recorded `ioreg -n Root -d1 -a` to read in place of the IORegistry, for tests, which never lock a real screen.
+SCREEN_RECORDING = "VOCARO_SCREEN_IOREG"
+
+
+def screen(found=None, mac=None, at=None):
+    """Whether this Mac's console screen is locked now, read from the IORegistry root where the tests' own
+    check reads it (vocaro-engineering#185): state is `unlocked`, `locked` or `unknown`. found is the bytes of
+    `ioreg -n Root -d1 -a`, read now when None. Only the login session on the console counts: its
+    CGSSessionScreenIsLocked, which CGSessionCopyCurrentDictionary() returns, and the root's IOConsoleLocked.
+    Either one set is locked, since a lock from idle time sets only the first and a hand lock was once seen
+    without the second. No session on the console, or a reading that fails, is unknown with its reason,
+    never unlocked. Each key reads True, False or None when absent. SCREEN_RECORDING names a recording to read
+    instead of ioreg."""
+    reading = {"mac": mac or mac_name(), "at": at or time.strftime("%H:%M:%S")}
+    unknown = lambda reason: {**reading, "state": "unknown", "reason": reason}
+    if found is None and os.environ.get(SCREEN_RECORDING):
+        try: found = Path(os.environ[SCREEN_RECORDING]).read_bytes()
+        except OSError as error: return unknown(f"the recording {SCREEN_RECORDING} names cannot be read: {error}")
+    if found is None:
+        try:
+            ran = subprocess.run(["ioreg", "-n", "Root", "-d1", "-a"], capture_output=True, timeout=30)
+        except (OSError, subprocess.SubprocessError) as error:
+            return unknown(f"ioreg could not run: {error}")
+        if ran.returncode:
+            said = ran.stderr.decode(errors="replace").strip().splitlines()
+            return unknown(f"ioreg exited {ran.returncode}" + (f": {said[-1]}" if said else ""))
+        found = ran.stdout
+    try:
+        root = plistlib.loads(found)
+    except Exception as error:  # plistlib raises several kinds for a damaged property list.
+        return unknown(f"ioreg's output is not a property list: {error}")
+    if not isinstance(root, dict) or not isinstance(root.get("IOConsoleUsers", []), list):
+        return unknown("ioreg's root entry is not in the expected form")
+    console = [user for user in root.get("IOConsoleUsers") or []
+               if isinstance(user, dict) and user.get("kCGSSessionOnConsoleKey") is True]
+    if not console: return unknown("no login session is on the console")
+    user = console[0]
+    keys = {"CGSSessionScreenIsLocked": user.get("CGSSessionScreenIsLocked"),
+            "IOConsoleLocked": root.get("IOConsoleLocked")}
+    keys = {key: value if isinstance(value, bool) else None for key, value in keys.items()}
+    locked = any(value is True for value in keys.values())
+    return {**reading, "state": "locked" if locked else "unlocked", "user": user.get("kCGSSessionUserNameKey"), **keys}
+
+
+def screen_line(reading, where=None):
+    """One line saying what screen read: `screen: unlocked (console user NAME, CGSSessionScreenIsLocked
+    absent, IOConsoleLocked no) on MAC at HH:MM:SS`, or `screen: unknown (REASON) on MAC at ...`. where
+    names the Mac in place of its own name, such as `this Mac (NAME)`."""
+    said = lambda value: "absent" if value is None else "yes" if value else "no"
+    if reading["state"] == "unknown":
+        detail = reading.get("reason") or "no reason given"
+    else:
+        detail = ", ".join([f"console user {reading.get('user') or 'unnamed'}",
+                            *(f"{key} {said(reading.get(key))}" for key in SCREEN_KEYS)])
+    return f"screen: {reading['state']} ({detail}) on {where or reading.get('mac')} at {reading.get('at')}"
+
+
+def screen_declined(plan, read=None):
+    """Decline, as busy, a lane that needs an unlocked screen while this Mac's does not read unlocked, when the
+    plan may be declined, before it takes a checkout: it then waits for a Mac that can measure it instead of
+    running unmeasured (vocaro-engineering#185). read is screen, which a test replaces."""
+    if not (plan.get("unlockedScreen") and plan.get("decline")): return
+    found = (read or screen)()
+    if found["state"] != "unlocked":
+        raise Refusal(f"its screen is {found['state']}, and the lane needs it unlocked ({screen_line(found)})", busy=True)
 
 
 def identity(developer_dir):
@@ -883,7 +953,8 @@ def capacity():
     (remote.spare; vocaro-engineering#168): its guaranteed slots and their maximum; the slots busy among those
     up to the maximum; its one-minute load, None when unavailable, and the limit at or above which its admission
     finds no spare capacity; and the labels of the whole-host lanes and the exclusive work its guard records as
-    running. A reading it cannot take says why, as error, as pressure does."""
+    running; and its console screen (screen), which a lane that needs it unlocked reads. A reading it cannot take
+    says why, as error, as pressure does."""
     try: found = limits()
     except ValueError as error: return {"error": str(error)}
     try: directory = slot_directory()
@@ -895,7 +966,7 @@ def capacity():
     return {"slots": found["slots"], "slotsMax": found["slotsMax"], "busy": busy_slots(directory, found["slotsMax"]),
             "load": load, "limit": found["loadLimit"],
             "wholeHost": [label(owner) for owner in running if owner.get("wholeHost") and not owner.get("exclusive")],
-            "exclusive": [label(owner) for owner in running if owner.get("exclusive")]}
+            "exclusive": [label(owner) for owner in running if owner.get("exclusive")], "screen": screen()}
 
 
 def unended():
@@ -1735,6 +1806,7 @@ def answer(request):
     if "foreground" in request: return foreground()
     if "pressure" in request: return pressure()
     if "capacity" in request: return capacity()
+    if "screen" in request: return screen()
     if "leftovers" in request or "device" in request:
         reaped = reap(request["leftovers"], **request["reap"]) if "reap" in request else None
         # A census that fails says why: it must never stop the work it is printed before.
@@ -1988,6 +2060,7 @@ def main(plan):
                           "(guides/shared-host.md, Setting up the second Mac), or select with DEVELOPER_DIR an Xcode "
                           "both Macs have at the same path")
         root, project, toolkit = Path.home() / plan["root"], plan["project"], plan.get("toolkit")
+        screen_declined(plan)
         unlocked = unlock_for_run(root)
         if unlocked: say(f"unlocked {unlocked} for this run's session, with the password keep-unlocked kept")
         base = root / "checkouts" / project["directory"]
@@ -2063,6 +2136,6 @@ if __name__ == "__main__":
     request = json.loads(sys.argv[1])
     if "keepUnlocked" in request: sys.exit(keep_unlocked(request["keepUnlocked"]))
     if {"toolchain", "images", "deleteRuntime", "receive", "leftovers", "device", "keychain", "foreground",
-            "pressure", "capacity"} & request.keys():
+            "pressure", "capacity", "screen"} & request.keys():
         print(json.dumps(answer(request)))
     else: main(request)

@@ -464,26 +464,47 @@ not a reason to keep the lane here. A lane group runs its lanes under its one ad
 Mac, so a group stays here when it, or one of its lanes, says `here`. `"buildHost"`, which once
 marked a lane for the second Mac, is refused, true or false ([earlier names](#earlier-names)).
 
-The second Mac's screen is usually locked, and `displaysleep` 0 there does not keep its display
-on behind a lock made by hand. A command started over SSH there runs in an audit session of its
-own and is not trusted for accessibility (on the 27.2 beta 26B5091g as on 27.2 26B123), yet the
-window server gives it the console user's session: it opens offscreen windows and reads its own
-accessibility. On macOS 27.2 (26B123), locked with the display awake, EPUBLib's Mac suite passed
-there twice, case for case with this Mac's unlocked run, and its whole gate passed there behind
-a lock made by hand, its Mac suite waking the display with the lane's `"display": true`
-(2026-10-29). What a locked screen or a sleeping
-display has been seen to stop, on which Mac and build, what wakes a locked screen's display and
-keeps it on, and what is unmeasured, is in
-[lock screen and display sleep](background-mac-testing.md#lock-screen-and-display-sleep).
-A run whose mechanism a lock or a sleeping display stops is unmeasured, never passed
-([shared resources](../agents/core.md#shared-resources)). Behind the lock, the accessibility API
-(`AXUIElement`) vends no offscreen window on the second Mac's 27.2 either, as on this Mac on 27.0,
-so a test that reads its own tree through it is unmeasured while the second Mac's screen is
-locked; with its display asleep, a scroll that the display link animates gets no frame.
-Pagepour's Mac lanes, `mac-tests` and `mac-purchases`, read their tree that way, and still go to
-the second Mac: `here` would not help them, since this Mac locks too, and their tests move to the
-in-process NSAccessibility methods instead
+No guide, policy or log line assumes either Mac's screen state. eng reads it on the Mac that runs
+a lane, with the check `eng host screen [--remote]` runs
+([checking a Mac's screen](background-mac-testing.md#checking-a-macs-screen)), and writes what it
+read, or `unknown` and why, never a guess (vocaro-engineering#185). The owner keeps the second Mac
+unlocked; both Macs can lock, by hand or by idle time under their settings.
+
+A command started over SSH on the second Mac runs in an audit session of its own and is not
+trusted for accessibility (on the 27.2 beta 26B5091g as on 27.2 26B123), yet the window server
+gives it the console user's session: it opens offscreen windows and reads its own accessibility.
+What a locked screen or a sleeping display has been seen to stop, on which Mac and build, what
+wakes a locked screen's display and keeps it on, and what is unmeasured, is dated history in
+[lock screen and display sleep](background-mac-testing.md#lock-screen-and-display-sleep): on macOS
+27.2 (26B123), locked for those measurements, EPUBLib's Mac suite and whole gate passed on the
+second Mac (2026-10-28 and 10-29), while the accessibility API (`AXUIElement`) vended no offscreen
+window behind the lock, as on this Mac on 27.0. A run whose mechanism a lock or a sleeping display
+stops is unmeasured, never passed ([shared resources](../agents/core.md#shared-resources)).
+
+A lane whose tests need an unlocked console screen, such as one that reads its own tree through the
+accessibility API, says `"unlockedScreen": true`; a group that runs such a lane says so too. eng
+reads both Macs' screens with their capacity and places the lane only on a Mac whose screen reads
+unlocked, `locked` and `unknown` alike counting as no room for it, and its placement line says so:
+`the lane needs an unlocked screen, and the second Mac's is locked (screen: locked (...) on NAME at
+HH:MM:SS)`. The second Mac declines such a lane before it takes a checkout while its screen is not
+unlocked, and this Mac does not admit it while its own is not, so when neither Mac reads unlocked
+the lane waits, offered to the second Mac again as any waiting lane is, instead of running
+unmeasured and using up the merge queue's no-verdict runs. A lane that does not declare it is placed
+as before, whatever either screen reads. Pagepour's gate and Mac suites declare it: its Mac lanes,
+`mac-tests` and `mac-purchases`, read their tree through the accessibility API until their tests
+move to the in-process NSAccessibility methods
 ([Pagepour#123](https://github.com/vocaro/Pagepour/issues/123)).
+
+Once admitted, a lane that says `"unlockedScreen": true` or `"display": true` has the screen of the
+Mac that runs it read and logged, `eng: screen: STATE (...) on this Mac (NAME) at HH:MM:SS`, or on
+the second Mac, and kept in its receipt as `screen`, and read again, as `screenAfter`, when it ends
+unmeasured, after a line naming that Mac: `eng: LANE unmeasured on this Mac (NAME)`. Any lane that
+ends unmeasured with a log saying the screen is locked is read again the same way. A lane that runs on
+this Mac after it was offered to the second Mac says so in one line, with why, before it starts:
+`eng: gate runs on this Mac (NAME), not the second Mac: REASON; the second Mac's lines above are from
+the offer it did not take`. The merge queue's hold for runs that gave no verdict names the Mac the
+last ran on, and quotes the last screen line of its log
+([maintenance](maintenance.md#the-merge-queue)).
 
 `eng run` sends the lane to the Mac that has spare capacity for it, whole or filtered
 (`eng run LANE -- FILTER`), over the working tree as it is: a tree with uncommitted changes or new
@@ -693,7 +714,7 @@ cannot be reached, and a second Mac that ssh reaches through a proxy is not meas
 ### Simulators on the second Mac
 
 A lane that boots simulators runs on the second Mac as it does here: headless, from a session
-started over SSH, with the screen locked, and from the second Mac's own pool. It goes there like
+started over SSH, and from the second Mac's own pool, whatever its screen's state. It goes there like
 any other heavy lane, and its first run there is its check (the owner's decision, 2026-10-28, in
 place of the earlier rule that a simulator lane went there only once a run there had passed with
 this Mac's test counts): counts that differ are a defect to fix there. One that also needs a
@@ -739,9 +760,10 @@ otherwise quiet, so no time is a bound:
 
 Creating two pool members and booting them for the first time beside a cold build ran the build
 host's one-minute load average from 6 to 983 within four minutes, with memory pressure normal;
-the 23 minutes of tests that followed averaged 40. No run needed the screen unlocked. The boots,
-the builds and every gate, EPUBLib's Mac suite included, ran with the screen locked and the
-display on; the screen was unlocked, not by the run, for the last 15 minutes of `ios-tests`.
+the 23 minutes of tests that followed averaged 40. No run needed the screen unlocked. On that day
+the boots, the builds and every gate, EPUBLib's Mac suite included, ran with the build host's
+screen locked and the display on; the screen was unlocked, not by the run, for the last 15 minutes
+of `ios-tests`. That was its state then, not now.
 
 ### How a run reaches the second Mac
 

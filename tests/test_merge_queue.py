@@ -17,7 +17,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src/python"))
-from vocaro_engineering import cli, config as configuration, merge_queue as mq
+from vocaro_engineering import cli, config as configuration, merge_queue as mq, offload_host
 import host_isolation
 from host_isolation import stretched
 
@@ -501,8 +501,10 @@ class NoVerdict(Fixture):
         self.assertEqual(self.state(identifier)["state"], "queued")
         self.assertNotIn("a", self.main_files())
         held = mq.Queue(self.repo).held()
-        self.assertIn("the lanes gave no verdict in 3 runs in a row, the last with exit 3, unmeasured, with no test "
-                      "its log names, the most queue.noVerdictRuns allows (3); see ", held)
+        # The hold names the Mac the gate ran on, from its receipt (vocaro-engineering#185).
+        self.assertIn(f"the lanes gave no verdict in 3 runs in a row, the last with exit 3 on this Mac "
+                      f"({offload_host.mac_name()}), unmeasured, with no test its log names, the most "
+                      "queue.noVerdictRuns allows (3); see ", held)
         self.assertIn("eng queue resume", held)
         self.status.unlink()
         with patch.object(mq.Queue, "start"), patch("builtins.print"): mq.resume(self.repo)
@@ -659,8 +661,8 @@ class NoVerdict(Fixture):
         self.assertEqual(self.gates(), 1)
         self.assertEqual(self.state(identifier)["state"], "queued")
         held = mq.Queue(self.repo).held()
-        self.assertIn("the lanes gave no verdict in 1 run in a row, the last with exit 3, unmeasured, with no test its "
-                      f"log names, and the host did not settle in {mq.SETTLE_LIMIT}s (load 40.0 is at or above", held)
+        self.assertIn(f"the lanes gave no verdict in 1 run in a row, the last with exit 3 on this Mac "
+                      f"({offload_host.mac_name()}), unmeasured, with no test its log names, and the host did not settle in {mq.SETTLE_LIMIT}s (load 40.0 is at or above", held)
         self.assertIn("eng queue resume", held)
         self.assertIn(f"the host did not settle in {mq.SETTLE_LIMIT}s and {len(slept) + 1} looks", said.getvalue())
         # A line every SETTLE_REPORT while it waited, not one per look.
@@ -872,7 +874,8 @@ class HoldKinds(Fixture):
                 with patch("builtins.print"): self.assertEqual(self.work(), 0)
                 held = mq.Queue(self.repo).held()
                 self.assertTrue(held.startswith(f"{kind}the lanes gave no verdict in {mq.NO_VERDICT_RUNS} runs in a row, "
-                                                f"the last with exit {status}, "), held)
+                                                f"the last with exit {status} on this Mac "
+                                                f"({offload_host.mac_name()}), "), held)
                 self.assertTrue(held.endswith(self.OWNER_FIXES if kind == self.FOR_OWNER else self.SESSION_RESUMES), held)
                 self.assertEqual(self.state(identifier)["state"], "queued")
                 mq.remove(mq.Queue(self.repo), identifier, quiet=True)
@@ -2357,7 +2360,7 @@ class ToolkitCopy(Fixture):
         other = self.base / f"other-knows-{key}"
         run(self.base, "git", "clone", "-q", str(self.kit_origin), str(other))
         source = other / "src/python/vocaro_engineering/config.py"
-        edited = source.read_text().replace('"wholeHost"}', f'"wholeHost", "{key}"}}')
+        edited = source.read_text().replace('"unlockedScreen"}', f'"unlockedScreen", "{key}"}}')
         self.assertNotEqual(edited, source.read_text())
         source.write_text(edited)
         run(other, "git", "add", "src/python/vocaro_engineering/config.py")
@@ -2675,7 +2678,7 @@ class ToolkitsOwnWorker(Fixture):
         run(self.repo, "git", "checkout", "-q", "-B", branch, "origin/main")
         name = "config.py" if key else "merge_queue.py"
         source = self.repo / "src/python/vocaro_engineering" / name
-        edited = source.read_text().replace('"wholeHost"}', f'"wholeHost", "{key}"}}') if key else edit(source.read_text())
+        edited = source.read_text().replace('"unlockedScreen"}', f'"unlockedScreen", "{key}"}}') if key else edit(source.read_text())
         self.assertNotEqual(edited, source.read_text())
         source.write_text(edited)
         if key:

@@ -46,6 +46,8 @@ ADVERTISED = remote.advertised
 # FAKE_TMPDIR gives the second Mac a temporary directory of its own, and FAKE_DEVICE_RECORD its
 # device record, which is never this Mac's. FAKE_LOAD_LIMIT sets the second Mac's HEAVY_LOAD_LIMIT apart
 # from this Mac's, which both read from the one environment otherwise: 0 makes it loaded at any load.
+# FAKE_SCREEN_IOREG names the recorded IORegistry the second Mac reads its screen from, and this Mac's
+# VOCARO_SCREEN_IOREG never reaches it (offload_host.SCREEN_RECORDING).
 FAKE_SSH = """#!/bin/sh
 if [ "$1" = -G ]; then
     case " fake $FAKE_ALIASES " in
@@ -78,13 +80,16 @@ cd "$FAKE_HOME" || exit 255
 # The second Mac has its own heavy-work queue.
 HOME="$FAKE_HOME" SHELL="$FAKE_SHELL" HEAVY_SLOT_DIR="$FAKE_SLOTS" SW_GATE_LOCK_FILE="$FAKE_GATE" \
     TMPDIR="${FAKE_TMPDIR:-$TMPDIR}" VOCARO_DEVICE_RECORD="${FAKE_DEVICE_RECORD:-$FAKE_HOME/device-handoff.json}" \
-    exec env ${FAKE_LOAD_LIMIT:+"HEAVY_LOAD_LIMIT=$FAKE_LOAD_LIMIT"} /bin/sh -c "$*"
+    exec env -u VOCARO_SCREEN_IOREG ${FAKE_LOAD_LIMIT:+"HEAVY_LOAD_LIMIT=$FAKE_LOAD_LIMIT"} \
+    ${FAKE_SCREEN_IOREG:+"VOCARO_SCREEN_IOREG=$FAKE_SCREEN_IOREG"} /bin/sh -c "$*"
 """
 # A login shell that reads no profile, so the test's PATH reaches the second Mac.
 FAKE_SHELL = """#!/bin/sh
 [ "$1" = -l ] && shift
 exec /bin/sh "$@"
 """
+# Recorded `ioreg -n Root -d1 -a` of both Macs' unlocked screens (tests/test_screen.py).
+SCREENS = Path(__file__).resolve().parent / "fixtures/ScreenState"
 # Well-formed, invented identifiers: a hardware UDID and a simulator UUID.
 PHONE = "00008130-001A2C3E0C38001C"
 DUO = "5B0E6C51-2D3A-4F7B-9C1E-0A4B8D2F6E13"
@@ -340,7 +345,10 @@ class RemoteTests(unittest.TestCase):
             "HEAVY_LOAD_LIMIT": "1000000",
             "FAKE_SLOTS": str(base / "second-mac-slots"), "FAKE_GATE": str(base / "second-mac-gate"),
             "FAKE_TMPDIR": str(base / "second-mac-tmp"), devices.OVERRIDE: str(self.record_here),
-            "FAKE_DEVICE_RECORD": str(self.record_there)})
+            "FAKE_DEVICE_RECORD": str(self.record_there),
+            # Both Macs' screens read unlocked from a recording, never the real screen, unless a test locks one.
+            offload_host.SCREEN_RECORDING: str(SCREENS / "this-mac-unlocked.plist"),
+            "FAKE_SCREEN_IOREG": str(SCREENS / "second-mac-unlocked.plist")})
         (base / "second-mac-tmp").mkdir()
         self.environment.start()
         # Python writes bytecode, as it does for a session that sets no PYTHONDONTWRITEBYTECODE and in
@@ -1036,7 +1044,9 @@ class RemoteTests(unittest.TestCase):
         status, output, error = self.eng("remote", "admit", "--", sys.executable, "-c", "print('the work ran')")
         self.assertEqual(status, 0, output + error)
         self.assertIn("the work ran", output)
-        self.assertNotIn("unlocked", output + error)
+        # The run's keychain line says "unlocked PATH for this run's session"; the policy it prints speaks of
+        # unlocked screens, so the check is for that line.
+        self.assertNotIn("for this run's session", output + error)
         # A kept password for a login keychain this second Mac does not have: the run does not start.
         kept = self.home / remote.ROOT / offload_host.KEYCHAIN_PASSWORD
         kept.write_text("not a real password\n")
@@ -1494,6 +1504,54 @@ class RemoteTests(unittest.TestCase):
                                 r"second Mac asked first")
         self.assertIn("remote: sending", error)
         self.assertFalse((self.project / ".build/engineering/gate").exists())
+        self.assertEqual(json.loads((self.project / ".build/engineering/remote/gate/source.json").read_text())["ranOn"],
+                         "second Mac")
+
+    def test_a_lane_that_needs_an_unlocked_screen_runs_only_where_the_screen_reads_unlocked(self):
+        """vocaro-engineering#185: a lane that says "unlockedScreen": true goes to a Mac whose screen eng reads as
+        unlocked, says where it fell back and what the screen read, and waits rather than run on a locked one. Each
+        Mac's screen comes from a recording: the second Mac's from FAKE_SCREEN_IOREG, this Mac's from its own."""
+        original = (self.project / "engineering.json").read_text()
+        settings = json.loads(original)
+        settings["lanes"]["gate"]["unlockedScreen"] = True
+        (self.project / "engineering.json").write_text(json.dumps(settings, indent=2))
+        # The second Mac locked by its idle time, this Mac unlocked: the lane runs here, and nothing is sent.
+        with patch.dict(os.environ, {"FAKE_SCREEN_IOREG": str(SCREENS / "second-mac-locked-idle.plist")}):
+            status, output, error = self.run_here("gate")
+        self.assertEqual(status, 0, output + error)
+        self.assertRegex(error, r"eng: trying gate on this Mac: the lane needs an unlocked screen, and the second Mac's is "
+                                r"locked \(screen: locked \(console user trevorharmon, CGSSessionScreenIsLocked yes, "
+                                r"IOConsoleLocked no\) on \S+ at \d\d:\d\d:\d\d\)")
+        self.assertNotIn("remote: sending", error)
+        self.assertRegex(error, r"eng: gate runs on this Mac \(\S+\), not the second Mac: the lane needs an unlocked "
+                                r"screen\b")
+        self.assertRegex(error, r"eng: screen: unlocked \(console user trevorharmon, CGSSessionScreenIsLocked absent, "
+                                r"IOConsoleLocked no\) on this Mac \(\S+\) at ")
+        receipt = self.ran_here()
+        self.assertEqual((receipt["ranOn"], receipt["screen"]["state"]), ("this Mac", "unlocked"))
+        # Both Macs locked: the second Mac declines the offer before it takes a checkout, this Mac does not admit
+        # the lane, and nothing runs anywhere, rather than a run left unmeasured.
+        shutil.rmtree(self.project / ".build/engineering/gate")
+        with patch.dict(os.environ, {"FAKE_SCREEN_IOREG": str(SCREENS / "second-mac-locked-by-hand.plist"),
+                                     offload_host.SCREEN_RECORDING: str(SCREENS / "this-mac-locked-idle.plist")}), \
+                patch.object(cli, "SCREEN_POLL", 0.01):
+            status, output, error = self.run_here("--if-free", "gate")
+        self.assertEqual(status, resources.BUSY, output + error)
+        self.assertIn("fake did not take it: its screen is locked, and the lane needs it unlocked (screen: locked "
+                      "(console user trevorharmon, CGSSessionScreenIsLocked yes, IOConsoleLocked yes)", error)
+        self.assertRegex(error, r"eng: gate waits: the lane needs an unlocked screen, and this Mac \(\S+\)'s is locked "
+                                r"\(screen: locked \(console user trevorharmon, CGSSessionScreenIsLocked yes, "
+                                r"IOConsoleLocked no\)")
+        self.assertIn("eng: gate not run: neither Mac admitted it now; the second Mac is busy: fake did not take it: "
+                      "its screen is locked", error)
+        self.assertFalse((self.project / ".build/engineering/gate").exists())
+        self.assertFalse((self.project / ".build/engineering/remote/gate").exists())
+        # The negative control: the lane without the declaration goes to the locked second Mac, as before.
+        (self.project / "engineering.json").write_text(original)
+        with patch.dict(os.environ, {"FAKE_SCREEN_IOREG": str(SCREENS / "second-mac-locked-by-hand.plist")}):
+            status, output, error = self.run_here("gate")
+        self.assertEqual(status, 0, output + error)
+        self.assertNotIn("screen", error)
         self.assertEqual(json.loads((self.project / ".build/engineering/remote/gate/source.json").read_text())["ranOn"],
                          "second Mac")
 

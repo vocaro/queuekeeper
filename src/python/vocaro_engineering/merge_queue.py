@@ -72,6 +72,8 @@ SETTLE_LIMIT = 3600
 SETTLE_POLL = 15
 # Seconds between the wait's lines in the worker's log while the host stays busy.
 SETTLE_REPORT = 600
+# eng's reading of a Mac's screen in a lane's log (cli.screen_reading, offload_host.screen_line).
+SCREEN_LINE = re.compile(r"^eng: (screen: .*)$", re.MULTILINE)
 # The most of an unmeasured test's line a hold's reason quotes.
 UNMEASURED_SHOWN = 300
 # Times main may move past a passed batch, in carried-over steps, before the batch is gated again.
@@ -1198,7 +1200,7 @@ class Worker:
         that lane, by its dispatch's record (remote.dispatched), or None when it ran here or nowhere. A pass of
         the gate lane leaves its wall time and the parts its log reports in self.measured, for the gate's
         budget (budgets.py)."""
-        log, self.ran_on, self.measured, self.timed_out = None, None, None, None
+        log, self.ran_on, self.measured, self.timed_out, self.ran_where = None, None, None, None, ""
         for lane in lanes:
             log = self.queue.logs / f"{round_name}-{lane}.log"
             # A lane run here logs to its own file, and one on the second Mac prints here. What an
@@ -1213,11 +1215,13 @@ class Worker:
                                         timeout=LANE_LIMIT, env=self.environment)
             except processes.TimedOut as error:
                 self.ran_on = remote.dispatched(self.checkout, lane, began)
+                self.ran_where = self.mac(lane, began)
                 self.timed_out = f"{lane} reached its limit: {error}"
                 self.say(f"{lane}: unmeasured: {error}")
                 return evidence.UNMEASURED, log
             self.ran_on = remote.dispatched(self.checkout, lane, began)
             with contextlib.suppress(OSError), log.open("a") as kept: kept.write(lane_log.read_text(errors="replace"))
+            self.ran_where = self.mac(lane, began)
             self.say(f"{lane} exited {status_}{self.placed(lane, began)}")
             if status_: return status_, log
             if lane == budgets.GATE:
@@ -1239,6 +1243,20 @@ class Worker:
             return ""
         if not isinstance(said, dict) or said.get("ranOn") != "this Mac": return ""
         return f" on this Mac ({said.get('hereBecause')})"
+
+    def mac(self, lane, began):
+        """The Mac the lane ran on, for a hold's reason (vocaro-engineering#185): ` on the second Mac (HOST)` by its
+        dispatch's record, ` on this Mac (NAME)` by the receipt the run wrote here since began, or nothing when
+        neither says."""
+        if self.ran_on: return f" on the second Mac ({self.ran_on})"
+        receipt = self.checkout / ".build/engineering" / lane / "source.json"
+        try:
+            if receipt.stat().st_mtime < began: return ""
+            said = json.loads(receipt.read_text())
+        except (OSError, ValueError):
+            return ""
+        if not isinstance(said, dict) or said.get("ranOn") != "this Mac": return ""
+        return f" on this Mac ({said.get('mac') or 'unnamed'})"
 
     def changed(self, old, new):
         return text(self.checkout, "diff", "--name-only", old, new).split("\n")
@@ -1481,7 +1499,7 @@ class Worker:
             self.no_verdicts += 1
             runs = no_verdict_runs(config)
             gave = (f"the lanes gave no verdict in {self.no_verdicts} run{'' if self.no_verdicts == 1 else 's'} in a "
-                    f"row, the last with exit {result}, {self.no_verdict_cause(result, log)}")
+                    f"row, the last with exit {result}{self.ran_where}, {self.no_verdict_cause(result, log)}")
             # A shared host's configuration is the owner's; a host that stays busy, or tests left unmeasured, a
             # session reads, and resumes once the host has settled or the cause is gone.
             kind = OWNER if result == remote.MISCONFIGURED else SESSION
@@ -1535,11 +1553,15 @@ class Worker:
         tests its log reports unmeasured, no admission, or a shared host's configuration."""
         if self.timed_out: return f"unmeasured: {self.timed_out}"
         if result == evidence.UNMEASURED:
-            try: found = evidence.unmeasured_tests(log.read_text(errors="replace")) if log else []
-            except OSError: found = []
+            try: said = log.read_text(errors="replace") if log else ""
+            except OSError: said = ""
+            found = evidence.unmeasured_tests(said)
             if not found: return "unmeasured, with no test its log names"
             first = found[0] if len(found[0]) <= UNMEASURED_SHOWN else found[0][:UNMEASURED_SHOWN - 3] + "..."
-            return f"unmeasured: {len(found)} test{'' if len(found) == 1 else 's'}, the first {first}"
+            # The run's last reading of its screen, which eng writes for a lane whose result depends on it.
+            screens = SCREEN_LINE.findall(said)
+            return (f"unmeasured: {len(found)} test{'' if len(found) == 1 else 's'}, the first {first}"
+                    + (f"; the last reading {screens[-1].strip()}" if screens else ""))
         if result == resources.BUSY: return "no admission: the host stayed at capacity"
         return "a shared host's configuration stopped it"
 

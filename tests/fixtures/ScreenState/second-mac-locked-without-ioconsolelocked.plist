@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>IOConsoleUsers</key>
+	<array>
+		<dict>
+			<key>CGSSessionScreenIsLocked</key>
+			<true/>
+			<key>CGSSessionUniqueSessionUUID</key>
+			<string>44CF148D-CD12-4E61-A739-658ECAFA0230</string>
+			<key>kCGSSessionAuditIDKey</key>
+			<integer>100083</integer>
+			<key>kCGSSessionGroupIDKey</key>
+			<integer>20</integer>
+			<key>kCGSSessionIDKey</key>
+			<integer>258</integer>
+			<key>kCGSSessionLoginwindowSafeLogin</key>
+			<false/>
+			<key>kCGSSessionOnConsoleKey</key>
+			<true/>
+			<key>kCGSSessionSystemSafeBoot</key>
+			<false/>
+			<key>kCGSSessionUserIDKey</key>
+			<integer>502</integer>
+			<key>kCGSSessionUserNameKey</key>
+			<string>trevorharmon</string>
+			<key>kCGSessionLoginDoneKey</key>
+			<true/>
+			<key>kCGSessionLongUserNameKey</key>
+			<string>Trevor Harmon</string>
+			<key>kSCSecuritySessionID</key>
+			<integer>100083</integer>
+		</dict>
+		<dict>
+			<key>CGSSessionUniqueSessionUUID</key>
+			<string>00BD7DC4-7C4B-4E0F-8B08-FB468F026F4B</string>
+			<key>kCGSSessionAuditIDKey</key>
+			<integer>100002</integer>
+			<key>kCGSSessionGroupIDKey</key>
+			<integer>20</integer>
+			<key>kCGSSessionIDKey</key>
+			<integer>257</integer>
+			<key>kCGSSessionLoginwindowSafeLogin</key>
+			<false/>
+			<key>kCGSSessionOnConsoleKey</key>
+			<false/>
+			<key>kCGSSessionSystemSafeBoot</key>
+			<false/>
+			<key>kCGSSessionUserIDKey</key>
+			<integer>501</integer>
+			<key>kCGSSessionUserNameKey</key>
+			<string>mediaserver</string>
+			<key>kCGSessionLoginDoneKey</key>
+			<true/>
+			<key>kCGSessionLongUserNameKey</key>
+			<string>Media Server</string>
+			<key>kSCSecuritySessionID</key>
+			<integer>100002</integer>
+		</dict>
+	</array>
+	<key>IOKitBuildVersion</key>
+	<string>Darwin Kernel Version 27.2.0: Thu Oct 15 00:02:46 PDT 2026; root:xnu-13432.41.4~25/RELEASE_ARM64_T6000</string>
+	<key>IOObjectClass</key>
+	<string>IORegistryEntry</string>
+	<key>IOObjectRetainCount</key>
+	<integer>37</integer>
+	<key>IORegistryEntryID</key>
+	<integer>4294967552</integer>
+	<key>IORegistryEntryName</key>
+	<string>Root</string>
+	<key>IORegistryPlanes</key>
+	<dict>
+		<key>CoreCapture</key>
+		<string>CoreCapture</string>
+		<key>IOAccessory</key>
+		<string>IOAccessory</string>
+		<key>IODeviceTree</key>
+		<string>IODeviceTree</string>
+		<key>IOPort</key>
+		<string>IOPort</string>
+		<key>IOPower</key>
+		<string>IOPower</string>
+		<key>IOService</key>
+		<string>IOService</string>
+		<key>IOUSB</key>
+		<string>IOUSB</string>
+		<key>WiFiDKCoreCapture</key>
+		<string>WiFiDKCoreCapture</string>
+	</dict>
+	<key>OS Build Version</key>
+	<string>26B123</string>
+	<key>OSKernelCPUSubtype</key>
+	<integer>-1073741822</integer>
+	<key>OSKernelCPUType</key>
+	<integer>16777228</integer>
+	<key>OSPrelinkKextCount</key>
+	<integer>5</integer>
+</dict>
+</plist>
