@@ -418,19 +418,25 @@ class CacheTests(Fixture):
         resolved = tree("Resolved", "Logs", "SourcePackages", "TestResults")
         logs = tree("Logs", "Logs")
         built = tree("Built", "Logs", "SourcePackages", "Build")
+        # What a test-without-building with no -derivedDataPath leaves: a test run's coverage data, no products.
+        coverage = tree("Coverage", "Logs", "TestResults", "Build/ProfileData/F49BFB5B")
+        (coverage / "Build/ProfileData/F49BFB5B/Coverage.profdata").write_bytes(b"profile")
+        products = tree("Products", "Logs", "TestResults", "Build/ProfileData", "Build/Products")
         indexed = tree("Indexed", "Logs", "Index.noindex")
         used = tree("Used", "Logs", "SourcePackages")
         recent = tree("Recent", "Logs", "SourcePackages")
         os.utime(recent / "Logs", (LATER - 3600, LATER - 3600))
         process = disk.Process(6, "xcodebuild", cwd=str(used / "SourcePackages/checkouts/Package"))
         items = self.items(self.host([process]), ["derived-data"])
-        for candidate in (resolved, logs):
+        for candidate in (resolved, logs, coverage):
             self.assertEqual(items[str(candidate)].status, disk.CANDIDATE, items[str(candidate)].reason)
             self.assertEqual(items[str(candidate)].command, ["rm", "-rf", "--", str(candidate)])
         self.assertIn("records no workspace; holds only Logs, SourcePackages, TestResults, no build products",
                       items[str(resolved)].reason)
         # A folder with build products, or anything else this rule does not know, stays the owner's decision.
-        for owner in (built, indexed):
+        self.assertIn("records no workspace; holds only Build, Logs, TestResults, Build holding only coverage data",
+                      items[str(coverage)].reason)
+        for owner in (built, indexed, products):
             self.assertEqual(items[str(owner)].status, disk.OWNER, items[str(owner)].reason)
             self.assertIn("records no workspace; holds", items[str(owner)].reason)
         self.assertEqual(items[str(used)].status, disk.KEPT)

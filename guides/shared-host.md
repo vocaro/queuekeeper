@@ -1288,8 +1288,11 @@ with their commands: exactly what `--delete` would offer to remove.
   project. When it holds nothing but `Logs`, `SourcePackages` and `TestResults`, which an
   `xcodebuild` without `-derivedDataPath` leaves when it resolves packages or tests without
   building, it has no build products to lose and is a candidate under the same rules: no
-  process and idle for `--min-idle-hours`. One holding `Build` or anything else is an owner
-  item. The folders every build shares (`ModuleCache.noindex`, `SDKExplicitPrecompiledModules`)
+  process and idle for `--min-idle-hours`. So is one whose `Build` holds only `ProfileData`, the
+  coverage data a `test-without-building` without `-derivedDataPath` leaves on every run: 1,850
+  such folders, 15 GiB, on 2026-11-04, before `eng simulator-tests` gave each test step a folder of
+  its own ([#158](https://github.com/vocaro/vocaro-engineering/issues/158)). One holding other
+  `Build` contents or anything else is an owner item. The folders every build shares (`ModuleCache.noindex`, `SDKExplicitPrecompiledModules`)
   are kept. A SwiftPM scratch (a
   directory holding `workspace-state.json`) or an Xcode `-derivedDataPath` directory under
   `/private/tmp` or the user temporary directory is a candidate when it lies outside every

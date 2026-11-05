@@ -10,8 +10,8 @@ free, the next is created and kept in the pool, after members unused for 14 days
 (guides/simulator-testing.md, Reserved simulator pool).
 Every device boots while the tests build, and is shut down and released however the run ends. The
 build is one `xcodebuild build-for-testing` for the first device's destination; each device
-then runs `xcodebuild test-without-building` on the same .xctestrun, with its own log and
-result bundle. Each device's outcome stands apart: a boot that reached its limit leaves that
+then runs `xcodebuild test-without-building` on the same .xctestrun, with its own log, result
+bundle and derived data folder, removed when its tests end. Each device's outcome stands apart: a boot that reached its limit leaves that
 device unmeasured, and the run fails when any device failed, and is otherwise unmeasured when
 any device was. guides/parallel-tests.md says how to bound it. A build that fails on a module older
 than a header it was built from clears that module cache and builds once more, and says so.
@@ -202,6 +202,17 @@ class Run:
         bundle = self.logs / f"{kind}.xcresult"
         # xcodebuild refuses a result bundle path that exists; each run's bundle is new.
         shutil.rmtree(bundle, ignore_errors=True)
+        # Without a derived data folder of its own, test-without-building writes logs, test results and
+        # coverage data to a new folder under ~/Library/Developer/Xcode/DerivedData on every run, which
+        # records no workspace and nothing removes: 1850 of them, 15 GiB, on 2026-11-04
+        # (vocaro-engineering#158). The result bundle keeps what the run reports; this folder goes.
+        scratch = self.logs / f"{kind}.derived"
+        shutil.rmtree(scratch, ignore_errors=True)
+        try: return self.run_test(kind, device, xctestrun, log, bundle, scratch)
+        finally: shutil.rmtree(scratch, ignore_errors=True)
+
+    def run_test(self, kind, device, xctestrun, log, bundle, scratch):
+        args = self.args
         workers = ["-parallel-testing-enabled", "YES", "-parallel-testing-worker-count", str(args.workers)] \
             if args.workers else ["-parallel-testing-enabled", "NO"]
         # A hung test fails by itself, named, and the rest still run, well before the run's own backstop.
@@ -210,7 +221,7 @@ class Run:
         command = ["xcodebuild", "test-without-building", "-xctestrun", str(xctestrun),
                    "-destination", f"platform=iOS Simulator,id={device.udid}", "-destination-timeout", "600",
                    *workers, *allowance, "-collect-test-diagnostics", "never", "-resultBundlePath", str(bundle),
-                   *args.passed]
+                   "-derivedDataPath", str(scratch), *args.passed]
         self.say(f"TEST {kind} ({device.udid}); log: {log}")
         started = time.monotonic()
         try:

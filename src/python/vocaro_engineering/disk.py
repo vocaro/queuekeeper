@@ -58,6 +58,9 @@ WORKSPACE_FOLDER = re.compile(r".+-[a-z]{28}")
 # What an xcodebuild leaves in a folder it writes no info.plist for, when it resolves packages or tests
 # without building: logs, resolved package checkouts and test results, and no build products to lose.
 UNBUILT = frozenset({"Logs", "SourcePackages", "TestResults"})
+# A Build folder that holds nothing but ProfileData holds a test run's coverage data, not build products:
+# xcodebuild test-without-building without -derivedDataPath leaves one per run (vocaro-engineering#158).
+COVERAGE_ONLY = frozenset({"ProfileData"})
 # Ignored files under a directory of one of these names may be evidence; ignored.py, which Closeout
 # reads too, says which ignored files are caches a tool rebuilds and keeps a worktree for any other.
 EVIDENCE_NAMES = ignored.EVIDENCE_NAMES
@@ -676,11 +679,14 @@ def derived_data(host, usage, sizes):
         if not workspace:
             names = sorted(entry.name for entry in child.iterdir())
             held = ", ".join(names[:5]) or "nothing"
-            if set(names) <= UNBUILT:
+            built = sorted(entry.name for entry in (child / "Build").iterdir()) if "Build" in names \
+                and (child / "Build").is_dir() and not (child / "Build").is_symlink() else None
+            if set(names) - {"Build"} <= UNBUILT and ("Build" not in names or built == sorted(COVERAGE_ONLY)):
                 # No project to trace it to, but nothing in it a build could need again: a candidate once
                 # idle and unused, as a folder whose workspace is gone.
+                what = "no build products" if "Build" not in names else "Build holding only coverage data"
                 items.append(cache_item(host, usage, sizes, "derived-data", child,
-                                        f"records no workspace; holds only {held}, no build products"))
+                                        f"records no workspace; holds only {held}, {what}"))
                 continue
             use = usage.of(child)
             items.append(Item("derived-data", str(child), KEPT if use else OWNER,

@@ -209,6 +209,11 @@ class SimulatorMatrixTests(unittest.TestCase):
         self.assertNotIn("-only-testing:T/C", builds[0])
         self.assertTrue(all(call[-1] == "-only-testing:T/C" for call in tests))
         self.assertTrue(all(call[call.index("-parallel-testing-enabled") + 1] == "NO" for call in tests))
+        # Each test has a derived data folder of its own beside its log, gone once it ends, so none is left
+        # under ~/Library/Developer/Xcode/DerivedData (vocaro-engineering#158).
+        scratches = [Path(call[call.index("-derivedDataPath") + 1]) for call in tests]
+        self.assertEqual(sorted(path.name for path in scratches), ["iPad-Air-13-inch-M4.derived", "iPhone-17-Pro.derived"])
+        self.assertFalse(any(path.exists() for path in scratches))
         # The build's destination is one of the devices, so it builds only that device's architecture.
         udids = {call[call.index("-destination") + 1] for call in tests}
         self.assertIn(builds[0][builds[0].index("-destination") + 1], udids)
