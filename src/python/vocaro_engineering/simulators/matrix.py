@@ -22,6 +22,15 @@ names either waits for the earlier to end, and says so. Simulators test from the
 in place, and a build can replace a test bundle's embedded resource bundle whole, so a build beside
 another run's tests can take the files they read from under them (vocaro/EPUBLib#872).
 
+With --shards N each device's kind takes N members, and each runs one test process, a share of the
+tests: Swift Testing runs a test process's suites at once, and xcodebuild's parallel workers do not
+share Swift Testing suites between clones (Xcode 27.2, 2026-11-05), so a suite on the main actor would
+take turns with every other at each await. The tests are listed once, with
+`xcodebuild test-without-building -enumerate-tests` and the run's own -only-testing and -skip-testing,
+and packed by class or suite into the shards, longest first by the seconds the last run's result
+bundles gave each, kept in the logs folder; each member then runs its share, with parallel testing
+off, by -only-testing. The device's line adds up its shards.
+
 With --build-only it builds and tests nothing: it takes the first device's member without erasing or
 booting it, only to name the build's destination, and returns it once the build ends. A gate can then
 build while its earlier stages run, and the full run that follows finds the build up to date
@@ -72,8 +81,11 @@ def parse(argv):
     parser.add_argument("--runtime", required=True, help="a simulator runtime, such as iOS-27-0")
     parser.add_argument("--jobs", type=int, help="devices tested at a time (default: every device)")
     parser.add_argument("--build-jobs", type=int, default=4, help="xcodebuild -jobs for the build (default 4)")
-    parser.add_argument("--workers", type=int, help="xcodebuild's parallel test workers on each device, each a "
-                        "clone of it; without this each device runs one test process")
+    parallel = parser.add_mutually_exclusive_group()
+    parallel.add_argument("--workers", type=int, help="xcodebuild's parallel test workers on each device, each a "
+                          "clone of it; without this each device runs one test process")
+    parallel.add_argument("--shards", type=int, help="pool members of each device's kind, each running a share of "
+                          "the tests, by class or suite, in a test process of its own, one test at a time")
     parser.add_argument("--boot-timeout", type=int, default=600, help="seconds a boot may take (default 600)")
     fresh = parser.add_mutually_exclusive_group()
     fresh.add_argument("--keep-state", action="store_true", help="take each member without resetting or erasing it, "
@@ -108,7 +120,7 @@ def parse(argv):
         parser.error(f"unrecognized arguments: {' '.join(unknown)}. Test arguments such as -only-testing go after "
                      "--, so a lane whose command runs simulator-tests ends with \"--\"")
     args.passed = argv[split + 1:]
-    for name in ("jobs", "build_jobs", "workers", "boot_timeout", "test_timeout", "test_allowance"):
+    for name in ("jobs", "build_jobs", "workers", "shards", "boot_timeout", "test_timeout", "test_allowance"):
         if getattr(args, name) is not None and getattr(args, name) < 1:
             parser.error(f"--{name.replace('_', '-')} needs at least 1")
     if len(set(args.device)) != len(args.device): parser.error("name each device type once")
@@ -125,10 +137,71 @@ def forwarded(prefixes, environment):
             if name.startswith(tuple(prefixes)) and f"TEST_RUNNER_{name}" not in environment}
 
 
+# Each class's or suite's seconds in the last sharded run, Bundle/Suite, which packs the next one's shards.
+SHARD_TIMINGS = "shard-timings.json"
+# The -only-testing and -skip-testing arguments, which a sharded run applies when it lists the tests.
+SELECTING = ("-only-testing", "-skip-testing")
+
+
+def selecting(argument):
+    return argument.startswith(SELECTING)
+
+
+def enumerated(listing):
+    """(enabled test ids, units with a disabled test) from xcodebuild -enumerate-tests' flat JSON."""
+    enabled, partial = [], set()
+    for value in listing.get("values", []):
+        enabled += [test["identifier"] for test in value.get("enabledTests", [])]
+        partial |= {unit(test["identifier"]) for test in value.get("disabledTests", [])}
+    return enabled, partial
+
+
+def unit(identifier):
+    """A test's class or suite, Bundle/Suite, from its identifier, Bundle/Suite/test()."""
+    return "/".join(identifier.split("/")[:2])
+
+
+def packed(tests, partial, seconds, count):
+    """count lists of -only-testing arguments, longest first into the one with least: each unit whole, unless
+    the run left some of its tests out, when its tests one by one. A unit with no recorded seconds counts
+    the median of those that have one."""
+    units = {}
+    for test in tests: units.setdefault(unit(test), []).append(test)
+    known = sorted(seconds[name] for name in units if name in seconds)
+    guess = known[len(known) // 2] if known else 1.0
+    bins = [[0.0, []] for _ in range(count)]
+    for name in sorted(units, key=lambda name: (-seconds.get(name, guess), name)):
+        bin = min(bins, key=lambda entry: entry[0])
+        bin[0] += seconds.get(name, guess)
+        bin[1] += [f"-only-testing:{test}" for test in units[name]] if name in partial else [f"-only-testing:{name}"]
+    return [names for _, names in bins]
+
+
+def suite_seconds(bundle):
+    """{Bundle/Suite: seconds} over a result bundle's test cases, or {} when xcresulttool cannot read it."""
+    try:
+        found = subprocess.run(["xcrun", "xcresulttool", "get", "test-results", "tests", "--path", str(bundle)],
+                               capture_output=True, text=True, timeout=300, check=True)
+        tests = json.loads(found.stdout)
+    except (OSError, ValueError, subprocess.SubprocessError): return {}
+    seconds = {}
+    def walk(node, path):
+        kind = node.get("nodeType")
+        if kind in ("Unit test bundle", "UI test bundle", "Test Suite") and len(path) < 2: path = [*path, node.get("name")]
+        if kind == "Test Case" and len(path) == 2:
+            seconds["/".join(path)] = seconds.get("/".join(path), 0.0) + float(node.get("durationInSeconds") or 0)
+            return
+        for child in node.get("children", []): walk(child, path)
+    for node in tests.get("testNodes", []): walk(node, [])
+    return seconds
+
+
 class Run:
     def __init__(self, args):
         self.args, self.lock, self.results = args, threading.Lock(), {}
         self.logs = args.logs.resolve()
+        # The listing has a lock of its own: say() takes self.lock, and the listing says what it found.
+        self.shards, self.listing, self.seconds, self.listing_lock = {}, None, {}, threading.Lock()
 
     def say(self, *lines):
         with self.lock: print(*lines, sep="\n", flush=True)
@@ -202,7 +275,7 @@ class Run:
         self.say(f"BUILT {written[-1]} in {round(time.time() - started)}s")
         return written[-1]
 
-    def test(self, kind, device, xctestrun):
+    def test(self, kind, device, xctestrun, selection=None):
         args, log = self.args, self.logs / f"{kind}.log"
         bundle = self.logs / f"{kind}.xcresult"
         # xcodebuild refuses a result bundle path that exists; each run's bundle is new.
@@ -213,26 +286,30 @@ class Run:
         # (vocaro-engineering#158). The result bundle keeps what the run reports; this folder goes.
         scratch = self.logs / f"{kind}.derived"
         shutil.rmtree(scratch, ignore_errors=True)
-        try: return self.run_test(kind, device, xctestrun, log, bundle, scratch)
+        try: return self.run_test(kind, device, xctestrun, log, bundle, scratch, selection)
         finally: shutil.rmtree(scratch, ignore_errors=True)
 
-    def run_test(self, kind, device, xctestrun, log, bundle, scratch):
+    def run_test(self, kind, device, xctestrun, log, bundle, scratch, selection=None):
+        """With selection, a shard's -only-testing arguments in place of the run's own selecting ones, and
+        (status, executed, skipped, unmeasured lines, detail) returned, not reported."""
         args = self.args
         workers = ["-parallel-testing-enabled", "YES", "-parallel-testing-worker-count", str(args.workers)] \
             if args.workers else ["-parallel-testing-enabled", "NO"]
+        passed = args.passed if selection is None else [*[a for a in args.passed if not selecting(a)], *selection]
         # A hung test fails by itself, named, and the rest still run, well before the run's own backstop.
         allowance = [] if "-test-timeouts-enabled" in args.passed else \
             ["-test-timeouts-enabled", "YES", "-default-test-execution-time-allowance", str(args.test_allowance)]
         command = ["xcodebuild", "test-without-building", "-xctestrun", str(xctestrun),
                    "-destination", f"platform=iOS Simulator,id={device.udid}", "-destination-timeout", "600",
                    *workers, *allowance, "-collect-test-diagnostics", "never", "-resultBundlePath", str(bundle),
-                   "-derivedDataPath", str(scratch), *args.passed]
+                   "-derivedDataPath", str(scratch), *passed]
         self.say(f"TEST {kind} ({device.udid}); log: {log}")
         started = time.monotonic()
         try:
             status = processes.run(command, cwd=Path.cwd(), log_path=log, timeout=args.test_timeout,
                                    env={**os.environ, **forwarded(args.forward_env, os.environ)})
         except processes.TimedOut:
+            if selection is not None: return evidence.UNMEASURED, 0, 0, [], f"{kind}'s tests exceeded {args.test_timeout}s"
             return self.finish(kind, evidence.UNMEASURED, f"the tests exceeded {args.test_timeout}s", log)
         seconds = round(time.monotonic() - started)
         text = log.read_text(errors="replace")
@@ -242,6 +319,16 @@ class Run:
         if recorded is not None: executed, skipped, from_bundle = recorded
         else: executed, skipped, from_bundle = evidence.executed_tests(text) or 0, evidence.skipped_tests(text), []
         counted = f"Executed {executed} tests" + (f", {skipped} skipped" if skipped else "")
+        if selection is not None:
+            console = evidence.unmeasured_tests(text)
+            if recorded is not None: console = [line for line in console if "Test skipped - Unmeasured:" not in line]
+            with self.lock: self.seconds.update(suite_seconds(bundle))
+            # Not "Executed N tests", which a lane would count beside the device's own total.
+            self.say(f"SHARD {kind}: status {status}, ran {executed} tests" + (f", {skipped} skipped" if skipped else "")
+                     + f" in {seconds}s; log: {log}")
+            detail = f"{kind} failed with status {status}" if status != 0 else \
+                f"{kind} ran no tests" if executed == 0 and selection else None
+            return (1 if detail else 0), executed, skipped, [*console, *from_bundle], detail
         if status != 0:
             return self.finish(kind, 1, f"the tests failed with status {status}, {counted}", log, seconds)
         if executed == 0:
@@ -254,6 +341,58 @@ class Run:
         # The wrapper's "Executed N tests" is what a lane counts: the device's own totals are in its log.
         self.finish(kind, evidence.UNMEASURED if unmeasured else 0, counted, log, seconds)
         if unmeasured: self.say(*unmeasured)
+
+    def listed(self, device, xctestrun):
+        """(enabled test ids, partial units) for the run's selection, listed once, on the first member to ask."""
+        with self.listing_lock:
+            if self.listing is not None: return self.listing
+            path, log = self.logs / "enumerated.json", self.logs / "enumerate.log"
+            path.unlink(missing_ok=True)
+            command = ["xcodebuild", "test-without-building", "-xctestrun", str(xctestrun),
+                       "-destination", f"platform=iOS Simulator,id={device.udid}", "-destination-timeout", "600",
+                       "-enumerate-tests", "-test-enumeration-style", "flat", "-test-enumeration-format", "json",
+                       "-test-enumeration-output-path", str(path), *[a for a in self.args.passed if selecting(a)]]
+            status = processes.run(command, cwd=Path.cwd(), log_path=log, timeout=self.args.test_timeout)
+            try: self.listing = enumerated(json.loads(path.read_text())) if status == 0 else ([], set())
+            except (OSError, ValueError): self.listing = ([], set())
+            self.say(f"LISTED {len(self.listing[0])} tests to share among {self.args.shards} members of each device; "
+                     f"log: {log}")
+            return self.listing
+
+    def shard(self, kind, number, device, built):
+        """Run one member's share of a sharded device's tests; its outcome goes to self.shards[kind]."""
+        label = f"{kind}-{number + 1}"
+        record = lambda result: self.shards.setdefault(kind, {}).__setitem__(number, result)
+        if not self.boot(label, device):
+            return record((self.results.pop(label), 0, 0, [], f"{label} did not boot"))
+        xctestrun = built.result()
+        if xctestrun is None: return record((1, 0, 0, [], "not tested: the build failed"))
+        tests, partial = self.listed(device, xctestrun)
+        if not tests: return record((1, 0, 0, [], "no tests were listed"))
+        try: seconds = json.loads((self.logs / SHARD_TIMINGS).read_text())
+        except (OSError, ValueError): seconds = {}
+        shares = packed(tests, partial, seconds, self.args.shards)
+        if not shares[number]: return record((0, 0, 0, [], None))
+        record(self.test(label, device, xctestrun, shares[number]))
+
+    def shards_finished(self, kind):
+        results = [self.shards.get(kind, {}).get(number, (1, 0, 0, [], "no result")) for number in range(self.args.shards)]
+        executed, skipped = sum(r[1] for r in results), sum(r[2] for r in results)
+        unmeasured = [line for r in results for line in r[3]]
+        problems = [r[4] for r in results if r[4]]
+        counted = f"Executed {executed} tests" + (f", {skipped} skipped" if skipped else "") + \
+            f" in {self.args.shards} shards"
+        status = combined([r[0] for r in results])
+        if status == 0 and unmeasured: status = evidence.UNMEASURED
+        self.finish(kind, status, counted + (f"; {'; '.join(problems)}" if problems else ""))
+        if unmeasured: self.say(*unmeasured)
+
+    def keep_timings(self):
+        if not self.seconds: return
+        path = self.logs / SHARD_TIMINGS
+        try: kept = json.loads(path.read_text())
+        except (OSError, ValueError): kept = {}
+        path.write_text(json.dumps({**kept, **self.seconds}, indent=1, sort_keys=True) + "\n")
 
     def device(self, kind, device, built):
         if not self.boot(kind, device): return
@@ -361,21 +500,26 @@ def main(argv, project=None):
             devices = []
             for kind in kinds:
                 purpose = f"eng simulator-tests {args.scheme}" + (", build only" if args.build_only else "")
-                device = stack.enter_context(taken(pool, run, kind, args.runtime, purpose,
-                                                   args.keep_state or args.build_only, args.erase))
-                devices.append((kind, device))
+                for number in range(1 if args.build_only else args.shards or 1):
+                    device = stack.enter_context(taken(pool, run, kind, args.runtime, purpose,
+                                                       args.keep_state or args.build_only, args.erase))
+                    devices.append((kind, number, device))
             if args.build_only:
                 # The member names the destination alone: nothing boots, installs or runs on it.
-                xctestrun = run.build(f"platform=iOS Simulator,id={devices[0][1].udid}")
+                xctestrun = run.build(f"platform=iOS Simulator,id={devices[0][2].udid}")
                 run.results[kinds[0]] = 0 if xctestrun is not None else 1
                 print(f"Simulator build (wall-clock {round(time.monotonic() - started)}s): "
                       f"{'BUILT' if xctestrun is not None else 'FAIL'}, no test run", flush=True)
                 return run.results[kinds[0]]
             # The build runs while every device boots; tests wait for both.
             with ThreadPoolExecutor(max_workers=1) as builder, \
-                    ThreadPoolExecutor(max_workers=args.jobs or len(kinds)) as testers:
-                built = builder.submit(run.build, f"platform=iOS Simulator,id={devices[0][1].udid}")
-                futures = [testers.submit(run.device, kind, device, built) for kind, device in devices]
+                    ThreadPoolExecutor(max_workers=(args.jobs or len(kinds)) * (args.shards or 1)) as testers:
+                built = builder.submit(run.build, f"platform=iOS Simulator,id={devices[0][2].udid}")
+                futures = [testers.submit(run.shard, kind, number, device, built) if args.shards else
+                           testers.submit(run.device, kind, device, built) for kind, number, device in devices]
+            if args.shards:
+                for kind in kinds: run.shards_finished(kind)
+                run.keep_timings()
             errors = [future.exception() for future in [built, *futures] if future.exception() is not None]
             if errors:
                 uncertain = [error for error in errors if not isinstance(error, processes.Interrupted)]

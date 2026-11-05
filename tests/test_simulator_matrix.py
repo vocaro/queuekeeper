@@ -150,6 +150,18 @@ XCODEBUILD = textwrap.dedent("""\
         sys.exit(0)
     udid = value("-destination").split("id=")[1]
     kind = json.loads((state / "devices" / udid).read_text())["type"].rsplit(".", 1)[-1]
+    # FAKE_TESTS: the bundle's tests, which -enumerate-tests lists and a test run with -only-testing counts.
+    every = json.loads(os.environ.get("FAKE_TESTS", "[]"))
+    only = [a.split(":", 1)[1] for a in arguments if a.startswith("-only-testing:")]
+    skip = [a.split(":", 1)[1] for a in arguments if a.startswith("-skip-testing:")]
+    chosen = lambda test, names: any(test == name or test.startswith(name + "/") for name in names)
+    selected = [test for test in every if (not only or chosen(test, only)) and not chosen(test, skip)]
+    if "-enumerate-tests" in arguments:
+        if os.environ.get("FAKE_ENUMERATE_FAIL"): sys.exit("xcodebuild: error: enumeration failed")
+        pathlib.Path(value("-test-enumeration-output-path")).write_text(json.dumps({"errors": [], "values": [{
+            "enabledTests": [{"identifier": test} for test in selected],
+            "disabledTests": [{"identifier": test} for test in every if test not in selected]}]}))
+        sys.exit(0)
     bundle = pathlib.Path(value("-resultBundlePath"))
     if bundle.exists(): sys.exit(f"Existing file at -resultBundlePath {bundle}")
     bundle.mkdir(parents=True)
@@ -179,9 +191,14 @@ XCODEBUILD = textwrap.dedent("""\
     if unmeasured:
         print("/p/T.swift:5: -[P.T testA] : Test skipped - Unmeasured: the host was busy")
     print("Test Suite 'All tests' passed at 2026-10-24 01:00:00.000.")
-    print(f"\\t Executed 3 tests, with {skipped} tests skipped and 0 failures (0 unexpected) in 0.1 (0.1) seconds")
+    ran = len(selected) if every else 3
+    print(f"\\t Executed {ran} tests, with {skipped} tests skipped and 0 failures (0 unexpected) in 0.1 (0.1) seconds")
     sys.exit(65 if kind in os.environ.get("FAKE_TEST_FAIL", "") else 0)
 """)
+
+
+def selecting_argument(argument):
+    return argument.startswith(("-only-testing", "-skip-testing"))
 
 
 class SimulatorMatrixTests(unittest.TestCase):
@@ -672,6 +689,86 @@ class SimulatorMatrixTests(unittest.TestCase):
         self.assertEqual(status, evidence.UNMEASURED, output)
         self.assertEqual(evidence.unmeasured_tests(output),
                          ["iPhone-17-Pro: -[T/testA()] : Test skipped - Unmeasured: the host was busy"])
+
+    SHARDED = ["T/A/testA()", "T/A/testB()", "T/B/testC()", "T/C/testD()", "T/D/testE()"]
+
+    def shard_runs(self):
+        return [call for call in self.calls() if call[0] == "test-without-building" and "-enumerate-tests" not in call]
+
+    def test_shards_share_each_devices_tests_among_members_each_one_test_at_a_time(self):
+        status, output = self.run_matrix("--shards", "2", FAKE_TESTS=json.dumps(self.SHARDED))
+        self.assertEqual(status, 0, output)
+        # Two members of each kind, each its own simulator, and each test once on each kind.
+        self.assertEqual(sorted(self.devices()), ["Project iPad Air 13-inch (M4) 1", "Project iPad Air 13-inch (M4) 2",
+                                                  "Project iPhone 17 Pro 1", "Project iPhone 17 Pro 2"])
+        runs = self.shard_runs()
+        self.assertEqual(len(runs), 4)
+        for call in runs:
+            self.assertEqual(call[call.index("-parallel-testing-enabled") + 1], "NO")
+        by_kind = {}
+        for call in runs:
+            udid = call[call.index("-destination") + 1].split("id=")[1]
+            kind = self.devices_by_udid()[udid]
+            by_kind.setdefault(kind, []).append(sorted(a for a in call if a.startswith("-only-testing:")))
+        for kind, shares in by_kind.items():
+            self.assertTrue(all(shares), shares)
+            self.assertEqual(sorted(a for share in shares for a in share),
+                             ["-only-testing:T/A", "-only-testing:T/B", "-only-testing:T/C", "-only-testing:T/D"])
+        self.assertIn("PASS iPhone-17-Pro: Executed 5 tests in 2 shards", output)
+        # A lane counts each device once, not its shards.
+        self.assertEqual(evidence.executed_tests(output), 10, output)
+        self.assertEqual(len([call for call in self.calls() if "-enumerate-tests" in call]), 1)
+        self.assert_every_device_returned()
+
+    def devices_by_udid(self):
+        return {device["udid"]: device["type"].rsplit(".", 1)[-1] for device in self.devices().values()}
+
+    def test_without_shards_each_device_runs_one_process_of_every_test(self):
+        status, output = self.run_matrix(FAKE_TESTS=json.dumps(self.SHARDED))
+        self.assertEqual(status, 0, output)
+        self.assertEqual(len(self.devices()), 2)
+        self.assertFalse([call for call in self.calls() if "-enumerate-tests" in call])
+        self.assertFalse([a for call in self.shard_runs() for a in call if a.startswith("-only-testing")])
+
+    def test_a_runs_own_selection_is_listed_and_a_partly_chosen_unit_is_shared_test_by_test(self):
+        status, output = self.run_matrix("--shards", "2", "--", "-skip-testing:T/A/testB()", "-skip-testing:T/D",
+                                         FAKE_TESTS=json.dumps(self.SHARDED))
+        self.assertEqual(status, 0, output)
+        listed = [call for call in self.calls() if "-enumerate-tests" in call][0]
+        self.assertIn("-skip-testing:T/D", listed)
+        shares = [a for call in self.shard_runs() for a in call if selecting_argument(a)]
+        self.assertFalse([a for a in shares if a.startswith("-skip-testing")])
+        iphone = sorted(a for call in self.shard_runs() for a in call if a.startswith("-only-testing")
+                        and self.devices_by_udid()[call[call.index("-destination") + 1].split("id=")[1]] == "iPhone-17-Pro")
+        self.assertEqual(iphone, ["-only-testing:T/A/testA()", "-only-testing:T/B", "-only-testing:T/C"])
+        self.assertIn("PASS iPhone-17-Pro: Executed 3 tests in 2 shards", output)
+
+    def test_a_shard_that_fails_fails_its_device(self):
+        status, output = self.run_matrix("--shards", "2", FAKE_TESTS=json.dumps(self.SHARDED), FAKE_TEST_FAIL="iPad-Air-13-inch-M4")
+        self.assertEqual(status, 1, output)
+        self.assertIn("FAIL iPad-Air-13-inch-M4: Executed 5 tests in 2 shards", output)
+        self.assertIn("PASS iPhone-17-Pro", output)
+
+    def test_a_listing_that_fails_runs_nothing_and_fails(self):
+        status, output = self.run_matrix("--shards", "2", FAKE_TESTS=json.dumps(self.SHARDED), FAKE_ENUMERATE_FAIL="1")
+        self.assertEqual(status, 1, output)
+        self.assertFalse(self.shard_runs())
+        self.assertIn("no tests were listed", output)
+        self.assert_every_device_returned()
+
+    def test_the_last_runs_seconds_pack_the_shards(self):
+        logs = self.root / ".build/simulator-tests/logs"
+        logs.mkdir(parents=True)
+        (logs / "shard-timings.json").write_text(json.dumps({"T/A": 1, "T/B": 1, "T/C": 1, "T/D": 50}))
+        status, output = self.run_matrix("--shards", "2", FAKE_TESTS=json.dumps(self.SHARDED))
+        self.assertEqual(status, 0, output)
+        shares = sorted(sorted(a for a in call if a.startswith("-only-testing")) for call in self.shard_runs()
+                        if self.devices_by_udid()[call[call.index("-destination") + 1].split("id=")[1]] == "iPhone-17-Pro")
+        self.assertIn(["-only-testing:T/D"], shares, output)
+
+    def test_shards_and_workers_cannot_be_asked_for_together(self):
+        status, output = self.run_matrix("--shards", "2", "--workers", "2")
+        self.assertEqual(status, 2, output)
 
     def test_a_lane_that_ends_with_its_separator_takes_a_filter_from_eng_run(self):
         matrix = [sys.executable, str(ENG), "simulator-tests", "--scheme", "Package-Tests", "--runtime", "iOS-27-0",
