@@ -214,6 +214,35 @@ class WorktreeTests(Fixture):
                             disk.Process(6, cwd=str(self.root))], checkout, apart=[nested])
         self.assertEqual([process.pid for process in found], [1, 3, 4])
 
+    def test_runners_count_only_what_runs_from_below_a_checkout(self):
+        """vocaro-engineering#182: a session in a worktree inside the checkout names the checkout itself as its
+        project root, and its helpers start at that root; neither runs code from the tree, while a run from the
+        root names a file below it, relative to its working directory."""
+        checkout = self.root / "kit"
+        nested = checkout / ".claude/worktrees/agent"
+        (checkout / "scripts").mkdir(parents=True)
+        (checkout / "scripts/eng").write_text("")
+        processes = [
+            # The negative controls.
+            disk.Process(1, cwd=str(nested), args=f"claude --project-config-root {checkout}"),
+            disk.Process(2, cwd=str(checkout), args="node mcp-server --stdio"),
+            disk.Process(3, paths=(str(checkout),)),
+            disk.Process(4, cwd=str(self.root), args="python3 scripts/eng run lane"),
+            disk.Process(5, cwd=str(nested), args="python3 scripts/eng run lane"),
+            # The positive controls.
+            disk.Process(6, cwd=str(checkout), args="python3 scripts/eng run lane"),
+            disk.Process(7, cwd=str(checkout / "scripts"), args="sleep 300"),
+            disk.Process(8, paths=(str(checkout / "skills/closeout/landed.sh"),)),
+            disk.Process(9, cwd=str(self.root), args=f"python3 {checkout}/scripts/eng land")]
+        found = disk.runners(processes, checkout, apart=[nested])
+        self.assertEqual([process.pid for process, _, _ in found], [6, 7, 8, 9])
+        self.assertEqual(found[0][1:], ("argument", str(checkout / "scripts/eng")))
+        self.assertEqual(found[1][1], "working directory")
+        self.assertEqual(found[2][1], "open file")
+        # users, which keeps a checkout from being moved, still counts each use at its root.
+        self.assertEqual([process.pid for process in disk.users(processes, checkout, apart=[nested])],
+                         [1, 2, 3, 6, 7, 8, 9])
+
     def test_a_worktree_outside_the_session_directories_is_only_an_owner_decision(self):
         shared = self.worktree("Project", parent=self.root / "share")
         session = self.worktree("session", parent=self.home / ".codex/worktrees/abcd")

@@ -305,13 +305,22 @@ by hand only once that checkout has it.
 fast-forwards its main checkout, `~/Development/vocaro-engineering`, to `origin/main`, without hooks,
 but only when that checkout is on `main`, clean (no changed or untracked path), holds no commit of its
 own, is behind, and no process started from it still runs: one whose working directory, an open file
-or an argument is in its tree, outside the session worktrees inside it and Git's own directory (owner's
-decision, 2026-11-02, [vocaro-engineering#104](https://github.com/vocaro/vocaro-engineering/issues/104)).
+or an argument is below the checkout, in its tree, outside the session worktrees inside it and Git's
+own directory, where an argument relative to its working directory counts when it names a path there
+(owner's decision, 2026-11-02, [vocaro-engineering#104](https://github.com/vocaro/vocaro-engineering/issues/104)).
+The checkout itself is no such use: every Claude session in a worktree inside it passes it as
+`--project-config-root`, and the session's MCP servers and language servers start there, while a run
+from it, such as `python3 scripts/eng`, names a file below it
+([vocaro-engineering#182](https://github.com/vocaro/vocaro-engineering/issues/182)).
 A running `eng` keeps the modules it loaded at its start but reads six others when first used, and a
 lane that starts another `eng` reads the tree as it is then, so a run spanning the move could mix two
-toolkits. Otherwise the worker leaves the checkout as it is and its log says why, such as
+toolkits. Otherwise the worker leaves the checkout as it is and its log says why, naming up to five
+of the processes and what of each it found, such as
 `left ~/Development/vocaro-engineering as it is: it is on BRANCH, not main`; nothing of this holds
-the queue, and the next landing tries again. A worker whose code came from that checkout, the
+the queue, and the next landing tries again. A checkout left only for such a run, or for a census that
+failed, the worker also tries again once nothing waits, every 30 seconds for up to an hour, ending the
+tries as soon as an entry arrives, and says when it gives up; one left for any other reason is a
+person's to settle. A worker whose code came from that checkout, the
 toolkit's own among them, is such a process until its first round after a toolkit landing, when it
 starts itself again from its copy, above. A process that loaded the toolkit from it without keeping a path there,
 as a project's launcher does, cannot be seen, and a process that starts between the check and the

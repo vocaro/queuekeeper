@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import time
 import unittest
 from unittest.mock import patch
 
@@ -2791,9 +2792,15 @@ class SharedCheckout(Fixture):
     (vocaro-engineering#104). The fixture's clone stands for that checkout."""
     def setUp(self):
         super().setUp()
-        toolkit = patch.object(mq, "TOOLKIT_ROOT", self.repo)
-        toolkit.start()
-        self.addCleanup(toolkit.stop)
+        for patcher in (patch.object(mq, "TOOLKIT_ROOT", self.repo), patch.object(mq, "FOLLOW_LIMIT", 0)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def held(self, command, cwd):
+        process = subprocess.Popen(command, cwd=cwd)
+        self.addCleanup(process.wait)
+        self.addCleanup(process.kill)
+        return process
 
     def land(self, prepare=lambda: None):
         """Land one commit while the shared checkout is on main at the old origin/main, as prepare leaves it,
@@ -2864,6 +2871,69 @@ class SharedCheckout(Fixture):
         # The positive control: with the process gone, the next landing moves it.
         before, after, main, said = self.land()
         self.assertEqual(after, main)
+
+    def test_a_session_that_only_names_the_checkout_does_not_hold_it_back(self):
+        """vocaro-engineering#182: a Claude session in a worktree inside it passes the checkout itself as its project
+        root, and its MCP servers start at that root; neither runs the toolkit from its tree."""
+        nested = self.repo / ".claude/worktrees/agent"
+        run(self.repo, "git", "worktree", "add", "-q", "--detach", str(nested), "origin/main")
+        (self.repo / ".git/info/exclude").write_text(".claude/worktrees/\n")
+        def started():
+            self.held(["sh", "-c", "sleep 300; exit 0", "--project-config-root", str(self.repo)], nested)
+            self.held(["sleep", "300"], self.repo)
+        before, after, main, said = self.land(started)
+        self.assertEqual(after, main)
+        self.assertIn(f"fast-forwarded {self.repo} from {before[:12]} to {main[:12]}", said)
+
+    def test_a_toolkit_run_from_the_checkouts_root_holds_it_back_and_is_named(self):
+        def started(): self.runner = self.held(["sh", "-c", "sleep 300; exit 0", "scripts/eng"], self.repo)
+        before, after, main, said = self.land(started)
+        self.assertEqual(after, before)
+        self.assertRegex(said, rf"may still run its toolkit: PID {self.runner.pid} \(\w+\), argument \S*/scripts/eng; "
+                               "tried again once nothing waits")
+
+    def test_a_checkout_left_for_a_run_from_it_follows_once_the_run_ends(self):
+        tries = []
+        def ended(seconds):
+            tries.append(seconds)
+            if len(tries) == 2: self.runner.kill()
+        def started(): self.runner = self.held(["sleep", "300"], self.repo / "scripts")
+        with patch.object(mq, "FOLLOW_LIMIT", 3600), patch.object(mq, "pause", ended):
+            before, after, main, said = self.land(started)
+        self.assertEqual(after, main)
+        self.assertEqual(tries, [mq.FOLLOW_POLL] * 2)
+        self.assertIn(f"left {self.repo} as it is: {mq.IN_USE}", said)
+        self.assertIn(f"fast-forwarded {self.repo} from {before[:12]} to {main[:12]}", said)
+        # The negative controls: a checkout left on another branch is a person's, so nothing tries it again, and a
+        # run that outlasts the tries leaves it behind, saying so.
+        tries.clear()
+        def elsewhere(): run(self.repo, "git", "checkout", "-q", "-B", "elsewhere", "origin/main")
+        with patch.object(mq, "FOLLOW_LIMIT", 3600), patch.object(mq, "pause", ended):
+            before, after, main, said = self.land(elsewhere)
+        self.assertEqual((after, tries), (before, []))
+        run(self.repo, "git", "checkout", "-q", "main")
+        with patch.object(mq, "FOLLOW_LIMIT", 0.5), patch.object(mq, "pause", lambda seconds: time.sleep(0.3)):
+            before, after, main, said = self.land(started)
+        self.assertEqual(after, before)
+        self.assertIn(f"left {self.repo} behind after 0.5s of tries: {mq.IN_USE}", said)
+
+    def test_a_landing_that_arrives_during_the_tries_ends_them(self):
+        def started(): self.runner = self.held(["sleep", "300"], self.repo / "scripts")
+        tries = []
+        def arrived(seconds):
+            tries.append(seconds)
+            if len(tries) == 1:
+                self.commit("later", "later")
+                self.add("later")
+                run(self.repo, "git", "checkout", "-q", "main")
+            if len(tries) == 3: self.runner.kill()
+        with patch.object(mq, "FOLLOW_LIMIT", 3600), patch.object(mq, "pause", arrived):
+            before, after, main, said = self.land(started)
+        # The arrival ended the first tries, the second round landed it, and the tries after it caught up.
+        self.assertIn("later", self.main_files())
+        self.assertEqual(len(tries), 3)
+        self.assertEqual(after, main)
+        self.assertEqual(said.count(f"left {self.repo} as it is: {mq.IN_USE}"), 2)
 
     def test_a_projects_queue_leaves_the_toolkits_checkout_alone(self):
         with patch.object(mq, "TOOLKIT_ROOT", ROOT):

@@ -105,6 +105,14 @@ OPERATIONAL = "operational"
 # up to SETTLE_LIMIT: as long as a gate, which a hold would cost again.
 REFUSAL_POLL = 60
 POLL = 5
+# Seconds between the worker's tries to bring the shared checkout to origin/main once nothing waits, while only a
+# process running from it kept it behind, and how long it goes on: longer than a gate run from it (Worker.catch_up).
+FOLLOW_POLL = 30
+FOLLOW_LIMIT = 3600
+# How Worker.stays begins the reasons catch_up tries again, and how many of the processes it names.
+IN_USE = "a process started from it may still run its toolkit"
+UNKNOWN_USE = "whether a process started from it still runs is unknown"
+SHOWN_USERS = 5
 # What a project's launcher reads first to find the toolkit.
 TOOLKIT_VARIABLE = "VOCARO_ENGINEERING_ROOT"
 # What carries a worker's bisect progress to the worker that replaces it on a newer toolkit (Worker.move_to).
@@ -827,6 +835,7 @@ class Worker:
             self.no_verdicts = progress.get("no_verdicts", 0)
         self.code = running()  # the commit this worker's code came from, which toolkit compares with the copy's
         self.rounds = 0  # the rounds this worker has finished, which run reads to count its tries
+        self.deferred = None  # why follow last left the shared checkout behind for a run from it, or None
         self.timed_out = None  # why the last gate's lane reached its limit, or None (gate)
         self.ran_on = None  # the second Mac that ran the last lane the gate ran, or None (gate)
         self.environment = environment()  # what the lanes, the hook and the carry-over checks run in
@@ -1021,13 +1030,15 @@ class Worker:
         return common.returncode == 0 and common.stdout.strip() == \
             text(self.queue.main_checkout, "rev-parse", "--path-format=absolute", "--git-common-dir")
 
-    def follow(self):
+    def follow(self, quiet=False):
         """After a landing in the toolkit's own queue, fast-forward the shared checkout, the toolkit's main
         checkout, which every session's eng and the next worker read, to origin/main. Only when it is on main,
         clean, holds no commit of its own, is behind, and no process started from it still runs there, since
         such a run would mix two toolkits (owner's decision, vocaro-engineering#104). Otherwise it is left as it
-        is, and the log says why; nothing of this holds the queue."""
+        is, and the log says why; nothing of this holds the queue. One left only for such a run is deferred, which
+        catch_up tries again; quiet, for those tries, says only a fast-forward."""
         shared = self.queue.main_checkout
+        self.deferred = None
         try:
             why = self.stays(shared)
             if why is None:
@@ -1040,7 +1051,9 @@ class Worker:
                     return
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
             why = str(error)
-        if why: self.say(f"left {shared} as it is: {why}")
+        if why and why.startswith((IN_USE, UNKNOWN_USE)): self.deferred = why
+        if why and not quiet:
+            self.say(f"left {shared} as it is: {why}" + ("; tried again once nothing waits" if self.deferred else ""))
 
     def stays(self, shared):
         """Why the shared checkout is not fast-forwarded now, '' when it is current, or None."""
@@ -1052,18 +1065,36 @@ class Worker:
         if head == target: return ""
         if git(shared, "merge-base", "--is-ancestor", head, target).returncode:
             return f"its HEAD {head[:12]} has commits origin/main lacks"
-        # What runs in a session's worktree inside it, or opens Git's own files, is not running from its tree.
+        # What runs in a session's worktree inside it, or opens Git's own files, is not running from its tree; nor
+        # is what names only the checkout itself, as every session names its project root (disk.runners, #182).
         listed = text(shared, "worktree", "list", "--porcelain").splitlines()
         apart = [Path(line[len("worktree "):]) for line in listed[1:] if line.startswith("worktree ")]
         apart.append(Path(text(shared, "rev-parse", "--path-format=absolute", "--git-common-dir")))
-        try: users = disk.users(disk.census(), shared, apart)
+        try: users = disk.runners(disk.census(), shared, apart)
         except (OSError, RuntimeError, subprocess.SubprocessError) as error:
-            return f"whether a process started from it still runs is unknown: {error}"
+            return f"{UNKNOWN_USE}: {error}"
         if users:
-            more = f", and {len(users) - 1} more" if len(users) > 1 else ""
-            return (f"a process started from it may still run its toolkit: "
-                    f"{disk.described((users[0], 'working directory, an open file or an argument'))}{more}")
+            named = "; ".join(f"PID {process.pid} ({process.command or process.args.split(' ')[0] or '?'}), "
+                              f"{how} {path}" for process, how, path in users[:SHOWN_USERS])
+            more = f"; and {len(users) - SHOWN_USERS} more" if len(users) > SHOWN_USERS else ""
+            return f"{IN_USE}: {named}{more}"
         return None
+
+    def catch_up(self):
+        """After the worker's rounds, while nothing waits, try follow again every FOLLOW_POLL seconds for up to
+        FOLLOW_LIMIT while only a process running from the shared checkout, or a census that failed, kept it
+        behind; such a run ends by itself (vocaro-engineering#182). A checkout left for any other reason is a
+        person's to settle. The next landing tries again either way. It looks once first, since a worker that
+        moved to a newer toolkit after a landing (move_to) has not followed itself."""
+        if self.queue.held() or not self.toolkits_own(): return
+        self.follow(quiet=True)
+        deadline = time.monotonic() + FOLLOW_LIMIT
+        while self.deferred and time.monotonic() < deadline:
+            pause(FOLLOW_POLL)
+            if self.queue.held() or self.queue.waiting(): return
+            self.follow(quiet=True)
+        if self.deferred:
+            self.say(f"left {self.queue.main_checkout} behind after {FOLLOW_LIMIT}s of tries: {self.deferred}")
 
     def reset(self, commit):
         """Exactly commit's tracked files. Ignored inputs a lane provisioned stay for the next round."""
@@ -1689,7 +1720,9 @@ def run(root):
             worker = Worker(queue, progress)
             progress = None
             try:
-                with processes.forwarding_signals(): worker.drain()
+                with processes.forwarding_signals():
+                    worker.drain()
+                    worker.catch_up()
             except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
                 queue.mark([entry for entry in queue.all() if entry["state"] == TESTING], QUEUED)
                 if worker.rounds: tries = 0  # a round that went through since the last try starts the count again
