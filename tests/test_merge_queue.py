@@ -2161,10 +2161,28 @@ class ToolkitCopy(Fixture):
         self.assertTrue(self.locks(self.repo)[str(old)].startswith("retired by the merge queue"))
 
     def test_the_toolkits_own_queue_tests_its_batch(self):
-        worker = mq.Worker(mq.Queue(self.repo))
-        with patch.object(mq, "TOOLKIT_ROOT", self.repo): worker.toolkit()
+        with patch.object(mq, "TOOLKIT_ROOT", self.repo):
+            worker = mq.Worker(mq.Queue(self.repo))
+            worker.toolkit()
         self.assertNotIn("VOCARO_ENGINEERING_ROOT", worker.environment)
         self.assertFalse(self.copy.exists())
+
+    def test_a_toolkit_at_origin_that_does_not_start_is_not_moved_to(self):
+        """A toolkit commit pushed by hand whose worker code does not import: the project's worker stays on its own
+        code, and its lanes run the toolkit it was started from, rather than a gate that sends every entry back."""
+        behind = run(self.kit, "git", "rev-parse", "HEAD")
+        other = self.base / "other-broken"
+        run(self.base, "git", "clone", "-q", str(self.kit_origin), str(other))
+        source = other / "src/python/vocaro_engineering/merge_queue.py"
+        source.write_text(source.read_text() + "\ndef broken(:\n")
+        run(other, "git", "commit", "-qam", "Break the worker")
+        broken = run(other, "git", "rev-parse", "HEAD")
+        run(other, "git", "push", "-q", "origin", "HEAD:main")
+        with contextlib.redirect_stdout(io.StringIO()) as said: identifier, status = self.gate_once("a")
+        self.assertEqual((status, self.state(identifier)["state"], self.moves), (0, "landed", []))
+        self.assertIn(f"staying on the toolkit at {behind[:12]}, which this worker was started from, rather than "
+                      f"moving to {broken[:12]}, origin/main: importing it exited 1: SyntaxError", said.getvalue())
+        self.assertEqual(self.seen.read_text().split("\n"), [str(self.copy), behind, ""])
 
     def test_an_explicit_toolkit_stands(self):
         with patch.dict(os.environ, {"VOCARO_ENGINEERING_ROOT": str(ROOT)}):
@@ -2172,6 +2190,174 @@ class ToolkitCopy(Fixture):
         self.assertEqual(status, 0)
         self.assertEqual(self.seen.read_text().split("\n")[0], str(ROOT))
         self.assertFalse(self.copy.exists())
+
+
+class ToolkitsOwnWorker(Fixture):
+    """The toolkit's own queue judging its main with the toolkit at origin/main, not the code its worker was started
+    from (vocaro-engineering#177). The fixture's project is the toolkit: it holds the toolkit's Python, and the
+    worker starts from a checkout of it at the first commit, as from the shared checkout before follow moves it."""
+    def setUp(self):
+        super().setUp()
+        shutil.copytree(ROOT / "src/python", self.repo / "src/python", ignore=shutil.ignore_patterns("__pycache__"))
+        # Its own toolkit, as the toolkit's engineering.json names it.
+        config = json.loads((self.repo / "engineering.json").read_text())
+        (self.repo / "engineering.json").write_text(json.dumps({**config, "toolkit": {"path": "."}}))
+        run(self.repo, "git", "add", "src", "engineering.json")
+        run(self.repo, "git", "commit", "-qm", "Toolkit")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        self.started = self.base / "started"
+        run(self.repo, "git", "worktree", "add", "-q", "--detach", str(self.started), "origin/main")
+        self.copy = self.base / "vocaro-queue/project/project-toolkit"
+        variables = patch.dict(os.environ)
+        variables.start()
+        self.addCleanup(variables.stop)
+        del os.environ["VOCARO_ENGINEERING_ROOT"]
+        for patcher in (patch.object(mq, "TOOLKIT_ROOT", self.started), patch.object(mq, "execute", self.execute),
+                        patch.object(mq, "load", mq.load)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.moves, self.follow = [], True
+
+    def execute(self, command, env): raise Replaced(command, env)
+
+    def work(self):
+        """The worker, then the one its move starts from the copy, with the copy's config module judging main, as
+        ToolkitCopy.work; with follow False, a move ends the worker as a process that died at once would."""
+        while True:
+            try: return mq.run(self.repo)
+            except Replaced as moved:
+                self.moves.append(moved)
+                self.assertEqual(moved.command, mq.Queue(self.repo).command(self.copy))
+                if not self.follow: return None
+                mq.TOOLKIT_ROOT = self.copy
+                mq.load = self.code_of(self.copy).load
+                os.environ[mq.PROGRESS_VARIABLE] = moved.env[mq.PROGRESS_VARIABLE]
+
+    def code_of(self, checkout):
+        """A toolkit checkout's config module, loaded apart from this process's."""
+        source = checkout / "src/python/vocaro_engineering/config.py"
+        spec = importlib.util.spec_from_file_location(f"own_config_{len(self.moves)}_{checkout.name}", source)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def toolkit_branch(self, branch, edit, key=None):
+        """A toolkit commit on a new branch from origin/main: edit(text) of merge_queue.py's or, with key, config.py
+        accepting key and main's gate lane setting it, in one commit."""
+        run(self.repo, "git", "fetch", "-q", "origin")
+        run(self.repo, "git", "checkout", "-q", "-B", branch, "origin/main")
+        name = "config.py" if key else "merge_queue.py"
+        source = self.repo / "src/python/vocaro_engineering" / name
+        edited = source.read_text().replace('"wholeHost"}', f'"wholeHost", "{key}"}}') if key else edit(source.read_text())
+        self.assertNotEqual(edited, source.read_text())
+        source.write_text(edited)
+        if key:
+            config = json.loads((self.repo / "engineering.json").read_text())
+            config["lanes"]["gate"][key] = True
+            (self.repo / "engineering.json").write_text(json.dumps(config))
+        run(self.repo, "git", "commit", "-qam", f"Change the toolkit on {branch}")
+        return run(self.repo, "git", "rev-parse", "HEAD")
+
+    def landed(self, name, follow=True, adder=None):
+        """Queue the branch name, work, and return (exit, its entry's state, what the worker said). With adder, a
+        config module, `eng land` reads main with it, as a session's eng at origin/main does."""
+        with patch.object(mq, "parse", adder.parse if adder else mq.parse): [identifier] = self.add(name)
+        self.follow = follow
+        with contextlib.redirect_stdout(io.StringIO()) as said: status = self.work()
+        return status, self.state(identifier)["state"], said.getvalue()
+
+    def test_a_batch_that_adds_a_key_and_sets_it_lands_and_the_next_round_needs_no_hold(self):
+        """The case #173 left: the toolkit's own worker, started before the batch, judged the next round's main,
+        which sets the key, with its own config module, which refuses it, and held."""
+        code = run(self.started, "git", "rev-parse", "HEAD")
+        self.toolkit_branch("knows", None, key="newKey")
+        self.assertEqual(self.landed("knows")[:2], (0, "landed"))
+        self.assertEqual(self.moves, [])
+        knows = run(self.repo, "git", "rev-parse", "origin/main")
+        # The control: the code this worker is started from refuses main as it now stands.
+        main = run(self.repo, "git", "show", "origin/main:engineering.json")
+        with self.assertRaisesRegex(ValueError, "Invalid lane gate"): configuration.parse(main)
+        self.commit("b", "b")
+        status, state, said = self.landed("b", adder=self.code_of(self.repo))
+        self.assertEqual((status, state), (0, "landed"))
+        self.assertIsNone(mq.Queue(self.repo).held())
+        self.assertEqual(len(self.moves), 1)
+        self.assertIn(f"moving to the toolkit at {knows[:12]}, origin/main, from {code[:12]}", said)
+        self.assertNotIn("VOCARO_ENGINEERING_ROOT", self.moves[0].env)
+        self.assertEqual(run(self.copy, "git", "rev-parse", "HEAD"), knows)
+        # The worker the move started finished a round, so the move is forgotten.
+        self.assertFalse((mq.Queue(self.repo).directory / mq.MOVED).exists())
+
+    def test_a_worker_whose_code_is_origin_main_does_not_move(self):
+        """The negative control: no copy, no move."""
+        self.commit("a", "a")
+        self.assertEqual(self.landed("a")[:2], (0, "landed"))
+        self.assertEqual(self.moves, [])
+        self.assertFalse(self.copy.exists())
+
+    def test_a_main_whose_worker_does_not_start_lands_its_fix_through_the_old_worker(self):
+        """A commit on main, pushed by hand, whose worker code does not import: moving there would leave the queue
+        no worker, so the fix could land only by hand. The worker stays on its own code and lands the fix; then,
+        main starting again, the next round moves."""
+        code = run(self.started, "git", "rev-parse", "HEAD")
+        broken = self.toolkit_branch("broken", lambda source: source + "\ndef broken(:\n")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        self.assertIn("SyntaxError", mq.starts(self.repo, broken))
+        self.assertIsNone(mq.starts(self.repo, code))
+        self.toolkit_branch("fix", lambda source: source.replace("\ndef broken(:\n", ""))
+        status, state, said = self.landed("fix")
+        self.assertEqual((status, state, self.moves), (0, "landed", []))
+        self.assertIn(f"staying on the toolkit at {code[:12]}, which this worker was started from, rather than "
+                      f"moving to {broken[:12]}, origin/main: importing it exited 1: SyntaxError", said)
+        self.assertIsNone(mq.Queue(self.repo).held())
+        self.commit("c", "c")
+        status, state, said = self.landed("c")
+        self.assertEqual((status, state, len(self.moves)), (0, "landed", 1))
+        self.assertNotIn("staying on the toolkit", said)
+        self.assertEqual(run(self.copy, "git", "show", "-s", "--format=%s", "HEAD"), "Change the toolkit on fix")
+
+    def test_a_toolkit_a_moved_worker_stopped_in_is_not_moved_to_again(self):
+        """A worker that moved and then died, or held, before it finished a round: the next worker, which the next
+        `eng land` starts from older code, stays on that code and lands, rather than moving into the same stop.
+        Only that commit is refused: the next one on main is moved to."""
+        code = run(self.started, "git", "rev-parse", "HEAD")
+        later = self.toolkit_branch("later", lambda source: source + "\n# A later toolkit.\n")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        self.commit("a", "a")
+        self.assertEqual(self.landed("a", follow=False)[1], "queued")
+        moved = json.loads((mq.Queue(self.repo).directory / mq.MOVED).read_text())
+        self.assertEqual((moved["from"], moved["to"]), (code, later))
+        status, state, said = self.landed_again()
+        self.assertEqual((status, state, len(self.moves)), (0, "landed", 1))
+        self.assertIn(f"staying on the toolkit at {code[:12]}, which this worker was started from, rather than "
+                      f"moving to {later[:12]}, origin/main: a worker moved to it before and stopped before it "
+                      "finished a round", said)
+        self.assertTrue((mq.Queue(self.repo).directory / mq.MOVED).exists())
+        # The positive control: main has moved past that commit, so the next worker moves, and the one it starts
+        # finishes a round, which forgets the move.
+        landed = run(self.repo, "git", "rev-parse", "origin/main")
+        self.commit("c", "c")
+        status, state, said = self.landed("c")
+        self.assertEqual((status, state, len(self.moves)), (0, "landed", 2))
+        self.assertIn(f"moving to the toolkit at {landed[:12]}, origin/main, from {code[:12]}", said)
+        self.assertFalse((mq.Queue(self.repo).directory / mq.MOVED).exists())
+
+    def landed_again(self):
+        """Work the entry a worker left queued: (exit, its state, what the worker said)."""
+        [entry] = mq.Queue(self.repo).waiting()
+        with contextlib.redirect_stdout(io.StringIO()) as said: status = self.work()
+        return status, self.state(entry["id"])["state"], said.getvalue()
+
+    def test_a_failed_exec_holds_and_forgets_the_move(self):
+        """An exec that returns never ran the toolkit it named, which later workers may still move to."""
+        self.toolkit_branch("later", lambda source: source + "\n# A later toolkit.\n")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        self.commit("a", "a")
+        mq.execute = lambda command, env: None
+        status, state, said = self.landed("a")
+        self.assertEqual((status, state), (1, "queued"))
+        self.assertIn("could not start itself again", mq.Queue(self.repo).held())
+        self.assertFalse((mq.Queue(self.repo).directory / mq.MOVED).exists())
 
 
 class SharedCheckout(Fixture):

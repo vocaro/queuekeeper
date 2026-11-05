@@ -272,9 +272,23 @@ judges `main`, its `engineering.json` above all, is the toolkit the lanes run, n
 checkout the worker was started from. On 2026-11-04 EPUBLib's worker, started before
 [#168](https://github.com/vocaro/vocaro-engineering/issues/168) added the lane key `wholeHost`, landed
 a commit whose gate lane set it and then held the queue on `Invalid lane gate`, as its own code refused
-the key its copy had accepted, until a person resumed it ([#173](https://github.com/vocaro/vocaro-engineering/issues/173)). The toolkit's own queue tests its
-batch instead, and a `VOCARO_ENGINEERING_ROOT` set where the worker started stands; neither moves the
-worker. A copy that cannot be fetched is a remote out of reach, tried again as any is, and one that
+the key its copy had accepted, until a person resumed it ([#173](https://github.com/vocaro/vocaro-engineering/issues/173)). The toolkit's own queue's lanes test its
+batch instead, but its worker moves the same way, to a copy of its own that no lane reads: a running
+worker keeps the modules it loaded, so one started from the shared checkout, or a session's worktree,
+would judge the next round's `main` with that code even after the shared checkout followed a landing,
+and a toolkit commit that added a key and set it in the toolkit's own `engineering.json` held the queue
+once ([#177](https://github.com/vocaro/vocaro-engineering/issues/177)). Since every toolkit landing
+moves `origin/main`, that worker starts itself again in the round after each one. A
+`VOCARO_ENGINEERING_ROOT` set where the worker started stands and does not move it.
+
+A worker does not move to a toolkit that could leave the queue with no worker to land its fix. Before a
+move it imports the worker's code from that commit's files in a process of its own, and the queue's
+directory keeps the commit a worker moved to, `moved`, until the worker started there finishes a round.
+A commit that does not import, or one a moved worker died or held in before finishing a round, is not
+moved to: the worker goes on with its own code, a project's lanes with the toolkit it was started from,
+and its log says `staying on the toolkit at COMMIT, which this worker was started from, rather than
+moving to COMMIT, origin/main:` and why. So a broken toolkit pushed to `main` by hand is fixed through
+the toolkit's queue as any commit is, and the next commit on `main` is moved to again. A copy that cannot be fetched is a remote out of reach, tried again as any is, and one that
 cannot be moved holds the queue for a session; neither blames a commit. Anything else still
 reads the shared checkout: a session's own `eng`. So a project commit that needs a new toolkit option lands after the toolkit's commit, and runs
 by hand only once that checkout has it.
@@ -289,9 +303,9 @@ A running `eng` keeps the modules it loaded at its start but reads six others wh
 lane that starts another `eng` reads the tree as it is then, so a run spanning the move could mix two
 toolkits. Otherwise the worker leaves the checkout as it is and its log says why, such as
 `left ~/Development/vocaro-engineering as it is: it is on BRANCH, not main`; nothing of this holds
-the queue, and the next landing tries again. A project worker whose code came from that checkout is
-such a process until its first round after a toolkit landing, when it starts itself again from its
-copy, above. A process that loaded the toolkit from it without keeping a path there,
+the queue, and the next landing tries again. A worker whose code came from that checkout, the
+toolkit's own among them, is such a process until its first round after a toolkit landing, when it
+starts itself again from its copy, above. A process that loaded the toolkit from it without keeping a path there,
 as a project's launcher does, cannot be seen, and a process that starts between the check and the
 fast-forward is not either. A session never stashes, resets or edits that checkout by hand to make it
 follow.
@@ -307,7 +321,8 @@ outside every repository, laid out as the second Mac lays out a run's (`checkout
 So a project file that names the toolkit by a path relative to the checkout, as Pagepour's and
 studywright's `../vocaro-engineering/src/swift/EngineeringTestSupport` do, finds the queue's own copy,
 on this Mac as on the second Mac, with no change to the project. The toolkit's own queue is
-`vocaro-queue/vocaro-engineering/vocaro-engineering`, with no copy beside it. A folder inside the
+`vocaro-queue/vocaro-engineering/vocaro-engineering`, with the copy its worker runs from beside it,
+`vocaro-queue/vocaro-engineering/vocaro-engineering-toolkit`. A folder inside the
 toolkit's checkout was set aside: `git clean -x`, a reclone and the toolkit's own tree-walking checks
 would all reach it (owner's decision, 2026-11-02,
 [vocaro-engineering#104](https://github.com/vocaro/vocaro-engineering/issues/104)).

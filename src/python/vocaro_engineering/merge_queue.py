@@ -109,6 +109,11 @@ POLL = 5
 TOOLKIT_VARIABLE = "VOCARO_ENGINEERING_ROOT"
 # What carries a worker's bisect progress to the worker that replaces it on a newer toolkit (Worker.move_to).
 PROGRESS_VARIABLE = "VOCARO_QUEUE_PROGRESS"
+# The file in the queue's directory that names the toolkit commit a worker moved to (Worker.move_to) until the
+# worker started from it finishes a round (Worker.arrived): one that died or held first is not moved to again.
+MOVED = "moved"
+# Seconds the toolkit at origin/main has to import what a worker runs before a worker moves to it (starts).
+STARTS_LIMIT = 120
 BEFORE_GATE = ["spelling", "provision"]
 WAIT_LIMIT = 6 * 3600
 KEPT_LOGS = 200
@@ -654,6 +659,32 @@ def execute(command, env):
     os.execve(command[0], command, env)
 
 
+def starts(toolkit, commit):
+    """None when the toolkit at commit imports what a worker runs, else why not: a worker checks this in a
+    process of its own, from commit's files, before it moves there (Worker.toolkit), so that a commit that does
+    not start leaves the worker running on its own code rather than replacing it with nothing."""
+    archive = subprocess.run(["git", "-C", str(toolkit), "archive", "--format=tar", commit, "src/python"],
+                             capture_output=True, stdin=subprocess.DEVNULL, env=environment(), timeout=GIT_TIMEOUT)
+    if archive.returncode:
+        return f"`git archive` of it failed: {archive.stderr.decode(errors='replace').strip() or 'no output'}"
+    with tempfile.TemporaryDirectory(prefix="eng-queue-toolkit-") as folder:
+        # By tar rather than tarfile, whose safe extraction Python 3.9 lacks; the archive is the toolkit's own.
+        unpacked = subprocess.run(["tar", "-x", "-f", "-", "-C", folder], input=archive.stdout, capture_output=True,
+                                  timeout=GIT_TIMEOUT)
+        if unpacked.returncode:
+            return f"its files could not be unpacked: {unpacked.stderr.decode(errors='replace').strip() or 'no output'}"
+        script = ("import sys; sys.path.insert(0, sys.argv[1]); "
+                  "import vocaro_engineering.cli, vocaro_engineering.merge_queue")
+        try:
+            tried = subprocess.run([sys.executable, "-c", script, str(Path(folder) / "src/python")], cwd=folder,
+                                   capture_output=True, text=True, stdin=subprocess.DEVNULL, env=environment(),
+                                   timeout=STARTS_LIMIT)
+        except subprocess.TimeoutExpired: return f"importing it took more than {STARTS_LIMIT}s"
+    if tried.returncode == 0: return None
+    said = [line for line in tried.stderr.splitlines() if line.strip()]
+    return f"importing it exited {tried.returncode}: {said[-1].strip() if said else 'no output'}"
+
+
 def carried():
     """The bisect progress the worker this one replaces left in the environment (Worker.move_to), taken out of it
     so that no lane inherits it, or None."""
@@ -787,25 +818,61 @@ class Worker:
         A copy that cannot be made or moved holds the queue, as a fetch of the project that keeps failing does.
         A copy at another commit than this worker's own code then replaces the worker with one started from it
         (move_to): what judges main, config.load among it, is the copy's code too, not the older code the worker was
-        started from. A toolkit that is no repository, or an explicit root, keeps the code the worker runs."""
+        started from. The toolkit's own queue moves its worker the same way, to a copy of its own that no lane
+        reads, since a running worker keeps the modules it loaded when follow moves the shared checkout under it
+        (vocaro-engineering#177). A toolkit at origin/main that does not start, or that a worker moved to and
+        stopped in before it finished a round, is not moved to (refuses): the worker goes on with its own code, and
+        a project's lanes with the toolkit it was started from, so that the fix can land through this queue. A
+        toolkit that is no repository, or an explicit root, keeps the code the worker runs."""
         self.environment = environment()
         if os.environ.get(TOOLKIT_VARIABLE): return
         common = git(TOOLKIT_ROOT, "rev-parse", "--path-format=absolute", "--git-common-dir")
         if common.returncode: return  # a toolkit that is no repository has no origin/main to follow
-        if common.stdout.strip() == text(self.queue.main_checkout, "rev-parse", "--path-format=absolute", "--git-common-dir"):
-            return
-        reach(TOOLKIT_ROOT, *FETCH, say=self.say, check=True)
-        # Named as the toolkit's main checkout is, which a project's relative path names from its own checkout.
-        kit = Path(common.stdout.strip())
-        copy = self.queue.home / (kit.parent.name if kit.name == ".git" else Path(TOOLKIT_ROOT).resolve().name)
+        own = common.stdout.strip() == text(self.queue.main_checkout, "rev-parse", "--path-format=absolute",
+                                            "--git-common-dir")
+        # The toolkit's own origin/main is the queue's, which the round has just fetched.
+        if not own: reach(TOOLKIT_ROOT, *FETCH, say=self.say, check=True)
+        head = text(TOOLKIT_ROOT, "rev-parse", MAIN)
+        if self.code and head != self.code and self.refuses(head): head = self.code
+        if own and (not self.code or head == self.code): return
+        if own:
+            # Beside the queue's checkout, which already has the toolkit's own name.
+            copy = self.queue.home / f"{self.queue.main_checkout.name}-toolkit"
+        else:
+            # Named as the toolkit's main checkout is, which a project's relative path names from its own checkout.
+            kit = Path(common.stdout.strip())
+            copy = self.queue.home / (kit.parent.name if kit.name == ".git" else Path(TOOLKIT_ROOT).resolve().name)
         old = self.queue.old_checkout.with_name(f"{self.queue.old_checkout.name}-toolkit")
         self.place(TOOLKIT_ROOT, copy, old, "the merge queue's copy of the toolkit")
-        git(copy, "checkout", "--force", "--detach", text(TOOLKIT_ROOT, "rev-parse", MAIN), hooks=False, check=True)
+        git(copy, "checkout", "--force", "--detach", head, hooks=False, check=True)
         git(copy, "clean", "-fdq", hooks=False, check=True)
         head = text(copy, "rev-parse", "HEAD")
         self.say(f"toolkit {head[:12]} in {copy}")
-        self.environment = {**environment(), TOOLKIT_VARIABLE: str(copy)}
+        if not own: self.environment = {**environment(), TOOLKIT_VARIABLE: str(copy)}
         if self.code and head != self.code: self.move_to(copy, head)
+
+    def refuses(self, head):
+        """Why this worker does not move to the toolkit at head, origin/main, or None: a worker moved there before
+        and stopped before it finished a round (MOVED), dying or holding, or head does not start (starts). Either
+        would leave this queue with no worker that can land the fix; this worker's own code can."""
+        why = ("a worker moved to it before and stopped before it finished a round" if self.moved() == head
+               else starts(TOOLKIT_ROOT, head))
+        if why: self.say(f"staying on the toolkit at {self.code[:12]}, which this worker was started from, rather "
+                         f"than moving to {head[:12]}, origin/main: {why}")
+        return why
+
+    def moved(self):
+        """The toolkit commit the last worker's move went to while no worker started there has finished a round."""
+        try: return json.loads((self.queue.directory / MOVED).read_text()).get("to")
+        except (OSError, ValueError, AttributeError): return None
+
+    def arrived(self):
+        """A worker that a move started (move_to) has finished a round: later workers may move to its code too."""
+        if self.code and self.moved() == self.code: self.unmoved()
+
+    def unmoved(self):
+        """Forget the last move: its toolkit finished a round (arrived), or never ran, as an exec that failed."""
+        with contextlib.suppress(OSError): (self.queue.directory / MOVED).unlink()
 
     def move_to(self, copy, head):
         """Go on as a worker started from copy, the toolkit at origin/main, in place of this process: the same
@@ -819,7 +886,12 @@ class Worker:
         self.say(f"moving to the toolkit at {head[:12]}, origin/main, from {self.code[:12]}, which this worker was "
                  "started from: the next worker is started from the copy")
         sys.stdout.flush()
-        execute(self.queue.command(copy), {**environment(), PROGRESS_VARIABLE: json.dumps(self.progress())})
+        (self.queue.directory / MOVED).write_text(json.dumps({"from": self.code, "to": head, "at": time.time()}) + "\n")
+        try: execute(self.queue.command(copy), {**environment(), PROGRESS_VARIABLE: json.dumps(self.progress())})
+        except OSError:
+            self.unmoved()
+            raise
+        self.unmoved()
         raise RuntimeError(f"the worker could not start itself again from {copy}")
 
     def toolkits_own(self):
@@ -1295,7 +1367,11 @@ class Worker:
             with contextlib.suppress(OSError): path.unlink()
 
     def drain(self):
-        while not self.queue.held() and self.round(): self.rounds += 1
+        while not self.queue.held():
+            more = self.round()
+            self.arrived()
+            if not more: return
+            self.rounds += 1
 
 
 def run(root):
