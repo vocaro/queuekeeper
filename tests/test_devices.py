@@ -18,7 +18,7 @@ from unittest.mock import patch
 
 SOURCE = Path(__file__).resolve().parents[1] / "src/python"
 sys.path.insert(0, str(SOURCE))
-from vocaro_engineering import cli, devices, resources
+from vocaro_engineering import cli, device_notifications, devices, resources
 import host_isolation
 from host_isolation import stretched
 from vocaro_engineering.resources import process_start
@@ -1245,6 +1245,242 @@ class BoundedRunTests(unittest.TestCase):
         self.assertEqual(code, 0, error)
         self.assertTrue(self.marker.exists())
         self.assertEqual(self.path.read_bytes(), before)
+
+
+class Devicectl:
+    """devicectl as the notification shortcuts reach it: each command it is given, answered by answers in turn."""
+
+    def __init__(self, *answers):
+        self.answers, self.commands = list(answers), []
+
+    def __call__(self, command):
+        self.commands.append(command)
+        return self.answers.pop(0) if self.answers else (0, "")
+
+    def shortcuts(self):
+        """The shortcut each command had Shortcuts run, with the device it named."""
+        named = []
+        for command in self.commands:
+            named.append((command[command.index("--device") + 1], command[command.index("--payload-url") + 1],
+                          command[-1]))
+        return named
+
+
+class NotificationTests(unittest.TestCase):
+    """The owner's notifications during a run on a paired device (#144)."""
+
+    def setUp(self):
+        temp = scratch()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+        self.path = self.root / "device-handoff.json"
+        self.record = devices.Record(self.path)
+        self.device = Devicectl()
+        for patcher in (patch.dict(os.environ, {devices.OVERRIDE: str(self.path)}),
+                        patch.object(device_notifications, "run", self.device)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        for name in (devices.OWNER, devices.LEASE, "CODEX_THREAD_ID", "CLAUDE_CODE_SESSION_ID"):
+            os.environ.pop(name, None)
+
+    def cli(self, *arguments):
+        with contextlib.redirect_stdout(StringIO()) as output, contextlib.redirect_stderr(StringIO()) as error:
+            code = devices.main(list(arguments))
+        return code, output.getvalue(), error.getvalue()
+
+    def first(self, key="iPad", device=TABLET):
+        """key's first reservation, which records its device, released again."""
+        entry = self.record.reserve(key, owner="first", revision=0, purpose="p", release_by=later(), device=device,
+                                    approval=approval())
+        return self.record.release(key, owner="first", revision=entry["revision"], outcome="o", restoration="r")
+
+    def setup(self, key="iPad"):
+        code, output, error = self.cli("notifications", "setup", key, "--by", "owner", "--at", later(-1),
+                                       "--words", "the shortcuts are on the iPad")
+        self.assertEqual(code, 0, error)
+        return json.loads(output)["setup"]
+
+    def take(self, key="iPad", owner="session-a"):
+        window = () if key == "iPad" else ("--approved-by", "owner", "--approved-at", later(-1),
+                                           "--approved-until", later(60))
+        code, output, error = self.cli("take", key, "--owner", owner, "--purpose", "VoiceOver run",
+                                       "--release-by", later(), *window)
+        self.assertEqual(code, 0, error)
+        return json.loads(output)["entry"], error
+
+    def silence_url(self):
+        return "shortcuts://run-shortcut?name=Vocaro%20Silence%20Notifications"
+
+    def restore_url(self):
+        return "shortcuts://run-shortcut?name=Vocaro%20Restore%20Notifications"
+
+    def test_the_shortcuts_are_run_by_url_through_devicectl_on_the_named_device(self):
+        self.assertEqual(device_notifications.url(device_notifications.SILENCE), self.silence_url())
+        self.assertEqual(device_notifications.command(TABLET, device_notifications.RESTORE),
+                         ["xcrun", "devicectl", "--timeout", str(device_notifications.TIMEOUT), "device", "process",
+                          "launch", "--device", TABLET, "--payload-url", self.restore_url(), "com.apple.shortcuts"])
+        self.assertEqual(device_notifications.trigger(TABLET, device_notifications.SILENCE)[0], True)
+        self.device.answers.append((1, "ERROR: The device has not been unlocked recently"))
+        opened, said = device_notifications.trigger(TABLET, device_notifications.SILENCE)
+        self.assertFalse(opened)
+        self.assertIn("(exit 1): ERROR: The device has not been unlocked recently", said)
+        self.device.answers.append((None, "no answer within 150s"))
+        self.assertIn("it did not finish", device_notifications.trigger(TABLET, device_notifications.SILENCE)[1])
+
+    def test_a_take_silences_the_device_and_its_release_puts_it_back(self):
+        self.first()
+        self.setup()
+        entry, error = self.take()
+        self.assertEqual(self.device.shortcuts(), [(TABLET, self.silence_url(), "com.apple.shortcuts")])
+        notifications = entry["notifications"]
+        self.assertEqual((notifications["silence"], notifications["restore"], notifications["confirmed"]),
+                         ("requested", "pending", False))
+        self.assertEqual(entry["launchedApps"], ["com.apple.shortcuts"])
+        self.assertIn("not confirmed", error)
+        self.assertIn("silencing shortcut run, not confirmed", self.cli("status")[1])
+        # A session that releases through the record alone, skipping the restore, is refused.
+        with self.assertRaisesRegex(devices.Refused, "not yet put back"):
+            self.record.release("iPad", owner="session-a", revision=entry["revision"], outcome="o", restoration="r",
+                                apps_quit="q")
+        code, output, error = self.cli("release", "iPad", "--owner", "session-a", "--revision", str(entry["revision"]),
+                                       "--outcome", "exit 0", "--restoration", "verified", "--apps-quit", "terminated")
+        self.assertEqual(code, 0, error)
+        released = json.loads(output)["entry"]
+        self.assertEqual(self.device.shortcuts()[1], (TABLET, self.restore_url(), "com.apple.shortcuts"))
+        self.assertEqual((released["state"], released["notifications"]["restore"]), ("released", "done"))
+        self.assertNotIn("notifications", self.cli("status")[1].split("iPad: released")[1].split("\n")[0])
+
+    def test_a_failed_run_still_puts_the_notifications_back(self):
+        self.first()
+        self.setup()
+        entry, _error = self.take()
+        code, _output, _error = self.cli("run", "iPad", "--owner", "session-a", "--", sys.executable, "-c",
+                                         "raise SystemExit(3)")
+        self.assertEqual(code, 3)
+        entry = self.record.entry("iPad")
+        self.assertEqual((entry["run"]["outcome"], entry["run"]["notifications"]), ("exit 3", "requested"))
+        code, output, error = self.cli("release", "iPad", "--owner", "session-a", "--revision", str(entry["revision"]),
+                                       "--outcome", "exit 3", "--restoration", "r", "--apps-quit", "terminated")
+        self.assertEqual(code, 0, error)
+        self.assertEqual(json.loads(output)["entry"]["notifications"]["restore"], "done")
+        self.assertEqual([url for _device, url, _app in self.device.shortcuts()],
+                         [self.silence_url(), self.restore_url()])
+
+    def test_a_run_whose_process_died_is_put_back_at_attended_recovery(self):
+        self.first()
+        self.setup()
+        entry, _error = self.take()
+        gone = live()
+        entry = self.record.update("iPad", owner="session-a", revision=entry["revision"], activeRun=True,
+                                   hostProcessIdentifier=gone.pid)
+        gone.kill()
+        gone.wait()
+        self.assertEqual(devices.condition(entry), "orphan")
+        code, output, error = self.cli("recover", "iPad", "--by", "session-b", "--revision", str(entry["revision"]),
+                                       "--verified", "no owned processes")
+        self.assertEqual(code, 0, error)
+        recovered = json.loads(output)["entry"]
+        self.assertEqual((recovered["state"], recovered["notifications"]["restore"]), ("released", "done"))
+        self.assertEqual(self.device.shortcuts()[-1][1], self.restore_url())
+
+    def test_a_recovery_refused_while_the_run_lives_runs_no_shortcut(self):
+        self.first()
+        self.setup()
+        entry, _error = self.take()
+        child = live()
+        self.addCleanup(child.wait)
+        self.addCleanup(child.kill)
+        entry = self.record.update("iPad", owner="session-a", revision=entry["revision"], activeRun=True,
+                                   hostProcessIdentifier=child.pid)
+        code, _output, error = self.cli("recover", "iPad", "--by", "session-b", "--revision", str(entry["revision"]),
+                                        "--verified", "v")
+        self.assertEqual(code, 2)
+        self.assertIn("still running", error)
+        self.assertEqual(len(self.device.shortcuts()), 1)
+
+    def test_a_restore_that_fails_is_recorded_and_said_and_the_release_goes_on(self):
+        self.first()
+        self.setup()
+        entry, _error = self.take()
+        self.device.answers.append((1, "ERROR: The device is unavailable"))
+        code, output, error = self.cli("release", "iPad", "--owner", "session-a", "--revision", str(entry["revision"]),
+                                       "--outcome", "o", "--restoration", "r", "--apps-quit", "terminated")
+        self.assertEqual(code, 0, error)
+        released = json.loads(output)["entry"]
+        self.assertEqual(released["notifications"]["restore"], "failed")
+        self.assertIn("Do Not Disturb may still be on there: tell the owner", error)
+        self.assertIn("not put back after the last run", self.cli("status")[1])
+
+    def test_without_the_owners_setup_nothing_runs_and_the_session_is_told_what_to_ask(self):
+        self.first()
+        entry, error = self.take()
+        self.assertEqual(self.device.commands, [])
+        # Nothing was done, so the entry records nothing.
+        self.assertNotIn("notifications", entry)
+        self.assertIn("not silenced: the owner has recorded no notification shortcuts on iPad's device", error)
+        self.assertIn("in the same message as the window, to turn on Do Not Disturb", error)
+        self.assertIn("notifications: not silenced (nothing was done)", self.cli("status")[1])
+        # The run says so before it starts, and records it.
+        code, _output, error = self.cli("run", "iPad", "--owner", "session-a", "--", sys.executable, "-c", "pass")
+        self.assertEqual(code, 0)
+        self.assertIn("iPad's notifications are not silenced (nothing was done)", error)
+        entry = self.record.entry("iPad")
+        self.assertEqual(entry["run"]["notifications"], "nothing was done")
+        # The owner turning Do Not Disturb on himself, recorded, lets the run start quietly; release runs nothing.
+        code, output, error = self.cli("notifications", "by-owner", "iPad", "--owner", "session-a", "--revision",
+                                       str(entry["revision"]), "--by", "owner", "--at", later(-1))
+        self.assertEqual(code, 0, error)
+        entry = json.loads(output)["entry"]
+        code, _output, error = self.cli("run", "iPad", "--owner", "session-a", "--", sys.executable, "-c", "pass")
+        self.assertNotIn("not silenced", error)
+        entry = self.record.entry("iPad")
+        code, _output, error = self.cli("release", "iPad", "--owner", "session-a", "--revision", str(entry["revision"]),
+                                        "--outcome", "o", "--restoration", "r")
+        self.assertEqual(code, 0, error)
+        self.assertEqual(self.device.commands, [])
+
+    def test_a_silencing_that_fails_is_said_still_put_back_and_can_be_tried_again(self):
+        self.first()
+        self.setup()
+        self.device.answers.append((1, "ERROR: The device has not been unlocked recently"))
+        entry, error = self.take()
+        self.assertEqual((entry["notifications"]["silence"], entry["notifications"]["restore"]), ("failed", "pending"))
+        self.assertIn("not silenced: devicectl could not open Shortcuts", error)
+        code, output, error = self.cli("notifications", "silence", "iPad", "--owner", "session-a", "--revision",
+                                       str(entry["revision"]))
+        self.assertEqual(code, 0, error)
+        entry = json.loads(output)["entry"]
+        self.assertEqual(entry["notifications"]["silence"], "requested")
+        self.assertEqual([url for _device, url, _app in self.device.shortcuts()], [self.silence_url()] * 2)
+        # Silenced already, asking again runs nothing.
+        code, output, _error = self.cli("notifications", "silence", "iPad", "--owner", "session-a", "--revision",
+                                        str(entry["revision"]))
+        self.assertEqual((code, len(self.device.commands)), (0, 2))
+
+    def test_the_setup_belongs_to_the_device_it_was_made_on(self):
+        with self.assertRaisesRegex(devices.Refused, "records no physical device"):
+            self.record.notification_setup("iPad", by="owner", at=later(-1))
+        with self.assertRaisesRegex(ValueError, "past ISO 8601"):
+            self.record.notification_setup("iPad", by="owner", at=later(5))
+        self.first()
+        self.assertEqual(self.setup()["device"], TABLET)
+        # Another device under the key, as after a replacement, is not covered.
+        self.record.load()
+        value = json.loads(self.path.read_text())
+        value[devices.SETUP]["iPad"]["device"] = PHONE
+        self.path.write_text(json.dumps(value))
+        entry, error = self.take()
+        self.assertEqual(self.device.commands, [])
+        self.assertIn("recorded on another device", error)
+        self.assertNotIn("notifications", entry)
+
+    def test_a_simulator_or_the_mac_foreground_is_never_silenced(self):
+        self.cli("notifications", "setup", "Example Duo 1", "--by", "owner", "--at", later(-1))
+        code, output, error = self.cli("reserve", "Example Duo 1", "--owner", "s", "--revision", "0", "--purpose", "p",
+                                       "--release-by", later(), "--device", DUO)
+        self.assertEqual(code, 0, error)
+        self.assertNotIn("notifications", json.loads(output)["entry"])
+        self.assertEqual(self.device.commands, [])
 
 
 class ProcessStartTests(unittest.TestCase):

@@ -1878,6 +1878,12 @@ needs attended recovery. Nothing hurries the holder: an overdue expected release
 nothing, so a wait behind a session that never releases ends at `--wait`, and `status` shows the
 holder and the line.
 
+Reserving or taking a physical device also silences the owner's notifications on it for the
+run, with the shortcuts he made there once, and releasing or recovering it puts them back; the
+entry's `notifications` records each step. Without those shortcuts the command says what to ask
+the owner in the same message as the window
+([notifications during a run](device-testing.md#notifications-during-a-run)).
+
 Record each app the session launches on the device with `devices update KEY --launched BUNDLE`.
 Releasing an entry that records any requires `--apps-quit "…"`, saying how they were quit (for
 example `devicectl device process terminate`), so the next holder does not find them running. The

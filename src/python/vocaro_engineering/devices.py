@@ -44,6 +44,12 @@ beside the entries, so joining it never changes a holder's revision, and a waite
 gone drops out. While anyone waits, only the first in line may reserve the entry. A session records each app it
 launches on its device (`update --launched BUNDLE`), and releasing an entry that records any says how
 they were quit.
+
+A physical device's run keeps the owner's notifications out (vocaro-engineering#144): reserving or taking one
+runs the owner's silencing shortcut on it, once he has recorded making it there (`devices notifications setup`),
+and releasing or recovering the entry runs the restoring one. The entry's `notifications` records each step.
+The Mac reads no device's Focus, so the silencing is never confirmed, and a run without it says so
+(device_notifications).
 """
 import argparse
 import contextlib
@@ -61,7 +67,7 @@ import sys
 import tempfile
 import time
 
-from . import offload_host, processes
+from . import device_notifications, offload_host, processes
 from .resources import process_start
 
 SCHEMA = 1
@@ -99,7 +105,7 @@ TIMED_OUT = 124
 # Written only by the record's own operations, which say who changed ownership and why.
 MANAGED = {"revision", "ownerChatID", "lastOwnerChatID", "previousLease", "recovery", "importedFrom",
            "importedVersions", "uncertainReason", "hostProcessStart", "approval", "ownedProcesses", "frontmost",
-           "launchedApps", "appsQuit"}
+           "launchedApps", "appsQuit", "notifications"}
 # The paired devices `take` waits in line for, by their entries' keys.
 PAIRED = ("iPad", "iPhone")
 # The owner's standing approval of each paired device, by its entry's key, in the owner's words. It
@@ -117,6 +123,12 @@ WINDOWED = {
 }
 # Sessions waiting in line for an entry, by its key, kept beside the entries.
 QUEUES = "queues"
+# The owner's word that he made the notification shortcuts on a paired device, by its entry's key, kept
+# beside the entries with the device it names (device_notifications).
+SETUP = "notificationSetup"
+# What the entry's notifications record says of a run's silencing that let it start protected: eng ran the
+# owner's shortcut, or the owner turned Do Not Disturb on himself.
+SILENCED = ("requested", "owner")
 # Seconds between looks at an entry while `take` waits for it.
 POLL = 10
 # The owner's screen, keyboard, pointer, focus and speech, held like a device.
@@ -560,6 +572,38 @@ class Record:
             return entry
         return self._change(key, revision, change)
 
+    def notifications(self, key, *, owner, revision, value, launched=()):
+        """Record in the caller's own entry what was done to the owner's notifications on its device: value's
+        fields join the entry's notifications. launched adds apps it opened there, as update's does."""
+        json.dumps(value)
+
+        def change(current, _record):
+            _owned(key, current, owner)
+            entry = {**current, "notifications": {**current.get("notifications", {}), **value}}
+            if launched:
+                entry["launchedApps"] = list(dict.fromkeys([*current.get("launchedApps", []), *launched]))
+            return entry
+        return self._change(key, revision, change)
+
+    def notification_setup(self, key, *, by, at, words=None):
+        """Record the owner's word that he made the notification shortcuts on key's device, which the entry
+        names; the setup recorded. A later device under the key needs his word again."""
+        if not by or moment(at) is None or moment(at) > datetime.now(timezone.utc):
+            raise ValueError("the setup records who made the shortcuts and when: a past ISO 8601 time with a time zone")
+        with self._exclusive():
+            record = self.load()
+            entry = record["devices"].get(key) or {}
+            if record.get(DEFERRED):
+                raise deferred_refusal(record[DEFERRED], key)
+            if not physical(entry.get("device")):
+                raise Refused(f"{key} records no physical device, so there is none to have the shortcuts. "
+                              "Nothing was changed")
+            setup = {"device": entry["device"].upper(), "by": by, "at": at, "silence": device_notifications.SILENCE,
+                     "restore": device_notifications.RESTORE, **({"words": words} if words else {})}
+            record.setdefault(SETUP, {})[key] = setup
+            self._replace(record)
+            return setup
+
     def release(self, key, *, owner, revision, outcome, restoration, frontmost=None, apps_quit=None):
         """Release the caller's own entry with its terminal outcome and restoration checks.
 
@@ -591,6 +635,10 @@ class Record:
             if current.get("launchedApps") and not apps_quit:
                 raise Refused(f"{key} records launched apps {', '.join(current['launchedApps'])}: quit them on the "
                               "device and say how (--apps-quit). Nothing was changed")
+            if (current.get("notifications") or {}).get("restore") == "pending":
+                raise Refused(f"{key}'s run silenced the owner's notifications, which are not yet put back: "
+                              f"`devices release` runs the restoring shortcut first, as `devices notifications "
+                              f"restore {key}` does. Nothing was changed")
             entry = {name: value for name, value in current.items() if name not in ("uncertain", "uncertainReason")}
             entry.update({"state": "released", "activeRun": False, "ownerChatID": None,
                           "lastOwnerChatID": owner, "releasedAt": now(), "run": outcome,
@@ -602,12 +650,13 @@ class Record:
             return entry
         return self._change(key, revision, change)
 
-    def recover(self, key, *, by, revision, verified, unchecked=None, users=None):
+    def recover(self, key, *, by, revision, verified, unchecked=None, users=None, notifications=None):
         """Attended recovery of an entry whose owner cannot release it, once its work has stopped.
 
         An entry whose run went to the second Mac also waits until nothing there may still use its
         device, as users (remote.device_users) lists it, unless unchecked records why that host
-        cannot be checked, which is the owner's decision."""
+        cannot be checked, which is the owner's decision. notifications, the restoring shortcut's
+        outcome (restore_for_recovery), joins the entry's notifications."""
         if not by or not verified:
             raise ValueError("recovery records who verified the device and what they verified")
         checked = self._checked_offload_host(key, revision, unchecked, users)
@@ -630,6 +679,8 @@ class Record:
                                        "state": current.get("state"),
                                        "uncertainReason": current.get("uncertainReason"),
                                        **({"offload": checked} if checked else {})}})
+            if notifications:
+                entry["notifications"] = {**current.get("notifications", {}), **notifications}
             return entry
         return self._change(key, revision, change)
 
@@ -951,6 +1002,81 @@ class BoundedRun:
         return status
 
 
+def silence_notifications(record, key, *, owner, revision, said):
+    """Silence the owner's notifications on the physical device key's entry holds, for the caller's run: run his
+    silencing shortcut there when he has recorded making it on that device, or else say what to ask him.
+
+    The entry records each step, the restore as pending before the shortcut runs, so that a run that dies
+    after it still has its release or recovery run the restoring one. The Mac reads no Focus, so the result is
+    never confirmed. It returns the entry; an entry already silenced, or holding no physical device, is left."""
+    value = record.load()
+    entry = value["devices"].get(key)
+    _owned(key, entry, owner)
+    done = (entry.get("notifications") or {}).get("silence")
+    if not physical(entry.get("device")) or done in SILENCED or value.get(DEFERRED):
+        return entry
+    setup = value.get(SETUP, {}).get(key)
+    if not setup or setup.get("device") != entry["device"].upper():
+        why = (f"the owner has recorded no notification shortcuts on {key}'s device" if not setup else
+               f"the owner's notification shortcuts were recorded on another device under {key}")
+        # Nothing was done, so the entry stays as it was; a run on it says it is not silenced.
+        said(f"devices: {key}'s notifications are not silenced: {why}. A notification can reach a session's "
+             f"transcript and move VoiceOver's cursor: {device_notifications.ask(key)}")
+        return entry
+    entry = record.notifications(key, owner=owner, revision=revision, launched=[device_notifications.APP],
+                                 value={"silence": "requesting", "restore": "pending", "at": now()})
+    opened, detail = device_notifications.trigger(entry["device"], device_notifications.SILENCE)
+    entry = record.notifications(key, owner=owner, revision=entry["revision"],
+                                 value={"silence": "requested" if opened else "failed", "detail": detail,
+                                        "confirmed": False})
+    if opened:
+        said(f"devices: ran the owner's {device_notifications.SILENCE!r} shortcut on {key}, which turns on Do Not "
+             f"Disturb unless a Focus is already on; the Mac cannot read a device's Focus, so it is not confirmed")
+    else:
+        said(f"devices: {key}'s notifications are not silenced: {detail}. Retry with `devices notifications silence "
+             f"{key}` once the device is unlocked and reachable, or {device_notifications.ask(key)}")
+    return entry
+
+
+def restore_notifications(record, key, *, owner, revision, said):
+    """Put back the owner's notifications on key's device, by his restoring shortcut, when the caller's run
+    silenced them; the entry. A restore that fails is recorded and said, for the owner, and the release goes on."""
+    entry = record.entry(key)
+    _owned(key, entry, owner)
+    if (entry.get("notifications") or {}).get("restore") != "pending":
+        return entry
+    outcome = restore_for_recovery(key, entry, said)
+    return record.notifications(key, owner=owner, revision=revision, value=outcome)
+
+
+def restore_for_recovery(key, entry, said):
+    """Run the owner's restoring shortcut on entry's device when its run left a restore pending; what to record
+    in its notifications, or None when nothing was pending."""
+    if (entry.get("notifications") or {}).get("restore") != "pending":
+        return None
+    opened, detail = device_notifications.trigger(entry["device"], device_notifications.RESTORE)
+    if opened:
+        said(f"devices: ran the owner's {device_notifications.RESTORE!r} shortcut on {key}, which turns Do Not "
+             "Disturb off only if the run's silencing turned it on")
+    else:
+        said(f"devices: could not put back the owner's notifications on {key}: {detail}. Do Not Disturb may still "
+             f"be on there: tell the owner, who can run {device_notifications.RESTORE!r} or turn it off himself")
+    return {"restore": "done" if opened else "failed", "restoreDetail": detail, "restoredAt": now()}
+
+
+def _notification_state(key, entry):
+    """What status says of the owner's notifications on entry's physical device, or None."""
+    value = entry.get("notifications") or {}
+    if condition(entry) == "released":
+        return (f"notifications: not put back after the last run ({value.get('restoreDetail')}); Do Not Disturb may "
+                "still be on, tell the owner") if value.get("restore") in ("failed", "pending") else None
+    silence = value.get("silence")
+    if silence == "requested": return "notifications: silencing shortcut run, not confirmed (the Mac reads no Focus)"
+    if silence == "owner": return f"notifications: Do Not Disturb turned on by {value.get('by')} at {value.get('at')}"
+    return (f"notifications: not silenced ({value.get('detail') or 'nothing was done'}); "
+            f"`devices notifications silence {key}`, or {device_notifications.ask(key)}")
+
+
 def _describe(key, entry, line=()):
     state = condition(entry)
     parts = [f"{key}: {state}"]
@@ -980,6 +1106,8 @@ def _describe(key, entry, line=()):
                          + "; kept for attended recovery")
         if entry.get("launchedApps"):
             parts.append(f"launched apps: {', '.join(entry['launchedApps'])}")
+    if physical(entry.get("device")) and _notification_state(key, entry):
+        parts.append(_notification_state(key, entry))
     if line:
         parts.append("waiting: " + ", ".join(f"{item['owner']} ({item.get('purpose')})" for item in line))
     if key in STANDING:
@@ -1122,6 +1250,27 @@ def main(argv=None):
     target.add_argument("mac", nargs="?", help="the Mac whose record holds physical devices")
     target.add_argument("--end", action="store_true", help="hold physical devices in this record again")
     defer.add_argument("--replace", action="store_true", help="defer to MAC when the record defers to another Mac")
+    notices = commands.add_parser("notifications", help="the owner's notifications on a paired device during a run: "
+                                  "record his one-time shortcuts, silence them, put them back, or record that he "
+                                  f"silenced them ({device_notifications.GUIDE})")
+    notice = notices.add_subparsers(dest="notifications", required=True)
+    setup = notice.add_parser("setup", help=f"record the owner's word that he made the {device_notifications.SILENCE!r} "
+                              f"and {device_notifications.RESTORE!r} shortcuts on KEY's device")
+    setup.add_argument("key")
+    setup.add_argument("--by", required=True, help="who made them: the owner")
+    setup.add_argument("--at", required=True, help="when, ISO 8601 with a time zone")
+    setup.add_argument("--words", help="the owner's words, quoted")
+    for name, text in (("silence", "run the silencing shortcut on your held device"),
+                       ("restore", "run the restoring shortcut, when your run silenced the device"),
+                       ("by-owner", "record that the owner turned Do Not Disturb on himself for your run")):
+        action = notice.add_parser(name, help=text)
+        action.add_argument("key")
+        action.add_argument("--owner", default=default_owner(), help=f"the session (default: {OWNER}, else the "
+                            "agent session)")
+        action.add_argument("--revision", type=int, required=True)
+        if name == "by-owner":
+            action.add_argument("--by", required=True, help="who turned it on: the owner")
+            action.add_argument("--at", required=True, help="when he said it was on, ISO 8601 with a time zone")
     bounded = commands.add_parser("run", usage="%(prog)s [-h] [--owner SESSION] [--revision N] [--limit SECONDS] "
                                   "[--restoration SECONDS] key -- COMMAND ...", help="run COMMAND on KEY's physical "
                                   "device, held by the session within the owner's approval, and stop it before the "
@@ -1142,6 +1291,7 @@ def main(argv=None):
         split = argv.index("--")
         argv, command = argv[:split], argv[split + 1:]
     args = parser.parse_args(argv)
+    said = lambda text: print(text, file=sys.stderr, flush=True)
     try:
         record = Record()
         if args.action == "path":
@@ -1151,9 +1301,11 @@ def main(argv=None):
         elif args.action == "show":
             _report(args.key, record.entry(args.key))
         elif args.action == "reserve":
-            _report(args.key, record.reserve(args.key, owner=args.owner, revision=args.revision,
+            entry = record.reserve(args.key, owner=args.owner, revision=args.revision,
                 purpose=args.purpose, release_by=args.release_by, device=args.device, title=args.title,
-                details=_fields(args.set), approval=_given_approval(args)))
+                details=_fields(args.set), approval=_given_approval(args))
+            _report(args.key, silence_notifications(record, args.key, owner=args.owner, revision=entry["revision"],
+                                                    said=said))
         elif args.action == "update":
             if not args.set and not args.own and not args.launched:
                 raise ValueError("update takes --set FIELD=JSON, --own PID or --launched BUNDLE")
@@ -1162,10 +1314,18 @@ def main(argv=None):
         elif args.action == "take":
             if not args.owner:
                 raise ValueError(f"name the session: --owner, or {OWNER}")
-            _report(args.key, record.take(args.key, owner=args.owner, purpose=args.purpose,
-                                          release_by=args.release_by, timeout=args.wait, title=args.title,
-                                          details=_fields(args.set), approval=_given_approval(args)))
+            entry = record.take(args.key, owner=args.owner, purpose=args.purpose,
+                                release_by=args.release_by, timeout=args.wait, title=args.title,
+                                details=_fields(args.set), approval=_given_approval(args))
+            _report(args.key, silence_notifications(record, args.key, owner=args.owner, revision=entry["revision"],
+                                                    said=said))
         elif args.action == "release":
+            # The owner's notifications first, when the entry is still the caller's at the revision named.
+            entry = record.entry(args.key) or {}
+            if entry.get("ownerChatID") == args.owner and entry.get("revision") == args.revision and \
+                    not entry.get("activeRun"):
+                args.revision = restore_notifications(record, args.key, owner=args.owner, revision=args.revision,
+                                                      said=said)["revision"]
             _report(args.key, record.release(args.key, owner=args.owner, revision=args.revision,
                                              outcome=args.outcome, restoration=args.restoration,
                                              frontmost=args.frontmost, apps_quit=args.apps_quit))
@@ -1177,22 +1337,59 @@ def main(argv=None):
             if args.build_host_unchecked is not None:
                 raise ValueError("--build-host-unchecked was --offload-unchecked's name until vocaro-engineering#58, "
                                  "and is no longer read: use --offload-unchecked (guides/shared-host.md, Earlier names)")
+            entry = record.entry(args.key) or {}
+            # Only once recovery would go ahead: never while its run's process still runs.
+            restored = restore_for_recovery(args.key, entry, said) if entry.get("revision") == args.revision and \
+                condition(entry) in ("orphan", "uncertain", "held") and not running(entry) else None
             _report(args.key, record.recover(args.key, by=args.by, revision=args.revision, verified=args.verified,
-                                             unchecked=args.offload_unchecked))
+                                             unchecked=args.offload_unchecked, notifications=restored))
         elif args.action == "import":
             print("\n".join(record.import_legacy(args.paths, by=args.by)))
         elif args.action == "defer":
             if record.defer(None if args.end else args.mac, replace=args.replace):
                 print(f"{record.path}: physical devices are reserved here again" if args.end else
                       f"{record.path}: physical devices are reserved in {args.mac}'s device record from now on")
+        elif args.action == "notifications":
+            if args.notifications == "setup":
+                setup = record.notification_setup(args.key, by=args.by, at=args.at, words=args.words)
+                print(json.dumps({"key": args.key, "setup": setup}, indent=2))
+                return 0
+            if not args.owner:
+                raise ValueError(f"name the session: --owner, or {OWNER}")
+            if args.notifications in ("silence", "restore"):
+                entry = record.entry(args.key)
+                _owned(args.key, entry, args.owner)
+                if entry.get("revision") != args.revision:
+                    raise Stale(f"{args.key} is at revision {entry.get('revision')}, not {args.revision}; read it "
+                                "again. Nothing was changed")
+                # Asked again, silence tries again unless it is done: a failed silencing is not a done one.
+                act = silence_notifications if args.notifications == "silence" else restore_notifications
+                entry = act(record, args.key, owner=args.owner, revision=args.revision, said=said)
+            else:
+                if moment(args.at) is None:
+                    raise ValueError("--at is when the owner said Do Not Disturb was on, ISO 8601 with a time zone")
+                entry = record.notifications(args.key, owner=args.owner, revision=args.revision,
+                                             value={"silence": "owner", "by": args.by, "at": args.at,
+                                                    "detail": "the owner turned Do Not Disturb on himself, and "
+                                                              "turns it off"})
+            _report(args.key, entry)
         elif args.action == "run":
             if not command:
                 raise ValueError("name the command after --: devices run KEY -- COMMAND")
             run = BoundedRun([args.key], args.owner, command, record=record, revision=args.revision,
                              limit=args.limit, restoration=args.restoration)
+            # A run that starts without its notifications silenced says so, and its entry records it.
+            notified = None
+            if run.revisions is not None:
+                notified = (record.entry(args.key).get("notifications") or {}).get("silence") or "nothing was done"
+                if notified not in SILENCED:
+                    said(f"devices: {args.key}'s notifications are not silenced ({notified}), so a notification can "
+                         f"reach this run's transcript and move VoiceOver's cursor; discard a session that picks one "
+                         f"up. Run `devices notifications silence {args.key}` first, or "
+                         f"{device_notifications.ask(args.key)}")
             with processes.forwarding_signals():
                 try:
-                    code = run.execute(command)
+                    code = run.execute(command, run={"notifications": notified} if notified else None)
                 except processes.TimedOut as error:
                     print(f"devices: {error}; {args.key} stays reserved", file=sys.stderr)
                     return TIMED_OUT
