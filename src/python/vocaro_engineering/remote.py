@@ -2126,10 +2126,11 @@ def overflow(offered, admit, timeout=OVERFLOW_TIMEOUT, once=False):
     reading allows (Offer.again). The wait in this Mac's queue is the backoff between offers, so the
     work starts on whichever Mac admits it first, and the second Mac is asked again at least every
     OVERFLOW_WAIT_MAX seconds: each offer costs it a checkout claim, the project's provision lane and
-    a policy refresh, so not every few seconds. Each of this Mac's waits that ends unadmitted leaves
-    its queue and is logged as withdrawn, as a declined offer is there; an exclusive request rejoins
-    the exclusive queue behind those that came meanwhile. With once, as for --if-free, each Mac is
-    asked once."""
+    a policy refresh, so not every few seconds. Each of this Mac's waits that ends unadmitted is logged
+    as withdrawn, as a declined offer is there, and leaves its queue; an exclusive request rejoins the
+    queue behind those that came meanwhile, and a whole-host one keeps its place across the waits
+    (resources.Place), holding later heavy work back while it waits here and for HEAVY_PLACE_SECONDS
+    after (vocaro-engineering#174). With once, as for --if-free, each Mac is asked once."""
     deadline, window, said = time.monotonic() + timeout, FREE_WAIT, None
     while True:
         # Once the second Mac can no longer take it, this Mac's queue alone, for the rest of the time.

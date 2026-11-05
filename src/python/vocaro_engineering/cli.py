@@ -420,26 +420,32 @@ def admitted_here(stack, name, label, timeout, offered=None, once=False, exclusi
     BUSY when no admission came, after saying so. Work the second Mac did not take (offered), declined
     as busy or not offered while it had no spare capacity and this Mac had, goes to whichever Mac admits
     it first, this Mac asked first (remote.overflow). Other work waits in this Mac's queue for timeout
-    seconds, or with once FREE_WAIT, and only once declines. A whole-host lane takes every guaranteed slot."""
+    seconds, or with once FREE_WAIT, and only once declines. A whole-host lane takes every guaranteed slot,
+    and keeps one place in this Mac's queue across its waits until it no longer waits here (resources.Place)."""
     refused = []
+    place = resources.Place() if whole_host and not exclusive else None
 
     def admit(seconds):
         try:
             return stack.enter_context(resources.Admission(label, exclusive=exclusive, timeout=seconds, model=model,
-                                                           whole_host=whole_host))
+                                                           whole_host=whole_host, place=place))
         except TimeoutError as error:
-            # Admission published nothing, so declining leaves nothing to release.
+            # Admission published nothing but the place, which the finally below leaves.
             refused.append(error)
             return None
-    if offered is not None and offered.busy is not None:
-        return remote.overflow(offered, admit, timeout, once)
-    if not once: return stack.enter_context(resources.Admission(label, exclusive=exclusive, timeout=timeout, model=model,
-                                                                whole_host=whole_host))
-    admission = admit(FREE_WAIT)
-    if admission is None:
-        print(f"eng: {name} not run: {refused[-1]}", file=sys.stderr)
-        return BUSY
-    return admission
+    try:
+        if offered is not None and offered.busy is not None:
+            return remote.overflow(offered, admit, timeout, once)
+        if not once: return stack.enter_context(resources.Admission(label, exclusive=exclusive, timeout=timeout,
+                                                                    model=model, whole_host=whole_host, place=place))
+        admission = admit(FREE_WAIT)
+        if admission is None:
+            print(f"eng: {name} not run: {refused[-1]}", file=sys.stderr)
+            return BUSY
+        return admission
+    finally:
+        # Admitted, admission took the place out of the queue; otherwise the work no longer waits here.
+        if place is not None: place.leave()
 
 
 def admitted_tree(root, name, offered, receipt):

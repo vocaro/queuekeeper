@@ -32,7 +32,7 @@ run whose seconds are not meant as figures are heavy work. An exclusive request 
 admission is refused, so a lane whose run needs both is `light`, and its script admits each part.
 A gate suite is heavy work, never exclusive: one that runs the project's suites side by side says
 `"wholeHost": true`, which keeps a second gate off its Mac while other heavy work still shares it
-and nothing queues behind it ([heavy-work admission](#heavy-work-admission)).
+beyond the guaranteed slots ([heavy-work admission](#heavy-work-admission)).
 `--timeout` bounds the wait for admission. The command runs in the current directory with
 its output on the terminal. Like a heavy lane, `eng admit` first refreshes the operating policy,
 printing it to standard error, and records the command's receipt in
@@ -89,7 +89,7 @@ strings -n 1 .build/SCRATCH/out/Intermediates.noindex/XCBuildData/*.xcbuilddata/
   | grep -A1 -- '^-num-threads$'
 ```
 
-While no exclusive request waits, HEAVY_SLOTS jobs (3) are always admitted. Beyond them one job
+While no exclusive or whole-host request waits, HEAVY_SLOTS jobs (3) are always admitted. Beyond them one job
 at a time is admitted, up to HEAVY_SLOTS_MAX (half the CPU count), while the one-minute load
 average is below HEAVY_LOAD_LIMIT (75% of the CPU count), macOS reports normal memory pressure
 (`kern.memorystatus_vm_pressure_level` is 1), and no slot was taken in the last
@@ -106,11 +106,12 @@ whole-host or not.
 
 Whole-host and exclusive differ in what they hold and whom they make wait. A whole-host lane holds
 the guaranteed slots and no more: a lighter heavy lane is still admitted beside it, in a slot beyond
-them, and a heavy request that arrives while it waits is not held back. It is for a gate, whose
+them. While it waits, it keeps the guaranteed slots for itself, and a heavy request that arrives
+meanwhile takes only a slot beyond them, as the queue paragraphs below say. It is for a gate, whose
 suites fill a Mac but tolerate company and whose wait must not stall every other session. Exclusive
 work holds every slot up to the maximum, is admitted one request at a time in arrival order, and
-holds every later request back until it ends, as the exclusive paragraphs below say. It is for a
-timed measurement that needs a quiet host and nothing else. A whole-host lane cannot be exclusive,
+holds every later request back until it ends. It is for a timed measurement that needs a quiet host
+and nothing else. A whole-host lane cannot be exclusive,
 since exclusive admission holds the host already. In the choice of Mac the two count alike: a Mac
 running either has no spare capacity for any heavy lane, which goes to the other Mac first and is
 offered to both, to share where admission allows, only when neither has capacity
@@ -134,9 +135,10 @@ the slots below its own maximum, and a caller with a higher one can take slots a
 `python3 scripts/eng admissions limits` prints the limits a process started like it would use,
 and where each comes from. Waiting messages name a limit by its variable whatever set it.
 
-Exclusive requests are admitted one at a time, in the order they asked. Each joins the queue,
-`exclusive-queue.json` in the slot directory, at its first attempt, and is admitted once it is
-first and every slot is free. While a live exclusive request waits, no other request is admitted
+Exclusive and whole-host requests are admitted one at a time, in the order they asked. Each joins
+the queue, `exclusive-queue.json` in the slot directory, at its first attempt, and is admitted once
+it is first and the slots it needs are free: every slot for exclusive work, every guaranteed slot
+for a whole-host lane. While a live exclusive request waits, no other request is admitted
 ahead of it: a heavy request waits even when a guaranteed slot is free, and prints that it waits
 behind exclusive work. Jobs already running finish normally, so an exclusive request waits for
 the work admitted before it asked and for the exclusive requests ahead of it, never for heavy
@@ -145,6 +147,26 @@ A queued request holds nothing: one whose process has ended, or whose PID now ha
 time, is dropped from the queue, and a timeout or a stop takes the request out. A waiting process
 keeps its place for as long as it runs, even orphaned from the script that started it; stop that
 process to give up its place.
+
+A whole-host request queued ahead holds back less. Exclusive and whole-host requests behind it
+wait their turn, but other heavy work goes on in a slot beyond the guaranteed ones while the host
+shows spare capacity, and takes none of the guaranteed slots, so that they drain toward the
+whole-host lane: `heavy: waiting (0s): a guaranteed slot is free but kept for a whole-host lane
+queued ahead of it: EPUBLib gate; and …`. Until 2026-11-05, when the owner chose this on #174's evidence, a waiting whole-host lane held nothing,
+and heavy requests that arrived meanwhile took each guaranteed slot as it was freed, so on a Mac
+where sessions started heavy lanes one after another the guaranteed slots need never all be free
+and the gate could wait out its 5,400 s
+([vocaro-engineering#174](https://github.com/vocaro/vocaro-engineering/issues/174)). Where
+HEAVY_SLOTS_MAX equals HEAVY_SLOTS, or the host shows no spare capacity, the heavy work waits
+for the whole-host lane as it would for exclusive work. A whole-host request holds anything back
+only while its process keeps asking: one that last asked more than HEAVY_PLACE_SECONDS (180) ago
+holds nothing back, though it keeps its place. That is how `eng run` keeps a whole-host lane's
+place across its waits on this Mac while it also offers the lane to the second Mac
+([which Mac runs a lane](#which-mac-runs-a-lane)): the place stays between waits, so the lane
+does not rejoin behind requests that came meanwhile, and it holds nothing back once the offer has
+kept it away that long, as when the second Mac took the lane and runs it. It leaves the place once
+it no longer waits here, admitted or not. How long an offer takes, and so whether 180 s covers
+every gap between two waits, is unmeasured.
 
 Nested work reuses its inherited admission. Admission exports `VOCARO_RESOURCE_TOKEN` and keeps
 its lock descriptors open across exec. A nested `eng run`, resource CLI call or project gate
@@ -183,6 +205,7 @@ value, beside what the attempt read, so that a wait says which limit to look at:
 | `memory` | `all 3 guaranteed slots are busy and memory pressure is level 2 (warning), not 1 (normal)`, or `… memory pressure, which must be level 1 (normal), cannot be read` |
 | `model` | `the on-device model, one run at a time, is held by LABEL` |
 | `exclusive` | `it waits behind exclusive work queued ahead of it: LABEL`, or `… holding the host: LABEL` |
+| `wholeHost` | `it waits behind a whole-host lane queued ahead of it: LABEL`, for exclusive and whole-host requests; for other heavy work, `a guaranteed slot is free but kept for a whole-host lane queued ahead of it: LABEL; and HEAVY_SLOTS_MAX=3 allows none beyond them`, or `… and every slot beyond them up to HEAVY_SLOTS_MAX=9 is busy`, or the `settle`, `load` or `memory` reason. With every guaranteed slot busy anyway, the reason is the `slots` or other kind's, as with nothing queued |
 | `stranded` | another reason above, then `; the guard entry of LABEL, PID 4242, is dead and requires inspection (it has no process record), and is counted as slot 1; …`, `uncertain` for an entry marked so, with why [recovery](#lock-reclamation) left it in parentheses (`its owner still runs`, `it has no process record`, `its process record cannot vouch for every command` or `2 of its processes still run: PID 4250, 4251`) and what it is counted as (`slots 0, 1, 2 and the model` for exclusive work); a model request's reason is `the on-device model, one run at a time, is counted as held` |
 | `guard` | `the guard PATH is unreadable or not in admission's format and requires inspection; …` |
 
@@ -190,7 +213,7 @@ In both rows `…` names `python3 scripts/eng admissions recover`.
 
 Each kind is the one the [admission log](#admission-log) records for the refusal. After its
 timeout (5,400 s by default) admission fails without reclaiming any lock, naming the same reason,
-and an exclusive request leaves the queue. A script that runs several jobs at once leaves at least one of the guaranteed
+and an exclusive or whole-host request leaves the queue, unless it keeps its place across waits. A script that runs several jobs at once leaves at least one of the guaranteed
 HEAVY_SLOTS for other sessions.
 
 Admission recovers each dead or uncertain entry it meets, as `eng admissions recover OWNER`
@@ -202,8 +225,9 @@ HEAVY_SLOTS_MAX, so all heavy work waits behind it; any other counts as the slot
 name its identity, as each admission writes them, or, where none does, as the lowest slot not
 already counted; one that held the model counts as its holder. Exclusive work waits behind any
 stranded entry, since it needs every slot. A queued exclusive request holds back no work while a
-stranded entry is counted, since it cannot be admitted until the entry is recovered; once it
-is, the queue's order applies again. Work admitted beside a stranded entry prints `heavy:
+stranded entry is counted, since it cannot be admitted until the entry is recovered, and a queued
+whole-host request none while one is counted as a guaranteed slot; once it is recovered, the
+queue's order applies again. Work admitted beside a stranded entry prints `heavy:
 admitted beside a stranded entry: …` with the entry, its slots and the recover command, and its
 log line names them ([admission log](#admission-log)). Admission checks the entry again every
 HEAVY_RECOVER_SECONDS (60). `python3 scripts/eng admissions recover` lists those entries.
@@ -320,6 +344,9 @@ A line holds:
   - `model`: another run holds the on-device model;
   - `exclusive`: an exclusive request is queued ahead, or exclusive work holds the host, which
     refuses the request at its slots or the model;
+  - `wholeHost`: a whole-host request is queued ahead of an exclusive or whole-host one, or keeps a
+    free guaranteed slot from other heavy work, which found no slot beyond them
+    ([vocaro-engineering#174](https://github.com/vocaro/vocaro-engineering/issues/174));
   - `stranded`: the request was refused at its slots or the model while a stranded entry, dead or
     uncertain and left by recovery, was counted as some of them;
   - `guard`: the guard is unreadable or not in admission's format, and requires inspection.
@@ -526,7 +553,8 @@ once admitted. `eng admit --verify` does the same for its command.
 
 Each of this Mac's waits that ends unadmitted leaves its queue and is logged as withdrawn, as each
 declined offer is on the second Mac ([admission log](#admission-log)); an exclusive lane rejoins
-this Mac's exclusive queue at each wait, behind requests that came meanwhile. `eng run --if-free`
+this Mac's exclusive queue at each wait, behind requests that came meanwhile, and a whole-host lane
+keeps its place there across the waits ([heavy-work admission](#heavy-work-admission)). `eng run --if-free`
 asks each Mac once, five seconds each, and exits 75 when both are busy. The admission logs of
 2026-10-27 hold this overflow before it was the rule: the build host's three `timed-out` requests
 were `eng run --if-free` declining after 5.5 s, and each of those lanes then ran on this Mac
@@ -2356,10 +2384,14 @@ Three kinds of marker coexist, and they are reclaimed differently:
   and `eng admissions recover` refuse it, and nested work inside an admission it records fails
   rather than reusing that admission.
 - The exclusive queue (`exclusive-queue.json` in the slot directory, changed only under its
-  `coordination.lock`) records each waiting exclusive request's PID, process start and label, in
-  arrival order. A queued request holds no slot and has started nothing, so admission drops one
-  whose process has ended or whose PID has another start time, and a request that times out or
-  is stopped takes itself out ([heavy-work admission](#heavy-work-admission)).
+  `coordination.lock`) records each waiting exclusive or whole-host request's PID, process start
+  and label, in arrival order, a whole-host one with `wholeHost` and `seen`, when it last asked. A
+  queued request holds no slot and has started nothing, so admission drops one whose process has
+  ended or whose PID has another start time, and a request that times out or is stopped takes
+  itself out, unless a whole-host request keeps its place across waits; one whose `seen` is
+  more than HEAVY_PLACE_SECONDS old holds nothing back ([heavy-work admission](#heavy-work-admission)).
+  A toolkit older than 2026-11-04 reads a whole-host record as an exclusive one, and so holds its
+  own heavy work back behind it entirely, never less.
 - The device record's lock (`device-handoff.json.lock` beside the record) is an `flock` held for
   one change. The kernel releases it when its process ends, so it needs no reclamation, and its
   file is never removed. A reservation in the record ends only by its owner's release or an

@@ -21,7 +21,10 @@ the file the defaults stand (#49).
 
 Exclusive requests queue in arrival order, and every other request waits behind a live one, so
 an exclusive request waits only for the work running when it asked. While heavy jobs kept
-taking freed slots, exclusive gates waited for hours (October 2026).
+taking freed slots, exclusive gates waited for hours (October 2026). A whole-host request joins
+the same queue: exclusive and whole-host requests behind it wait their turn, and other heavy work
+takes no guaranteed slot while it waits, only a slot beyond them, so that the guaranteed slots
+drain toward it rather than a steady stream of heavy jobs keeping one busy for good (#174).
 
 A generative-model run takes one heavy slot and the host's model lock, an flock on `model` in
 the slot directory, both or neither: two model runs exclude each other while builds and tests
@@ -492,8 +495,64 @@ def publish_guard(path, state):
             temporary.unlink(missing_ok=True)
 
 
+# Seconds a queued whole-host request holds later heavy work back after its process last asked: longer than an
+# offer of its lane to the second Mac takes, between two of this Mac's waits (Place).
+PLACE_SECONDS = 180
+# The queue of exclusive and whole-host requests, in the slot directory, changed only under its coordination lock.
+QUEUE = "exclusive-queue.json"
+
+
+def queued_requests(queue):
+    """The live queued requests, first come first. The caller holds the coordination lock.
+
+    A queued request holds no slot and has started nothing, so the record of one whose
+    process ended or whose identity changed is dropped, where a guard owner's is kept.
+    """
+    try:
+        recorded = json.loads(Path(queue).read_text())["waiters"]
+        live = [waiter for waiter in recorded if running(waiter)]
+    except FileNotFoundError:
+        return []
+    except (OSError, ValueError, KeyError, TypeError):
+        # Only admission writes the queue, atomically. Losing an unreadable queue's order
+        # stops nobody: each live request records itself again at its next attempt.
+        recorded, live = None, []
+    if live != recorded:
+        record_queue(queue, live)
+    return live
+
+
+def record_queue(queue, waiters):
+    if waiters: publish_guard(Path(queue), {"vocaroEngineering": 1, "waiters": waiters})
+    else: Path(queue).unlink(missing_ok=True)
+
+
+class Place:
+    """A whole-host request's place in the queue, kept across the successive admissions one process asks for, so
+    that work which alternates between this Mac's queue and offers to the second Mac (remote.overflow) keeps its
+    place in arrival order instead of rejoining behind the requests that came meanwhile (vocaro-engineering#174).
+
+    An admission given a place leaves it there when its wait times out; its caller calls leave() once it no longer
+    waits for this Mac, admitted or not, and admission removes it when admitted. While the process is away, between
+    waits, its place holds nothing back once HEAVY_PLACE_SECONDS have passed since it last asked, and a place whose
+    process has ended is dropped, as every queued request is."""
+
+    def __init__(self):
+        self.identity = uuid.uuid4().hex
+
+    def leave(self):
+        directory = slot_directory()
+        if not (directory / QUEUE).exists():
+            return
+        with (directory / "coordination.lock").open("a+") as bridge:
+            fcntl.flock(bridge, fcntl.LOCK_EX)
+            waiters = queued_requests(directory / QUEUE)
+            if any(waiter["identity"] == self.identity for waiter in waiters):
+                record_queue(directory / QUEUE, [waiter for waiter in waiters if waiter["identity"] != self.identity])
+
+
 class Admission:
-    def __init__(self, label, exclusive=False, timeout=5400, model=False, whole_host=False):
+    def __init__(self, label, exclusive=False, timeout=5400, model=False, whole_host=False, place=None):
         self.label, self.exclusive, self.timeout = label, exclusive, timeout
         # Exclusive work holds the host, the model with it.
         self.model = model or exclusive
@@ -514,14 +573,19 @@ class Admission:
         self.poll = float(os.environ.get("HEAVY_POLL_SECONDS", "1"))
         # How long a dead or uncertain entry that recovery left waits before it is checked again.
         self.recheck = float(os.environ.get("HEAVY_RECOVER_SECONDS", "60"))
+        # How long a queued whole-host request holds later heavy work back after it last asked (_holds).
+        self.hold = float(os.environ.get("HEAVY_PLACE_SECONDS", str(PLACE_SECONDS)))
         if self.slots < 1 or self.maximum < self.slots or self.settle < 0 or self.poll <= 0 or timeout < 0 \
-                or self.recheck < 0:
+                or self.recheck < 0 or self.hold < 0:
             raise ValueError("Invalid resource limits")
+        if place is not None and not self.whole_host:
+            raise ValueError("Only a whole-host request keeps a place in the queue")
         # Why the latest attempt was refused: its kind, which the log counts (#49), and the waiting message,
         # which names the limit that refused it and its value beside what the attempt read.
         # guard: the guard is unreadable or not in admission's format and needs inspection; stranded: a dead or
         # uncertain entry recovery left is counted among the busy slots, or as the model's holder (#89);
-        # exclusive: exclusive work holds the host or is queued ahead; model: another run holds the model; slots: every slot the request may take is busy; settle, load or memory: the settling time, the
+        # exclusive: exclusive work holds the host or is queued ahead; wholeHost: a whole-host request queued ahead
+        # keeps the guaranteed slots, one of them free; model: another run holds the model; slots: every slot the request may take is busy; settle, load or memory: the settling time, the
         # load average or memory pressure withholds a slot beyond the guaranteed ones. An older toolkit's log
         # lines also count legacy, a gate holding StudyWright's former host lock, which no longer refuses (#25).
         self.refusal = self.waiting = None
@@ -535,9 +599,12 @@ class Admission:
         # pressure level read beside its refusals.
         self.refusals, self.holders, self.loads, self.memory = Counter(), None, None, None
         self.guard = guard_path(os.environ)
-        # Exclusive requests waiting for admission, first come first.
-        self.queue = self.directory / "exclusive-queue.json"
+        # Exclusive and whole-host requests waiting for admission, first come first.
+        self.queue = self.directory / QUEUE
         self.identity = uuid.uuid4().hex
+        # The identity of its queued record: its place's, kept across this process's successive admissions, or its own.
+        self.place = place
+        self.queued_as = place.identity if place is not None else self.identity
         # What supervision in this process sees of each command, for the entry's recovery, and
         # whether a line failed to reach it, which ends recording. Lane groups supervise in threads.
         self.process_record = record_path(self.guard, self.identity)
@@ -645,27 +712,20 @@ class Admission:
         return why
 
     def _waiters(self):
-        """The live exclusive requests, first come first. The caller holds the coordination lock.
-
-        A queued request holds no slot and has started nothing, so the record of one whose
-        process ended or whose identity changed is dropped, where a guard owner's is kept.
-        """
-        try:
-            recorded = json.loads(self.queue.read_text())["waiters"]
-            live = [waiter for waiter in recorded if running(waiter)]
-        except FileNotFoundError:
-            return []
-        except (OSError, ValueError, KeyError, TypeError):
-            # Only admission writes the queue, atomically. Losing an unreadable queue's order
-            # stops nobody: each live request records itself again at its next attempt.
-            recorded, live = None, []
-        if live != recorded:
-            self._record(live)
-        return live
+        return queued_requests(self.queue)
 
     def _record(self, waiters):
-        if waiters: publish_guard(self.queue, {"vocaroEngineering": 1, "waiters": waiters})
-        else: self.queue.unlink(missing_ok=True)
+        record_queue(self.queue, waiters)
+
+    def _holds(self, waiter):
+        """Whether a queued request ahead of this one holds it back now. An exclusive request does for as long
+        as its process runs. A whole-host request does while its process last asked within HEAVY_PLACE_SECONDS:
+        one that keeps its place between successive waits (Place) holds nothing back while it is away, such as
+        while the second Mac is offered its lane and perhaps runs it (vocaro-engineering#174)."""
+        if not waiter.get("wholeHost"):
+            return True
+        seen = waiter.get("seen")
+        return isinstance(seen, (int, float)) and time.time() - seen < self.hold
 
     def _log(self, event, **fields):
         """Append this request's line to the admission log. The caller holds the coordination lock."""
@@ -700,8 +760,9 @@ class Admission:
                    else "timed-out" if isinstance(error, TimeoutError) else "failed")
         with (self.directory / "coordination.lock").open("a+") as bridge:
             fcntl.flock(bridge, fcntl.LOCK_EX)
-            if self.queued:
-                self._record([waiter for waiter in self._waiters() if waiter["identity"] != self.identity])
+            # A request whose wait timed out keeps its place, if it has one, for its next wait; its caller leaves it.
+            if self.queued and not (self.place is not None and outcome == "timed-out"):
+                self._record([waiter for waiter in self._waiters() if waiter["identity"] != self.queued_as])
             self._log("withdrawn", outcome=outcome, waited=round(time.monotonic() - self.started, 3), **self._seen())
         self.queued = False
 
@@ -737,16 +798,28 @@ class Admission:
             os.close(self.held_model)
         self.descriptors, self.held_model = [], None
 
-    def _extra_slot(self, reserved=()):
-        """A slot beyond the guaranteed ones while the host shows spare capacity, or None."""
+    def _extra_slot(self, reserved=(), kept=None):
+        """A slot beyond the guaranteed ones while the host shows spare capacity, or None. kept is the whole-host
+        request queued ahead, for which the guaranteed slots are kept: a refusal then says so when one of them is
+        free, as the kind wholeHost, since the request would otherwise have taken it (vocaro-engineering#174)."""
         refusal = self._extra_refusal()
         if refusal is None:
             taken = take_slot(self.directory, self.maximum, start=self.slots, skip=reserved)
             if taken is not None:
                 return taken
-            refusal = "slots", f"so is every slot up to HEAVY_SLOTS_MAX={self.maximum}"
+            refusal = "slots", (f"so is every slot up to HEAVY_SLOTS_MAX={self.maximum}" if kept is None else
+                                f"every slot beyond them up to HEAVY_SLOTS_MAX={self.maximum} is busy")
         kind, reason = refusal
-        self.refusal, self.waiting = kind, f"all {self.slots} guaranteed slots are busy and {reason}"
+        free = None
+        if kept is not None:
+            # Whether a guaranteed slot is free: probed and let go at once, under the coordination lock.
+            free = take_slot(self.directory, self.slots, skip=reserved)
+            if free is not None: os.close(free[1])
+        if free is not None:
+            self.refusal, self.waiting = "wholeHost", (f"a guaranteed slot is free but kept for a whole-host lane queued "
+                                                       f"ahead of it: {kept['label']}; and {reason}")
+        else:
+            self.refusal, self.waiting = kind, f"all {self.slots} guaranteed slots are busy and {reason}"
         return None
 
     def _held_back(self, state):
@@ -769,14 +842,21 @@ class Admission:
             if load is not None:
                 self.loads = [load, load, load] if self.loads is None else [self.loads[0], load, max(self.loads[2], load)]
             waiters = self._waiters()
-            if self.exclusive and all(waiter["identity"] != self.identity for waiter in waiters):
-                # Its first attempt sets its place, whatever refuses it now.
-                born = process_start(os.getpid())
-                if born is None:
-                    raise RuntimeError("Cannot establish the admission owner's process identity")
-                waiters.append({"identity": self.identity, "pid": os.getpid(), "start": born, "label": self.label[:LABEL_LIMIT]})
+            if self.exclusive or self.whole_host:
+                mine = next((waiter for waiter in waiters if waiter["identity"] == self.queued_as), None)
+                if mine is None:
+                    # Its first attempt sets its place, whatever refuses it now.
+                    born = process_start(os.getpid())
+                    if born is None:
+                        raise RuntimeError("Cannot establish the admission owner's process identity")
+                    mine = {"identity": self.queued_as, "pid": os.getpid(), "start": born, "label": self.label[:LABEL_LIMIT],
+                            **({"wholeHost": True} if self.whole_host else {})}
+                    waiters.append(mine)
                 # Set first, so that leaving the wait by any exception withdraws the record.
                 self.queued = True
+                if self.whole_host:
+                    # A whole-host request holds later heavy work back only while it keeps asking (_holds).
+                    mine["seen"] = round(time.time(), 3)
                 self._record(waiters)
             state = self._guard()
             if self.holders is None:
@@ -786,11 +866,24 @@ class Admission:
             if state is None:
                 return False
             reserved, model_counted = self._count_stranded()
-            # An exclusive request cannot be admitted while a stranded entry is counted as any slot, so one queued
-            # ahead then holds nothing back: work within the free slots goes on beside the stranded entry (#89).
-            if waiters and waiters[0]["identity"] != self.identity and not reserved:
-                # Work already admitted runs on; nothing new starts before the exclusive request.
-                self.refusal, self.waiting = "exclusive", f"it waits behind exclusive work queued ahead of it: {waiters[0]['label']}"
+            # The first request queued ahead of this one that holds it back now, if any.
+            ahead = next((waiter for waiter in waiters if waiter["identity"] == self.queued_as or self._holds(waiter)), None)
+            if ahead is not None and ahead["identity"] == self.queued_as:
+                ahead = None
+            # An exclusive request cannot be admitted while a stranded entry is counted as any slot, nor a whole-host
+            # one while it is counted as a guaranteed slot, so one queued ahead then holds nothing back: work within
+            # the free slots goes on beside the stranded entry (#89).
+            if ahead is not None and (any(slot < self.slots for slot in reserved) if ahead.get("wholeHost") else reserved):
+                ahead = None
+            # A whole-host request queued ahead keeps the guaranteed slots for itself, so that they drain toward it
+            # while lighter heavy work goes on beyond them; exclusive and whole-host requests wait their turn (#174).
+            kept = ahead if ahead is not None and ahead.get("wholeHost") and not (self.exclusive or self.whole_host) else None
+            if ahead is not None and kept is None:
+                # Work already admitted runs on; nothing new starts before the request queued ahead.
+                if ahead.get("wholeHost"):
+                    self.refusal, self.waiting = "wholeHost", f"it waits behind a whole-host lane queued ahead of it: {ahead['label']}"
+                else:
+                    self.refusal, self.waiting = "exclusive", f"it waits behind exclusive work queued ahead of it: {ahead['label']}"
                 return False
             # The model first, so that a request it refuses names the model's holder.
             if self.model:
@@ -802,9 +895,10 @@ class Admission:
                     return self._held_back(state)
             wanted = self.maximum if self.exclusive else self.slots if self.whole_host else 1
             for _ in range(wanted):
-                taken = take_slot(self.directory, self.maximum if self.exclusive else self.slots, skip=reserved)
+                taken = None if kept is not None else take_slot(self.directory, self.maximum if self.exclusive else self.slots,
+                                                                skip=reserved)
                 if taken is None and not self.exclusive and not self.whole_host:
-                    taken = self._extra_slot(reserved)
+                    taken = self._extra_slot(reserved, kept)
                 if taken is None:
                     busy = wanted - len(self.descriptors)
                     if self.exclusive:
@@ -826,9 +920,9 @@ class Admission:
                                                 "admitted": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                                                 **({"wholeHost": True} if self.whole_host else {})}
             publish_guard(self.guard, state)
-            if self.exclusive:
-                # The next exclusive request waits for these slots, and every other behind it.
-                self._record(waiters[1:])
+            if self.queued:
+                # The next queued request waits for these slots, and every other behind it.
+                self._record([waiter for waiter in waiters if waiter["identity"] != self.queued_as])
                 self.queued = False
             held = [(f"slot{slot}", fd) for slot, fd in self.descriptors]
             if self.held_model is not None:
@@ -858,8 +952,8 @@ class Admission:
         try:
             while not self._attempt():
                 self._count()
-                # Nothing is published yet but an exclusive request's place in the queue, so a
-                # stop or a timeout leaves nothing to release once it withdraws.
+                # Nothing is published yet but an exclusive or whole-host request's place in the queue,
+                # so a stop or a timeout leaves nothing to release once it withdraws.
                 if requested() is not None:
                     raise Interrupted(requested(), "while waiting for admission")
                 waited = int(time.monotonic() - started)
