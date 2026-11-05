@@ -353,7 +353,7 @@ def main(argv, project=None):
     kinds = args.device[:1] if args.build_only else args.device
     started = time.monotonic()
     pool = simulator_pool.Pool(name, owner=simulator_pool.default_owner() or f"simulator-tests-{uuid.uuid4()}",
-                               log=run.say)
+                               log=run.say, alone=True)
     try:
         with processes.forwarding_signals(), contextlib.ExitStack() as stack:
             # Before any device is taken, so that a run that waits holds none.

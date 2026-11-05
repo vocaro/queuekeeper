@@ -12,8 +12,10 @@ file whole. The lock covers one change, never a reservation, and the kernel drop
 process. Like a heavy-work guard, an entry is never released by a deadline or a vanished process:
 an active run whose recorded process is gone is an orphan, kept for attended recovery. The one
 exception is a simulator pool's reservation that `eng simulator-pool reap` proves dead, every process
-it records gone, its expected release passed and its simulator shut down, which reap releases as a
-recovery by reap (offload_host.release_dead; vocaro-engineering#156).
+it records gone and its simulator shut down, which reap releases as a recovery by reap: once its
+expected release has passed, or before then when only its holder held it (ALONE) and nothing accounts
+for its owner, no live admission or other process naming the owner or the device (offload_host.release_dead;
+vocaro-engineering#156).
 
 The mac-foreground entry reserves the owner's screen, keyboard, pointer, focus and speech. It
 names no device and records the owner's approval window, which no update changes. Foreground
@@ -125,6 +127,10 @@ OWNER = "VOCARO_DEVICE_OWNER"
 # as one of a live run's processes, the second Mac's census of leftover processes counts the
 # member's simulator as that run's (offload_host.leftovers).
 HOLDER = "holderProcess"
+# Set beside HOLDER when that process alone holds the reservation, as a run's pool records it and
+# `eng simulator-pool take` never does: reap may release such an entry before its expected release once
+# its processes are gone and nothing accounts for its owner (offload_host.ALONE; vocaro-engineering#156).
+ALONE = offload_host.ALONE
 # How a foreground release left the frontmost app: restored, or no longer the session's to restore.
 FRONTMOST = ("restored", "not-ours")
 TIMES = ("leaseRevision", "releasedAt", "reservedAt", "leasedAt", "updatedAt")

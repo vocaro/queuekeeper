@@ -323,9 +323,13 @@ class Lease:
 
 
 class Pool:
-    def __init__(self, name, *, owner, record=None, run=None, log=None, clock=None, warm=True, sleep=time.sleep):
+    def __init__(self, name, *, owner, record=None, run=None, log=None, clock=None, warm=True, sleep=time.sleep,
+                 alone=False):
         """warm warms a new template, by default template.warm; None keeps no templates: it creates new members
-        instead of cloning them and erases taken ones instead of resetting them. sleep waits for a held template."""
+        instead of cloning them and erases taken ones instead of resetting them. sleep waits for a held template.
+        alone says that this process holds what it reserves only while it runs, as a run does that releases its
+        members when it ends, so that reap may release one whose holder has gone before its expected release
+        (devices.ALONE); never for `eng simulator-pool take`, whose session holds a member once it has ended."""
         if not name:
             raise ValueError("a pool needs its name")
         self.name, self.owner, self.run = name, owner, run or simctl
@@ -334,6 +338,7 @@ class Pool:
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.warm = warmed.warm if warm is True else warm
         self.sleep = sleep
+        self.alone = alone
 
     def listing(self):
         result = self.run("list", "devices", "-j", timeout=120)
@@ -633,6 +638,7 @@ class Pool:
             start = None
         if start is not None:
             details[device_record.HOLDER] = {"pid": os.getpid(), "start": start}
+            if self.alone: details[device_record.ALONE] = True
         entry = self.record.reserve(key, owner=self.owner, revision=revision, device=device, purpose=purpose,
                                     release_by=self._release_by(), details=details)
         return entry["revision"]
@@ -909,7 +915,7 @@ def member(name, device_type, runtime, *, purpose, owner=None, boot_timeout=600,
 
     It raises BootTimedOut when the boot reaches its limit, RuntimeError when it fails, and
     ReleaseUnconfirmed after a block that ended normally when the release cannot confirm shutdown."""
-    pool = Pool(name, owner=owner or default_owner() or f"{name}-{uuid.uuid4()}", log=log)
+    pool = Pool(name, owner=owner or default_owner() or f"{name}-{uuid.uuid4()}", log=log, alone=True)
     lease = pool.take(device_type, runtime, purpose=purpose, keep_state=keep_state, erase=erase)
     status = "stopped"
     try:
@@ -1048,7 +1054,8 @@ def main(argv, project=None):
     if not owner and (args.action not in {"list", "check"} or getattr(args, "held", False)):
         parser.error(f"name the owner with --owner or ${device_record.OWNER}")
     try:
-        pool = Pool(name, owner=owner)
+        # Only take hands its member to a session that holds it after this command has ended.
+        pool = Pool(name, owner=owner, alone=args.action != "take")
         if args.action == "list":
             listing = pool.listing()
             record = pool.record.load().get("devices", {})

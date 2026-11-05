@@ -1591,9 +1591,19 @@ entry of that Mac's device record only when all of these hold, read in that orde
    record, so a process it lacks was recorded before it went, and the listing must show the reap's own
    process, or it shows nothing gone. An entry that records no process, or a running PID with no start
    to compare, is left.
-2. Its expected release has passed. Before then a session that took the member with `eng simulator-pool
-   take`, whose process ends when it prints the UDID, still holds it by its word, so a reservation not
-   yet due is never released, however dead its process.
+2. Its expected release has passed, or nothing accounts for its owner (the owner's decision,
+   2026-11-04, in chat, taking #156's alternative). Before its expected release an entry goes only when:
+   - it records `heldOnlyWhileHolderRuns`, which a run's own pool writes beside `holderProcess`
+     (`eng simulator-tests`, `simulators.pool.member`, a warm-up or prune) and `eng simulator-pool take`
+     never does. A take's process ends when it prints the UDID, and its session then holds the member
+     by its word; a session between commands runs no process that names it (an agent's own process
+     carries no session ID, only the commands it starts do), so no census can show that it has gone,
+     and a take is never released early;
+   - no live admission, in the guard or the admission log, has a process, itself or a descendant, whose
+     command line or environment names the owner (`ownerChatID`), and no other process of the account
+     names the owner or the device's UDID, in a `ps -axwwE` listing read after the record. The listing
+     must show the reap's own environment, and an owner shorter than 8 characters cannot be searched
+     for; either leaves the entry held. An admission record that cannot be read leaves it held too.
 3. It is not uncertain or `restoration-unverified`, and its run did not go to another Mac (`run.host`),
    whose processes this Mac cannot check.
 4. It is a simulator pool's: its device is a simulator, `simctl` lists that UDID under the entry's key,
@@ -1603,8 +1613,10 @@ entry of that Mac's device record only when all of these hold, read in that orde
 6. The reap met no problem, and under the device record's lock the entry is still at the revision it read.
 
 It releases the entry as `devices recover` does, at the next revision, with `recovery.by` set to `reap`,
-the condition (`held`, or `orphan` for an active run whose process is gone) and `recovery.verified` naming
-the PIDs, their starts, the release that had passed and the `Shutdown` it saw; it logs a `releasing` line
+the condition (`held`, or `orphan` for an active run whose process is gone), `recovery.qualified` (`its
+release passed`, or `early: nothing accounts for its owner`) and `recovery.verified` naming the PIDs, their
+starts, the release that had passed or, for an early one, what the owner's census checked, and the
+`Shutdown` it saw; it logs a `releasing` line, with the same `qualified`,
 before it writes the record, then `released`, in `simulator-reaps.jsonl`, so a log that cannot be written
 releases nothing. Each release is printed (`released KEY (UDID), held for owner …`); `--dry-run` says
 `would release` and changes nothing.
@@ -1616,9 +1628,12 @@ in the second Mac's record that command runs there, as `ssh HOST 'cd
 ~/Development/vocaro-engineering/src/python && python3 -m vocaro_engineering.devices recover …'`, since
 run here it would read this Mac's record. `eng simulator-pool reap`, with or without `--dry-run`, and
 `eng doctor`'s `reaped` name every such entry; the reap before a dispatch names only those of
-simulators it just stopped. `devices status` names them too, and releases nothing. A live holder, a
-release not yet due or unreadable, an entry that records no process and an uncertain entry are neither
-named nor released.
+simulators it just stopped. `devices status` names them too, and releases nothing. One not yet due that
+reap leaves (`its release is due …; reap did not release it: …`, a take's or one whose owner something
+accounts for) is named only by `eng simulator-pool reap`. Reap does not shut down a member whose dead
+reservation is not yet due; it releases that one early once the member is shut down. A live holder, a
+release that cannot be read, an entry that records no process and an uncertain entry are neither named
+nor released.
 
 ### Registered Mac builds
 
@@ -1711,8 +1726,9 @@ were never imported; once it is imported, stop writing it.
 A device is released only explicitly. A passed expected release time, an idle screen or a silent
 session proves nothing: obtain the release and verify the device's state freshly. A deadline
 never releases a device; `status` reports an overdue entry and changes nothing. The one exception is
-a simulator pool's reservation whose processes are all gone, past its expected release and with its
-simulator shut down, which reap releases as a recovery
+a simulator pool's reservation whose processes are all gone and whose simulator is shut down, past its
+expected release or, for a run's reservation, before it once nothing accounts for its owner, which reap
+releases as a recovery
 ([stale pool simulators](#stale-pool-simulators)). Release yours
 during offline analysis instead of holding an idle reservation. `release` refuses while a run is
 active: record its confirmed terminal result first.

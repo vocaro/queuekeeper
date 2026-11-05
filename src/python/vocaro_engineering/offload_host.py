@@ -109,6 +109,14 @@ PASSWORD_TRIES = 3
 # The process that holds a simulator pool member's reservation, {"pid", "start"}, as
 # simulators/pool.py records it when it reserves the member.
 HOLDER = "holderProcess"
+# Set on a reservation that holds its member only while its holderProcess runs, as a run's own pool does
+# (simulators/pool.py, Pool(alone=True)), and never on `eng simulator-pool take`'s, whose session holds the
+# member by its word once that command has ended. Only such a reservation may be released before its expected
+# release (release_dead; vocaro-engineering#156).
+ALONE = "heldOnlyWhileHolderRuns"
+# What ps lists for an early release's census: each process's environment after its command line, which
+# carries the session a command runs for (CLAUDE_CODE_SESSION_ID, CODEX_THREAD_ID, VOCARO_DEVICE_OWNER).
+ENVIRONMENTS = ("ps", "-axwwE", "-o", "pid=,ppid=,uid=,lstart=,args=")
 # A program inside an Xcode, such as the DTServiceHub that xcodebuild starts for a test run,
 # which launchd adopts once xcodebuild has ended.
 XCODE = re.compile(r"[^\s'\"]*/Xcode[^/\s'\"]*\.app/Contents/")
@@ -1204,11 +1212,12 @@ def require_admissions():
             raise ReapProblem(f"the admission log could not be read ({error})") from None
 
 
-def reservation_hold(key, entry, table):
+def reservation_hold(key, entry, table, due_holds=True):
     """Why a record entry keeps its simulator running, or None, and what a reservation that does not
     says of itself. A recorded process is live while its PID runs with its recorded start. An entry
     that records none, or none that can be read, or that is marked uncertain, may be live: only a
-    process known to be gone, or a PID with another start, shows that it is not."""
+    process known to be gone, or a PID with another start, shows that it is not. With due_holds False,
+    an expected release not yet passed holds nothing here, for release_dead to judge."""
     if entry.get("uncertain") or entry.get("state") == "restoration-unverified":
         return f"its reservation {key} is uncertain, kept for recovery", None
     if entry.get("state") == "released" and not entry.get("activeRun"): return None, None
@@ -1219,7 +1228,8 @@ def reservation_hold(key, entry, table):
         try: ends = datetime.fromisoformat(str(due).replace("Z", "+00:00")).timestamp()
         except (ValueError, OverflowError, OSError):
             return f"its reservation {key} records an expected release that cannot be read", None
-        if ends > time.time(): return f"its reservation {key} is not due for release until {due}", None
+        if ends > time.time() and due_holds:
+            return f"its reservation {key} is not due for release until {due}", None
     recorded = ([entry[HOLDER]] if HOLDER in entry else [])
     if entry.get("activeRun"):
         recorded.append({"pid": entry.get("hostProcessIdentifier"), "start": entry.get("hostProcessStart")})
@@ -1239,24 +1249,32 @@ def reservation_hold(key, entry, table):
     return None, f"reservation {key}'s recorded process is gone, and reap releases its entry once it proves it dead"
 
 
-def recoverable(entries, table):
+def recoverable(entries, table, early=False):
     """The record's held entries that nothing keeps: each records a process, known to be gone, and an
     expected release that has passed (reservation_hold says the rest). Reap releases each that it proves
     dead (release_dead) and names the rest, with why it left each and the command that recovers it
-    (vocaro-engineering#97, #156)."""
+    (vocaro-engineering#97, #156). With early, instead the entries like these whose expected release has
+    not yet passed, each marked early."""
     found = []
     for key, entry in entries.items():
-        hold, gone = reservation_hold(key, entry, table)
+        hold, gone = reservation_hold(key, entry, table, due_holds=not early)
         if hold is not None or gone is None or entry.get("expectedReleaseBy") is None: continue
+        if early != (passed(entry["expectedReleaseBy"]) is False): continue
         owned = entry.get("ownedProcesses") or []
         run = [{"pid": entry.get("hostProcessIdentifier")}] if entry.get("activeRun") else []
         recorded = [entry.get(HOLDER), *run, *(owned if isinstance(owned, list) else [owned])]
         found.append({"key": key, "device": entry.get("device"), "owner": entry.get("ownerChatID"),
                       "due": entry.get("expectedReleaseBy"), "pids": [item[0] for item in identities(recorded)],
-                      "revision": entry.get("revision", 0),
+                      "revision": entry.get("revision", 0), **({"early": True} if early else {}),
                       "command": f"python3 -m vocaro_engineering.devices recover {shlex.quote(key)} --by SESSION "
                                  f"--revision {entry.get('revision', 0)} --verified 'WHAT YOU CHECKED'"})
     return found
+
+
+def passed(due):
+    """Whether an expected release, as ISO 8601 text, has passed; None when it cannot be read."""
+    try: return datetime.fromisoformat(str(due).replace("Z", "+00:00")).timestamp() <= time.time()
+    except (ValueError, OverflowError, OSError): return None
 
 
 def recoverable_line(item, host=None):
@@ -1268,7 +1286,8 @@ def recoverable_line(item, host=None):
         command = f"ssh {shlex.quote(host)} {shlex.quote('cd ' + TOOLKIT + ' && ' + command)}"
     left = f"; reap did not release it: {item['hold']}" if item.get("hold") else ""
     return (f"{item['key']} stays held for owner {item['owner']}, though its process "
-            f"{', '.join(map(str, item['pids']))} is gone and its release was due {item['due']}{left}. Once its "
+            f"{', '.join(map(str, item['pids']))} is gone and its release "
+            f"{'is due' if item.get('early') else 'was due'} {item['due']}{left}. Once its "
             f"work has stopped, its owner or a session they agreed recovers it: {command}")
 
 
@@ -1345,7 +1364,44 @@ def release_hold(item, entries, table, simulators, pools):
             return f"its device is also held as {other}"
     if os.getpid() not in table:
         return "the process listing does not show this reap's own process, so it cannot show another is gone"
+    if item.get("early") and entry.get(ALONE) is not True:
+        return (f"its release is not due until {item['due']}, and it does not record that only its holder held it, "
+                "as `eng simulator-pool take`'s does not: that command's session holds the member by its word, and a "
+                "session between commands leaves no process that names it")
     return None
+
+
+def accounted(item, environments, admissions):
+    """What accounts for the owner of an entry release_hold would release early, or None when nothing does:
+    a live admission, as the guard or the admission log records it, whose process or a descendant names the
+    owner in its command line or environment; any other process of the account that does; or one that names
+    the device's UDID. environments is the table of an ENVIRONMENTS listing, and admissions the PIDs of live
+    admissions. An owner that cannot be searched for, or a listing that shows no environment, accounts for
+    it, so that only a search that could have found the owner releases the entry."""
+    owner, udid = item.get("owner"), str(item.get("device") or "").upper()
+    if not isinstance(owner, str) or len(owner.strip()) < 8:
+        return f"its owner {owner!r} is too short to search processes for"
+    own = environments.get(os.getpid())
+    if own is None or "PATH=" not in own["args"]:
+        return "ps did not show this reap's own environment, so it cannot show that no process names the owner"
+    uid = os.getuid()
+    for pid in sorted(admissions):
+        for other, process in environments.items():
+            if pid in lineage(environments, other) and owner in process["args"]:
+                return f"live admission PID {pid} accounts for its owner: PID {other} names {owner}"
+    for other, process in sorted(environments.items()):
+        # This reap's own processes too: a session that reaps may be the owner.
+        if process["uid"] != uid: continue
+        if owner in process["args"]: return f"PID {other} names its owner {owner}"
+        if udid and udid in process["args"].upper(): return f"PID {other} names its device {udid}"
+    return None
+
+
+def live_admissions(table):
+    """The PIDs of the admissions that the guard or the admission log records as live in table, as the census
+    counts them (live_runs). Either that cannot be read raises."""
+    require_admissions()
+    return live_runs(table, guard_owners(), unended())
 
 
 def release_dead(found, entries, table, pools, listed, dry_run):
@@ -1366,6 +1422,23 @@ def release_dead(found, entries, table, pools, listed, dry_run):
         hold = release_hold(item, entries, table, simulators, pools)
         if hold: left.append({**item, "hold": hold})
         else: ready.append(item)
+    if any(item.get("early") for item in ready):
+        # Before its expected release, an entry goes only when nothing accounts for its owner, by a census that
+        # can see each process's environment (vocaro-engineering#156).
+        try:
+            environments = process_table(listed(list(ENVIRONMENTS)))
+            if not environments: raise ReapProblem("ps listed no processes with their environments")
+            admissions, problem = live_admissions(environments), None
+        except Exception as error:
+            problem = str(error) if isinstance(error, ReapProblem) else f"{type(error).__name__}: {error}"
+        waiting, ready = [item for item in ready if item.get("early")], [item for item in ready if not item.get("early")]
+        for item in waiting:
+            why = (f"its release is not due until {item['due']}, and its owner could not be checked: {problem}"
+                   if problem else accounted(item, environments, admissions))
+            if why and not problem: why = f"its release is not due until {item['due']}, and {why}"
+            if why: left.append({**item, "hold": why})
+            else: ready.append({**item, "checked": "no live admission or other process of the account names its "
+                                                   f"owner {item['owner']} or its device, in ps with environments"})
     for item in ready:
         entry = entries[item["key"]]
         owned = entry.get("ownedProcesses") or []
@@ -1373,9 +1446,11 @@ def release_dead(found, entries, table, pools, listed, dry_run):
                                             "start": entry.get("hostProcessStart")}] if entry.get("activeRun") else []),
                     *(owned if isinstance(owned, list) else [owned])]
         pids = ", ".join(f"PID {pid}" + (f" (started {start})" if start else "") for pid, start in identities(recorded))
-        item.update(verified=f"reap on this Mac found {pids} no longer running, by PID and start in ps; its "
-                             f"expected release, {item['due']}, had passed; and simctl showed "
-                             f"{str(entry['device']).upper()} Shutdown",
+        due = (f"its expected release, {item['due']}, had not passed, but it recorded that only its holder held "
+               f"it, and {item['checked']}" if item.get("early") else f"its expected release, {item['due']}, had passed")
+        item.update(verified=f"reap on this Mac found {pids} no longer running, by PID and start in ps; {due}; and "
+                             f"simctl showed {str(entry['device']).upper()} Shutdown",
+                    qualified="early: nothing accounts for its owner" if item.get("early") else "its release passed",
                     condition="orphan" if entry.get("activeRun") else "held")
     if dry_run:
         return [{**item, "dryRun": True} for item in ready], left
@@ -1394,6 +1469,7 @@ def release_dead(found, entries, table, pools, listed, dry_run):
                             "lastOwnerChatID": entry.get("ownerChatID"), "releasedAt": moment,
                             "recovery": {"by": "reap", "at": moment, "verified": item["verified"],
                                          "condition": item["condition"], "state": entry.get("state"),
+                                         "qualified": item["qualified"],
                                          "uncertainReason": entry.get("uncertainReason")}})
             current[item["key"]] = {"revision": item["revision"] + 1, **changed}
             released.append(item)
@@ -1495,7 +1571,8 @@ def log_reap(event, item, **more):
 def log_release(event, item):
     """Append one release of an entry to the log of stops, with what reap checked."""
     line = {"time": datetime.now(timezone.utc).isoformat(timespec="seconds"), "event": event,
-            **{key: item.get(key) for key in ("key", "device", "owner", "due", "pids", "revision", "verified")}}
+            **{key: item.get(key) for key in ("key", "device", "owner", "due", "pids", "revision", "qualified",
+                                              "verified")}}
     path = admission_directory() / REAP_LOG
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NONBLOCK, 0o644)
@@ -1545,12 +1622,12 @@ def reap(root, pools, dry_run=False, scan=True, listed=None, begin=None, clock=t
         # recorded it before it was gone.
         entries = device_entries()
         # As if no process ran: what could be named at all, without which nothing need be listed.
-        if recoverable(entries, {}):
+        if recoverable(entries, {}) or recoverable(entries, {}, early=True):
             look = listed or (lambda command: listing(command, REAP_CHECK_SECONDS))
             processes = look(["ps", "-axww", "-o", "pid=,ppid=,uid=,lstart=,args="])
             if not processes: raise ReapProblem("the processes could not be listed, so no held entry can be named")
             table = process_table(processes)
-            found = recoverable(entries, table)
+            found = recoverable(entries, table) + recoverable(entries, table, early=True)
             if found and report["problem"]:
                 why = "this reap met a problem, so it releases nothing"
                 report["recoverable"] = [{**item, "hold": why} for item in found]
