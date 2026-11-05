@@ -1881,7 +1881,8 @@ holder and the line.
 Reserving or taking a physical device also silences the owner's notifications on it for the
 run, with the shortcuts he made there once, and releasing or recovering it puts them back; the
 entry's `notifications` records each step. Without those shortcuts the command says what to ask
-the owner in the same message as the window
+the owner in the same message as the window. `devices run` watches the device's log for a
+banner while its command runs, and runs a command that one reached once more
 ([notifications during a run](device-testing.md#notifications-during-a-run)).
 
 Record each app the session launches on the device with `devices update KEY --launched BUNDLE`.

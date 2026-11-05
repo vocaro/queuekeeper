@@ -49,7 +49,8 @@ A physical device's run keeps the owner's notifications out (vocaro-engineering#
 runs the owner's silencing shortcut on it, once he has recorded making it there (`devices notifications setup`),
 and releasing or recovering the entry runs the restoring one. The entry's `notifications` records each step.
 The Mac reads no device's Focus, so the silencing is never confirmed, and a run without it says so
-(device_notifications).
+(device_notifications). `devices run` watches the device's log while its command runs, and a run a notification
+reached as a banner is unmeasured and run once more.
 """
 import argparse
 import contextlib
@@ -68,6 +69,7 @@ import tempfile
 import time
 
 from . import device_notifications, offload_host, processes
+from .evidence import UNMEASURED
 from .resources import process_start
 
 SCHEMA = 1
@@ -978,15 +980,24 @@ class BoundedRun:
                 print(f"devices: {key}'s entry did not record the run's end, so it shows the run orphaned until its "
                       f"owner releases or recovers it: {error}", file=sys.stderr, flush=True)
 
-    def execute(self, command, *, cwd=None, stdout=None, run=None):
+    def execute(self, command, *, cwd=None, stdout=None, run=None, watch=None):
         """Run command under the bound, recorded in each entry, and return its exit status.
 
         A timeout, a stop, or a command that did not start is recorded and raised once the command
-        and its observed descendants have ended. A run whose end is unconfirmed stays active."""
+        and its observed descendants have ended. A run whose end is unconfirmed stays active. A watch
+        of the device's log (device_notifications.Watch) is stopped as the command ends, and what it
+        saw is recorded with the run's end as its notificationWatch."""
         command = list(command)
-        timeout = self.begin({**(run or {}), "command": command, "startedAt": now()})
         try:
-            status = processes.supervise(command, cwd=cwd, stdout=stdout, timeout=timeout, on_start=self.own)
+            timeout = self.begin({**(run or {}), "command": command, "startedAt": now()})
+        except BaseException:
+            if watch is not None: watch.stop()
+            raise
+        try:
+            try:
+                status = processes.supervise(command, cwd=cwd, stdout=stdout, timeout=timeout, on_start=self.own)
+            finally:
+                if watch is not None: self.run = {**self.run, "notificationWatch": watch.stop()}
         except processes.TimedOut as error:
             self.timed_out = True
             self.finish(str(error))
@@ -1000,6 +1011,46 @@ class BoundedRun:
             raise
         self.finish(f"exit {status}")
         return status
+
+
+class Unmeasured(Exception):
+    """A run that a notification reached twice: neither its run nor its rerun is a measurement."""
+
+
+def watched(run, key, command, extra):
+    """Run command under run while watching key's device log for a notification presented as a banner; its exit
+    status and what the watch saw, which the entry's run records (device_notifications.Watch)."""
+    code = run.execute(command, run=extra, watch=device_notifications.watch(run.devices[key]))
+    return code, run.run["notificationWatch"]
+
+
+def watched_run(run, key, command, extra, said):
+    """Run command under run, and once more when a notification was presented on key's device during it (#144).
+
+    Such a run is unmeasured: its transcript may hold the notification and VoiceOver's cursor may have moved. Its
+    rerun's status is the run's; a rerun that one reaches too, or no time left for one, raises Unmeasured. A run
+    whose device log could not be read is said to be unwatched and keeps its status."""
+    code, seen = watched(run, key, command, extra)
+    if not seen["presented"]:
+        if not seen["watched"]:
+            said(f"devices: {key}'s log could not be read during the run ({seen['detail']}), so a notification that "
+                 "reached it would not be seen; read the transcript for one")
+        return code
+    said(f"devices: unmeasured: {device_notifications.presented(seen)}. The run's transcript may hold it and "
+         f"VoiceOver's cursor may have moved, so its status {code} measures nothing; running it once more")
+    try:
+        run.seconds()
+    except Refused as error:
+        said(f"devices: unmeasured, not run again: {error}")
+        raise Unmeasured() from None
+    first = {name: value for name, value in run.run.items() if name not in ("boundSeconds", "stopsAt")}
+    code, seen = watched(run, key, command, {**extra, "rerunOf": {**first, "measured": False}})
+    if seen["presented"]:
+        said(f"devices: unmeasured again: {device_notifications.presented(seen)}. Not run a third time: ask the "
+             f"owner to check Do Not Disturb on {key} ({device_notifications.GUIDE})")
+        raise Unmeasured()
+    said(f"devices: the rerun saw no notification; its status {code} is the run's")
+    return code
 
 
 def silence_notifications(record, key, *, owner, revision, said):
@@ -1389,10 +1440,14 @@ def main(argv=None):
                          f"{device_notifications.ask(args.key)}")
             with processes.forwarding_signals():
                 try:
-                    code = run.execute(command, run={"notifications": notified} if notified else None)
+                    code = watched_run(run, args.key, command, {"notifications": notified} if notified else {},
+                                       said)
                 except processes.TimedOut as error:
                     print(f"devices: {error}; {args.key} stays reserved", file=sys.stderr)
                     return TIMED_OUT
+                except Unmeasured:
+                    print(f"devices: the run is unmeasured; {args.key} stays reserved", file=sys.stderr)
+                    return UNMEASURED
             print(f"devices: {command[0]} exited with status {code}; {args.key} stays reserved", file=sys.stderr)
             # A command a signal ended has a negative status; a shell reports it as 128 plus the signal.
             return 128 - code if code < 0 else code

@@ -1483,6 +1483,197 @@ class NotificationTests(unittest.TestCase):
         self.assertEqual(self.device.commands, [])
 
 
+LOGS = Path(__file__).resolve().parent / "fixtures/DeviceLog"
+
+
+def alive(pid):
+    try: os.kill(pid, 0)
+    except ProcessLookupError: return False
+    return True
+
+
+class Watches:
+    """device_notifications.watch as a run reaches it: each watch's stop answers what it saw, in turn."""
+
+    def __init__(self, *seen):
+        self.seen, self.devices = list(seen), []
+
+    def __call__(self, udid):
+        self.devices.append(udid)
+        seen = self.seen.pop(0) if self.seen else {"watched": True, "presented": 0}
+        return type("Watch", (), {"stop": lambda _self: seen})()
+
+
+BANNER = {"watched": True, "presented": 1, "first": "00:52:13"}
+
+
+class NotificationWatchTests(unittest.TestCase):
+    """A notification that reaches the device during a run despite its silencing (#144, item 2)."""
+
+    def setUp(self):
+        temp = scratch()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+        self.path = self.root / "device-handoff.json"
+        self.record = devices.Record(self.path)
+        for patcher in (patch.dict(os.environ, {devices.OVERRIDE: str(self.path)}),
+                        patch.object(device_notifications, "run", Devicectl())):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        for name in (devices.OWNER, devices.LEASE, "CODEX_THREAD_ID", "CLAUDE_CODE_SESSION_ID"):
+            os.environ.pop(name, None)
+        entry = self.record.reserve("iPad", owner="session-a", revision=0, purpose="p", release_by=later(),
+                                    device=TABLET, approval=approval())
+        self.revision = entry["revision"]
+        self.runs = self.root / "runs"
+
+    def cli(self, *arguments):
+        with contextlib.redirect_stdout(StringIO()) as output, contextlib.redirect_stderr(StringIO()) as error:
+            code = devices.main(list(arguments))
+        return code, output.getvalue(), error.getvalue()
+
+    def run_with(self, watches, status=0):
+        """`devices run` of a command that counts its runs and exits with status, watched by watches."""
+        with patch.object(device_notifications, "watch", watches):
+            return self.cli("run", "iPad", "--owner", "session-a", "--", sys.executable, "-c",
+                            f"open({str(self.runs)!r}, 'a').write('x'); raise SystemExit({status})")
+
+    def count(self):
+        return len(self.runs.read_text()) if self.runs.exists() else 0
+
+    def test_springboard_presenting_a_banner_is_found_and_nothing_else_is(self):
+        banner = (LOGS / "springboard-banner.log").read_text()
+        quiet = (LOGS / "springboard-quiet.log").read_text()
+        self.assertEqual(sorted(set(device_notifications.presentations(banner))), ["00:52:13", "00:52:40"])
+        # Dismissing a banner, a notification Do Not Disturb kept from a banner, and another process naming the
+        # banner destination are none.
+        self.assertEqual(device_notifications.presentations(quiet), [])
+        self.assertTrue(device_notifications.lines(quiet))
+        self.assertFalse(device_notifications.lines("[connected:00008130-001A2C3E0C38001C]\n"))
+        # A device whose name has spaces.
+        named = banner.replace(" iPhone ", " Owner's iPad Pro ")
+        self.assertEqual(len(device_notifications.presentations(named)), 3)
+
+    def test_a_run_a_notification_reached_is_unmeasured_and_run_once_more(self):
+        watches = Watches(BANNER, {"watched": True, "presented": 0})
+        code, _output, error = self.run_with(watches, status=0)
+        self.assertEqual((code, self.count()), (0, 2))
+        self.assertEqual(watches.devices, [TABLET, TABLET])
+        self.assertIn("unmeasured: a notification was presented as a banner, the first at 00:52:13", error)
+        self.assertIn("the rerun saw no notification; its status 0 is the run's", error)
+        run = self.record.entry("iPad")["run"]
+        self.assertEqual((run["outcome"], run["notificationWatch"]["presented"]), ("exit 0", 0))
+        self.assertEqual((run["rerunOf"]["measured"], run["rerunOf"]["notificationWatch"]), (False, BANNER))
+        self.assertEqual(run["rerunOf"]["outcome"], "exit 0")
+        self.assertFalse(self.record.entry("iPad")["activeRun"])
+
+    def test_the_reruns_status_is_the_runs(self):
+        watches = Watches(BANNER)
+        with patch.object(device_notifications, "watch", watches):
+            code, _output, error = self.cli("run", "iPad", "--owner", "session-a", "--", sys.executable, "-c",
+                                            f"import os; p = {str(self.runs)!r}; first = not os.path.exists(p); "
+                                            "open(p, 'a').write('x'); raise SystemExit(0 if first else 1)")
+        self.assertEqual((code, self.count()), (1, 2))
+
+    def test_a_rerun_a_notification_reaches_too_is_unmeasured_and_not_run_a_third_time(self):
+        code, _output, error = self.run_with(Watches(BANNER, {**BANNER, "presented": 2, "first": "01:02:03"}),
+                                             status=0)
+        self.assertEqual((code, self.count()), (devices.UNMEASURED, 2))
+        self.assertIn("unmeasured again: 2 notifications were presented as a banner, the first at 01:02:03", error)
+        self.assertIn("Not run a third time", error)
+        self.assertIn("the run is unmeasured; iPad stays reserved", error)
+        entry = self.record.entry("iPad")
+        self.assertEqual((entry["state"], entry["activeRun"]), (self.record.entry("iPad")["state"], False))
+        self.assertNotEqual(devices.condition(entry), "released")
+
+    def test_no_time_left_for_a_rerun_leaves_the_run_unmeasured(self):
+        seconds = devices.BoundedRun.seconds
+        calls = []
+
+        def once(run):
+            calls.append(1)
+            if len(calls) > 2: raise devices.Refused("no time left")
+            return seconds(run)
+        with patch.object(devices.BoundedRun, "seconds", once):
+            code, _output, error = self.run_with(Watches(BANNER), status=0)
+        self.assertEqual((code, self.count()), (devices.UNMEASURED, 1))
+        self.assertIn("unmeasured, not run again: no time left", error)
+
+    def test_a_clean_or_unwatched_run_keeps_its_status_and_runs_once(self):
+        code, _output, error = self.run_with(Watches({"watched": True, "presented": 0}), status=4)
+        self.assertEqual((code, self.count()), (4, 1))
+        self.assertNotIn("notification was presented", error)
+        self.assertNotIn("could not be read", error)
+        code, _output, error = self.run_with(Watches({"watched": False, "presented": 0, "detail": "why"}), status=0)
+        self.assertEqual((code, self.count()), (0, 2))
+        self.assertIn("iPad's log could not be read during the run (why)", error)
+        self.assertEqual(self.record.entry("iPad")["run"]["notificationWatch"]["watched"], False)
+
+    def test_tests_never_relay_a_devices_log(self):
+        self.assertEqual(os.environ.get(device_notifications.WATCH), "off")
+        with patch.object(device_notifications.subprocess, "Popen") as started:
+            seen = device_notifications.Watch(TABLET).stop()
+        started.assert_not_called()
+        self.assertEqual(seen, {"watched": False, "presented": 0,
+                                "detail": f"{device_notifications.WATCH} is off"})
+
+    def relaying(self, *texts):
+        """A watch whose relays print texts, over USB and the network in turn, and then wait to be ended."""
+        printed = iter(texts)
+
+        def relay(udid, network):
+            return [sys.executable, "-c", "import sys, time; sys.stdout.write(sys.argv[1]); sys.stdout.flush(); "
+                    f"time.sleep({stretched(60)})", next(printed)]
+        for patcher in (patch.dict(os.environ, {device_notifications.WATCH: ""}),
+                        patch.object(device_notifications, "relay", relay),
+                        patch.object(device_notifications.shutil, "which", return_value="/usr/bin/true")):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_a_watch_reads_its_relays_once_says_nothing_of_what_they_said_and_deletes_it(self):
+        banner = (LOGS / "springboard-banner.log").read_text()
+        self.relaying(banner, banner)
+        watch = device_notifications.Watch(TABLET)
+        directory = Path(watch.directory)
+        self.assertEqual(oct(directory.stat().st_mode & 0o777), "0o700")
+        self.assertEqual([oct(Path(path).stat().st_mode & 0o777) for path, _ in watch.relays], ["0o600", "0o600"])
+        seen = watch.stop()
+        # The same banners over both relays are counted once, and only their device clock is kept.
+        self.assertEqual(seen, {"watched": True, "presented": 2, "first": "00:52:13"})
+        self.assertFalse(directory.exists())
+        self.assertTrue(all(process.poll() is not None for _path, process in watch.relays))
+
+    def test_a_watch_that_reached_the_device_by_neither_route_says_so(self):
+        self.relaying("[connected]\n", "")
+        self.assertEqual(device_notifications.Watch(TABLET).stop(),
+                         {"watched": False, "presented": 0, "detail": f"{device_notifications.RELAY} relayed no line "
+                                                                      f"of {TABLET}'s log over USB or the network"})
+        quiet = (LOGS / "springboard-quiet.log").read_text()
+        self.relaying("", quiet)
+        self.assertEqual(device_notifications.Watch(TABLET).stop(), {"watched": True, "presented": 0})
+
+    def test_a_relay_whose_starter_dies_ends_and_deletes_what_it_relayed(self):
+        script = (f"import sys, time; sys.path.insert(0, {str(Path(__file__).resolve().parents[1] / 'src/python')!r})\n"
+                  "from vocaro_engineering import device_notifications as d\n"
+                  f"d.relay = lambda udid, network: [sys.executable, '-c', 'import time; time.sleep({stretched(60)})']\n"
+                  "d.shutil.which = lambda name: '/usr/bin/true'\n"
+                  "watch = d.Watch(sys.argv[1])\n"
+                  "print(watch.directory, *[process.pid for _path, process in watch.relays], flush=True)\n"
+                  "time.sleep(600)\n")
+        starter = subprocess.Popen([sys.executable, "-c", script, TABLET], stdout=subprocess.PIPE, text=True,
+                                   env={**os.environ, device_notifications.WATCH: ""})
+        self.addCleanup(lambda: starter.poll() is None and starter.kill())
+        directory, *guards = starter.stdout.readline().split()
+        self.assertTrue(Path(directory).is_dir())
+        starter.kill()
+        starter.wait()
+        deadline = time.monotonic() + stretched(20)
+        while time.monotonic() < deadline and (Path(directory).exists() or any(alive(int(pid)) for pid in guards)):
+            time.sleep(0.2)
+        self.assertFalse(Path(directory).exists())
+        self.assertFalse(any(alive(int(pid)) for pid in guards))
+
+
 class ProcessStartTests(unittest.TestCase):
     """process_start reads a start as ps prints it, and from the kernel where ps cannot be started."""
 

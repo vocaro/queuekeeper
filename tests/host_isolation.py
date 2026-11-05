@@ -57,6 +57,9 @@ crash_alerts.change = lambda value: True
 # Nor does any reach a paired device's Focus (#144): a reservation a test makes that would run the owner's
 # notification shortcuts finds devicectl unable to open Shortcuts. A test of them replaces this again.
 device_notifications.run = lambda command: (None, "tests never reach a device")
+# Nor does any run a test makes, in this process or a child, relay a device's log: its watch starts no relay and
+# says so. A test of the watch sets its own relay.
+os.environ[device_notifications.WATCH] = "off"
 
 
 FIX_HOSTS = cli.fix_hosts

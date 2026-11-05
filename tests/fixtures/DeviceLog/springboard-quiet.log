@@ -1,0 +1,6 @@
+[connected:00008130-001A2C3E0C38001C]
+Nov  4 00:52:10.104882 iPhone SpringBoard(FrontBoard)[58] <Notice>: [app<com.vocaro.qa.host>:4211] Workspace assertion state did change: Foreground
+Nov  4 00:52:13.512301 iPhone SpringBoard(SpringBoard)[58] <Notice>: [NCNotificationDispatcher] Posting request <private> to destinations
+Nov  4 00:52:13.512950 iPhone SpringBoard(SpringBoard)[58] <Notice>: [NCNotificationListDestination] Adding request <private>; banner suppressed by Do Not Disturb
+Nov  4 00:52:20.330001 iPhone bulletinboard(BulletinBoard)[61] <Notice>: Publishing to SBNotificationBannerDestination: <private>
+Nov  4 00:52:41.002319 iPhone SpringBoard(FrontBoard)[58] <Notice>: [app<com.vocaro.qa.host>:4211] Workspace assertion state did change: Foreground

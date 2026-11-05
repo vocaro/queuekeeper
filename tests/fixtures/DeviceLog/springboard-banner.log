@@ -1,0 +1,7 @@
+Nov  4 00:52:10.104882 iPhone SpringBoard(FrontBoard)[58] <Notice>: [app<com.vocaro.qa.host>:4211] Workspace assertion state did change: Foreground
+Nov  4 00:52:13.512301 iPhone SpringBoard(SpringBoard)[58] <Notice>: [NCNotificationDispatcher] Posting request <private> to destinations
+Nov  4 00:52:13.513017 iPhone SpringBoard(SpringBoard)[58] <Notice>: [SBNotificationBannerDestination] Presenting notification request <private>
+Nov  4 00:52:13.515990 iPhone SpringBoard(UserNotificationsUIKit)[58] <Notice>: NCNotificationShortLookViewController will present for request <private>
+Nov  4 00:52:18.009431 iPhone SpringBoard(SpringBoard)[58] <Notice>: [SBNotificationBannerDestination] Dismissing presented banner <private>
+Nov  4 00:52:40.771120 iPhone SpringBoard(SpringBoard)[58] <Notice>: [SBNotificationBannerDestination] Presenting notification request <private>
+Nov  4 00:52:41.002319 iPhone SpringBoard(FrontBoard)[58] <Notice>: [app<com.vocaro.qa.host>:4211] Workspace assertion state did change: Foreground

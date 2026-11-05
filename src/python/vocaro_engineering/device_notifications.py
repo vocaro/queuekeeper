@@ -15,8 +15,22 @@ marker, and RESTORE turns it off only when that marker is there, so it puts back
 nothing twice. The Mac reads no device's Focus, so eng never confirms the silencing: it records that it asked and
 how devicectl answered. devices.py records each step in the reservation entry and runs RESTORE at release or at
 attended recovery.
+
+A notification can still get through: the shortcuts were never made, the owner's Do Not Disturb lets someone
+through, or the silencing failed unseen. So `devices run` also watches the device's own log while its command
+runs (Watch): idevicesyslog relays SpringBoard's lines, over USB and over the network at once since either may
+be how the device is reached, into a temporary directory only this account can read. When the command ends, the
+lines are scanned for SpringBoard presenting a banner and deleted unread otherwise; nothing from them is printed
+or recorded except how many presentations there were and the device's clock at the first, because what they
+say is the owner's. A run that saw one is unmeasured, and devices.py runs it once more.
 """
+import os
+import re
+import shutil
 import subprocess
+import sys
+import tempfile
+import time
 from urllib.parse import quote
 
 # The app that runs a shortcut by URL, and the owner's two shortcuts, by the names he gives them.
@@ -70,3 +84,131 @@ def ask(key):
     return (f"ask the owner, in the same message as the window, to turn on Do Not Disturb on the {key} for the run "
             f"and to say when it is on; record it with `devices notifications by-owner {key}`. Making the "
             f"{SILENCE!r} and {RESTORE!r} shortcuts on the {key} once lets eng do it ({GUIDE})")
+
+
+# The relay of a device's log, from libimobiledevice, which guides/device-testing.md already uses to read the
+# test daemons; "off" in WATCH starts none, as tests set it for every process they start (host_isolation).
+RELAY = "idevicesyslog"
+WATCH = "VOCARO_DEVICE_LOG_WATCH"
+# A line as idevicesyslog prints it: the device's clock, its name, then the process, with the library that
+# logged in parentheses, its pid and the level: `Nov  4 00:52:13.123456 iPhone SpringBoard(Lib)[58] <Notice>: …`.
+LINE = re.compile(r"^(?P<month>[A-Z][a-z]{2}) +\d{1,2} (?P<clock>\d\d:\d\d:\d\d)(?:\.\d+)? \S.*? "
+                  r"(?P<process>[^\s(\[]+)(?:\([^)]*\))?\[\d+\] <\w+>: ", re.M)
+# SpringBoard presenting a notification as a banner, by the classes that do it. Not yet observed on the owner's
+# devices: the first window that verifies #144 shows a test notification and records which of these its log
+# names (guides/device-testing.md, Notifications during a run), and this follows what it shows. A notification
+# that Do Not Disturb holds back reaches Notification Center without a banner, so a bulletin alone is not one.
+# A line that only names the banner destination, as one dismissing a banner does, is not one.
+PRESENTED = re.compile(r"\b(?:(?:SB|NC)?NotificationBannerDestination|NCNotificationShortLook\w*)\b.*?"
+                       r"\b(?:post|present)(?:s|ing)?\b", re.I)
+# Seconds the relays have to send their first line before the command starts, and to end when asked.
+READY, ENDING = 3, 5
+# What runs each relay: it ends the relay, and deletes what it wrote, once the process that started it is gone,
+# so that a devices run killed outright leaves no relay copying the owner's log.
+GUARD = """
+import os, shutil, signal, subprocess, sys, time
+parent, directory, command = int(sys.argv[1]), sys.argv[2], sys.argv[3:]
+child = subprocess.Popen(command, stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+def end(*_):
+    child.terminate()
+    try: child.wait(5)
+    except subprocess.TimeoutExpired: child.kill()
+    raise SystemExit(0)
+signal.signal(signal.SIGTERM, end)
+signal.signal(signal.SIGINT, signal.SIG_IGN)
+while child.poll() is None:
+    if os.getppid() != parent:
+        shutil.rmtree(directory, True)
+        end()
+    time.sleep(1)
+"""
+
+
+def relay(udid, network):
+    """The command that relays SpringBoard's lines from udid's log, reached over the network or over USB."""
+    return [RELAY, "-u", udid, *(["-n"] if network else []), "--no-colors", "-p", "SpringBoard"]
+
+
+def presentations(text):
+    """The device clock at each banner SpringBoard presented in text, a relay's lines; nothing else of them."""
+    found = []
+    for line in text.splitlines():
+        match = LINE.match(line)
+        if match and match["process"] == "SpringBoard" and PRESENTED.search(line[match.end():]):
+            found.append(match["clock"])
+    return found
+
+
+def lines(text):
+    """Whether text holds any line of the device's log, which shows the relay reached it."""
+    return LINE.search(text) is not None
+
+
+class Watch:
+    """The device udid's log, relayed while a run lasts and read once for notifications presented (#144)."""
+
+    def __init__(self, udid):
+        self.udid, self.relays, self.failure, self.directory = udid, [], None, None
+        if os.environ.get(WATCH) == "off":
+            self.failure = f"{WATCH} is off"
+            return
+        if shutil.which(RELAY) is None:
+            self.failure = f"{RELAY} is not installed (brew install libimobiledevice)"
+            return
+        # mkdtemp makes it readable by this account alone, and each file in it is made so too.
+        self.directory = tempfile.mkdtemp(prefix="vocaro-device-log-")
+        for network in (False, True):
+            path = os.path.join(self.directory, "network" if network else "usb")
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            try:
+                process = subprocess.Popen([sys.executable, "-I", "-c", GUARD, str(os.getpid()), self.directory,
+                                            *relay(udid, network)], stdin=subprocess.DEVNULL, stdout=descriptor,
+                                           stderr=subprocess.DEVNULL)
+            except OSError as error:
+                self.failure = str(error)
+                continue
+            finally:
+                os.close(descriptor)
+            self.relays.append((path, process))
+        deadline = time.monotonic() + READY
+        while self.relays and time.monotonic() < deadline and not any(lines(self._read(path))
+                                                                       for path, _ in self.relays):
+            time.sleep(0.2)
+
+    @staticmethod
+    def _read(path):
+        try:
+            with open(path, errors="replace") as handle: return handle.read()
+        except OSError:
+            return ""
+
+    def stop(self):
+        """End the relays, read what they relayed for presentations, and delete it: what the run's entry records,
+        {"watched", "presented", "first"} and why it was not watched, with nothing the lines say."""
+        for _path, process in self.relays:
+            if process.poll() is None: process.terminate()
+        for _path, process in self.relays:
+            try: process.wait(ENDING)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+        texts = [self._read(path) for path, _ in self.relays]
+        if self.directory: shutil.rmtree(self.directory, True)
+        # The same line can come over both relays.
+        found = sorted(set(clock for text in texts for clock in presentations(text)))
+        seen = {"watched": any(lines(text) for text in texts), "presented": len(found)}
+        if found: seen["first"] = found[0]
+        if not seen["watched"]:
+            seen["detail"] = self.failure or f"{RELAY} relayed no line of {self.udid}'s log over USB or the network"
+        return seen
+
+
+# What watches a run's device, alone, so that tests replace it.
+watch = Watch
+
+
+def presented(seen):
+    """What a session is told of the notifications a watch saw, without anything they said."""
+    count = seen["presented"]
+    return (f"{'a notification was' if count == 1 else f'{count} notifications were'} presented as a banner, the "
+            f"first at {seen['first']} by the device's clock; what it said is the owner's and was not read")
