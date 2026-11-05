@@ -32,8 +32,17 @@ SWIFT = textwrap.dedent("""
         if "--disable-swift-testing" not in arguments: tests += json.loads(os.environ["FAKE_SWIFT_TESTING"])
         print("\\n".join(tests))
     elif arguments[:1] == ["test"]:
-        print("✔ Test doublingInSwiftTesting() passed after 0.001 seconds.")
-        print("✔ Test run with 1 test in 0 suites passed after 0.001 seconds.")
+        import re
+        filters = [argument.split("=", 1)[1] for argument in arguments if argument.startswith("--filter=")]
+        # Swift Testing matches a filter against an id that goes on past the listed one, as its source location.
+        chosen = [test for test in json.loads(os.environ["FAKE_SWIFT_TESTING"])
+                  if not filters or any(re.search(pattern, test + "/x.swift:1:2") for pattern in filters)]
+        chosen = chosen[:len(chosen) - int(os.environ.get("FAKE_SWIFT_TESTING_DROP", "0"))]
+        suites = sorted({test.split("/")[0].split(".", 1)[1] for test in chosen if "/" in test})
+        for test in chosen: print(f"✔ Test {test.split('/')[-1].split('.')[-1]} passed after 0.001 seconds.")
+        for suite in suites: print(f"✔ Suite {suite} passed after 2.500 seconds.")
+        print(f"✔ Test run with {len(chosen)} test{'s' if len(chosen) != 1 else ''} in {len(suites)} suites passed "
+              "after 0.001 seconds.")
 """)
 XCRUN = textwrap.dedent("""
     import json, os, pathlib, sys
@@ -220,6 +229,81 @@ class RunnerTests(unittest.TestCase):
         (self.root / "calls.jsonl").unlink()
         self.run_eng("--skip-build", "-j", "1")
         self.assertEqual([call[1] for call in self.calls() if call[0] == "xcrun"][0], "Beta.ZeroTests")
+
+
+class SplitSwiftTestingTests(unittest.TestCase):
+    """--split-swift-testing: Swift Testing suites packed into the shards beside the XCTest classes, each
+    shard's suites in a swift test process of their own that runs one test at a time."""
+    SUITES = ["Alpha.SuiteA/one()", "Alpha.SuiteA/two()", "Alpha.SuiteB/three()", "Alpha.doublingInSwiftTesting()"]
+
+    # The same stand-in toolchain as RunnerTests', without running its tests again.
+    run_eng, calls = RunnerTests.run_eng, RunnerTests.calls
+
+    def setUp(self):
+        RunnerTests.setUp(self)
+        self.environment["FAKE_SWIFT_TESTING"] = json.dumps(self.SUITES)
+
+    def swift_testing_runs(self):
+        return [call for call in self.calls() if call[:2] == ["swift", "test"] and call[2] != "list"]
+
+    def selected(self):
+        import re
+        runs = self.swift_testing_runs()
+        filters = [[argument.split("=", 1)[1] for argument in call if argument.startswith("--filter=")] for call in runs]
+        return sorted(test for patterns in filters for test in self.SUITES
+                      if any(re.search(pattern, test) for pattern in patterns))
+
+    def test_each_shard_runs_its_suites_one_test_at_a_time_and_every_test_once(self):
+        status, output = self.run_eng("--skip-build", "-j", "2", "--split-swift-testing")
+        self.assertEqual(status, 0, output)
+        runs = self.swift_testing_runs()
+        self.assertGreater(len(runs), 1, "the suites are split over several processes")
+        for call in runs:
+            self.assertIn("--no-parallel", call)
+            self.assertIn("--disable-xctest", call)
+        # A suite goes whole into one process, and every Swift Testing test runs exactly once.
+        self.assertEqual(self.selected(), sorted(self.SUITES))
+        self.assertIn("--filter=^Alpha\\.SuiteA/", [argument for call in runs for argument in call])
+        self.assertEqual(evidence.counted(output), (9, 1))
+        self.assertRegex(output, r"== shard \d+ of \d+, Swift Testing \(about \d+s\): PASS")
+
+    def test_without_the_option_swift_testing_runs_once_concurrently(self):
+        status, output = self.run_eng("--skip-build", "-j", "2")
+        self.assertEqual(status, 0, output)
+        runs = self.swift_testing_runs()
+        self.assertEqual(len(runs), 1)
+        self.assertNotIn("--no-parallel", runs[0])
+        self.assertFalse([argument for argument in runs[0] if argument.startswith("--filter")])
+        self.assertEqual(evidence.counted(output), (9, 1))
+
+    def test_a_filter_selects_single_tests_of_a_suite(self):
+        status, output = self.run_eng("--skip-build", "--split-swift-testing", "--filter", "SuiteA/one")
+        self.assertEqual(status, 0, output)
+        self.assertEqual(self.selected(), ["Alpha.SuiteA/one()"])
+        self.assertFalse([call for call in self.calls() if call[0] == "xcrun"])
+        self.assertEqual(evidence.counted(output), (1, 0))
+
+    def test_a_process_that_runs_fewer_swift_testing_tests_than_it_was_given_fails(self):
+        status, output = self.run_eng("--skip-build", "--split-swift-testing", "--filter", "SuiteA",
+                                      FAKE_SWIFT_TESTING_DROP="1")
+        self.assertEqual(status, 1, output)
+        self.assertIn("(ran 1 of 2 tests)", output)
+
+    def test_a_suites_last_time_orders_the_next_run(self):
+        timings = self.package / xctest_shards.TIMINGS.format(configuration="debug")
+        self.run_eng("--skip-build", "--split-swift-testing")
+        self.assertEqual(json.loads(timings.read_text())["Alpha.SuiteA"], 2.5)
+        timings.write_text(json.dumps({"Alpha.SuiteB": 99}))
+        (self.root / "calls.jsonl").unlink()
+        self.run_eng("--skip-build", "-j", "1", "--split-swift-testing")
+        first = self.swift_testing_runs()[0]
+        self.assertIn("--filter=^Alpha\\.SuiteB/", first)
+        self.assertNotIn("--filter=^Alpha\\.SuiteA/", first)
+
+    def test_suite_seconds_reads_only_the_units_a_process_ran(self):
+        log = ("✔ Suite SuiteA passed after 2.500 seconds.\n✘ Suite SuiteB failed after 1.250 seconds with 1 issue.\n"
+               "✔ Suite Inner passed after 9.000 seconds.\n✔ Suite \"Shown name\" passed after 3.000 seconds.\n")
+        self.assertEqual(xctest_shards.suite_seconds(log, ["M.SuiteA", "M.SuiteB"]), {"M.SuiteA": 2.5, "M.SuiteB": 1.25})
 
 
 if __name__ == "__main__":

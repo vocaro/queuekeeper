@@ -29,3 +29,9 @@ final class FailingTests: XCTestCase {
 }
 
 @Test func doublingInSwiftTesting() { #expect(doubled(4) == 8) }
+
+// A Swift Testing suite, which --split-swift-testing packs into a shard of its own beside the classes.
+@Suite struct DoublingSuite {
+    @Test func twice() { #expect(doubled(doubled(1)) == 4) }
+    @Test func negative() { #expect(doubled(-3) == -6) }
+}

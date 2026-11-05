@@ -5,7 +5,9 @@ an unmeasured result among them, would read as a pass (Swift 6.4, Xcode 27.2, Oc
 process here runs `xcrun xctest -XCTest CLASSES BUNDLE`, one test at a time, and prints XCTest's
 own lines whole: every skip, failure and suite total, which evidence.counted reads. Swift Testing
 tests run once beside them, in `swift test --skip-build --disable-xctest`, which runs them
-concurrently itself. Several packages build one after another and share one pool of processes.
+concurrently itself; with --split-swift-testing their suites are packed into the shards as the
+classes are, each shard's in a `swift test --no-parallel` process of its own that runs one test at a
+time, as xctest does. Several packages build one after another and share one pool of processes.
 A project passes what its run needs as options: a scratch path, a configuration, other swift
 options. guides/parallel-tests.md says when this is safe and how to bound it.
 """
@@ -29,6 +31,8 @@ SHARDS_PER_JOB = 3
 # shards, relative to the package.
 TIMINGS = ".build/engineering/xctest/timings-{configuration}.json"
 CASE = re.compile(r"^Test Case '-\[(\S+) (\S+)\]' (?:passed|failed|skipped) \((\d+(?:\.\d+)?) seconds\)", re.M)
+# Swift Testing's line for a suite that ended, named by its type or, in quotes, its display name.
+SUITE = re.compile(r"Suite (\S+|\"[^\"]*\") (?:passed|failed) after (\d+(?:\.\d+)?) seconds", re.M)
 
 
 def swift(directory, options, *arguments):
@@ -72,13 +76,42 @@ def class_seconds(text):
     return seconds
 
 
+def suite_seconds(text, units):
+    """{Module.Suite: seconds} over Swift Testing's suite lines in a log, for the units, Module.Suite,
+    a process ran: a line names its suite without its module."""
+    by_name = {unit.split(".", 1)[-1]: unit for unit in units}
+    seconds = {}
+    for match in SUITE.finditer(text):
+        unit = by_name.get(match.group(1))
+        if unit: seconds[unit] = seconds.get(unit, 0.0) + float(match.group(2))
+    return seconds
+
+
+def unit(test):
+    """What a test is packed with: its XCTest class or its top-level Swift Testing suite, Module.Name, or a
+    Swift Testing function outside a suite by itself."""
+    return test.split("/", 1)[0]
+
+
+def swift_testing_filters(names, classes, sizes):
+    """swift test --filter expressions that select exactly the tests of names: a unit whose every test is
+    selected by its prefix, any other test by its whole id. Neither ends in $: Swift Testing matches a
+    filter against an id that goes on past the one `swift test list` prints (Swift 6.4.2, 2026-11-05),
+    and an id that ends in its function's parentheses is no other's prefix."""
+    filters = []
+    for name in names:
+        if len(classes[name]) == sizes[name] and "/" in classes[name][0]: filters.append(f"^{re.escape(name)}/")
+        else: filters.extend(f"^{re.escape(test)}" for test in classes[name])
+    return filters
+
+
 def shards(selected, seconds, count):
     """[(estimated seconds, [xctest selectors])], longest first: the classes packed into at most
     count shards, each next class, longest first, into the shard with the least. A class whose every
     test is selected is named whole, Module.Class; otherwise each test is, Module.Class/test. A
     class with no recorded time counts the median of those that have one."""
     classes = {}
-    for test in selected: classes.setdefault(test.split("/", 1)[0], []).append(test)
+    for test in selected: classes.setdefault(unit(test), []).append(test)
     known = [seconds[name] for name in classes if name in seconds]
     guess = statistics.median(known) if known else 1.0
     order = sorted(classes, key=lambda name: (-seconds.get(name, guess), name))
@@ -100,10 +133,11 @@ def run(name, command, directory, expected, timeout=parallel.PROCESS_LIMIT):
             "seconds": time.monotonic() - began}
 
 
-def planned(directory, options, filters, jobs, timings, label):
-    """[(name, command, expected tests)] for one built package: its Swift Testing run first, as its
-    length is unknown and it runs its tests concurrently itself, then its XCTest shards, longest
-    first; and the classes' recorded seconds."""
+def planned(directory, options, filters, jobs, timings, label, split=False):
+    """[(name, command, expected tests, estimate, units)] for one built package: its Swift Testing run
+    first, as its length is unknown and it runs its tests concurrently itself, then its XCTest shards,
+    longest first; and the classes' recorded seconds. With split, the Swift Testing suites are packed
+    into the shards with the classes, and each shard runs its suites in a process of their own."""
     xctests = listed(directory, options, "--disable-swift-testing")
     everything = listed(directory, options)
     found = bundles(directory, options) if xctests else {}
@@ -114,25 +148,32 @@ def planned(directory, options, filters, jobs, timings, label):
     swift_testing = [test for test in everything if test not in known and chosen(test)]
     try: seconds = json.loads(timings.read_text())
     except (OSError, ValueError): seconds = {}
-    packed, classes = shards(selected, seconds, jobs * SHARDS_PER_JOB)
+    packed, classes = shards(selected + (swift_testing if split else []), seconds, jobs * SHARDS_PER_JOB)
     work = []
-    if swift_testing:
+    if swift_testing and not split:
         command, _ = swift(directory, options, "test", "--skip-build", "--disable-xctest",
                            *[f"--filter={pattern}" for pattern in filters])
-        work.append((f"{label}Swift Testing", command, len(swift_testing), None))
+        work.append((f"{label}Swift Testing", command, len(swift_testing), None, []))
     sizes = {}
-    for test in xctests: sizes[test.split("/", 1)[0]] = sizes.get(test.split("/", 1)[0], 0) + 1
+    for test in everything: sizes[unit(test)] = sizes.get(unit(test), 0) + 1
+    in_swift_testing = {unit(test) for test in swift_testing}
     for number, (estimate, names) in enumerate(packed, 1):
-        # One process per bundle the shard's classes are in: xctest loads one bundle.
-        by_bundle = {}
+        # One process per bundle the shard's classes are in, as xctest loads one bundle, and one for its suites.
+        by_bundle, suites = {}, [name for name in names if name in in_swift_testing]
         for name in names:
+            if name in in_swift_testing: continue
             entry = by_bundle.setdefault(bundle_for(name.split(".", 1)[0], found), [[], 0])
             entry[0].extend([name] if len(classes[name]) == sizes[name] else classes[name])
             entry[1] += len(classes[name])
         for bundle, (selectors, count) in by_bundle.items():
             command = ["xcrun", "xctest", "-XCTest", ",".join(selectors), str(bundle)]
             work.append((f"{label}shard {number} of {len(packed)}, {bundle.stem} (about {estimate:.0f}s)",
-                         command, count, estimate))
+                         command, count, estimate, []))
+        if suites:
+            command, _ = swift(directory, options, "test", "--skip-build", "--disable-xctest", "--no-parallel",
+                               *[f"--filter={pattern}" for pattern in swift_testing_filters(suites, classes, sizes)])
+            work.append((f"{label}shard {number} of {len(packed)}, Swift Testing (about {estimate:.0f}s)",
+                         command, sum(len(classes[name]) for name in suites), estimate, suites))
     return work, seconds
 
 
@@ -153,6 +194,10 @@ def main(argv):
                         help="an option every swift command of the run takes, such as --swift-option=-Xswiftc; "
                         "repeat for each")
     parser.add_argument("--skip-build", action="store_true", help="run the tests the last build built")
+    parser.add_argument("--split-swift-testing", action="store_true",
+                        help="pack Swift Testing suites into the shards with the XCTest classes, each shard's suites "
+                        "in a process of their own that runs one test at a time, as xctest does: for suites that "
+                        "share process state, such as views on the main actor")
     parser.add_argument("--filter", action="append", default=[], help="a regular expression a test's id, "
                         "Module.Class/test, must match, as swift test's; repeat for any of several")
     parser.add_argument("--timeout", type=float, default=parallel.PROCESS_LIMIT, metavar="SECONDS",
@@ -175,11 +220,13 @@ def main(argv):
                 print(f"eng xctest: {label}the build exited {status}", flush=True)
                 return status
         timings = directory / TIMINGS.format(configuration=args.configuration)
-        try: planned_work, recorded[directory] = planned(directory, options, args.filter, args.jobs, timings, label)
+        try: planned_work, recorded[directory] = planned(directory, options, args.filter, args.jobs, timings, label,
+                                                         args.split_swift_testing)
         except (RuntimeError, subprocess.CalledProcessError) as error:
             print(f"eng xctest: {error}", flush=True)
             return 1
-        work.extend((name, command, expected, estimate, directory) for name, command, expected, estimate in planned_work)
+        work.extend((name, command, expected, estimate, directory, units)
+                    for name, command, expected, estimate, units in planned_work)
     if not work:
         print(f"eng xctest: no tests in {', '.join(map(str, directories))} match {' or '.join(args.filter)}", flush=True)
         return parallel.NO_TESTS
@@ -188,7 +235,7 @@ def main(argv):
     began = time.monotonic()
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
         futures = [pool.submit(run, name, command, directory, expected, args.timeout)
-                   for name, command, expected, _, directory in work]
+                   for name, command, expected, _, directory, _ in work]
         results = []
         for future in futures:
             result = future.result()
@@ -208,8 +255,10 @@ def main(argv):
             failed.append(f"{result['name']} (ran {result['ran']} of {result['expected']} tests)")
     for directory in directories:
         kept = dict(recorded[directory])
-        for result in results:
-            if result["directory"] == directory: kept.update(class_seconds(result["output"]))
+        for result, (_, _, _, _, _, units) in zip(results, work):
+            if result["directory"] == directory:
+                kept.update(class_seconds(result["output"]))
+                kept.update(suite_seconds(result["output"], units))
         timings = directory / TIMINGS.format(configuration=args.configuration)
         try:
             timings.parent.mkdir(parents=True, exist_ok=True)
