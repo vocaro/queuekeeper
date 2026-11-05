@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import threading
 import time
 import unittest
 from unittest import mock
@@ -17,6 +18,48 @@ import host_isolation
 from host_isolation import stretched
 
 ENG = Path(__file__).resolve().parents[1] / "scripts/eng"
+
+
+class Followed:
+    """A started process's output, read as it comes, so that a test can wait for a line.
+
+    A run that is to wait for a lock its test holds says so before it does anything else, so the test
+    waits for that line before it lets go, not a fixed time: on a loaded host the interpreter alone can
+    take longer than a second to start, and a lock let go before the run asks for it is never waited for
+    (#180)."""
+
+    def __init__(self, process):
+        self.process, self.lines, self.changed = process, [], threading.Condition()
+        self.reader = threading.Thread(target=self.read, daemon=True)
+        self.reader.start()
+
+    def read(self):
+        for line in self.process.stdout:
+            with self.changed:
+                self.lines.append(line)
+                self.changed.notify_all()
+        with self.changed:
+            self.lines.append(None)
+            self.changed.notify_all()
+
+    def wait_for(self, text, test):
+        """Until a line holds text; fails the test if the output ends or a stretched minute passes first."""
+        deadline = time.monotonic() + stretched(60)
+        with self.changed:
+            while not any(line is not None and text in line for line in self.lines):
+                test.assertNotIn(None, self.lines, f"the run ended without saying {text!r}: {self.text()}")
+                remaining = deadline - time.monotonic()
+                test.assertGreater(remaining, 0, f"the run never said {text!r}: {self.text()}")
+                self.changed.wait(remaining)
+
+    def text(self):
+        return "".join(line for line in self.lines if line is not None)
+
+    def communicate(self, timeout):
+        """All of the output once the process ends, as Popen.communicate's first value."""
+        self.process.wait(timeout=timeout)
+        self.reader.join(timeout=timeout)
+        with self.changed: return self.text()
 
 # Stand-ins for xcrun simctl and xcodebuild that record what they were asked to do in FAKE_STATE,
 # where each simulator is a file of its name, type, runtime, state and last use. A device type
@@ -525,6 +568,9 @@ class SimulatorMatrixTests(unittest.TestCase):
             self.assertLess(time.monotonic(), deadline, "the first run never started its build")
             time.sleep(0.05)
         second = start()
+        # The second run asks for the folders before the first lets go of them, however slowly it starts.
+        followed = Followed(second)
+        followed.wait_for("WAIT: another eng simulator-tests run holds", self)
         # A run with folders of its own goes ahead while the first holds the defaults.
         status, output = self.run_matrix("--derived-data", "elsewhere/derived", "--logs", "elsewhere/logs")
         self.assertEqual(status, 0, output)
@@ -536,7 +582,7 @@ class SimulatorMatrixTests(unittest.TestCase):
                          ["build-for-testing", "elsewhere build-for-testing", *["elsewhere test-without-building"] * 2])
         self.assertIsNone(second.poll(), "the second run waits for the first, which is still building")
         (self.state / "release").touch()
-        outputs = [process.communicate(timeout=stretched(60))[0] for process in (first, second)]
+        outputs = [first.communicate(timeout=stretched(60))[0], followed.communicate(timeout=stretched(60))]
         self.assertEqual([first.returncode, second.returncode], [0, 0], outputs)
         self.assertNotIn("WAIT:", outputs[0])
         derived = self.root / ".build/simulator-tests/derived"
@@ -559,13 +605,14 @@ class SimulatorMatrixTests(unittest.TestCase):
         process = subprocess.Popen(command, cwd=self.root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                                    env=self.environment)
         self.addCleanup(lambda: process.poll() is None and process.kill())
-        time.sleep(1)
+        followed = Followed(process)
+        followed.wait_for(f"WAIT: another eng simulator-tests run holds {logs} (it has not said which)", self)
         self.assertIsNone(process.poll())
         self.assertFalse((self.state / "xcodebuild.log").exists(), "nothing builds while another run holds the logs")
         self.assertFalse((self.state / "simctl.log").exists() and "boot" in (self.state / "simctl.log").read_text(),
                          "and no device is booted for it")
         fcntl.flock(lock, fcntl.LOCK_UN)
-        output = process.communicate(timeout=stretched(60))[0]
+        output = followed.communicate(timeout=stretched(60))
         self.assertEqual(process.returncode, 0, output)
         self.assertIn(f"WAIT: another eng simulator-tests run holds {logs} (it has not said which)", output)
         self.assertIn(f"HELD {logs} after waiting", output)
