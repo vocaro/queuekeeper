@@ -7,7 +7,8 @@ their sessions leave in the temporary directories. It reads nothing else, and cl
 - candidate: the rules prove that no session's live work is in it. `--delete` removes it after
   the owner confirms its category on a terminal, checking it again first. Simulators and runtimes,
   which Xcode makes or downloads again, it removes without asking, on a terminal or not (the
-  owner's decision, 2026-11-03).
+  owner's decision, 2026-11-03). `--yes`, given only on the owner's approval of that run, answers
+  for him, so an agent can carry an approval he gave in chat into a run without a terminal.
 - owner: nothing shows a session using it, but only the owner can say whether it is still
   wanted. The command that would remove it is printed; `--delete` never runs it.
 - kept: it is in use, owned, of unclear ownership, or holds work or evidence.
@@ -927,15 +928,22 @@ def outside_checkouts(path):
     return not any((ancestor / ".git").exists() for ancestor in [path, *path.parents])
 
 
-def delete(items, fresh, ledger, ask=input, out=print, run=subprocess.run, terminal=None):
+def delete(items, fresh, ledger, ask=input, out=print, run=subprocess.run, terminal=None, approval=None):
     """Remove candidates category by category after a fresh check of each: those of UNASKED at once,
-    any other category once the owner confirms it on a terminal. Off a terminal, the others stay."""
+    any other category once the owner confirms it on a terminal. Off a terminal, the others stay,
+    unless approval (the text given to --yes, "" when none) answers for the owner: each is then
+    removed as if he had typed y, and the ledger records the approval."""
     terminal = sys.stdin.isatty() if terminal is None else terminal
     removed = 0
     for category, title in CATEGORIES.items():
         group = [item for item in items if item.category == category and item.status == CANDIDATE]
         if not group: continue
-        if category not in UNASKED:
+        answered = None  # who approved removing the category, when the owner had to
+        if category not in UNASKED and approval is not None:
+            answered = "--yes" + (f": {approval}" if approval else "")
+            out(f"Removing {len(group)} {title.lower()} candidates without asking, on the owner's approval ({answered}).")
+        elif category not in UNASKED:
+            answered = "y on a terminal"
             if not terminal:
                 out(f"Kept every {title.lower()} candidate: removing them asks the owner on a terminal.")
                 continue
@@ -948,6 +956,7 @@ def delete(items, fresh, ledger, ask=input, out=print, run=subprocess.run, termi
             now = current.get(item.path)
             entry = {"time": datetime.datetime.now(datetime.timezone.utc).isoformat(), "category": category,
                      "path": item.path, "size": item.size, "reason": item.reason, "command": item.command}
+            if answered: entry["approval"] = answered
             if now is None or now.status != CANDIDATE or now.command != item.command:
                 entry["outcome"] = "skipped: " + (now.reason if now else "no longer present")
             elif item.command[0] == "rm" and not outside_checkouts(item.command[-1]):
@@ -968,6 +977,11 @@ def add_arguments(parser):
     action.add_argument("--dry-run", action="store_true", help="list only what --delete would remove, and remove nothing")
     action.add_argument("--delete", action="store_true", help="remove candidates: simulators and runtimes at once, "
                         "any other category after the owner confirms it on a terminal")
+    parser.add_argument("--yes", nargs="?", const="", metavar="APPROVAL",
+                        help="with --delete, remove every candidate category without asking, as if the owner had "
+                        "typed y to each, on a terminal or not; give it only on the owner's explicit approval of "
+                        "this run, naming that approval (such as 'owner, 2026-11-04 chat'), which the ledger "
+                        "records. It never runs an owner item's command")
     parser.add_argument("--json", action="store_true", help="print the items as JSON")
     parser.add_argument("--min-idle-hours", type=float, default=24.0,
                         help="how long a candidate must have been unchanged (default 24)")
@@ -983,6 +997,9 @@ def prime_items(host, sizes):
 
 
 def execute(args, run=subprocess.run, out=print):
+    if args.yes is not None and not args.delete:
+        print("eng disk: --yes answers the questions --delete asks, so it needs --delete", file=sys.stderr)
+        return 2
     def collect(categories=None, measure=True):
         host = Host.current(args.min_idle_hours * 3600, args.development, run)
         sizes = Sizes(run, measure)
@@ -1004,7 +1021,8 @@ def execute(args, run=subprocess.run, out=print):
     else:
         report(items, volume, sizes.unreadable, args.min_size_mb * 1024 * 1024, out)
     if args.delete:
-        delete(items, lambda category: collect([category], measure=False)[2], ledger_path(host.home), out=out, run=run)
+        delete(items, lambda category: collect([category], measure=False)[2], ledger_path(host.home), out=out, run=run,
+               approval=args.yes)
     return 0
 
 

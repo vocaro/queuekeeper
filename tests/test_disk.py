@@ -527,6 +527,45 @@ class DeletionTests(Fixture):
         self.assertIn("Kept every linked worktrees candidate: removing them asks the owner on a terminal.",
                       output.getvalue())
 
+    def test_yes_removes_the_asked_categories_off_a_terminal_and_records_the_approval(self):
+        stale = disk.Item("simulator", "U Example", disk.CANDIDATE, "test", command=["xcrun", "simctl", "delete", "U"])
+        owner = disk.Item("evidence", "/nowhere/x-evidence", disk.OWNER, "test", command=["eng", "evidence", "offload"])
+        items = [*self.collect(), stale, owner]
+        calls = []
+        def run(command, **options):
+            calls.append(command)
+            if command[0] == "xcrun": return subprocess.CompletedProcess(command, 0, "", "")
+            return subprocess.run(command, **options)
+        def fresh(category):
+            return [item for item in items if item.category == category] if category in disk.UNASKED \
+                else self.collect(categories=[category])
+        asked = []
+        with contextlib.redirect_stdout(StringIO()) as output:
+            removed = disk.delete(items, fresh, self.ledger, ask=lambda prompt: asked.append(prompt) or "n", out=print,
+                                  run=run, terminal=False, approval="owner, 2026-11-04 chat")
+        self.assertEqual(asked, [])
+        self.assertEqual(removed, 3)
+        self.assertFalse(self.landed.exists() or self.scratch.exists())
+        self.assertTrue(self.unlanded.exists())
+        self.assertNotIn(owner.command, calls)  # an owner item's command never runs
+        self.assertIn("on the owner's approval (--yes: owner, 2026-11-04 chat)", output.getvalue())
+        records = {record["path"]: record for record in map(json.loads, self.ledger.read_text().splitlines())}
+        self.assertEqual(records[str(self.landed)]["approval"], "--yes: owner, 2026-11-04 chat")
+        self.assertEqual(records[str(self.scratch)]["approval"], "--yes: owner, 2026-11-04 chat")
+        self.assertNotIn("approval", records[stale.path])  # simulators are removed alike, with or without it
+
+    def test_yes_still_checks_each_candidate_again_and_without_a_reason_says_only_yes(self):
+        items = self.collect()
+        process = disk.Process(78, "swift-build", cwd=str(self.scratch))
+        with contextlib.redirect_stdout(StringIO()):
+            disk.delete(items, lambda category: self.collect([process], [category]), self.ledger,
+                        ask=lambda prompt: self.fail(prompt), terminal=True, approval="")
+        self.assertTrue(self.scratch.exists())
+        self.assertFalse(self.landed.exists())
+        records = {record["path"]: record for record in map(json.loads, self.ledger.read_text().splitlines())}
+        self.assertTrue(records[str(self.scratch)]["outcome"].startswith("skipped: in use: PID 78"))
+        self.assertEqual(records[str(self.landed)]["approval"], "--yes")
+
     def test_only_confirmed_candidates_are_removed_and_each_decision_is_recorded(self):
         answers = {"linked worktrees": "y", "scratch builds outside checkouts": "n"}
         ask = lambda prompt: next(answer for title, answer in answers.items() if title in prompt)
@@ -539,6 +578,7 @@ class DeletionTests(Fixture):
         self.assertTrue(self.scratch.exists())
         records = [json.loads(line) for line in self.ledger.read_text().splitlines()]
         self.assertEqual([(record["path"], record["outcome"]) for record in records], [(str(self.landed), "removed")])
+        self.assertEqual(records[0]["approval"], "y on a terminal")
 
     def test_a_candidate_is_checked_again_before_removal(self):
         items = self.collect()
@@ -729,6 +769,20 @@ class CommandTests(Fixture):
         self.assertEqual([item["path"] for item in json.loads(text)["items"]], [str(landed)])
         with self.assertRaises(SystemExit), contextlib.redirect_stderr(StringIO()):
             self.run_disk("--dry-run", "--delete")
+
+    def test_yes_reaches_delete_only_with_delete(self):
+        def approval(*arguments):
+            with patch.object(disk, "delete") as delete:
+                self.run_disk(*arguments)
+            return delete.call_args.kwargs["approval"] if delete.called else "not called"
+        self.assertIsNone(approval("--delete"))
+        self.assertEqual(approval("--delete", "--yes"), "")
+        self.assertEqual(approval("--delete", "--yes", "owner, 2026-11-04 chat"), "owner, 2026-11-04 chat")
+        error = StringIO()
+        with patch.object(disk, "delete") as delete, contextlib.redirect_stderr(error):
+            self.assertEqual(cli.main(["--project", str(self.root), "disk", "--yes"]), 2)
+        self.assertFalse(delete.called)
+        self.assertIn("--yes answers the questions --delete asks", error.getvalue())
 
 
 if __name__ == "__main__":

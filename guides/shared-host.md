@@ -1317,7 +1317,13 @@ with their commands: exactly what `--delete` would offer to remove.
 
 `eng disk --delete` removes simulator and runtime candidates at once, on a terminal or not, so a
 script can run it. Every other category it removes only on a terminal, after asking once for
-that category; off a terminal it keeps them and says so. Immediately before each
+that category; off a terminal it keeps them and says so. When the owner has approved a run's
+removal in chat, `eng disk --delete --yes 'owner, 2026-11-04 chat'` carries his approval into
+it: every candidate category is removed as if he had typed y to each, on a terminal or not, and
+each ledger entry records the approval (`--yes` alone records only the flag). A session gives
+`--yes` only on his explicit word for that run, never on its own judgment, and without
+`--delete` it is refused. It answers only the candidate questions: owner items, evidence
+archives among them, are never removed. Immediately before each
 removal it takes a fresh census and checks that candidate again, refuses an `rm` inside any
 working tree or reached through a link, and appends every decision to
 `~/Library/Application Support/vocaro-engineering/disk-reclaimed.jsonl`. It never runs an owner
