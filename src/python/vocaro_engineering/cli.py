@@ -540,6 +540,27 @@ def host_screen(args):
     return SCREEN_STATUS[found["state"]]
 
 
+# Set to off, work that runs on this Mac does not reap first (reap_here). tests/host_isolation sets it, so that no
+# run a test makes, in its process or a child, stops a simulator or releases a reservation of this Mac.
+REAP_SWITCH = "VOCARO_REAP_BEFORE_RUN"
+
+
+def reap_here(root, inherited):
+    """Before heavy work runs on this Mac, the reap that runs before work is sent to the second Mac (remote.execute):
+    the stale simulators of the project's pool and of the pools its checkouts name shut down, and the pool
+    reservations reap proves dead released (offload_host.reap, remote.reap_request), within REAP_SECONDS. Each stop,
+    failure, release and problem goes to standard error as a dispatch says them (remote.reap_lines), and the work
+    runs all the same; the lines are returned. Work a dispatch sent here was reaped by that dispatch, and work that
+    inherited an admission (inherited) by the run it is nested in, so neither reaps again (vocaro-engineering#156)."""
+    if os.environ.get(REAP_SWITCH, "").strip().lower() == "off": return []
+    if inherited or os.environ.get(remote.DISPATCHER): return []
+    # offload_host.reap never raises; it says what it could not read or do in its report's problem.
+    report = offload_host.reap(remote.ROOT, **remote.reap_request(root))
+    lines = remote.reap_lines(remote.HERE, report, listing=False)
+    for line in lines: print(f"eng: {line}", file=sys.stderr, flush=True)
+    return lines
+
+
 def admitted_tree(root, name, offered, receipt):
     """None when work this Mac admitted may run, after recording in receipt the tree it reads, or 2 after
     saying why not. A run here reads the working tree as it is once admitted, not as it was when the
@@ -587,8 +608,9 @@ def admit(root, args, config=None):
                          "eng remote admit --foreground -- COMMAND")
     if args.foreground and not second: devices.require_foreground(os.environ.get(devices.OWNER))
     # Nested work runs inside the admission it inherits, here.
+    inherited = bool(os.environ.get(resources.TOKEN))
     reason = "eng admit runs here without --verify" if not args.verify else \
-        "nested in the admission it inherits" if os.environ.get(resources.TOKEN) else None
+        "nested in the admission it inherits" if inherited else None
     offered = None
     if reason is None:
         # Whichever Mac has spare capacity for it, the second Mac first (remote.first_command, admitted_here).
@@ -613,6 +635,7 @@ def admit(root, args, config=None):
         if offered is not None:
             receipt["hereBecause"] = offered.status
             fell_back("the command", offered)
+        reap_here(root, inherited)
         alerts = guarded_alerts(stack, " ".join(command), receipt) if args.foreground else None
         if isinstance(alerts, int): return alerts
         def work():
@@ -986,8 +1009,9 @@ def main(argv=None):
                 # The caller runs the lane under its own admission when the second Mac declines it.
                 return remote.first(root, config, args.lane, extra, args.expect, fallback=False).status
             # Nested work runs inside the admission it inherits, here. The serial reference runs here too.
+            inherited = bool(os.environ.get(resources.TOKEN))
             reason = reason or ("--here" if args.here else "--serial runs the serial reference here" if args.serial
-                                else "nested in the admission it inherits" if os.environ.get(resources.TOKEN) else None)
+                                else "nested in the admission it inherits" if inherited else None)
             offered = None
             if reason is None:
                 # Whichever Mac has spare capacity for the lane, the second Mac first, and while neither has,
@@ -1063,6 +1087,7 @@ def main(argv=None):
                             if offered is not None:
                                 receipt["hereBecause"] = offered.status
                                 fell_back(args.lane, offered)
+                            reap_here(root, inherited)
                             if reads_screen: receipt["screen"] = screen_reading()
                             alerts = guarded_alerts(stack, args.lane, receipt) if lane.get("foreground") else None
                             if isinstance(alerts, int): return alerts

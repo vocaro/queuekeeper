@@ -16,7 +16,7 @@ import unittest
 import unittest.mock
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
-from vocaro_engineering import devices, offload_host, remote
+from vocaro_engineering import cli, devices, offload_host, remote, resources
 import host_isolation
 from vocaro_engineering.simulators import pool as simulator_pool
 
@@ -919,6 +919,98 @@ class ReapCommandTests(unittest.TestCase):
             Path(project, "engineering.json").write_text(json.dumps({"simulatorPool": "Example"}))
             self.assertEqual(remote.reap_request(project), {"pools": ["Example"]})
         self.assertIn('"reap": {"pools": ["Example"]}', remote.census_command(reap={"pools": ["Example"]}))
+
+
+class ReapBeforeRunTests(unittest.TestCase):
+    """cli.reap_here: heavy work that runs on this Mac reaps it first, as a dispatch reaps the second Mac before it
+    sends work there (vocaro-engineering#156), over a fake offload_host.reap."""
+    RELEASED = {**ReapCommandTests.EMPTY, "recoverable": [], "released": [{
+        "key": NAME, "device": UDID, "owner": "session-gone", "verified": "PID 6000 gone; Shutdown", "dryRun": False}]}
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name).resolve()
+        self.project = self.root / "project"
+        self.project.mkdir()
+        ran = [sys.executable, "-c", "open('ran', 'a').write('ran')"]
+        (self.project / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Project",
+            "capabilities": ["simulator-pool"], "simulatorPool": "Example", "lanes": {"heavy": {"command": ran, "resource": "heavy"},
+                                                  "light": {"command": ran}}}))
+        # patch.dict puts back the whole environment when it stops, the switch host_isolation set among it.
+        environment = patch.dict(os.environ, {"HEAVY_SLOT_DIR": str(self.root / "slots"),
+                                              "SW_GATE_LOCK_FILE": str(self.root / "gate")})
+        environment.start()
+        self.addCleanup(environment.stop)
+        # host_isolation turns the reap off for every other test; these turn it back on, over the fake below.
+        for name in (cli.REAP_SWITCH, remote.DISPATCHER, resources.TOKEN): os.environ.pop(name, None)
+        self.calls, self.report = [], ReapCommandTests.EMPTY
+
+    def reaped(self, root, **request):
+        # Whether the work had run when the reap did.
+        self.calls.append(((root, request), (self.project / "ran").exists()))
+        return self.report
+
+    def eng(self, *arguments, report=None):
+        self.report = report or ReapCommandTests.EMPTY
+        with patch.object(offload_host, "reap", side_effect=self.reaped), \
+                patch.object(cli, "source_identity", return_value={}), \
+                patch.object(cli, "refresh_policy", return_value=None), \
+                contextlib.chdir(self.project), contextlib.redirect_stdout(StringIO()), \
+                contextlib.redirect_stderr(StringIO()) as error:
+            return cli.main(["--project", str(self.project), *arguments]), error.getvalue()
+
+    def test_a_heavy_lane_run_here_reaps_this_mac_first_and_says_what_it_released(self):
+        status, error = self.eng("run", "--here", "heavy", report=self.RELEASED)
+        self.assertEqual(status, 0, error)
+        # The project's pool, as a dispatch asks of the second Mac (remote.reap_request), before the lane ran: its
+        # own admission, entered before the reap, does not count as one it inherited.
+        self.assertEqual(self.calls, [((remote.ROOT, {"pools": ["Example"]}), False)])
+        self.assertTrue((self.project / "ran").exists())
+        self.assertIn(f"eng: on {remote.HERE}, released {NAME} ({UDID}), held for owner session-gone", error)
+
+    def test_a_command_eng_admit_runs_here_reaps_this_mac_first(self):
+        status, error = self.eng("admit", "--", sys.executable, "-c", "open('ran', 'a').write('ran')")
+        self.assertEqual(status, 0, error)
+        self.assertEqual(self.calls, [((remote.ROOT, {"pools": ["Example"]}), False)])
+        self.assertTrue((self.project / "ran").exists())
+        # A reap that found nothing says nothing.
+        self.assertNotIn(f"on {remote.HERE}", error)
+
+    def test_a_reaps_problem_is_said_and_the_work_runs_all_the_same(self):
+        status, error = self.eng("run", "--here", "heavy", report={**ReapCommandTests.EMPTY, "problem": "broken"})
+        self.assertEqual(status, 0, error)
+        self.assertIn(f"eng: on {remote.HERE}, stopped no further simulator: broken", error)
+        self.assertTrue((self.project / "ran").exists())
+
+    def test_light_dispatched_switched_off_and_nested_work_does_not_reap(self):
+        cases = {"a light lane": ({}, ("run", "--here", "light")),
+                 "work a dispatch sent here": ({remote.DISPATCHER: "Sender"}, ("run", "--here", "heavy")),
+                 "admitted work a dispatch sent here": ({remote.DISPATCHER: "Sender"},
+                                                        ("admit", "--", sys.executable, "-c", "open('ran', 'a')")),
+                 "the switch tests set": ({cli.REAP_SWITCH: "off"}, ("run", "--here", "heavy"))}
+        for name, (variables, arguments) in cases.items():
+            with self.subTest(name), patch.dict(os.environ, variables):
+                (self.project / "ran").unlink(missing_ok=True)
+                status, error = self.eng(*arguments)
+                self.assertEqual(status, 0, error)
+                self.assertTrue((self.project / "ran").exists())
+                self.assertEqual(self.calls, [])
+        # Nested in an admission it inherits, the run it is nested in reaped; the control reaps.
+        with patch.object(offload_host, "reap", side_effect=self.reaped), redirect_stdout(StringIO()), \
+                contextlib.redirect_stderr(StringIO()) as error:
+            self.assertEqual(cli.reap_here(self.project, inherited=True), [])
+            self.assertEqual(self.calls, [])
+            self.report = self.RELEASED
+            self.assertEqual(len(cli.reap_here(self.project, inherited=False)), 1)
+        self.assertEqual(len(self.calls), 1)
+        self.assertIn(f"released {NAME}", error.getvalue())
+
+
+class ReapSwitchTests(unittest.TestCase):
+    def test_tests_run_with_the_reap_before_a_run_turned_off(self):
+        # host_isolation's setting, which a child eng that a test starts inherits.
+        self.assertEqual(os.environ.get(cli.REAP_SWITCH), "off")
 
 
 if __name__ == "__main__":

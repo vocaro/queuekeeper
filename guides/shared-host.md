@@ -1645,7 +1645,12 @@ On 2026-10-31 a `Pagepour Duo 1` simulator, a `launchd_sim` with about 320 desce
 on the second Mac for 22 hours waiting for that decision. The owner has decided it for this one
 case: any session may run `python3 scripts/eng simulator-pool reap`, without asking, and eng runs it
 in the connection that lists leftovers before work is sent to the second Mac, and on both Macs in
-`eng doctor` (the owner's decision, 2026-11-03). It runs
+`eng doctor` (the owner's decision, 2026-11-03). Heavy work that runs on the Mac it was started on, a lane
+`eng run` runs there or a command `eng admit` runs there, reaps that Mac the same way once it is admitted and
+before it starts, so that a run here frees what is left over before it takes simulators
+([vocaro-engineering#156](https://github.com/vocaro/vocaro-engineering/issues/156)). Work a dispatch sent
+to the second Mac does not reap again, since its dispatch just did, nor does work nested in an admission
+it inherits, nor a light lane. It runs
 `xcrun simctl shutdown UDID` on a simulator only when all of these hold:
 
 1. It is a member of a project's pool: named `POOL LABEL N`, for a pool named by the project, or by a
@@ -1693,9 +1698,9 @@ reason. A log that cannot be written stops nothing. The log is a sibling of the
 With no options the command acts on this Mac and then, over the search's connection, on the second
 Mac. `--dry-run` only says what it would stop and what it keeps, and why; `--here` leaves out the
 second Mac; `--pool NAME` looks at that pool alone. It exits 1 when anything failed, a second Mac that
-cannot be reached among them. Before a dispatch it is bounded: one reap spends at most 60 seconds
-(`REAP_SECONDS`), starts no stop with under 20 left, and leaves the rest for the next one; every problem
-is printed and the work is sent all the same. With nothing listed it adds only `ps` and `lsof`.
+cannot be reached among them. Before a dispatch or a run here it is bounded: one reap spends at most 60
+seconds (`REAP_SECONDS`), starts no stop with under 20 left, and leaves the rest for the next one; every
+problem is printed and the work is sent, or runs, all the same. With nothing listed it adds only `ps` and `lsof`.
 
 A reap cannot race a run that takes the device, by three things. `Pool.take` only takes a member that
 `simctl` shows shut down, and reserves it, under the record's lock, before it erases or boots it, so a
@@ -1710,7 +1715,7 @@ session recovers leftover simulators by hand or brings them to the owner (the ow
 2026-11-04, [vocaro-engineering#156](https://github.com/vocaro/vocaro-engineering/issues/156), which
 reverses the report-only rule of [#97](https://github.com/vocaro/vocaro-engineering/issues/97)). Pool
 members are erased before each take, so a dead holder leaves nothing on the device to restore. Each run of
-`eng simulator-pool reap`, the reap before a dispatch to the second Mac and `eng doctor`'s releases an
+`eng simulator-pool reap`, the reap before a dispatch to the second Mac or a run here and `eng doctor`'s releases an
 entry of that Mac's device record only when all of these hold, read in that order:
 
 1. The entry records a process (`holderProcess`, an active run's process, `--own` processes) and every
@@ -1754,7 +1759,7 @@ for one; its simulator is still under 2 hours old) and its exact `devices recove
 in the second Mac's record that command runs there, as `ssh HOST 'cd
 ~/Development/vocaro-engineering/src/python && python3 -m vocaro_engineering.devices recover …'`, since
 run here it would read this Mac's record. `eng simulator-pool reap`, with or without `--dry-run`, and
-`eng doctor`'s `reaped` name every such entry; the reap before a dispatch names only those of
+`eng doctor`'s `reaped` name every such entry; the reap before a dispatch or a run here names only those of
 simulators it just stopped. `devices status` names them too, and releases nothing. One not yet due that
 reap leaves (`its release is due …; reap did not release it: …`, a take's or one whose owner something
 accounts for) is named only by `eng simulator-pool reap`. Reap does not shut down a member whose dead

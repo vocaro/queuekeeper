@@ -12,7 +12,8 @@ sets its own; the process removes this one when it exits.
 `eng doctor` also fixes both Macs itself: it evens out their runtimes, deleting or copying them, and
 shuts down stale pool simulators (cli.fix_hosts). Most doctor tests compare this Mac with the real
 second Mac, so cli.fix_hosts is replaced here by one that changes nothing; a test of the fixes calls
-FIX_HOSTS, the real one, against fakes.
+FIX_HOSTS, the real one, against fakes. A heavy run here reaps this Mac first (cli.reap_here); VOCARO_REAP_BEFORE_RUN
+is set to off, so no run a test makes does.
 
 VOCARO_EVIDENCE_RETRY is set to off, so no eng a test runs offloads this Mac's evidence archives.
 """
@@ -68,6 +69,11 @@ FIX_HOSTS = cli.fix_hosts
 # which would offer this Mac's real evidence archives to the real second Mac (vocaro-engineering#157). A test
 # of retry_soon clears it.
 os.environ["VOCARO_EVIDENCE_RETRY"] = "off"
+
+# Nor does any heavy run a test makes here, in this process or a child, reap this Mac first (cli.reap_here), which
+# would shut down its stale pool simulators and release its dead pool reservations (vocaro-engineering#156). A test
+# of the reap clears it.
+os.environ[cli.REAP_SWITCH] = "off"
 
 
 def unfixed(root, hosts):
