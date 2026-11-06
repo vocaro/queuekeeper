@@ -35,7 +35,9 @@ second Mac it cannot reach as unchecked, and gives both the same simulator runti
 `eng remote setup --runtimes` does, without asking the owner (the owner's decision, 2026-11-03).
 Before it sends work, and
 in `eng doctor`, it lists the processes there that earlier runs left running, which nothing
-stops.
+stops, and fast-forwards the second Mac's own toolkit checkout, ~/Development/vocaro-engineering, to
+origin/main when that checkout is on main with no uncommitted changes, saying why it leaves it otherwise:
+a dispatch goes on, and `eng doctor` reports an error (offload_host.update_toolkit, vocaro-engineering#203).
 """
 import base64
 import binascii
@@ -1271,7 +1273,10 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
         # before any work is sent: a connection to the second Mac can take seconds of its own. It has
         # each repository name the commits its checkouts hold, which the pushes then need not send.
         attempt, moment = asleep(), time.monotonic()
-        prepared = ssh(host, f"{prepare} || exit $?\n{census_command(repositories, reap_request(root))} || true",
+        # It also fast-forwards the second Mac's own toolkit checkout when it can, which no run there uses
+        # (vocaro-engineering#203): bounded, and nothing of it stops the work.
+        census = census_command(repositories, reap_request(root), update=update_request())
+        prepared = ssh(host, f"{prepare} || exit $?\n{census} || true",
                        stdin=subprocess.DEVNULL, capture_output=True, text=True)
         preparation["seconds"]["connection"] = round(time.monotonic() - moment, 3)
         # ssh's own failures, a name that does not resolve among them, exit 255. Nothing is sent yet.
@@ -1286,6 +1291,8 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
         for line in leftover_lines(host, *read_census(prepared)):
             print(f"remote: {line}", file=sys.stderr, flush=True)
         answered = final_object(prepared)
+        updated, _ = toolkit_line(host, answered.get("toolkitCheckout"))
+        if updated: print(f"remote: {updated}", file=sys.stderr, flush=True)
         advertised = answered.get("advertised") if isinstance(answered.get("advertised"), dict) else {}
         preparation["git"]["there"] = answered.get("git")
         moment = time.monotonic()
@@ -2417,15 +2424,55 @@ def reap_request(root):
     return {"pools": [pool] if isinstance(pool, str) and pool else []}
 
 
-def census_command(advertise=None, reap=None):
+def census_command(advertise=None, reap=None, update=None):
     """The second Mac's command that prints offload_host.leftovers, the census of what runs left
     running there, as its last line; with advertise, paths of repositories relative to the home
     there, it has each name the commits its checkouts hold, and says which, and its Git's version
     (offload_host.advertise); with reap, offload_host.reap's arguments, it first shuts down the stale pool
-    simulators the census finds, and says which."""
+    simulators the census finds, and says which; with update, update_request's, it fast-forwards the second
+    Mac's own toolkit checkout when it can, and says what became of it (offload_host.update_toolkit)."""
     request = {"leftovers": ROOT, **({"advertise": list(advertise)} if advertise else {}),
-               **({"reap": reap} if reap is not None else {})}
+               **({"reap": reap} if reap is not None else {}), **({"toolkitCheckout": update} if update else {})}
     return shlex.join(["python3", "-c", Path(offload_host.__file__).read_text(), json.dumps(request)])
+
+
+def update_request(want=True):
+    """What a connection asks of offload_host.update_toolkit on the second Mac (vocaro-engineering#203): its own
+    toolkit checkout, and with want, the commit this Mac's origin/main names, which spares the fetch there when
+    that checkout holds it already. Without want, or when this Mac names none, it fetches."""
+    request = {"path": offload_host.TOOLKIT_CHECKOUT, "root": ROOT}
+    if want:
+        try: request["want"] = git(TOOLKIT_ROOT, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main^{commit}")
+        except (RuntimeError, OSError, subprocess.SubprocessError): pass
+    return request
+
+
+def toolkit_line(host, found):
+    """What is said of offload_host.update_toolkit's answer from host, and whether it is the owner's to decide:
+    (None, False) for a checkout already current, or one another connection is updating; (line, False) for one
+    it updated; (line, True) for one it left as it is, or could not update, and why."""
+    if not isinstance(found, dict) or found.get("state") in ("current", "busy"): return None, False
+    where = f"{host}'s toolkit checkout ~/{found.get('path') or offload_host.TOOLKIT_CHECKOUT}"
+    if found.get("state") == "updated":
+        count = found.get("behind")
+        return (f"updated {where} from {str(found.get('head'))[:12]} to {str(found.get('to'))[:12]}, "
+                f"{count} commit{'s' * (count != 1)} of origin/main"), False
+    at = f" at {found['head'][:12]}" if found.get("head") else ""
+    return (f"left {where}{at} as it is: {found.get('reason') or 'it gave no reason'}. eng fast-forwards it to "
+            "origin/main only on main, clean, with no commit of its own and nothing running from it; the owner "
+            "decides what becomes of it (guides/shared-host.md, The second Mac's own toolkit checkout)"), True
+
+
+def update_there(host):
+    """offload_host.update_toolkit's answer from host, for `eng doctor` (cli.fix_hosts), which fetches whatever
+    this Mac's origin/main says; one that cannot be had is an answer of state unchecked, saying why."""
+    try:
+        answered = ask(host, {"toolkitCheckout": update_request(want=False)},
+                       timeout=CENSUS_TIMEOUT + offload_host.UPDATE_SECONDS)
+    except Unavailable as error:
+        return {"state": "unchecked", "reason": str(error)}
+    found = answered.get("toolkitCheckout") if isinstance(answered, dict) else None
+    return found if isinstance(found, dict) else {"state": "unchecked", "reason": f"it answered {answered!r}"}
 
 
 def read_census(found):

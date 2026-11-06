@@ -129,7 +129,9 @@ def fix_hosts(root, hosts):
     decision, 2026-11-03): runtimes that differ, which it evens out (remote.match_runtimes) and then
     compares again, and stale pool simulators on both Macs, which it shuts down (simulators.pool.reap_reports)
     and lists in reaped, and Xcode's default simulators on this Mac, which it deletes as `eng disk --delete`
-    does, checking each again first, and lists in deletedDefaults. Its progress goes to standard error, so
+    does, checking each again first, and lists in deletedDefaults, and the second Mac's own toolkit checkout,
+    which it fast-forwards to origin/main when it can and reports in toolkitCheckout, an error when it cannot
+    (remote.update_there, vocaro-engineering#203). Its progress goes to standard error, so
     that standard output stays the report. tests/host_isolation.py replaces it, so that no test changes
     either Mac."""
     if hosts.pop("runtimesDiffer", False):
@@ -143,6 +145,18 @@ def fix_hosts(root, hosts):
     hosts["reaped"] = [line for where, report in reaped
                        for line in remote.reap_lines(where, report, listing=False, held=True)]
     hosts["deletedDefaults"] = delete_defaults()
+    # The second Mac's own toolkit checkout, which it fast-forwards to origin/main when it can; one it must
+    # leave as it is is an error, the owner's to decide (vocaro-engineering#203).
+    if "remote" in hosts:
+        found = hosts["toolkitCheckout"] = remote.update_there(hosts["host"])
+        if found.get("state") == "unchecked":
+            hosts.setdefault("unchecked", []).append(f"{hosts['host']}'s own toolkit checkout, which it did not "
+                                                     f"report: {found.get('reason')}")
+        else:
+            line, owner = remote.toolkit_line(hosts["host"], found)
+            if line: found["said"] = line
+            if owner: hosts.setdefault("errors", []).append(line)
+            elif line: print(f"remote: {line}", file=sys.stderr, flush=True)
     return hosts
 
 

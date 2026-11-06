@@ -999,6 +999,59 @@ timeout ran out at 22:18:38, two minutes of awake time after the connection bega
 `Connection to ADDRESS port 22 timed out`, and eng said to wake the build host, which had stayed
 awake and on its network.
 
+### The second Mac's own toolkit checkout
+
+The second Mac has a toolkit checkout of its own at `~/Development/vocaro-engineering`. No dispatched
+run uses it: each run uses the toolkit checkout dispatched beside its project, at the commit that was
+sent. Anything that runs `eng` straight from that checkout does use it, such as a
+[recovery](#stale-pool-simulators) run there over ssh. On 2026-11-05 it was at e097b91, about 195
+commits behind, and it lacked `eng admissions limits`. Its own `origin/main` was stale too, since
+nothing there fetched it. eng now keeps it current (owner's decision, 2026-11-05: "it should be
+auto-updated by the eng scripts";
+[vocaro-engineering#203](https://github.com/vocaro/vocaro-engineering/issues/203)).
+
+The update runs in two places:
+
+- The connection that prepares each dispatch, so every `eng run`, `eng admit --verify`, `eng remote`
+  and merge-queue gate sent there. The dispatch passes the commit this Mac's `origin/main` names, and
+  a checkout that already holds it counts as current without a fetch.
+- `eng doctor`, in what it fixes on both Macs (`cli.fix_hosts`). It always fetches.
+
+offload_host fast-forwards the checkout to `origin/main`, without hooks, under the same conditions as
+this Mac's shared checkout follows a landing
+([guides/maintenance.md](maintenance.md), The shared checkout follows each toolkit landing):
+
+- it is on `main`;
+- it has no changed, staged or untracked path (ignored files stay);
+- it holds no commit that `origin/main` lacks;
+- it is behind; and
+- no process of the account runs from its tree. That means a working directory or an argument below
+  it, outside session worktrees inside it and Git's own directory. A process that only names the
+  checkout itself does not count, and open files are not read.
+
+Otherwise it leaves the checkout as it is and says why. A dispatch prints one line,
+`remote: left HOST's toolkit checkout ~/Development/vocaro-engineering at COMMIT as it is: REASON`,
+and goes on. `eng doctor` reports the same line as an error. Reasons include a missing checkout,
+another branch, a detached HEAD, changes, commits of its own or a diverged history, a process running
+from it, and a fetch that failed or timed out. These are the owner's to decide. A session does not
+stash, reset or edit that checkout to make it follow. An update prints
+`remote: updated HOST's toolkit checkout … from OLD to NEW, N commits of origin/main`. A current
+checkout says nothing.
+
+Limits:
+
+- **Time.** All of the update's steps share one 40 s deadline, the fetch at most 25 s of it. Each git
+  step runs in a process group of its own, which the deadline kills.
+- **No prompts.** Git cannot prompt: `GIT_TERMINAL_PROMPT=0`, and ssh runs in BatchMode. The fetch
+  uses `~/Development/build-host/git-credentials`, as runs do, when that file exists.
+- **Concurrency.** A lock under `~/Development/build-host` lets one connection update at a time. Any
+  other connection skips the update while it is held.
+- **Failures.** Whatever goes wrong becomes the answer's reason, so the update never ends or fails
+  the connection that prepares a dispatch.
+
+`tests/host_isolation.py` replaces `cli.fix_hosts`, so no doctor test updates the real second Mac,
+and a test that dispatches uses a fake second Mac or `VOCARO_OFFLOAD_HOST=none`.
+
 ### Setting up the second Mac
 
 The owner prepares the second Mac once:

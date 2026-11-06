@@ -1081,6 +1081,53 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual(status, 0, output + error)
         self.assertNotIn("left over", error)
 
+    def test_a_dispatch_fast_forwards_the_second_macs_own_toolkit_checkout_and_runs_whatever_became_of_it(self):
+        base = Path(self.temp.name) / "kit-origin"
+        where = f"fake's toolkit checkout ~/{offload_host.TOOLKIT_CHECKOUT}"
+        # None there: said, and the run goes on.
+        status, output, error = self.eng("remote", "run", "check")
+        self.assertEqual(status, 0, output + error)
+        self.assertIn(f"remote: left {where} as it is: there is no git checkout at ~/{offload_host.TOOLKIT_CHECKOUT}",
+                      error)
+        _origin, seed, checkout = toolkit_clone(base, self.home)
+        start = git(checkout, "rev-parse", "HEAD")
+        tip = land(seed)
+        status, output, error = self.eng("remote", "run", "check")
+        self.assertEqual(status, 0, output + error)
+        self.assertIn(f"remote: updated {where} from {start[:12]} to {tip[:12]}, 1 commit of origin/main", error)
+        self.assertEqual(git(checkout, "rev-parse", "HEAD"), tip)
+        self.assertIn(f"check at {self.commit[:12]}", error)
+        # The work ran from the dispatched toolkit checkout, never from this one.
+        receipt = json.loads((self.project / ".build/engineering/remote/check/source.json").read_text())
+        self.assertEqual(receipt["toolkit"], git(self.toolkit, "rev-parse", "HEAD"))
+        # Current: nothing said.
+        status, output, error = self.eng("remote", "run", "check")
+        self.assertEqual(status, 0, output + error)
+        self.assertNotIn("toolkit checkout", error)
+        # Changes there: left as they are, said, and the run goes on.
+        land(seed, "more.txt")
+        (checkout / "README.md").write_text("the owner's edit\n")
+        status, output, error = self.eng("remote", "run", "check")
+        self.assertEqual(status, 0, output + error)
+        self.assertIn(f"remote: left {where} at {tip[:12]} as it is: it has 1 changed or untracked path: README.md",
+                      error)
+        self.assertEqual((git(checkout, "rev-parse", "HEAD"), (checkout / "README.md").read_text()),
+                         (tip, "the owner's edit\n"))
+        self.assertIn(f"check at {self.commit[:12]}", error)
+
+    def test_a_toolkit_update_that_breaks_stops_no_run(self):
+        _origin, seed, checkout = toolkit_clone(Path(self.temp.name) / "kit-origin", self.home)
+        land(seed)
+        start = git(checkout, "rev-parse", "HEAD")
+        # Its lock is a directory, which no open can take: the update fails, and says so.
+        lock = self.home / remote.ROOT / offload_host.UPDATE_LOCK
+        lock.mkdir(parents=True)
+        status, output, error = self.eng("remote", "run", "check")
+        self.assertEqual(status, 0, output + error)
+        self.assertIn(f"as it is: its lock in {self.home / remote.ROOT} could not be opened", error)
+        self.assertIn(f"check at {self.commit[:12]}", error)
+        self.assertEqual(git(checkout, "rev-parse", "HEAD"), start)
+
     def test_a_reap_before_a_dispatch_is_printed_and_its_problem_stops_no_run(self):
         item = {"name": "Example Duo 1", "udid": "U", "pid": 7, "reason": "it has run 3.0 h"}
         for report, said in [({"stopped": [item], "problem": None}, "remote: on fake, stopped Example Duo 1 (U), PID 7: it has run 3.0 h"),
@@ -3400,6 +3447,19 @@ class SecondMacDoctorTests(unittest.TestCase):
         self.assertNotIn("buildHost", report)
         return status, report["offload"]
 
+    def test_doctors_update_of_the_second_macs_toolkit_checkout_reaches_it_and_fetches(self):
+        _origin, seed, checkout = toolkit_clone(Path(self.temp.name) / "kit-origin", self.home)
+        start, tip = git(checkout, "rev-parse", "HEAD"), land(seed)
+        found = remote.update_there("fake")
+        self.assertEqual((found["state"], found["head"], found["to"], found["fetched"]), ("updated", start, tip, True),
+                         found)
+        self.assertEqual(git(checkout, "rev-parse", "HEAD"), tip)
+        # A second Mac that cannot be reached is unchecked, and nothing is searched for or changed.
+        with patch.dict(os.environ, {"FAKE_UNREACHABLE": "1"}), patch.object(remote, "rediscover", return_value=None):
+            found = remote.update_there("fake")
+        self.assertEqual(found["state"], "unchecked", found)
+        self.assertIn("Could not resolve hostname", found["reason"])
+
     def test_matching_macs_pass(self):
         status, found = self.doctor()
         self.assertEqual((status, found["errors"], found["unchecked"], found["leftovers"]), (0, [], [], []), found)
@@ -4138,9 +4198,12 @@ class DoctorFixTests(unittest.TestCase):
     REPORT = {"stopped": [{"name": "Example iPhone 1", "udid": "U", "pid": 7, "reason": "stale"}], "failed": [],
               "skipped": [], "eligible": [], "kept": [], "problem": None}
 
-    def fix(self, first, again=None):
+    def fix(self, first, again=None, update=None):
         calls = []
+        self.updates = []
+        updating = lambda host: self.updates.append(host) or dict(update or {"state": "current", "path": "kit"})
         with patch.object(remote, "compare_hosts", return_value=again) as compare, \
+                patch.object(remote, "update_there", side_effect=updating), \
                 patch.object(remote, "match_runtimes", side_effect=lambda host, check: calls.append((host, check)) or
                              print("runtimes: progress")) as match, \
                 patch.object(cli.simulator_pool, "reap_reports", return_value=[("this Mac", self.REPORT)]) as reap, \
@@ -4168,6 +4231,30 @@ class DoctorFixTests(unittest.TestCase):
         fixed, calls, compare, reap, _, _ = self.fix(first)
         self.assertEqual((calls, compare.call_count), ([], 0))
         reap.assert_called_once_with(None, Path("/project"), dry_run=False, here=True)
+        # Nor is its toolkit checkout updated.
+        self.assertEqual(self.updates, [])
+        self.assertNotIn("toolkitCheckout", fixed)
+
+    def test_the_second_macs_toolkit_checkout_is_updated_and_one_left_as_it_is_is_an_error(self):
+        first = lambda: {"host": "fake", "remote": {}, "errors": [], "unchecked": []}
+        fixed, _, _, _, _, error = self.fix(first())
+        self.assertEqual((self.updates, fixed["errors"], fixed["toolkitCheckout"]["state"]), (["fake"], [], "current"))
+        fixed, _, _, _, _, error = self.fix(first(), update={"state": "updated", "path": "kit", "head": "a" * 40,
+                                                             "to": "b" * 40, "behind": 3})
+        said = f"updated fake's toolkit checkout ~/kit from {'a' * 12} to {'b' * 12}, 3 commits of origin/main"
+        self.assertEqual((fixed["errors"], fixed["toolkitCheckout"]["said"]), ([], said))
+        self.assertIn(said, error)
+        for found in [{"state": "left", "path": "kit", "head": "a" * 40, "reason": "it is on branch x, not main"},
+                      {"state": "failed", "path": "kit", "reason": "fetching origin's main failed: no route"},
+                      {"state": "missing", "path": "kit", "reason": "there is no git checkout at ~/kit"}]:
+            with self.subTest(found["state"]):
+                fixed, _, _, _, _, _ = self.fix(first(), update=found)
+                self.assertEqual(len(fixed["errors"]), 1, fixed)
+                self.assertIn(f"left fake's toolkit checkout ~/kit", fixed["errors"][0])
+                self.assertIn(found["reason"], fixed["errors"][0])
+        fixed, _, _, _, _, _ = self.fix(first(), update={"state": "unchecked", "reason": "fake did not answer"})
+        self.assertEqual(fixed["errors"], [])
+        self.assertEqual(fixed["unchecked"], ["fake's own toolkit checkout, which it did not report: fake did not answer"])
 
     def test_every_test_gets_a_doctor_that_changes_neither_mac(self):
         self.assertIsNot(cli.fix_hosts, host_isolation.FIX_HOSTS)
@@ -4920,6 +5007,219 @@ class SharedOriginTests(unittest.TestCase):
             offload_host.place(repository, base / "0/vocaro-engineering", commit, "refs/heads/main", fork)
             self.assertEqual(git(repository, "config", "--get", "remote.origin.url"), fork)
             self.assertEqual(git(base / "0/vocaro-engineering", "rev-parse", "HEAD"), commit)
+
+
+def toolkit_clone(base, home):
+    """A bare origin under base holding one commit of main, a working clone of it to add commits from, and
+    the second Mac's own toolkit checkout under home, cloned from that origin at that commit."""
+    origin, seed = base / "origin.git", base / "seed"
+    subprocess.run(["git", "init", "-q", "-b", "main", str(seed)], check=True)
+    (seed / "README.md").write_text("kit\n")
+    commit_all(seed)
+    subprocess.run(["git", "clone", "-q", "--bare", str(seed), str(origin)], check=True)
+    git(seed, "remote", "add", "origin", str(origin))
+    checkout = home / offload_host.TOOLKIT_CHECKOUT
+    checkout.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "clone", "-q", str(origin), str(checkout)], check=True)
+    return origin, seed, checkout
+
+
+def land(seed, name="change.txt", text="change\n"):
+    """A commit of main pushed to the seed's origin, as one landed on GitHub."""
+    (seed / name).write_text(text)
+    commit = commit_all(seed)
+    git(seed, "push", "-q", "origin", "main")
+    return commit
+
+
+class ToolkitUpdateTests(unittest.TestCase):
+    """offload_host.update_toolkit, which keeps the second Mac's own toolkit checkout at origin/main when it can
+    and leaves it otherwise, saying why (vocaro-engineering#203), over a home that is a temporary directory."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.base = Path(self.temp.name).resolve()
+        self.home = self.base / "home"
+        self.origin, self.seed, self.checkout = toolkit_clone(self.base, self.home)
+        self.start = git(self.checkout, "rev-parse", "HEAD")
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def update(self, **request):
+        return offload_host.update_toolkit({"path": offload_host.TOOLKIT_CHECKOUT, "root": remote.ROOT, **request},
+                                           home=self.home)
+
+    def head(self):
+        return git(self.checkout, "rev-parse", "HEAD")
+
+    def test_a_clean_checkout_on_main_behind_origin_is_fast_forwarded_and_then_current(self):
+        land(self.seed, "one.txt")
+        tip = land(self.seed, "two.txt")
+        found = self.update()
+        self.assertEqual((found["state"], found["head"], found["to"], found["behind"]), ("updated", self.start, tip, 2),
+                         found)
+        self.assertEqual(self.head(), tip)
+        self.assertEqual(git(self.checkout, "status", "--porcelain"), "")
+        self.assertEqual(self.update()["state"], "current")
+        line, owner = remote.toolkit_line("fake", found)
+        self.assertFalse(owner)
+        self.assertEqual(line, f"updated fake's toolkit checkout ~/{offload_host.TOOLKIT_CHECKOUT} from {self.start[:12]} "
+                               f"to {tip[:12]}, 2 commits of origin/main")
+        self.assertEqual(remote.toolkit_line("fake", self.update()), (None, False))
+
+    def test_a_commit_the_sender_names_that_the_checkout_holds_spares_the_fetch(self):
+        git(self.checkout, "remote", "set-url", "origin", str(self.base / "nowhere.git"))
+        found = self.update(want=self.start)
+        self.assertEqual((found["state"], found["fetched"]), ("current", False), found)
+        # The negative control: a commit it lacks fetches, and here the fetch fails.
+        tip = land(self.seed)
+        found = self.update(want=tip)
+        self.assertEqual(found["state"], "failed", found)
+        self.assertIn("fetching origin's main failed", found["reason"])
+        self.assertEqual(self.head(), self.start)
+
+    def test_changed_staged_or_untracked_paths_leave_it_as_it_is_and_ignored_ones_do_not(self):
+        land(self.seed)
+        (self.checkout / "README.md").write_text("the owner's edit\n")
+        found = self.update()
+        self.assertEqual(found["state"], "left", found)
+        self.assertEqual(found["reason"], "it has 1 changed or untracked path: README.md")
+        self.assertEqual((self.head(), (self.checkout / "README.md").read_text()), (self.start, "the owner's edit\n"))
+        line, owner = remote.toolkit_line("fake", found)
+        self.assertTrue(owner)
+        self.assertIn(f"left fake's toolkit checkout ~/{offload_host.TOOLKIT_CHECKOUT} at {self.start[:12]} as it is: "
+                      "it has 1 changed or untracked path: README.md", line)
+        self.assertIn("the owner decides", line)
+        git(self.checkout, "add", "README.md")
+        self.assertEqual(self.update()["reason"], "it has 1 changed or untracked path: README.md")
+        git(self.checkout, "reset", "-q", "--hard")
+        (self.checkout / "notes.txt").write_text("the owner's notes\n")
+        self.assertEqual(self.update()["reason"], "it has 1 changed or untracked path: notes.txt")
+        self.assertEqual(self.head(), self.start)
+        # The positive control: an ignored file stays, and the checkout moves.
+        (self.checkout / ".git/info/exclude").write_text("notes.txt\n")
+        self.assertEqual(self.update()["state"], "updated")
+        self.assertEqual((self.checkout / "notes.txt").read_text(), "the owner's notes\n")
+
+    def test_a_process_running_from_it_leaves_it_as_it_is_and_one_tied_only_to_its_root_does_not(self):
+        land(self.seed)
+        (self.checkout / "src").mkdir()
+        nap = [sys.executable, "-c", "import time; time.sleep(300)"]
+        def running(*arguments, cwd):
+            child = subprocess.Popen([*nap, *arguments], cwd=cwd)
+            self.addCleanup(child.wait)
+            self.addCleanup(child.kill)
+            return child
+        working = running(cwd=self.checkout / "src")
+        found = self.update()
+        self.assertEqual(found["state"], "left", found)
+        self.assertIn(f"a process runs from it: PID {working.pid}, working in ", found["reason"])
+        working.kill()
+        working.wait()
+        naming = running(str(self.checkout / "README.md"), cwd=self.base)
+        found = self.update()
+        self.assertIn(f"PID {naming.pid}, naming {self.checkout / 'README.md'}", found.get("reason", ""), found)
+        naming.kill()
+        naming.wait()
+        self.assertEqual(self.head(), self.start)
+        # The positive control: a process at the checkout itself, naming only it, as a session names its project
+        # root, runs nothing from its tree; nor does one in a worktree inside it.
+        git(self.checkout, "worktree", "add", "-q", "--detach", str(self.checkout / ".claude/worktrees/session"))
+        running(str(self.checkout), cwd=self.checkout)
+        running(cwd=self.checkout / ".claude/worktrees/session")
+        (self.checkout / ".git/info/exclude").write_text(".claude/\n")
+        found = self.update()
+        self.assertEqual(found["state"], "updated", found)
+
+    def test_another_branch_or_a_detached_head_leaves_it_as_it_is(self):
+        land(self.seed)
+        git(self.checkout, "checkout", "-q", "-b", "experiment")
+        found = self.update()
+        self.assertEqual((found["state"], found["reason"]), ("left", "it is on branch experiment, not main"), found)
+        git(self.checkout, "checkout", "-q", "--detach", "main")
+        found = self.update()
+        self.assertEqual((found["state"], found["reason"]),
+                         ("left", f"its HEAD is detached at {self.start[:12]}, not on main"), found)
+        self.assertEqual(self.head(), self.start)
+        self.assertEqual(git(self.checkout, "rev-parse", "experiment"), self.start)
+
+    def test_commits_origin_lacks_leave_it_as_it_is_diverged_or_not(self):
+        (self.checkout / "local.txt").write_text("local\n")
+        local = commit_all(self.checkout)
+        found = self.update()
+        self.assertEqual((found["state"], found["reason"]), ("left", "it has 1 commit that origin/main lacks"), found)
+        land(self.seed)
+        found = self.update()
+        self.assertEqual(found["state"], "left", found)
+        self.assertEqual(found["reason"], "it has 1 commit that origin/main lacks and lacks 1 of origin/main's, so the "
+                                          "two have diverged")
+        self.assertEqual(self.head(), local)
+
+    def test_an_origin_that_cannot_be_reached_leaves_it_as_it_is(self):
+        land(self.seed)
+        git(self.checkout, "remote", "set-url", "origin", str(self.base / "nowhere.git"))
+        found = self.update()
+        self.assertEqual(found["state"], "failed", found)
+        self.assertIn("fetching origin's main failed: `git fetch", found["reason"])
+        self.assertEqual(self.head(), self.start)
+        self.assertTrue(remote.toolkit_line("fake", found)[1])
+
+    def test_a_fetch_that_hangs_ends_at_the_deadline_with_what_it_started(self):
+        land(self.seed)
+        hang = self.base / "hang"
+        marker = self.base / "hang.pid"
+        hang.write_text(f"#!/bin/sh\necho $$ > {shlex.quote(str(marker))}\nexec sleep 300\n")
+        hang.chmod(0o755)
+        git(self.checkout, "remote", "set-url", "origin", "ssh://example.invalid/kit.git")
+        began = time.monotonic()
+        with patch.dict(os.environ, {"GIT_SSH_COMMAND": str(hang)}):
+            found = offload_host.update_toolkit({"path": offload_host.TOOLKIT_CHECKOUT}, home=self.home, seconds=2)
+        # The 2 s deadline is the behavior under test; its ceiling stretches with load.
+        self.assertLess(time.monotonic() - began, stretched(15))
+        self.assertEqual(found["state"], "failed", found)
+        self.assertIn("did not finish in", found["reason"])
+        self.assertEqual(self.head(), self.start)
+        # What git started for the fetch was stopped with it.
+        pid = int(marker.read_text())
+        deadline = time.monotonic() + stretched(5)
+        while time.monotonic() < deadline:
+            try: os.kill(pid, 0)
+            except ProcessLookupError: break
+            time.sleep(0.05)
+        with self.assertRaises(ProcessLookupError): os.kill(pid, 0)
+
+    def test_a_missing_checkout_and_a_held_lock_are_said_and_change_nothing(self):
+        shutil.rmtree(self.checkout)
+        found = self.update()
+        self.assertEqual((found["state"], found["reason"]),
+                         ("missing", f"there is no git checkout at ~/{offload_host.TOOLKIT_CHECKOUT}"), found)
+        self.assertTrue(remote.toolkit_line("fake", found)[1])
+        self.origin, self.seed, self.checkout = toolkit_clone(self.base / "again", self.home)
+        land(self.seed)
+        lock = self.home / remote.ROOT / offload_host.UPDATE_LOCK
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        with open(lock, "a") as held:
+            fcntl.flock(held, fcntl.LOCK_EX)
+            found = self.update()
+        self.assertEqual(found["state"], "busy", found)
+        self.assertEqual(remote.toolkit_line("fake", found), (None, False))
+        self.assertEqual(self.update()["state"], "updated")
+
+    def test_an_update_that_raises_still_lets_the_census_answer(self):
+        with patch.object(offload_host, "update_toolkit", side_effect=RuntimeError("broken")), \
+                patch.object(offload_host, "leftovers", return_value={"leftovers": [], "unchecked": []}):
+            found = offload_host.answer({"leftovers": remote.ROOT, "toolkitCheckout": {"path": "x"}})
+        self.assertEqual(found["leftovers"], [])
+        self.assertEqual(found["toolkitCheckout"], {"state": "failed", "path": "x", "reason": "RuntimeError: broken"})
+
+    def test_the_request_names_this_macs_origin_main_unless_told_to_fetch(self):
+        request = remote.update_request()
+        self.assertEqual((request["path"], request["root"]), (offload_host.TOOLKIT_CHECKOUT, remote.ROOT))
+        expected = subprocess.run(["git", "-C", str(config.TOOLKIT_ROOT), "rev-parse", "--verify", "--quiet",
+                                   "refs/remotes/origin/main^{commit}"], capture_output=True, text=True).stdout.strip()
+        self.assertEqual(request.get("want"), expected or None)
+        self.assertNotIn("want", remote.update_request(want=False))
 
 
 class OfferAgainTests(unittest.TestCase):

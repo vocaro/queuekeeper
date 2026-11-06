@@ -17,7 +17,8 @@ defaults uses, for `eng doctor` and `eng remote setup --runtimes`; given `{"left
 it lists the processes left over from runs there, which `eng remote` prints before it sends work,
 and with `"advertise"` names as refs the commits the named repositories' checkouts hold, so that
 the push that follows sends only what they lack, and with `"reap"` first shuts down the stale pool
-simulators that census finds (reap);
+simulators that census finds (reap), and with `"toolkitCheckout"`, alone too, fast-forwards this Mac's
+own toolkit checkout to origin/main when it can, and says why not when it cannot (update_toolkit);
 given `{"device": ...}`, what there may still use a physical device a run was given, for
 `devices recover`; given `{"keychain": PATH}`, the Mac's name and whether that keychain file is
 there, for `eng keychain recover`; given `{"keepUnlocked": ...}`, at the owner's terminal, it asks for
@@ -162,9 +163,15 @@ LAUNCHD_SIM = re.compile(r"(?:\S*/)?launchd_sim\s")
 MEMBER = re.compile(r".+ [1-9][0-9]*")
 TEMPLATE = re.compile(r"(?P<label>.+) template \((?P<runtime>[^()]+)\)")
 SIMULATORS = ("xcrun", "simctl", "list", "devices", "-j")
-# The toolkit's checkout on each Mac, as a shell path from the home, where a recovery that the second Mac's
-# record needs runs.
-TOOLKIT = "~/Development/vocaro-engineering/src/python"
+# The toolkit's own checkout on each Mac, relative to its home, which update_toolkit keeps at origin/main
+# there (vocaro-engineering#203); and its src/python as a shell path from the home, where a recovery that the
+# second Mac's record needs runs.
+TOOLKIT_CHECKOUT = "Development/vocaro-engineering"
+TOOLKIT = f"~/{TOOLKIT_CHECKOUT}/src/python"
+# Seconds one update_toolkit may take in all, the bound it adds to the connection that prepares a dispatch,
+# and at most for its fetch; and its lock beside the second Mac's repositories, under ROOT.
+UPDATE_SECONDS, UPDATE_FETCH_SECONDS = 40, 25
+UPDATE_LOCK = "toolkit-update.lock"
 
 _output = threading.Lock()
 _stop = threading.Event()
@@ -2005,6 +2012,15 @@ def pressure():
     return {"load": load, "limit": limit, "memory": memory_level()}
 
 
+def guarded_update(request):
+    """update_toolkit's answer, or what kept it from answering: it rides on a dispatch's preparing connection,
+    which nothing of it may end (vocaro-engineering#203)."""
+    try: return update_toolkit(request)
+    except Exception as error:
+        return {"state": "failed", "path": request.get("path", TOOLKIT_CHECKOUT),
+                "reason": f"{type(error).__name__}: {error}"}
+
+
 def answer(request):
     """offload_host.py's answer to a request other than a plan, for `eng doctor`, `eng remote`,
     `eng remote setup`, `eng remote foreground`, `devices recover` and `eng keychain recover`. A census before a dispatch can
@@ -2024,7 +2040,9 @@ def answer(request):
         if request.get("advertise"):
             found.update(git=output(["git", "--version"]),
                          advertised={path: advertise(Path.home() / path) for path in request["advertise"]})
+        if request.get("toolkitCheckout"): found["toolkitCheckout"] = guarded_update(request["toolkitCheckout"])
         return found
+    if "toolkitCheckout" in request: return {"toolkitCheckout": guarded_update(request["toolkitCheckout"])}
     if "deleteRuntime" in request:
         deleted = request["deleteRuntime"]
         return {"problem": delete_runtime(deleted["developer"], deleted["build"], deleted.get("pinned") or ())}
@@ -2178,6 +2196,162 @@ def credentials(environment, path):
         environment[f"GIT_CONFIG_KEY_{count + offset}"] = "credential.helper"
         environment[f"GIT_CONFIG_VALUE_{count + offset}"] = value
     environment["GIT_CONFIG_COUNT"] = str(count + 2)
+
+
+# What a hook or the sending side may export for its own repository, which must not aim git at another.
+GIT_LOCATION = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+                "GIT_COMMON_DIR", "GIT_PREFIX")
+
+
+def update_toolkit(request, home=None, seconds=UPDATE_SECONDS, listed=listing):
+    """Fast-forward this Mac's own toolkit checkout, request["path"] under the home, to its origin's main
+    (vocaro-engineering#203), and return what became of it.
+
+    Work dispatched here runs from the dispatched toolkit checkouts under ROOT, at the commit sent, and never
+    from this one; but whatever runs `eng` straight from it, such as a recovery recoverable_line names, runs
+    its code, which nothing else here updates (owner's decision, 2026-11-05: "it should be auto-updated by
+    the eng scripts"). It is fast-forwarded, without hooks, only as this Mac's shared checkout follows a
+    landing (merge_queue's follow, vocaro-engineering#104): when it is on main, has no changed or untracked
+    path, holds no commit origin/main lacks, is behind, and no process of this account runs from it (its
+    working directory or an argument lies in it; running_from). Otherwise it is left as it is, with the
+    reason, which is its owner's to decide: state "missing", "left" (another branch, a detached HEAD,
+    changes, commits origin/main lacks, a process running from it) or "failed" (a fetch, listing or merge
+    that failed or timed out).
+
+    With request["want"], a commit the sending Mac's origin/main names, a checkout that holds it already is
+    "current" without a fetch, so most connections cost a few git reads. Every step shares one deadline,
+    seconds, the fetch at most UPDATE_FETCH_SECONDS of it, and git can never prompt. While another
+    connection updates the checkout, this one leaves it to that one ("busy"). Nothing here raises for the
+    checkout's sake: whatever went wrong is the answer's reason."""
+    home = Path.home() if home is None else Path(home)
+    checkout = home / request.get("path", TOOLKIT_CHECKOUT)
+    found = {"checkout": str(checkout), "path": request.get("path", TOOLKIT_CHECKOUT)}
+    deadline = time.monotonic() + seconds
+    environment = {key: value for key, value in os.environ.items() if key not in GIT_LOCATION}
+    environment.update(GIT_TERMINAL_PROMPT="0", GIT_SSH_COMMAND=environment.get("GIT_SSH_COMMAND") or
+                       "ssh -o BatchMode=yes -o ConnectTimeout=10")
+    root = home / request.get("root", "Development/build-host")
+    if (root / "git-credentials").is_file(): credentials(environment, root / "git-credentials")
+
+    def run(*arguments, limit=None):
+        """Git's output, stripped, and None; or None and why it failed."""
+        name = next((word for word in arguments if not word.startswith("-") and "=" not in word), "")
+        left = deadline - time.monotonic()
+        allowed = min(left, limit) if limit else left
+        if allowed <= 0: return None, f"`git {name}` had no time left of the update's {seconds}s"
+        try:
+            # In a session of its own, so that a timeout stops what git started too, such as a fetch's
+            # git-remote-https or ssh, which would otherwise hold its output open past the deadline.
+            child = subprocess.Popen(["git", "-C", str(checkout), *arguments], stdin=subprocess.DEVNULL,
+                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=environment,
+                                     start_new_session=True)
+        except OSError as error:
+            return None, f"`git {name}` could not run: {error}"
+        try:
+            stdout, stderr = child.communicate(timeout=allowed)
+        except subprocess.TimeoutExpired:
+            with contextlib.suppress(OSError): os.killpg(child.pid, signal.SIGKILL)
+            with contextlib.suppress(subprocess.TimeoutExpired): child.communicate(timeout=DRAIN_SECONDS)
+            return None, f"`git {name}` did not finish in {round(allowed)}s"
+        if child.returncode:
+            return None, f"`git {' '.join(arguments)}` exited {child.returncode}: " + \
+                ((stderr.strip().splitlines() or ["no output"])[-1])
+        return stdout.strip(), None
+
+    def ended(state, reason=None, **more):
+        found.update(state=state, **({"reason": reason} if reason else {}), **more)
+        return found
+
+    if not (checkout / ".git").exists():
+        return ended("missing", f"there is no git checkout at ~/{found['path']}")
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        lock = open(root / UPDATE_LOCK, "a")
+    except OSError as error:
+        return ended("failed", f"its lock in {root} could not be opened: {error}")
+    with lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return ended("busy", "another connection is updating it now")
+        head, why = run("rev-parse", "--verify", "HEAD^{commit}")
+        if head is None: return ended("failed", why)
+        found["head"] = head
+        branch, _ = run("symbolic-ref", "--quiet", "--short", "HEAD")
+        if branch is None: return ended("left", f"its HEAD is detached at {head[:12]}, not on main")
+        if branch != "main": return ended("left", f"it is on branch {branch}, not main", branch=branch)
+        # Staged or not, against HEAD, and untracked files that no .gitignore names: clean, as this Mac's
+        # shared checkout must be to follow a landing (merge_queue's follow, vocaro-engineering#104).
+        changed, why = run("diff", "--name-only", "HEAD")
+        untracked, why_untracked = run("ls-files", "--others", "--exclude-standard")
+        if changed is None or untracked is None: return ended("failed", why or why_untracked)
+        files = [*changed.splitlines(), *untracked.splitlines()]
+        if files:
+            shown = ", ".join(files[:3]) + (f" and {len(files) - 3} more" if len(files) > 3 else "")
+            return ended("left", f"it has {len(files)} changed or untracked path{'s' * (len(files) != 1)}: {shown}")
+        want = request.get("want")
+        if want and run("merge-base", "--is-ancestor", want, "HEAD")[0] is not None:
+            return ended("current", fetched=False)
+        _, why = run("fetch", "--quiet", "--no-tags", "origin", "refs/heads/main:refs/remotes/origin/main",
+                     limit=UPDATE_FETCH_SECONDS)
+        if why: return ended("failed", f"fetching origin's main failed: {why}")
+        upstream, why = run("rev-parse", "--verify", "refs/remotes/origin/main^{commit}")
+        if upstream is None: return ended("failed", why)
+        behind, why = run("rev-list", "--count", f"HEAD..{upstream}")
+        ahead, why_ahead = run("rev-list", "--count", f"{upstream}..HEAD")
+        if behind is None or ahead is None: return ended("failed", why or why_ahead)
+        behind, ahead = int(behind), int(ahead)
+        found.update(upstream=upstream, behind=behind, ahead=ahead, fetched=True)
+        if ahead:
+            return ended("left", f"it has {ahead} commit{'s' * (ahead != 1)} that origin/main lacks"
+                                 + (f" and lacks {behind} of origin/main's, so the two have diverged" if behind else ""))
+        if not behind: return ended("current")
+        # A run from it, such as a recovery, keeps the modules it loaded and reads others as it goes, so a
+        # move under it could mix two toolkits. What runs in a session's worktree inside it, or in Git's own
+        # directory, does not run from its tree.
+        listed_worktrees, why = run("worktree", "list", "--porcelain")
+        if listed_worktrees is None: return ended("failed", why)
+        apart = [line[len("worktree "):] for line in listed_worktrees.splitlines()[1:] if line.startswith("worktree ")]
+        apart.append(str(checkout / ".git"))
+        users = running_from(checkout, max(1, deadline - time.monotonic()), listed, apart)
+        if users is None: return ended("failed", "ps listed no processes, so what runs from it is unknown")
+        if users:
+            more = f"; and {len(users) - 3} more" if len(users) > 3 else ""
+            return ended("left", f"a process runs from it: {'; '.join(users[:3])}{more}")
+        _, why = run("-c", "core.hooksPath=/dev/null", "merge", "--ff-only", "--quiet", upstream)
+        if why: return ended("failed", f"the fast-forward to {upstream[:12]} failed: {why}")
+        return ended("updated", to=upstream)
+
+
+def running_from(checkout, seconds, listed=listing, apart=()):
+    """What of this account, other than this process and its ancestors, may run code from checkout's own tree, as
+    lines naming each process: its working directory, as lsof lists it, or an argument is below checkout, not at
+    checkout itself and not below any of apart, where an argument relative to its working directory counts when
+    it names a file there, or a folder by a path with a slash. This is disk.runners' rule, which this file cannot
+    import, without open files (vocaro-engineering#182). None when ps listed no processes. ps and lsof each have
+    at most seconds."""
+    table = process_table(listed(["ps", "-axww", "-o", "pid=,ppid=,uid=,lstart=,args="], timeout=seconds))
+    if not table: return None
+    uid = os.getuid()
+    directories = working_directories(listed(["lsof", "-nPw", "-a", "-u", str(uid), "-d", "cwd", "-Fpn"],
+                                             timeout=seconds))
+    top, others = forms(checkout), [form for path in apart for form in forms(path)]
+    inside = lambda value, prefixes: any((value.rstrip("/") + "/").startswith(prefix) for prefix in prefixes)
+    below = lambda value: bool(value) and (value.rstrip("/") + "/") not in top and inside(value, top) \
+        and not inside(value, others)
+    mine, found = set(lineage(table, os.getpid())), []
+    for pid, row in sorted(table.items()):
+        if pid in mine or row["uid"] != uid: continue
+        where = directories.get(pid)
+        uses = [(where, "working in")]
+        for token in row["args"].split():
+            if token.startswith("/"): uses.append((token, "naming"))
+            elif token and not token.startswith("-") and where and inside(where, top):
+                named = os.path.join(where, token)
+                if os.path.isfile(named) or ("/" in token and os.path.exists(named)): uses.append((named, "naming"))
+        hit = next(((how, value) for value, how in uses if below(value)), None)
+        if hit: found.append(f"PID {pid}, {hit[0]} {hit[1]}: {row['args']}")
+    return found
 
 
 def defer_devices(kit, mac):
@@ -2380,6 +2554,6 @@ if __name__ == "__main__":
     request = json.loads(sys.argv[1])
     if "keepUnlocked" in request: sys.exit(keep_unlocked(request["keepUnlocked"]))
     if {"toolchain", "images", "deleteRuntime", "receive", "leftovers", "device", "keychain", "foreground",
-            "pressure", "capacity", "screen"} & request.keys():
+            "pressure", "capacity", "screen", "toolkitCheckout"} & request.keys():
         print(json.dumps(answer(request)))
     else: main(request)
