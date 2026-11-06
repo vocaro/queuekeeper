@@ -506,6 +506,16 @@ The lanes must be ones the queue runs, so their passing is what the worker just 
 admission there is a lane's no verdict. The worker then does not run the hook, and its log says so.
 Keep the opt-in only while it is true: a hook that checks something no lane does stays a hook. A person's own `git push` still runs the hook.
 
+**A gate that fails on a test the change cannot reach.** Record the failure on that test's issue,
+or file one by the project's labels, before adding the entry again: an entry added again with no
+record leaves the flake nobody's to fix. On 2026-11-05 the fix for
+[EPUBLib#978](https://github.com/vocaro/EPUBLib/issues/978) went through EPUBLib's queue four
+times: once on its own regression test's race, then twice on Mac display checks that ran on the
+second Mac beside another project's gate
+([EPUBLib#875](https://github.com/vocaro/EPUBLib/issues/875),
+[EPUBLib#896](https://github.com/vocaro/EPUBLib/issues/896)), each recorded on its issue, while
+the iOS lane passed every time. The options below are for a fix that cannot wait, not for a flake.
+
 **Landing ahead of the queue.** Two options of `eng land`, and of `eng queue add`, are for
 emergencies only, never routine. They work in every repository, with no setting (owner's decision,
 2026-11-04, [#163](https://github.com/vocaro/vocaro-engineering/issues/163)), and do what a hand push
