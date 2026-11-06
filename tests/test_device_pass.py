@@ -38,10 +38,9 @@ class Fixture(unittest.TestCase):
             self.addCleanup(patcher.stop)
         for name in (devices.OWNER, devices.LEASE, "CODEX_THREAD_ID", "CLAUDE_CODE_SESSION_ID", "ENG_RESULTS_DIR"):
             os.environ.pop(name, None)
-        # Each paired device's first reservation, within a window the owner agreed, records its device.
+        # Each paired device's first reservation records its device.
         for key, device in (("iPad", TABLET), ("iPhone", PHONE)):
-            entry = self.record.reserve(key, owner="first", revision=0, purpose="p", release_by=later(), device=device,
-                                        approval=approval())
+            entry = self.record.reserve(key, owner="first", revision=0, purpose="p", release_by=later(), device=device)
             self.record.release(key, owner="first", revision=entry["revision"], outcome="o", restoration="r")
 
     def command(self, *words):
@@ -52,9 +51,8 @@ class Fixture(unittest.TestCase):
 
     def hold_iphone(self, owner="session-a"):
         entry = self.record.entry("iPhone")
-        until = later(60)
-        return self.record.reserve("iPhone", owner=owner, revision=entry["revision"], purpose="the owner's window",
-                                   release_by=until, approval=approval(until=until))
+        return self.record.reserve("iPhone", owner=owner, revision=entry["revision"], purpose="its own run",
+                                   release_by=later(60))
 
     def run_pass(self, keys, command, **options):
         options.setdefault("owner", "session-a")
@@ -77,12 +75,11 @@ class DevicePass(Fixture):
         self.assertEqual((ipad["words"], ipad["key"], ipad["udid"]), ([f"id={TABLET}", "iPad"], "iPad", TABLET))
         self.assertEqual((iphone["words"], iphone["udid"]), ([f"id={PHONE}", "iPhone"], PHONE))
         self.assertEqual(ipad["results"], str(results / "iPad"))
-        # The iPad, taken under the owner's standing approval, is released; the iPhone, the session's own
-        # reservation within his window, stays held.
+        # The iPad, taken in turn, is released; the iPhone, the session's own reservation, stays held.
         ipad_entry, iphone_entry = self.record.entry("iPad"), self.record.entry("iPhone")
         self.assertEqual(devices.condition(ipad_entry), "released")
         self.assertEqual(ipad_entry["lastOwnerChatID"], "session-a")
-        self.assertEqual(ipad_entry["approval"]["words"], devices.STANDING["iPad"]["words"])
+        self.assertNotIn("approval", ipad_entry)
         self.assertIn("device pass: passed", ipad_entry["run"])
         self.assertEqual((devices.condition(iphone_entry), iphone_entry["ownerChatID"]), ("held", "session-a"))
         self.assertEqual(iphone_entry["run"]["outcome"], "exit 0")
@@ -97,32 +94,22 @@ class DevicePass(Fixture):
         self.assertNotIn(TABLET, summary)
         self.assertNotIn(PHONE, summary)
 
-    def test_an_iphone_outside_a_window_is_not_run_and_leaves_the_pass_unmeasured(self):
-        parts, code, said = self.run_pass(["iPad", "iPhone"], self.command())
-        self.assertEqual(code, device_pass.UNMEASURED)
-        self.assertEqual((parts["iPad"].outcome, parts["iPhone"].outcome), ("passed", "not run"))
-        self.assertIn("ask the owner for a window", parts["iPhone"].detail)
-        # Nothing ran on the iPhone, and its entry is as it was.
-        self.assertEqual([call["key"] for call in self.ran()], ["iPad"])
-        self.assertEqual(devices.condition(self.record.entry("iPhone")), "released")
-        self.assertEqual(self.record.entry("iPhone")["lastOwnerChatID"], "first")
-        # The negative control: the iPhone alone, not run, is unmeasured, never passed.
-        _parts, code, _said = self.run_pass(["iPhone"], self.command())
-        self.assertEqual(code, device_pass.UNMEASURED)
-
-    def test_an_iphone_within_the_owners_window_is_taken_in_turn_run_on_and_released(self):
-        window = approval(until=later(120), words="install it on my iPhone")
-        parts, code, said = self.run_pass(["iPhone"], self.command("{key}"), approval=window, minutes=20)
+    def test_the_iphone_is_taken_in_turn_run_on_and_released_as_the_ipad_is(self):
+        # The owner's decision of 2026-11-06: the pass checks no approval, which is between the session and the
+        # owner; it only takes the device in turn.
+        parts, code, said = self.run_pass(["iPhone"], self.command("{key}"), minutes=20)
         self.assertEqual(code, 0, said)
         self.assertEqual((parts["iPhone"].outcome, parts["iPhone"].took, parts["iPhone"].released), ("passed", True, True))
         self.assertEqual([call["udid"] for call in self.ran()], [PHONE])
         entry = self.record.entry("iPhone")
         self.assertEqual((devices.condition(entry), entry["lastOwnerChatID"]), ("released", "session-a"))
-        self.assertEqual(entry["approval"]["words"], "install it on my iPhone")
-        # A window that ends before the reservation would is refused, and nothing runs.
-        parts, code, _said = self.run_pass(["iPhone"], self.command(), approval=approval(until=later(5)), minutes=20)
+        self.assertNotIn("approval", entry)
+        # The negative control: an iPhone another session holds past the wait is not run, and the pass is
+        # unmeasured, never passed.
+        self.hold_iphone(owner="session-b")
+        parts, code, _said = self.run_pass(["iPhone"], self.command())
         self.assertEqual((parts["iPhone"].outcome, code), ("not run", device_pass.UNMEASURED))
-        self.assertIn("falls after the owner's approval ends", parts["iPhone"].detail)
+        self.assertIn("stayed held or claimed by session-b", parts["iPhone"].detail)
         self.assertEqual(len(self.ran()), 1)
 
     def test_a_failure_on_one_device_fails_the_pass_and_the_other_still_runs(self):
@@ -153,7 +140,7 @@ class DevicePass(Fixture):
     def test_an_ipad_another_session_holds_past_the_wait_is_not_run(self):
         entry = self.record.entry("iPad")
         self.record.reserve("iPad", owner="session-b", revision=entry["revision"], purpose="its own run",
-                            release_by=later(), approval=approval())
+                            release_by=later())
         parts, code, _said = self.run_pass(["iPad"], self.command())
         self.assertEqual((code, parts["iPad"].outcome), (device_pass.UNMEASURED, "not run"))
         self.assertIn("stayed held or claimed by session-b", parts["iPad"].detail)
@@ -215,6 +202,8 @@ class DevicePass(Fixture):
                              *self.command()])
         self.assertEqual(code, 0, error.getvalue())
         self.assertIn("device-pass: iPad: passed: exit 0", error.getvalue())
+        # An iPhone another session holds is not run.
+        self.hold_iphone(owner="session-b")
         with contextlib.redirect_stderr(StringIO()) as error:
             code = cli.main(["device-pass", "--device", "iPhone", "--owner", "session-a", "--wait", "0", "--",
                              *self.command()])
@@ -276,6 +265,7 @@ class ReleaseLane(Fixture):
             self.assertIn("in this checkout", release.lane_passed(root, "device-voiceover", commit))
 
     def test_a_device_lane_with_the_iphone_not_run_is_no_pass(self):
+        self.hold_iphone(owner="session-b")
         root, commit = self.project("iPad", "iPhone")
         code, error = self.run_lane(root)
         self.assertEqual(code, device_pass.UNMEASURED, error)

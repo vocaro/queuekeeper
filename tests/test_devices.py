@@ -106,9 +106,6 @@ class DeviceRecordTests(unittest.TestCase):
             os.environ.pop(name, None)
 
     def reserve(self, key="iPhone", owner="session-a", revision=0, **options):
-        # A physical device's reservation records the window the owner agreed.
-        if devices.physical(options.get("device")):
-            options.setdefault("approval", approval())
         return self.record.reserve(key, owner=owner, revision=revision, purpose="bounded UI test",
                                    release_by=options.pop("release_by", later()), **options)
 
@@ -230,7 +227,7 @@ class DeviceRecordTests(unittest.TestCase):
                                        verified="no owned processes on the device; VoiceOver as recorded")
         self.assertEqual((released["state"], released["lastOwnerChatID"]), ("released", "session-a"))
         self.assertEqual(released["recovery"]["condition"], "orphan")
-        self.reserve(owner="session-b", revision=released["revision"], approval=approval())
+        self.reserve(owner="session-b", revision=released["revision"])
 
     def test_recovering_a_run_sent_to_the_second_mac_waits_until_nothing_there_may_use_the_device(self):
         child = live()
@@ -265,7 +262,7 @@ class DeviceRecordTests(unittest.TestCase):
         self.assertEqual(recovered["recovery"]["offload"]["host"], "build-host")
         self.assertIn("checkedAt", recovered["recovery"]["offload"])
         # The owner can recover without the second Mac, recording why.
-        entry = self.reserve(owner="session-b", revision=recovered["revision"], approval=approval())
+        entry = self.reserve(owner="session-b", revision=recovered["revision"])
         entry = self.record.update("iPhone", owner="session-b", revision=entry["revision"], state="uncertain-run",
                                    uncertain=True, run={"host": "build-host", "startedAt": started})
         asked.clear()
@@ -276,7 +273,7 @@ class DeviceRecordTests(unittest.TestCase):
                                                                               "unchecked": "it is gone"})
         self.assertEqual((error, asked), ("", []))
         # A run that stayed on this Mac asks no second Mac.
-        entry = self.reserve(owner="session-c", revision=self.record.entry("iPhone")["revision"], approval=approval())
+        entry = self.reserve(owner="session-c", revision=self.record.entry("iPhone")["revision"])
         entry = self.record.update("iPhone", owner="session-c", revision=entry["revision"], uncertain=True,
                                    run="a local result bundle")
         recovered = self.record.recover("iPhone", by="owner", revision=entry["revision"], verified="v",
@@ -382,25 +379,37 @@ class DeviceRecordTests(unittest.TestCase):
         for udid in [DUO, None, "", "booted", "00008130-001A2C3E"]:
             self.assertFalse(devices.physical(udid), udid)
 
-    def test_a_physical_device_is_reserved_and_worked_on_only_within_the_owners_window(self):
-        with self.assertRaisesRegex(devices.Refused, "iPhone is a physical device: its reservation records the window"):
-            self.reserve(device=PHONE, approval=None)
+    def test_a_physical_device_is_reserved_with_no_approval(self):
+        # The owner's decision of 2026-11-06: the record schedules a device and records no approval, which is
+        # between the session and the owner.
+        with self.assertRaisesRegex(ValueError, "iPhone is a physical device, whose reservation records no approval"):
+            self.reserve(device=PHONE, approval=approval())
         self.assertFalse(self.path.exists())
-        # A simulator needs no window, and an entry without one is not given a physical device.
-        duo = self.reserve("Example Duo 1", device=DUO)
-        with self.assertRaisesRegex(devices.Refused, "Example Duo 1 is a physical device"):
-            self.record.update("Example Duo 1", owner="session-a", revision=duo["revision"], device=PHONE)
-        with self.assertRaisesRegex(devices.Refused, "approval of Example Duo 1 was never recorded"):
-            devices.require_window("Example Duo 1", duo)
+        code, _output, error = self.cli("reserve", "iPhone", "--owner", "s", "--revision", "0", "--purpose", "p",
+                                        "--release-by", later(), "--device", PHONE, "--approved-by", "owner",
+                                        "--approved-at", later(-1), "--approved-until", later(60))
+        self.assertEqual(code, 2)
+        self.assertIn("records no approval", error)
         entry = self.reserve(device=PHONE)
+        self.assertNotIn("approval", entry)
         self.assertIs(devices.require_window("iPhone", entry), entry)
-        self.assertNotIn("work on the device is refused", self.cli("status")[1])
+        duo = self.reserve("Example Duo 1", device=DUO)
+        self.assertIs(devices.require_window("Example Duo 1", duo), duo)
+        self.assertEqual(self.record.update("Example Duo 1", owner="session-a", revision=duo["revision"],
+                                            device=PHONE.replace("C", "E"))["device"], PHONE.replace("C", "E"))
         with patch.object(devices, "datetime", Later):
-            with self.assertRaisesRegex(devices.Refused, re.escape(f"approval of iPhone ended at {entry['approval']['until']}")):
-                devices.require_window("iPhone", self.record.entry("iPhone"))
-            output = self.cli("status")[1]
+            later_entry = self.record.entry("iPhone")
+            self.assertIs(devices.require_window("iPhone", later_entry), later_entry)
+        self.assertNotIn("work on the device is refused", self.cli("status")[1])
+        # A reservation made before then recorded one, and work stops once it has ended.
+        value = json.loads(self.path.read_text())
+        value["devices"]["iPhone"]["approval"] = approval(at=later(-90), until=later(-30))
+        self.path.write_text(json.dumps(value))
+        with self.assertRaisesRegex(devices.Refused, "approval of iPhone ended at"):
+            devices.require_window("iPhone", self.record.entry("iPhone"))
+        output = self.cli("status")[1]
         self.assertIn("iPhone: held", output)
-        self.assertIn("approval ended or never recorded; work on the device is refused", output)
+        self.assertIn("the approval an earlier reservation recorded has ended; work on the device is refused", output)
 
     def test_a_record_that_defers_physical_devices_refuses_them_and_keeps_its_simulators(self):
         # Before the deferral, the record holds a physical device like any other.
@@ -419,7 +428,7 @@ class DeviceRecordTests(unittest.TestCase):
         self.assertIsNone(self.record.entry("iPad"))
         self.assertIn("Physical devices are reserved in workstation's device record", self.cli("status")[1])
         self.record.defer(None)
-        self.reserve(revision=self.record.entry("iPhone")["revision"], approval=approval())
+        self.reserve(revision=self.record.entry("iPhone")["revision"])
         self.assertNotIn("Physical devices are reserved", self.cli("status")[1])
 
     def test_which_mac_holds_physical_devices_changes_only_by_the_owners_decision(self):
@@ -732,8 +741,7 @@ class DeviceRecordTests(unittest.TestCase):
 
     def test_command_line_reports_revisions_and_refusals(self):
         code, output, _error = self.cli("reserve", "iPhone", "--owner", "session-a", "--revision", "0",
-            "--purpose", "smoke", "--release-by", later(), "--device", PHONE, "--approved-by", "owner",
-            "--approved-at", later(-1), "--approved-until", later(60),
+            "--purpose", "smoke", "--release-by", later(), "--device", PHONE,
             "--set", 'originalSettings={"voiceoverEnabled": false}', "--set", "preservation=owner apps and data")
         self.assertEqual(code, 0)
         shown = json.loads(output)
@@ -762,7 +770,7 @@ class DeviceRecordTests(unittest.TestCase):
         entry = self.reserve("iPad", device=TABLET)
         return self.record.release("iPad", owner="session-a", revision=entry["revision"], outcome="o", restoration="r")
 
-    def test_a_device_with_standing_approval_is_taken_in_turn_without_asking(self):
+    def test_a_paired_device_is_taken_in_turn(self):
         held = self.reserve("iPad", device=TABLET)
         said = []
         result = {}
@@ -788,7 +796,7 @@ class DeviceRecordTests(unittest.TestCase):
         self.assertNotIn("error", result)
         entry = result["entry"]
         self.assertEqual((entry["ownerChatID"], entry["device"]), ("session-b", TABLET))
-        self.assertEqual(entry["approval"], {**devices.STANDING["iPad"], "until": "released"})
+        self.assertNotIn("approval", entry)
         self.assertIs(devices.require_window("iPad", entry), entry)
         self.assertTrue(any("held by session-a" in line for line in said))
         self.assertEqual(devices.waiting(self.record.load(), "iPad"), [])
@@ -800,7 +808,7 @@ class DeviceRecordTests(unittest.TestCase):
         self.assertEqual(self.record.join("iPad", owner="session-c", purpose="second", pid=second.pid), 2)
         with self.assertRaisesRegex(devices.Refused, "already waits"):
             self.record.join("iPad", owner="session-c", purpose="again", pid=second.pid)
-        # Even a window the owner agreed waits its turn.
+        # A reservation waits its turn too.
         for owner in ("session-a", "session-c"):
             with self.assertRaisesRegex(devices.Refused, "2 waiting for iPad, first session-b"):
                 self.reserve("iPad", owner=owner, revision=entry["revision"], device=TABLET)
@@ -813,7 +821,7 @@ class DeviceRecordTests(unittest.TestCase):
         self.assertEqual(devices.waiting(self.record.load(), "iPad"), [])
         self.assertEqual(self.record.load()[devices.QUEUES]["iPad"], [])
 
-    def test_only_standing_devices_that_record_their_device_are_taken(self):
+    def test_only_paired_devices_that_record_their_device_are_taken(self):
         # Their 1 s timeouts stay fixed: each take is refused before it waits.
         with self.assertRaisesRegex(ValueError, "take waits only for iPad or iPhone"):
             self.record.take("Example Duo 1", owner="s", purpose="p", release_by=later(), timeout=1)
@@ -839,66 +847,35 @@ class DeviceRecordTests(unittest.TestCase):
         return self.record.release("iPhone", owner="session-a", revision=entry["revision"], outcome="o",
                                    restoration="r")
 
-    def test_the_ipad_is_taken_with_no_window_and_the_iphone_is_not(self):
-        # The owner's decision of 2026-11-01: the iPhone, the owner's personal phone, has no standing approval.
-        self.assertEqual(set(devices.STANDING), {"iPad"})
-        self.assertEqual(set(devices.WINDOWED), {"iPhone"})
+    def test_the_iphone_is_taken_in_turn_as_the_ipad_is(self):
+        # The owner's decision of 2026-11-06: neither take checks an approval; asking the owner before using
+        # the iPhone, his personal phone, is between the session and the owner.
         self.released_tablet()
-        phone = self.released_phone()
-        taken = self.record.take("iPad", owner="session-b", purpose="p", release_by=later(), timeout=stretched(5), poll=0.01,
-                                 said=lambda _text: None)
-        self.assertEqual(taken["approval"], {**devices.STANDING["iPad"], "until": "released"})
-        with self.assertRaisesRegex(devices.Refused, r"iPhone has no standing approval\. Ask the owner for a window "
-                                    r"first.*devices reserve iPhone --approved-by.*Nothing was changed"):
-            self.record.take("iPhone", owner="session-b", purpose="p", release_by=later(), timeout=stretched(5), poll=0.01,
-                             said=lambda _text: None)
-        self.assertEqual(self.record.entry("iPhone"), phone)
-        self.assertEqual(devices.waiting(self.record.load(), "iPhone"), [])
-        code, output, error = self.cli("take", "iPhone", "--owner", "session-b", "--purpose", "p",
-                                       "--release-by", later())
-        self.assertEqual((code, output), (2, ""))
-        self.assertIn("Ask the owner for a window first", error)
-        self.assertEqual(self.record.entry("iPhone"), phone)
-        self.assertIn("iPhone: released", self.cli("status")[1])
-        self.assertIn("no standing approval: ask the owner for a window", self.cli("status")[1])
-
-    def test_the_iphone_is_reserved_or_taken_within_the_owners_window(self):
-        phone = self.released_phone()
-        # A window that has ended, or ends before the expected release, is no window.
-        for window, release_by in ((approval(at=later(-90), until=later(-30)), later()),
-                                   (approval(until=later(10)), later(30))):
-            with self.assertRaises(ValueError):
-                self.record.take("iPhone", owner="session-b", purpose="p", release_by=release_by, timeout=stretched(5),
-                                 poll=0.01, said=lambda _text: None, approval=window)
-        self.assertEqual(self.record.entry("iPhone"), phone)
-        self.assertEqual(devices.waiting(self.record.load(), "iPhone"), [])
-        window = approval(words="ok, the iphone is yours for the next hour")
-        taken = self.record.take("iPhone", owner="session-b", purpose="p", release_by=later(), timeout=stretched(5), poll=0.01,
-                                 said=lambda _text: None, approval=window)
-        self.assertEqual((taken["ownerChatID"], taken["device"], taken["approval"]), ("session-b", PHONE, window))
-        self.assertIs(devices.require_window("iPhone", taken), taken)
-        released = self.record.release("iPhone", owner="session-b", revision=taken["revision"], outcome="o",
-                                       restoration="r")
-        reserved = self.record.reserve("iPhone", owner="session-c", revision=released["revision"], purpose="p",
-                                       release_by=later(), approval=window)
-        self.assertEqual((reserved["ownerChatID"], reserved["approval"]), ("session-c", window))
-        released = self.record.release("iPhone", owner="session-c", revision=reserved["revision"], outcome="o",
-                                       restoration="r")
+        self.released_phone()
+        for key, device in (("iPad", TABLET), ("iPhone", PHONE)):
+            taken = self.record.take(key, owner="session-b", purpose="p", release_by=later(), timeout=stretched(5),
+                                     poll=0.01, said=lambda _text: None)
+            self.assertEqual((taken["ownerChatID"], taken["device"]), ("session-b", device))
+            self.assertNotIn("approval", taken)
+            self.record.release(key, owner="session-b", revision=taken["revision"], outcome="o", restoration="r")
         code, output, _error = self.cli("take", "iPhone", "--owner", "session-d", "--purpose", "p",
-                                        "--release-by", later(), "--approved-by", "owner", "--approved-at", later(-1),
-                                        "--approved-until", later(60))
+                                        "--release-by", later())
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(output)["entry"]["ownerChatID"], "session-d")
+        self.assertIn("take it in turn with `devices take iPhone`", self.cli("status")[1])
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(StringIO()):
+            devices.main(["take", "iPhone", "--owner", "s", "--purpose", "p", "--release-by", later(),
+                          "--approved-by", "owner"])
 
     def test_either_device_has_one_holder_at_a_time(self):
-        for key, device, window in (("iPad", TABLET, None), ("iPhone", PHONE, approval())):
+        for key, device in (("iPad", TABLET), ("iPhone", PHONE)):
             held = self.reserve(key, device=device)
             with self.assertRaisesRegex(devices.Refused, "held by session-a"):
                 self.record.reserve(key, owner="session-b", revision=held["revision"], purpose="p",
-                                    release_by=later(), approval=approval())
+                                    release_by=later())
             with self.assertRaisesRegex(TimeoutError, "nothing was reserved"):
                 self.record.take(key, owner="session-b", purpose="p", release_by=later(), timeout=0.05, poll=0.01,
-                                 said=lambda _text: None, approval=window)
+                                 said=lambda _text: None)
             self.assertEqual(self.record.entry(key), held)
             self.assertEqual(devices.waiting(self.record.load(), key), [])
 
@@ -930,7 +907,7 @@ class DeviceRecordTests(unittest.TestCase):
                                        restoration="r", apps_quit="devicectl terminated com.example.Host")
         self.assertEqual(released["appsQuit"], "devicectl terminated com.example.Host")
         # The next holder's entry starts without them, and keeps them in its previous lease.
-        taken = self.reserve("iPad", owner="session-b", revision=released["revision"], approval=approval())
+        taken = self.reserve("iPad", owner="session-b", revision=released["revision"])
         self.assertNotIn("launchedApps", taken)
         self.assertEqual(taken["previousLease"]["launchedApps"], ["com.example.Host"])
 
@@ -950,10 +927,9 @@ class BoundedRunTests(unittest.TestCase):
             os.environ.pop(name, None)
 
     def hold(self, key="iPad", device=TABLET, owner="session-a", release_by=None, **options):
-        """A reservation within the owner's approval of a window until it ends."""
+        """A reservation until release_by."""
         entry = self.record.entry(key)
         release_by = release_by or later()
-        options.setdefault("approval", approval(until=release_by))
         return self.record.reserve(key, owner=owner, revision=(entry or {}).get("revision", 0), purpose="bounded run",
                                    release_by=release_by, device=device, **options)
 
@@ -1084,7 +1060,7 @@ class BoundedRunTests(unittest.TestCase):
         # A device the record knows is named wherever it appears.
         self.assertEqual(devices.named([f"SIGN_IDENTITY={identity}"], [identity.lower()]), {identity})
 
-    def test_only_the_holder_with_no_run_active_within_the_owners_approval_may_run(self):
+    def test_only_the_holder_with_no_run_active_may_run(self):
         command = ["--", *self.mark()]
         def refused(message, *arguments, key="iPad", owner="session-a"):
             code, _output, error = self.cli("run", key, *(["--owner", owner] if owner else []), *arguments, *command)
@@ -1112,16 +1088,14 @@ class BoundedRunTests(unittest.TestCase):
         self.hold("Example Duo 1", device=DUO)
         refused(f"holds {DUO}, not a physical device", key="Example Duo 1")
         self.hold()
-        with patch.object(devices, "datetime", Later):
-            refused("the owner's approval of iPad ended at")
-        # An entry from before reservations recorded the window has none to run in.
+        # A reservation made before 2026-11-06 recorded an approval, and once that has ended nothing runs.
         value = json.loads(self.path.read_text())
+        value["devices"]["iPad"]["approval"] = approval(at=later(-90), until=later(-30))
+        self.path.write_text(json.dumps(value))
+        refused("the owner's approval of iPad ended at")
         del value["devices"]["iPad"]["approval"]
         self.path.write_text(json.dumps(value))
-        refused("the owner's approval of iPad was never recorded")
-        value["devices"]["iPad"]["approval"] = approval(until=value["devices"]["iPad"]["expectedReleaseBy"])
-        self.path.write_text(json.dumps(value))
-        # Positive control: the same reservation, within its approval.
+        # Positive control: the same reservation, which records no approval, as every one now.
         code, _output, error = self.cli("run", "iPad", "--owner", "session-a", *command)
         self.assertEqual(code, 0, error)
         self.assertTrue(self.marker.exists())
@@ -1139,10 +1113,17 @@ class BoundedRunTests(unittest.TestCase):
                                                   restoration=0).seconds(), 300 + devices.RESTORATION, delta=stretched(5))
         with self.assertRaisesRegex(ValueError, "at least 30s"):
             devices.BoundedRun(["iPad"], "session-a", [], record=self.record, limit=10)
-        # A later expected release leaves the run within the owner's approval, which ends first.
+        # A later expected release leaves the run within an earlier reservation's recorded approval, which ends first.
+        value = json.loads(self.path.read_text())
+        value["devices"]["iPad"]["approval"] = approval(until=value["devices"]["iPad"]["expectedReleaseBy"])
+        self.path.write_text(json.dumps(value))
         entry = self.record.entry("iPad")
         self.record.update("iPad", owner="session-a", revision=entry["revision"], expectedReleaseBy=later(600))
         self.assertAlmostEqual(devices.BoundedRun(["iPad"], "session-a", [], record=self.record).seconds(), 300, delta=stretched(5))
+        del value["devices"]["iPad"]["approval"]
+        value["devices"]["iPad"]["expectedReleaseBy"] = later(600)
+        value["devices"]["iPad"]["revision"] += 1
+        self.path.write_text(json.dumps(value))
         # Too little time left refuses the run, and nothing runs.
         entry = self.record.entry("iPad")
         self.record.update("iPad", owner="session-a", revision=entry["revision"], expectedReleaseBy=later((keep + 10) / 60))
@@ -1290,8 +1271,7 @@ class NotificationTests(unittest.TestCase):
 
     def first(self, key="iPad", device=TABLET):
         """key's first reservation, which records its device, released again."""
-        entry = self.record.reserve(key, owner="first", revision=0, purpose="p", release_by=later(), device=device,
-                                    approval=approval())
+        entry = self.record.reserve(key, owner="first", revision=0, purpose="p", release_by=later(), device=device)
         return self.record.release(key, owner="first", revision=entry["revision"], outcome="o", restoration="r")
 
     def setup(self, key="iPad"):
@@ -1582,7 +1562,7 @@ class NotificationWatchTests(unittest.TestCase):
         for name in (devices.OWNER, devices.LEASE, "CODEX_THREAD_ID", "CLAUDE_CODE_SESSION_ID"):
             os.environ.pop(name, None)
         entry = self.record.reserve("iPad", owner="session-a", revision=0, purpose="p", release_by=later(),
-                                    device=TABLET, approval=approval())
+                                    device=TABLET)
         self.revision = entry["revision"]
         self.runs = self.root / "runs"
 

@@ -26,20 +26,20 @@ Each Mac's simulators are its own, but a paired iPhone or iPad is reachable from
 physical device is reserved in one record only: the Mac that sends runs to the second Mac. The
 second Mac's record defers physical devices to that Mac and refuses to reserve one. A run there
 uses one under a reservation held in the sending Mac's record, which `eng remote --device` carries.
-A physical device's reservation records the window the owner agreed, as mac-foreground's does,
-and require_window refuses work on it once that window has ended.
+
+A physical device's reservation records no approval (owner's decision, 2026-11-06): the record schedules
+the devices, first come first served, one holder at a time, and a session that reserves one has the
+owner's agreement already, which is a matter between the session and the owner. The reservation's
+expected release is its window, and a bounded run stops before it.
 
 A bounded run (`devices run KEY -- COMMAND`, BoundedRun) runs one command on physical devices the
-session holds within the owner's approval, refusing a command that names any other device, and
+session holds, refusing a command that names any other device, and
 stops it before the reservation ends, keeping time for its termination and the session's
 restoration. It records the run in the entry and never releases the device. `eng remote --device`
 bounds a run on the second Mac the same way, and there a bounded run takes its reservation from the lease.
 
-The owner gave the paired iPad a standing approval (owner's decision, 2026-10-31), so a session
-takes it in turn without asking: `devices take iPad` joins its queue, waits while another session
-holds it or waits ahead, and reserves it with that approval. The iPhone, the owner's personal phone,
-has none (owner's decision, 2026-11-01): a session asks the owner for a window first, and `take
-iPhone` refuses unless it names that window (--approved-*), as `reserve` does. The queue lives
+`devices take KEY` takes a paired device in turn: it joins the device's queue, waits while another
+session holds it or waits ahead, and reserves it. The queue lives
 beside the entries, so joining it never changes a holder's revision, and a waiter whose process is
 gone drops out. While anyone waits, only the first in line may reserve the entry. A session records each app it
 launches on its device (`update --launched BUNDLE`), and releasing an entry that records any says how
@@ -110,19 +110,6 @@ MANAGED = {"revision", "ownerChatID", "lastOwnerChatID", "previousLease", "recov
            "launchedApps", "appsQuit", "notifications"}
 # The paired devices `take` waits in line for, by their entries' keys.
 PAIRED = ("iPad", "iPhone")
-# The owner's standing approval of each paired device, by its entry's key, in the owner's words. It
-# covers what a window does: installing, launching and automated runs, not operating the device.
-STANDING = {
-    "iPad": {"by": "owner", "at": "2026-10-31T06:14:00Z",
-             "words": "Also add iPad queue"},
-}
-# Paired devices without standing approval, by the owner's decision in the owner's words: each is
-# taken only within a window the owner agreed.
-WINDOWED = {
-    "iPhone": {"by": "owner", "at": "2026-11-01T23:37:06Z",
-               "words": "because it is my personal phone agents need to get approval from me first for a "
-                        "window of time in which the iphone is reserved for their use"},
-}
 # Sessions waiting in line for an entry, by its key, kept beside the entries.
 QUEUES = "queues"
 # The owner's word that he made the notification shortcuts on a paired device, by its entry's key, kept
@@ -196,10 +183,11 @@ def deferred_refusal(mac, key):
                    f"send the run here with `eng remote run|admit --device {key}`. Nothing was changed")
 
 
-def window_refusal(key):
-    return Refused(f"{key} is a physical device: its reservation records the window the owner agreed, who "
-                   "approved it, when, and until when (--approved-by, --approved-at, --approved-until). "
-                   "Nothing was changed")
+def approval_refusal(key):
+    return ValueError(f"{key} is a physical device, whose reservation records no approval: the record only "
+                      "schedules it, and the owner's agreement is between the session and the owner "
+                      f"(owner's decision, 2026-11-06). Reserve it without --approved-*, until {key}'s expected "
+                      "release. Nothing was changed")
 
 
 def now():
@@ -247,8 +235,11 @@ def _approval(value, release_by):
 
 
 def approval_ended(entry):
-    """Whether the approval an entry records has ended; an entry without one has none to act on."""
-    until = (entry.get("approval") or {}).get("until")
+    """Whether the approval an entry records has ended; an entry without one has none to end, as a physical
+    device's, which records none."""
+    if not entry.get("approval"):
+        return False
+    until = entry["approval"].get("until")
     if until == "released":
         return False
     deadline = moment(until)
@@ -256,13 +247,14 @@ def approval_ended(entry):
 
 
 def require_window(key, entry):
-    """Refuse work on key, the owner's screen or a paired device, outside the window the owner agreed.
+    """Refuse work on key, the owner's screen, outside the window the owner agreed, and on an older
+    device reservation that recorded one, once it has ended.
 
     An ended window releases nothing: the session stops, restores and releases."""
     if approval_ended(entry):
         until = (entry.get("approval") or {}).get("until")
-        raise Refused(f"the owner's approval of {key} " + (f"ended at {until}" if until else "was never recorded")
-                      + "; stop, restore the owner's settings and release")
+        raise Refused(f"the owner's approval of {key} ended at {until}; stop, restore the owner's settings and "
+                      "release")
     return entry
 
 
@@ -427,8 +419,8 @@ class Record:
             identifier = device or (current or {}).get("device")
             if record.get(DEFERRED) and physical(identifier):
                 raise deferred_refusal(record[DEFERRED], key)
-            if physical(identifier) and approval is None:
-                raise window_refusal(key)
+            if physical(identifier) and approval is not None:
+                raise approval_refusal(key)
             line = waiting(record, key)
             if line and line[0]["owner"] != owner:
                 raise Refused(f"{len(line)} waiting for {key}, first {line[0]['owner']} for {line[0].get('purpose')}; "
@@ -477,29 +469,13 @@ class Record:
         """Take owner out of key's line, if it is there."""
         self._line(key, lambda line: [item for item in line if item["owner"] != owner])
 
-    def take(self, key, *, owner, purpose, release_by, timeout, title=None, details=None, poll=POLL, said=None,
-             approval=None):
-        """Reserve key in turn, waiting up to timeout seconds in its line, within approval, the window the
-        owner agreed, or else with the owner's standing approval of key.
+    def take(self, key, *, owner, purpose, release_by, timeout, title=None, details=None, poll=POLL, said=None):
+        """Reserve key in turn, first come first served, waiting up to timeout seconds in its line.
 
-        The entry already records the device, from a reservation the owner agreed, so the standing approval
-        names no other. An orphaned or uncertain entry needs attended recovery; waiting leaves the line on
-        any end."""
+        The entry already records the device, from its first reservation, so the take names no other. An
+        orphaned or uncertain entry needs attended recovery; waiting leaves the line on any end."""
         if key not in PAIRED:
-            raise ValueError(f"take waits only for {' or '.join(PAIRED)}; reserve {key} within a window the "
-                             "owner agreed")
-        if approval is None and key not in STANDING:
-            raise Refused(f"{key} has no standing approval. Ask the owner for a window first, then "
-                          f"reserve it within that window with `devices reserve {key} "
-                          "--approved-by … --approved-at … --approved-until …`, or wait in line for it with the "
-                          "same options on `devices take`. Nothing was changed")
-        if approval is None:
-            approval = {**STANDING[key], "until": "released"}
-        else:
-            ends = moment(release_by)
-            if ends is None:
-                raise ValueError("the expected release must be a future ISO 8601 time with a time zone")
-            approval = _approval(approval, ends)
+            raise ValueError(f"take waits only for {' or '.join(PAIRED)}; reserve {key} with `devices reserve`")
         said = said or (lambda text: print(text, file=sys.stderr, flush=True))
         place = self.join(key, owner=owner, purpose=purpose)
         said(f"devices: {owner} waits for {key}, place {place} in line")
@@ -509,15 +485,14 @@ class Record:
                 value = self.load()
                 entry = value["devices"].get(key)
                 if entry is None or not physical(entry.get("device")):
-                    raise Refused(f"{key} records no physical device yet; its first reservation is within a window "
-                                  "the owner agreed, which records the device. Nothing was changed")
+                    raise Refused(f"{key} records no physical device yet; its first reservation, `devices reserve "
+                                  f"{key} --device UDID`, records the device. Nothing was changed")
                 state = condition(entry)
                 line = waiting(value, key)
                 if state == "released" and line and line[0]["owner"] == owner:
                     try:
                         return self.reserve(key, owner=owner, revision=entry["revision"], purpose=purpose,
-                                            release_by=release_by, title=title, details=details,
-                                            approval=approval)
+                                            release_by=release_by, title=title, details=details)
                     except Stale:
                         continue
                 if state in ("orphan", "uncertain"):
@@ -564,8 +539,6 @@ class Record:
             _owned(key, current, owner)
             if record.get(DEFERRED) and physical(changes.get("device")):
                 raise deferred_refusal(record[DEFERRED], key)
-            if physical(changes.get("device")) and not current.get("approval"):
-                raise window_refusal(key)
             entry = {**current, **changes}
             if owned:
                 entry["ownedProcesses"] = [*current.get("ownedProcesses", []), *owned]
@@ -843,7 +816,7 @@ class BoundedRun:
     never releasing them (guides/shared-host.md, Bounded device runs).
 
     Here the reservations come from this Mac's record: the session holds each with no run active,
-    at revision when one is given, within the owner's approval. Each entry records the run: active,
+    at revision when one is given. Each entry records the run: active,
     with this process as the run's and the command as the entry's own process, then its outcome.
     On the second Mac, whose record defers physical devices, they come from the lease the dispatch
     carries (LEASE), and the dispatch records the run in the sending Mac's record. Every device
@@ -901,11 +874,11 @@ class BoundedRun:
                               "come from a project's pool. Nothing ran")
             try: require_window(key, entry)
             except Refused as error: raise Refused(f"{error}. Nothing ran") from None
-            approval = entry["approval"]
+            until = (entry.get("approval") or {}).get("until")
             release = moment(entry.get("expectedReleaseBy"))
             if release is None:
                 raise Refused(f"{key} records no expected release to bound the run by. Nothing ran")
-            ends += [release] + ([] if approval["until"] == "released" else [moment(approval["until"])])
+            ends += [release] + ([] if until in (None, "released") else [moment(until)])
             devices[key] = entry["device"].upper()
             self.revisions[key] = entry.get("revision", 0)
         return devices, min(ends)
@@ -1164,7 +1137,7 @@ def _describe(key, entry, line=()):
         if key == FOREGROUND and approval_ended(entry):
             parts.append("approval ended; foreground actions are refused")
         elif physical(entry.get("device")) and approval_ended(entry):
-            parts.append("approval ended or never recorded; work on the device is refused")
+            parts.append("the approval an earlier reservation recorded has ended; work on the device is refused")
         alive = running(entry)
         if alive:
             parts.append(f"own processes running: {', '.join(str(item['pid']) for item in alive)}")
@@ -1179,10 +1152,8 @@ def _describe(key, entry, line=()):
         parts.append(_notification_state(key, entry))
     if line:
         parts.append("waiting: " + ", ".join(f"{item['owner']} ({item.get('purpose')})" for item in line))
-    if key in STANDING:
-        parts.append("standing approval: take it in turn with `devices take`")
-    elif key in WINDOWED:
-        parts.append("no standing approval: ask the owner for a window, then reserve it with --approved-*")
+    if key in PAIRED:
+        parts.append(f"take it in turn with `devices take {key}`")
     parts.append(f"revision {entry.get('revision', 0)}")
     return "; ".join(parts)
 
@@ -1262,10 +1233,11 @@ def main(argv=None):
     reserve.add_argument("--device")
     reserve.add_argument("--title")
     reserve.add_argument("--set", action="append", metavar="FIELD=JSON")
-    reserve.add_argument("--approved-by", help=f"who approved the window; required for {FOREGROUND}")
-    reserve.add_argument("--approved-at", help="when the owner approved, ISO 8601 with a time zone")
-    reserve.add_argument("--approved-until", help="when the approval ends, ISO 8601 with a time zone, or released")
-    reserve.add_argument("--approval-words", help="the owner's words, quoted")
+    reserve.add_argument("--approved-by", help=f"who approved the window; {FOREGROUND} only, which requires it")
+    reserve.add_argument("--approved-at", help=f"when the owner approved, ISO 8601 with a time zone; {FOREGROUND} only")
+    reserve.add_argument("--approved-until", help="when the approval ends, ISO 8601 with a time zone, or released; "
+                         f"{FOREGROUND} only")
+    reserve.add_argument("--approval-words", help=f"the owner's words, quoted; {FOREGROUND} only")
     update = commands.add_parser("update", help="change your own held entry")
     update.add_argument("key")
     update.add_argument("--owner", required=True)
@@ -1275,9 +1247,8 @@ def main(argv=None):
                         help="a process this session launched, which release waits for")
     update.add_argument("--launched", action="append", metavar="BUNDLE", default=[],
                         help="an app this session launched on the device, which release says it quit")
-    take = commands.add_parser("take", help=f"wait in line for {' or '.join(PAIRED)} and reserve it with the "
-                               f"owner's standing approval ({', '.join(STANDING)}) or within the window the owner "
-                               "agreed (--approved-*); prints the entry")
+    take = commands.add_parser("take", help=f"wait in line for {' or '.join(PAIRED)}, first come first served, "
+                               "and reserve it; prints the entry")
     take.add_argument("key", choices=sorted(PAIRED))
     take.add_argument("--owner", default=default_owner(), help=f"the session (default: {OWNER}, else the agent session)")
     take.add_argument("--purpose", required=True)
@@ -1286,10 +1257,6 @@ def main(argv=None):
     take.add_argument("--set", action="append", metavar="FIELD=JSON")
     take.add_argument("--wait", type=float, metavar="SECONDS", default=3600,
                       help="give up after waiting this long (default 3600)")
-    take.add_argument("--approved-by", help=f"who approved the window; required for {', '.join(WINDOWED)}")
-    take.add_argument("--approved-at", help="when the owner approved, ISO 8601 with a time zone")
-    take.add_argument("--approved-until", help="when the approval ends, ISO 8601 with a time zone, or released")
-    take.add_argument("--approval-words", help="the owner's words, quoted")
     release = commands.add_parser("release", help="release your own entry")
     release.add_argument("key")
     release.add_argument("--owner", required=True)
@@ -1342,7 +1309,7 @@ def main(argv=None):
             action.add_argument("--at", required=True, help="when he said it was on, ISO 8601 with a time zone")
     bounded = commands.add_parser("run", usage="%(prog)s [-h] [--owner SESSION] [--revision N] [--limit SECONDS] "
                                   "[--restoration SECONDS] key -- COMMAND ...", help="run COMMAND on KEY's physical "
-                                  "device, held by the session within the owner's approval, and stop it before the "
+                                  "device, held by the session, and stop it before the "
                                   "reservation ends; it records the run in the entry and never releases the device")
     bounded.add_argument("key")
     bounded.add_argument("--owner", default=default_owner(), help=f"the session holding KEY (default: {OWNER}, "
@@ -1385,7 +1352,7 @@ def main(argv=None):
                 raise ValueError(f"name the session: --owner, or {OWNER}")
             entry = record.take(args.key, owner=args.owner, purpose=args.purpose,
                                 release_by=args.release_by, timeout=args.wait, title=args.title,
-                                details=_fields(args.set), approval=_given_approval(args))
+                                details=_fields(args.set))
             _report(args.key, silence_notifications(record, args.key, owner=args.owner, revision=entry["revision"],
                                                     said=said))
         elif args.action == "release":

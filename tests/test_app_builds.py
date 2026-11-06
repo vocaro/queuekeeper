@@ -1,4 +1,6 @@
 """The last good build of a project's app, kept and run: `eng app` (app_builds.py)."""
+import contextlib
+from io import StringIO
 import json
 import os
 from pathlib import Path
@@ -345,16 +347,16 @@ class Devices(unittest.TestCase):
             self.assertEqual(app_builds.install_and_launch("U", "/a", BUNDLE, run=run), 1)
             self.assertEqual(len(run.calls), 1)
 
-    def test_a_device_run_is_a_device_pass_on_the_one_device_with_the_owners_window(self):
+    def test_a_device_run_is_a_device_pass_on_the_one_device(self):
         seen = {}
         def pass_run(keys, command, **options):
             seen.update(keys=keys, command=command, **options)
             return [device_pass.Part(keys[0], device_pass.PASSED, "exit 0", 0)], 0
         kept = {"app": "/store/kept/ios/abc/Demo.app", "bundle": BUNDLE, "commit": "a" * 40}
-        window = {"by": "owner", "at": "2026-11-05T00:00:00Z", "until": "2026-11-05T01:00:00Z"}
-        code = app_builds.run_on_device(kept, "iPhone", owner="s", approval=window, pass_run=pass_run)
+        code = app_builds.run_on_device(kept, "iPhone", owner="s", pass_run=pass_run)
         self.assertEqual(code, 0)
-        self.assertEqual((seen["keys"], seen["owner"], seen["approval"], seen["launched"]), (["iPhone"], "s", window, [BUNDLE]))
+        self.assertEqual((seen["keys"], seen["owner"], seen["launched"]), (["iPhone"], "s", [BUNDLE]))
+        self.assertNotIn("approval", seen)
         self.assertIn("{udid}", seen["command"])
         self.assertEqual(seen["command"][-1], kept["app"])
         self.assertTrue(seen["apps_quit"])
@@ -365,13 +367,14 @@ class Devices(unittest.TestCase):
         done = subprocess.run(command[:6] + ["-h"], capture_output=True, text=True)
         self.assertEqual(done.returncode, 0, done.stderr)
 
-    def test_the_command_line_refuses_a_window_without_a_device_and_an_app_it_does_not_build(self):
+    def test_the_command_line_refuses_an_approval_and_an_app_it_does_not_build(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         root = Path(temp.name)
         (root / "engineering.json").write_text(json.dumps(project({"project": "A.xcodeproj", "mac": {"scheme": "A"}})))
-        self.assertEqual(cli.main(["--project", str(root), "app", "run", "--approved-by", "owner"]), 2)
-        self.assertTrue(any("--approved-*" in line for line in self.said), self.said)
+        # The owner's decision of 2026-11-06: the device's reservation records no approval, so eng app takes none.
+        with contextlib.redirect_stderr(StringIO()), self.assertRaises(SystemExit):
+            cli.main(["--project", str(root), "app", "run", "--iphone", "--approved-by", "owner"])
         self.assertEqual(cli.main(["--project", str(root), "app", "run", "--ipad"]), 2)
         self.assertTrue(any("builds no ios app" in line for line in self.said), self.said)
         (root / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "A"}))

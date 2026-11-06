@@ -1902,7 +1902,6 @@ python3 -m vocaro_engineering.devices status
 python3 -m vocaro_engineering.devices show iPhone    # the entry and its revision; 0 if new
 python3 -m vocaro_engineering.devices reserve iPhone --owner SESSION --revision N \
   --device UDID --purpose "…" --release-by 2026-10-21T18:00:00Z \
-  --approved-by OWNER --approved-at 2026-10-21T15:02:00Z --approved-until 2026-10-21T18:00:00Z \
   --set 'originalSettings={"voiceoverEnabled": false}' --set 'preservation=…'
 python3 -m vocaro_engineering.devices update iPhone --owner SESSION --revision N --set 'run=…'
 python3 -m vocaro_engineering.devices release iPhone --owner SESSION --revision N \
@@ -1961,48 +1960,35 @@ has the preflight, UI-automation authorization and restoration steps for physica
 
 ### Taking the iPad or iPhone in turn
 
-The paired iPad carries the owner's standing approval (owner's decision, 2026-10-31, kept in
-`devices.STANDING` with the owner's words), so a session takes it whenever it is free, without
-asking:
+The record schedules the paired iPad and iPhone, first come first served, one holder at a time,
+and records no approval (owner's decision, 2026-11-06). Whether a session may use a device is
+between the session and the owner: the iPad carries his standing approval (2026-10-31), so a
+session takes it whenever it is free, without asking; the iPhone is his personal phone
+(2026-11-01), so a session asks him first and takes it only once he has agreed, with
+`--release-by` at the end of the time he gave. Both are taken the same way:
 
 ```sh
 python3 -m vocaro_engineering.devices take iPad --purpose "…" --release-by 2026-10-31T09:00:00Z \
   --set 'originalSettings={"voiceoverEnabled": false}' --set 'preservation=…'
 ```
 
-The paired iPhone is the owner's personal phone and has no standing approval (owner's decision,
-2026-11-01, kept in `devices.WINDOWED` with the owner's words). A session asks the owner for a
-window first, then reserves it within that window, with `reserve` as in
-[device reservations](#device-reservations) or, to wait in line, with `take` and the same options:
-
-```sh
-python3 -m vocaro_engineering.devices take iPhone --purpose "…" --release-by 2026-11-02T10:00:00Z \
-  --approved-by owner --approved-at 2026-11-02T08:55:00Z --approved-until 2026-11-02T10:00:00Z
-```
-
-`take iPhone` without `--approved-*` refuses and changes nothing, saying to ask the owner for a
-window. The window is the one an [owner window](#owner-windows) records, so its end stops work
-on the device.
-
 `take` joins the entry's line, waits while another session holds the device or is ahead of it,
-saying who holds it and until when, and reserves it with the standing approval, until released,
-or within the owner's window.
+saying who holds it and until when, and reserves it until `--release-by`.
 It prints the entry, whose revision the session's next change names. Start it in the background
 when the wait may outlast the tool's; `--wait SECONDS`, an hour by default, bounds it, after which
 it leaves the line and reserves nothing. The line is kept beside the entries, in the record's
 `queues`, so joining it never changes the holder's revision. Each place in it records the waiting
 `take` process and its start time, and a place whose process is gone drops out. While anyone waits,
-`reserve` refuses everyone but the first in line, a reservation within an owner's window included.
-`take` refuses an entry that has never recorded its device, since the standing approval names the
-device by the entry an owner's window first recorded, and an orphaned or uncertain entry, which
-needs attended recovery. Nothing hurries the holder: an overdue expected release still releases
+`reserve` refuses everyone but the first in line.
+`take` refuses an entry that has never recorded its device, which its first `reserve --device`
+records, and an orphaned or uncertain entry, which needs attended recovery. Nothing hurries the holder: an overdue expected release still releases
 nothing, so a wait behind a session that never releases ends at `--wait`, and `status` shows the
 holder and the line.
 
 Reserving or taking a physical device also silences the owner's notifications on it for the
 run, with the shortcuts he made there once, and releasing or recovering it puts them back; the
 entry's `notifications` records each step. Without those shortcuts the command says what to ask
-the owner in the same message as the window. `devices run` watches the device's log for a
+the owner when asking for the device. `devices run` watches the device's log for a
 banner while its command runs, and runs a command that one reached once more
 ([notifications during a run](device-testing.md#notifications-during-a-run)).
 
@@ -2013,17 +1999,16 @@ next entry starts without them; its `previousLease` keeps them. An app running o
 session holds is not another session's work, since the record shows nobody else holds the device:
 a leftover the holder may quit, but never uninstall or clear beyond the agreed cleanup.
 
-### Owner windows
+### Device windows
 
-The iPhone, and any physical device but the iPad, needs a window agreed with the owner. The
-reservation records that window as `mac-foreground`'s records the owner's: who approved it,
-when, and until a time or `released` (`--approved-by`, `--approved-at`, `--approved-until`, and
-`--approval-words` for the owner's words), never past the expected release. The record refuses
-to reserve a physical device, a hardware UDID of 8 and 16 hex digits or 40, without one, or to
-give an entry one later. Work on the device stops when the window ends: a launcher or a script
-calls `devices.require_window(KEY, entry)` before each run, `eng remote --device` refuses, and
-`status` reports the device's work as refused. An ended window releases nothing; the session
-restores the device and releases it, and a new window from the owner is a new reservation.
+A physical device's reservation records no approval (owner's decision, 2026-11-06): its window
+is the reservation itself, until `--release-by`, and a bounded run stops before that. The record
+refuses `--approved-*` on a physical device, a hardware UDID of 8 and 16 hex digits or 40, since
+the owner's agreement is between the session and the owner. Only `mac-foreground` records the
+owner's approval. A reservation made before then recorded
+one, and work on it stops once that has ended: `devices.require_window(KEY, entry)` refuses,
+`eng remote --device` refuses, and `status` reports the device's work as refused. An ended window
+releases nothing; the session restores the device and releases it.
 
 ### Bounded device runs
 

@@ -29,8 +29,9 @@ session and the queue share one store, outside every checkout and outside Xcode'
 
 A build runs through `eng admit`, here, since its product is this Mac's. `eng app run` opens the newest kept Mac
 build, or with --iphone or --ipad installs the newest kept device build on that paired device and launches it,
-under the device's reservation as `eng device-pass` takes one: the iPad in turn by the owner's standing approval,
-the iPhone only within a window the owner agreed (--approved-*), or under a reservation the session holds. Before
+under the device's reservation as `eng device-pass` takes one: in turn, first come first served, or under a
+reservation the session holds. It checks no approval: a session runs it on the owner's iPhone only when he has
+agreed, which is between the session and the owner (owner's decision, 2026-11-06). Before
 it runs one, it builds origin/main when the newest kept build is older, unless --no-build, and runs the newest
 kept build, saying so, when that build fails. Opening an app on this Mac uses the owner's screen: it is the
 owner's command, or a session's at his request.
@@ -468,12 +469,12 @@ def install_and_launch(udid, app, bundle, run=subprocess.run, sleep=time.sleep):
     return 1
 
 
-def run_on_device(kept, key, *, owner, approval=None, wait=device_pass.WAIT, record=None, pass_run=device_pass.run):
+def run_on_device(kept, key, *, owner, wait=device_pass.WAIT, record=None, pass_run=device_pass.run):
     """Install and launch the kept device build on key's device under its reservation; the exit status."""
     parts, code = pass_run([key], device_command(kept), owner=owner, purpose=f"eng app run of {Path(kept['app']).name}",
                            minutes=DEVICE_MINUTES, wait=wait, launched=[kept["bundle"]],
                            apps_quit="left running on the device for the owner to use", record=record,
-                           approval=approval, said=say, results=None)
+                           said=say, results=None)
     for part in parts:
         if part.outcome != device_pass.PASSED: say(f"{key}: {part.outcome}: {part.detail}")
     if code == 0: say(f"{key} runs {Path(kept['app']).name} built at {kept['commit'][:12]} ({kept.get('subject', '')})")
@@ -482,13 +483,6 @@ def run_on_device(kept, key, *, owner, approval=None, wait=device_pass.WAIT, rec
 
 def owner_of(given):
     return given or devices.default_owner() or f"eng app ({getpass.getuser()})"
-
-
-def approval_of(args):
-    given = {"by": args.approved_by, "at": args.approved_at, "until": args.approved_until,
-             "words": args.approval_words}
-    given = {name: value for name, value in given.items() if value is not None}
-    return given or None
 
 
 def describe(store, config, root):
@@ -523,10 +517,9 @@ def add_arguments(parser):
     running = operations.add_parser("run", help="open the newest kept Mac build, or install and launch the device "
         "build on the paired iPhone or iPad, building origin/main first when the newest kept build is older")
     target = running.add_mutually_exclusive_group()
-    target.add_argument("--iphone", action="store_true", help="install and launch on the paired iPhone, within a "
-                        "window the owner agreed (--approved-*) or under a reservation this session holds")
-    target.add_argument("--ipad", action="store_true", help="install and launch on the paired iPad, taken in turn "
-                        "by the owner's standing approval")
+    target.add_argument("--iphone", action="store_true", help="install and launch on the paired iPhone, taken in "
+                        "turn; ask the owner first, since it is his personal phone")
+    target.add_argument("--ipad", action="store_true", help="install and launch on the paired iPad, taken in turn")
     running.add_argument("--no-build", action="store_true", help="run the newest kept build as it is, building "
                          "nothing")
     running.add_argument("--replace", action="store_true", help="on this Mac, quit another copy of the app that runs "
@@ -535,10 +528,6 @@ def add_arguments(parser):
                          "else the agent session, else this account)")
     running.add_argument("--wait", type=float, default=device_pass.WAIT, metavar="SECONDS", help="how long to wait "
                          f"in the device's line (default {device_pass.WAIT})")
-    running.add_argument("--approved-by", help="who approved the iPhone's window: the owner")
-    running.add_argument("--approved-at", help="when the owner approved it, ISO 8601 with a time zone")
-    running.add_argument("--approved-until", help="when the owner's window ends, ISO 8601 with a time zone")
-    running.add_argument("--approval-words", help="the owner's words approving it")
     keeping = operations.add_parser("keep", help="build the app at a commit, by default origin/main, and keep it "
                                     "as the newest build when it builds")
     keeping.add_argument("--commit", help="the commit to build (default origin/main, fetched)")
@@ -576,14 +565,12 @@ def execute(root, args, config=None):
         platform = "ios" if key else "mac"
         if platform not in config["app"]:
             raise Failed(f"engineering.json's app builds no {platform} app")
-        approval = approval_of(args)
-        if approval and not key: raise Failed("--approved-* is for a device's window: give --iphone or --ipad")
         with processes.forwarding_signals():
             kept = current(root, config, platform, store=store, build_missing=not args.no_build)
             if key is None:
                 open_on_mac(kept, replace=args.replace)
                 return 0
-            return run_on_device(kept, key, owner=owner_of(args.owner), approval=approval, wait=args.wait)
+            return run_on_device(kept, key, owner=owner_of(args.owner), wait=args.wait)
     except processes.Interrupted:
         say("stopped")
         return 130

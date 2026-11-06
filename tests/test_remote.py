@@ -547,10 +547,8 @@ class RemoteTests(unittest.TestCase):
         record = devices.Record(self.record_here)
         revision = (record.entry(key) or {}).get("revision", 0)
         moment = lambda minutes: (datetime.now(timezone.utc) + timedelta(minutes=minutes)).isoformat()
-        # A physical device's reservation records the window the owner agreed.
-        window = {"by": "owner", "at": moment(-1), "until": moment(90)} if devices.physical(device) else None
         return record.reserve(key, owner=owner, revision=revision, purpose="device run", release_by=moment(60),
-                              device=device, approval=window)
+                              device=device)
 
     def nothing_sent(self):
         return not (self.home / remote.ROOT / "repositories").exists()
@@ -585,9 +583,8 @@ class RemoteTests(unittest.TestCase):
         self.assertIn("defers physical devices to another-mac", error)
         self.assertFalse((self.checkout(0) / ".build/provisioned").exists())
         there.defer(None)
-        approved = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
         there.reserve("iPhone", owner="there", revision=0, purpose="p", release_by="2099-01-01T00:00:00Z",
-                      device=PHONE, approval={"by": "owner", "at": approved, "until": "released"})
+                      device=PHONE)
         status, _output, error = self.eng("remote", "run", "check")
         self.assertEqual(status, 2)
         self.assertIn("iPhone holds a physical device", error)
@@ -730,11 +727,14 @@ class RemoteTests(unittest.TestCase):
         self.assertIn("not a physical device", error)
         status, _output, error = self.eng("remote", "admit", "--device", "Example Duo 1", "--", sys.executable, "-c", "pass")
         self.assertIn("name the session whose reservations --device carries", error)
-        # Once the owner's window has ended, the session's own reservation sends nothing.
+        # Once the approval a reservation made before 2026-11-06 recorded has ended, it sends nothing.
         self.hold("iPad", device=PHONE.replace("C", "D"))
-        with patch.object(devices, "datetime", Later):
-            status, _output, error = self.eng("remote", "admit", "--device", "iPad", "--device-owner", "session-a",
-                                              "--", sys.executable, "-c", "pass")
+        value = json.loads(Path(self.record_here).read_text())
+        ended = lambda minutes: (datetime.now(timezone.utc) + timedelta(minutes=minutes)).isoformat()
+        value["devices"]["iPad"]["approval"] = {"by": "owner", "at": ended(-90), "until": ended(-30)}
+        Path(self.record_here).write_text(json.dumps(value))
+        status, _output, error = self.eng("remote", "admit", "--device", "iPad", "--device-owner", "session-a",
+                                          "--", sys.executable, "-c", "pass")
         self.assertEqual(status, 2)
         self.assertIn("the owner's approval of iPad ended at", error)
         self.assertTrue(self.nothing_sent())
@@ -3615,7 +3615,6 @@ class SecondMacDoctorTests(unittest.TestCase):
         name = offload_host.mac_name()
         self.assertEqual(self.doctor()[1]["remote"]["deviceRecord"]["deferredTo"], name)
         release_by = (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat()
-        window = {"by": "owner", "at": (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat(), "until": release_by}
         with self.subTest("not yet deferred"):
             self.record_there.defer(None)
             status, found = self.doctor()
@@ -3624,7 +3623,7 @@ class SecondMacDoctorTests(unittest.TestCase):
                                                   "them to no Mac until the next eng remote run there"])
         with self.subTest("held there"):
             self.record_there.reserve("iPhone", owner="there", revision=0, purpose="p", release_by=release_by,
-                                      device=PHONE, approval=window)
+                                      device=PHONE)
             status, found = self.doctor()
             self.assertEqual(status, 1)
             self.assertIn("fake's device record holds the physical device of iPhone", found["errors"][0])
