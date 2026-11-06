@@ -28,9 +28,9 @@ UPSTREAM = "refs/remotes/origin/main"
 # What the runner itself is made of. A change to tests, guides or agents leaves the runner main's.
 TOOLKIT_PATHS = ("src/python", "scripts/eng", "integrations")
 # Commands that act on what every session on the host shares: its disk, admission slots and log, the
-# merge queue, both Macs and their keychains, the simulator pool and the policy file.
-HOST_COMMANDS = frozenset({"admissions", "admit", "disk", "host", "keychain", "land", "policy", "queue", "remote",
-                           "simulator-pool"})
+# merge queue, both Macs and their keychains, the simulator pool, the device record and the policy file.
+HOST_COMMANDS = frozenset({"admissions", "admit", "device-pass", "disk", "host", "keychain", "land", "policy", "queue",
+                           "remote", "simulator-pool"})
 GIT_TIMEOUT = 10
 
 

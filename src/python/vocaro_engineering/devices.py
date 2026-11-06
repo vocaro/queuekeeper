@@ -980,7 +980,7 @@ class BoundedRun:
                 print(f"devices: {key}'s entry did not record the run's end, so it shows the run orphaned until its "
                       f"owner releases or recovers it: {error}", file=sys.stderr, flush=True)
 
-    def execute(self, command, *, cwd=None, stdout=None, run=None, watch=None):
+    def execute(self, command, *, cwd=None, stdout=None, run=None, watch=None, env=None):
         """Run command under the bound, recorded in each entry, and return its exit status.
 
         A timeout, a stop, or a command that did not start is recorded and raised once the command
@@ -995,7 +995,8 @@ class BoundedRun:
             raise
         try:
             try:
-                status = processes.supervise(command, cwd=cwd, stdout=stdout, timeout=timeout, on_start=self.own)
+                status = processes.supervise(command, cwd=cwd, stdout=stdout, timeout=timeout, env=env,
+                                             on_start=self.own)
             finally:
                 if watch is not None: self.run = {**self.run, "notificationWatch": watch.stop()}
         except processes.TimedOut as error:
@@ -1017,20 +1018,20 @@ class Unmeasured(Exception):
     """A run that a notification reached twice: neither its run nor its rerun is a measurement."""
 
 
-def watched(run, key, command, extra):
+def watched(run, key, command, extra, cwd=None, env=None):
     """Run command under run while watching key's device log for a notification presented as a banner; its exit
     status and what the watch saw, which the entry's run records (device_notifications.Watch)."""
-    code = run.execute(command, run=extra, watch=device_notifications.watch(run.devices[key]))
+    code = run.execute(command, run=extra, watch=device_notifications.watch(run.devices[key]), cwd=cwd, env=env)
     return code, run.run["notificationWatch"]
 
 
-def watched_run(run, key, command, extra, said):
+def watched_run(run, key, command, extra, said, cwd=None, env=None):
     """Run command under run, and once more when a notification was presented on key's device during it (#144).
 
     Such a run is unmeasured: its transcript may hold the notification and VoiceOver's cursor may have moved. Its
     rerun's status is the run's; a rerun that one reaches too, or no time left for one, raises Unmeasured. A run
     whose device log could not be read is said to be unwatched and keeps its status."""
-    code, seen = watched(run, key, command, extra)
+    code, seen = watched(run, key, command, extra, cwd, env)
     if not seen["presented"]:
         if not seen["watched"]:
             said(f"devices: {key}'s log could not be read during the run ({seen['detail']}), so a notification that "
@@ -1044,7 +1045,7 @@ def watched_run(run, key, command, extra, said):
         said(f"devices: unmeasured, not run again: {error}")
         raise Unmeasured() from None
     first = {name: value for name, value in run.run.items() if name not in ("boundSeconds", "stopsAt")}
-    code, seen = watched(run, key, command, {**extra, "rerunOf": {**first, "measured": False}})
+    code, seen = watched(run, key, command, {**extra, "rerunOf": {**first, "measured": False}}, cwd, env)
     if seen["presented"]:
         said(f"devices: unmeasured again: {device_notifications.presented(seen)}. Not run a third time: ask the "
              f"owner to check Do Not Disturb on {key} ({device_notifications.GUIDE})")

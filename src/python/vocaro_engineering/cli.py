@@ -11,7 +11,7 @@ import subprocess
 import sys
 import time
 
-from . import __version__, app_registrations, budgets, crash_alerts, devices, disk, docs, evidence, evidence_offload, failure_records, foreground, github_artifacts, keychain, merge_queue, \
+from . import __version__, app_registrations, budgets, crash_alerts, device_pass, devices, disk, docs, evidence, evidence_offload, failure_records, foreground, github_artifacts, keychain, merge_queue, \
     offload_host, parallel, processes, release, remote, resources, skills, spelling, toolkit_copy, xctest_shards
 from .config import TOOLKIT_ROOT, CAPABILITIES, DEFAULT_TOOLKIT, load, source_identity, stays, unlocked_screen
 from .resources import BUSY, FREE_WAIT
@@ -675,6 +675,10 @@ def main(argv=None):
     commands.add_parser("simulator-tests", help="build a scheme's tests once and run them on several members of the "
         "project's simulator pool side by side: eng simulator-tests --scheme S --runtime R --device T --device T; "
         "-h for the rest")
+    commands.add_parser("device-pass", help="a release's physical-device pass, as a release lane's command: run "
+        "COMMAND once on each paired device named, in turn, under its reservation, taking the iPad in turn and "
+        "using an iPhone the session reserved within the owner's window: eng device-pass --device iPad --device "
+        "iPhone -- COMMAND; -h for the rest (guides/releasing.md, The device pass)")
     commands.add_parser("simulator-pool", help="list, take, release, prune, reap or check members of the project's "
         "simulator pool under device-record reservations: eng simulator-pool list|take|release|prune|reap|check; "
         "-h for the rest")
@@ -841,6 +845,7 @@ def main(argv=None):
     project = argv[1] if first == 2 else argv[0].split("=", 1)[1] if first == 1 else None
     if argv[first:first + 1] == ["simulator-tests"]: return matrix.main(argv[first + 1:], project)
     if argv[first:first + 1] == ["simulator-pool"]: return simulator_pool.main(argv[first + 1:], project)
+    if argv[first:first + 1] == ["device-pass"]: return device_pass.main(argv[first + 1:], project)
     if argv[first:first + 1] == ["failures"]: return failure_records.main(argv[first + 1:], project)
     # Recovery, like the admission log, covers the whole host and reads no project.
     if argv[first:first + 2] == ["admissions", "recover"]: return resources.recover_main(argv[first + 2:])

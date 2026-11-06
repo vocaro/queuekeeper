@@ -1183,7 +1183,7 @@ class BoundedRunTests(unittest.TestCase):
         child = live()
         self.addCleanup(child.wait)
         self.addCleanup(child.kill)
-        def stuck(command, *, cwd, stdout, timeout, on_start):
+        def stuck(command, *, cwd, stdout, timeout, env, on_start):
             on_start(child.pid)
             raise RuntimeError("Timed out, but owned descendants have no confirmed terminal result; reservation retained")
         bounded = devices.BoundedRun(["iPad"], "session-a", [], record=self.record)

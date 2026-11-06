@@ -6,7 +6,8 @@ Keeping the split and Checkpoints, vocaro-engineering#135), which `eng land` pri
   budgetMinutes, naming its slowest parts;
 - origin/main holds more than release.maxCommits commits since the last commit that passed every lane
   in release.lanes, a release or a checkpoint;
-- and, from eng doctor alone, a direct-main gate with no budget, and a gate that takes a physical device.
+- and, from eng doctor alone, a direct-main gate with no budget, a gate that takes a physical device, and a
+  device pass's lane that would go to the second Mac.
 
 The queue's worker records each landed entry's gate run (Worker.gate): its wall time as the queue saw
 it, wherever the lane ran, any wait for admission included, and the parts its log reports with their
@@ -30,6 +31,7 @@ DEFAULT_MAX_COMMITS = 100
 SHARD = re.compile(r"^== (.+?): .*\((?:[^()]*, )?(\d+(?:\.\d+)?)s\)$")
 LANE_TIME = re.compile(r"^  (\S+)\s+(\d+(?:\.\d+)?)s\s+(?:PASS|FAIL|UNMEASURED)$")
 SPLIT = "guides/releasing.md, Keeping the split"
+PASS = "guides/releasing.md, The device pass"
 CHECKPOINTS = "guides/releasing.md, Checkpoints"
 
 
@@ -101,17 +103,38 @@ def lane_commands(config, name):
 
 
 def takes_device(command):
-    """Whether a command reserves a physical device: a --device option, or `devices take` or `reserve`."""
-    if any(word == "--device" or word.startswith("--device=") for word in command): return True
+    """Whether a command reserves a physical device: a --device option, `devices take` or `reserve`, or a device
+    pass (`eng device-pass`)."""
+    if any(word == "--device" or word.startswith("--device=") or word == "device-pass" for word in command):
+        return True
     return any(word == "devices" and command[index + 1:index + 2] in (["take"], ["reserve"])
                for index, word in enumerate(command))
 
 
-def doctor_warnings(config):
-    """eng doctor's own: a direct-main gate with no budget, and a gate that takes a physical device."""
+def passes_devices(command):
+    """Whether a command is a device pass, `eng device-pass`, which takes the paired devices itself."""
+    return "device-pass" in command
+
+
+def misplaced_passes(config):
+    """The lanes that run a device pass and would go to the second Mac, whose device record defers physical
+    devices to this Mac, so the pass refuses there: a heavy or exclusive lane, or group, without "here"."""
     lanes = config.get("lanes", {})
-    if GATE not in lanes: return []
-    warnings = []
+    found = []
+    for name, lane in lanes.items():
+        if "command" not in lane or not passes_devices(lane["command"]): continue
+        if lane.get("resource", "light") != "light" and not lane.get("here"): found.append(name)
+    return found
+
+
+def doctor_warnings(config):
+    """eng doctor's own: a direct-main gate with no budget, a gate that takes a physical device, and a device
+    pass's lane that would go to the second Mac."""
+    lanes = config.get("lanes", {})
+    warnings = [f"{name} runs a device pass with no \"here\", so eng run sends it to the second Mac, whose device "
+                "record defers physical devices to this Mac: give it \"here\": \"a physical device, reserved in "
+                f"this Mac's device record\" ({PASS})" for name in misplaced_passes(config)]
+    if GATE not in lanes: return warnings
     if config.get("integration", "direct-main") == "direct-main" and "budgetMinutes" not in lanes[GATE]:
         warnings.append(f"gate has no budgetMinutes, so nothing warns when it outgrows its time: set it in the gate "
                         f"lane from the gate's measured time ({SPLIT})")
