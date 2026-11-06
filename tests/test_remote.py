@@ -2297,7 +2297,12 @@ exec {shlex.quote(real)} "$@"
 
     def test_a_snapshots_result_never_counts_as_a_pass_of_head_or_of_the_snapshot(self):
         base = self.work_in_progress()
-        self.assertEqual(self.run_here("gate")[0], 0)
+        status, _output, error = self.run_here("gate")
+        self.assertEqual(status, 0)
+        # It says so as it sends the snapshot, naming what made one, and no ignored file
+        # (vocaro-engineering#197).
+        self.assertIn("remote: gate runs the working tree's uncommitted changes (deleted.txt, edited.txt, new.txt), "
+                      "so its result is no commit's pass", error)
         receipt = self.project / ".build/engineering/remote/gate/source.json"
         snapshot = json.loads(receipt.read_text())["commit"]
         self.assertEqual(json.loads(receipt.read_text())["result"]["exitStatus"], 0)
@@ -2317,6 +2322,7 @@ exec {shlex.quote(real)} "$@"
                          git(self.project, "rev-parse", f"{snapshot}^{{tree}}"))
         status, output, error = self.run_here("gate")
         self.assertEqual(status, 0, output + error)
+        self.assertNotIn("no commit's pass", error)
         self.assertEqual(json.loads(receipt.read_text())["snapshot"], False)
         self.assertEqual(git(self.checkout(0), "rev-parse", "HEAD"), commit)
         self.assertEqual(self.eng("remote", "passed", "gate")[0], 0)

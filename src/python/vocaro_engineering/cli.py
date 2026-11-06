@@ -1000,6 +1000,16 @@ def main(argv=None):
             directory = root / ".build/engineering" / args.lane
             receipt = {"project": source_identity(root), "toolkit": source_identity(TOOLKIT_ROOT),
                        "policy": policy_commit, **placement(reason)}
+            # A run of the whole lane, which a pass of counts for its commit once kept (concluded).
+            whole = not extra and args.expect is None and not args.serial
+            if whole and receipt["project"].get("workingChangesSHA256") != remote.CLEAN:
+                # vocaro-engineering#197: nothing said so until eng release stopped for it.
+                why = remote.uncounted(root, args.lane)
+                if why: print(f"eng: {why}", file=sys.stderr, flush=True)
+            def concluded(status, **fields):
+                # The verdict in this checkout, and kept by commit for every worktree (vocaro-engineering#198).
+                conclude(directory, receipt, status, **fields)
+                remote.keep_here(root, args.lane, receipt, status, whole)
             def prepared(work):
                 # What an earlier run left in results/ is not this run's, here as on the second Mac (remote.RESULTS).
                 # The lane finds the directory in ENG_RESULTS_DIR, and a group's lanes each find one of their own in it.
@@ -1061,7 +1071,7 @@ def main(argv=None):
             # A group's lanes were each judged by their own logs.
             if "parallel" in lane:
                 if reads_screen and result == evidence.UNMEASURED: unmeasured_screen(args.lane, receipt)
-                conclude(directory, receipt, result)
+                concluded(result)
                 return result
             # The command has a confirmed terminal result. Coverage validation cannot turn
             # that completed process into an orphan reservation.
@@ -1069,11 +1079,11 @@ def main(argv=None):
             try:
                 status, unmeasured = judge(lane, result, log, extra, args.expect)
             except ValueError as error:
-                conclude(directory, receipt, 2, error=str(error))
+                concluded(2, error=str(error))
                 raise
             if status == evidence.UNMEASURED and (reads_screen or SCREEN_LOCKED.search(log)):
                 unmeasured_screen(args.lane, receipt)
-            conclude(directory, receipt, status, **({"unmeasured": unmeasured} if status == evidence.UNMEASURED else {}))
+            concluded(status, **({"unmeasured": unmeasured} if status == evidence.UNMEASURED else {}))
             return status
         return 0
     except (remote.Lost, PolicyUnavailable) as error:

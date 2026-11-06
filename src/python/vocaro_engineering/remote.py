@@ -10,8 +10,9 @@ second Mac's checkouts lack, which their refs name there. The log and the result
 this checkout's .build/engineering/remote, each dispatch's in a directory of its own as well, with
 what its preparation cost, and a lane group's lanes' logs and receipts with them once the run
 there ends. A whole lane's result at a commit is also kept by commit in
-the repository's Git directory, where every worktree of the repository can find it; a
-snapshot's is not.
+the repository's Git directory, where every worktree of the repository can find it, and so is a
+whole lane's run on this Mac at a commit with no working changes (keep_here); a snapshot's is not,
+and eng says so when it sends one.
 
 `eng run` sends every heavy or exclusive lane to whichever Mac has spare capacity for it now,
 the second Mac first, unless the lane says why it stays on this Mac, and `eng admit --verify` a
@@ -41,6 +42,7 @@ import binascii
 import calendar
 import contextlib
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -938,9 +940,11 @@ def file_results(base, name, dispatch, staging=None, receipt=None, latest=True):
 
 
 def passed(root, lane, revision="HEAD"):
-    """The receipt of a passing run of the whole lane on the second Mac at exactly revision's commit, or
-    None. Only a run there keeps this receipt, so its ranOn, `second Mac`, or `build host` in a receipt
-    written before vocaro-engineering#58, is not read.
+    """The receipt of a passing run of the whole lane at exactly revision's commit, kept by commit in the
+    repository's Git directory, or None: a run on the second Mac, whose ranOn is `second Mac`, or
+    `build host` in a receipt written before vocaro-engineering#58, or a run on this Mac in any worktree
+    of the repository, whose ranOn is `this Mac` (keep_here, vocaro-engineering#198). The receipt is the
+    last such run's, on either Mac, so a later failure at the commit replaces a pass.
 
     A snapshot's run never counts, for HEAD or for the snapshot itself: no branch holds it. Nor
     does a run on a snapshot of the toolkit's working tree, nor a group's serial reference."""
@@ -949,10 +953,88 @@ def passed(root, lane, revision="HEAD"):
         receipt = json.loads((store(root) / commit / f"{lane}.json").read_text())
     except (OSError, ValueError):
         return None
+    if not isinstance(receipt, dict): return None
     result = receipt.get("result", {})
     whole = receipt.get("commit") == commit and receipt.get("lane") == lane and not receipt.get("arguments") \
         and not receipt.get("snapshot") and not receipt.get("toolkitSnapshot") and not receipt.get("serial")
-    return receipt if whole and result.get("exitStatus") == 0 and not result.get("stopped") else None
+    # A run on this Mac counts by its judged verdict, which a zero exit that ran too few tests is not.
+    judged = receipt.get("ranOn") != HERE or result.get("outcome") == "passed"
+    return receipt if whole and judged and result.get("exitStatus") == 0 and not result.get("stopped") else None
+
+
+# A receipt's ranOn for a run on this Mac, as cli.placement writes it.
+HERE = "this Mac"
+# The working-changes digest config.source_identity gives a checkout with none.
+CLEAN = hashlib.sha256().hexdigest()
+
+
+def keep(kept, lane, receipt):
+    """Keep receipt as the lane's at the commit whose directory in the store is kept: whole or not at all,
+    for a reader beside a run of the lane at this commit that ends at once."""
+    kept.mkdir(parents=True, exist_ok=True)
+    partial = kept / f".{lane}.json.{os.getpid()}"
+    partial.write_text(json.dumps(receipt, indent=2) + "\n")
+    partial.replace(kept / f"{lane}.json")
+
+
+def keep_here(root, lane, receipt, status, whole=True):
+    """Keep a judged run of the whole lane on this Mac by commit in the repository's Git directory, beside
+    the second Mac's, and return its path, or None when it is no commit's run. Every worktree reads it
+    there, as eng release, a checkpoint and `eng remote passed` do: the merge queue's gate on this Mac ran
+    in the queue's own checkout, whose receipt no session's checkout reads and the next round replaces
+    (vocaro-engineering#198).
+
+    It is kept only as a run on the second Mac is: the whole lane, with no arguments, --expect or --serial
+    (whole), at the checkout's commit with no working changes, by a toolkit with none, and run for this
+    Mac, not for a Mac that sent it (DISPATCHER), which keeps the receipt itself. status is the lane's
+    judged status, 0 only for a pass. A run with no verdict, interrupted or past its timeout, is not
+    kept, and leaves what the store holds."""
+    if not whole or receipt.get("arguments") or receipt.get("ranOn") != HERE or os.environ.get(DISPATCHER):
+        return None
+    project, toolkit = receipt.get("project") or {}, receipt.get("toolkit") or {}
+    commit = project.get("revision")
+    if not isinstance(commit, str) or not commit or project.get("workingChangesSHA256") != CLEAN \
+            or toolkit.get("workingChangesSHA256") != CLEAN:
+        return None
+    kept = {"ranOn": HERE, "mac": receipt.get("mac"), "checkout": str(Path(root).resolve()), "commit": commit,
+            "head": commit, "snapshot": False, "toolkit": toolkit.get("revision"),
+            "toolkitHead": toolkit.get("revision"), "toolkitSnapshot": False, "lane": lane, "arguments": [],
+            "result": {"exitStatus": status, "outcome": receipt.get("outcome"), "stopped": False,
+                       "receipt": receipt}}
+    try:
+        directory = store(root) / commit
+        keep(directory, lane, kept)
+    except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+        print(f"remote: {lane}'s result at {commit[:12]} was not kept by commit, so other worktrees cannot read "
+              f"it: {error}", file=sys.stderr, flush=True)
+        return None
+    return directory / f"{lane}.json"
+
+
+def ran_where(receipt):
+    """Where a kept receipt's run ran, as eng release and `eng remote passed` say it."""
+    if receipt.get("ranOn") == HERE:
+        return f"on this Mac ({receipt.get('mac') or 'unnamed'}), in {receipt.get('checkout') or 'a worktree'}"
+    return f"on the second Mac, {describe(receipt['result']['host'])}"
+
+
+def uncounted(root, lane):
+    """Why a run of the lane from root now would be no commit's pass, naming the working tree's changes that
+    make it so, or None when the tree has none (vocaro-engineering#197). A run on such a tree runs a snapshot
+    on the second Mac, or the changes here, and neither eng release, a checkpoint nor `eng remote passed`
+    counts it."""
+    try:
+        changed = git(root, "diff", "--name-only", "HEAD").splitlines()
+        changed += git(root, "ls-files", "--others", "--exclude-standard").splitlines()
+    except (RuntimeError, subprocess.SubprocessError):
+        return None
+    changed = sorted({path for path in changed if path})
+    if not changed: return None
+    shown = ", ".join(changed[:5]) + (f" and {len(changed) - 5} more" if len(changed) > 5 else "")
+    return (f"{lane} runs the working tree's uncommitted changes ({shown}), so its result is no commit's pass "
+            "for eng release or a checkpoint: commit them, or keep a file no lane reads, such as release notes, "
+            "out of the checkout until the lane has run, then run it again for a pass that counts "
+            "(guides/releasing.md, Preparing a release)")
 
 
 def write(stream, data):
@@ -1171,6 +1253,11 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     if sent:
         print(f"remote: offering {at} to {host} again", file=sys.stderr, flush=True)
     else:
+        # A snapshot's result is no commit's pass, which nothing else says until eng release stops for it
+        # (vocaro-engineering#197).
+        why = uncounted(root, lane) if lane is not None and commit != head and not arguments and expect is None \
+            and not serial else None
+        if why: print(f"remote: {why}", file=sys.stderr, flush=True)
         repositories = [f"{ROOT}/{part['repository']}" for part in (project, kit) if part is not None]
         # Two first dispatches of a project at once both create its repository, and one `git init` then
         # fails with "cannot mkdir ...: File exists"; once the other's has finished, a second leaves its
@@ -1327,11 +1414,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     # serial reference: the group's pass is its lanes' side by side.
     if lane is not None and not arguments and expect is None and commit == head and not serial \
             and not kit_snapshot(kit):
-        kept.mkdir(parents=True, exist_ok=True)
-        # Whole or not at all, for a reader beside a run of the lane at this commit that ends at once.
-        partial = kept / f".{lane}.json.{os.getpid()}"
-        partial.write_text(json.dumps(receipt, indent=2) + "\n")
-        partial.replace(kept / f"{lane}.json")
+        keep(kept, lane, receipt)
     if preparation:
         print(f"remote: {preparing(preparation, result.get('phases') or {}, result.get('receipt'))}", file=sys.stderr,
               flush=True)
@@ -1377,9 +1460,9 @@ def main(root, config, args):
     if args.operation == "passed":
         receipt = passed(root, args.lane, args.commit)
         if receipt is None:
-            print(f"No passing run of the whole {args.lane} lane on the second Mac at {args.commit}")
+            print(f"No passing run of the whole {args.lane} lane at {args.commit} kept by commit, from either Mac")
             return 1
-        print(f"{args.lane} passed at {receipt['commit']} on {describe(receipt['result']['host'])}")
+        print(f"{args.lane} passed at {receipt['commit']} {ran_where(receipt)}")
         return 0
     host = args.host or named_host() or alias() or DEFAULT_HOST
     if args.operation == "setup": return setup(host, args.formulae, args.imports or [], args.check, args.runtimes)

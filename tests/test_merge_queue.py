@@ -1725,7 +1725,15 @@ class DocsOnly(Fixture):
         self.work()
         checkout = mq.Queue(self.repo).checkout
         # The control: a batch that ran every lane leaves a receipt of the gate at the commit it pushed.
-        self.assertIn("in this checkout", release.gate_passed(checkout, self.state(code)["landedAs"]))
+        landed = self.state(code)["landedAs"]
+        self.assertRegex(release.gate_passed(checkout, landed), rf"in this checkout|on this Mac \(.*\), in {checkout}")
+        # And keeps it by commit, where a session's own checkout reads it (vocaro-engineering#198), when the
+        # toolkit that ran it, this one, has no working changes, as a run on the second Mac counts.
+        if cli.source_identity(ROOT)["workingChangesSHA256"] == release.remote.CLEAN:
+            self.assertEqual(release.gate_passed(self.repo, landed), f"on this Mac ({offload_host.mac_name()}), in {checkout}")
+        else:
+            with self.assertRaisesRegex(release.Stop, "no pass of the whole gate lane"):
+                release.gate_passed(self.repo, landed)
         self.commit("doc/guide.md", "guide")
         [docs] = self.add("guide")
         self.work()

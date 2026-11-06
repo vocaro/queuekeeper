@@ -922,7 +922,11 @@ refused. A different macOS is reported but refuses nothing: a whole lane's pass 
 for a push from this Mac, while as a qualification claim it names the second Mac's platform. A
 whole lane's receipt is also kept by commit in the repository's Git directory, so
 `eng remote passed LANE` answers from any worktree whether the lane, without arguments, passed
-at exactly that commit. A later run of the lane at that commit replaces it. A push path that
+at exactly that commit. A whole lane's run on this Mac, at a commit with no working changes and
+by a toolkit with none, is kept there too, with `ranOn` `this Mac` and the worktree it ran in, so
+that a gate the merge queue ran here counts from a session's checkout
+([vocaro-engineering#198](https://github.com/vocaro/vocaro-engineering/issues/198)). A later run
+of the lane at that commit, on either Mac, replaces it. A push path that
 accepts it in place of running the gate again prints both Macs' macOS versions from the receipt.
 
 Each dispatch also keeps its own copy of its results, in
@@ -940,7 +944,10 @@ commit unless `snapshot` is true, and likewise the toolkit's: `toolkit`, `toolki
 `toolkitSnapshot`. A snapshot's receipt, of either, stays in `.build/engineering/remote/LANE/`:
 no branch holds the snapshot, so its result is no commit's pass, and `eng remote passed` never
 counts it, for HEAD or for the snapshot itself. Commit the work and run the lane again for a pass
-that counts. `eng remote run --serial GROUP` runs a group's lanes one after another there, under
+that counts. `eng run` and `eng remote run` say so as they send a snapshot of the whole lane,
+naming the changed and untracked files, as `eng run` does for a run here on such a tree
+([vocaro-engineering#197](https://github.com/vocaro/vocaro-engineering/issues/197)).
+`eng remote run --serial GROUP` runs a group's lanes one after another there, under
 the second Mac's admission: the group's serial reference
 ([parallel-only failures](parallel-tests.md#a-failure-seen-only-side-by-side)). Its receipt says
 `serial` and, like a snapshot's, stays in `.build/engineering/remote/GROUP/`: it is no pass of the
