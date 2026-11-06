@@ -1059,12 +1059,16 @@ def silence_notifications(record, key, *, owner, revision, said):
 
     The entry records each step, the restore as pending before the shortcut runs, so that a run that dies
     after it still has its release or recovery run the restoring one. The Mac reads no Focus, so the result is
-    never confirmed. It returns the entry; an entry already silenced, or holding no physical device, is left."""
+    never confirmed. Each request records the restore as pending again, a request after a completed restore
+    too, so that the release or recovery puts back what it silenced (#144). It returns the entry; an entry still
+    silenced and not yet restored, silenced by the owner himself, or holding no physical device, is left."""
     value = record.load()
     entry = value["devices"].get(key)
     _owned(key, entry, owner)
-    done = (entry.get("notifications") or {}).get("silence")
-    if not physical(entry.get("device")) or done in SILENCED or value.get(DEFERRED):
+    notifications = entry.get("notifications") or {}
+    done = notifications.get("silence")
+    silenced = done == "owner" or (done in SILENCED and notifications.get("restore") == "pending")
+    if not physical(entry.get("device")) or silenced or value.get(DEFERRED):
         return entry
     setup = value.get(SETUP, {}).get(key)
     if not setup or setup.get("device") != entry["device"].upper():

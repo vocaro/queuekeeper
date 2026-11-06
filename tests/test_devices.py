@@ -1457,6 +1457,65 @@ class NotificationTests(unittest.TestCase):
                                         str(entry["revision"]))
         self.assertEqual((code, len(self.device.commands)), (0, 2))
 
+    def notifications_command(self, action, entry, key="iPad"):
+        code, output, error = self.cli("notifications", action, key, "--owner", "session-a", "--revision",
+                                       str(entry["revision"]))
+        self.assertEqual(code, 0, error)
+        return json.loads(output)["entry"]
+
+    def release_cli(self, entry, key="iPad"):
+        code, output, error = self.cli("release", key, "--owner", "session-a", "--revision", str(entry["revision"]),
+                                       "--outcome", "o", "--restoration", "r", "--apps-quit", "terminated")
+        self.assertEqual(code, 0, error)
+        return json.loads(output)["entry"]
+
+    def test_a_silencing_after_a_restore_in_one_hold_is_put_back_again_at_release(self):
+        self.first()
+        self.setup()
+        entry, _error = self.take()
+        entry = self.notifications_command("restore", entry)
+        self.assertEqual(entry["notifications"]["restore"], "done")
+        entry = self.notifications_command("silence", entry)
+        self.assertEqual((entry["notifications"]["silence"], entry["notifications"]["restore"]),
+                         ("requested", "pending"))
+        # Pending again, so the record alone refuses a release that skips the restore.
+        with self.assertRaisesRegex(devices.Refused, "not yet put back"):
+            self.record.release("iPad", owner="session-a", revision=entry["revision"], outcome="o", restoration="r",
+                                apps_quit="q")
+        released = self.release_cli(entry)
+        self.assertEqual((released["state"], released["notifications"]["restore"]), ("released", "done"))
+        self.assertEqual([url for _device, url, _app in self.device.shortcuts()],
+                         [self.silence_url(), self.restore_url(), self.silence_url(), self.restore_url()])
+
+    def test_a_silencing_after_a_restore_in_one_hold_is_put_back_again_at_recovery(self):
+        self.first()
+        self.setup()
+        entry, _error = self.take()
+        entry = self.notifications_command("silence", self.notifications_command("restore", entry))
+        gone = live()
+        entry = self.record.update("iPad", owner="session-a", revision=entry["revision"], activeRun=True,
+                                   hostProcessIdentifier=gone.pid)
+        gone.kill()
+        gone.wait()
+        code, output, error = self.cli("recover", "iPad", "--by", "session-b", "--revision", str(entry["revision"]),
+                                       "--verified", "no owned processes")
+        self.assertEqual(code, 0, error)
+        self.assertEqual(json.loads(output)["entry"]["notifications"]["restore"], "done")
+        self.assertEqual([url for _device, url, _app in self.device.shortcuts()],
+                         [self.silence_url(), self.restore_url(), self.silence_url(), self.restore_url()])
+
+    def test_a_restore_with_no_silencing_after_it_is_not_run_again_at_release(self):
+        self.first()
+        self.setup()
+        entry, _error = self.take()
+        entry = self.notifications_command("restore", entry)
+        # Restoring again with nothing pending runs nothing.
+        entry = self.notifications_command("restore", entry)
+        released = self.release_cli(entry)
+        self.assertEqual((released["state"], released["notifications"]["restore"]), ("released", "done"))
+        self.assertEqual([url for _device, url, _app in self.device.shortcuts()],
+                         [self.silence_url(), self.restore_url()])
+
     def test_the_setup_belongs_to_the_device_it_was_made_on(self):
         with self.assertRaisesRegex(devices.Refused, "records no physical device"):
             self.record.notification_setup("iPad", by="owner", at=later(-1))
