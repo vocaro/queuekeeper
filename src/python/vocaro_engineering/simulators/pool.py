@@ -73,6 +73,12 @@ DEVICES = Path.home() / "Library/Developer/CoreSimulator/Devices"
 CLONE_NOFOLLOW = 0x0001
 # What a take records when the caller asked for an erase in place of the reset.
 ERASE_ASKED = "asked for with --erase"
+# The simulator's setting that has the system load UIKit's and SwiftUI's own accessibility into every app
+# process with no assistive technology running, so that an in-process test hosted in an app reads their
+# views (AccessibilitySnapshot.readsSystemViews). Apple documents no such key: verified on the iOS 27.2
+# simulator, runtime build 24B8117, and checked again by the OS-drift procedure (vocaro-engineering#181;
+# guides/simulator-testing.md, App accessibility).
+APP_ACCESSIBILITY_DOMAIN, APP_ACCESSIBILITY_KEY = "com.apple.Accessibility", "ApplicationAccessibilityEnabled"
 
 
 def qualified(prefix, name):
@@ -910,9 +916,10 @@ class ReleaseUnconfirmed(RuntimeError):
 
 @contextlib.contextmanager
 def member(name, device_type, runtime, *, purpose, owner=None, boot_timeout=600, log=None, keep_state=False,
-           erase=False):
+           erase=False, app_accessibility=False):
     """A booted member of the pool for the block, then shut down and released however it ends; keep_state
-    takes it without resetting or erasing it, erase erases it in place of the reset (Pool.take).
+    takes it without resetting or erasing it, erase erases it in place of the reset (Pool.take), and
+    app_accessibility switches UIKit's and SwiftUI's own accessibility on in its app processes (boot).
 
     It raises BootTimedOut when the boot reaches its limit, RuntimeError when it fails, and
     ReleaseUnconfirmed after a block that ended normally when the release cannot confirm shutdown."""
@@ -920,7 +927,7 @@ def member(name, device_type, runtime, *, purpose, owner=None, boot_timeout=600,
     lease = pool.take(device_type, runtime, purpose=purpose, keep_state=keep_state, erase=erase)
     status = "stopped"
     try:
-        booted = boot(pool, lease, boot_timeout)
+        booted = boot(pool, lease, boot_timeout, app_accessibility=app_accessibility)
         if booted == evidence.UNMEASURED:
             status = "the boot reached its limit"
             raise BootTimedOut(f"{lease.key} did not finish booting within {boot_timeout}s")
@@ -935,13 +942,40 @@ def member(name, device_type, runtime, *, purpose, owner=None, boot_timeout=600,
         raise ReleaseUnconfirmed(f"{lease.key} could not be confirmed shut down; its reservation is kept for recovery")
 
 
-def boot(pool, lease, timeout):
+def set_app_accessibility(run, udid, enabled, *, kept):
+    """Give a booted member's app processes UIKit's and SwiftUI's own accessibility, or not; None when the
+    setting reads as asked, else why not. run is simctl's stand-in, as Pool.run.
+
+    Asked for, the setting is written on every boot and read back as 1: a reset copies the template's data,
+    which never holds it, and an erase clears it, so neither carries it from one take to the next. Not asked
+    for, nothing is written, since the reset and the erase leave it unset, except on a member that kept its
+    state, where an earlier holder's setting is deleted, so that a lane reads system views only when it asks."""
+    domain, key = APP_ACCESSIBILITY_DOMAIN, APP_ACCESSIBILITY_KEY
+    if enabled:
+        written = run("spawn", udid, "defaults", "write", domain, key, "-bool", "true", timeout=30)
+    elif kept:
+        # A key that is already absent fails the delete, which the reading below then confirms.
+        written = run("spawn", udid, "defaults", "delete", domain, key, timeout=30)
+    else:
+        return None
+    read = run("spawn", udid, "defaults", "read", domain, key, timeout=30)
+    value = read.stdout.strip() if read.returncode == 0 else None
+    if value == ("1" if enabled else None):
+        return None
+    if enabled and written.returncode != 0:
+        return f"simctl spawn defaults write exited {written.returncode}: {written.stderr.strip()}"
+    return f"{domain} {key} reads {value!r} after it was " + ("written true" if enabled else "deleted")
+
+
+def boot(pool, lease, timeout, *, app_accessibility=False):
     """Boot a member to bootstatus -b; None when it booted, else a status (UNMEASURED for a timeout).
 
     A booted member then has VoiceOver's sound cues switched off: an erase clears the setting, and
     the mute leaves the cues audible through the Mac (guides/voiceover-simulator.md, Muted speech
     capture). A setting that does not read off is logged, not a failed boot: a lane without VoiceOver
-    plays no cues."""
+    plays no cues. With app_accessibility its app processes get UIKit's and SwiftUI's own accessibility
+    (set_app_accessibility); a setting that does not read as asked fails the boot with status 1, since the
+    lane asked for it, and is logged."""
     started = pool.run("boot", lease.udid, timeout=120)
     if started.returncode != 0:
         return started.returncode
@@ -954,6 +988,11 @@ def boot(pool, lease, timeout):
     if written.returncode != 0 or read.returncode != 0 or read.stdout.strip() != "0":
         pool.log(f"CUES {lease.key}: VoiceOver's sound cues could not be switched off, so VoiceOver would play "
                  f"them through the Mac: {(written.stderr or read.stderr or read.stdout).strip() or 'no reading'}")
+    why = set_app_accessibility(pool.run, lease.udid, app_accessibility, kept=lease.kept)
+    if why is not None:
+        pool.log(f"APP ACCESSIBILITY {lease.key}: " + ("could not be switched on, so a hosted test reads no system "
+                 "views: " if app_accessibility else "an earlier holder's setting could not be removed: ") + why)
+        if app_accessibility: return 1
     return None
 
 
@@ -1015,6 +1054,10 @@ def main(argv, project=None):
                        "data and settings, and skips the first boot's migration")
     fresh.add_argument("--erase", action="store_true", help="erase the member in place of the reset from its kind's "
                        "template, for a lane that wants pristine data")
+    take.add_argument("--app-accessibility", action="store_true", help="switch UIKit's and SwiftUI's own "
+                      "accessibility on in the member's app processes, for tests hosted in an app that read system "
+                      "views (guides/simulator-testing.md, App accessibility); a setting that does not read on fails "
+                      "the take")
     take.add_argument("--boot-timeout", type=int, default=600, help="seconds the boot may take (default 600); "
                       f"past it the member is released and the command exits {evidence.UNMEASURED}")
     release = commands.add_parser("release", help="shut a member you hold down and release it")
@@ -1092,13 +1135,15 @@ def main(argv, project=None):
             lease = pool.take(args.device, args.runtime, purpose=args.purpose, label=args.label,
                               keep_state=args.keep_state, erase=args.erase)
             try:
-                status = boot(pool, lease, args.boot_timeout)
+                status = boot(pool, lease, args.boot_timeout, app_accessibility=args.app_accessibility)
             except BaseException:
                 pool.release(lease, outcome=f"Stopped while booting before {args.purpose}")
                 raise
             if status is not None:
                 pool.release(lease, outcome=f"The boot ended with status {status} before {args.purpose}")
-                print(f"eng simulator-pool: {lease.key} did not finish booting (status {status})", file=sys.stderr)
+                print(f"eng simulator-pool: {lease.key} did not finish booting (status {status})" +
+                      (", or its app accessibility could not be switched on (APP ACCESSIBILITY, above)"
+                       if args.app_accessibility and status == 1 else ""), file=sys.stderr)
                 return status if status != 124 else evidence.UNMEASURED
             print(lease.udid)
         elif args.action == "check":

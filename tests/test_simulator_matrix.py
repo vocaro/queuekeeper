@@ -98,6 +98,19 @@ XCRUN = textwrap.dedent("""\
         change(rest[0], state="Shutdown")
     elif action == "erase":
         if device(rest[0])["state"] != "Shutdown": sys.exit("Unable to erase contents and settings in current state")
+        if "defaults" in device(rest[0]): change(rest[0], defaults={})
+    elif action == "spawn" and rest[1] == "defaults":
+        # A setting in the simulator's preferences, which an erase clears; a kind in FAKE_DEFAULTS_IGNORED
+        # takes the write and still reads unset.
+        settings, key = device(rest[0]).get("defaults", {}), rest[3] + " " + rest[4]
+        if rest[2] == "write":
+            change(rest[0], defaults={**settings, key: {"true": "1", "false": "0"}.get(rest[-1], rest[-1])})
+        elif key not in settings or kind(rest[0]) in os.environ.get("FAKE_DEFAULTS_IGNORED", ""):
+            sys.exit(f"The domain/default pair of ({rest[3]}, {rest[4]}) does not exist")
+        elif rest[2] == "delete":
+            change(rest[0], defaults={name: value for name, value in settings.items() if name != key})
+        else:
+            print(settings[key])
     elif action == "delete":
         (devices / rest[0]).unlink()
     elif action == "list" and rest[0] == "devicetypes":
@@ -113,7 +126,15 @@ XCRUN = textwrap.dedent("""\
                                                              "isAvailable": True, **value})
         print(json.dumps({"devices": listing}))
 """)
-IPHONE, IPAD = "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro", "com.apple.CoreSimulator.SimDeviceType.iPad-Air-13-inch-M4"
+# A stand-in for xcodegen that records its working directory and arguments, and fails with FAKE_XCODEGEN_FAIL.
+XCODEGEN = textwrap.dedent("""\
+    #!/usr/bin/env python3
+    import json, os, pathlib, sys
+    state = pathlib.Path(os.environ["FAKE_STATE"])
+    with (state / "xcodegen.log").open("a") as log: log.write(json.dumps([os.getcwd(), *sys.argv[1:]]) + "\\n")
+    if os.environ.get("FAKE_XCODEGEN_FAIL"): sys.exit("Spec validation error: a target has a missing source")
+""")
+IPHONE, IPAD = "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro","com.apple.CoreSimulator.SimDeviceType.iPad-Air-13-inch-M4"
 RUNTIME = "com.apple.CoreSimulator.SimRuntime.iOS-27-0"
 XCODEBUILD = textwrap.dedent("""\
     #!/usr/bin/env python3
@@ -124,7 +145,7 @@ XCODEBUILD = textwrap.dedent("""\
     with (state / "xcodebuild.log").open("a") as log: log.write(json.dumps(sys.argv[1:]) + "\\n")
     with (state / "xcodebuild-env.log").open("a") as log:
         log.write(json.dumps({"action": action, **{name: value for name, value in os.environ.items()
-                                                   if "PROJECT_" in name}}) + "\\n")
+                                                   if "PROJECT_" in name or "SYSTEM_VIEWS" in name}}) + "\\n")
     if action == "build-for-testing":
         if os.environ.get("FAKE_BUILD_FAIL"): sys.exit("** TEST BUILD FAILED **")
         # FAKE_BUILD_WAIT holds the build until a file of that name appears in FAKE_STATE.
@@ -214,7 +235,7 @@ class SimulatorMatrixTests(unittest.TestCase):
         self.state.mkdir()
         tools = self.root / "bin"
         tools.mkdir()
-        for name, source in (("xcrun", XCRUN), ("xcodebuild", XCODEBUILD)):
+        for name, source in (("xcrun", XCRUN), ("xcodebuild", XCODEBUILD), ("xcodegen", XCODEGEN)):
             (tools / name).write_text(source)
             (tools / name).chmod(0o755)
         self.record = self.root / "record/device-handoff.json"
@@ -498,6 +519,87 @@ class SimulatorMatrixTests(unittest.TestCase):
         self.assertEqual(status, 1, output)
         self.assertIn("never met the other devices", output)
         self.assert_every_device_returned()
+
+    APP_ACCESSIBILITY = "com.apple.Accessibility ApplicationAccessibilityEnabled"
+
+    def app_accessibility_lines(self, udid):
+        """The simctl calls for the app accessibility setting on a device, and where each stands among its calls."""
+        simctl = [line for line in (self.state / "simctl.log").read_text().splitlines() if udid in line.split()]
+        return simctl, [line for line in simctl if line.startswith("spawn ") and self.APP_ACCESSIBILITY in line]
+
+    def test_app_accessibility_is_switched_on_after_each_boot_and_before_the_tests(self):
+        iphone = self.add("Project iPhone 17 Pro 1")
+        ipad = self.add("Project iPad Air 13-inch (M4) 1", IPAD)
+        status, output = self.run_matrix("--app-accessibility", FAKE_MEET="2")
+        self.assertEqual(status, 0, output)
+        for kind, udid in (("iPhone-17-Pro", iphone), ("iPad-Air-13-inch-M4", ipad)):
+            simctl, setting = self.app_accessibility_lines(udid)
+            self.assertEqual(setting, [f"spawn {udid} defaults write {self.APP_ACCESSIBILITY} -bool true",
+                                       f"spawn {udid} defaults read {self.APP_ACCESSIBILITY}"])
+            self.assertLess(simctl.index(f"bootstatus {udid} -b"), simctl.index(setting[0]))
+            self.assertIn(f"APP ACCESSIBILITY {kind}: on ({self.APP_ACCESSIBILITY} reads 1)", output)
+            # Before its tests start.
+            self.assertLess(output.index(f"APP ACCESSIBILITY {kind}"), output.index(f"TEST {kind}"))
+            self.assertIn(f"PASS {kind}: Executed 3 tests", output)
+        # Each test process is told that the run promised system views, so that a golden read without them fails.
+        seen = [json.loads(line) for line in (self.state / "xcodebuild-env.log").read_text().splitlines()]
+        tests = [entry for entry in seen if entry["action"] == "test-without-building"]
+        self.assertEqual([entry.get("TEST_RUNNER_ACCESSIBILITY_SNAPSHOT_SYSTEM_VIEWS") for entry in tests], ["1", "1"])
+        self.assert_every_device_returned()
+        # Without it nothing is written, and a member that kept an earlier holder's setting has it removed.
+        (self.state / "simctl.log").unlink()
+        (self.state / "xcodebuild-env.log").unlink()
+        for path in self.state.glob("testing-*"): path.unlink()
+        status, output = self.run_matrix("--keep-state", FAKE_MEET="2")
+        self.assertEqual(status, 0, output)
+        for udid in (iphone, ipad):
+            _, setting = self.app_accessibility_lines(udid)
+            self.assertEqual(setting, [f"spawn {udid} defaults delete {self.APP_ACCESSIBILITY}",
+                                       f"spawn {udid} defaults read {self.APP_ACCESSIBILITY}"])
+        self.assertNotIn("APP ACCESSIBILITY", output)
+        (self.state / "simctl.log").unlink()
+        for path in self.state.glob("testing-*"): path.unlink()
+        status, output = self.run_matrix(FAKE_MEET="2")
+        self.assertEqual(status, 0, output)
+        self.assertEqual([self.app_accessibility_lines(udid)[1] for udid in (iphone, ipad)], [[], []])
+        seen = [json.loads(line) for line in (self.state / "xcodebuild-env.log").read_text().splitlines()]
+        self.assertFalse([entry for entry in seen if "TEST_RUNNER_ACCESSIBILITY_SNAPSHOT_SYSTEM_VIEWS" in entry], seen)
+        self.assert_every_device_returned()
+
+    def test_app_accessibility_that_does_not_read_on_fails_that_device_before_its_tests(self):
+        # The negative control: the iPad's write is taken and the key still reads unset.
+        status, output = self.run_matrix("--app-accessibility", FAKE_DEFAULTS_IGNORED="iPad-Air-13-inch-M4")
+        self.assertEqual(status, 1, output)
+        self.assertIn("FAIL iPad-Air-13-inch-M4: its app accessibility could not be switched on, so no test ran: "
+                      f"{self.APP_ACCESSIBILITY} reads None after it was written true", output)
+        self.assertIn("PASS iPhone-17-Pro: Executed 3 tests", output)
+        tests = [call for call in self.calls() if call[0] == "test-without-building"]
+        self.assertEqual(len(tests), 1)
+        self.assert_every_device_returned()
+
+    def test_xcodegen_generates_the_project_before_the_build_and_its_failure_fails_the_build(self):
+        status, output = self.run_matrix("--xcode-project", "Hosted/Host.xcodeproj", "--xcodegen", "Hosted/project.yml",
+                                         FAKE_MEET="2")
+        self.assertEqual(status, 0, output)
+        generated = [json.loads(line) for line in (self.state / "xcodegen.log").read_text().splitlines()]
+        self.assertEqual(generated, [[str(self.root), "generate", "--quiet", "--spec", "Hosted/project.yml"]])
+        self.assertLess(output.index("GENERATE Hosted/Host.xcodeproj from Hosted/project.yml"), output.index("BUILD "))
+        build = [call for call in self.calls() if call[0] == "build-for-testing"][0]
+        self.assertEqual(build[build.index("-project") + 1], "Hosted/Host.xcodeproj")
+        self.assert_every_device_returned()
+        # The negative control: a spec xcodegen refuses builds and tests nothing.
+        (self.state / "xcodebuild.log").unlink()
+        status, output = self.run_matrix("--xcode-project", "Hosted/Host.xcodeproj", "--xcodegen", "Hosted/project.yml",
+                                         FAKE_XCODEGEN_FAIL="1")
+        self.assertEqual(status, 1, output)
+        self.assertIn("FAIL build: xcodegen ended with status 1", output)
+        self.assertIn("a target has a missing source", output)
+        self.assertFalse((self.state / "xcodebuild.log").exists())
+        self.assert_every_device_returned()
+        # It needs the project it generates.
+        status, output = self.run_matrix("--xcodegen", "Hosted/project.yml")
+        self.assertEqual(status, 2, output)
+        self.assertIn("--xcodegen generates an Xcode project: name it with --xcode-project", output)
 
     def test_a_boot_past_its_limit_leaves_only_that_device_unmeasured(self):
         # Fixed: the 1 s boot timeout is the behavior under test, and the slow boot's 60 s outlasts it.

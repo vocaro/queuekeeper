@@ -9,7 +9,9 @@ host's device record and reset from its kind's warmed template (erased with --er
 template can be copied), or, with --keep-state, kept as earlier runs left it, or, when none is
 free, the next is cloned from that template, or created, and kept in the pool, after members unused
 for 14 days are pruned (guides/simulator-testing.md, Reserved simulator pool).
-Every device boots while the tests build, and is shut down and released however the run ends. The
+With --app-accessibility each member's app processes get UIKit's and SwiftUI's own accessibility, for tests
+hosted in an app that read system views (guides/simulator-testing.md, App accessibility). With --xcodegen SPEC
+the Xcode project is generated from SPEC before the build. Every device boots while the tests build, and is shut down and released however the run ends. The
 build is one `xcodebuild build-for-testing` for the first device's destination; each device
 then runs `xcodebuild test-without-building` on the same .xctestrun, with its own log, result
 bundle and derived data folder, removed when its tests end. Each device's outcome stands apart: a boot that reached its limit leaves that
@@ -76,6 +78,9 @@ def parse(argv):
     where = parser.add_mutually_exclusive_group()
     where.add_argument("--xcode-project", help="the .xcodeproj; a package's scheme needs neither this nor --workspace")
     where.add_argument("--workspace")
+    parser.add_argument("--xcodegen", type=Path, metavar="SPEC", help="generate the --xcode-project from this "
+                        "XcodeGen spec before the build, for a project whose generated .xcodeproj is not tracked, "
+                        "such as a test-only host app's")
     parser.add_argument("--device", action="append", required=True, metavar="TYPE",
                         help="a simulator device type, such as iPhone-17-Pro; repeat for each device")
     parser.add_argument("--runtime", required=True, help="a simulator runtime, such as iOS-27-0")
@@ -94,6 +99,10 @@ def parse(argv):
     fresh.add_argument("--erase", action="store_true", help="erase each member in place of the reset from its "
                        "kind's warmed template, for tests that want pristine data (guides/simulator-testing.md, "
                        "Warmed templates)")
+    parser.add_argument("--app-accessibility", action="store_true", help="switch UIKit's and SwiftUI's own "
+                        "accessibility on in each member's app processes once it has booted, for tests hosted in an "
+                        "app that read system views; a device whose setting does not read on fails "
+                        "(guides/simulator-testing.md, App accessibility)")
     parser.add_argument("--build-only", action="store_true", help="build the tests for the first device and "
                         "test nothing, so that a later run with the same options finds the build up to date; the "
                         "member is taken without erasing or booting it, only to name the build's destination")
@@ -124,6 +133,8 @@ def parse(argv):
         if getattr(args, name) is not None and getattr(args, name) < 1:
             parser.error(f"--{name.replace('_', '-')} needs at least 1")
     if len(set(args.device)) != len(args.device): parser.error("name each device type once")
+    if args.xcodegen is not None and not args.xcode_project:
+        parser.error("--xcodegen generates an Xcode project: name it with --xcode-project")
     if not all(args.forward_env): parser.error("--forward-env needs a prefix: an empty one would forward everything")
     return args
 
@@ -135,6 +146,16 @@ def forwarded(prefixes, environment):
     if not prefixes: return {}
     return {f"TEST_RUNNER_{name}": value for name, value in environment.items()
             if name.startswith(tuple(prefixes)) and f"TEST_RUNNER_{name}" not in environment}
+
+
+# What tells the golden API that the run promised UIKit's and SwiftUI's own views to every fixture, so that a
+# test process that reads none fails each golden instead of comparing an empty tree (AccessibilityGolden).
+SYSTEM_VIEWS = "TEST_RUNNER_ACCESSIBILITY_SNAPSHOT_SYSTEM_VIEWS"
+
+
+def system_views(app_accessibility, environment):
+    """The variable a run with app accessibility gives its test processes, unless the caller set it."""
+    return {SYSTEM_VIEWS: "1"} if app_accessibility and SYSTEM_VIEWS not in environment else {}
 
 
 # Each class's or suite's seconds in the last sharded run, Bundle/Suite, which packs the next one's shards.
@@ -235,6 +256,17 @@ class Run:
             self.finish(kind, 1, f"the boot failed with status {status}", log)
             return False
         self.say(f"BOOTED {kind} ({device.udid}) in {round(time.monotonic() - started)}s")
+        why = simulator_pool.set_app_accessibility(simulator_pool.simctl, device.udid, self.args.app_accessibility,
+                                                   kept=device.kept)
+        if why is not None and self.args.app_accessibility:
+            # Its hosted tests would read no system views, and a golden of them fails its precondition.
+            self.finish(kind, 1, f"its app accessibility could not be switched on, so no test ran: {why}", log)
+            return False
+        if why is not None:
+            self.say(f"APP ACCESSIBILITY {kind}: an earlier holder's setting could not be removed: {why}")
+        elif self.args.app_accessibility:
+            self.say(f"APP ACCESSIBILITY {kind}: on ({simulator_pool.APP_ACCESSIBILITY_DOMAIN} "
+                     f"{simulator_pool.APP_ACCESSIBILITY_KEY} reads 1)")
         return True
 
     def build(self, destination):
@@ -245,6 +277,18 @@ class Run:
         command = ["xcodebuild", "build-for-testing", "-scheme", args.scheme, *location, "-destination", destination,
                    "-derivedDataPath", str(args.derived_data), "-jobs", str(args.build_jobs),
                    "CODE_SIGNING_ALLOWED=NO", *args.setting]
+        if args.xcodegen is not None:
+            generated = self.logs / "xcodegen.log"
+            self.say(f"GENERATE {args.xcode_project} from {args.xcodegen}; log: {generated}")
+            try:
+                status = processes.run(["xcodegen", "generate", "--quiet", "--spec", str(args.xcodegen)],
+                                       cwd=Path.cwd(), log_path=generated, timeout=300)
+            except processes.TimedOut:
+                status = "a timeout after 300 s"
+            if status != 0:
+                self.say(f"FAIL build: xcodegen ended with status {status}; log: {generated}",
+                         *("    " + line for line in generated.read_text(errors="replace").splitlines()[-TAIL:]))
+                return None
         self.say(f"BUILD {args.scheme} for {destination}; log: {log}")
         started = time.time()
         status = processes.run(command, cwd=Path.cwd(), log_path=log)
@@ -307,7 +351,8 @@ class Run:
         started = time.monotonic()
         try:
             status = processes.run(command, cwd=Path.cwd(), log_path=log, timeout=args.test_timeout,
-                                   env={**os.environ, **forwarded(args.forward_env, os.environ)})
+                                   env={**os.environ, **forwarded(args.forward_env, os.environ),
+                                        **system_views(args.app_accessibility, os.environ)})
         except processes.TimedOut:
             if selection is not None: return evidence.UNMEASURED, 0, 0, [], f"{kind}'s tests exceeded {args.test_timeout}s"
             return self.finish(kind, evidence.UNMEASURED, f"the tests exceeded {args.test_timeout}s", log)
