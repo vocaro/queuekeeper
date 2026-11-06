@@ -3986,8 +3986,9 @@ class LeftoverCensusTests(unittest.TestCase):
 # Two Macs' simulator runtimes on one file system, for eng remote setup --runtimes. FAKE_MAC names
 # the Mac a command runs on, and FAKE_RUNTIMES/MAC holds its runtime images as simctl's storage
 # holds cryptexes: NAME.asset/AssetData/Restore/BUILD.dmg, a file whose first line is the runtime
-# it holds and whose size is its image's. An image whose record says unreadable is listed with
-# another size, so no file is its image. FAKE_RUNTIMES/catalog holds what xcodebuild downloads, and
+# it holds and whose size is its image's, with its lastUsedAt when it names one. An image whose record
+# says unreadable is listed with another size, so no file is its image. MAC/matches.json is what
+# `simctl runtime match list -j` prints there. FAKE_RUNTIMES/catalog holds what xcodebuild downloads, and
 # FAKE_ADD_FAIL makes simctl refuse every image it is given. Nothing reaches the real runtimes.
 RUNTIME_XCRUN = """#!PYTHON
 import json, os, pathlib, shutil, sys
@@ -4029,7 +4030,13 @@ elif arguments == ["simctl", "runtime", "list", "-j"]:
         "platformIdentifier": "com.apple.platform.iphonesimulator",
         "runtimeBundlePath": f"/Library/Developer/CoreSimulator/Volumes/{record['build']}/{record['name']}.simruntime",
         "runtimeIdentifier": "com.apple.CoreSimulator.SimRuntime." + record["name"].replace(" ", "-").replace(".", "-"),
+        "lastUsedAt": record.get("lastUsedAt"),
     } for image, record in held()}))
+elif arguments == ["simctl", "runtime", "match", "list", "-j"]:
+    # A Mac's matches.json, the build simctl chooses for each SDK; without one, simctl fails.
+    matches = store / "matches.json"
+    if not matches.exists(): sys.exit(1)
+    print(matches.read_text())
 elif arguments == ["simctl", "list", "devices", "-j"]:
     # A Mac's devices.json, as simctl lists them; without one, simctl fails.
     listed = store / "devices.json"
@@ -4360,6 +4367,135 @@ class RemoteRuntimeTests(unittest.TestCase):
         self.assertIsNone(offload_host.delete_runtime(str(self.developer), "23F73"))
         self.assertEqual(self.held("here"), [])
         self.assertEqual(offload_host.delete_runtime(str(self.developer), "23F73"), "simctl lists 0 images of 23F73")
+
+    # vocaro-engineering#190: builds no real record or pin names, since the second Mac's side reads this Mac's
+    # account record and legacy records as they are.
+    CHOSEN, OLD = ("iOS 27.0", "24Z434"), ("iOS 27.0", "24Z5423a")
+
+    def users(self, pinned=(), recorded=frozenset()):
+        """Each of this Mac's images' build: (users, supersededBy), with the device records naming recorded."""
+        with patch.object(offload_host, "recorded_builds", return_value=recorded):
+            return {image["build"]: (image["users"], image["supersededBy"])
+                    for image in offload_host.images(str(self.developer), pinned)}
+
+    def choose(self, mac, *builds):
+        """simctl's match list on a Mac: an SDK choosing each of builds."""
+        (self.runtimes / mac / "matches.json").write_text(json.dumps(
+            {f"iphoneos27.{index}": {"chosenRuntimeBuild": build} for index, build in enumerate(builds)}))
+
+    def test_a_superseded_build_has_no_users_and_the_build_simctl_chooses_keeps_them(self):
+        # As on 2026-11-05: build-host's 30 simulators on iOS-27-0 ran 24A434, and 24A5423a counted as used.
+        self.give("here", [self.CHOSEN, self.OLD])
+        self.devices("here", {"iOS 27.0": ["Example iPhone 1", "Example iPhone 2"]})
+        users = ["Example iPhone 1", "Example iPhone 2"]
+        # Negative control: when neither simctl's choice nor a use shows the build, both keep the users.
+        self.assertEqual(self.users(), {"24Z434": (users, None), "24Z5423a": (users, None)})
+        self.choose("here", "24Z434")
+        self.assertEqual(self.users(), {"24Z434": (users, None), "24Z5423a": ([], "24Z434")})
+        # The SDK's choice outranks a later use of the other build.
+        self.image("here", *self.OLD, lastUsedAt="2026-11-04T10:00:00Z")
+        self.image("here", *self.CHOSEN, lastUsedAt="2026-10-01T10:00:00Z")
+        self.assertEqual(self.users()["24Z5423a"], ([], "24Z434"))
+        # Two builds that simctl both chooses, for two SDKs, leave the choice unknown.
+        self.choose("here", "24Z434", "24Z5423a")
+        self.assertEqual(self.users(), {"24Z434": (users, None), "24Z5423a": (users, None)})
+        # Simulators that cannot be listed leave every build's users unknown, a superseded one's too.
+        self.choose("here", "24Z434")
+        (self.runtimes / "here/devices.json").unlink()
+        self.assertEqual(self.users(), {"24Z434": (None, None), "24Z5423a": (None, "24Z434")})
+
+    def test_without_simctls_choice_the_build_used_last_supersedes_the_others(self):
+        self.give("here", [self.CHOSEN])
+        self.image("here", *self.OLD, lastUsedAt="2026-10-01T10:00:00.25Z")
+        self.devices("here", {"iOS 27.0": ["Example iPhone 1"]})
+        # A build never used, as 24A5423a was, loses to one used once: here the old one was the one used.
+        self.assertEqual(self.users(), {"24Z434": ([], "24Z5423a"), "24Z5423a": (["Example iPhone 1"], None)})
+        # A later use, in a stamp Python 3.9 reads only once rewritten, makes the other build the choice.
+        self.image("here", *self.CHOSEN, lastUsedAt="2026-11-04T10:00:00.1234567+0000")
+        self.assertEqual(self.users(), {"24Z434": (["Example iPhone 1"], None), "24Z5423a": ([], "24Z434")})
+        # Two builds used at the same moment leave the choice unknown.
+        self.image("here", *self.CHOSEN, lastUsedAt="2026-10-01T10:00:00.250Z")
+        self.assertEqual(self.users(), {"24Z434": (["Example iPhone 1"], None),
+                                        "24Z5423a": (["Example iPhone 1"], None)})
+        # One build of an identifier supersedes nothing.
+        shutil.rmtree(self.runtimes / "here/24Z434.asset")
+        self.assertEqual(self.users(), {"24Z5423a": (["Example iPhone 1"], None)})
+
+    def test_a_stamp_reads_alike_on_python_3_9(self):
+        expected = datetime(2026, 11, 4, 10, 0, 0, 123456, tzinfo=timezone.utc).timestamp()
+        for stamp in ("2026-11-04T10:00:00.1234567Z", "2026-11-04T10:00:00.123456+00:00",
+                      "2026-11-04T02:00:00.123456-0800"):
+            self.assertAlmostEqual(offload_host.used_at(stamp), expected, places=5, msg=stamp)
+        for stamp in (None, "", "yesterday", "2026-13-04T10:00:00Z"): self.assertIsNone(offload_host.used_at(stamp))
+
+    def test_a_pinned_superseded_build_keeps_its_users(self):
+        self.give("here", [self.CHOSEN, self.OLD])
+        self.devices("here", {"iOS 27.0": ["Example iPhone 1"]})
+        self.choose("here", "24Z434")
+        kept = {"24Z434": (["Example iPhone 1"], None), "24Z5423a": (["Example iPhone 1"], "24Z434")}
+        # The caller's pins (disk.pinned_builds), a build a device record names, and a record that cannot be read.
+        self.assertEqual(self.users(pinned=("24Z5423a",)), kept)
+        self.assertEqual(self.users(recorded={"runtimeBuild", "24Z5423a"}), kept)
+        self.assertEqual(self.users(recorded=None), kept)
+        # Negative control: a pin or record naming another build leaves the superseded build unused.
+        self.assertEqual(self.users(pinned=("24Z434",), recorded={"24B8117"})["24Z5423a"], ([], "24Z434"))
+        # delete_runtime reads the same users again, so a pin keeps it there too.
+        with patch.object(offload_host, "recorded_builds", return_value=set()):
+            self.assertEqual(offload_host.delete_runtime(str(self.developer), "24Z5423a", ("24Z5423a",)),
+                             "Example iPhone 1 uses it")
+            self.assertEqual(self.held("here"), ["iOS 27.0 (24Z434)", "iOS 27.0 (24Z5423a)"])
+            self.assertEqual(offload_host.delete_runtime(str(self.developer), "24Z434"), "Example iPhone 1 uses it")
+            self.assertIsNone(offload_host.delete_runtime(str(self.developer), "24Z5423a"))
+        self.assertEqual(self.held("here"), ["iOS 27.0 (24Z434)"])
+        self.assertEqual(self.logged("here", "deletes.log"), ["simctl runtime delete 24Z5423a"])
+
+    def test_device_records_name_builds_as_disk_reads_them(self):
+        self.assertEqual(offload_host.LEGACY_RECORDS, devices.LEGACY)
+        record = self.local / "record.json"
+        record.write_text(json.dumps({"devices": {"x": {"runtimeBuild": "24Z5423a"},
+                                                  "y": {"template": {"installedBuilds": ["24Z9999"]}}}}))
+        account = type("Account", (), {"pw_dir": str(self.local / "account")})
+        with patch.dict(os.environ, {"VOCARO_DEVICE_RECORD": str(record)}), \
+                patch.object(offload_host, "LEGACY_RECORDS", str(self.local / "none-*.json")), \
+                patch.object(offload_host.pwd, "getpwuid", return_value=account):
+            found = offload_host.recorded_builds()
+            self.assertIn("24Z5423a", found)
+            # The census of a warmed template's installed builds pins nothing (disk.recorded_builds).
+            self.assertNotIn("24Z9999", found)
+            record.write_text("not json 24Z7777")
+            self.assertIn("24Z7777", offload_host.recorded_builds())
+            record.unlink()
+            self.assertEqual(offload_host.recorded_builds(), set())
+            record.mkdir()
+            self.assertIsNone(offload_host.recorded_builds())
+
+    def test_a_superseded_build_only_one_mac_lists_is_deleted_there_unless_the_toolkit_pins_it(self):
+        # vocaro-engineering#190: the second Mac's copy of a superseded build goes, as eng disk's does here, and
+        # the pins this Mac's toolkit names reach the second Mac in the request.
+        for pinned in (False, True):
+            with self.subTest(pinned=pinned):
+                for mac in ("here", "there"):
+                    shutil.rmtree(self.runtimes / mac)
+                    (self.runtimes / mac).mkdir()
+                self.give("here", [self.CHOSEN])
+                self.give("there", [self.CHOSEN, self.OLD])
+                for mac in ("here", "there"): self.devices(mac, {"iOS 27.0": ["Example iPhone 1"]})
+                self.choose("there", "24Z434")
+                pins = {"24Z5423a": "named by a test pin"} if pinned else {}
+                with patch.object(disk_module, "pinned_builds", return_value=pins):
+                    status, output, error = self.eng()
+                self.assertEqual(status, 0, output + error)
+                if pinned:
+                    self.assertIn("runtimes: iOS 27.0 (24Z5423a): added on this Mac", output)
+                    self.assertEqual(self.logged("there", "deletes.log"), [])
+                    self.assertEqual(self.held("here"), ["iOS 27.0 (24Z434)", "iOS 27.0 (24Z5423a)"])
+                else:
+                    self.assertIn("deleting from fake, where no simulator but Xcode's defaults uses it: its "
+                                  "identifier's simulators run 24Z434", output)
+                    self.assertIn("runtimes: iOS 27.0 (24Z5423a): deleted from fake", output)
+                    self.assertEqual(self.logged("there", "deletes.log"), ["simctl runtime delete 24Z5423a"])
+                    self.assertEqual(self.held("there"), ["iOS 27.0 (24Z434)"])
+                    self.assertEqual(self.logged("here", "adds.log"), [])
 
     def test_check_says_what_it_would_do_and_changes_nothing(self):
         self.give("here", HERE_RUNTIMES)

@@ -1070,7 +1070,13 @@ The owner prepares the second Mac once:
    one Mac has is deleted from that Mac when no simulator but Xcode's defaults uses it there, read
    again just before the delete (`xcrun simctl runtime delete`), so a runtime nobody uses costs
    neither Mac its space; one that something uses, or whose simulators simctl cannot list, is
-   copied to the other. Both must have that Xcode at the same path. The
+   copied to the other. A superseded build, one whose identifier CoreSimulator resolves to another
+   build by the rule `eng disk` uses (Reclaiming disk space), runs none of its identifier's
+   simulators, so none uses it, unless the toolkit pins it or that Mac's device record names it,
+   as `eng disk` keeps it; an unreadable record keeps every superseded build used. This Mac sends
+   its pins with each request, since the second Mac reads nothing of the toolkit
+   ([#190](https://github.com/vocaro/vocaro-engineering/issues/190)). Both must have that Xcode at
+   the same path. The
    copy is the runtime's own disk image, as `xcrun simctl runtime list -j` names it (for a
    cryptex, the one disk image of its listed size in its asset's `Restore` folder), so a beta
    build Apple no longer serves comes across exactly. It goes over the second Mac's SSH
@@ -1478,8 +1484,8 @@ the candidates, with their commands: exactly what `--delete` removes.
   runtime candidate's reason names the second Mac's copy, read as `eng remote setup --runtimes`
   reads it. The two Macs keep the same runtimes
   ([#123](https://github.com/vocaro/vocaro-engineering/issues/123)): that command deletes a runtime
-  only one Mac lists when no simulator on its identifier uses it there, and otherwise copies it to
-  the other Mac. So a runtime stays kept here while the second Mac holds a copy its simulators
+  only one Mac lists when no simulator uses it there, as none uses a superseded build nothing
+  pins, and otherwise copies it to the other Mac. So a runtime stays kept here while the second Mac holds a copy its simulators
   count as used, or while its runtimes cannot be read; removing it would only bring it back.
 - **Build caches.** A DerivedData folder in `~/Library/Developer/Xcode` (named
   `NAME-<28 letters>`) whose `info.plist` names a workspace in `~/Development` or a temporary

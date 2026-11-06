@@ -1621,10 +1621,18 @@ def toolchains(host, developer):
 
 def runtime_images(host, side, developer, clear=False):
     """A Mac's runtime images, the free space where a copy to it is staged, and what an earlier copy
-    left staged there, which clear removes: offload_host.images and offload_host.stage on side."""
+    left staged there, which clear removes: offload_host.images and offload_host.stage on side. Each side
+    is given the builds the toolkit pins (runtime_pins), which keep their users there though superseded."""
     if side == HERE:
-        return {"images": offload_host.images(developer), **offload_host.stage(Path.home() / LOCAL_RUNTIME_STAGING, clear)}
-    return ask(host, {"images": developer, "staging": RUNTIME_STAGING, "clear": clear})
+        return {"images": offload_host.images(developer, runtime_pins()),
+                **offload_host.stage(Path.home() / LOCAL_RUNTIME_STAGING, clear)}
+    return ask(host, {"images": developer, "staging": RUNTIME_STAGING, "clear": clear, "pinned": runtime_pins()})
+
+
+def runtime_pins():
+    """The runtime builds the toolkit pins (disk.pinned_builds), which offload_host cannot read on the
+    second Mac, since it imports nothing from the toolkit there: a superseded one keeps its users."""
+    return sorted(disk.pinned_builds())
 
 
 def runtime_lock():
@@ -1644,8 +1652,9 @@ def runtime_plan(found, stores, host):
     """A step for each runtime that only one Mac lists: the runtime, its build, the Mac that has it
     (source), the one that lacks it (target), and how the two come to match: a delete from the source
     when no simulator but Xcode's defaults uses it there, so a runtime nobody uses costs neither Mac
-    its space, else a copy of the source's image to the target when that can be read, else a download
-    there by its build, else None, with why."""
+    its space (none uses a build its identifier no longer resolves to, offload_host.images), else a
+    copy of the source's image to the target when that can be read, else a download there by its
+    build, else None, with why."""
     plan = []
     for source, target in ((HERE, host), (host, HERE)):
         for runtime in sorted(set(found[source]["runtimes"]) - set(found[target]["runtimes"])):
@@ -1660,7 +1669,7 @@ def runtime_plan(found, stores, host):
             if build is None:
                 step.update(how=None, why="its name gives no build")
             elif len(images) == 1 and images[0].get("users") == []:
-                step.update(how="delete", size=images[0]["sizeBytes"])
+                step.update(how="delete", size=images[0]["sizeBytes"], supersededBy=images[0].get("supersededBy"))
             elif held:
                 step.update(how=None, why=f"{target} holds its image ({held[0]['state']}), which the Xcode there does "
                             "not list as available; see `xcrun simctl runtime list` there")
@@ -1839,13 +1848,15 @@ def bring_runtimes(host, developer, check):
             continue
         if step["how"] == "delete":
             heading = f"runtimes: {runtime}, {gib(step['size']) if isinstance(step['size'], int) else 'unknown size'}:"
+            unused = "no simulator but Xcode's defaults uses it" + (
+                f": its identifier's simulators run {step['supersededBy']}" if step.get("supersededBy") else "")
             if check:
-                print(f"{heading} would be deleted from {source}, where no simulator but Xcode's defaults uses it",
-                      flush=True)
+                print(f"{heading} would be deleted from {source}, where {unused}", flush=True)
                 continue
-            print(f"{heading} deleting from {source}, where no simulator but Xcode's defaults uses it", flush=True)
-            failure = offload_host.delete_runtime(developer, step["build"]) if source == HERE else \
-                ask(host, {"deleteRuntime": {"developer": developer, "build": step["build"]}}).get("problem")
+            print(f"{heading} deleting from {source}, where {unused}", flush=True)
+            failure = offload_host.delete_runtime(developer, step["build"], runtime_pins()) if source == HERE else \
+                ask(host, {"deleteRuntime": {"developer": developer, "build": step["build"],
+                                             "pinned": runtime_pins()}}).get("problem")
             print(f"runtimes: {runtime}: deleted from {source}" if failure is None else
                   f"runtimes: {runtime}: not deleted from {source}: {failure}", flush=True)
             continue

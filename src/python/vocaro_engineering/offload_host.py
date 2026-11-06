@@ -35,6 +35,7 @@ import ctypes
 from datetime import datetime, timezone
 import fcntl
 import getpass
+import glob
 import json
 import os
 from pathlib import Path
@@ -91,6 +92,8 @@ DEVICE = re.compile(r"[0-9A-F]{8}-(?:[0-9A-F]{4}-){3}[0-9A-F]{12}", re.IGNORECAS
 # device's hardware UDID, as devices.PHYSICAL matches it.
 DEVICE_RECORD = "Library/Application Support/vocaro-engineering/device-handoff.json"
 DEFERRED = "physicalDevicesRecordedOn"
+# Device records older toolkits left, which devices.LEGACY names and disk still reads.
+LEGACY_RECORDS = "/private/tmp/*device-handoff*.json"
 # The setting that shows an app's "quit unexpectedly" alert, and where a foreground run that has it off
 # keeps its value from before the run, relative to the home (crash_alerts.py).
 CRASH_DIALOG = ("com.apple.CrashReporter", "DialogType")
@@ -685,17 +688,88 @@ def runtime_users(developer_dir):
         return None
 
 
-def images(developer_dir):
+def used_at(stamp):
+    """The time an ISO 8601 stamp such as simctl's lastUsedAt names, or None. Python 3.9's fromisoformat
+    reads neither a Z nor a fraction of other than 3 or 6 digits, so both are rewritten first."""
+    matched = re.fullmatch(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d+))?(Z|[+-]\d\d:?\d\d)?", str(stamp or ""))
+    if not matched: return None
+    whole, fraction, zone = matched.groups()
+    zone = "+00:00" if zone in (None, "Z") else zone if ":" in zone else f"{zone[:3]}:{zone[3:]}"
+    try: return datetime.fromisoformat(f"{whole}.{(fraction or '0')[:6].ljust(6, '0')}{zone}").timestamp()
+    except ValueError: return None
+
+
+def chosen_builds(records, matches):
+    """For each runtime identifier with several images in records (`simctl runtime list -j`), the build
+    CoreSimulator resolves its devices to: the build `simctl runtime match list -j` (matches) chooses
+    for an installed SDK, else the build whose image CoreSimulator last used. An identifier whose choice
+    neither shows is left out. disk.chosen_builds applies the same rule on this Mac; this module imports
+    nothing from the toolkit, since it runs on the second Mac's own Python (vocaro-engineering#190)."""
+    groups = {}
+    for record in records:
+        if isinstance(record, dict): groups.setdefault(record.get("runtimeIdentifier", ""), []).append(record)
+    sdks = {match["chosenRuntimeBuild"] for match in (matches or {}).values()
+            if isinstance(match, dict) and match.get("chosenRuntimeBuild")}
+    chosen = {}
+    for identifier, group in groups.items():
+        builds = {record.get("build") for record in group}
+        if len(group) < 2 or None in builds or len(builds) < len(group): continue
+        matched = [record["build"] for record in group if record["build"] in sdks]
+        if len(matched) == 1:
+            chosen[identifier] = matched[0]
+            continue
+        if matched: continue
+        stamps = sorted(((used_at(record.get("lastUsedAt")), record["build"]) for record in group
+                         if used_at(record.get("lastUsedAt")) is not None), reverse=True)
+        if stamps and (len(stamps) == 1 or stamps[0][0] != stamps[1][0]): chosen[identifier] = stamps[0][1]
+    return chosen
+
+
+def recorded_builds():
+    """Every build word this Mac's device records hold but under installedBuilds, the census of builds
+    installed when a template was warmed, as disk.recorded_builds reads them; None when a record exists
+    but cannot be read. A record that is not JSON is taken whole, word by word."""
+    paths = list(dict.fromkeys([record_path(), Path(pwd.getpwuid(os.getuid()).pw_dir) / DEVICE_RECORD]))
+    paths += sorted(Path(path) for path in glob.glob(LEGACY_RECORDS))
+    found = set()
+    for path in paths:
+        if not path.exists(): continue
+        try: text = path.read_text(errors="replace")
+        except OSError: return None
+        try: stack = [json.loads(text)]
+        except ValueError:
+            found.update(re.findall(r"[A-Za-z0-9]+", text))
+            continue
+        while stack:
+            value = stack.pop()
+            if isinstance(value, dict): stack += [item for key, item in value.items() if key != "installedBuilds"]
+            elif isinstance(value, list): stack += value
+            elif isinstance(value, str): found.update(re.findall(r"[A-Za-z0-9]+", value))
+    return found
+
+
+def images(developer_dir, pinned=()):
     """The runtime disk images `simctl runtime list` reports, each with the runtime it holds named as
     toolchain names it, NAME (BUILD), its image file, and in users the simulators on its runtime
     identifier but Xcode's defaults (runtime_users), or None when those cannot be listed. None when
-    simctl lists no images."""
-    listed = output(["xcrun", "simctl", "runtime", "list", "-j"], {**os.environ, "DEVELOPER_DIR": developer_dir})
+    simctl lists no images.
+
+    A superseded build, one whose identifier CoreSimulator resolves to another build (chosen_builds), runs
+    none of those simulators, so it has no users and supersededBy names that build (vocaro-engineering#190).
+    A pinned one keeps its identifier's users: a build in pinned, which the caller names because this
+    module cannot read the toolkit (disk.pinned_builds), or one this Mac's device records name; and every
+    superseded build keeps them while a record cannot be read."""
+    environment = {**os.environ, "DEVELOPER_DIR": developer_dir}
+    listed = output(["xcrun", "simctl", "runtime", "list", "-j"], environment)
     try:
         records = list(json.loads(listed).values())
     except (TypeError, ValueError, AttributeError):
         return None
     users = runtime_users(developer_dir)
+    try: matches = json.loads(output(["xcrun", "simctl", "runtime", "match", "list", "-j"], environment))
+    except (TypeError, ValueError): matches = None
+    chosen = chosen_builds(records, matches if isinstance(matches, dict) else None)
+    recorded = recorded_builds() if chosen else set()
     found = []
     for record in records:
         if not isinstance(record, dict) or not record.get("build"): continue
@@ -703,19 +777,23 @@ def images(developer_dir):
         name = bundle.stem if bundle.suffix == ".simruntime" else \
             f"{PLATFORMS.get(record.get('platformIdentifier'), record.get('platformIdentifier'))} {record.get('version')}"
         file, unreadable = image_file(record)
-        found.append({"runtime": f"{name} ({record['build']})", "name": name, "build": record["build"],
+        identifier, build = record.get("runtimeIdentifier"), record["build"]
+        superseded = chosen.get(identifier) if chosen.get(identifier, build) != build else None
+        kept = superseded and (build in pinned or recorded is None or build in recorded)
+        found.append({"runtime": f"{name} ({build})", "name": name, "build": build,
                       "identifier": record.get("identifier"), "state": record.get("state"),
                       "sizeBytes": record.get("sizeBytes"), "architectures": record.get("supportedArchitectures") or [],
-                      "file": file, "unreadable": unreadable,
-                      "users": None if users is None else users.get(record.get("runtimeIdentifier"), [])
-                      if record.get("runtimeIdentifier") else None})
+                      "file": file, "unreadable": unreadable, "supersededBy": superseded,
+                      "users": None if users is None or not identifier else [] if superseded and not kept
+                      else users.get(identifier, [])})
     return sorted(found, key=lambda image: image["runtime"])
 
 
-def delete_runtime(developer_dir, build):
+def delete_runtime(developer_dir, build, pinned=()):
     """Delete the runtime image of build once simctl lists it and no simulator but Xcode's defaults
-    uses its runtime, both read again now. Return None once it is deleted, else why it was not."""
-    found = [image for image in images(developer_dir) or [] if image["build"] == build]
+    uses it, both read again now: none uses a superseded build that nothing pins (images). Return None
+    once it is deleted, else why it was not."""
+    found = [image for image in images(developer_dir, pinned) or [] if image["build"] == build]
     if len(found) != 1: return f"simctl lists {len(found)} images of {build}"
     image = found[0]
     if image["users"] is None: return "simctl did not list the simulators that might use it"
@@ -1889,9 +1967,11 @@ def answer(request):
                          advertised={path: advertise(Path.home() / path) for path in request["advertise"]})
         return found
     if "deleteRuntime" in request:
-        return {"problem": delete_runtime(request["deleteRuntime"]["developer"], request["deleteRuntime"]["build"])}
+        deleted = request["deleteRuntime"]
+        return {"problem": delete_runtime(deleted["developer"], deleted["build"], deleted.get("pinned") or ())}
     if "images" in request:
-        return {"images": images(request["images"]), **stage(Path.home() / request["staging"], request.get("clear"))}
+        return {"images": images(request["images"], request.get("pinned") or ()),
+                **stage(Path.home() / request["staging"], request.get("clear"))}
     # A stop or a dropped connection ends the copy, and the staged file is removed.
     for number in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         signal.signal(number, lambda *_: _stop.set())
