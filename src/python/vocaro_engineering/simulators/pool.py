@@ -135,6 +135,14 @@ def configured(root):
         return None
 
 
+def running(project=None):
+    """The pool of the project a command runs in: the engineering.json in the working directory, which a lane's
+    is, and the launcher's project only where the directory has none. A launcher always names its own checkout,
+    and the toolkit's, which names a pool of its own, runs in other projects' roots too."""
+    here = Path.cwd()
+    return configured(here if (here / "engineering.json").exists() else project or here)
+
+
 def instant(value):
     return device_record.moment(value)
 
@@ -1091,7 +1099,7 @@ def main(argv, project=None):
         except (OSError, ValueError, RuntimeError) as error:
             print(f"eng simulator-pool: {error}; nothing further was stopped", file=sys.stderr)
             return 1
-    name = args.pool or configured(project or Path.cwd()) or configured(Path.cwd())
+    name = args.pool or running(project)
     owner = args.owner or default_owner()
     if not name:
         parser.error("name the pool with --pool, or in engineering.json's simulatorPool")

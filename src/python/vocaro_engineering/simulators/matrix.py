@@ -549,8 +549,7 @@ def taken(pool, run, kind, runtime, purpose, keep_state=False, erase=False):
 
 def main(argv, project=None):
     args = parse(argv)
-    # The launcher names its project; a lane runs in its project's root, which may name the pool instead.
-    name = args.pool or simulator_pool.configured(project or Path.cwd()) or simulator_pool.configured(Path.cwd())
+    name = args.pool or simulator_pool.running(project)
     if args.directory is not None: os.chdir(args.directory)
     if not name:
         print("eng simulator-tests: name the simulator pool with --pool, or in engineering.json's simulatorPool",
