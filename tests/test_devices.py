@@ -1704,12 +1704,14 @@ class NotificationWatchTests(unittest.TestCase):
                                 "detail": f"{device_notifications.WATCH} is off"})
 
     def relaying(self, *texts):
-        """A watch whose relays print texts, over USB and the network in turn, and then wait to be ended."""
+        """A watch whose relays print texts, over USB and the network in turn, and then wait to be ended. A text may
+        be (text, after, ends): printed after that many seconds, and the relay then ends at once if ends."""
         printed = iter(texts)
 
         def relay(udid, network):
-            return [sys.executable, "-c", "import sys, time; sys.stdout.write(sys.argv[1]); sys.stdout.flush(); "
-                    f"time.sleep({stretched(60)})", next(printed)]
+            text, after, ends = (lambda given: given if isinstance(given, tuple) else (given, 0, False))(next(printed))
+            return [sys.executable, "-c", f"import sys, time; time.sleep({after}); sys.stdout.write(sys.argv[1]); "
+                    f"sys.stdout.flush(); time.sleep({0 if ends else stretched(60)})", text]
         for patcher in (patch.dict(os.environ, {device_notifications.WATCH: ""}),
                         patch.object(device_notifications, "relay", relay),
                         patch.object(device_notifications.shutil, "which", return_value="/usr/bin/true")):
@@ -1725,7 +1727,7 @@ class NotificationWatchTests(unittest.TestCase):
         self.assertEqual([oct(Path(path).stat().st_mode & 0o777) for path, _ in watch.relays], ["0o600", "0o600"])
         seen = watch.stop()
         # The same banners over both relays are counted once, and only their device clock is kept.
-        self.assertEqual(seen, {"watched": True, "presented": 1, "first": "17:03:49"})
+        self.assertEqual(seen, {"watched": True, "presented": 1, "first": "17:03:49", "transport": "usb+network"})
         self.assertFalse(directory.exists())
         self.assertTrue(all(process.poll() is not None for _path, process in watch.relays))
 
@@ -1736,7 +1738,45 @@ class NotificationWatchTests(unittest.TestCase):
                                                                       f"of {TABLET}'s log over USB or the network"})
         quiet = (LOGS / "springboard-quiet.log").read_text()
         self.relaying("", quiet)
-        self.assertEqual(device_notifications.Watch(TABLET).stop(), {"watched": True, "presented": 0})
+        self.assertEqual(device_notifications.Watch(TABLET).stop(),
+                         {"watched": True, "presented": 0, "transport": "network"})
+
+    def test_a_relay_that_ends_or_loses_the_device_during_the_run_leaves_it_unwatched(self):
+        quiet = (LOGS / "springboard-quiet.log").read_text()
+        cases = [
+            # The relay ended before the command did, as -x ends it when the cable comes out.
+            ((quiet, 0, True), "", "its usb relay lost"),
+            # It stayed up but said it lost the device.
+            ("", f"{quiet}[disconnected:{TABLET}]\n", "its network relay lost"),
+        ]
+        for usb, network, said in cases:
+            with self.subTest(said=said):
+                self.relaying(usb, network)
+                watch = device_notifications.Watch(TABLET)
+                time.sleep(stretched(1))
+                seen = watch.stop()
+                self.assertEqual((seen["watched"], seen["presented"]), (False, 0), seen)
+                self.assertIn(said, seen["detail"])
+                self.assertNotIn("transport", seen)
+
+    def test_a_relay_that_reaches_the_device_only_after_the_run_started_leaves_it_unwatched(self):
+        quiet = (LOGS / "springboard-quiet.log").read_text()
+        with patch.object(device_notifications, "READY", 0.5):
+            self.relaying((quiet, stretched(2), False), "")
+            watch = device_notifications.Watch(TABLET)
+            time.sleep(stretched(3))
+            seen = watch.stop()
+        self.assertEqual((seen["watched"], seen["presented"]), (False, 0), seen)
+        self.assertIn("its usb relay reached", seen["detail"])
+        self.assertIn("only after the run had started", seen["detail"])
+
+    def test_one_relay_that_watched_the_whole_run_is_enough_and_is_named(self):
+        # The negative control for the two above: the network relay lost the device, but USB read the whole run.
+        quiet = (LOGS / "springboard-quiet.log").read_text()
+        self.relaying(f"[connected:{TABLET}]\n{quiet}", (quiet, 0, True))
+        watch = device_notifications.Watch(TABLET)
+        time.sleep(stretched(1))
+        self.assertEqual(watch.stop(), {"watched": True, "presented": 0, "transport": "usb"})
 
     def test_a_relay_whose_starter_dies_ends_and_deletes_what_it_relayed(self):
         script = (f"import sys, time; sys.path.insert(0, {str(Path(__file__).resolve().parents[1] / 'src/python')!r})\n"

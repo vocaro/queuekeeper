@@ -128,8 +128,13 @@ while child.poll() is None:
 
 
 def relay(udid, network):
-    """The command that relays SpringBoard's lines from udid's log, reached over the network or over USB."""
-    return [RELAY, "-u", udid, *(["-n"] if network else []), "--no-colors", "-p", "SpringBoard"]
+    """The command that relays SpringBoard's lines from udid's log, reached over the network or over USB; -x ends it
+    when the device goes, so that a relay that lost the device is seen to have stopped."""
+    return [RELAY, "-u", udid, *(["-n"] if network else []), "-x", "--no-colors", "-p", "SpringBoard"]
+
+
+# What idevicesyslog prints when it reaches the device and when it loses it (libimobiledevice 1.4.0).
+CONNECTED, DISCONNECTED = "[connected:{}]", "[disconnected:{}]"
 
 
 def presentations(text):
@@ -145,6 +150,11 @@ def presentations(text):
 def lines(text):
     """Whether text holds any line of the device's log, which shows the relay reached it."""
     return LINE.search(text) is not None
+
+
+def reached(text, udid):
+    """Whether a relay's text shows it reached udid: its connection, or a line of the log."""
+    return CONNECTED.format(udid) in text or lines(text)
 
 
 class Watch:
@@ -174,9 +184,11 @@ class Watch:
                 os.close(descriptor)
             self.relays.append((path, process))
         deadline = time.monotonic() + READY
-        while self.relays and time.monotonic() < deadline and not any(lines(self._read(path))
+        while self.relays and time.monotonic() < deadline and not any(reached(self._read(path), udid)
                                                                        for path, _ in self.relays):
             time.sleep(0.2)
+        # Which relays had reached the device when the command starts: one that reaches it later missed the start.
+        self.ready = {path for path, _ in self.relays if reached(self._read(path), udid)}
 
     @staticmethod
     def _read(path):
@@ -187,7 +199,12 @@ class Watch:
 
     def stop(self):
         """End the relays, read what they relayed for presentations, and delete it: what the run's entry records,
-        {"watched", "presented", "first"} and why it was not watched, with nothing the lines say."""
+        {"watched", "presented", "first", "transport"} and why it was not watched, with nothing the lines say.
+
+        The run is watched only through a relay that had reached the device before the command started, relayed its
+        log, and was still relaying it when the command ended: one that lost the device, or ended, during the run,
+        or reached it only after the run had started, leaves part of the run unread (vocaro-engineering#194)."""
+        ended = {path for path, process in self.relays if process.poll() is not None}
         for _path, process in self.relays:
             if process.poll() is None: process.terminate()
         for _path, process in self.relays:
@@ -195,14 +212,25 @@ class Watch:
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait()
-        texts = [self._read(path) for path, _ in self.relays]
+        texts = {path: self._read(path) for path, _ in self.relays}
         if self.directory: shutil.rmtree(self.directory, True)
         # The same line can come over both relays.
-        found = sorted(set(clock for text in texts for clock in presentations(text)))
-        seen = {"watched": any(lines(text) for text in texts), "presented": len(found)}
+        found = sorted(set(clock for text in texts.values() for clock in presentations(text)))
+        name = lambda path: os.path.basename(path)
+        relayed = [path for path, text in texts.items() if lines(text)]
+        late = [path for path in relayed if path not in self.ready]
+        lost = [path for path in relayed if path in ended or DISCONNECTED.format(self.udid) in texts[path]]
+        whole = [path for path in relayed if path not in late and path not in lost]
+        seen = {"watched": bool(whole), "presented": len(found)}
         if found: seen["first"] = found[0]
+        if whole: seen["transport"] = "+".join(name(path) for path in whole)
         if not seen["watched"]:
-            seen["detail"] = self.failure or f"{RELAY} relayed no line of {self.udid}'s log over USB or the network"
+            if not relayed:
+                seen["detail"] = self.failure or f"{RELAY} relayed no line of {self.udid}'s log over USB or the network"
+            else:
+                seen["detail"] = "; ".join(
+                    [f"its {name(path)} relay reached {self.udid} only after the run had started" for path in late]
+                    + [f"its {name(path)} relay lost {self.udid} during the run" for path in lost if path not in late])
         return seen
 
 
