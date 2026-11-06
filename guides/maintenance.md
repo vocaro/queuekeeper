@@ -391,6 +391,15 @@ hour later, from `eng queue status`
 alone; every entry that passes along the way lands. An entry that comes back keeps its ref until
 `eng queue remove ID`. Fix it, rebase and land it again.
 
+**After it lands, start again from `main`.** The round may change a commit as it puts it on
+`main`, as when it keeps both sides of `CHANGELOG.md`, so `main` holds it under another hash and
+another patch. Rebasing the branch onto `origin/main` then replays the landed commit and
+conflicts on that file, and merging `main` in makes a merge the queue refuses. Begin the next
+change on that branch from `origin/main`, as with `git reset --hard origin/main` on a clean
+branch of your own once `eng land` says `landed`. In a rebase already under way, `git rebase
+--skip` drops a landed commit. On 2026-11-05 one EPUBLib session's rebases stopped on
+`CHANGELOG.md` three times this way.
+
 **A run with no verdict blames nobody.** Exit 3 (unmeasured), 75 (no admission) and 78 (a
 misconfigured host) say nothing about the commits. The worker runs the lanes again, and holds the
 queue, with every entry waiting, once three runs in a row have given no verdict, as it also does for a
