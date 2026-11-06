@@ -540,6 +540,16 @@ which it keeps between offers, is not counted against it. Until vocaro-engineeri
 counted a guaranteed slot such a request kept as free, and eng offered work there that admission
 then held back or that competed with the gate.
 
+The reading applies admission's rule for an exclusive request queued there too: while one whose
+process runs is the first request queued that holds later work back, admission holds every later
+request behind it until it has been admitted and has ended, so no lane of any kind has spare
+capacity there (`exclusive work is queued ahead on the second Mac: LABEL`). One whose process has
+ended holds nothing back, and neither does one queued while a dead or uncertain guard entry is
+counted as any slot, which it would wait for, as in admission (#89); one queued behind a
+whole-host request that asks is that request's turn, read as the slots kept for it. Until
+vocaro-engineering#191 the reading did not report such a request, and eng offered a lane to a Mac
+whose admission then held it back for as long as the exclusive work waited and ran.
+
 1. The second Mac runs the lane when its reading shows spare capacity and it can start the lane
    now: its queue admits the lane within five seconds (`eng run --if-free` there, which exits 75
    without running otherwise) and one of the project's four checkouts there is free.
@@ -548,7 +558,7 @@ then held back or that competed with the gate.
    and the receipt's `hereBecause` records it, naming the second Mac's load when that is it, as
    `the second Mac is loaded (load 719.0, at or above its HEAVY_LOAD_LIMIT=7.5)`, else the
    whole-host lane or exclusive work running there, its guaranteed slots all busy, or those slots
-   kept for a whole-host lane queued there. A second
+   kept for a whole-host lane queued there, or exclusive work queued there. A second
    Mac whose reading shows capacity may still decline the lane as busy once it is offered, as
    when every checkout of the project there is in use or the model is held: this Mac's own
    admission then gets the same five seconds, and the lane runs here if it admits it, the receipt

@@ -2219,11 +2219,12 @@ def spare(reading, mac, whole_host=False, exclusive=False, screen=False):
     """Why mac, read as reading (offload_host.capacity), has no spare capacity now for the work, or None while
     it has (vocaro-engineering#168). The work needs a guaranteed slot free there, every guaranteed slot for a
     whole-host lane and every slot up to the maximum for exclusive work, a one-minute load under the Mac's own
-    HEAVY_LOAD_LIMIT, and no whole-host lane or exclusive work running there. While the Mac's admission keeps the
-    guaranteed slots for a whole-host lane queued ahead (kept), a whole-host or exclusive lane waits its turn
-    behind it and other work needs a slot beyond them free, as admission rules (vocaro-engineering#174, #186).
-    The reason names the Mac and, for its load, the load read and the limit, and the lane queued ahead for which
-    the slots are kept; the receipt's hereBecause carries it. With screen, for a lane
+    HEAVY_LOAD_LIMIT, no whole-host lane or exclusive work running there, and no exclusive work queued ahead
+    there (queuedExclusive), behind which admission holds every later request (vocaro-engineering#191). While the
+    Mac's admission keeps the guaranteed slots for a whole-host lane queued ahead (kept), a whole-host or
+    exclusive lane waits its turn behind it and other work needs a slot beyond them free, as admission rules
+    (vocaro-engineering#174, #186). The reason names the Mac and, for its load, the load read and the limit,
+    and the request queued ahead; the receipt's hereBecause carries it. With screen, for a lane
     that needs an unlocked screen, a Mac whose screen is locked or unknown has none (screen_refusal)."""
     if screen:
         refused = screen_refusal(reading.get("screen"), mac)
@@ -2234,6 +2235,10 @@ def spare(reading, mac, whole_host=False, exclusive=False, screen=False):
         return f"{mac} is running a whole-host lane: {running[0]}"
     if holding:
         return f"exclusive work holds {mac}: {holding[0]}"
+    # An older toolkit's reading has no queuedExclusive, and holds nothing back by it.
+    queued = reading.get("queuedExclusive")
+    if isinstance(queued, str) and queued:
+        return f"exclusive work is queued ahead on {mac}: {queued}"
     if exclusive and busy:
         return (f"exclusive work needs every slot of {mac} up to HEAVY_SLOTS_MAX={maximum} free, and {len(busy)} "
                 f"{'is' if len(busy) == 1 else 'are'} busy")

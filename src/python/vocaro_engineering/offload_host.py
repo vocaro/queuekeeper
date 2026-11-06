@@ -980,14 +980,16 @@ def stranded_slots(directory, maximum, owners):
     return reserved
 
 
-def kept_for(directory, slots, maximum, owners, own=None):
-    """The label of the whole-host request queued ahead for which this Mac's admission keeps the guaranteed slots
-    now, or None, by the rule resources.Admission._attempt applies (vocaro-engineering#174, #186): the first
-    queued request that holds later work back, an exclusive one whose process runs or a whole-host one whose
-    process runs and last asked within HEAVY_PLACE_SECONDS, when it is a whole-host one and no dead or uncertain
-    guard entry is counted as a guaranteed slot, which it would wait for. A request whose process ended, one that
-    has not asked lately, and one queued behind exclusive work keep nothing. own is the identity of the asking
-    work's own place in this queue (resources.Place): what is queued behind it keeps nothing from it."""
+def queued_ahead(directory, slots, maximum, owners, own=None):
+    """The request queued ahead that holds this Mac's later heavy work back now, as ("wholeHost", LABEL), for
+    which admission keeps the guaranteed slots, or ("exclusive", LABEL), behind which every later request waits;
+    or None. It applies the rule resources.Admission._attempt applies (vocaro-engineering#174, #186, #191): the
+    first queued request that holds later work back, an exclusive one whose process runs or a whole-host one
+    whose process runs and last asked within HEAVY_PLACE_SECONDS, unless a dead or uncertain guard entry is
+    counted as a slot it would wait for, any slot for an exclusive request and a guaranteed one for a whole-host
+    request, when it holds nothing back (#89). A request whose process ended and one that has not asked lately
+    hold nothing back, and the reading looks past them, as admission does. own is the identity of the asking
+    work's own place in this queue (resources.Place): what is queued behind it holds nothing back from it."""
     try: recorded = json.loads((directory / QUEUE).read_text())["waiters"]
     except (OSError, ValueError, KeyError, TypeError): return None
     if not isinstance(recorded, list): return None
@@ -999,13 +1001,14 @@ def kept_for(directory, slots, maximum, owners, own=None):
         # The asking work's own place: nothing queued behind it holds it back.
         if own is not None and waiter.get("identity") == own: return None
         if not alive(waiter): continue
+        label = str(waiter.get("label") or "an unnamed request")
         if not waiter.get("wholeHost"):
-            # Exclusive work queued ahead holds every request back; the slots are not kept for a whole-host lane.
-            return None
+            # Exclusive work queued ahead holds every request back, unless a stranded entry is counted as any slot.
+            return None if stranded_slots(directory, maximum, owners) else ("exclusive", label)
         seen = waiter.get("seen")
         if not (isinstance(seen, (int, float)) and not isinstance(seen, bool) and time.time() - seen < hold): continue
         if any(slot < slots for slot in stranded_slots(directory, maximum, owners)): return None
-        return str(waiter.get("label") or "an unnamed request")
+        return "wholeHost", label
     return None
 
 
@@ -1015,8 +1018,10 @@ def capacity(own=None):
     up to the maximum; its one-minute load, None when unavailable, and the limit at or above which its admission
     finds no spare capacity; and the labels of the whole-host lanes and the exclusive work its guard records as
     running; the label of the whole-host request queued ahead for which admission keeps the guaranteed slots, or
-    None (kept_for; own is the asking work's own place, vocaro-engineering#186); and its console screen (screen),
-    which a lane that needs it unlocked reads. A reading it cannot take says why, as error, as pressure does."""
+    None (kept; own is the asking work's own place, vocaro-engineering#186); the label of the exclusive request
+    queued ahead that holds every later request back, or None (queuedExclusive, vocaro-engineering#191), both
+    read by queued_ahead; and its console screen (screen), which a lane that needs it unlocked reads. A reading
+    it cannot take says why, as error, as pressure does."""
     try: found = limits()
     except ValueError as error: return {"error": str(error)}
     try: directory = slot_directory()
@@ -1026,11 +1031,13 @@ def capacity(own=None):
     owners = guard_entries()
     running = [owner for owner in owners if alive(owner)]
     label = lambda owner: str(owner.get("label") or "an unnamed owner")
+    kind, ahead = queued_ahead(directory, found["slots"], found["slotsMax"], owners, own) or (None, None)
     return {"slots": found["slots"], "slotsMax": found["slotsMax"], "busy": busy_slots(directory, found["slotsMax"]),
             "load": load, "limit": found["loadLimit"],
             "wholeHost": [label(owner) for owner in running if owner.get("wholeHost") and not owner.get("exclusive")],
             "exclusive": [label(owner) for owner in running if owner.get("exclusive")],
-            "kept": kept_for(directory, found["slots"], found["slotsMax"], owners, own), "screen": screen()}
+            "kept": ahead if kind == "wholeHost" else None,
+            "queuedExclusive": ahead if kind == "exclusive" else None, "screen": screen()}
 
 
 def unended():

@@ -2872,6 +2872,28 @@ class KeptSlotsTests(unittest.TestCase):
         self.assertEqual(remote.spare({**kept, "wholeHost": ["Pagepour gate"]}, "the second Mac"),
                          "the second Mac is running a whole-host lane: Pagepour gate")
 
+    def test_exclusive_work_queued_ahead_leaves_no_spare_capacity_for_any_lane(self):
+        """Admission holds every later request behind a live exclusive request queued ahead, so a Mac whose reading
+        reports one (queuedExclusive) has no spare capacity for any lane, however idle it is (#191)."""
+        queued = {**self.IDLE, "queuedExclusive": "bench", "kept": None}
+        refused = "exclusive work is queued ahead on the second Mac: bench"
+        for need in [{}, {"whole_host": True}, {"exclusive": True}]:
+            with self.subTest(need=need):
+                self.assertEqual(remote.spare(queued, "the second Mac", **need), refused)
+                # The negative controls: a reading that reports none, an older toolkit's without the key and a
+                # malformed one find the idle Mac's capacity as before.
+                for reading in [{**self.IDLE, "queuedExclusive": None}, self.IDLE, {**self.IDLE, "queuedExclusive": ""},
+                                {**self.IDLE, "queuedExclusive": 7}]:
+                    self.assertIsNone(remote.spare(reading, "the second Mac", **need), reading)
+        # Work running there still says so first.
+        self.assertEqual(remote.spare({**queued, "exclusive": ["simulator bench"]}, "the second Mac"),
+                         "exclusive work holds the second Mac: simulator bench")
+        # So eng sends the lane to this Mac's queue when only the second Mac has exclusive work queued.
+        offered = remote.Offer("gate", "", lambda host, sent: 0)
+        with patch.object(remote, "capacity_there", return_value={**queued, "screen": None}), \
+                patch.object(remote.offload_host, "capacity", return_value={**self.IDLE, "screen": None}):
+            self.assertEqual(offered.choose(), refused)
+
     def test_this_macs_reading_does_not_count_the_works_own_place(self):
         """A whole-host lane that waits here keeps its place in this Mac's queue between offers (resources.Place);
         eng's reading of this Mac for it does not count that place as a request queued ahead of it."""
