@@ -1719,13 +1719,19 @@ class NotificationWatchTests(unittest.TestCase):
 
     def relaying(self, *texts):
         """A watch whose relays print texts, over USB and the network in turn, and then wait to be ended. A text may
-        be (text, after, ends): printed after that many seconds, and the relay then ends at once if ends."""
+        be (text, after, ends): printed after that many seconds, and the relay then ends at once if ends. Ended by
+        SIGTERM, each prints `[disconnected:UDID]` first, as idevicesyslog 1.4.0 did on the owner's iPhone and iPad
+        (2026-11-06, vocaro-engineering#194)."""
         printed = iter(texts)
 
         def relay(udid, network):
             text, after, ends = (lambda given: given if isinstance(given, tuple) else (given, 0, False))(next(printed))
-            return [sys.executable, "-c", f"import sys, time; time.sleep({after}); sys.stdout.write(sys.argv[1]); "
-                    f"sys.stdout.flush(); time.sleep({0 if ends else stretched(60)})", text]
+            return [sys.executable, "-c", "import signal, sys, time\n"
+                    "def end(*_): sys.stdout.write(sys.argv[2]); sys.stdout.flush(); sys.exit(0)\n"
+                    "signal.signal(signal.SIGTERM, end)\n"
+                    f"time.sleep({after}); sys.stdout.write(sys.argv[1]); "
+                    f"sys.stdout.flush(); time.sleep({0 if ends else stretched(60)})", text,
+                    device_notifications.DISCONNECTED.format(udid) + "\n"]
         for patcher in (patch.dict(os.environ, {device_notifications.WATCH: ""}),
                         patch.object(device_notifications, "relay", relay),
                         patch.object(device_notifications.shutil, "which", return_value="/usr/bin/true")):
@@ -1783,6 +1789,17 @@ class NotificationWatchTests(unittest.TestCase):
         self.assertEqual((seen["watched"], seen["presented"]), (False, 0), seen)
         self.assertIn("its usb relay reached", seen["detail"])
         self.assertIn("only after the run had started", seen["detail"])
+
+    def test_a_relay_that_reaches_the_device_a_moment_after_the_other_is_waited_for(self):
+        # On the owner's iPhone (2026-11-06) USB answered at once and the network relay 0.42 s later: both read the
+        # whole run, and the relays ended at stop() said they disconnected, which is not losing the device.
+        # The gap stays fixed, the behavior under test; READY, its bound, stretches with the load (host_isolation).
+        quiet = (LOGS / "springboard-quiet.log").read_text()
+        with patch.object(device_notifications, "READY", stretched(10)):
+            self.relaying(f"[connected:{TABLET}]\n{quiet}", (f"[connected:{TABLET}]\n{quiet}", 0.5, False))
+            watch = device_notifications.Watch(TABLET)
+        time.sleep(stretched(1))
+        self.assertEqual(watch.stop(), {"watched": True, "presented": 0, "transport": "usb+network"})
 
     def test_one_relay_that_watched_the_whole_run_is_enough_and_is_named(self):
         # The negative control for the two above: the network relay lost the device, but USB read the whole run.

@@ -183,10 +183,13 @@ class Watch:
             finally:
                 os.close(descriptor)
             self.relays.append((path, process))
+        # Wait for every relay still running, not the first: over USB the owner's iPhone answered at once and over the
+        # network 0.42 s later (2026-11-06, vocaro-engineering#194), and a relay that is waited for reads the whole
+        # run. One that cannot reach the device costs the whole of READY.
         deadline = time.monotonic() + READY
-        while self.relays and time.monotonic() < deadline and not any(reached(self._read(path), udid)
-                                                                       for path, _ in self.relays):
-            time.sleep(0.2)
+        while self.relays and time.monotonic() < deadline and not all(
+                process.poll() is not None or reached(self._read(path), udid) for path, process in self.relays):
+            time.sleep(0.1)
         # Which relays had reached the device when the command starts: one that reaches it later missed the start.
         self.ready = {path for path, _ in self.relays if reached(self._read(path), udid)}
 
@@ -205,6 +208,9 @@ class Watch:
         log, and was still relaying it when the command ended: one that lost the device, or ended, during the run,
         or reached it only after the run had started, leaves part of the run unread (vocaro-engineering#194)."""
         ended = {path for path, process in self.relays if process.poll() is not None}
+        # Whether each lost the device is read before ending it: idevicesyslog prints `[disconnected:UDID]` when
+        # SIGTERM ends it too (libimobiledevice 1.4.0, 2026-11-06, vocaro-engineering#194).
+        lost_before = {path for path, _ in self.relays if DISCONNECTED.format(self.udid) in self._read(path)}
         for _path, process in self.relays:
             if process.poll() is None: process.terminate()
         for _path, process in self.relays:
@@ -219,7 +225,7 @@ class Watch:
         name = lambda path: os.path.basename(path)
         relayed = [path for path, text in texts.items() if lines(text)]
         late = [path for path in relayed if path not in self.ready]
-        lost = [path for path in relayed if path in ended or DISCONNECTED.format(self.udid) in texts[path]]
+        lost = [path for path in relayed if path in ended or path in lost_before]
         whole = [path for path in relayed if path not in late and path not in lost]
         seen = {"watched": bool(whole), "presented": len(found)}
         if found: seen["first"] = found[0]
