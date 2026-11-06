@@ -614,6 +614,13 @@ class NoVerdict(Fixture):
             with self.subTest(runs=runs), self.assertRaisesRegex(ValueError, "queue.noVerdictRuns"):
                 configuration.parse(json.dumps({**start, "queue": {"noVerdictRuns": runs}}))
 
+    def test_the_schema_knows_the_setting(self):
+        # The schema's queue takes no property it does not list, so a project that set the bound failed it.
+        queue = json.loads((ROOT / "schemas/engineering.schema.json").read_text())["properties"]["queue"]
+        self.assertFalse(queue["additionalProperties"])
+        self.assertEqual(queue["properties"]["noVerdictRuns"]["type"], "integer")
+        self.assertEqual(queue["properties"]["noVerdictRuns"]["minimum"], 1)
+
     def test_the_hold_says_why_the_last_run_gave_no_verdict(self):
         worker = mq.Worker(mq.Queue(self.repo))
         log = self.base / "gate.log"
