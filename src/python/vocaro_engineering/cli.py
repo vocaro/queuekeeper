@@ -11,7 +11,7 @@ import subprocess
 import sys
 import time
 
-from . import __version__, app_registrations, budgets, crash_alerts, device_pass, devices, disk, docs, evidence, evidence_offload, failure_records, foreground, github_artifacts, keychain, merge_queue, \
+from . import __version__, app_builds, app_registrations, budgets, crash_alerts, device_pass, devices, disk, docs, evidence, evidence_offload, failure_records, foreground, github_artifacts, keychain, merge_queue, \
     offload_host, parallel, processes, release, remote, resources, skills, spelling, toolkit_copy, xctest_shards
 from .config import TOOLKIT_ROOT, CAPABILITIES, DEFAULT_TOOLKIT, load, source_identity, stays, unlocked_screen
 from .resources import BUSY, FREE_WAIT
@@ -716,6 +716,11 @@ def main(argv=None):
         "COMMAND once on each paired device named, in turn, under its reservation, taking the iPad in turn and "
         "using an iPhone the session reserved within the owner's window: eng device-pass --device iPad --device "
         "iPhone -- COMMAND; -h for the rest (guides/releasing.md, The device pass)")
+    app_builds.add_arguments(commands.add_parser("app", help="run the last good build of the project's app: eng app "
+        "run opens the newest kept Mac build, and eng app run --iphone or --ipad installs and launches the device "
+        "build on that paired device, building origin/main first when the kept build is older; eng app keep builds "
+        "and keeps one, as the merge queue does after each gated landing; eng app status lists them "
+        "(guides/app-builds.md)"))
     commands.add_parser("simulator-pool", help="list, take, release, prune, reap or check members of the project's "
         "simulator pool under device-record reservations: eng simulator-pool list|take|release|prune|reap|check; "
         "-h for the rest")
@@ -925,6 +930,7 @@ def main(argv=None):
         if args.action == "land": return merge_queue.land(root, args)
         if args.action == "queue": return merge_queue.main(root, args)
         config = load(root)
+        if args.action == "app": return app_builds.execute(root, args, config)
         if args.action == "instructions": instructions(config)
         elif args.action == "doctor":
             required = {"git", "python3"}

@@ -34,7 +34,7 @@ import subprocess
 import sys
 import time
 
-from . import devices as device_record, failure_records as failures, ignored, landing
+from . import app_builds as kept_apps, devices as device_record, failure_records as failures, ignored, landing
 from .config import TOOLKIT_ROOT
 from .simulators import pool as simulator_pool
 
@@ -44,7 +44,8 @@ CATEGORIES = {"worktree": "Linked worktrees", "simulator": "Simulators", "runtim
               "derived-data": "Xcode DerivedData", "scratch": "Scratch builds outside checkouts",
               "swiftpm-cache": "SwiftPM shared cache", "results": "Result directories",
               "failures": "Kept failure records (pruned by their rule)",
-              "evidence": "Evidence archives (offload to the second Mac)"}
+              "evidence": "Evidence archives (offload to the second Mac)",
+              "app-builds": "Kept app builds and their build caches (eng app)"}
 # --delete removes every candidate category without asking (the owner's decision, 2026-11-05, widening that
 # of 2026-11-03 from simulators and runtimes to every candidate): a candidate is what the rules prove nobody
 # owns, so it needs no second judgment; what only the owner can judge is an owner item, never removed.
@@ -74,6 +75,8 @@ SESSION_RECORDS = "Library/Application Support/Claude/claude-code-sessions"
 # The lock reason the merge queue gives a checkout of its old layout that it could not move while a process
 # used it, once it has made the checkout afresh in its place (merge_queue.Worker.place).
 RETIRED = "retired by the merge queue"
+# eng app's store of kept builds under the account's home (app_builds.store_root).
+APP_STORE = "Library/Application Support/vocaro-engineering/apps"
 
 
 @dataclass
@@ -901,6 +904,28 @@ def derived_data(host, usage, sizes):
     return items
 
 
+def app_builds(host, usage, sizes):
+    """eng app's store (app_builds.py): each project's kept builds, which stay, being what `eng app run` opens, and
+    its DerivedData for each platform, which only makes the next keep incremental and goes once idle."""
+    root = host.home / APP_STORE
+    if not root.is_dir(): return []
+    items = []
+    for project in sorted(child for child in root.iterdir() if child.is_dir() and not child.is_symlink()):
+        if (project / "kept").is_dir():
+            items.append(Item("app-builds", str(project / "kept"), KEPT, "the last good builds `eng app run` opens, "
+                              "the newest two of each platform", sizes.of(project / "kept")))
+        derived = project / "derived"
+        if derived.is_dir() and kept_apps.Store(project.name, root).busy():
+            # The census reads a build's arguments word by word, and this path has a space in it: the lock says.
+            items += [Item("app-builds", str(child), KEPT, "a keep is building with it now", sizes.of(child))
+                      for child in sorted(derived.iterdir()) if child.is_dir() and not child.is_symlink()]
+        elif derived.is_dir():
+            items += [cache_item(host, usage, sizes, "app-builds", child, "eng app's build cache, which the next keep "
+                                 "builds again in full") for child in sorted(derived.iterdir())
+                      if child.is_dir() and not child.is_symlink()]
+    return items
+
+
 def swiftpm_cache(host, usage, sizes):
     root = host.home / "Library/Caches/org.swift.swiftpm"
     items = []
@@ -1080,6 +1105,7 @@ def inventory(host, sizes, categories=None):
     if "runtime" in wanted: items += runtimes(host)
     if "derived-data" in wanted: items += derived_data(host, usage, sizes)
     if "swiftpm-cache" in wanted: items += swiftpm_cache(host, usage, sizes)
+    if "app-builds" in wanted: items += app_builds(host, usage, sizes)
     if "evidence" in wanted: items += evidence_archives(host, sizes)
     if "failures" in wanted: items += failure_records(host, usage, sizes)
     if wanted & {"scratch", "results"}: items += [item for item in temp_items(host, usage, sizes) if item.category in wanted]

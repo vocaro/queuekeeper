@@ -216,6 +216,10 @@ python3 scripts/eng land --repo EPUBLib BRANCH  # from any project: land a fix i
 python3 scripts/eng queue status
 ```
 
+**A gated push keeps the app.** For a project whose engineering.json has `app`, the worker starts
+`eng app keep --after-landing` for the pushed commit in the background once the push lands, and the
+round goes on without waiting. That build is what `eng app run` opens ([kept app builds](app-builds.md)).
+
 **A session does not run the full gate.** It runs the smallest relevant checks, commits and adds
 the commit. Adding is the decision to land: the owner approves that once, and no later step asks.
 What is added is the range the ref has and `origin/main` lacks, held by a ref of its own, so the

@@ -38,7 +38,7 @@ import threading
 import time
 import urllib.request
 
-from . import budgets, disk, evidence, landing, processes, remote, resources
+from . import app_builds, budgets, disk, evidence, landing, processes, remote, resources
 from .config import TOOLKIT_ROOT, load, parse
 
 MAIN = "refs/remotes/origin/main"
@@ -1354,6 +1354,7 @@ class Worker:
                                       **({"ungated": ungated} if ungated else {}),
                                       **({"gate": self.measured} if self.measured and not docs else {}),
                                       **({} if docs or ungated else {"gatedOn": gated_on}))
+                if not docs and not ungated: self.keep_app(config, head)
                 if self.toolkits_own(): self.follow()
                 return True
             said = pushed.stderr.strip()
@@ -1362,6 +1363,19 @@ class Worker:
                 raise Hold(CLEARS, f"the push of {head[:12]} did not reach the remote in {len(BACKOFF) + 1} tries: {said}")
             raise Hold(OWNER, f"the push of {head[:12]} was refused: {said or 'no output'}{status}")
         return False
+
+    def keep_app(self, config, head):
+        """Start keeping the app built at head, the gated commit just pushed, in the background, when main's
+        engineering.json keeps one after landing (app_builds.py): the round goes on while it builds, and a build
+        that fails leaves the build kept before it. A docs-only or ungated landing keeps none."""
+        if not app_builds.after_landing(config): return
+        log = self.queue.logs / f"app-keep-{head[:12]}.log"
+        try:
+            app_builds.spawn_keep(self.checkout, head, log, env=self.environment)
+        except OSError as error:
+            self.say(f"could not start keeping the app built at {head[:12]}: {error}")
+            return
+        self.say(f"keeping the app built at {head[:12]} in the background; see {log}")
 
     def landed(self, batch, base, head):
         """{entry id: (its last commit in base..head, how many of its commits that range holds)}, so that each entry

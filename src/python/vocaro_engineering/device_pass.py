@@ -67,8 +67,10 @@ def words(command, key, udid):
     return [word.replace("{udid}", udid).replace("{key}", key) for word in command]
 
 
-def acquire(record, key, owner, *, purpose, minutes, wait, said):
-    """key's entry for the run and whether the pass took it, or a Part saying why it is not run."""
+def acquire(record, key, owner, *, purpose, minutes, wait, said, approval=None):
+    """key's entry for the run and whether the pass took it, or a Part saying why it is not run. approval, the
+    window the owner agreed ({"by", "at", "until"[, "words"]}), takes a device without standing approval in turn
+    within it, as `devices take --approved-*` does."""
     value = record.load()
     if value.get(devices.DEFERRED):
         raise Misplaced(f"this Mac's device record defers physical devices to {value[devices.DEFERRED]}, so the pass "
@@ -78,15 +80,16 @@ def acquire(record, key, owner, *, purpose, minutes, wait, said):
     if entry is not None and devices.condition(entry) == "held" and entry.get("ownerChatID") == owner:
         said(f"device-pass: {key}: {owner} holds it already, so the pass uses that reservation and leaves it held")
         return entry, False
-    if key not in devices.STANDING:
+    if key not in devices.STANDING and approval is None:
         return Part(key, NOT_RUN, f"{key} has no standing approval and {owner} holds no reservation of it: ask the "
                     f"owner for a window, reserve it within that window (`devices reserve {key} --approved-by … "
                     f"--approved-at … --approved-until …`, or `take` with the same options), then run the lane "
                     "again"), False
     release_by = (datetime.now(timezone.utc) + timedelta(minutes=minutes)).isoformat()
     try:
-        entry = record.take(key, owner=owner, purpose=purpose, release_by=release_by, timeout=wait, said=said)
-    except (TimeoutError, devices.Refused) as error:
+        entry = record.take(key, owner=owner, purpose=purpose, release_by=release_by, timeout=wait, said=said,
+                            approval=approval)
+    except (TimeoutError, devices.Refused, ValueError) as error:
         return Part(key, NOT_RUN, str(error)), False
     entry = devices.silence_notifications(record, key, owner=owner, revision=entry["revision"], said=said)
     return entry, True
@@ -153,13 +156,14 @@ def status(parts):
 
 
 def run(keys, command, *, owner=None, purpose="release device pass", minutes=MINUTES, wait=WAIT, limit=None,
-        apps_quit=None, launched=(), cwd=None, results=None, record=None, said=None):
+        apps_quit=None, launched=(), cwd=None, results=None, record=None, said=None, approval=None):
     """Run command on each device keys names, in turn; each device's Part and the pass's status.
 
     command is a list of words, or a function of (key, udid) that returns them, for a project script that
     gives each device its own steps. launched names the apps the command launches on each device, by bundle
     identifier, which its entry records before the run (`devices update --launched`); apps_quit then says how
-    the command quits them, which a device's release records."""
+    the command quits them, which a device's release records. approval, the window the owner agreed, lets the
+    pass take a device without standing approval within it (acquire)."""
     if launched and not apps_quit:
         raise ValueError("a pass whose command launches apps says how it quits them: apps_quit")
     said = said or (lambda text: print(text, file=sys.stderr, flush=True))
@@ -171,7 +175,8 @@ def run(keys, command, *, owner=None, purpose="release device pass", minutes=MIN
     results = results if results is not None else os.environ.get(RESULTS_VARIABLE)
     parts = []
     for key in keys:
-        acquired, took = acquire(record, key, owner, purpose=purpose, minutes=minutes, wait=wait, said=said)
+        acquired, took = acquire(record, key, owner, purpose=purpose, minutes=minutes, wait=wait, said=said,
+                                 approval=approval)
         if isinstance(acquired, Part):
             part = acquired
         else:

@@ -110,6 +110,21 @@ class DevicePass(Fixture):
         _parts, code, _said = self.run_pass(["iPhone"], self.command())
         self.assertEqual(code, device_pass.UNMEASURED)
 
+    def test_an_iphone_within_the_owners_window_is_taken_in_turn_run_on_and_released(self):
+        window = approval(until=later(120), words="install it on my iPhone")
+        parts, code, said = self.run_pass(["iPhone"], self.command("{key}"), approval=window, minutes=20)
+        self.assertEqual(code, 0, said)
+        self.assertEqual((parts["iPhone"].outcome, parts["iPhone"].took, parts["iPhone"].released), ("passed", True, True))
+        self.assertEqual([call["udid"] for call in self.ran()], [PHONE])
+        entry = self.record.entry("iPhone")
+        self.assertEqual((devices.condition(entry), entry["lastOwnerChatID"]), ("released", "session-a"))
+        self.assertEqual(entry["approval"]["words"], "install it on my iPhone")
+        # A window that ends before the reservation would is refused, and nothing runs.
+        parts, code, _said = self.run_pass(["iPhone"], self.command(), approval=approval(until=later(5)), minutes=20)
+        self.assertEqual((parts["iPhone"].outcome, code), ("not run", device_pass.UNMEASURED))
+        self.assertIn("falls after the owner's approval ends", parts["iPhone"].detail)
+        self.assertEqual(len(self.ran()), 1)
+
     def test_a_failure_on_one_device_fails_the_pass_and_the_other_still_runs(self):
         self.hold_iphone()
         with patch.dict(os.environ, {"STATUS_iPad": "4"}):

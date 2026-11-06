@@ -25,7 +25,7 @@ def parse(source):
     if not isinstance(value, dict) or value.get("schemaVersion") != 1:
         raise ValueError("engineering.json requires schemaVersion 1")
     allowed = {"schemaVersion", "name", "toolkit", "capabilities", "lanes", "exceptions",
-               "integration", "repository", "spelling", "simulatorPool", "githubArtifacts", "queue", "release"}
+               "integration", "repository", "spelling", "simulatorPool", "githubArtifacts", "queue", "release", "app"}
     hosted = [key for key in ("hostedRepositories", "voiceover") if key in value]
     if hosted:
         raise ValueError(f"engineering.json gives {' and '.join(hosted)}, which configured GitHub's hosted Mac runner "
@@ -96,6 +96,7 @@ def parse(source):
                 raise ValueError(f"{name}.{key} must be a positive integer")
     merge_queue(value.get("queue", {}), lanes)
     release(value.get("release", {}), lanes, value.get("queue", {}))
+    if "app" in value: app(value["app"])
     spelling = value.get("spelling", {})
     if not isinstance(spelling, dict) or set(spelling) - {"skip", "exemptPhrases", "exemptRuns", "exemptTokens"}:
         raise ValueError("spelling supports only skip, exemptPhrases, exemptRuns and exemptTokens")
@@ -110,6 +111,47 @@ def parse(source):
 
 
 RESOURCES = ["light", "heavy", "exclusive"]
+# The platforms `eng app` builds an app for, and whether each is kept after every gated landing unless the
+# project says otherwise: the Mac build is, so that the newest landed app opens at once; a device build is
+# made when a device asks for it (app_builds.py).
+APP_PLATFORMS = {"mac": True, "ios": False}
+
+
+def app(declared):
+    """The app `eng app` keeps and runs (app_builds.py, guides/app-builds.md)."""
+    if not isinstance(declared, dict) or set(declared) - {"project", "workspace", "directory", "configuration",
+                                                          "prepare", *APP_PLATFORMS}:
+        raise ValueError("app supports only project or workspace, directory, configuration, prepare, mac and ios")
+    if ("project" in declared) == ("workspace" in declared):
+        raise ValueError("app names its Xcode project or its workspace, one of them")
+    for key in ("project", "workspace", "directory", "configuration"):
+        if key in declared and (not isinstance(declared[key], str) or not declared[key].strip()):
+            raise ValueError(f"app.{key} must be a nonempty string")
+    for key in ("project", "workspace", "directory"):
+        if key in declared and (Path(declared[key]).is_absolute() or ".." in Path(declared[key]).parts):
+            raise ValueError(f"app.{key} is a path inside the checkout")
+    prepare = declared.get("prepare")
+    if prepare is not None and (not isinstance(prepare, list) or not prepare or
+                                any(not isinstance(word, str) or not word for word in prepare)):
+        raise ValueError("app.prepare needs an argv list, never shell source")
+    platforms = [name for name in APP_PLATFORMS if name in declared]
+    if not platforms:
+        raise ValueError("app names at least one platform to build: mac or ios")
+    for name in platforms:
+        platform = declared[name]
+        if not isinstance(platform, dict) or set(platform) - {"scheme", "product", "settings", "afterLanding"}:
+            raise ValueError(f"app.{name} supports only scheme, product, settings and afterLanding")
+        if not isinstance(platform.get("scheme"), str) or not platform["scheme"].strip():
+            raise ValueError(f"app.{name}.scheme must name the scheme that builds the app")
+        product = platform.get("product")
+        if product is not None and (not isinstance(product, str) or not product.endswith(".app") or "/" in product):
+            raise ValueError(f"app.{name}.product is the built app's file name, such as Name.app")
+        settings = platform.get("settings", {})
+        if not isinstance(settings, dict) or any(not isinstance(key, str) or not re.fullmatch(r"[A-Z_][A-Z0-9_]*", key)
+                                                 or not isinstance(text, str) for key, text in settings.items()):
+            raise ValueError(f"app.{name}.settings maps build setting names to text")
+        if "afterLanding" in platform and type(platform["afterLanding"]) is not bool:
+            raise ValueError(f"app.{name}.afterLanding must be true or false")
 
 
 # The lanes the merge queue runs before its gate where a project has them: merge_queue.BEFORE_GATE, kept
