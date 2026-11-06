@@ -498,14 +498,75 @@ class ReapTests(unittest.TestCase):
             report = self.reap()
         self.assertHeldEarly(report, "its owner could not be checked: the admission log broke", before)
 
-    def test_an_early_one_still_booted_is_kept_running_and_held(self):
-        before = self.early()
+    # Booted, before its expected release (the owner's decision, 2026-11-05, vocaro-engineering#156).
+
+    def booted_early(self, **more):
+        """early's member booted again, its launchd_sim and app running for 3 hours."""
+        before = self.early(**more)
         self.simulator()
         self.states[UDID] = "Booted"
+        return before
+
+    def test_a_booted_member_of_a_dead_runs_reservation_is_shut_down_and_released_in_one_reap(self):
+        self.booted_early()
         report = self.reap()
+        self.assertStopped(report)
+        self.assertIn("before its expected release", report["stopped"][0]["reason"])
+        self.assertEqual(([item["key"] for item in report["released"]], report["recoverable"]), ([NAME], []), report)
+        entry = devices.Record(self.record).entry(NAME)
+        self.assertEqual((devices.condition(entry), entry["revision"]), ("released", 8))
+        self.assertEqual(entry["recovery"]["qualified"], "early: nothing accounts for its owner")
+        self.assertIn(f"simctl showed {UDID} Shutdown", entry["recovery"]["verified"])
+        events = [json.loads(line)["event"] for line in self.log.read_text().splitlines()]
+        self.assertEqual(events, ["stopping", "stopped", "releasing", "released"])
+        said = "\n".join(remote.reap_lines(remote.HERE, report, listing=False))
+        self.assertIn(f"stopped {NAME}", said)
+        self.assertIn(f"released {NAME}", said)
+
+    def test_a_dry_run_names_the_booted_one_it_would_stop_and_release_and_changes_nothing(self):
+        before = self.booted_early()
+        report = self.reap(dry_run=True)
         self.assertEqual(self.stops, [])
-        self.assertKept(report, "not due for release")
-        self.assertHeldEarly(report, "simctl shows it Booted", before)
+        self.assertEqual([item["udid"] for item in report["eligible"]], [UDID], report)
+        self.assertEqual([item["key"] for item in report["released"]], [NAME], report)
+        self.assertIn(f"simctl would show {UDID} Shutdown once this reap stopped it", report["released"][0]["verified"])
+        said = "\n".join(remote.reap_lines(remote.HERE, report))
+        self.assertIn(f"would stop {NAME}", said)
+        self.assertIn(f"would release {NAME}", said)
+        self.assertEqual(self.record.read_bytes(), before)
+        self.assertFalse(self.log.exists())
+
+    def test_a_booted_member_whose_reservation_does_not_qualify_early_stays_booted_and_held(self):
+        def live_holder():
+            entry = json.loads(self.record.read_text())
+            entry["devices"][NAME]["holderProcess"]["start"] = ago(600)
+            self.record.write_text(json.dumps(entry))
+            self.process(HOLDER, 1, "python3 -m vocaro_engineering.simulators.matrix", start=ago(600))
+        def live_admission():
+            self.process(6100, 900, "python3 scripts/eng admit -- swift test")
+            self.environments[6100] = f"PATH=/usr/bin CLAUDE_CODE_SESSION_ID={self.OWNER}"
+            self.guard.write_text(json.dumps({"vocaroEngineering": 1, "owners": {"a" * 32: {
+                "pid": 6100, "start": self.table[6100][2], "label": "swift test"}}}))
+        cases = (
+            ("a take's reservation", {offload_host.ALONE: None, "purpose": "eng simulator-pool take"}, None,
+             "not due for release"),
+            ("one not marked held only while its holder runs", {offload_host.ALONE: False}, None, "not due for release"),
+            # Its expected release, not yet passed, still holds it: the process that would end that runs.
+            ("a live holder", {}, live_holder, "not due for release"),
+            ("a live admission naming its owner", {}, live_admission,
+             "not due for release .*live admission PID 6100 accounts for its owner"))
+        for name, more, arrange, hold in cases:
+            with self.subTest(name):
+                self.setUp()
+                self.booted_early(**more)
+                if arrange: arrange()
+                before = self.record.read_bytes()
+                for dry_run in (True, False):
+                    report = self.reap(dry_run=dry_run)
+                    self.assertKept(report, hold)
+                    self.assertEqual((report["eligible"], report["released"]), ([], []), report)
+                    self.assertEqual(self.record.read_bytes(), before)
+                self.assertEqual(self.states[UDID], "Booted")
 
     def test_a_runs_pool_marks_its_reservations_alone_and_a_take_does_not(self):
         future = time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(time.time() + 3600))

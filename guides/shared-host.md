@@ -1666,7 +1666,15 @@ it inherits, nor a light lane. It runs
    recorded process (`holderProcess`, an active run's process, `--own` processes) is gone, or whose
    PID now has another start, is not live, and once the simulator is shut down reap releases its
    entry, as below. One that records no process, is marked uncertain, or has not reached its expected
-   release counts as live.
+   release counts as live, except a run's reservation (`heldOnlyWhileHolderRuns`) whose recorded
+   processes are all gone and whose owner nothing accounts for, by the census of the early release
+   below (the simulator's own `launchd_sim` and its descendants, which name its UDID, left out): that one
+   is not live before its expected release either, so reap shuts the simulator down and releases its
+   entry in the same run. Asked on 2026-11-05 whether reap may shut down a booted pool simulator whose
+   reservation would qualify for early release, the owner answered yes
+   ([vocaro-engineering#156](https://github.com/vocaro/vocaro-engineering/issues/156)). A take's
+   reservation, or one with a live holder or a live admission or process naming its owner, keeps the
+   simulator running until its release is due.
 4. Its `launchd_sim` has run for 2 hours (`offload_host.REAP_AFTER`), and all of this is still so at
    a second check immediately before the stop.
 
@@ -1680,8 +1688,9 @@ to work past that, it records a running process of its own (`devices update KEY 
 **A template stays while its warm-up runs.** The pool reserves a template in the warming process's name,
 its `holderProcess`, before it boots it, so a live warm-up's reservation keeps it running however long
 the warm-up takes. A warm-up killed outright (`SIGKILL`, or the Mac stopping) leaves the template booted
-and its entry held by a process that is gone; that entry counts as live until its expected release, 8
-hours after the reservation, and then reap shuts the template down and releases its entry, as below.
+and its entry held by a process that is gone. Its reservation is a run's (`heldOnlyWhileHolderRuns`), so
+once the template has run 2 hours and nothing accounts for its owner, reap shuts it down and releases its
+entry, as below, before its expected release, 8 hours after the reservation.
 Until the entry is released, the kind's new members are created rather than cloned, and once it is
 released the next creation replaces the template, which was never warmed to the end.
 
@@ -1762,8 +1771,11 @@ run here it would read this Mac's record. `eng simulator-pool reap`, with or wit
 `eng doctor`'s `reaped` name every such entry; the reap before a dispatch or a run here names only those of
 simulators it just stopped. `devices status` names them too, and releases nothing. One not yet due that
 reap leaves (`its release is due …; reap did not release it: …`, a take's or one whose owner something
-accounts for) is named only by `eng simulator-pool reap`. Reap does not shut down a member whose dead
-reservation is not yet due; it releases that one early once the member is shut down. A live holder, a
+accounts for) is named only by `eng simulator-pool reap`. A member still booted whose dead reservation
+is not yet due but qualifies early, a run's whose owner nothing accounts for, reap shuts down once it has
+run 2 hours and then releases in the same run (the owner's decision, 2026-11-05); `--dry-run` names it as
+one it would stop and would release. A take's, or one whose owner something accounts for, stays booted
+and held until its release is due. A live holder, a
 release that cannot be read, an entry that records no process and an uncertain entry are neither named
 nor released.
 

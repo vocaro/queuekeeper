@@ -1558,12 +1558,13 @@ def replace_record(record):
     finally: os.close(directory)
 
 
-def release_hold(item, entries, table, simulators, pools):
+def release_hold(item, entries, table, simulators, pools, stopping=()):
     """Why release_dead must leave one entry recoverable found, or None when this Mac proves it dead: a pool
     simulator's reservation, of the device simctl here lists under that name and shows Shutdown, whose run
     went to no other Mac, and which no other entry of the device still holds, with this reap's own process
     in the listing that shows the others gone. recoverable has already shown that every process the entry
-    records is gone, by PID and start, and that its expected release has passed."""
+    records is gone, by PID and start, and that its expected release has passed. A dry run passes in stopping
+    the devices it would shut down first, which it judges as if they were Shutdown."""
     key, entry = item["key"], entries[item["key"]]
     udid = str(entry.get("device") or "").upper()
     if not DEVICE.fullmatch(udid) or PHYSICAL.fullmatch(udid):
@@ -1576,7 +1577,7 @@ def release_hold(item, entries, table, simulators, pools):
     if device.get("name") != key: return f"simctl lists {udid} as {device.get('name')!r}, not {key!r}"
     if pool_of(key, pools, device.get("runtime") or "")[0] is None:
         return "it is neither a member nor a warmed template of the pools " + ", ".join(sorted(pools))
-    if device.get("state") != "Shutdown":
+    if device.get("state") != "Shutdown" and udid not in stopping:
         return f"simctl shows it {device.get('state') or 'in no state'}, not Shutdown"
     for other, held in entries.items():
         if other != key and str(held.get("device") or "").upper() == udid and \
@@ -1591,13 +1592,15 @@ def release_hold(item, entries, table, simulators, pools):
     return None
 
 
-def accounted(item, environments, admissions):
+def accounted(item, environments, admissions, simulator=None):
     """What accounts for the owner of an entry release_hold would release early, or None when nothing does:
     a live admission, as the guard or the admission log records it, whose process or a descendant names the
     owner in its command line or environment; any other process of the account that does; or one that names
     the device's UDID. environments is the table of an ENVIRONMENTS listing, and admissions the PIDs of live
     admissions. An owner that cannot be searched for, or a listing that shows no environment, accounts for
-    it, so that only a search that could have found the owner releases the entry."""
+    it, so that only a search that could have found the owner releases the entry. simulator, the PID of the
+    device's own launchd_sim while it still runs, is left out of the search for its UDID with its descendants,
+    whose paths all name it."""
     owner, udid = item.get("owner"), str(item.get("device") or "").upper()
     if not isinstance(owner, str) or len(owner.strip()) < 8:
         return f"its owner {owner!r} is too short to search processes for"
@@ -1613,7 +1616,8 @@ def accounted(item, environments, admissions):
         # This reap's own processes too: a session that reaps may be the owner.
         if process["uid"] != uid: continue
         if owner in process["args"]: return f"PID {other} names its owner {owner}"
-        if udid and udid in process["args"].upper(): return f"PID {other} names its device {udid}"
+        if udid and udid in process["args"].upper() and simulator not in lineage(environments, other):
+            return f"PID {other} names its device {udid}"
     return None
 
 
@@ -1624,12 +1628,14 @@ def live_admissions(table):
     return live_runs(table, guard_owners(), unended())
 
 
-def release_dead(found, entries, table, pools, listed, dry_run):
+def release_dead(found, entries, table, pools, listed, dry_run, stopping=None):
     """Release each entry of found that release_hold proves dead, as `devices recover --by reap` would, and
     log it; the rest come back with why each stays (owner's decision, 2026-11-04, vocaro-engineering#156).
     entries is the record as read before table's ps listing, so that a process gone from that listing was
     gone after the entry recorded it; under the record's lock, an entry whose revision has moved since is
-    left. Return (released, left)."""
+    left. stopping maps each device this reap shut down, or in a dry run would, to its launchd_sim's PID.
+    Return (released, left)."""
+    stopping = stopping or {}
     try:
         groups = json.loads(listed(list(SIMULATORS)) or "")["devices"]
         simulators = {device["udid"].upper(): {**device, "runtime": runtime}
@@ -1639,7 +1645,7 @@ def release_dead(found, entries, table, pools, listed, dry_run):
         return [], [{**item, "hold": why} for item in found]
     released, left, ready = [], [], []
     for item in found:
-        hold = release_hold(item, entries, table, simulators, pools)
+        hold = release_hold(item, entries, table, simulators, pools, stopping if dry_run else ())
         if hold: left.append({**item, "hold": hold})
         else: ready.append(item)
     if any(item.get("early") for item in ready):
@@ -1654,7 +1660,8 @@ def release_dead(found, entries, table, pools, listed, dry_run):
         waiting, ready = [item for item in ready if item.get("early")], [item for item in ready if not item.get("early")]
         for item in waiting:
             why = (f"its release is not due until {item['due']}, and its owner could not be checked: {problem}"
-                   if problem else accounted(item, environments, admissions))
+                   if problem else accounted(item, environments, admissions,
+                                             stopping.get(str(item.get("device") or "").upper())))
             if why and not problem: why = f"its release is not due until {item['due']}, and {why}"
             if why: left.append({**item, "hold": why})
             else: ready.append({**item, "checked": "no live admission or other process of the account names its "
@@ -1668,8 +1675,11 @@ def release_dead(found, entries, table, pools, listed, dry_run):
         pids = ", ".join(f"PID {pid}" + (f" (started {start})" if start else "") for pid, start in identities(recorded))
         due = (f"its expected release, {item['due']}, had not passed, but it recorded that only its holder held "
                f"it, and {item['checked']}" if item.get("early") else f"its expected release, {item['due']}, had passed")
+        shown = (f"simctl would show {str(entry['device']).upper()} Shutdown once this reap stopped it"
+                 if dry_run and str(entry["device"]).upper() in stopping
+                 else f"simctl showed {str(entry['device']).upper()} Shutdown")
         item.update(verified=f"reap on this Mac found {pids} no longer running, by PID and start in ps; {due}; and "
-                             f"simctl showed {str(entry['device']).upper()} Shutdown",
+                             f"{shown}",
                     qualified="early: nothing accounts for its owner" if item.get("early") else "its release passed",
                     condition="orphan" if entry.get("activeRun") else "held")
     if dry_run:
@@ -1699,6 +1709,31 @@ def release_dead(found, entries, table, pools, listed, dry_run):
         replace_record(record)
     for item in released: log_release("released", item)
     return released, left
+
+
+def stale_hold(key, entry, table, udid, launchd, seen):
+    """reservation_hold for a booted simulator observe looks at, but a run's reservation (ALONE) not yet due
+    holds it only while something accounts for its owner, by the census release_dead reads (accounted), with
+    the simulator's own processes left out: one whose recorded processes are all gone and whose owner nothing
+    accounts for is stale before its expected release, so that reap shuts it down and then releases its entry
+    in the same run (the owner's decision, 2026-11-05, vocaro-engineering#156). A take's reservation, which
+    records no ALONE, and any other keep today's rule: held until its release is due."""
+    hold, note = reservation_hold(key, entry, table)
+    if hold is None or entry.get(ALONE) is not True: return hold, note
+    later, gone = reservation_hold(key, entry, table, due_holds=False)
+    if later is not None or gone is None: return hold, note
+    try:
+        environments = process_table(seen(list(ENVIRONMENTS)))
+        if not environments: raise ReapProblem("ps listed no processes with their environments")
+        admissions = live_admissions(environments)
+    except Exception as error:
+        why = str(error) if isinstance(error, ReapProblem) else f"{type(error).__name__}: {error}"
+        return f"{hold}, and its owner could not be checked: {why}", None
+    why = accounted({"owner": entry.get("ownerChatID"), "device": udid}, environments, admissions, launchd)
+    if why: return f"{hold}, and {why}", None
+    return None, (f"reservation {key} is a run's whose recorded processes are gone, and nothing accounts for its "
+                  f"owner, so reap shuts it down before its expected release, {entry.get('expectedReleaseBy')}, "
+                  "and then releases its entry")
 
 
 def observe(root, pools, listed):
@@ -1734,7 +1769,7 @@ def observe(root, pools, listed):
         name = device.get("name") or "unnamed"
         reason, hold = None, None
         keys = [key for key, entry in entries.items() if key == name or str(entry.get("device") or "").upper() == udid]
-        holds = [reservation_hold(key, entries[key], table) for key in keys]
+        holds = [stale_hold(key, entries[key], table, udid, pid, seen) for key in keys]
         naming = [other for other, process in table.items() if process["uid"] == uid and other not in own
                   and pid not in lineage(table, other) and udid in process["args"].upper()]
         pool, what = pool_of(name, pools, device.get("runtime") or "")
@@ -1855,8 +1890,9 @@ def reap(root, pools, dry_run=False, scan=True, listed=None, begin=None, clock=t
                 report["recoverable"] = [{**item, "hold": "no simulator pool was named or found"} for item in found]
             elif found:
                 report["recoverable"] = found
+                stopping = {item["udid"]: item["pid"] for item in report["stopped"] + report["eligible"]}
                 report["released"], report["recoverable"] = release_dead(found, entries, table, report["pools"],
-                                                                         look, dry_run)
+                                                                         look, dry_run, stopping)
     except Exception as error:
         report["problem"] = report["problem"] or (str(error) if isinstance(error, ReapProblem)
                                                   else f"{type(error).__name__}: {error}")
