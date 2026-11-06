@@ -315,8 +315,9 @@ class CheckedWhenQueued(Fixture):
         identifier, _, error = self.land("two")
         self.assertIsNone(identifier)
         self.assertEqual([e["id"] for e in mq.Queue(self.repo).all()], ahead)
-        self.assertEqual(run(self.repo, "git", "for-each-ref", "--format=%(refname)", "refs/eng-queue").split(),
-                         [f"refs/eng-queue/{i}" for i in ahead])
+        # for-each-ref sorts by name, and two entries made in one second sort by their random suffix, not their order.
+        self.assertEqual(sorted(run(self.repo, "git", "for-each-ref", "--format=%(refname)", "refs/eng-queue").split()),
+                         sorted(f"refs/eng-queue/{i}" for i in ahead))
         # The files and the entries: all it was checked against, in order, and the one that changes the file.
         self.assertIn("is not queued", error)
         self.assertIn(f"conflicts with what is ahead of it, origin/main and {ahead[0]}, {ahead[1]}, in same:", error)
