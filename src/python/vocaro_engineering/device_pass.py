@@ -92,11 +92,14 @@ def acquire(record, key, owner, *, purpose, minutes, wait, said):
     return entry, True
 
 
-def execute(record, key, owner, entry, command, *, limit, cwd, results, said):
-    """Run command on key's device under a bounded run; the device's Part."""
+def execute(record, key, owner, entry, command, *, limit, cwd, results, said, launched=()):
+    """Run command on key's device under a bounded run; the device's Part. launched, the bundle identifiers of
+    the apps the command launches there, joins the entry's launched apps first, so its release says how they
+    were quit."""
     udid = entry["device"].upper()
     command = words(command, key, udid)
     try:
+        if launched: entry = record.update(key, owner=owner, revision=entry["revision"], launched=list(launched))
         run = devices.BoundedRun([key], owner, command, record=record, revision=entry["revision"], limit=limit,
                                  root=cwd)
     except devices.Refused as error:
@@ -150,11 +153,15 @@ def status(parts):
 
 
 def run(keys, command, *, owner=None, purpose="release device pass", minutes=MINUTES, wait=WAIT, limit=None,
-        apps_quit=None, cwd=None, results=None, record=None, said=None):
+        apps_quit=None, launched=(), cwd=None, results=None, record=None, said=None):
     """Run command on each device keys names, in turn; each device's Part and the pass's status.
 
     command is a list of words, or a function of (key, udid) that returns them, for a project script that
-    gives each device its own steps."""
+    gives each device its own steps. launched names the apps the command launches on each device, by bundle
+    identifier, which its entry records before the run (`devices update --launched`); apps_quit then says how
+    the command quits them, which a device's release records."""
+    if launched and not apps_quit:
+        raise ValueError("a pass whose command launches apps says how it quits them: apps_quit")
     said = said or (lambda text: print(text, file=sys.stderr, flush=True))
     keys = list(dict.fromkeys(keys))
     if not keys: raise ValueError("a device pass names at least one device: --device KEY")
@@ -170,7 +177,8 @@ def run(keys, command, *, owner=None, purpose="release device pass", minutes=MIN
         else:
             given = command(key, acquired["device"].upper()) if callable(command) else command
             try:
-                part = execute(record, key, owner, acquired, given, limit=limit, cwd=cwd, results=results, said=said)
+                part = execute(record, key, owner, acquired, given, limit=limit, cwd=cwd, results=results, said=said,
+                               launched=launched)
             except BaseException:
                 # A stop, whose run's end the entry records: put back a device the pass took before it goes on.
                 # A run whose end is unconfirmed stays active, and the release refuses and says so.
@@ -203,8 +211,10 @@ def main(argv, project=None):
     parser.add_argument("--wait", type=float, default=WAIT, metavar="SECONDS", help="how long to wait in a device's "
                         f"line before leaving it not run (default {WAIT})")
     parser.add_argument("--limit", type=float, metavar="SECONDS", help="stop each device's run after at most this long")
-    parser.add_argument("--apps-quit", help="how the command quits the apps it launches and records, which a "
-                        "device's release records")
+    parser.add_argument("--launched", action="append", default=[], metavar="BUNDLE", help="an app the command "
+                        "launches on each device, which its entry records before the run (repeatable)")
+    parser.add_argument("--apps-quit", help="how the command quits the apps it launches, which a device's release "
+                        "records; required with --launched")
     argv = list(argv)
     split = argv.index("--") if "--" in argv else len(argv)
     args = parser.parse_args(argv[:split])
@@ -213,7 +223,7 @@ def main(argv, project=None):
     try:
         with processes.forwarding_signals():
             _parts, code = run(args.device, command, owner=args.owner, purpose=args.purpose, minutes=args.minutes,
-                               wait=args.wait, limit=args.limit, apps_quit=args.apps_quit,
+                               wait=args.wait, limit=args.limit, apps_quit=args.apps_quit, launched=args.launched,
                                cwd=Path(project).resolve() if project else None)
         return code
     except processes.Interrupted:

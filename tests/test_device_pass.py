@@ -172,6 +172,22 @@ class DevicePass(Fixture):
         self.assertEqual(given, [("iPad", TABLET), ("iPhone", PHONE)])
         self.assertEqual([call["words"] for call in self.ran()], [["portrait"], ["landscape"]])
 
+    def test_the_apps_the_command_launches_are_recorded_and_their_quitting_released_with_the_device(self):
+        self.hold_iphone()
+        app = "org.example.probe"
+        _parts, code, said = self.run_pass(["iPad", "iPhone"], self.command(), launched=[app],
+                                           apps_quit="the command terminated them")
+        self.assertEqual(code, 0, said)
+        ipad = self.record.entry("iPad")
+        self.assertEqual((devices.condition(ipad), ipad["launchedApps"], ipad["appsQuit"]),
+                         ("released", [app], "the command terminated them"))
+        # A device the session held keeps its record of them, for its own release.
+        self.assertEqual(self.record.entry("iPhone")["launchedApps"], [app])
+        # The negative control: launching apps without saying how they are quit runs nothing.
+        with self.assertRaisesRegex(ValueError, "says how it quits them"):
+            self.run_pass(["iPad"], self.command(), launched=[app])
+        self.assertEqual(len(self.ran()), 2)
+
     def test_on_a_mac_whose_record_defers_devices_the_pass_refuses_naming_here(self):
         self.record.defer("Trevors-MacBook-Pro")
         with self.assertRaisesRegex(device_pass.Misplaced, r'give the lane "here"'):
