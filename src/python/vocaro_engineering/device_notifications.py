@@ -90,17 +90,18 @@ def ask(key):
 # test daemons; "off" in WATCH starts none, as tests set it for every process they start (host_isolation).
 RELAY = "idevicesyslog"
 WATCH = "VOCARO_DEVICE_LOG_WATCH"
-# A line as idevicesyslog prints it: the device's clock, its name, then the process, with the library that
-# logged in parentheses, its pid and the level: `Nov  4 00:52:13.123456 iPhone SpringBoard(Lib)[58] <Notice>: …`.
-LINE = re.compile(r"^(?P<month>[A-Z][a-z]{2}) +\d{1,2} (?P<clock>\d\d:\d\d:\d\d)(?:\.\d+)? \S.*? "
+# A line as idevicesyslog prints it: the device's clock, then the process, with the library that logged in
+# parentheses, its pid and the level: `Nov  5 17:03:47.851141 SpringBoard(UserNotificationsKit)[27395] <Notice>: …`,
+# as it printed the owner's iPhone's on iOS 27.2 (2026-11-05). Some versions put the device's name, which may
+# have spaces, before the process; that is allowed too.
+LINE = re.compile(r"^(?P<month>[A-Z][a-z]{2}) +\d{1,2} (?P<clock>\d\d:\d\d:\d\d)(?:\.\d+)? (?:\S.*? )??"
                   r"(?P<process>[^\s(\[]+)(?:\([^)]*\))?\[\d+\] <\w+>: ", re.M)
-# SpringBoard presenting a notification as a banner, by the classes that do it. Not yet observed on the owner's
-# devices: the first window that verifies #144 shows a test notification and records which of these its log
-# names (guides/device-testing.md, Notifications during a run), and this follows what it shows. A notification
-# that Do Not Disturb holds back reaches Notification Center without a banner, so a bulletin alone is not one.
-# A line that only names the banner destination, as one dismissing a banner does, is not one.
-PRESENTED = re.compile(r"\b(?:(?:SB|NC)?NotificationBannerDestination|NCNotificationShortLook\w*)\b.*?"
-                       r"\b(?:post|present)(?:s|ing)?\b", re.I)
+# SpringBoard showing a notification as a banner, which it logs once per banner, after the banner appears:
+# `Destination BulletinDestinationBanner presentable did appear as banner: <SBNotificationPresentableViewController
+# …>`. Observed on the owner's iPhone (iOS 27.2) on 2026-11-05 (vocaro-engineering#144). Posting a notification to
+# SBNotificationBannerDestination is not one: a notification Do Not Disturb holds back is posted there too and
+# then logged as `Banner for notification ID was dropped. suppressed: 1 … do not disturb: 1`.
+PRESENTED = re.compile(r"\bpresentable did appear as banner\b")
 # Seconds the relays have to send their first line before the command starts, and to end when asked.
 READY, ENDING = 3, 5
 # What runs each relay: it ends the relay, and deletes what it wrote, once the process that started it is gone,

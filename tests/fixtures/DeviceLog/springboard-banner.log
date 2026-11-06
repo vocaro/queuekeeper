@@ -1,7 +1,5 @@
-Nov  4 00:52:10.104882 iPhone SpringBoard(FrontBoard)[58] <Notice>: [app<com.vocaro.qa.host>:4211] Workspace assertion state did change: Foreground
-Nov  4 00:52:13.512301 iPhone SpringBoard(SpringBoard)[58] <Notice>: [NCNotificationDispatcher] Posting request <private> to destinations
-Nov  4 00:52:13.513017 iPhone SpringBoard(SpringBoard)[58] <Notice>: [SBNotificationBannerDestination] Presenting notification request <private>
-Nov  4 00:52:13.515990 iPhone SpringBoard(UserNotificationsUIKit)[58] <Notice>: NCNotificationShortLookViewController will present for request <private>
-Nov  4 00:52:18.009431 iPhone SpringBoard(SpringBoard)[58] <Notice>: [SBNotificationBannerDestination] Dismissing presented banner <private>
-Nov  4 00:52:40.771120 iPhone SpringBoard(SpringBoard)[58] <Notice>: [SBNotificationBannerDestination] Presenting notification request <private>
-Nov  4 00:52:41.002319 iPhone SpringBoard(FrontBoard)[58] <Notice>: [app<com.vocaro.qa.host>:4211] Workspace assertion state did change: Foreground
+Nov  5 17:03:47.848272 SpringBoard(UserNotificationsKit)[27395] <Notice>: Posting notification 8E7B-02D4 to destination CSNotificationDispatcher
+Nov  5 17:03:47.851130 SpringBoard[27395] <Notice>: Destination BulletinDestinationBanner can receive notification 8E7B-02D4: YES [ stickyVisible: 0 isUserInteractionInProgress: 0 inSetupMode: 0 canReceiveNotificationRequestIfLocked: 1 canReceiveIfAmbientPresented: 1 ]
+Nov  5 17:03:47.851141 SpringBoard(UserNotificationsKit)[27395] <Notice>: Posting notification 8E7B-02D4 to destination SBNotificationBannerDestination
+Nov  5 17:03:47.855199 SpringBoard[27395] <Notice>: Destination BulletinDestinationBanner presentable will appear as banner: <SBNotificationPresentableViewController: 0x500007d3e983700; requesterIdentifier: com.apple.UserNotificationsKit; requestIdentifier: B4179B13-3622-451B-9FCB-B6167C38D7DA; viewController: self; bannerAppearState: appearing; logDigest: 8E7B-02D4>
+Nov  5 17:03:49.244017 SpringBoard[27395] <Notice>: Destination BulletinDestinationBanner presentable did appear as banner: <SBNotificationPresentableViewController: 0x500007d3e983700; requesterIdentifier: com.apple.UserNotificationsKit; requestIdentifier: B4179B13-3622-451B-9FCB-B6167C38D7DA; viewController: self; bannerAppearState: appeared; logDigest: 8E7B-02D4>

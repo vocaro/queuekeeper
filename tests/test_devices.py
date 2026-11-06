@@ -1603,15 +1603,24 @@ class NotificationWatchTests(unittest.TestCase):
     def test_springboard_presenting_a_banner_is_found_and_nothing_else_is(self):
         banner = (LOGS / "springboard-banner.log").read_text()
         quiet = (LOGS / "springboard-quiet.log").read_text()
-        self.assertEqual(sorted(set(device_notifications.presentations(banner))), ["00:52:13", "00:52:40"])
-        # Dismissing a banner, a notification Do Not Disturb kept from a banner, and another process naming the
-        # banner destination are none.
+        # The owner's iPhone's lines (iOS 27.2): one banner, by the clock it appeared at, and not its posting or
+        # its "will appear".
+        self.assertEqual(device_notifications.presentations(banner), ["17:03:49"])
+        self.assertTrue(device_notifications.lines(banner))
+        # A notification Do Not Disturb kept from a banner, though posted to the banner destination, is none.
+        self.assertIn("SBNotificationBannerDestination", quiet)
+        self.assertIn("do not disturb: 1", quiet)
         self.assertEqual(device_notifications.presentations(quiet), [])
         self.assertTrue(device_notifications.lines(quiet))
         self.assertFalse(device_notifications.lines("[connected:00008130-001A2C3E0C38001C]\n"))
-        # A device whose name has spaces.
-        named = banner.replace(" iPhone ", " Owner's iPad Pro ")
-        self.assertEqual(len(device_notifications.presentations(named)), 3)
+        self.assertFalse(device_notifications.lines(
+            "Waiting for device with UDID 00008150-00164DE1342B401C to become available...\n"))
+        # Another process saying the same words is none.
+        other = banner.replace(" SpringBoard[", " bulletinboard[")
+        self.assertEqual(device_notifications.presentations(other), [])
+        # A relay that puts the device's name, spaces and all, before the process.
+        named = banner.replace(" SpringBoard", " Owner's iPad Pro SpringBoard")
+        self.assertEqual(device_notifications.presentations(named), ["17:03:49"])
 
     def test_a_run_a_notification_reached_is_unmeasured_and_run_once_more(self):
         watches = Watches(BANNER, {"watched": True, "presented": 0})
@@ -1698,7 +1707,7 @@ class NotificationWatchTests(unittest.TestCase):
         self.assertEqual([oct(Path(path).stat().st_mode & 0o777) for path, _ in watch.relays], ["0o600", "0o600"])
         seen = watch.stop()
         # The same banners over both relays are counted once, and only their device clock is kept.
-        self.assertEqual(seen, {"watched": True, "presented": 2, "first": "00:52:13"})
+        self.assertEqual(seen, {"watched": True, "presented": 1, "first": "17:03:49"})
         self.assertFalse(directory.exists())
         self.assertTrue(all(process.poll() is not None for _path, process in watch.relays))
 

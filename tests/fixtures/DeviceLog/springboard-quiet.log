@@ -1,6 +1,4 @@
-[connected:00008130-001A2C3E0C38001C]
-Nov  4 00:52:10.104882 iPhone SpringBoard(FrontBoard)[58] <Notice>: [app<com.vocaro.qa.host>:4211] Workspace assertion state did change: Foreground
-Nov  4 00:52:13.512301 iPhone SpringBoard(SpringBoard)[58] <Notice>: [NCNotificationDispatcher] Posting request <private> to destinations
-Nov  4 00:52:13.512950 iPhone SpringBoard(SpringBoard)[58] <Notice>: [NCNotificationListDestination] Adding request <private>; banner suppressed by Do Not Disturb
-Nov  4 00:52:20.330001 iPhone bulletinboard(BulletinBoard)[61] <Notice>: Publishing to SBNotificationBannerDestination: <private>
-Nov  4 00:52:41.002319 iPhone SpringBoard(FrontBoard)[58] <Notice>: [app<com.vocaro.qa.host>:4211] Workspace assertion state did change: Foreground
+Nov  5 17:17:15.884779 SpringBoard(UserNotificationsKit)[27395] <Notice>: Posting notification B255-16C4 to destination CSNotificationDispatcher
+Nov  5 17:17:15.893072 SpringBoard[27395] <Notice>: Destination BulletinDestinationBanner can receive notification B255-16C4: YES [ stickyVisible: 0 isUserInteractionInProgress: 0 inSetupMode: 0 canReceiveNotificationRequestIfLocked: 1 canReceiveIfAmbientPresented: 1 ]
+Nov  5 17:17:15.893080 SpringBoard(UserNotificationsKit)[27395] <Notice>: Posting notification B255-16C4 to destination SBNotificationBannerDestination
+Nov  5 17:17:15.893170 SpringBoard[27395] <Notice>: Banner for notification B255-16C4 was dropped. suppressed: 1 application: 0, do not disturb: 1 screen time: 0 ambient: 0
