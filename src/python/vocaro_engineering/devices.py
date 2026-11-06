@@ -50,7 +50,7 @@ runs the owner's silencing shortcut on it, once he has recorded making it there 
 and releasing or recovering the entry runs the restoring one. The entry's `notifications` records each step.
 The Mac reads no device's Focus, so the silencing is never confirmed, and a run without it says so
 (device_notifications). `devices run` watches the device's log while its command runs, and a run a notification
-reached as a banner is unmeasured and run once more.
+reached as a banner is unmeasured and run once more; so does `eng remote --device`, from the sending Mac (#192).
 """
 import argparse
 import contextlib
@@ -1018,23 +1018,36 @@ class Unmeasured(Exception):
     """A run that a notification reached twice: neither its run nor its rerun is a measurement."""
 
 
+def keyed(key):
+    """The keys a watched run names: one key, or a sequence of them."""
+    return [key] if isinstance(key, str) else list(dict.fromkeys(key))
+
+
 def watched(run, key, command, extra, cwd=None, env=None):
-    """Run command under run while watching key's device log for a notification presented as a banner; its exit
-    status and what the watch saw, which the entry's run records (device_notifications.Watch)."""
-    code = run.execute(command, run=extra, watch=device_notifications.watch(run.devices[key]), cwd=cwd, env=env)
+    """Run command under run while watching key's device log, or each of several keys' devices' logs, for a
+    notification presented as a banner; its exit status and what the watch saw, which the entry's run records
+    (device_notifications.Watch, Together)."""
+    keys = keyed(key)
+    watches = {each: device_notifications.watch(run.devices[each]) for each in keys}
+    watch = watches[keys[0]] if len(keys) == 1 else device_notifications.Together(watches)
+    code = run.execute(command, run=extra, watch=watch, cwd=cwd, env=env)
     return code, run.run["notificationWatch"]
 
 
 def watched_run(run, key, command, extra, said, cwd=None, env=None):
-    """Run command under run, and once more when a notification was presented on key's device during it (#144).
+    """Run command under run, and once more when a notification was presented on key's device during it (#144);
+    key may be several keys, whose devices are all watched (remote.Lease).
 
     Such a run is unmeasured: its transcript may hold the notification and VoiceOver's cursor may have moved. Its
     rerun's status is the run's; a rerun that one reaches too, or no time left for one, raises Unmeasured. A run
     whose device log could not be read is said to be unwatched and keeps its status."""
-    code, seen = watched(run, key, command, extra, cwd, env)
+    keys = keyed(key)
+    code, seen = watched(run, keys, command, extra, cwd, env)
+    # What the session is told names every device watched.
+    who = " and ".join(keys)
     if not seen["presented"]:
         if not seen["watched"]:
-            said(f"devices: {key}'s log could not be read during the run ({seen['detail']}), so a notification that "
+            said(f"devices: {who}'s log could not be read during the run ({seen['detail']}), so a notification that "
                  "reached it would not be seen; read the transcript for one")
         return code
     said(f"devices: unmeasured: {device_notifications.presented(seen)}. The run's transcript may hold it and "
@@ -1045,10 +1058,10 @@ def watched_run(run, key, command, extra, said, cwd=None, env=None):
         said(f"devices: unmeasured, not run again: {error}")
         raise Unmeasured() from None
     first = {name: value for name, value in run.run.items() if name not in ("boundSeconds", "stopsAt")}
-    code, seen = watched(run, key, command, {**extra, "rerunOf": {**first, "measured": False}}, cwd, env)
+    code, seen = watched(run, keys, command, {**extra, "rerunOf": {**first, "measured": False}}, cwd, env)
     if seen["presented"]:
         said(f"devices: unmeasured again: {device_notifications.presented(seen)}. Not run a third time: ask the "
-             f"owner to check Do Not Disturb on {key} ({device_notifications.GUIDE})")
+             f"owner to check Do Not Disturb on {who} ({device_notifications.GUIDE})")
         raise Unmeasured()
     said(f"devices: the rerun saw no notification; its status {code} is the run's")
     return code

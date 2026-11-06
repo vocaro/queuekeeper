@@ -1677,6 +1677,24 @@ class NotificationWatchTests(unittest.TestCase):
         self.assertIn("iPad's log could not be read during the run (why)", error)
         self.assertEqual(self.record.entry("iPad")["run"]["notificationWatch"]["watched"], False)
 
+    def test_several_devices_watched_together_count_each_ones_banners(self):
+        stopped = lambda seen: type("Watch", (), {"stop": lambda _self: seen})()
+        clean = {"watched": True, "presented": 0}
+        seen = device_notifications.Together({"iPhone": stopped(clean), "iPad": stopped(BANNER)}).stop()
+        self.assertEqual(seen, {"watched": True, "presented": 1, "first": "00:52:13",
+                                "devices": {"iPhone": clean, "iPad": BANNER}})
+        # The earliest first banner among them; an unread log is unwatched and says which device's it was.
+        later = {"watched": True, "presented": 2, "first": "09:00:00"}
+        unread = {"watched": False, "presented": 0, "detail": "why"}
+        seen = device_notifications.Together({"iPhone": stopped(later), "iPad": stopped(BANNER),
+                                              "Duo": stopped(unread)}).stop()
+        self.assertEqual((seen["watched"], seen["presented"], seen["first"], seen["detail"]),
+                         (False, 3, "00:52:13", "Duo: why"))
+        # Nothing presented and every log read is a clean run.
+        seen = device_notifications.Together({"iPhone": stopped(clean), "iPad": stopped(clean)}).stop()
+        self.assertEqual((seen["watched"], seen["presented"], "first" in seen, "detail" in seen),
+                         (True, 0, False, False))
+
     def test_tests_never_relay_a_devices_log(self):
         self.assertEqual(os.environ.get(device_notifications.WATCH), "off")
         with patch.object(device_notifications.subprocess, "Popen") as started:

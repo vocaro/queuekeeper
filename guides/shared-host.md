@@ -2141,6 +2141,9 @@ python3 scripts/eng remote run --device iPhone LANE -- ARGUMENTS
   There `devices run KEY -- COMMAND` takes KEY from the lease, since the second Mac's record
   defers physical devices: it checks the devices the command names against the lease, bounds the
   command by END as here, and leaves the recording to the dispatch.
+- The dispatch watches each leased device's log from this Mac while it lasts, and sends a run a
+  notification banner reached once more (guides/device-testing.md, Notifications during a run).
+  A `devices run` in the work watches from the second Mac as well, and reruns on its own.
 - The device stays reserved after the run. Preflight, restoration and the release are the
   session's, from this Mac, which reaches the device too.
 - Without `--device`, a command, or a lane's arguments, that names any hardware UDID is refused,

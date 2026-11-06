@@ -22,7 +22,9 @@ runs (Watch): idevicesyslog relays SpringBoard's lines, over USB and over the ne
 be how the device is reached, into a temporary directory only this account can read. When the command ends, the
 lines are scanned for SpringBoard presenting a banner and deleted unread otherwise; nothing from them is printed
 or recorded except how many presentations there were and the device's clock at the first, because what they
-say is the owner's. A run that saw one is unmeasured, and devices.py runs it once more.
+say is the owner's. A run that saw one is unmeasured, and devices.py runs it once more. A run sent to the second
+Mac with `eng remote --device` is watched the same way from the Mac that sends it, which holds its reservation
+(remote.Lease, vocaro-engineering#192), every leased device at once (Together).
 """
 import os
 import re
@@ -206,6 +208,26 @@ class Watch:
 
 # What watches a run's device, alone, so that tests replace it.
 watch = Watch
+
+
+class Together:
+    """The watches of several devices' logs, {KEY: watch}, stopped as one for a run that uses them all, as a run
+    sent to the second Mac may (remote.Lease). Its stop says what Watch.stop does, over all of them: every
+    device's banners counted, the earliest device clock among their first banners, watched only when each log
+    was read, and what each saw under devices."""
+
+    def __init__(self, watches):
+        self.watches = dict(watches)
+
+    def stop(self):
+        each = {key: watch.stop() for key, watch in self.watches.items()}
+        firsts = sorted(seen["first"] for seen in each.values() if seen.get("first"))
+        seen = {"watched": all(seen["watched"] for seen in each.values()),
+                "presented": sum(seen["presented"] for seen in each.values())}
+        if firsts: seen["first"] = firsts[0]
+        unread = [f"{key}: {seen.get('detail')}" for key, seen in each.items() if not seen["watched"]]
+        if unread: seen["detail"] = "; ".join(unread)
+        return {**seen, "devices": each}
 
 
 def presented(seen):

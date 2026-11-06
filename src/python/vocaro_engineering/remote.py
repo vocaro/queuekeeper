@@ -1109,7 +1109,38 @@ class Lease(devices.BoundedRun):
     or a dropped connection, ends the run there: a run whose dispatcher vanished is an orphan here.
     The connection's ssh is recorded as the entry's own process, which release and recovery wait
     for. Once the bound passes, the dispatch stops the run there as a stop does. It records the
-    run's outcome when it ends; releasing the device stays the session's."""
+    run's outcome when it ends; releasing the device stays the session's.
+
+    Its command is the dispatch, so that devices.watched_run watches each leased device's log from
+    this Mac while the dispatch lasts and sends it once more when a banner was presented (#192): the
+    relay runs here, the Mac whose record holds the reservation, silences and restores the device,
+    so the owner's lines never leave it, and offload_host.py, which imports nothing of the toolkit,
+    runs no copy of the watch."""
+
+    def execute(self, send, *, run=None, watch=None, **_unused):
+        """send()'s status, the dispatch, with the run it makes recorded in each leased entry here, and what
+        watch, a watch of the devices' logs (device_notifications.Watch), saw during it as its
+        notificationWatch."""
+        self.timed_out = False
+        try:
+            self.begin({**(run or {}), "startedAt": devices.now()})
+        except BaseException:
+            if watch is not None: watch.stop()
+            raise
+        outcome = None
+        try:
+            try:
+                status = send()
+            finally:
+                if watch is not None: self.run = {**self.run, "notificationWatch": watch.stop()}
+            outcome = f"exit {status}"
+            return status
+        except BaseException as error:
+            outcome = f"{type(error).__name__}: {error}"
+            raise
+        finally:
+            if self.timed_out: outcome = f"stopped at its {self.run['boundSeconds']}s bound, then {outcome}"
+            self.finish(outcome)
 
     def plan(self, mac):
         return {"record": mac, "devices": dict(self.devices), "until": self.deadline.isoformat()}
@@ -1159,21 +1190,19 @@ def lease(keys, owner, words, record=None, root=None):
 
 
 def carrying(lease, root, host, work, name, send):
-    """send()'s status, with the run it makes recorded in each leased device's entry here."""
+    """send()'s status, with the run it makes recorded in each leased device's entry here. The leased devices'
+    logs are watched while it runs, and a run a notification banner reached is sent once more, as `devices run`
+    does (devices.watched_run): send offers the same commits again then. A rerun that one reaches too, or no
+    time left for one, is unmeasured."""
     if lease is None: return send()
-    lease.begin({"host": host, "work": work, "results": str(Path(root) / ".build/engineering/remote" / name),
-                 "startedAt": devices.now()})
-    outcome = None
+    said = lambda text: print(text, file=sys.stderr, flush=True)
     try:
-        status = send()
-        outcome = f"exit {status}"
-        return status
-    except BaseException as error:
-        outcome = f"{type(error).__name__}: {error}"
-        raise
-    finally:
-        if lease.timed_out: outcome = f"stopped at its {lease.run['boundSeconds']}s bound, then {outcome}"
-        lease.finish(outcome)
+        return devices.watched_run(lease, list(lease.devices), send, {
+            "host": host, "work": work, "results": str(Path(root) / ".build/engineering/remote" / name)}, said)
+    except devices.Unmeasured:
+        print(f"remote: the run is unmeasured; {' and '.join(lease.devices)} "
+              f"{'stays' if len(lease.devices) == 1 else 'stay'} reserved", file=sys.stderr)
+        return devices.UNMEASURED
 
 
 def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, decline=False, lease=None,
@@ -1485,8 +1514,10 @@ def main(root, config, args):
         work = ["run", "--here", *(["--serial"] if args.serial else []),
                 *(["--expect", str(args.expect)] if args.expect else []), args.lane, *(["--", *extra] if extra else [])]
         held = lease(args.device or [], args.device_owner or devices.default_owner(), extra, root=root)
+        # A leased run sent again, after a notification reached it, offers the same commits (carrying).
+        sent = {}
         send = lambda: execute(root, config, host, work, lane=args.lane, arguments=extra, expect=args.expect,
-                               lease=held, serial=args.serial)
+                               lease=held, serial=args.serial, sent=sent)
         with processes.forwarding_signals():
             return carrying(held, root, host, work, args.lane, lambda: offering_here(
                 f"eng run --here {args.lane}", send) if lane.get("foreground") else send())
@@ -1501,7 +1532,8 @@ def main(root, config, args):
         (["--time-limit", f"{args.time_limit:g}"] if args.time_limit is not None else [])
     held = lease(args.device or [], args.device_owner or devices.default_owner(), command, root=root)
     work = ["admit", *kind, "--", *command]
-    send = lambda: execute(root, config, host, work, lease=held)
+    sent = {}
+    send = lambda: execute(root, config, host, work, lease=held, sent=sent)
     with processes.forwarding_signals():
         return carrying(held, root, host, work, "admit", lambda: offering_here(
             "eng admit --foreground -- COMMAND", send) if args.foreground else send())

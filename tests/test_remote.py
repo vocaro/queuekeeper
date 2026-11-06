@@ -21,7 +21,7 @@ import uuid
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
-from vocaro_engineering import cli, config, devices, evidence, offload_host, processes, release, remote, resources
+from vocaro_engineering import cli, config, device_notifications, devices, evidence, offload_host, processes, release, remote, resources
 from vocaro_engineering import disk as disk_module
 import host_isolation
 from host_isolation import stretched
@@ -95,6 +95,22 @@ PHONE = "00008130-001A2C3E0C38001C"
 DUO = "5B0E6C51-2D3A-4F7B-9C1E-0A4B8D2F6E13"
 # An invented code-signing identity's SHA-1, forty hex digits as an older device's UDID is.
 IDENTITY = "96DAB4C8A3D308C37BCC5C7E987AB6FE05F16008"
+TABLET = "00008120-0016A4C21E8B401E"
+
+
+class Watches:
+    """device_notifications.watch as a leased run reaches it: each watch's stop answers what it saw, in turn."""
+
+    def __init__(self, *seen):
+        self.seen, self.devices = list(seen), []
+
+    def __call__(self, udid):
+        self.devices.append(udid)
+        seen = self.seen.pop(0) if self.seen else {"watched": True, "presented": 0}
+        return type("Watch", (), {"stop": lambda _self: seen})()
+
+
+BANNER = {"watched": True, "presented": 1, "first": "00:52:13"}
 # A lane that says it has started, then puts its PID in .build/NAME.pid, whole, and waits to be stopped.
 NAP = ("import os, pathlib, sys, time; name = sys.argv[1]; print(name, 'started', flush=True); "
        "partial = pathlib.Path('.build', name + '.partial'); partial.write_text(str(os.getpid())); "
@@ -601,6 +617,98 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual(self.eng("remote", "run", "fail", "--device", "iPhone")[0], 3)
         entry = devices.Record(self.record_here).entry("iPhone")
         self.assertEqual((devices.condition(entry), entry["run"]["outcome"]), ("held", "exit 3"))
+
+    def leased(self, watches, status=0, *words):
+        """`eng remote admit --device iPhone` of a command that counts its runs and exits with status, its devices'
+        logs watched by watches; with words, those instead of admit's."""
+        runs = Path(self.temp.name) / "runs"
+        counting = [sys.executable, "-c", f"open({str(runs)!r}, 'a').write('x'); raise SystemExit({status})"]
+        with patch.object(device_notifications, "watch", watches):
+            result = self.eng("remote", *(words or ["admit", "--device", "iPhone", "--device-owner", "session-a",
+                                                    "--", *counting]))
+        return (*result, len(runs.read_text()) if runs.exists() else 0)
+
+    def test_a_leased_run_a_notification_reached_is_unmeasured_and_sent_once_more(self):
+        held = self.hold()
+        watches = Watches(BANNER, {"watched": True, "presented": 0})
+        status, _output, error, runs = self.leased(watches)
+        self.assertEqual((status, runs), (0, 2), error)
+        # The relay runs here, on the Mac whose record holds the reservation, once for each run.
+        self.assertEqual(watches.devices, [PHONE, PHONE])
+        self.assertIn("devices: unmeasured: a notification was presented as a banner, the first at 00:52:13", error)
+        self.assertIn("the rerun saw no notification; its status 0 is the run's", error)
+        # The rerun offers the commits the first run sent, without a snapshot or a push.
+        self.assertEqual(error.count("remote: sending "), 1, error)
+        self.assertIn(f"remote: offering {self.commit[:12]} to fake again", error)
+        entry = devices.Record(self.record_here).entry("iPhone")
+        self.assertEqual(devices.condition(entry), "held")
+        self.assertFalse(devices.running(entry))
+        self.assertEqual((entry["run"]["outcome"], entry["run"]["notificationWatch"]), ("exit 0",
+                                                                                         {"watched": True, "presented": 0}))
+        self.assertEqual(entry["run"]["host"], "fake")
+        first = entry["run"]["rerunOf"]
+        self.assertEqual((first["measured"], first["notificationWatch"], first["outcome"]), (False, BANNER, "exit 0"))
+        self.assertEqual(first["work"][:2], ["admit", "--"])
+        # Two runs, each marked active, given its connection and ended.
+        self.assertEqual(entry["revision"], held["revision"] + 6)
+
+    def test_a_leased_run_no_notification_reached_runs_once_with_its_status(self):
+        self.hold()
+        watches = Watches({"watched": True, "presented": 0})
+        status, _output, error, runs = self.leased(watches, 4)
+        self.assertEqual((status, runs), (4, 1), error)
+        self.assertEqual(watches.devices, [PHONE])
+        self.assertNotIn("notification was presented", error)
+        self.assertNotIn("could not be read", error)
+        self.assertNotIn("again", error)
+        entry = devices.Record(self.record_here).entry("iPhone")
+        self.assertEqual((entry["run"]["outcome"], entry["run"]["notificationWatch"]["presented"]), ("exit 4", 0))
+        self.assertNotIn("rerunOf", entry["run"])
+        # A log this Mac could not read, as without the device's cable here, is said and keeps the run's status.
+        status, _output, error, runs = self.leased(Watches({"watched": False, "presented": 0, "detail": "why"}), 0)
+        self.assertEqual((status, runs), (0, 2), error)
+        self.assertIn("devices: iPhone's log could not be read during the run (why)", error)
+        self.assertFalse(devices.Record(self.record_here).entry("iPhone")["run"]["notificationWatch"]["watched"])
+
+    def test_a_leased_rerun_a_notification_reaches_too_is_unmeasured_and_not_sent_a_third_time(self):
+        self.hold()
+        watches = Watches(BANNER, {**BANNER, "presented": 2, "first": "01:02:03"}, BANNER)
+        status, _output, error, runs = self.leased(watches)
+        self.assertEqual((status, runs), (devices.UNMEASURED, 2), error)
+        self.assertEqual(len(watches.devices), 2)
+        self.assertIn("unmeasured again: 2 notifications were presented as a banner, the first at 01:02:03", error)
+        self.assertIn("Not run a third time: ask the owner to check Do Not Disturb on iPhone", error)
+        self.assertIn("remote: the run is unmeasured; iPhone stays reserved", error)
+        entry = devices.Record(self.record_here).entry("iPhone")
+        self.assertEqual(devices.condition(entry), "held")
+        self.assertFalse(devices.running(entry))
+        self.assertEqual(entry["run"]["rerunOf"]["measured"], False)
+
+    def test_a_run_without_a_device_watches_nothing(self):
+        self.hold()
+        watches = Watches(BANNER)
+        runs = Path(self.temp.name) / "runs"
+        status, _output, error, count = self.leased(watches, 0, "admit", "--", sys.executable, "-c",
+                                                    f"open({str(runs)!r}, 'a').write('x')")
+        self.assertEqual((status, count, watches.devices), (0, 1, []), error)
+        self.assertNotIn("notification", error)
+
+    def test_a_leased_lane_and_every_leased_device_are_watched(self):
+        self.hold()
+        self.hold("iPad", device=TABLET)
+        os.environ[devices.OWNER] = "session-a"
+        # A banner on either device makes the run unmeasured, and the lane is sent once more.
+        watches = Watches({"watched": True, "presented": 0}, BANNER)
+        status, output, error, _runs = self.leased(watches, 0, "run", "check", "--device", "iPhone", "--device", "iPad")
+        self.assertEqual(status, 0, output + error)
+        self.assertEqual(watches.devices, [PHONE, TABLET, PHONE, TABLET])
+        self.assertIn("devices: unmeasured: a notification was presented as a banner, the first at 00:52:13", error)
+        self.assertIn(f"remote: offering {self.commit[:12]} to fake again", error)
+        for key in ("iPhone", "iPad"):
+            run = devices.Record(self.record_here).entry(key)["run"]
+            self.assertEqual(run["rerunOf"]["notificationWatch"]["devices"],
+                             {"iPhone": {"watched": True, "presented": 0}, "iPad": BANNER})
+            self.assertEqual((run["outcome"], run["notificationWatch"]["presented"]), ("exit 0", 0))
 
     def test_a_device_the_session_does_not_hold_idle_is_refused_before_anything_is_sent(self):
         record = devices.Record(self.record_here)
