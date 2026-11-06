@@ -31,8 +31,8 @@ work, then admit the timed run alone with `--exclusive`, as a separate command, 
 run whose seconds are not meant as figures are heavy work. An exclusive request inside heavy
 admission is refused, so a lane whose run needs both is `light`, and its script admits each part.
 A gate suite is heavy work, never exclusive: one that runs the project's suites side by side says
-`"wholeHost": true`, which keeps a second gate off its Mac while other heavy work still shares it
-beyond the guaranteed slots ([heavy-work admission](#heavy-work-admission)).
+`"wholeHost": true`, which keeps every other heavy job off its Mac while it runs
+([heavy-work admission](#heavy-work-admission)).
 `--timeout` bounds the wait for admission. The command runs in the current directory with
 its output on the terminal. Like a heavy lane, `eng admit` first refreshes the operating policy,
 printing it to standard error, and records the command's receipt in
@@ -99,19 +99,24 @@ become heavy later. Exclusive work holds every slot up to the maximum. A whole-h
 that runs the project's suites side by side (`"wholeHost": true` on the lane or its group), takes
 every guaranteed slot instead of one, and waits while any of them is busy (`a whole-host lane needs
 every guaranteed slot (HEAVY_SLOTS=3) free, and 1 is busy`), so that two such lanes never run on
-one Mac at once; a lighter heavy lane still shares the Mac, in a slot beyond the guaranteed ones
-while the host shows spare capacity, and eng sends each lane to the Mac that has the slots it needs
-([which Mac runs a lane](#which-mac-runs-a-lane)). Nested work reuses its inherited admission,
-whole-host or not.
+one Mac at once, and while it runs no other heavy work is admitted beside it, not even in a slot
+beyond the guaranteed ones (`it waits behind a whole-host lane holding the host: PDFReflowLib
+gate`): a gate's load dips between its phases, and on 2026-11-05 MathMLLayout's gate squeezed in
+beside PDFReflowLib's on such a dip, whose memory pressure then left that gate unmeasured after
+1,116 s (the owner's decision, 2026-11-05,
+[vocaro-engineering#196](https://github.com/vocaro/vocaro-engineering/issues/196)). eng sends
+each lane to the Mac that has the slots it needs ([which Mac runs a lane](#which-mac-runs-a-lane)).
+Nested work reuses its inherited admission, whole-host or not.
 
-Whole-host and exclusive differ in what they hold and whom they make wait. A whole-host lane holds
-the guaranteed slots and no more: a lighter heavy lane is still admitted beside it, in a slot beyond
-them. While it waits, it keeps the guaranteed slots for itself, and a heavy request that arrives
-meanwhile takes only a slot beyond them, as the queue paragraphs below say. It is for a gate, whose
-suites fill a Mac but tolerate company and whose wait must not stall every other session. Exclusive
-work holds every slot up to the maximum, is admitted one request at a time in arrival order, and
-holds every later request back until it ends. It is for a timed measurement that needs a quiet host
-and nothing else. A whole-host lane cannot be exclusive,
+Whole-host and exclusive differ in when they start and whom they make wait. A whole-host lane
+starts once the guaranteed slots are free, beside any lighter work already running beyond them,
+and from then on no other heavy work is admitted until it ends. While it waits, it keeps the
+guaranteed slots for itself, and a heavy request that arrives meanwhile takes only a slot beyond
+them, as the queue paragraphs below say. It is for a gate, whose time is measured with the Mac to
+itself but whose wait must not stall every other session. Exclusive work holds every slot up to
+the maximum, is admitted one request at a time in arrival order once the work running before it
+has ended, and holds every later request back until it ends. It is for a timed measurement that
+needs a quiet host and nothing else. A whole-host lane cannot be exclusive,
 since exclusive admission holds the host already. In the choice of Mac the two count alike: a Mac
 running either has no spare capacity for any heavy lane, which goes to the other Mac first and is
 offered to both, to share where admission allows, only when neither has capacity
@@ -205,7 +210,7 @@ value, beside what the attempt read, so that a wait says which limit to look at:
 | `memory` | `all 3 guaranteed slots are busy and memory pressure is level 2 (warning), not 1 (normal)`, or `… memory pressure, which must be level 1 (normal), cannot be read` |
 | `model` | `the on-device model, one run at a time, is held by LABEL` |
 | `exclusive` | `it waits behind exclusive work queued ahead of it: LABEL`, or `… holding the host: LABEL` |
-| `wholeHost` | `it waits behind a whole-host lane queued ahead of it: LABEL`, for exclusive and whole-host requests; for other heavy work, `a guaranteed slot is free but kept for a whole-host lane queued ahead of it: LABEL; and HEAVY_SLOTS_MAX=3 allows none beyond them`, or `… and every slot beyond them up to HEAVY_SLOTS_MAX=9 is busy`, or the `settle`, `load` or `memory` reason. With every guaranteed slot busy anyway, the reason is the `slots` or other kind's, as with nothing queued |
+| `wholeHost` | `it waits behind a whole-host lane queued ahead of it: LABEL`, for exclusive and whole-host requests, and `it waits behind a whole-host lane holding the host: LABEL` for other heavy work while one runs; for other heavy work behind a queued one, `a guaranteed slot is free but kept for a whole-host lane queued ahead of it: LABEL; and HEAVY_SLOTS_MAX=3 allows none beyond them`, or `… and every slot beyond them up to HEAVY_SLOTS_MAX=9 is busy`, or the `settle`, `load` or `memory` reason. With every guaranteed slot busy anyway, the reason is the `slots` or other kind's, as with nothing queued |
 | `stranded` | another reason above, then `; the guard entry of LABEL, PID 4242, is dead and requires inspection (it has no process record), and is counted as slot 1; …`, `uncertain` for an entry marked so, with why [recovery](#lock-reclamation) left it in parentheses (`its owner still runs`, `it has no process record`, `its process record cannot vouch for every command` or `2 of its processes still run: PID 4250, 4251`) and what it is counted as (`slots 0, 1, 2 and the model` for exclusive work); a model request's reason is `the on-device model, one run at a time, is counted as held` |
 | `guard` | `the guard PATH is unreadable or not in admission's format and requires inspection; …` |
 

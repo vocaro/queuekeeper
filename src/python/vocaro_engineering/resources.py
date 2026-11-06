@@ -13,8 +13,10 @@ spare capacity: a fixed count left the host idle behind jobs waiting on simulato
 unqueued builds starved watchdogd until the kernel panicked (2026-10-14). Admission cannot
 preempt a job that becomes heavy later. A whole-host lane, a gate that runs a project's suites
 side by side, takes every guaranteed slot, so that two such lanes never run on one Mac at once
-(two EPUBLib gates at once put a 10-core Mac at a load of 719 on 2026-11-04, #168); a lighter
-heavy lane still shares, beyond them, while the host shows spare capacity. Each limit can be set for a host in its limits file,
+(two EPUBLib gates at once put a 10-core Mac at a load of 719 on 2026-11-04, #168), and while it
+runs no other heavy work is admitted beside it, not even beyond them: a gate's load dips between
+its phases, and another project's gate that squeezed in on 2026-11-05 left it unmeasured (#196).
+Each limit can be set for a host in its limits file,
 admission-limits.json beside the admission log, which every process there reads, as a number or
 as a share of the cores; a limit's environment variable overrides it for one process. Without
 the file the defaults stand (#49).
@@ -822,14 +824,24 @@ class Admission:
             self.refusal, self.waiting = kind, f"all {self.slots} guaranteed slots are busy and {reason}"
         return None
 
+    def _whole_host_holder(self, state):
+        """The whole-host lane running on the host, if any: a live guard owner marked wholeHost."""
+        return next((owner for identity, owner in state["owners"].items()
+                     if owner.get("wholeHost") and identity not in self.stranded), None)
+
     def _held_back(self, state):
         """Refuse the attempt at the model or a slot. Exclusive work holds both while its guard entry stands,
-        so whatever refused the request there, it waits behind that work, which the message names."""
+        so whatever refused the request there, it waits behind that work, which the message names; so does
+        heavy work behind a running whole-host lane, which holds the slots beyond the guaranteed ones too (#196)."""
         holder = next((owner for identity, owner in state["owners"].items()
                        if owner.get("exclusive") and identity not in self.stranded), None)
+        lane = None if holder is not None or self.exclusive or self.whole_host else self._whole_host_holder(state)
         if holder is not None:
             self.refusal, self.waiting = "exclusive", ("it waits behind exclusive work holding the host: "
                                                        f"{str(holder.get('label') or 'an unnamed owner')[:LABEL_LIMIT]}")
+        elif lane is not None:
+            self.refusal, self.waiting = "wholeHost", ("it waits behind a whole-host lane holding the host: "
+                                                       f"{str(lane.get('label') or 'an unnamed owner')[:LABEL_LIMIT]}")
         else:
             self._refused_beside_stranded()
         return False
@@ -897,7 +909,9 @@ class Admission:
             for _ in range(wanted):
                 taken = None if kept is not None else take_slot(self.directory, self.maximum if self.exclusive else self.slots,
                                                                 skip=reserved)
-                if taken is None and not self.exclusive and not self.whole_host:
+                # A running whole-host lane holds the slots beyond the guaranteed ones too: a gate's load dips
+                # between its phases, which is no spare capacity for another heavy job (#196).
+                if taken is None and not self.exclusive and not self.whole_host and self._whole_host_holder(state) is None:
                     taken = self._extra_slot(reserved, kept)
                 if taken is None:
                     busy = wanted - len(self.descriptors)
