@@ -379,29 +379,32 @@ class Devices(unittest.TestCase):
         self.assertTrue(any("configures no app" in line for line in self.said), self.said)
 
 
-class Queue(unittest.TestCase):
+class Queue(Fixture):
     def worker(self):
-        temp = tempfile.TemporaryDirectory()
-        self.addCleanup(temp.cleanup)
         said = []
-        worker = SimpleNamespace(queue=SimpleNamespace(logs=Path(temp.name)), checkout=Path(temp.name) / "checkout",
+        worker = SimpleNamespace(queue=SimpleNamespace(logs=self.temp / "logs"), checkout=self.root,
                                  environment={"A": "1"}, say=said.append)
         return worker, said
 
-    def test_a_gated_push_starts_keeping_the_app_in_the_background(self):
+    def test_a_gated_push_starts_keeping_the_app_by_the_pushed_commits_settings(self):
+        # The commit that first gives app keeps its build: main's settings at the batch's base had none.
         worker, said = self.worker()
+        head = git(self.root, "rev-parse", "HEAD")
         with patch.object(app_builds, "spawn_keep") as spawn:
-            merge_queue.Worker.keep_app(worker, project(), "b" * 40)
-        spawn.assert_called_once_with(worker.checkout, "b" * 40, worker.queue.logs / f"app-keep-{'b' * 12}.log",
-                                      env={"A": "1"})
+            merge_queue.Worker.keep_app(worker, head)
+        spawn.assert_called_once_with(self.root, head, worker.queue.logs / f"app-keep-{head[:12]}.log", env={"A": "1"})
         self.assertIn("in the background", said[0])
 
-    def test_a_project_that_keeps_nothing_after_landing_starts_nothing(self):
+    def test_a_commit_that_keeps_nothing_after_landing_starts_nothing(self):
         worker, said = self.worker()
+        none = self.commit("no keeping", app={**APP, "mac": {"scheme": "D", "afterLanding": False}})
+        (self.root / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Demo"}))
+        git(self.root, "commit", "-q", "-am", "no app")
         with patch.object(app_builds, "spawn_keep") as spawn:
-            merge_queue.Worker.keep_app(worker, {"name": "x"}, "b" * 40)
-            merge_queue.Worker.keep_app(worker, project({**APP, "mac": {"scheme": "D", "afterLanding": False}}), "b" * 40)
+            merge_queue.Worker.keep_app(worker, none)
+            merge_queue.Worker.keep_app(worker, git(self.root, "rev-parse", "HEAD"))
         spawn.assert_not_called()
+        self.assertEqual(said, [])
 
     def test_the_spawned_keep_outlives_the_round_and_writes_its_log(self):
         temp = tempfile.TemporaryDirectory()

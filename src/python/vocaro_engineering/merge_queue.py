@@ -1354,7 +1354,7 @@ class Worker:
                                       **({"ungated": ungated} if ungated else {}),
                                       **({"gate": self.measured} if self.measured and not docs else {}),
                                       **({} if docs or ungated else {"gatedOn": gated_on}))
-                if not docs and not ungated: self.keep_app(config, head)
+                if not docs and not ungated: self.keep_app(head)
                 if self.toolkits_own(): self.follow()
                 return True
             said = pushed.stderr.strip()
@@ -1364,10 +1364,17 @@ class Worker:
             raise Hold(OWNER, f"the push of {head[:12]} was refused: {said or 'no output'}{status}")
         return False
 
-    def keep_app(self, config, head):
-        """Start keeping the app built at head, the gated commit just pushed, in the background, when main's
+    def keep_app(self, head):
+        """Start keeping the app built at head, the gated commit just pushed, in the background, when head's
         engineering.json keeps one after landing (app_builds.py): the round goes on while it builds, and a build
-        that fails leaves the build kept before it. A docs-only or ungated landing keeps none."""
+        that fails leaves the build kept before it. A docs-only or ungated landing keeps none. Head's settings, not
+        main's at the batch's base as the gate's: keeping a build gates nothing, and so the commit that first gives
+        `app` keeps its build too (Pagepour's, 2026-11-06, kept none)."""
+        try:
+            config = config_at(self.checkout, head)
+        except ValueError as error:
+            self.say(f"keeping no app build of {head[:12]}: {error}")
+            return
         if not app_builds.after_landing(config): return
         log = self.queue.logs / f"app-keep-{head[:12]}.log"
         try:
