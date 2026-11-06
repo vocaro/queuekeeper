@@ -831,6 +831,13 @@ project, checks the commit out detached with the toolkit beside it, and runs `en
 the one it was sent from. The work it runs knows it runs there for this Mac, whose name
 `VOCARO_DISPATCHED_FROM` gives, and its receipts say so. A checkout keeps its ignored inputs and
 build products, so its next build is warm; `eng remote` waits for one when all four are in use.
+Of the free checkouts, a run takes the one whose last tree is nearest its commit's, by the files
+that differ between the two, so its builds redo the least, and the log says which slot it took and
+how many files differ (`slot 1: its last tree is the commit's, so its builds are warm`). A slot
+whose tree cannot be compared, or that has no checkout yet, comes after the rest, in index order.
+In index order alone, PDFReflowLib's queue gate there spent 406 to 733 s in its first step on a
+slot that had last built an older tree, against 362 to 365 s warm (2026-11-05;
+[vocaro-engineering#183](https://github.com/vocaro/vocaro-engineering/issues/183)).
 A project's `provision` lane, when it has one, runs first to provision the checkout's ignored
 inputs, and the work runs only if it passes. The work runs with `PYTHONDONTWRITEBYTECODE=1`, so
 its Python leaves no `__pycache__` in the checkout, which a project's `.gitignore` need not name;

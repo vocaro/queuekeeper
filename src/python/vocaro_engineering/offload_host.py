@@ -1912,20 +1912,52 @@ def changes(checkout):
     return git("status", "--porcelain", "--untracked-files=normal", cwd=checkout) if checkout.exists() else ""
 
 
-def claim(base, count, directory, wait=True):
+def distance(checkout, commit):
+    """How many files differ between the tree a checkout last held and commit's, or None when that is
+    unknown: no checkout yet, or a commit it cannot compare. The files that differ are what its builds
+    redo (vocaro-engineering#183). It compares two trees, so it reads a checkout another run holds
+    without touching its index or files."""
+    if not commit or not checkout.exists():
+        return None
+    result = subprocess.run(["git", "diff", "--name-only", "HEAD", commit], cwd=checkout, capture_output=True,
+                            text=True)
+    return None if result.returncode else len(result.stdout.splitlines())
+
+
+def nearest(base, count, directory, commit):
+    """The slots in the order to try them: those whose checkout last held the tree nearest commit's
+    first, then those whose distance is unknown, each in index order. Without a commit, index order."""
+    distances = {index: distance(base / str(index) / directory, commit) for index in range(count)}
+    return sorted(distances, key=lambda index: (distances[index] is None, distances[index] or 0, index)), distances
+
+
+def nearness(files, checkout):
+    """What a slot's distance says of its builds, for the run's log."""
+    if files is None:
+        return "its last tree could not be compared with the commit's" if checkout.exists() else \
+            "no checkout yet, so its builds are cold"
+    if not files:
+        return "its last tree is the commit's, so its builds are warm"
+    return f"{files} {'file differs' if files == 1 else 'files differ'} from its last tree"
+
+
+def claim(base, count, directory, wait=True, commit=None):
     """Lock a free checkout slot without changes, waiting while every one is in use, if wait.
 
-    The lock is an flock the run's command inherits, so it holds while that command lives. A
-    checkout with changes is left as it is, for inspection, and passed over. The lock's holder
-    writes its PID and start into it, so that a census of leftover processes knows a live run's
-    processes from those a lost run left (leftovers).
+    Of the free slots it takes the one whose checkout last held the tree nearest commit's, so the
+    run's builds redo the fewest files (nearest), and says how near it was. The lock is an flock the
+    run's command inherits, so it holds while that command lives. A checkout with changes is left as
+    it is, for inspection, and passed over. The lock's holder writes its PID and start into it, so
+    that a census of leftover processes knows a live run's processes from those a lost run left
+    (leftovers).
     """
     base.mkdir(parents=True, exist_ok=True)
     started, reported, named = time.monotonic(), None, set()
     record = json.dumps({"pid": os.getpid(), "start": output(["ps", "-p", str(os.getpid()), "-o", "lstart="])})
+    order, distances = nearest(base, count, directory, commit)
     while not _stop.is_set():
         changed = 0
-        for index in range(count):
+        for index in order:
             descriptor = os.open(base / f"{index}.lock", os.O_RDWR | os.O_CREAT, 0o644)
             try:
                 fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -1938,6 +1970,7 @@ def claim(base, count, directory, wait=True):
             checkout = base / str(index) / directory
             left = changes(checkout)
             if not left:
+                if commit: say(f"slot {index}: {nearness(distances[index], checkout)}")
                 return index, descriptor
             os.close(descriptor)
             changed += 1
@@ -2136,7 +2169,8 @@ def main(plan):
         if unlocked: say(f"unlocked {unlocked} for this run's session, with the password keep-unlocked kept")
         base = root / "checkouts" / project["directory"]
         began = time.monotonic()
-        claimed = claim(base, plan["checkouts"], project["directory"], wait=not plan.get("decline"))
+        claimed = claim(base, plan["checkouts"], project["directory"], wait=not plan.get("decline"),
+                        commit=project["commit"])
         timed("claim", began)
         if claimed is None:
             result["stopped"] = True

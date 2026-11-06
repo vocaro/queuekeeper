@@ -808,6 +808,73 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual(status, 2)
         self.assertIn("inspect and remove them", error)
 
+    @patch.object(remote, "CHECKOUTS", 3)
+    def test_a_run_takes_the_free_slot_whose_last_tree_is_nearest_its_commit(self):
+        """A slot whose builds last ran on another tree rebuilds what differs, 400 to 700 s on the second Mac
+        (#183), so a run takes the free slot whose checkout last held the tree nearest its commit's."""
+        results = self.project / ".build/engineering/remote/check"
+        slot = lambda: json.loads((results / "source.json").read_text())["result"]["slot"]
+        run = lambda: self.eng("remote", "run", "check")
+        status, output, error = run()
+        self.assertEqual((status, slot()), (0, 0), output + error)
+        self.assertIn("slot 0: no checkout yet, so its builds are cold", output)
+        first = self.commit
+        # Slot 1 at a commit two files from the first, while a stray file keeps slot 0 out of the way.
+        (self.checkout(0) / "stray.txt").write_text("left by a run\n")
+        (self.project / "one.txt").write_text("one\n")
+        (self.project / "two.txt").write_text("two\n")
+        second = commit_all(self.project)
+        status, output, error = run()
+        self.assertEqual((status, slot()), (0, 1), output + error)
+        (self.checkout(0) / "stray.txt").unlink()
+        self.assertEqual([git(self.checkout(index), "rev-parse", "HEAD") for index in (0, 1)], [first, second])
+        # The second commit's tree is slot 1's, so it goes there, not to slot 0 first in index order.
+        status, output, error = run()
+        self.assertEqual((status, slot()), (0, 1), output + error)
+        self.assertIn("slot 1: its last tree is the commit's, so its builds are warm", output)
+        # Nearness is the tree's, not ancestry's: a later commit with the first's tree goes to slot 0.
+        for name in ("one.txt", "two.txt"): (self.project / name).unlink()
+        commit_all(self.project)
+        status, output, error = run()
+        self.assertEqual((status, slot()), (0, 0), output + error)
+        self.assertIn("slot 0: its last tree is the commit's, so its builds are warm", output)
+        # One file from slot 0's tree and three from slot 1's: the nearer one, and the log counts what differs.
+        (self.project / "three.txt").write_text("three\n")
+        commit_all(self.project)
+        status, output, error = run()
+        self.assertEqual((status, slot()), (0, 0), output + error)
+        self.assertIn("slot 0: 1 file differs from its last tree", output)
+        # A busy nearest slot leaves the next nearest: slot 1, three files away, before slot 2, which has none.
+        lock = os.open(self.checkout(0).parents[1] / "0.lock", os.O_RDWR)
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            (self.project / "four.txt").write_text("four\n")
+            commit_all(self.project)
+            status, output, error = run()
+        finally:
+            os.close(lock)
+        self.assertEqual((status, slot()), (0, 1), output + error)
+        self.assertIn("slot 1: 4 files differ from its last tree", output)
+
+    def test_slots_are_ordered_by_the_files_that_differ_and_then_by_index(self):
+        base = Path(self.temp.name) / "slots"
+        repository = base / "repository"
+        repository.mkdir(parents=True)
+        git(repository, "init", "-q")
+        (repository / "a.txt").write_text("a\n")
+        first = commit_all(repository)
+        (repository / "b.txt").write_text("b\n")
+        second = commit_all(repository)
+        for index, commit in [(0, first), (1, second), (2, first)]:
+            git(repository, "worktree", "add", "-q", "--detach", str(base / str(index) / "example"), commit)
+        self.assertEqual(offload_host.nearest(base, 4, "example", second), ([1, 0, 2, 3], {0: 1, 1: 0, 2: 1, 3: None}))
+        self.assertEqual(offload_host.nearest(base, 4, "example", first)[0], [0, 2, 1, 3])
+        # The negative controls: without a commit, or with one no slot can compare, index order.
+        self.assertEqual(offload_host.nearest(base, 4, "example", None), ([0, 1, 2, 3], dict.fromkeys(range(4))))
+        self.assertEqual(offload_host.nearest(base, 4, "example", "0" * 40)[0], [0, 1, 2, 3])
+        self.assertEqual(offload_host.nearness(None, base / "0" / "example"),
+                         "its last tree could not be compared with the commit's")
+
     @patch.object(remote, "CHECKOUTS", 2)
     def test_work_on_the_second_mac_leaves_no_bytecode_in_its_checkout(self):
         # The project's .gitignore names no __pycache__, as many projects' do not.
