@@ -12,7 +12,7 @@ import sys
 import time
 
 from . import __version__, app_builds, app_registrations, budgets, crash_alerts, device_pass, devices, disk, docs, evidence, evidence_offload, failure_records, foreground, github_artifacts, keychain, merge_queue, \
-    offload_host, parallel, processes, release, remote, resources, skills, spelling, toolkit_copy, xctest_shards
+    notification_center, offload_host, parallel, processes, release, remote, resources, skills, spelling, toolkit_copy, xctest_shards
 from .config import TOOLKIT_ROOT, CAPABILITIES, DEFAULT_TOOLKIT, load, source_identity, stays, unlocked_screen
 from .resources import BUSY, FREE_WAIT
 from .simulators import matrix, pool as simulator_pool
@@ -602,6 +602,22 @@ def guarded_alerts(stack, purpose, receipt):
         return evidence.UNMEASURED
 
 
+def cleared_notifications(receipt):
+    """None once no Notification Center window is over the second Mac's screen, eng having closed the
+    notifications of any that was, under the foreground the run holds; or UNMEASURED, with nothing run, naming
+    a window it could not clear (notification_center.py). The receipt says what was found and closed, never
+    what a notification said."""
+    try:
+        receipt["notificationCenter"] = notification_center.dismiss()
+        return None
+    except (notification_center.Blocked, devices.Refused) as error:
+        print(f"eng: unmeasured: {error}; nothing ran ({notification_center.GUIDE}, {notification_center.SECTION})",
+              file=sys.stderr)
+        receipt["notificationCenter"] = {"left": str(error)}
+        receipt["outcome"] = "unmeasured"
+        return evidence.UNMEASURED
+
+
 def admit(root, args, config=None):
     # A command runs here, in the current directory: its paths, devices and products are this Mac's
     # (guides/shared-host.md, Which Mac runs a lane). Only --verify, which says that its result is its
@@ -652,6 +668,9 @@ def admit(root, args, config=None):
         reap_here(root, inherited)
         alerts = guarded_alerts(stack, " ".join(command), receipt) if args.foreground else None
         if isinstance(alerts, int): return alerts
+        # The second Mac's Notification Center windows, under the foreground eng holds there (#204).
+        blocked = cleared_notifications(receipt) if second else None
+        if blocked is not None: return blocked
         def work():
             github_artifacts.configured(root, config)
             # A foreground command restores what it changed on the Mac before SIGKILL, VoiceOver first.
@@ -873,6 +892,12 @@ def main(argv=None):
     screen.add_argument("--remote", action="store_true", help="read the second Mac's screen over SSH")
     screen.add_argument("--host", help="the second Mac's SSH name, when not the configured one")
     screen.add_argument("--json", action="store_true", help="print the reading as JSON")
+    notices = reads.add_parser("notifications", help="list the Notification Center windows over this Mac's screen, "
+        "exiting 0 when none is and 3 when one is; with --dismiss, on the second Mac under the foreground lease the "
+        "caller holds, close their notifications and confirm each window gone, as a foreground run does before it "
+        "starts (exit 0, 3 naming a window left, 1 without a lease)")
+    notices.add_argument("--dismiss", action="store_true", help="close the windows' notifications; needs the second "
+                         "Mac's mac-foreground lease, named by VOCARO_DEVICE_OWNER")
     linking = commands.add_parser("skills", help="check that Claude Code and Codex load the toolkit's agent skills "
         "through links to its main checkout; changes nothing without --link")
     linking.add_argument("--link", action="store_true", help="link each installed host's missing skills, and those "
@@ -917,6 +942,8 @@ def main(argv=None):
         if args.action == "keychain": return keychain.execute(args)
         if args.action == "skills": return skills.main(named_checkout(TOOLKIT_ROOT), args.link)
         # A Mac's screen is the host's, not a project's.
+        if args.action == "host" and args.operation == "notifications":
+            return notification_center.main(["check" if args.dismiss else "list"])
         if args.action == "host": return host_screen(args)
         if args.action == "admissions": return resources.report(args.logs or None, args.since, args.until)
         # Offloaded evidence goes to the host's second Mac, whatever project holds it.
@@ -1111,6 +1138,8 @@ def main(argv=None):
                             if reads_screen: receipt["screen"] = screen_reading()
                             alerts = guarded_alerts(stack, args.lane, receipt) if lane.get("foreground") else None
                             if isinstance(alerts, int): return alerts
+                            blocked = cleared_notifications(receipt) if second else None
+                            if blocked is not None: return blocked
                             result = execute(admission.interrupted)
                             if alerts is not None: result = alerts.judged(result)
             except processes.TimedOut as error:
