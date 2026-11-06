@@ -1015,6 +1015,10 @@ def main(argv=None):
             failures = docs.check(root, args.paths or None)
             if not args.paths or {"AGENTS.md", "CLAUDE.md"} & {Path(path).name for path in args.paths}:
                 failures += agent_entry(root, config)
+            # The speech predictor's rules cite knowledge entries; a project without the rules has none to check.
+            if not args.paths or any(Path(path).suffix == ".json" or "knowledge" in Path(path).parts for path in args.paths):
+                from .voiceover import speech
+                failures += speech.check_rules(root)
             print("\n".join(failures) if failures else "Documentation checks passed")
             return int(bool(failures))
         elif args.action == "spelling": return spelling.check(root, config, args.paths)
