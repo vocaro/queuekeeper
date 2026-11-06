@@ -2317,8 +2317,11 @@ def spare(reading, mac, whole_host=False, exclusive=False, screen=False):
     there (queuedExclusive), behind which admission holds every later request (vocaro-engineering#191). While the
     Mac's admission keeps the guaranteed slots for a whole-host lane queued ahead (kept), a whole-host or
     exclusive lane waits its turn behind it and other work needs a slot beyond them free, as admission rules
-    (vocaro-engineering#174, #186). The reason names the Mac and, for its load, the load read and the limit,
-    and the request queued ahead; the receipt's hereBecause carries it. With screen, for a lane
+    (vocaro-engineering#174, #186), and that slot only as admission takes one, once the Mac has settled for
+    HEAVY_SETTLE_SECONDS since its last admission (sinceAdmission, settle) and while its memory pressure is
+    normal (memory), as resources.Admission._extra_refusal rules (vocaro-engineering#201). The reason names the
+    Mac and, for its load, the load read and the limit, and the request queued ahead; the receipt's hereBecause
+    carries it. With screen, for a lane
     that needs an unlocked screen, a Mac whose screen is locked or unknown has none (screen_refusal)."""
     if screen:
         refused = screen_refusal(reading.get("screen"), mac)
@@ -2344,6 +2347,12 @@ def spare(reading, mac, whole_host=False, exclusive=False, screen=False):
             return f"{held}, which the lane would wait behind"
         if len([slot for slot in busy if slot >= slots]) >= maximum - slots:
             return f"{held}, and every slot beyond them up to HEAVY_SLOTS_MAX={maximum} is busy"
+        # An older toolkit's reading has no sinceAdmission or settle, and withholds nothing by them.
+        since, settle = reading.get("sinceAdmission"), reading.get("settle")
+        if all(isinstance(value, (int, float)) and not isinstance(value, bool) for value in (since, settle)) \
+                and since < settle:
+            return (f"{held}, and the load of {mac} does not yet show the job admitted {int(since)}s ago, within "
+                    f"HEAVY_SETTLE_SECONDS={settle:g}")
     taken = [slot for slot in busy if slot < slots]
     if whole_host and taken:
         return (f"a whole-host lane needs every guaranteed slot of {mac} (HEAVY_SLOTS={slots}) free, and {len(taken)} "
@@ -2355,6 +2364,13 @@ def spare(reading, mac, whole_host=False, exclusive=False, screen=False):
         return f"the load average of {mac}, which HEAVY_LOAD_LIMIT={limit:g} bounds, is unavailable"
     if load >= limit:
         return f"{mac} is loaded (load {load:.1f}, at or above its HEAVY_LOAD_LIMIT={limit:g})"
+    # Beyond the guaranteed slots, memory pressure that is not normal, or cannot be read, withholds the slot, judged
+    # as admission judges it; an older toolkit's reading has no memory, and withholds nothing by it.
+    if kept is not None and "memory" in reading:
+        level = reading["memory"] if isinstance(reading["memory"], int) and not isinstance(reading["memory"], bool) else None
+        refused = resources.judged(load, limit, lambda: level)
+        if refused is not None:
+            return f"{held}, and on {mac} {refused[1]}"
     return None
 
 

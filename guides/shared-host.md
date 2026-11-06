@@ -532,7 +532,17 @@ HEAVY_PLACE_SECONDS, the Mac keeps its guaranteed slots for it, so a whole-host 
 has no spare capacity there (`the guaranteed slots of the second Mac are kept for a whole-host
 lane queued ahead: LABEL, which the lane would wait behind`), and a lighter heavy lane has it only
 in a free slot beyond them (`…: LABEL, and every slot beyond them up to HEAVY_SLOTS_MAX=5 is
-busy`). A queued request whose process has ended, one that has not asked lately, one behind
+busy`), and only as admission takes such a slot: once HEAVY_SETTLE_SECONDS have passed since the
+Mac's last admission (`…: LABEL, and the load of the second Mac does not yet show the job admitted
+12s ago, within HEAVY_SETTLE_SECONDS=30`), under its HEAVY_LOAD_LIMIT, and while its memory
+pressure is level 1, normal, and can be read (`…: LABEL, and on the second Mac memory pressure is
+level 2 (warning), not 1 (normal)`). The reading reports the seconds since that admission, the
+Mac's own HEAVY_SETTLE_SECONDS and its memory pressure level for this, read from the same limits
+as its admission (`eng admissions limits`); a reading from a toolkit older than
+vocaro-engineering#201 has none of them and withholds nothing by them. A free guaranteed slot
+needs neither, here as in admission. Until vocaro-engineering#201 the reading judged that slot by
+the load alone, and eng could send a lane to wait on a Mac whose admission then withheld it. A
+queued request whose process has ended, one that has not asked lately, one behind
 exclusive work queued ahead, and one that waits for a dead or uncertain guard entry counted as a
 guaranteed slot keep nothing, as in admission; the reading runs no recovery census, so it counts
 every such entry, and the next admission may remove one. A lane's own place in this Mac's queue,

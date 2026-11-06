@@ -83,6 +83,7 @@ LIMIT_KEYS = {
     "slots": ("HEAVY_SLOTS", True, lambda cores, slots: 3),
     "slotsMax": ("HEAVY_SLOTS_MAX", True, lambda cores, slots: max(slots, cores // 2)),
     "loadLimit": ("HEAVY_LOAD_LIMIT", False, lambda cores, slots: 0.75 * cores),
+    "settleSeconds": ("HEAVY_SETTLE_SECONDS", False, lambda cores, slots: 30.0),
 }
 # The simulators' devices, relative to the home: a booted device's processes name its directory.
 DEVICES = "Library/Developer/CoreSimulator/Devices"
@@ -951,10 +952,10 @@ def slot_directory():
 
 
 def limits():
-    """The admission limits the capacity reading needs, by key: HEAVY_SLOTS, HEAVY_SLOTS_MAX and HEAVY_LOAD_LIMIT,
-    each from its environment variable, else the host's limits file, admission-limits.json beside the admission
-    log, as a number or {"perCore": F}, else its default, as resources.limits reads them, which this file cannot
-    import (#49). A file or variable admission could not read raises ValueError naming it, as admission does:
+    """The admission limits the capacity reading needs, by key: HEAVY_SLOTS, HEAVY_SLOTS_MAX, HEAVY_LOAD_LIMIT and
+    HEAVY_SETTLE_SECONDS, each from its environment variable, else the host's limits file, admission-limits.json
+    beside the admission log, as a number or {"perCore": F}, else its default, as resources.limits reads them,
+    which this file cannot import (#49). A file or variable admission could not read raises ValueError naming it, as admission does:
     its owner fixes it rather than eng guessing."""
     cores = os.cpu_count() or 1
     path = admission_directory() / ADMISSION_LIMITS
@@ -967,7 +968,7 @@ def limits():
         except ValueError as error: raise ValueError(f"Invalid resource limits: {path} is not JSON: {error}")
         if not isinstance(data, dict): raise ValueError(f"Invalid resource limits: {path} holds no JSON object")
         for key, value in data.items():
-            if key not in LIMIT_KEYS: continue  # settleSeconds and whatever a later toolkit adds
+            if key not in LIMIT_KEYS: continue  # whatever a later toolkit adds
             counts = LIMIT_KEYS[key][1]
             number = lambda found: isinstance(found, (int, float)) and not isinstance(found, bool) and found >= 0
             if isinstance(value, dict) and set(value) == {"perCore"} and number(value["perCore"]) and value["perCore"] > 0:
@@ -988,9 +989,9 @@ def limits():
         elif key in configured: found[key] = configured[key]
         else: found[key] = default(cores, slots)
         if key == "slots": slots = found[key]
-    if found["slots"] < 1 or found["slotsMax"] < found["slots"]:
-        raise ValueError(f"Invalid resource limits: HEAVY_SLOTS={found['slots']} must be at least 1, and "
-                         f"HEAVY_SLOTS_MAX={found['slotsMax']} at least HEAVY_SLOTS")
+    if found["slots"] < 1 or found["slotsMax"] < found["slots"] or found["settleSeconds"] < 0:
+        raise ValueError(f"Invalid resource limits: HEAVY_SLOTS={found['slots']} must be at least 1, "
+                         f"HEAVY_SLOTS_MAX={found['slotsMax']} at least HEAVY_SLOTS, and HEAVY_SETTLE_SECONDS at least 0")
     return found
 
 
@@ -1010,6 +1011,24 @@ def busy_slots(directory, count):
         except BlockingIOError: found.append(slot)
         finally: os.close(fd)
     return found
+
+
+def since_admission(directory, count):
+    """Seconds since a holder last wrote its identity into one of the first count slots, as resources.last_admission
+    reads it for admission's settle time; None when none has. Probing leaves a new slot file empty."""
+    latest = None
+    for slot in range(count):
+        try: status = (directory / f"slot{slot}").stat()
+        except OSError: continue
+        if status.st_size: latest = status.st_mtime if latest is None else max(latest, status.st_mtime)
+    return None if latest is None else round(max(0.0, time.time() - latest), 1)
+
+
+def memory_level():
+    """The memory pressure level macOS reports, as resources.memory_level reads it: 1 normal, 2 warning, 4 critical,
+    or None when it cannot be read."""
+    level = output(["/usr/sbin/sysctl", "-n", "kern.memorystatus_vm_pressure_level"]) if sys.platform == "darwin" else None
+    return int(level) if level and level.isdigit() else None
 
 
 def guard_entries():
@@ -1098,8 +1117,11 @@ def capacity(own=None):
     running; the label of the whole-host request queued ahead for which admission keeps the guaranteed slots, or
     None (kept; own is the asking work's own place, vocaro-engineering#186); the label of the exclusive request
     queued ahead that holds every later request back, or None (queuedExclusive, vocaro-engineering#191), both
-    read by queued_ahead; and its console screen (screen), which a lane that needs it unlocked reads. A reading
-    it cannot take says why, as error, as pressure does."""
+    read by queued_ahead; the seconds since admission last took a slot, None when it never has (sinceAdmission),
+    HEAVY_SETTLE_SECONDS (settle) and its memory pressure level, None when unread (memory), by which its admission
+    withholds a slot beyond the guaranteed ones (resources.Admission._extra_refusal, vocaro-engineering#201); and
+    its console screen (screen), which a lane that needs it unlocked reads. A reading it cannot take says why, as
+    error, as pressure does."""
     try: found = limits()
     except ValueError as error: return {"error": str(error)}
     try: directory = slot_directory()
@@ -1115,7 +1137,9 @@ def capacity(own=None):
             "wholeHost": [label(owner) for owner in running if owner.get("wholeHost") and not owner.get("exclusive")],
             "exclusive": [label(owner) for owner in running if owner.get("exclusive")],
             "kept": ahead if kind == "wholeHost" else None,
-            "queuedExclusive": ahead if kind == "exclusive" else None, "screen": screen()}
+            "queuedExclusive": ahead if kind == "exclusive" else None,
+            "sinceAdmission": since_admission(directory, found["slotsMax"]), "settle": found["settleSeconds"],
+            "memory": memory_level(), "screen": screen()}
 
 
 def unended():
@@ -1978,8 +2002,7 @@ def pressure():
     except OSError: load = None
     try: limit = limits()["loadLimit"]
     except ValueError as error: return {"error": str(error)}
-    level = output(["/usr/sbin/sysctl", "-n", "kern.memorystatus_vm_pressure_level"]) if sys.platform == "darwin" else None
-    return {"load": load, "limit": limit, "memory": int(level) if level and level.isdigit() else None}
+    return {"load": load, "limit": limit, "memory": memory_level()}
 
 
 def answer(request):

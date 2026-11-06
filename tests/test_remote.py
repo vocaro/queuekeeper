@@ -2967,6 +2967,44 @@ class KeptSlotsTests(unittest.TestCase):
                 patch.object(remote.offload_host, "capacity", return_value={**self.IDLE, "screen": None}):
             self.assertEqual(offered.choose(), refused)
 
+    def test_settle_time_and_memory_pressure_withhold_the_slots_beyond_kept_ones(self):
+        """Beyond the guaranteed slots kept for a whole-host lane queued ahead, a lighter lane has spare capacity only
+        once the Mac has settled for HEAVY_SETTLE_SECONDS since its last admission and while its memory pressure is
+        normal, as admission takes such a slot (resources.Admission._extra_refusal, #201)."""
+        kept = {**self.IDLE, "kept": "EPUBLib gate", "sinceAdmission": 120.0, "settle": 30.0, "memory": 1}
+        cases = [
+            (kept, None),
+            ({**kept, "sinceAdmission": None}, None),
+            ({**kept, "sinceAdmission": 30.0}, None),
+            ({**kept, "sinceAdmission": 12.7}, f"{self.HELD}, and the load of the second Mac does not yet show the job "
+                                               "admitted 12s ago, within HEAVY_SETTLE_SECONDS=30"),
+            ({**kept, "memory": 2}, f"{self.HELD}, and on the second Mac memory pressure is level 2 (warning), not 1 (normal)"),
+            ({**kept, "memory": 4}, f"{self.HELD}, and on the second Mac memory pressure is level 4 (critical), not 1 (normal)"),
+            ({**kept, "memory": None}, f"{self.HELD}, and on the second Mac memory pressure, which must be level 1 "
+                                       "(normal), cannot be read"),
+            ({**kept, "memory": "1"}, f"{self.HELD}, and on the second Mac memory pressure, which must be level 1 "
+                                      "(normal), cannot be read"),
+            # The load still comes first, as in admission, after the settle time.
+            ({**kept, "memory": 2, "load": 8.0}, "the second Mac is loaded (load 8.0, at or above its HEAVY_LOAD_LIMIT=7.5)"),
+            # The negative controls: an older toolkit's reading without the keys, and malformed settle readings,
+            # withhold nothing by them.
+            ({key: value for key, value in kept.items() if key not in ("sinceAdmission", "settle", "memory")}, None),
+            ({**kept, "sinceAdmission": 1.0, "settle": None}, None),
+            ({**kept, "sinceAdmission": True, "settle": 30.0}, None),
+            ({**kept, "sinceAdmission": "1", "settle": 30.0}, None),
+        ]
+        for reading, expected in cases:
+            with self.subTest(reading=reading):
+                self.assertEqual(remote.spare(reading, "the second Mac"), expected)
+        # A guaranteed slot needs neither: without kept slots, an unsettled Mac under pressure still has one spare.
+        for need in [{}, {"whole_host": True}, {"exclusive": True}]:
+            with self.subTest(need=need):
+                self.assertIsNone(remote.spare({**kept, "kept": None, "sinceAdmission": 1.0, "memory": 4}, "the second Mac",
+                                               **need))
+        # A whole-host or exclusive lane behind the kept slots still says it waits its turn.
+        self.assertEqual(remote.spare({**kept, "memory": 4}, "the second Mac", whole_host=True),
+                         f"{self.HELD}, which the lane would wait behind")
+
     def test_this_macs_reading_does_not_count_the_works_own_place(self):
         """A whole-host lane that waits here keeps its place in this Mac's queue between offers (resources.Place);
         eng's reading of this Mac for it does not count that place as a request queued ahead of it."""
