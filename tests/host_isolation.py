@@ -25,7 +25,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
-from vocaro_engineering import cli, crash_alerts, device_notifications, offload_host, resources
+from vocaro_engineering import cli, crash_alerts, device_notifications, notification_center, offload_host, resources
 
 
 def stretched(seconds):
@@ -55,6 +55,10 @@ resources.GATE_LOCK = offload_host.GATE_LOCK = GATE
 os.environ["VOCARO_CRASH_DIALOG_RECORD"] = str(ROOT / "crash-dialog.json")
 crash_alerts.run = lambda command, environment=None: "" if command[0] == "osascript" else None
 crash_alerts.change = lambda value: True
+# Nor does any reach the screen's Notification Center windows (#204): a foreground run a test makes on a second Mac
+# finds none, and closes nothing. A test of them replaces this again.
+notification_center.run = lambda command, environment=None: "[]" if command[:3] == ["osascript", "-l", "JavaScript"] \
+    else None
 # Nor does any reach a paired device's Focus (#144): a reservation a test makes that would run the owner's
 # notification shortcuts finds devicectl unable to open Shortcuts. A test of them replaces this again.
 device_notifications.run = lambda command: (None, "tests never reach a device")
