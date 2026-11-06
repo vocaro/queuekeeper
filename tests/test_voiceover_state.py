@@ -128,8 +128,7 @@ class ReadinessQueryTests(unittest.TestCase):
         self.record = devices.Record(Path(temporary.name) / "record.json")
         self.owner = "offline readiness query"
         self.entry = self.record.reserve(devices.FOREGROUND, owner=self.owner, revision=0, purpose="offline test",
-            release_by=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
-            approval={**foreground.STANDING, "until": "released"})
+            release_by=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat())
         self.lease = state._Lease(self.owner, self.record)
 
     def test_absence_is_readiness_only_for_current_user_and_exact_empty_success(self):
@@ -188,7 +187,7 @@ class ReadinessQueryTests(unittest.TestCase):
             self.record.release(devices.FOREGROUND, owner=self.owner, revision=entry["revision"],
                                 outcome="test replacement", restoration="test", frontmost="not-ours")
             self.record.reserve(devices.FOREGROUND, owner="other", revision=entry["revision"] + 1,
-                                purpose="new holder", release_by=entry["expectedReleaseBy"], approval=entry["approval"])
+                                purpose="new holder", release_by=entry["expectedReleaseBy"])
             return subprocess.CompletedProcess([], 0, "123", "")
         with patch.object(state.subprocess, "run", side_effect=replaced) as command, \
                 self.assertRaises(devices.Refused): state._ready_to_enable(self.lease)
@@ -207,8 +206,7 @@ class StateTests(unittest.TestCase):
         self.record = devices.Record(Path(temporary.name) / "record.json")
         self.owner = "owned offline contract"
         self.entry = self.record.reserve(devices.FOREGROUND, owner=self.owner, revision=0, purpose="offline test",
-            release_by=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
-            approval={**foreground.STANDING, "until": "released"})
+            release_by=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat())
         readiness = patch.object(state, "_ready_to_enable", return_value=True, create=True)
         readiness.start()
         self.addCleanup(readiness.stop)
@@ -464,7 +462,7 @@ class StateTests(unittest.TestCase):
             self.record.release(devices.FOREGROUND, owner=self.owner, revision=entry["revision"],
                                 outcome="test replacement", restoration="test", frontmost="not-ours")
             self.record.reserve(devices.FOREGROUND, owner="other", revision=entry["revision"] + 1,
-                                purpose="new test holder", release_by=entry["expectedReleaseBy"], approval=entry["approval"])
+                                purpose="new test holder", release_by=entry["expectedReleaseBy"])
             self.actions.clear()
             return True
         with self.assertRaises(devices.Refused): state._set(lease, True, self.read, self.toggle, ready=replaced)
@@ -502,8 +500,7 @@ class StateTests(unittest.TestCase):
                 self.record.release(devices.FOREGROUND, owner=self.owner, revision=entry["revision"],
                                     outcome="test replacement", restoration="test", frontmost="not-ours")
                 self.record.reserve(devices.FOREGROUND, owner=self.owner, revision=entry["revision"] + 1,
-                                    purpose="new same-name lease", release_by=entry["expectedReleaseBy"],
-                                    approval=entry["approval"])
+                                    purpose="new same-name lease", release_by=entry["expectedReleaseBy"])
                 self.actions.clear()
         self.assertEqual(self.actions, [])
         self.assertNotEqual(devices.condition(self.record.entry(devices.FOREGROUND)), "uncertain")

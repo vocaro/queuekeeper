@@ -1,9 +1,10 @@
 """A Mac's foreground for one run: the second Mac's taken by eng, this Mac's only within the owner's window.
 
-The second Mac is not used as a workstation, so the owner approved, once, taking its whole foreground,
-screen, keyboard, pointer, focus and speech, for any run eng admits there (owner's decision, 2026-10-30).
-eng takes it for a run as admission takes a slot: it waits while another run holds the second Mac's
-mac-foreground entry, reserves the entry with that standing approval, runs the work with
+The second Mac is used only for file serving and build hosting, not as a workstation, so a run takes
+its whole foreground, screen, keyboard, pointer, focus and speech, without asking the owner (owner's
+decisions, 2026-10-30 and 2026-11-06, vocaro-engineering#207). eng takes it for a run as admission takes
+a slot: it waits while another run holds the second Mac's mac-foreground entry, reserves the entry,
+which records no approval, runs the work with
 VOCARO_DEVICE_OWNER naming the reservation, so that drivers' `devices check` passes, and releases it.
 This Mac is the owner's workstation. Its foreground needs a window the owner agreed beforehand, which
 the session reserves itself (guides/shared-host.md, Attended Mac sessions), and eng never sends
@@ -22,10 +23,6 @@ import time
 from . import devices, offload_host
 from .voiceover import state as voiceover_state
 
-# The owner's standing approval of the second Mac's foreground, in the owner's words.
-STANDING = {"by": "owner", "at": "2026-10-30T16:53:26Z",
-            "words": "it is not used as a workstation so taking over the entire mac foreground for a voiceover "
-                     "test is not a problem"}
 # Seconds between looks at the second Mac's mac-foreground entry while another run holds it.
 POLL = 10
 # Seconds a run is expected to hold the foreground when its lane names no timeout. A deadline releases
@@ -65,7 +62,7 @@ def refusal(found):
 
 @contextlib.contextmanager
 def slot(purpose, *, timeout, expected=EXPECTED, record=None, poll=POLL, ready=None, voiceover=None, said=None):
-    """Hold the second Mac's mac-foreground for the run inside the block, with the owner's standing approval.
+    """Hold the second Mac's mac-foreground for the run inside the block, without asking the owner.
 
     It refuses on any other Mac, and, before taking anything, on a second Mac that problems() finds not
     ready, which is a configuration problem for the owner. While another run holds the entry it waits,
@@ -92,8 +89,7 @@ def slot(purpose, *, timeout, expected=EXPECTED, record=None, poll=POLL, ready=N
             release_by = (datetime.now(timezone.utc) + timedelta(seconds=expected)).isoformat()
             try:
                 entry = record.reserve(devices.FOREGROUND, owner=owner, revision=(entry or {}).get("revision", 0),
-                                       purpose=purpose, release_by=release_by, title=os.environ.get("VOCARO_DISPATCHED_FROM"),
-                                       approval={**STANDING, "until": "released"})
+                                       purpose=purpose, release_by=release_by, title=os.environ.get("VOCARO_DISPATCHED_FROM"))
                 break
             except devices.Stale:
                 continue

@@ -17,10 +17,15 @@ expected release has passed, or before then when only its holder held it (ALONE)
 for its owner, no live admission or other process naming the owner or the device (offload_host.release_dead;
 vocaro-engineering#156).
 
-The mac-foreground entry reserves the owner's screen, keyboard, pointer, focus and speech. It
-names no device and records the owner's approval window, which no update changes. Foreground
-drivers call require_foreground before acting; release waits for the processes the session
-recorded as its own, and says whether the previous frontmost app was restored.
+The mac-foreground entry reserves a Mac's screen, keyboard, pointer, focus and speech. It names no
+device and, like a physical device's, records no approval (owner's decision, 2026-11-06,
+vocaro-engineering#207): the record schedules it, one holder at a time, and its expected release
+is its window. On this Mac, the owner's workstation, a session agrees the window with the owner
+first and reserves it for that window; foreground actions are refused once the expected release
+has passed. The second Mac is not a workstation: eng reserves its entry for each run without
+asking (foreground.slot), and a run there may outlast its expected release. Foreground drivers
+call require_foreground before acting; release waits for the processes the session recorded as
+its own, and says whether the previous frontmost app was restored.
 
 Each Mac's simulators are its own, but a paired iPhone or iPad is reachable from both Macs, so a
 physical device is reserved in one record only: the Mac that sends runs to the second Mac. The
@@ -184,10 +189,9 @@ def deferred_refusal(mac, key):
 
 
 def approval_refusal(key):
-    return ValueError(f"{key} is a physical device, whose reservation records no approval: the record only "
-                      "schedules it, and the owner's agreement is between the session and the owner "
-                      f"(owner's decision, 2026-11-06). Reserve it without --approved-*, until {key}'s expected "
-                      "release. Nothing was changed")
+    return ValueError(f"a reservation of {key} records no approval: the record only schedules it, and the owner's "
+                      "agreement is between the session and the owner (owner's decision, 2026-11-06). Reserve it "
+                      f"without --approved-*, until the end of the window agreed for {key}. Nothing was changed")
 
 
 def now():
@@ -216,27 +220,9 @@ def condition(entry):
     return "released" if entry.get("state") == "released" else "held"
 
 
-def _approval(value, release_by):
-    """The owner's approval window, checked: who approved, when, and until a time or "released"."""
-    if not isinstance(value, dict) or set(value) - {"by", "at", "until", "words"} or \
-            not all(isinstance(value.get(name), str) and value[name] for name in ("by", "at", "until")):
-        raise ValueError("an approval records by, at and until, and optionally the owner's words")
-    current = datetime.now(timezone.utc)
-    approved = moment(value["at"])
-    if approved is None or approved > current:
-        raise ValueError("approval at is when the owner approved: a past ISO 8601 time with a time zone")
-    if value["until"] != "released":
-        until = moment(value["until"])
-        if until is None or until <= current:
-            raise ValueError("approval until is a future ISO 8601 time with a time zone, or released")
-        if release_by > until:
-            raise ValueError("the expected release falls after the owner's approval ends")
-    return dict(value)
-
-
 def approval_ended(entry):
-    """Whether the approval an entry records has ended; an entry without one has none to end, as a physical
-    device's, which records none."""
+    """Whether the approval an older entry recorded has ended; an entry without one has none to end. No
+    reservation records one since 2026-11-06."""
     if not entry.get("approval"):
         return False
     until = entry["approval"].get("until")
@@ -246,9 +232,14 @@ def approval_ended(entry):
     return deadline is None or deadline <= datetime.now(timezone.utc)
 
 
+def window_ended(entry):
+    """Whether an entry's expected release, the window it was reserved for, has passed or is unreadable."""
+    deadline = moment(entry.get("expectedReleaseBy"))
+    return deadline is None or deadline <= datetime.now(timezone.utc)
+
+
 def require_window(key, entry):
-    """Refuse work on key, the owner's screen, outside the window the owner agreed, and on an older
-    device reservation that recorded one, once it has ended.
+    """Refuse work on key under an older reservation whose recorded approval has ended.
 
     An ended window releases nothing: the session stops, restores and releases."""
     if approval_ended(entry):
@@ -393,7 +384,7 @@ class Record:
                 approval=None):
         """Claim a released or new entry. The previous lease is kept, one generation deep.
 
-        Reserving mac-foreground records the owner's approval window, which no update changes."""
+        No reservation records an approval: approval names the --approved-* options only to refuse them."""
         details = dict(details or {})
         if not owner or not purpose:
             raise ValueError("a reservation names its owner and purpose")
@@ -406,10 +397,8 @@ class Record:
             raise ValueError("name the device by its canonical uppercase UDID, never a name or 'booted'")
         if key == FOREGROUND and device is not None:
             raise ValueError(f"{FOREGROUND} names no device: it is the owner's screen, keyboard, pointer, focus and speech")
-        if key == FOREGROUND and approval is None:
-            raise ValueError(f"reserving {FOREGROUND} records the owner's approval: who approved, when, and until when")
         if approval is not None:
-            approval = _approval(approval, deadline)
+            raise approval_refusal(key)
         json.dumps(details)
 
         def change(current, record):
@@ -419,8 +408,6 @@ class Record:
             identifier = device or (current or {}).get("device")
             if record.get(DEFERRED) and physical(identifier):
                 raise deferred_refusal(record[DEFERRED], key)
-            if physical(identifier) and approval is not None:
-                raise approval_refusal(key)
             line = waiting(record, key)
             if line and line[0]["owner"] != owner:
                 raise Refused(f"{len(line)} waiting for {key}, first {line[0]['owner']} for {line[0].get('purpose')}; "
@@ -433,7 +420,7 @@ class Record:
                     raise Refused(f"the same device is {condition(entry)} as {other}; nothing was changed")
             entry = {**details, "device": identifier, "ownerChatID": owner, "ownerChatTitle": title,
                      "state": "reserved", "activeRun": False, "purpose": purpose, "reservedAt": now(),
-                     "expectedReleaseBy": release_by, "approval": approval}
+                     "expectedReleaseBy": release_by}
             if current is not None:
                 entry["previousLease"] = {name: value for name, value in current.items() if name != "previousLease"}
             return {name: value for name, value in entry.items() if value is not None}
@@ -769,21 +756,28 @@ class Record:
 
 
 def require_foreground(owner, record=None):
-    """Refuse foreground work unless owner holds mac-foreground within the owner's approval.
+    """Refuse foreground work unless owner holds mac-foreground, and on this Mac within its window.
 
-    Drivers call it before acting, on either Mac: on the second Mac, eng holds the entry for the run with the
-    owner's standing approval and names it in VOCARO_DEVICE_OWNER (foreground.slot)."""
+    Drivers call it before acting, on either Mac. On this Mac the window is the reservation's expected
+    release, which the session agreed with the owner. On the second Mac, whose record defers physical
+    devices, eng holds the entry for the run and names it in VOCARO_DEVICE_OWNER (foreground.slot), and
+    the run may outlast its expected release."""
     if not owner:
         raise Refused(f"name the session whose {FOREGROUND} reservation covers this work (--owner or {OWNER})")
-    entry = (record or Record()).entry(FOREGROUND)
+    value = (record or Record()).load()
+    entry = value["devices"].get(FOREGROUND)
     state = condition(entry) if entry is not None else "released"
     if state == "released":
-        raise Refused(f"nobody holds {FOREGROUND}; reserve it with the owner's approval before foreground work")
+        raise Refused(f"nobody holds {FOREGROUND}; " + ("eng reserves it for each run" if value.get(DEFERRED) else
+                      "before foreground work, agree a window with the owner and reserve it until the window ends"))
     if entry.get("ownerChatID") != owner:
         raise Refused(f"{FOREGROUND} is held by {entry.get('ownerChatID')} for {entry.get('purpose')}, expected "
                       f"release {entry.get('expectedReleaseBy')}; wait for its release")
     if state in ("orphan", "uncertain"):
         raise Refused(f"{FOREGROUND} is {state}; it needs attended recovery before foreground work")
+    if not value.get(DEFERRED) and window_ended(entry):
+        raise Refused(f"the window agreed for {FOREGROUND} ended at {entry.get('expectedReleaseBy')}; stop, restore "
+                      "the owner's settings and release")
     return require_window(FOREGROUND, entry)
 
 
@@ -1119,7 +1113,7 @@ def _notification_state(key, entry):
             f"`devices notifications silence {key}`, or {device_notifications.ask(key)}")
 
 
-def _describe(key, entry, line=()):
+def _describe(key, entry, line=(), window=True):
     state = condition(entry)
     parts = [f"{key}: {state}"]
     if state == "released":
@@ -1134,7 +1128,9 @@ def _describe(key, entry, line=()):
         if entry.get("approval"):
             approval = entry["approval"]
             parts.append(f"approved by {approval.get('by')} at {approval.get('at')} until {approval.get('until')}")
-        if key == FOREGROUND and approval_ended(entry):
+        if key == FOREGROUND and window and window_ended(entry):
+            parts.append("its window has ended; foreground actions are refused")
+        elif key == FOREGROUND and approval_ended(entry):
             parts.append("approval ended; foreground actions are refused")
         elif physical(entry.get("device")) and approval_ended(entry):
             parts.append("the approval an earlier reservation recorded has ended; work on the device is refused")
@@ -1175,8 +1171,9 @@ def status(record):
         print(f"Physical devices are reserved in {value[DEFERRED]}'s device record; this one refuses them")
     # The owner's screen first, held or free, so a session about to take it sees who has it.
     foreground = value["devices"].get(FOREGROUND)
-    print(_describe(FOREGROUND, foreground) if foreground is not None else
-          f"{FOREGROUND}: free; reserve it with the owner's approval before foreground work")
+    print(_describe(FOREGROUND, foreground, window=not value.get(DEFERRED)) if foreground is not None else
+          f"{FOREGROUND}: free; " + ("eng reserves it for each run" if value.get(DEFERRED) else
+                                     "agree a window with the owner, then reserve it until the window ends"))
     for key, entry in value["devices"].items():
         if key != FOREGROUND: print(_describe(key, entry, waiting(value, key)))
     for line in recoverable_lines(value["devices"]): print(line)
@@ -1233,11 +1230,9 @@ def main(argv=None):
     reserve.add_argument("--device")
     reserve.add_argument("--title")
     reserve.add_argument("--set", action="append", metavar="FIELD=JSON")
-    reserve.add_argument("--approved-by", help=f"who approved the window; {FOREGROUND} only, which requires it")
-    reserve.add_argument("--approved-at", help=f"when the owner approved, ISO 8601 with a time zone; {FOREGROUND} only")
-    reserve.add_argument("--approved-until", help="when the approval ends, ISO 8601 with a time zone, or released; "
-                         f"{FOREGROUND} only")
-    reserve.add_argument("--approval-words", help=f"the owner's words, quoted; {FOREGROUND} only")
+    # Refused since 2026-11-06: a reservation records no approval. Kept so the refusal can say why.
+    for option in ("--approved-by", "--approved-at", "--approved-until", "--approval-words"):
+        reserve.add_argument(option, help=argparse.SUPPRESS)
     update = commands.add_parser("update", help="change your own held entry")
     update.add_argument("key")
     update.add_argument("--owner", required=True)
@@ -1266,7 +1261,7 @@ def main(argv=None):
     release.add_argument("--frontmost", choices=FRONTMOST, help=f"required for {FOREGROUND}: whether the previous "
                          "frontmost app was restored, or the session no longer owned the foreground")
     release.add_argument("--apps-quit", help="required when the entry records launched apps: how they were quit")
-    check = commands.add_parser("check", help=f"refuse unless OWNER holds {FOREGROUND} within the owner's approval")
+    check = commands.add_parser("check", help=f"refuse unless OWNER holds {FOREGROUND}, on this Mac within its window")
     check.add_argument("--owner", default=os.environ.get(OWNER), help=f"the session; default ${OWNER}")
     recover = commands.add_parser("recover", help="attended release of an entry its owner cannot release")
     recover.add_argument("key")
@@ -1367,8 +1362,8 @@ def main(argv=None):
                                              frontmost=args.frontmost, apps_quit=args.apps_quit))
         elif args.action == "check":
             entry = require_foreground(args.owner, record)
-            print(f"{FOREGROUND}: held by {args.owner} for {entry.get('purpose')}, approved until "
-                  f"{entry['approval']['until']}")
+            print(f"{FOREGROUND}: held by {args.owner} for {entry.get('purpose')}, expected release "
+                  f"{entry.get('expectedReleaseBy')}")
         elif args.action == "recover":
             if args.build_host_unchecked is not None:
                 raise ValueError("--build-host-unchecked was --offload-unchecked's name until vocaro-engineering#58, "

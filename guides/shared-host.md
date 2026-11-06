@@ -2152,22 +2152,23 @@ device says so with `"here"`, so sending one to the second Mac is always an expl
 ## Attended Mac sessions
 
 Mac VoiceOver and foreground UI default to the [second Mac's foreground](second-mac-foreground.md),
-which eng reserves for each run with the owner's standing approval, not to this Mac. These rules
+which eng reserves for each run without asking the owner, not to this Mac. These rules
 are a method for a session on this Mac's foreground within a period the owner approved
 beforehand ([this Mac's foreground](second-mac-foreground.md#this-macs-foreground)); they grant
 nothing by themselves. The drivers' check below is the same on both Macs.
 
-Reserve the owner's foreground before taking it. The `mac-foreground` entry in the
-[device record](#device-reservations) stands for the screen, keyboard, pointer, focus and
-speech, and names no device. Reserving it records the owner's approval: who approved, when, and
-until a time or `released`, with the owner's words if given. No update changes the approval: a
-new window from the owner is a new reservation, after a release. Another session sees the holder
-in `devices status`, and its reservation is refused while the entry is held.
+Agree the window with the owner first, then reserve the foreground for it before taking it.
+The `mac-foreground` entry in the [device record](#device-reservations) stands for the screen,
+keyboard, pointer, focus and speech, and names no device. Like a physical device's, its
+reservation records no approval (owner's decision, 2026-11-06, vocaro-engineering#207): the
+record schedules it, one holder at a time, and `--release-by` is the end of the window the owner
+agreed. What the owner said is between the session and the owner, and `--approved-*` is refused.
+A new window from the owner is a new reservation, after a release. Another session sees the
+holder in `devices status`, and its reservation is refused while the entry is held.
 
 ```sh
 python3 -m vocaro_engineering.devices reserve mac-foreground --owner SESSION --revision N \
-  --purpose "Mac XCUITest of …" --release-by 2026-10-23T18:00:00Z --approved-by OWNER \
-  --approved-at 2026-10-23T15:02:00Z --approved-until 2026-10-23T18:00:00Z --approval-words "…"
+  --purpose "Mac XCUITest of …" --release-by 2026-10-23T18:00:00Z
 export VOCARO_DEVICE_OWNER=SESSION
 python3 -m vocaro_engineering.devices check      # at the start and before each action
 python3 -m vocaro_engineering.devices update mac-foreground --owner SESSION --revision N \
@@ -2179,12 +2180,14 @@ python3 -m vocaro_engineering.devices release mac-foreground --owner SESSION --r
 A foreground driver calls `devices check`, or `devices.require_foreground(owner)` from Python,
 at the start and before each key, activation or `set frontmost`. It refuses unless the session
 named by `--owner` or `VOCARO_DEVICE_OWNER` holds the entry, the entry is neither orphaned nor
-uncertain, and the approval has not ended. `eng run --here` checks a lane marked
+uncertain, and, on this Mac, its expected release has not passed. `eng run --here` checks a lane marked
 `"foreground": true` the same way, and `eng admit --foreground` a command; on the second Mac eng
 holds the entry for the run itself and names it in `VOCARO_DEVICE_OWNER`
-([running foreground work](second-mac-foreground.md#running-foreground-work)). A passed approval or expected
-release releases nothing: `status` reports it, the check refuses further foreground work, and
-the session stops, restores and releases. Record each app and test runner the session launches
+([running foreground work](second-mac-foreground.md#running-foreground-work)), and a run there may
+outlast its expected release. On this Mac a passed expected release releases nothing: `status`
+reports it, the check refuses further foreground work, and the session stops, restores and
+releases. A reservation made before 2026-11-06 that recorded an approval also stops once that
+approval ends. Record each app and test runner the session launches
 with `update --own PID`: `release` and `recover` wait until those have exited, and the release
 says whether the previous frontmost app was restored (`--frontmost restored`) or the session no
 longer owned the foreground (`not-ours`).

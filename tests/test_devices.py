@@ -111,8 +111,7 @@ class DeviceRecordTests(unittest.TestCase):
 
     def foreground(self, owner="session-a", revision=0, **options):
         return self.record.reserve(devices.FOREGROUND, owner=owner, revision=revision, purpose="attended Mac XCUITest",
-                                   release_by=options.pop("release_by", later()),
-                                   approval=options.pop("approval", approval()), **options)
+                                   release_by=options.pop("release_by", later()), **options)
 
     def cli(self, *arguments):
         with contextlib.redirect_stdout(StringIO()) as output, contextlib.redirect_stderr(StringIO()) as error:
@@ -382,7 +381,7 @@ class DeviceRecordTests(unittest.TestCase):
     def test_a_physical_device_is_reserved_with_no_approval(self):
         # The owner's decision of 2026-11-06: the record schedules a device and records no approval, which is
         # between the session and the owner.
-        with self.assertRaisesRegex(ValueError, "iPhone is a physical device, whose reservation records no approval"):
+        with self.assertRaisesRegex(ValueError, "a reservation of iPhone records no approval"):
             self.reserve(device=PHONE, approval=approval())
         self.assertFalse(self.path.exists())
         code, _output, error = self.cli("reserve", "iPhone", "--owner", "s", "--revision", "0", "--purpose", "p",
@@ -543,15 +542,17 @@ class DeviceRecordTests(unittest.TestCase):
             self.record.import_legacy([second, broken], by="session-x")
         self.assertEqual(self.path.read_bytes(), before)
 
-    def test_status_lists_the_mac_foreground_entry_free_then_with_its_holder_and_approval(self):
-        self.assertIn(f"{devices.FOREGROUND}: free", self.cli("status")[1])
-        entry = self.foreground(approval=approval(words="Use the screen for the Mac UI tests until 6"))
+    def test_status_lists_the_mac_foreground_entry_free_then_with_its_holder_and_window(self):
+        self.assertIn(f"{devices.FOREGROUND}: free; agree a window with the owner, then reserve it until the window "
+                      "ends", self.cli("status")[1])
+        entry = self.foreground()
         self.assertNotIn("device", entry)
-        self.assertEqual(entry["approval"]["words"], "Use the screen for the Mac UI tests until 6")
+        self.assertNotIn("approval", entry)
         code, output, _error = self.cli("status")
         self.assertEqual(code, 0)
-        self.assertIn(f"{devices.FOREGROUND}: held; owner session-a, state reserved", output)
-        self.assertIn(f"approved by owner at {entry['approval']['at']} until {entry['approval']['until']}", output)
+        self.assertIn(f"{devices.FOREGROUND}: held; owner session-a, state reserved, expected release "
+                      f"{entry['expectedReleaseBy']}", output)
+        self.assertNotIn("approved by", output)
 
     def held_by(self, pid, start, due):
         """A reserved simulator whose holder and expected release are these."""
@@ -596,17 +597,27 @@ class DeviceRecordTests(unittest.TestCase):
             self.foreground(owner="session-b", revision=entry["revision"])
         self.assertEqual(self.path.read_bytes(), before)
 
-    def test_the_approval_window_is_required_checked_and_never_changed(self):
-        invalid = [({"approval": None}, "owner's approval"), ({"device": PHONE}, "names no device"),
-                   ({"approval": {"by": "owner", "at": later(-1)}}, "by, at and until"),
-                   ({"approval": approval(at=later(5))}, "when the owner approved"),
-                   ({"approval": approval(until=later(-5))}, "until"),
-                   ({"approval": approval(until=later(20)), "release_by": later(30)}, "after the owner's approval ends")]
+    def test_a_foreground_reservation_records_no_approval_and_none_can_be_added(self):
+        # The owner's decision of 2026-11-06 (#207): mac-foreground is scheduled as the devices are.
+        invalid = [({"approval": approval()}, f"a reservation of {devices.FOREGROUND} records no approval"),
+                   ({"approval": approval(until="released")}, "records no approval"),
+                   ({"device": PHONE}, "names no device")]
         for options, message in invalid:
             with self.subTest(message), self.assertRaisesRegex(ValueError, message):
                 self.foreground(**options)
         self.assertFalse(self.path.exists())
-        entry = self.foreground(approval=approval(until="released"), release_by=later(600))
+        code, _output, error = self.cli("reserve", devices.FOREGROUND, "--owner", "s", "--revision", "0", "--purpose",
+                                        "p", "--release-by", later(), "--approved-by", "owner", "--approved-at",
+                                        later(-1), "--approved-until", later(60), "--approval-words", "until 6")
+        self.assertEqual(code, 2)
+        self.assertIn("records no approval", error)
+        self.assertFalse(self.path.exists())
+        code, output, error = self.cli("reserve", devices.FOREGROUND, "--owner", "s", "--revision", "0", "--purpose",
+                                       "p", "--release-by", later())
+        self.assertEqual(code, 0, error)
+        self.assertNotIn("approval", json.loads(output)["entry"])
+        self.path.unlink()
+        entry = self.foreground(release_by=later(600))
         for change in [{"approval": approval(until=later(600))}, {"ownedProcesses": []}]:
             with self.subTest(change=sorted(change)), self.assertRaisesRegex(ValueError, "itself"):
                 self.record.update(devices.FOREGROUND, owner="session-a", revision=entry["revision"], **change)
@@ -615,19 +626,42 @@ class DeviceRecordTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("itself", error)
 
-    def test_a_passed_approval_or_deadline_releases_nothing_and_refuses_foreground_work(self):
+    def test_a_passed_window_releases_nothing_and_refuses_foreground_work_on_this_mac(self):
         entry = self.foreground()
         self.assertEqual(devices.require_foreground("session-a")["ownerChatID"], "session-a")
+        self.assertEqual(self.cli("check", "--owner", "session-a")[1].strip(),
+                         f"{devices.FOREGROUND}: held by session-a for attended Mac XCUITest, expected release "
+                         f"{entry['expectedReleaseBy']}")
         with patch.object(devices, "datetime", Later):
             self.assertEqual(devices.condition(self.record.entry(devices.FOREGROUND)), "held")
-            with self.assertRaisesRegex(devices.Refused, "approval .* ended"):
+            with self.assertRaisesRegex(devices.Refused, f"window agreed for {devices.FOREGROUND} ended at"):
                 devices.require_foreground("session-a")
+            self.assertEqual(self.cli("check", "--owner", "session-a")[0], 2)
             with self.assertRaisesRegex(devices.Refused, "held by session-a"):
-                self.foreground(owner="session-b", revision=entry["revision"], release_by=later(300),
-                                approval=approval(until=later(600)))
+                self.foreground(owner="session-b", revision=entry["revision"], release_by=later(300))
             output = self.cli("status")[1]
         self.assertIn("overdue, which releases nothing", output)
-        self.assertIn("approval ended; foreground actions are refused", output)
+        self.assertIn("its window has ended; foreground actions are refused", output)
+
+    def test_on_the_second_mac_a_foreground_run_may_outlast_its_expected_release(self):
+        # The second Mac is not a workstation: eng reserves its foreground per run and no window binds it.
+        self.assertTrue(self.record.defer("workstation"))
+        self.assertIn(f"{devices.FOREGROUND}: free; eng reserves it for each run", self.cli("status")[1])
+        self.foreground()
+        with patch.object(devices, "datetime", Later):
+            self.assertEqual(devices.require_foreground("session-a")["ownerChatID"], "session-a")
+            output = self.cli("status")[1]
+        self.assertIn("overdue, which releases nothing", output)
+        self.assertNotIn("foreground actions are refused", output)
+
+    def test_an_older_foreground_reservation_stops_once_its_recorded_approval_ends(self):
+        self.foreground(release_by=later(120))
+        value = json.loads(self.path.read_text())
+        value["devices"][devices.FOREGROUND]["approval"] = approval(at=later(-90), until=later(-30))
+        self.path.write_text(json.dumps(value))
+        with self.assertRaisesRegex(devices.Refused, f"approval of {devices.FOREGROUND} ended at"):
+            devices.require_foreground("session-a")
+        self.assertIn("approval ended; foreground actions are refused", self.cli("status")[1])
 
     def test_the_foreground_check_refuses_other_sessions_and_orphans_on_any_runner(self):
         with self.assertRaisesRegex(devices.Refused, "nobody holds"):
@@ -729,8 +763,8 @@ class DeviceRecordTests(unittest.TestCase):
                  patch.object(cli, "source_identity", return_value={}), \
                  patch.object(cli, "refresh_policy", return_value=None), contextlib.redirect_stderr(StringIO()) as error:
                 return cli.main(["--project", str(project), "run", "--here", "ui"]), error.getvalue()
-        self.assertEqual(run("session-a"), (2, f"eng: nobody holds {devices.FOREGROUND}; reserve it with the owner's "
-                                               "approval before foreground work\n"))
+        self.assertEqual(run("session-a"), (2, f"eng: nobody holds {devices.FOREGROUND}; before foreground work, "
+                                               "agree a window with the owner and reserve it until the window ends\n"))
         self.foreground()
         for owner in ["session-b", None]:
             with self.subTest(owner=owner):

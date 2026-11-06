@@ -1,4 +1,5 @@
 import contextlib
+from datetime import datetime, timedelta
 from io import StringIO
 import json
 import os
@@ -17,6 +18,15 @@ from vocaro_engineering import cli, config, devices, foreground, offload_host, r
 import host_isolation
 from host_isolation import stretched
 from vocaro_engineering.voiceover import state as voiceover_state
+
+
+class Later(datetime):
+    """Past a slot's expected release: EXPECTED, three hours, plus one."""
+
+    @classmethod
+    def now(cls, tz=None):
+        return datetime.now(tz) + timedelta(seconds=foreground.EXPECTED + 3600)
+
 
 SECOND = "Trevors-MacBook-Pro-715"
 
@@ -66,7 +76,7 @@ class SlotTests(unittest.TestCase):
         # Nothing was taken.
         self.assertIsNone(self.record.entry(devices.FOREGROUND))
 
-    def test_a_run_holds_the_foreground_with_the_standing_approval_and_releases_it(self):
+    def test_a_run_holds_the_foreground_without_asking_and_releases_it(self):
         self.second_mac()
         with self.slot() as owner:
             entry = self.record.entry(devices.FOREGROUND)
@@ -75,7 +85,11 @@ class SlotTests(unittest.TestCase):
             self.assertEqual(devices.require_foreground(owner)["ownerChatID"], owner)
             self.assertEqual(devices.condition(entry), "active")
             self.assertEqual(entry["hostProcessIdentifier"], os.getpid())
-            self.assertEqual(entry["approval"], {**foreground.STANDING, "until": "released"})
+            # The second Mac is not a workstation: its reservation records no approval (#207).
+            self.assertNotIn("approval", entry)
+            # A run there may outlast its expected release.
+            with patch.object(devices, "datetime", Later):
+                self.assertEqual(devices.require_foreground(owner)["ownerChatID"], owner)
             self.assertEqual(entry["purpose"], "Project voiceover-mac")
         self.assertNotIn(devices.OWNER, os.environ)
         entry = self.record.entry(devices.FOREGROUND)
@@ -205,8 +219,7 @@ class SlotTests(unittest.TestCase):
     def test_a_run_waits_while_another_holds_the_foreground_and_takes_it_once_released(self):
         self.second_mac()
         held = self.record.reserve(devices.FOREGROUND, owner="other run", revision=0, purpose="Other voiceover-mac",
-                                   release_by=(time.strftime("%Y") + "-12-31T00:00:00+00:00"),
-                                   approval={**foreground.STANDING, "until": "released"})
+                                   release_by=(time.strftime("%Y") + "-12-31T00:00:00+00:00"))
         # The holder's release comes once this run says it waits, not after a time a slow host can outlast (#119);
         # until then, it takes nothing.
         waiting = threading.Event()
@@ -237,8 +250,7 @@ class SlotTests(unittest.TestCase):
     def test_a_run_that_waits_too_long_or_finds_an_orphan_takes_nothing(self):
         self.second_mac()
         held = self.record.reserve(devices.FOREGROUND, owner="other run", revision=0, purpose="Other voiceover-mac",
-                                   release_by=(time.strftime("%Y") + "-12-31T00:00:00+00:00"),
-                                   approval={**foreground.STANDING, "until": "released"})
+                                   release_by=(time.strftime("%Y") + "-12-31T00:00:00+00:00"))
         with self.assertRaisesRegex(TimeoutError, "held by other run for 0.2s"):
             with patch.object(voiceover_state, "_read") as read, patch.object(voiceover_state, "_toggle") as toggle:
                 # Fixed: the 0.2 s wait is the behavior under test, and the holder never releases.
@@ -408,7 +420,7 @@ class RoutingTests(unittest.TestCase):
         self.assertFalse(self.during.exists())
         later = lambda minutes: time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(time.time() + 60 * minutes))
         self.record.reserve(devices.FOREGROUND, owner="session-a", revision=0, purpose="approved VoiceOver",
-                            release_by=later(30), approval={"by": "owner", "at": later(-1), "until": later(60)})
+                            release_by=later(30))
         with patch.dict(os.environ, {devices.OWNER: "session-a"}):
             self.assertEqual(self.eng("run", "--here", "voiceover-mac")[0], 0)
         self.assertEqual(json.loads(self.during.read_text())["owner"], "session-a")
@@ -420,7 +432,7 @@ class RoutingTests(unittest.TestCase):
         self.assertEqual(status, 0, error)
         during = json.loads(self.during.read_text())
         self.assertEqual(during["entry"]["ownerChatID"], during["owner"])
-        self.assertEqual(during["entry"]["approval"]["by"], "owner")
+        self.assertNotIn("approval", during["entry"])
         self.assertTrue(during["entry"]["activeRun"])
         self.assertEqual(self.record.entry(devices.FOREGROUND)["state"], "released")
         # eng admit --foreground holds it the same way; --verify never sends foreground work.
