@@ -86,10 +86,24 @@ class Simctl:
             self.data(rest[0]).mkdir()
             (self.data(rest[0]) / "origin").write_text("erased")
         elif action == "boot": self.devices[rest[0]]["state"] = "Booted"
-        elif action == "spawn" and rest[1:2] == ("defaults",):
+        elif action == "spawn" and rest[1:2] == ("defaults",) and rest[3:5] == ("com.apple.VoiceOverTouch",
+                                                                                  "VoiceOverUseSoundEffects"):
             # VoiceOver's sound-cue switch, which reads 1 until it is written.
             if rest[2] == "write": self.devices[rest[0]]["cues"] = rest[-1]
             else: output = {"false": "0", "true": "1"}[self.devices[rest[0]].get("cues", "true")] + "\n"
+        elif action == "spawn" and rest[1:2] == ("defaults",):
+            # Any other setting lives in the data folder, as the simulator's preferences do: an erase clears it,
+            # a reset copies the template's, and a member that keeps its state keeps it. Unset, it reads as
+            # `defaults` says, with status 1.
+            path = self.data(rest[0]) / "defaults" / f"{rest[3]} {rest[4]}"
+            if rest[2] == "write":
+                path.parent.mkdir(exist_ok=True)
+                path.write_text({"false": "0", "true": "1"}.get(rest[-1], rest[-1]))
+            elif not path.exists():
+                return subprocess.CompletedProcess(arguments, 1, "", f"The domain/default pair of ({rest[3]}, "
+                                                                     f"{rest[4]}) does not exist")
+            elif rest[2] == "delete": path.unlink()
+            else: output = path.read_text() + "\n"
         elif action == "shutdown": self.devices[rest[0]]["state"] = "Shutdown"
         elif action == "delete":
             del self.devices[rest[0]]
@@ -545,6 +559,99 @@ class PoolTests(unittest.TestCase):
         self.assertEqual(simulator_pool.boot(self.pool, lease, 600), simulator_pool.evidence.UNMEASURED)
         self.assertFalse([call for call in self.simctl.named(udid) if call[0] == "spawn"])
         self.assertTrue(self.pool.release(lease, outcome="done"))
+
+    APP_ACCESSIBILITY = ("com.apple.Accessibility", "ApplicationAccessibilityEnabled")
+
+    def app_accessibility_calls(self, udid):
+        return [call[3] for call in self.simctl.named(udid)
+                if call[0] == "spawn" and call[2] == "defaults" and call[4:6] == self.APP_ACCESSIBILITY]
+
+    def test_a_boot_that_asks_for_app_accessibility_writes_it_on_every_take_and_reads_it_back(self):
+        udid = self.simctl.add("Project Duo 1")
+        for keep_state in (False, True, False):
+            with self.subTest(keep_state=keep_state):
+                lease = self.pool.take(DUO, RUNTIME, purpose="Hosted snapshots", keep_state=keep_state)
+                before = len(self.simctl.named(udid))
+                self.assertIsNone(simulator_pool.boot(self.pool, lease, 600, app_accessibility=True))
+                calls = self.simctl.named(udid)[before:]
+                status = calls.index(("bootstatus", udid, "-b"))
+                write = calls.index(("spawn", udid, "defaults", "write", *self.APP_ACCESSIBILITY, "-bool", "true"))
+                read = calls.index(("spawn", udid, "defaults", "read", *self.APP_ACCESSIBILITY))
+                # Once the boot has finished, on the member's data as this take left it.
+                self.assertTrue(status < write < read, calls)
+                self.assertEqual((self.simctl.data(udid) / "defaults" / " ".join(self.APP_ACCESSIBILITY)).read_text(), "1")
+                self.assertFalse([line for line in self.log if line.startswith("APP ACCESSIBILITY")], self.log)
+                self.assertTrue(self.pool.release(lease, outcome="done"))
+        # The erase of each default take cleared it, so each take wrote it again.
+        self.assertEqual(self.app_accessibility_calls(udid), ["write", "read"] * 3)
+
+    def test_app_accessibility_that_does_not_read_on_fails_the_boot(self):
+        # Negative controls: a write that fails, and one that leaves the key unset or off.
+        for failure in ({"spawn": lambda rest: (1, "", "spawn failed")},
+                        {"spawn": lambda rest: (0, "", "") if rest[2] == "write" else
+                         (1, "", "The domain/default pair does not exist")},
+                        {"spawn": lambda rest: (0, "0\n" if rest[2] == "read" else "", "")}):
+            with self.subTest(failure=failure):
+                self.simctl, self.log = Simctl(), []
+                self.pool = self.make("me")
+                self.simctl.add("Project Duo 1")
+                self.simctl.fail.update(failure)
+                lease = self.pool.take(DUO, RUNTIME, purpose="Hosted snapshots")
+                self.assertEqual(simulator_pool.boot(self.pool, lease, 600, app_accessibility=True), 1)
+                lines = [line for line in self.log if line.startswith("APP ACCESSIBILITY")]
+                self.assertEqual(len(lines), 1, self.log)
+                self.assertIn("Project Duo 1: could not be switched on, so a hosted test reads no system views", lines[0])
+                self.assertTrue(self.pool.release(lease, outcome="done"))
+
+    def test_a_boot_that_does_not_ask_leaves_app_accessibility_unset_and_removes_a_kept_one(self):
+        udid = self.simctl.add("Project Duo 1")
+        lease = self.pool.take(DUO, RUNTIME, purpose="Unit tests")
+        self.assertIsNone(simulator_pool.boot(self.pool, lease, 600))
+        # An erased or reset member cannot carry it, so nothing is spawned for it.
+        self.assertEqual(self.app_accessibility_calls(udid), [])
+        self.assertTrue(self.pool.release(lease, outcome="done"))
+        # An earlier holder that asked for it left it on a member the next take keeps.
+        self.simctl("spawn", udid, "defaults", "write", *self.APP_ACCESSIBILITY, "-bool", "true")
+        lease = self.pool.take(DUO, RUNTIME, purpose="Unit tests", keep_state=True)
+        self.assertIsNone(simulator_pool.boot(self.pool, lease, 600))
+        self.assertEqual(self.app_accessibility_calls(udid)[-2:], ["delete", "read"])
+        self.assertFalse((self.simctl.data(udid) / "defaults" / " ".join(self.APP_ACCESSIBILITY)).exists())
+        self.assertFalse([line for line in self.log if line.startswith("APP ACCESSIBILITY")], self.log)
+        self.assertTrue(self.pool.release(lease, outcome="done"))
+        # A kept member that never had it: the delete fails, the reading confirms it unset, and the boot counts.
+        lease = self.pool.take(DUO, RUNTIME, purpose="Unit tests", keep_state=True)
+        self.assertIsNone(simulator_pool.boot(self.pool, lease, 600))
+        self.assertFalse([line for line in self.log if line.startswith("APP ACCESSIBILITY")], self.log)
+        self.assertTrue(self.pool.release(lease, outcome="done"))
+        # The negative control: a key that will not go is logged, and the boot still counts, as nobody asked for it.
+        self.simctl("spawn", udid, "defaults", "write", *self.APP_ACCESSIBILITY, "-bool", "true")
+        self.simctl.fail["spawn"] = lambda rest: (0, "1\n" if rest[2] == "read" else "", "")
+        lease = self.pool.take(DUO, RUNTIME, purpose="Unit tests", keep_state=True)
+        self.assertIsNone(simulator_pool.boot(self.pool, lease, 600))
+        lines = [line for line in self.log if line.startswith("APP ACCESSIBILITY")]
+        self.assertEqual(len(lines), 1, self.log)
+        self.assertIn("an earlier holder's setting could not be removed", lines[0])
+        self.assertTrue(self.pool.release(lease, outcome="done"))
+
+    def test_the_take_command_switches_app_accessibility_on_only_when_asked(self):
+        udid = self.simctl.add("Project Duo 1")
+        with mock.patch.object(simulator_pool, "simctl", self.simctl), mock.patch.object(simulator_pool.signal, "signal"):
+            for arguments, expected in (([], []), (["--app-accessibility"], ["write", "read"])):
+                with self.subTest(arguments=arguments), redirect_stdout(StringIO()) as output, redirect_stderr(StringIO()):
+                    before = len(self.app_accessibility_calls(udid))
+                    status = simulator_pool.main(["--pool", "Project", "--owner", "me", "take", "--device", "iPhone-Duo",
+                                                  "--runtime", "iOS-27-1", *arguments])
+                    self.assertEqual((status, output.getvalue().strip()), (0, udid))
+                    self.assertEqual(self.app_accessibility_calls(udid)[before:], expected)
+                    self.assertTrue(self.make("me").release(self.make("me").held(udid), outcome="done"))
+            # The negative control: a setting that does not read on fails the take and releases the member.
+            self.simctl.fail["spawn"] = lambda rest: (0, "", "") if rest[2] == "write" else (1, "", "does not exist")
+            with redirect_stdout(StringIO()) as output, redirect_stderr(StringIO()) as error:
+                status = simulator_pool.main(["--pool", "Project", "--owner", "me", "take", "--device", "iPhone-Duo",
+                                              "--runtime", "iOS-27-1", "--app-accessibility"])
+            self.assertEqual((status, output.getvalue()), (1, ""))
+            self.assertIn("its app accessibility could not be switched on", error.getvalue())
+            self.assertEqual(devices.Record(self.path).entry("Project Duo 1")["state"], "released")
 
     def test_a_take_that_keeps_state_reserves_and_boots_without_erasing(self):
         booted = self.simctl.add("Project Duo 1", state="Booted")
