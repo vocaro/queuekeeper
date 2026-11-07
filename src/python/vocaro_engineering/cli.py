@@ -14,7 +14,7 @@ import time
 from . import __version__, app_builds, app_registrations, budgets, crash_alerts, device_pass, devices, disk, docs, evidence, evidence_offload, failure_records, foreground, github_artifacts, keychain, merge_queue, \
     notification_center, offload_host, parallel, processes, release, remote, resources, skills, spelling, storekit_config, toolkit_copy, xctest_shards
 from .config import TOOLKIT_ROOT, CAPABILITIES, DEFAULT_TOOLKIT, admission as admission_of, load, source_identity, \
-    stays, unlocked_screen
+    self_lane_warnings, stays, unlocked_screen
 from .resources import BUSY, FREE_WAIT
 from .simulators import matrix, pool as simulator_pool
 
@@ -1039,6 +1039,7 @@ def main(argv=None):
                                 "finds no pass of it and stops: add the lane or correct the name (guides/releasing.md, "
                                 "Two gates)")
             warnings += budgets.doctor_warnings(config)
+            warnings += self_lane_warnings(root, config)
             warnings += split_warnings(root, config)
             warnings += temporary_model_storage(root, config)
             warnings += unlinked_packages(root, config)

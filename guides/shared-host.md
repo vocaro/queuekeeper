@@ -37,6 +37,10 @@ run whose seconds are not meant as figures are heavy work. An exclusive request 
 admission is refused, so a lane whose run needs both is `self`, and its script admits each part,
 as BreezEPUB's `book-opening` and PDFReflowLib's `memory-platform-calibration` do; a lane group can
 be neither `self` nor run a `self` lane, since its one admission would hold the script's own.
+eng runs a `self` lane unadmitted and trusts its script, so `eng doctor` warns of one whose command
+neither calls `eng admit` in its own words nor runs a file of the checkout that does: such a lane
+would run its work outside admission. The check reads text, so it catches a lane that admits
+nothing, not one that admits some parts and runs others directly.
 A gate suite is heavy work, never exclusive: one that runs the project's suites side by side says
 `"wholeHost": true`, which keeps every other heavy job off its Mac while it runs
 ([heavy-work admission](#heavy-work-admission)).

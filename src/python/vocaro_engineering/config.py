@@ -135,6 +135,37 @@ def resource_of(name, lane):
     return "heavy" if resource == "light" else resource
 
 
+# A call of eng admit, as a shell script or a command's own words write it (`scripts/eng admit`), or as a
+# Python list of a command's words does (`[*eng, "admit", ...]`).
+ADMIT_CALL = re.compile(r"""\beng\b["' ,\])]*admit\b|["']admit["']""")
+
+
+def self_lane_warnings(root, config):
+    """eng doctor's warning for each self lane whose command neither calls eng admit in its own words nor runs
+    a file of the checkout that does: a self lane runs unadmitted, trusted to admit each of its parts, and one
+    that admits none runs its work outside admission (owner's decision, 2026-11-07, vocaro-engineering#200).
+    The check reads the text and cannot prove that every part is admitted; it catches a lane that admits nothing."""
+    warnings, root = [], Path(root)
+    for name, lane in sorted(config.get("lanes", {}).items()):
+        if not unadmitted(lane) or not isinstance(lane.get("command"), list): continue
+        words = [str(word) for word in lane["command"]]
+        if ADMIT_CALL.search(" ".join(words)): continue
+        # A file of the checkout: an interpreter by its absolute path, such as /opt/homebrew/bin/python3, is none.
+        files = [root / word for word in words if not word.startswith("-") and not Path(word).is_absolute()
+                 and (root / word).is_file()]
+        texts = []
+        for path in files:
+            try: texts.append(path.read_text(errors="replace"))
+            except OSError: pass
+        if any(ADMIT_CALL.search(text) for text in texts): continue
+        ran = f"the file it runs, {', '.join(path.relative_to(root).as_posix() for path in files)}," if files \
+            else "any file of the checkout it runs"
+        warnings.append(f"{name} is a self lane, which eng runs unadmitted, trusting it to admit each of its parts, "
+                        f"but neither its command nor {ran} calls eng admit, so its work runs outside admission: "
+                        "give it \"resource\": \"heavy\", or admit each part with eng admit (guides/shared-host.md)")
+    return warnings
+
+
 def unadmitted(lane):
     """Whether eng runs the lane, or group, without admission of its own: a self lane, whose script admits each of
     its parts."""
