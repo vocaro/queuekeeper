@@ -13,6 +13,7 @@ from unittest.mock import patch
 SOURCE = Path(__file__).resolve().parents[1] / "src/python"
 sys.path.insert(0, str(SOURCE))
 from vocaro_engineering import cli, evidence, resources
+from vocaro_engineering.parallel import SPLITS
 import host_isolation
 from host_isolation import stretched
 
@@ -236,6 +237,104 @@ class UnittestRunnerTests(unittest.TestCase):
             self.assertIn("== test_loader: OK (3 tests", output)
             self.assertIn("eng unittest: 4 tests (0 skipped) in 2 processes", output)
             self.assertEqual((root / "own").read_text(), (root / "one").read_text())
+
+    def selectable(self):
+        """Two modules whose tests each touch a marker named for themselves when they run."""
+        return self.suite(
+            module("test_alpha", """
+                class Landing(unittest.TestCase):
+                    def test_add(self): (HERE / "alpha.Landing.add").touch()
+                    def test_drop(self): (HERE / "alpha.Landing.drop").touch()
+                class LandingTail(unittest.TestCase):
+                    def test_add(self): (HERE / "alpha.LandingTail.add").touch()
+                class Other(unittest.TestCase):
+                    def test_add(self): (HERE / "alpha.Other.add").touch()
+            """),
+            module("test_beta", """
+                class Landing(unittest.TestCase):
+                    def test_keep(self): (HERE / "beta.Landing.keep").touch()
+            """))
+
+    def ran(self, root):
+        found = sorted(path.name for path in root.iterdir() if path.name.count(".") == 2)
+        for name in found: (root / name).unlink()
+        return found
+
+    def test_k_selects_tests_as_unittests_k_does_under_every_split(self):
+        root = self.selectable()
+        for split in SPLITS:
+            with self.subTest(split=split):
+                # A pattern without a * matches as a substring of the test id, in every module.
+                status, output = self.run_suite(root, "--split", split, "-k", "Landing")
+                self.assertEqual(status, 0, output)
+                self.assertIn("eng unittest: 4 tests (0 skipped)", output)
+                self.assertEqual(self.ran(root), ["alpha.Landing.add", "alpha.Landing.drop", "alpha.LandingTail.add",
+                                                  "beta.Landing.keep"])
+                # One with a * is an fnmatch pattern on the whole id, and -k repeats as an or.
+                status, output = self.run_suite(root, "--split", split, "-k", "*.Landing.test_drop",
+                                                "-k", "test_beta.*")
+                self.assertEqual(status, 0, output)
+                self.assertEqual(self.ran(root), ["alpha.Landing.drop", "beta.Landing.keep"])
+
+    def test_a_name_selects_a_module_class_or_test_and_what_it_holds(self):
+        root = self.selectable()
+        for split in SPLITS:
+            with self.subTest(split=split):
+                # A class name is not a prefix of the next class's: Landing leaves LandingTail out.
+                status, output = self.run_suite(root, "--split", split, "test_alpha.Landing")
+                self.assertEqual(status, 0, output)
+                self.assertIn("eng unittest: 2 tests (0 skipped)", output)
+                self.assertEqual(self.ran(root), ["alpha.Landing.add", "alpha.Landing.drop"])
+                status, output = self.run_suite(root, "--split", split, "test_beta", "test_alpha.Other.test_add")
+                self.assertEqual(status, 0, output)
+                self.assertEqual(self.ran(root), ["alpha.Other.add", "beta.Landing.keep"])
+                # With -k, a test must be under a name and match a pattern.
+                status, output = self.run_suite(root, "--split", split, "-k", "add", "test_alpha")
+                self.assertEqual(status, 0, output)
+                self.assertEqual(self.ran(root), ["alpha.Landing.add", "alpha.LandingTail.add", "alpha.Other.add"])
+
+    def test_a_selection_that_matches_nothing_fails_and_runs_nothing(self):
+        root = self.selectable()
+        for arguments, words in ((["-k", "NoSuchTest"], "is selected by -k NoSuchTest"),
+                                 (["-k", "keep", "test_alpha"], "is selected by -k keep and test_alpha"),
+                                 # A name that matches nothing fails the run though another matches.
+                                 (["test_alpha.Landing", "test_alpha.Landng"], "is or is under test_alpha.Landng"),
+                                 (["test_alpha.Land"], "is or is under test_alpha.Land")):
+            with self.subTest(arguments=arguments):
+                status, output = self.run_suite(root, *arguments)
+                self.assertEqual(status, 5, output)
+                self.assertIn(words, output)
+                self.assertNotIn("eng unittest: 0 tests", output)
+                self.assertEqual(self.ran(root), [])
+
+    def test_a_selection_reaches_a_module_that_runs_whole(self):
+        root = self.suite(module("test_loader", """
+            import importlib.util
+            class Own(unittest.TestCase):
+                def test_own(self): (HERE / "loader.Own.own").touch()
+            def load_tests(loader, tests, pattern):
+                spec = importlib.util.spec_from_file_location("loaded_tests", HERE / "probes" / "check.py")
+                loaded = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(loaded)
+                tests.addTests(loader.loadTestsFromModule(loaded))
+                return tests
+        """))
+        (root / "probes").mkdir()
+        (root / "probes/check.py").write_text(module("check", """
+            class Loaded(unittest.TestCase):
+                def test_one(self): (HERE.parent / "loaded.Loaded.one").touch()
+                def test_two(self): (HERE.parent / "loaded.Loaded.two").touch()
+        """)[1])
+        for split in SPLITS:
+            with self.subTest(split=split):
+                # Its process runs only the selected test, so its count matches discovery's.
+                status, output = self.run_suite(root, "--split", split, "-k", "test_one")
+                self.assertEqual(status, 0, output)
+                self.assertIn("== test_loader: OK (1 tests", output)
+                self.assertEqual(self.ran(root), ["loaded.Loaded.one"])
+                status, output = self.run_suite(root, "--split", split, "loaded_tests.Loaded.test_two")
+                self.assertEqual(status, 0, output)
+                self.assertEqual(self.ran(root), ["loaded.Loaded.two"])
 
     def test_a_module_imports_from_and_runs_in_the_directory_eng_runs_in(self):
         root = self.suite(module("test_invoked", """

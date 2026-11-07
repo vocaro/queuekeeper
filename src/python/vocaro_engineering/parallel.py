@@ -7,6 +7,8 @@ group fails when any lane failed, and is otherwise unmeasured when any lane was.
 """
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+import fnmatch
+import glob
 import json
 import os
 from pathlib import Path
@@ -164,35 +166,40 @@ def addressable(test):
 SPLITS = ("module", "class", "test")
 
 
-def shards(suite, split, origins=None):
+def shards(suite, split, origins=None, members=None):
     """{shard name: [test ids]}, in discovery order. A shard is a module, class or test, as split
     says, or finer where a module sets shard_by to "class" or "test": a module that alone bounds a
     run splits itself without every module splitting. Tests whose class or module sets serial_group
     share one shard, so they run one after another in one process. A module that failed to import is a shard of its own, which reports
     the import error when it runs. A module whose load_tests loads a module that a fresh process
     cannot import by name cannot be split: it runs whole in one shard, addressed by its own name,
-    which stands in for each of its tests."""
+    which stands in for each of its tests. A members dict gets each shard's test ids."""
     tests, origins = list(flattened(suite)), origins or {}
-    whole = {origins[id(test)] for test in tests if id(test) in origins and not addressable(test)}
     found = {}
+
+    def add(shard, entry, test):
+        found.setdefault(shard, []).append(entry)
+        if members is not None: members.setdefault(shard, []).append(test.id())
+
+    whole = {origins[id(test)] for test in tests if id(test) in origins and not addressable(test)}
     for test in tests:
         cls = type(test)
         module = sys.modules.get(cls.__module__)
         if cls.__module__ == "unittest.loader":
             # A _FailedTest's name is the module or package that failed to load.
             name = test.id().rsplit(".", 1)[-1]
-            found.setdefault(name, []).append(name)
+            add(name, name, test)
             continue
         origin = origins.get(id(test))
         if origin in whole:
             group = getattr(sys.modules.get(origin), "serial_group", None)
-            found.setdefault(f"group:{group}" if group else origin, []).append(origin)
+            add(f"group:{group}" if group else origin, origin, test)
             continue
         finest = max(split, getattr(module, "shard_by", "module"), key=SPLITS.index)
         group = getattr(module, "serial_group", None) if finest == "module" else \
             getattr(cls, "serial_group", getattr(module, "serial_group", None))
         unit = {"module": cls.__module__, "class": f"{cls.__module__}.{cls.__qualname__}", "test": test.id()}[finest]
-        found.setdefault(f"group:{group}" if group else unit, []).append(test.id())
+        add(f"group:{group}" if group else unit, test.id(), test)
     return found
 
 
@@ -200,17 +207,38 @@ RAN = re.compile(r"^Ran (\d+) tests? in ", re.M)
 RESULT = re.compile(r"^(OK|FAILED)\b.*$", re.M)
 
 
-# `python3 -m unittest` with its first argument, the top-level directory, first on sys.path.
-SHARD = "import sys, unittest; sys.path.insert(0, sys.argv.pop(1)); sys.argv[0] = 'python -m unittest'; " \
-    "unittest.main(module=None)"
+# `python3 -m unittest` with its first argument, the top-level directory, first on sys.path, and
+# its second, a JSON list of fnmatch patterns or null, as its loader's testNamePatterns: unlike
+# -k, a pattern is used as it is, so an escaped test id selects that test alone.
+SHARD = "import json, sys, unittest; sys.path.insert(0, sys.argv.pop(1)); " \
+    "unittest.defaultTestLoader.testNamePatterns = json.loads(sys.argv.pop(1)); " \
+    "sys.argv[0] = 'python -m unittest'; unittest.main(module=None)"
 
 
-def run_shard(name, tests, top, verbose, descriptors=(), timeout=PROCESS_LIMIT):
+def selection(patterns):
+    """unittest's -k patterns as fnmatch patterns: one without a * matches as a substring."""
+    return [pattern if "*" in pattern else f"*{pattern}*" for pattern in patterns]
+
+
+def selected(test, patterns, names):
+    """Whether a discovered test is selected: its id matches one of patterns, fnmatch patterns, when
+    there are any, and is one of names, or under one, when there are any. A module that failed to
+    import is always selected, so that its error reports as it would without a selection."""
+    if type(test).__module__ == "unittest.loader": return True
+    identity = test.id()
+    return (not patterns or any(fnmatch.fnmatchcase(identity, pattern) for pattern in patterns)) and \
+        (not names or any(identity == name or identity.startswith(f"{name}.") for name in names))
+
+
+def run_shard(name, tests, top, verbose, descriptors=(), timeout=PROCESS_LIMIT, chosen=None):
     """Run a shard's tests in a process of its own, which inherits descriptors and no other. It runs
     in this process's directory, with top and then that directory on its sys.path, as `python3 -m
-    unittest discover` does. A name listed more than once runs once. One still running after timeout
-    seconds is stopped, and its status is None."""
-    command = [sys.executable, "-c", SHARD, str(top), *(["-v"] if verbose else []), *dict.fromkeys(tests)]
+    unittest discover` does. A name listed more than once runs once. With chosen, the ids of the
+    shard's selected tests, a module the shard names whole runs only those. One still running after
+    timeout seconds is stopped, and its status is None."""
+    patterns = None if chosen is None else [glob.escape(identity) for identity in dict.fromkeys(chosen)]
+    command = [sys.executable, "-c", SHARD, str(top), json.dumps(patterns), *(["-v"] if verbose else []),
+               *dict.fromkeys(tests)]
     began = time.monotonic()
     status, output = processes.bounded(command, timeout=timeout, pass_fds=descriptors)
     summary = RESULT.search(output)
@@ -238,6 +266,12 @@ def unittest_main(argv):
                         help=f"seconds one process may run before it is stopped and left unmeasured "
                         f"(default {PROCESS_LIMIT})")
     parser.add_argument("-v", "--verbose", action="store_true")
+    parser.add_argument("-k", dest="selectors", action="append", default=[], metavar="PATTERN",
+                        help="run only tests whose id matches PATTERN, as unittest's -k does: an fnmatch "
+                        "pattern, or a substring when it has no *; repeat it to run tests matching any")
+    parser.add_argument("names", nargs="*", metavar="NAME",
+                        help="run only this module, class or test and what it holds, such as "
+                        "test_merge_queue.Landing; each must name a discovered test")
     args = parser.parse_args(argv)
     if args.jobs < 1: parser.error("--jobs needs at least 1")
     if args.timeout <= 0: parser.error("--timeout needs a positive number of seconds")
@@ -255,7 +289,24 @@ def unittest_main(argv):
             if test.id() not in seen:
                 seen.add(test.id())
                 tests.append(test)
-    found = shards(unittest.TestSuite(tests), args.split, loader.origins)
+    matching, selectors, chosen = " or ".join(patterns), selection(args.selectors), None
+    if selectors or args.names:
+        ids = {test.id() for test in tests}
+        unmatched = [name for name in args.names
+                     if not any(identity == name or identity.startswith(f"{name}.") for identity in ids)]
+        if unmatched:
+            print(f"eng unittest: no test discovered in {start} matching {matching} is or is under "
+                  f"{', '.join(unmatched)}", file=sys.stderr)
+            return NO_TESTS
+        tests = [test for test in tests if selected(test, selectors, args.names)]
+        if not any(type(test).__module__ != "unittest.loader" for test in tests):
+            print(f"eng unittest: no test discovered in {start} matching {matching} is selected by "
+                  + " and ".join(([f"-k {' or '.join(args.selectors)}"] if args.selectors else [])
+                                 + ([" or ".join(args.names)] if args.names else [])), file=sys.stderr)
+            return NO_TESTS
+        # Each shard's selected ids, which a module it names whole passes to its process.
+        chosen = {}
+    found = shards(unittest.TestSuite(tests), args.split, loader.origins, chosen)
     if not found:
         print(f"eng unittest: no tests found in {start} matching {' or '.join(patterns)}", file=sys.stderr)
         return NO_TESTS
@@ -266,7 +317,8 @@ def unittest_main(argv):
     descriptors = processes.held_locks(os.environ)
     began = time.monotonic()
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
-        futures = [pool.submit(run_shard, name, tests, top, args.verbose, descriptors, args.timeout)
+        futures = [pool.submit(run_shard, name, tests, top, args.verbose, descriptors, args.timeout,
+                               None if chosen is None else chosen[name])
                    for name, tests in found.items()]
         results = []
         for future in futures:

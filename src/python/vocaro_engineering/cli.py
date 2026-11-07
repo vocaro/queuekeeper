@@ -747,7 +747,7 @@ def main(argv=None):
         "record under .build/failures/ that no later run replaces, with a copy in the lane's results/, and list or "
         "prune the records by their rule: eng failures keep|list|prune; -h for the rest")
     commands.add_parser("unittest", help="run a unittest suite's modules in processes of their own, side by side: "
-        "eng unittest [-s START] [-p PATTERN] [-j JOBS] [-v]; eng unittest -h for the rest")
+        "eng unittest [-s START] [-p PATTERN] [-j JOBS] [-k PATTERN] [-v] [NAME ...]; eng unittest -h for the rest")
     commands.add_parser("xctest", help="build a Swift package's tests once and run its XCTest classes in xctest "
         "processes of their own, side by side, each reporting its skips: eng xctest [-j JOBS] [--filter REGEX]; "
         "eng xctest -h for the rest")
