@@ -174,11 +174,28 @@ def leftover_worktrees(toolkit, directories=None):
     return found
 
 
+def ignored_kept(path):
+    """The ignored paths in a worktree, collapsed as `git status --ignored` shows them, that are not Python's
+    caches: `git worktree remove` deletes them with it, and eng's results or an agent's evidence under
+    .build are not caches (agents/core.md). None when they cannot be read."""
+    listed = git(path, "status", "--porcelain", "--ignored", "--untracked-files=normal")
+    if listed is None: return None
+    return [line[3:] for line in listed.splitlines() if line.startswith("!! ")
+            and not line.rstrip("/").endswith("__pycache__") and not line.endswith(".pyc")]
+
+
 def leftover_line(path, head, count):
-    return (f"{path} is a leftover worktree of the toolkit: detached at {head[:12]}, {count} commit"
+    line = (f"{path} is a leftover worktree of the toolkit: detached at {head[:12]}, {count} commit"
             f"{'s' * (count != 1)} behind origin/main and already in it, clean and unused; a session pointed at it "
             f"through VOCARO_ENGINEERING_ROOT runs old toolkit code. `git worktree remove {path}` removes it "
             "(a landed leftover needs no owner, agents/core.md)")
+    kept = ignored_kept(path)
+    if kept is None:
+        return line + ", but its ignored files could not be read: look before removing it"
+    if kept:
+        return line + (f", and with it the ignored {', '.join(kept)}, which it deletes too: archive any results or "
+                       "evidence there first (guides/skills.md, Ignored files)")
+    return line
 
 
 def doctor_warnings(toolkit, directories=None):
