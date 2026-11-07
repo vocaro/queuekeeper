@@ -71,7 +71,7 @@ class DuoPoseTests(unittest.TestCase):
         tools.mkdir()
         for name, text in [("xcrun", FAKE_XCRUN), ("codesign", FAKE_CODESIGN)]:
             (tools / name).write_text(text)
-            (tools / name).chmod(0o755)
+            host_isolation.executable(tools / name)
         self.log = base / "calls.log"
         self.environment = {key: value for key, value in os.environ.items() if not key.startswith("FAKE_")}
         self.environment.update(PATH=f"{tools}{os.pathsep}{os.environ['PATH']}", FAKE_LOG=str(self.log))

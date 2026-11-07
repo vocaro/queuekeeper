@@ -255,7 +255,7 @@ class RemoteTests(unittest.TestCase):
         tools.mkdir()
         for name, text in [("ssh", FAKE_SSH), ("login-shell", FAKE_SHELL)]:
             (tools / name).write_text(text)
-            (tools / name).chmod(0o755)
+            host_isolation.executable(tools / name)
         # The second Mac's Python is the Mac's own when it has one: Python 3.9 without Homebrew.
         system = Path("/usr/bin/python3")
         (tools / "python3").symlink_to(system if sys.platform == "darwin" and system.exists() else sys.executable)
@@ -1206,7 +1206,7 @@ class RemoteTests(unittest.TestCase):
         real, ssh = self.tools / "fake-ssh", self.tools / "ssh"
         ssh.rename(real)
         ssh.write_text(DROPPING_SSH)
-        ssh.chmod(0o755)
+        host_isolation.executable(ssh)
         (self.tools / "drop.py").write_text(DROPPER)
         variables = {"FAKE_SSH_REAL": str(real), "FAKE_DROPPER": str(self.tools / "drop.py"),
                      "FAKE_PYTHON": sys.executable, "FAKE_DROP": str(marker)}
@@ -2147,7 +2147,7 @@ class RemoteTests(unittest.TestCase):
         real, ssh = self.tools / "fake-ssh", self.tools / "ssh"
         ssh.rename(real)
         ssh.write_text(DROPPING_SSH)
-        ssh.chmod(0o755)
+        host_isolation.executable(ssh)
         (self.tools / "drop.py").write_text(DROPPER)
         variables = {"FAKE_SSH_REAL": str(real), "FAKE_DROPPER": str(self.tools / "drop.py"),
                      "FAKE_PYTHON": sys.executable, "FAKE_DROP": str(marker)}
@@ -2241,7 +2241,7 @@ class RemoteTests(unittest.TestCase):
             target = os.readlink(python)
             python.unlink()
             python.write_text('#!/bin/sh\necho "zsh:1: command not found: python3" >&2\nexit 127\n')
-            python.chmod(0o755)
+            host_isolation.executable(python)
             stack.callback(lambda: (python.unlink(), python.symlink_to(target)))
 
         def provisioning(stack):
@@ -2311,7 +2311,7 @@ if [ "$3" = push ] && [ -n "$FAKE_PUSH" ]; then
 fi
 exec {shlex.quote(real)} "$@"
 """)
-        wrapper.chmod(0o755)
+        host_isolation.executable(wrapper)
 
     def raced(self, mode, *, races=1, only="", pushes=None):
         """eng run gate with racing_git's mode, from a new commit, so that each race starts afresh."""
@@ -2953,7 +2953,7 @@ exec {shlex.quote(real)} "$@"
         if not real.exists():
             ssh.rename(real)
             ssh.write_text(RELAYING_SSH)
-            ssh.chmod(0o755)
+            host_isolation.executable(ssh)
             (self.tools / "relay.py").write_text(RELAY)
         return patch.dict(os.environ, {"FAKE_SSH_REAL": str(real), "FAKE_RELAY": str(self.tools / "relay.py"),
                                        "FAKE_PYTHON": sys.executable, "FAKE_PASSED": str(self.passed_file()),
@@ -3599,7 +3599,7 @@ class RemoteSetupTests(unittest.TestCase):
         tools.mkdir()
         for name, text in [("ssh", SETUP_SSH), ("login-shell", PROFILE_SHELL)]:
             (tools / name).write_text(text)
-            (tools / name).chmod(0o755)
+            host_isolation.executable(tools / name)
         self.prefix = base / "homebrew"
         self.brew = self.prefix / "bin/brew"
         self.project = base / "example"
@@ -3622,7 +3622,7 @@ class RemoteSetupTests(unittest.TestCase):
     def install_homebrew(self):
         self.brew.parent.mkdir(parents=True)
         self.brew.write_text(FAKE_BREW)
-        self.brew.chmod(0o755)
+        host_isolation.executable(self.brew)
 
     def eng(self, *arguments):
         with contextlib.redirect_stdout(StringIO()) as output, contextlib.redirect_stderr(StringIO()) as error:
@@ -3733,7 +3733,7 @@ class SecondMacDoctorTests(unittest.TestCase):
         for name, text in [("ssh", DOCTOR_SSH), ("login-shell", FAKE_SHELL), ("xcode-select", FAKE_XCODE_SELECT),
                            ("xcrun", FAKE_XCRUN)]:
             (tools / name).write_text(text)
-            (tools / name).chmod(0o755)
+            host_isolation.executable(tools / name)
         system = Path("/usr/bin/python3")
         (tools / "python3").symlink_to(system if sys.platform == "darwin" and system.exists() else sys.executable)
         self.xcodes = base / "xcodes"
@@ -3985,7 +3985,7 @@ class ConnectionTests(unittest.TestCase):
         tools = Path(self.temp.name) / "bin"
         tools.mkdir()
         (tools / "ssh").write_text(SETTINGS_SSH)
-        (tools / "ssh").chmod(0o755)
+        host_isolation.executable(tools / "ssh")
         self.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.listener.bind(("127.0.0.1", 0))
         self.listener.listen(8)
@@ -4650,7 +4650,7 @@ class RemoteRuntimeTests(unittest.TestCase):
                            ("xcrun", RUNTIME_XCRUN.replace("PYTHON", sys.executable, 1)),
                            ("xcode-select", '#!/bin/sh\n[ "$1" = -p ] && echo "$FAKE_DEVELOPER"\n')]:
             (tools / name).write_text(text)
-            (tools / name).chmod(0o755)
+            host_isolation.executable(tools / name)
         system = Path("/usr/bin/python3")
         (tools / "python3").symlink_to(system if sys.platform == "darwin" and system.exists() else sys.executable)
         self.runtimes = base / "runtimes"
@@ -5542,7 +5542,7 @@ class ToolkitUpdateTests(unittest.TestCase):
         hang = self.base / "hang"
         marker = self.base / "hang.pid"
         hang.write_text(f"#!/bin/sh\necho $$ > {shlex.quote(str(marker))}\nexec sleep 300\n")
-        hang.chmod(0o755)
+        host_isolation.executable(hang)
         git(self.checkout, "remote", "set-url", "origin", "ssh://example.invalid/kit.git")
         began = time.monotonic()
         with patch.dict(os.environ, {"GIT_SSH_COMMAND": str(hang)}):

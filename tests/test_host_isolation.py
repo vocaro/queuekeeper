@@ -16,6 +16,8 @@ import host_isolation
 from host_isolation import stretched
 
 TESTS = Path(__file__).resolve().parent
+# A test marking a file executable itself, not through host_isolation.executable.
+MARKS_EXECUTABLE = re.compile(r"\.chmod\(\s*0o7|\.chmod\(.*S_IEXEC|os\.chmod\(")
 
 # Admits a heavy job with whatever namespace the environment names, after importing host_isolation
 # when the first argument says so, and prints the guard and slot directory the admission used.
@@ -73,6 +75,46 @@ class HostIsolationTests(unittest.TestCase):
             isolated.write_text("import unittest\nimport host_isolation\n")
             nested.write_text("def setUpModule():\n    import host_isolation\n")
             self.assertEqual(unisolated([forgot, isolated, nested]), ["test_forgot.py", "test_nested.py"])
+
+    def test_no_test_module_marks_a_file_executable_itself(self):
+        # A stand-in on PATH goes through host_isolation.executable, which checks that it runs (#214). This
+        # module's own negative control below makes one that cannot run, so it is not scanned.
+        found = [f"{module.name}:{number}" for module in sorted(TESTS.glob("test*.py")) if module.name != Path(__file__).name
+                 for number, line in enumerate(module.read_text().splitlines(), 1) if MARKS_EXECUTABLE.search(line)]
+        self.assertEqual(found, [])
+        for line in ("tool.chmod(0o755)", "path.chmod(path.stat().st_mode | stat.S_IEXEC)", "os.chmod(tool, 0o755)"):
+            self.assertTrue(MARKS_EXECUTABLE.search(line), line)
+        # A read-only directory is not a stand-in.
+        self.assertIsNone(MARKS_EXECUTABLE.search("self.root.chmod(0o500)"))
+
+    def test_a_stand_in_that_would_not_run_is_refused_before_the_real_tool_runs_in_its_place(self):
+        with tempfile.TemporaryDirectory() as directory:
+            tools = Path(directory)
+            # The negative control first: execvp runs the next match on PATH when a stand-in cannot run.
+            indented = tools / "true"
+            indented.write_text("    #!/bin/sh\nexit 3\n")
+            indented.chmod(0o755)
+            ran = subprocess.run(["true"], env={"PATH": f"{tools}:/usr/bin:/bin"})
+            self.assertEqual(ran.returncode, 0, "the real true ran in the unrunnable stand-in's place")
+            refused = {
+                "indented": "    #!/bin/sh\nexit 0\n",
+                "no-interpreter": "#!/no/such/interpreter\n",
+                "missing-on-path": "#!/usr/bin/env no-such-interpreter-214\n",
+                "python": f"#!{sys.executable}\nprint('a\n')\n",
+                "env-python": "#!/usr/bin/env python3\nif True:\nprint(1)\n",
+                "shell": "#!/bin/sh\nif then\n",
+            }
+            for name, text in refused.items():
+                with self.subTest(name=name), self.assertRaises(AssertionError):
+                    host_isolation.executable(tools / name, text)
+                self.assertFalse(os.access(tools / name, os.X_OK), name)
+            for name, text in {"sh": "#!/bin/sh\nexit 4\n", "python": f"#!{sys.executable}\nraise SystemExit(5)\n"}.items():
+                with self.subTest(name=name):
+                    made = host_isolation.executable(tools / f"good-{name}", text)
+                    self.assertEqual(subprocess.run([str(made)]).returncode, {"sh": 4, "python": 5}[name])
+            # Written beforehand, it is checked the same way.
+            (tools / "late").write_text("#!/bin/sh\nexit 6\n")
+            self.assertEqual(subprocess.run([str(host_isolation.executable(tools / "late"))]).returncode, 6)
 
     def test_this_process_resolves_admission_to_its_own_namespace(self):
         root = host_isolation.ROOT

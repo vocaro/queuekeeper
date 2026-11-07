@@ -193,7 +193,7 @@ class CommandTests(unittest.TestCase):
         self.addCleanup(lambda: subprocess.run(["rm", "-rf", str(self.bin)]))
         for name, text in [("scutil", FAKE_SCUTIL), ("security", FAKE_SECURITY), ("ssh", FAKE_SSH)]:
             (self.bin / name).write_text(text)
-            (self.bin / name).chmod(0o755)
+            host_isolation.executable(self.bin / name)
         self.log = self.bin / "log"
 
     def run_on(self, mac, command, shell=("/bin/sh",), remote_mac=None):

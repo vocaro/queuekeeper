@@ -3,7 +3,6 @@ from io import StringIO
 import json
 import os
 from pathlib import Path
-import stat
 import sys
 import tempfile
 import textwrap
@@ -113,7 +112,7 @@ class RunnerTests(unittest.TestCase):
         for name, body in (("swift", SWIFT), ("xcrun", XCRUN)):
             path = tools / name
             path.write_text(f"#!{sys.executable}\n{body}")
-            path.chmod(path.stat().st_mode | stat.S_IEXEC)
+            host_isolation.executable(path)
         for module in ("Alpha", "Beta", "Gamma"): (self.root / "bin" / f"{module}.xctest").mkdir(parents=True)
         self.package = self.root / "package"
         self.package.mkdir()

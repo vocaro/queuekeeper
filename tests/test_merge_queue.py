@@ -915,7 +915,7 @@ class HoldKinds(Fixture):
         [identifier] = self.add("a")
         hook = self.origin / "hooks/pre-receive"
         hook.write_text("#!/bin/sh\necho declined by the remote >&2\nexit 1\n")
-        hook.chmod(0o755)
+        host_isolation.executable(hook)
         with patch.object(mq, "pause") as slept, patch("builtins.print"): self.assertEqual(self.work(), 1)
         slept.assert_not_called()
         held = mq.Queue(self.repo).held()
@@ -963,7 +963,7 @@ class HoldKinds(Fixture):
         mq.Queue(self.repo).hold_file.unlink()
         hook = self.repo / ".git/hooks/pre-push"
         hook.write_text("#!/bin/sh\necho the reason >&2\nexit 1\n")
-        hook.chmod(0o755)
+        host_isolation.executable(hook)
         with patch("builtins.print"): self.assertEqual(self.work(), 1)
         held = mq.Queue(self.repo).held()
         self.assertTrue(held.startswith(f"{self.FOR_SESSION}the pre-push hook refused "), held)
@@ -1361,7 +1361,7 @@ class PrePushHooks(Fixture):
         path = (directory or self.repo / ".git/hooks") / "pre-push"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(f'#!/bin/sh\nread -r told\necho "$1 $2 $told" >> "{self.ran}"\n{body}\n')
-        path.chmod(0o755)
+        host_isolation.executable(path)
 
     def runs(self):
         return self.ran.read_text().splitlines() if self.ran.exists() else []
@@ -1415,7 +1415,7 @@ class PrePushHooks(Fixture):
         order = self.base / "order"
         wrapper = self.base / "receive-pack"
         wrapper.write_text(f'#!/bin/sh\necho connect >> "{order}"\nexec git-receive-pack "$@"\n')
-        wrapper.chmod(0o755)
+        host_isolation.executable(wrapper)
         run(self.repo, "git", "config", "remote.origin.receivepack", str(wrapper))
         self.hook(f'echo hook >> "{order}"')
         self.commit("a", "a")
@@ -3611,7 +3611,7 @@ class Refusals(Fixture):
         [identifier] = self.add("a")
         hook = self.origin / "hooks/pre-receive"
         hook.write_text("#!/bin/sh\necho no >&2\nexit 1\n")
-        hook.chmod(0o755)
+        host_isolation.executable(hook)
         self.assertEqual(self.work(), 1)
         self.assertEqual(self.state(identifier)["state"], "passed")
         self.assertIn("refused", mq.Queue(self.repo).held())
@@ -3647,7 +3647,7 @@ class Refusals(Fixture):
         [identifier] = self.add("a")
         hook = self.origin / "hooks/pre-receive"
         hook.write_text('#!/bin/sh\necho "fatal: the remote end hung up unexpectedly" >&2\nexit 1\n')
-        hook.chmod(0o755)
+        host_isolation.executable(hook)
         with patch.object(mq, "pause") as slept: self.assertEqual(self.work(), 1)
         self.assertEqual(self.state(identifier)["state"], "passed")
         self.assertIn("refused", mq.Queue(self.repo).held())

@@ -6,7 +6,6 @@ import json
 import os
 from pathlib import Path
 import signal
-import stat
 import subprocess
 import sys
 import tempfile
@@ -24,9 +23,7 @@ SOURCE = Path(__file__).resolve().parents[1] / "src/python"
 
 
 def executable(path, text):
-    path.write_text(text)
-    path.chmod(path.stat().st_mode | stat.S_IEXEC)
-    return path
+    return host_isolation.executable(path, text)
 
 
 class RegistrationTests(unittest.TestCase):

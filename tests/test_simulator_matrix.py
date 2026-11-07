@@ -267,7 +267,7 @@ class SimulatorMatrixTests(unittest.TestCase):
         tools.mkdir()
         for name, source in (("xcrun", XCRUN), ("xcodebuild", XCODEBUILD), ("xcodegen", XCODEGEN)):
             (tools / name).write_text(source)
-            (tools / name).chmod(0o755)
+            host_isolation.executable(tools / name)
         self.record = self.root / "record/device-handoff.json"
         self.others = set()  # devices another session holds booted
         self.environment = {"PATH": f"{tools}:{Path(sys.executable).parent}:/usr/bin:/bin", "FAKE_STATE": str(self.state),

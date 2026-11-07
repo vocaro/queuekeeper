@@ -21,6 +21,7 @@ import atexit
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import tempfile
 
@@ -42,6 +43,44 @@ def stretched(seconds):
     take or slot refused before it waits; and a timeout a fake receives or a test reads back, which no clock
     enforces. The stretch is finite, so a test that really hangs still fails at it (test_host_isolation)."""
     return seconds * max(1, os.getloadavg()[0] / (os.cpu_count() or 1))
+
+
+def executable(path, text=None):
+    """Make path an executable stand-in, writing text there first when given, and return it, once its script
+    is checked to run (#214). Every test that puts a stand-in for a tool on PATH makes it with this, and
+    test_host_isolation fails a module that marks a file executable itself.
+
+    A stand-in the kernel cannot run is not an error to subprocess or a shell: execvp treats the failure
+    as "not here" and runs the next match on PATH, the real tool. An indented `#!` line, a missing
+    interpreter or a script its interpreter refuses therefore runs the real xcrun, simctl or git under
+    the test; on 2026-11-06 a fake xcrun that did not parse created and booted real simulators while its
+    module hung. So the first line must be a `#!` naming an interpreter that exists, a Python script must
+    compile, and a shell script must pass its shell's -n."""
+    path = Path(path)
+    if text is not None: path.write_text(text)
+    text = path.read_text()
+    first, _, body = text.partition("\n")
+    if not first.startswith("#!"):
+        raise AssertionError(f"{path}: a stand-in's first line is its #! line, not {first[:60]!r}")
+    interpreter, *arguments = first[2:].split()
+    named = Path(arguments[0] if Path(interpreter).name == "env" and arguments else interpreter).name
+    if Path(interpreter).name == "env" and arguments:
+        if shutil.which(arguments[0]) is None:
+            raise AssertionError(f"{path}: its interpreter {arguments[0]} is not on PATH")
+    elif not os.access(interpreter, os.X_OK):
+        raise AssertionError(f"{path}: its interpreter {interpreter} cannot run")
+    if named.startswith("python"):
+        try:
+            compile(body, str(path), "exec")
+        except SyntaxError as error:
+            raise AssertionError(f"{path}: the stand-in does not compile: {error}") from None
+    elif named in ("sh", "bash", "zsh"):
+        shell = shutil.which(named) if Path(interpreter).name == "env" else interpreter
+        checked = subprocess.run([shell, "-n", str(path)], capture_output=True, text=True)
+        if checked.returncode:
+            raise AssertionError(f"{path}: {named} -n refuses the stand-in: {checked.stderr.strip()}")
+    path.chmod(0o755)
+    return path
 
 
 ROOT = Path(tempfile.mkdtemp(prefix="vocaro-test-host-")).resolve()
