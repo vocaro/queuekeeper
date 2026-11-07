@@ -2593,8 +2593,10 @@ exec {shlex.quote(real)} "$@"
                 for arguments in (["gate"], ["--offload-only", "gate"], ["--if-free", "gate"], ["pair"]):
                     status, output, error = self.run_here(*arguments)
                     self.assertEqual((status, error), (2, f"eng: {refused}\n"), output + error)
-                status, output, error = self.admit_in(self.project, "--verify", "--", *probe)
-                self.assertEqual((status, error), (2, f"eng: {refused}\n"), output + error)
+                # Plain eng admit chooses a Mac now too (the owner's decision, 2026-11-07), and --verify with it.
+                for options in (["--verify"], []):
+                    status, output, error = self.admit_in(self.project, *options, "--", *probe)
+                    self.assertEqual((status, error), (2, f"eng: {refused}\n"), output + error)
                 for arguments in (["remote", "run", "check"], ["remote", "admit", "--", *probe], ["doctor"]):
                     status, output, error = self.eng(*arguments)
                     self.assertEqual((status, output, error), (2, "", f"eng: {refused}\n"), arguments)
@@ -2604,7 +2606,7 @@ exec {shlex.quote(real)} "$@"
                 self.assertFalse(self.ran.exists())
                 self.assertFalse((self.home / remote.ROOT).exists())
         # A command that neither chooses a Mac nor reaches the second Mac never read it, and runs as before:
-        # a self lane, a lane that says here, --here, and eng admit without --verify, all here; and eng remote
+        # a self lane, a lane that says here, --here, and eng admit --here, all here; and eng remote
         # given --host, there.
         with patch.dict(os.environ, {"VOCARO_BUILD_HOST": "none"}):
             for arguments, status, place in [(["own"], 0, "own"), (["build"], 0, "build"), (["--here", "gate"], 0, "gate")]:
@@ -2612,7 +2614,7 @@ exec {shlex.quote(real)} "$@"
                 self.assertEqual(result[0], status, result)
                 self.assertEqual(receipt(place)["ranOn"], "this Mac")
                 self.assertNotIn("vocaro-engineering#58", result[2])
-            status, output, error = self.admit_in(self.project, "--", *probe)
+            status, output, error = self.admit_in(self.project, "--here", "--", *probe)
             self.assertEqual((status, self.ran_in()), (0, self.project.resolve()), output + error)
             status, output, error = self.eng("remote", "run", "--host", "fake", "check")
             self.assertEqual(status, 0, output + error)
@@ -2989,12 +2991,13 @@ exec {shlex.quote(real)} "$@"
         self.assertEqual(json.loads((self.project / ".build/engineering/remote/admit/source.json").read_text())["ranOn"],
                          "second Mac")
         self.assertFalse((self.project / ".build/engineering/admit").exists())
-        # The negative control: without --verify it runs here.
-        status, output, error = self.admit_in(self.project / "pkg", "--", *probe)
+        # The negative control: --here runs it here, offering it nowhere.
+        status, output, error = self.admit_in(self.project / "pkg", "--here", "--", *probe)
         self.assertEqual(status, 0, output + error)
         self.assertEqual(self.ran_in(), (self.project / "pkg").resolve())
         receipt = json.loads((self.project / ".build/engineering/admit/source.json").read_text())
-        self.assertEqual((receipt["ranOn"], receipt["hereBecause"]), ("this Mac", "eng admit runs here without --verify"))
+        self.assertEqual((receipt["ranOn"], receipt["hereBecause"]), ("this Mac", "eng admit --here"))
+        self.assertNotIn("remote: sending", error)
 
     def test_admit_verify_sends_a_command_whose_paths_hold_a_uuid_to_the_second_mac(self):
         # A session's scratchpad path holds its UUID (#116), which names no simulator, nor does one in another word.
@@ -3023,9 +3026,10 @@ exec {shlex.quote(real)} "$@"
                  # A hardware UDID that no entry of this Mac's record holds, as #57 refuses it without --device.
                  (self.project, [f"platform=iOS,id={PHONE}"], f"it names the hardware UDID {PHONE}"),
                  (self.project, [], "fake cannot be reached")]
-        for directory, words, said in cases:
+        # Plain eng admit, which offers the command to the second Mac first, and --verify, its synonym, alike.
+        for (directory, words, said), options in zip(cases, [["--verify"], *[[]] * (len(cases) - 1)]):
             with self.subTest(said), patch.dict(os.environ, {"FAKE_UNREACHABLE": "1"} if "reached" in said else {}):
-                status, output, error = self.admit_in(directory, "--verify", "--", *probe, *words)
+                status, output, error = self.admit_in(directory, *options, "--", *probe, *words)
                 self.assertEqual(status, 0, output + error)
                 self.assertEqual(self.ran_in(), directory.resolve())
                 self.assertIn(f"eng: running the command on this Mac: {said}", error)
@@ -3033,13 +3037,15 @@ exec {shlex.quote(real)} "$@"
                 self.assertEqual(receipt["ranOn"], "this Mac")
                 self.assertIn(said, receipt["hereBecause"])
         self.assertFalse((self.home / remote.ROOT / "checkouts").exists())
-        # Nested in an admission, it runs inside it, here.
-        inner = [sys.executable, str(self.toolkit / "bin/eng"), "--project", str(self.project), "admit", "--verify",
-                 "--", *probe]
-        status, output, error = self.admit_in(self.project, "--", "/bin/sh", "-c", f"exec {shlex.join(inner)} 2>/dev/null")
-        self.assertEqual(status, 0, output + error)
-        self.assertEqual(self.ran_in(), self.project.resolve())
-        self.assertFalse((self.home / remote.ROOT / "checkouts").exists())
+        # Nested in an admission, it runs inside it, here, with --verify or without.
+        for options in (["--verify"], []):
+            with self.subTest(nested=options):
+                inner = [sys.executable, str(self.toolkit / "bin/eng"), "admit", *options, "--", *probe]
+                status, output, error = self.admit_in(self.project, "--here", "--", "/bin/sh", "-c",
+                                                      f"exec {shlex.join(inner)} 2>/dev/null")
+                self.assertEqual(status, 0, output + error)
+                self.assertEqual(self.ran_in(), self.project.resolve())
+                self.assertFalse((self.home / remote.ROOT / "checkouts").exists())
         # A misconfigured second Mac stops it, and nothing runs here.
         shutil.rmtree(self.project / ".build/engineering/admit")
         self.ran.unlink()
@@ -3047,8 +3053,154 @@ exec {shlex.quote(real)} "$@"
             status, output, error = self.admit_in(self.project, "--verify", "--", *probe)
         self.assertEqual(status, remote.MISCONFIGURED, output + error)
         self.assertFalse(self.ran.exists())
-        self.assertIn("then `eng admit` without --verify", error)
+        self.assertIn("then `eng admit --here`", error)
         self.assertFalse((self.project / ".build/engineering/admit").exists())
+
+    def test_plain_admit_goes_to_the_second_mac_first_and_here_keeps_it_on_this_mac(self):
+        # The owner's decision, 2026-11-07: eng admit without --verify is offered as a lane is, the second Mac first.
+        probe = self.probe()
+        status, output, error = self.admit_in(self.project, "--", *probe)
+        self.assertEqual(status, 0, output + error)
+        self.assertEqual(self.ran_in(), self.checkout(0).resolve())
+        receipt = json.loads((self.project / ".build/engineering/remote/admit/source.json").read_text())
+        self.assertEqual((receipt["ranOn"], receipt["host"]), ("second Mac", "fake"))
+        self.assertFalse((self.project / ".build/engineering/admit").exists())
+        # Its build products stayed there, which one line says, naming --here.
+        self.assertIn(f"build products and other files Git ignores stayed in {self.checkout(0)}", error)
+        self.assertIn("`eng admit --here` runs it on this Mac", error)
+        # --here keeps it on this Mac, and says nothing of the second Mac.
+        status, output, error = self.admit_in(self.project, "--here", "--", *probe)
+        self.assertEqual(status, 0, output + error)
+        self.assertEqual(self.ran_in(), self.project.resolve())
+        receipt = json.loads((self.project / ".build/engineering/admit/source.json").read_text())
+        self.assertEqual((receipt["ranOn"], receipt["hereBecause"]), ("this Mac", "eng admit --here"))
+        self.assertNotIn("remote: ", error)
+        self.assertNotIn("build products", error)
+        # The second Mac busy, plain eng admit runs here, and the receipt says why.
+        shutil.rmtree(self.project / ".build/engineering/admit")
+        with patch.dict(os.environ, {"FAKE_BUSY_LIMIT": "0"}):
+            status, output, error = self.admit_in(self.project, "--", *probe)
+        self.assertEqual(status, 0, output + error)
+        self.assertEqual(self.ran_in(), self.project.resolve())
+        receipt = json.loads((self.project / ".build/engineering/admit/source.json").read_text())
+        self.assertTrue(receipt["hereBecause"].startswith("the second Mac is busy"), receipt)
+        self.assertNotIn("build products", error)
+        # --here and --verify contradict each other.
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(StringIO()):
+            self.admit_in(self.project, "--here", "--verify", "--", *probe)
+
+    def self_lane(self, name, inner):
+        """Add a self lane whose script runs `eng admit` with inner's words twice, as a build and a run of it."""
+        settings = json.loads((self.project / "engineering.json").read_text())
+        admit = shlex.join([sys.executable, str(self.toolkit / "bin/eng"), "admit", *inner])
+        settings["lanes"][name] = {"resource": "self", "command": ["/bin/sh", "-c", f"{admit} && {admit}"]}
+        (self.project / "engineering.json").write_text(json.dumps(settings))
+        commit_all(self.project)
+
+    def test_a_self_lanes_parts_stay_on_the_mac_where_the_lane_runs(self):
+        probe = self.probe()
+        self.self_lane("parts", ["--", *probe])
+        status, output, error = self.run_here("parts")
+        self.assertEqual(status, 0, output + error)
+        # Both parts ran here, in the checkout, and nothing went to the second Mac.
+        self.assertEqual(self.ran.read_text().splitlines(), [str(self.project.resolve())] * 2)
+        self.assertFalse((self.home / remote.ROOT / "checkouts").exists())
+        receipt = json.loads((self.project / ".build/engineering/admit/source.json").read_text())
+        self.assertEqual(receipt["ranOn"], "this Mac")
+        self.assertTrue(receipt["hereBecause"].startswith("a part of the self lane parts, "), receipt)
+        # The mark is the lane's run's alone.
+        self.assertNotIn(cli.SELF_LANE, os.environ)
+        # The negative control: the same command, admitted outside a self lane, goes to the second Mac.
+        status, output, error = self.admit_in(self.project, "--", *probe)
+        self.assertEqual(status, 0, output + error)
+        self.assertEqual(self.ran_in(), self.checkout(0).resolve())
+        # The category eng admissions usage counts each under.
+        self.assertEqual(resources.placed(resources.read_entry(json.dumps({
+            "time": "2026-11-07T00:00:00+00:00", "event": "admitted", "waited": 0, "identity": "a", "kind": "heavy",
+            "label": "x",
+            "placement": {"offered": False, "because": receipt["hereBecause"]}}))), ("never", "a self lane's part"))
+
+    def edits(self, *more):
+        """A command that edits the checkout it runs in, in files Git tracks, does not ignore, and ignores."""
+        return [sys.executable, "-c", "import os, pathlib, sys\n"
+                "pathlib.Path('pkg/README.md').write_text('a package, formatted\\n')\n"
+                "pathlib.Path('pkg/generated.bin').write_bytes(bytes(range(256)))\n"
+                "pathlib.Path('gone.txt').unlink()\n"
+                "pathlib.Path('.build').mkdir(exist_ok=True); pathlib.Path('.build/product').write_text('built')\n"
+                "for name in sys.argv[2:]: pathlib.Path(name).write_text('there\\n')\n"
+                "edit = os.environ.get('EDIT_HERE_TOO')\n"
+                "if edit: pathlib.Path(edit).write_text('a session edited this meanwhile\\n')\n"
+                "raise SystemExit(int(sys.argv[1]))", *more]
+
+    def test_what_admit_changed_on_the_second_mac_comes_back_and_is_applied_here(self):
+        (self.project / "gone.txt").write_text("to be deleted\n")
+        commit_all(self.project)
+        # Its exit status stays the command's, a failure's too: a formatter that failed still made its edits.
+        for code in (0, 4):
+            with self.subTest(code=code):
+                git(self.project, "reset", "-q", "--hard", "HEAD")
+                git(self.project, "clean", "-q", "-f", "-d")
+                status, output, error = self.admit_in(self.project, "--", *self.edits(str(code)))
+                self.assertEqual(status, code, output + error)
+                self.assertEqual((self.project / "pkg/README.md").read_text(), "a package, formatted\n")
+                self.assertEqual((self.project / "pkg/generated.bin").read_bytes(), bytes(range(256)))
+                self.assertFalse((self.project / "gone.txt").exists())
+                self.assertIn("eng: applied here what the command changed on the second Mac: ", error)
+                # The index here is the session's: the changes are in the working tree alone.
+                self.assertEqual(git(self.project, "diff", "--cached", "--name-only"), "")
+                # Ignored products stayed there, and the checkout there is clean for the next run, at slot 0 again.
+                self.assertFalse((self.project / ".build/product").exists())
+                self.assertEqual((self.checkout(0) / ".build/product").read_text(), "built")
+                self.assertEqual(git(self.checkout(0), "status", "--porcelain"), "")
+                self.assertNotIn("passing over", error)
+        # The negative control: a command that changes nothing applies nothing.
+        git(self.project, "reset", "-q", "--hard", "HEAD")
+        git(self.project, "clean", "-q", "-f", "-d")
+        status, output, error = self.admit_in(self.project, "--", sys.executable, "-c", "pass")
+        self.assertEqual(status, 0, output + error)
+        self.assertNotIn("applied here", error)
+        self.assertEqual(git(self.project, "status", "--porcelain"), "")
+
+    def test_changes_that_cannot_be_applied_keep_the_patch_and_exit_unapplied(self):
+        (self.project / "gone.txt").write_text("to be deleted\n")
+        commit_all(self.project)
+        # out.txt is ignored here alone, so the tree sent lacks it, and the second Mac's command creates it.
+        (self.project / ".git/info/exclude").write_text("out.txt\n")
+        (self.project / "out.txt").write_text("this Mac's own\n")
+        status, output, error = self.admit_in(self.project, "--", *self.edits("0", "out.txt"))
+        self.assertEqual(status, remote.UNAPPLIED, output + error)
+        kept = sorted((self.project.resolve() / remote.UNAPPLIED_DIRECTORY).glob("*.patch"))
+        self.assertEqual(len(kept), 1, error)
+        self.assertIn(f"eng: the patch is {kept[0]}", error)
+        self.assertIn("git apply refused it", error)
+        # git apply applies all of it or none: nothing of it reached the tree here.
+        self.assertEqual((self.project / "out.txt").read_text(), "this Mac's own\n")
+        self.assertEqual((self.project / "pkg/README.md").read_text(), "a package\n")
+        self.assertTrue((self.project / "gone.txt").exists())
+        self.assertIn(b"pkg/generated.bin", kept[0].read_bytes())
+        self.assertEqual(git(self.checkout(0), "status", "--porcelain"), "")
+        # The patch kept applies once the tree allows it.
+        (self.project / "out.txt").unlink()
+        subprocess.run(["git", "apply", "--binary", str(kept[0])], cwd=self.project, check=True)
+        self.assertEqual((self.project / "pkg/README.md").read_text(), "a package, formatted\n")
+
+    def test_changes_are_not_applied_once_the_tree_here_changed_after_it_was_sent(self):
+        (self.project / "gone.txt").write_text("to be deleted\n")
+        commit_all(self.project)
+        notes = self.project / "notes.txt"
+        # The command, running there, stands in for a session that edits the checkout here meanwhile.
+        with patch.dict(os.environ, {"EDIT_HERE_TOO": str(notes)}):
+            status, output, error = self.admit_in(self.project, "--", *self.edits("0"))
+        self.assertEqual(status, remote.UNAPPLIED, output + error)
+        self.assertIn("the working tree here changed after", error)
+        self.assertIn("notes.txt", error)
+        # The session's edit stays, and none of the command's changes were applied over it.
+        self.assertEqual(notes.read_text(), "a session edited this meanwhile\n")
+        self.assertEqual((self.project / "pkg/README.md").read_text(), "a package\n")
+        self.assertTrue((self.project / "gone.txt").exists())
+        kept = sorted((self.project.resolve() / remote.UNAPPLIED_DIRECTORY).glob("*.patch"))
+        self.assertEqual(len(kept), 1, error)
+        self.assertIn(f"eng: the patch is {kept[0]}", error)
 
     def test_the_toolkit_runs_itself_without_a_second_checkout(self):
         settings = json.loads((self.toolkit / "engineering.json").read_text())

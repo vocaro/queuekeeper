@@ -1352,8 +1352,12 @@ USAGE_WINDOW = 3 * 3600
 # died unrecorded, and counts as running no longer: lanes' time limits are 2 h by default (processes.DEFAULT_LIMIT).
 UNENDED_SECONDS = 12 * 3600
 # Why work that eng never offered to the second Mac runs here, as cli's placement reasons say it, by the category
-# usage counts it under.
+# usage counts it under. Until the owner's decision of 2026-11-07, eng admit without --verify ran here, and log lines
+# from then still say so; it goes to the second Mac first now, unless one of cli.here_because's reasons keeps it here.
 NOT_OFFERED = [("eng admit runs here without --verify", "eng admit without --verify"),
+               ("eng admit --here", "eng admit --here"),
+               ("a part of the self lane ", "a self lane's part"),
+               ("foreground work runs on the Mac", "foreground work"),
                ("--here", "eng run --here"), ("--serial", "eng run --serial"),
                ("the lane says: ", "a lane that stays on this Mac"), ("its lane ", "a lane that stays on this Mac"),
                ("nested in the admission it inherits", "nested in an admission it inherits")]

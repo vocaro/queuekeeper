@@ -28,7 +28,7 @@ session and the queue share one store, outside every checkout and outside Xcode'
     apps/NAME/logs/            each build's log
     apps/NAME/lock             held by a keep while it builds, so that one build at a time uses source and derived
 
-A build runs through `eng admit`, here, since its product is this Mac's. `eng app run` opens the newest kept Mac
+A build runs through `eng admit --here`, on this Mac, since its product is this Mac's. `eng app run` opens the newest kept Mac
 build, or with --iphone or --ipad installs the newest kept device build on that paired device and launches it,
 under the device's reservation as `eng device-pass` takes one: in turn, first come first served, or under a
 reservation the session holds. It checks no approval: a session runs it on the owner's iPhone only when he has
@@ -342,7 +342,9 @@ def build(root, store, config, platform, commit, *, admit=None):
     derived = store.derived(platform)
     command = build_command(app, platform, derived)
     say(f"building {platform} at {commit[:12]}; log {log}")
-    admit = admit or (lambda words: [sys.executable, str(source / "scripts/eng"), "admit", "--time-limit",
+    # --here: the build's product is this Mac's, kept in the store and run here (eng admit offers a command to the
+    # second Mac first otherwise).
+    admit = admit or (lambda words: [sys.executable, str(source / "scripts/eng"), "admit", "--here", "--time-limit",
                                      str(BUILD_LIMIT), "--", *words])
     try:
         status = processes.run(admit(command), cwd=directory, log_path=log, timeout=BUILD_LIMIT * 4)

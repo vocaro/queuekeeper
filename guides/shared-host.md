@@ -490,7 +490,8 @@ configuration's earlier names ([earlier names](#earlier-names)).
 python3 scripts/eng run LANE [-- ARGUMENTS]            # a heavy lane: whichever Mac has spare capacity, the second Mac first
 python3 scripts/eng run --here LANE                    # this Mac
 python3 scripts/eng run --offload-only LANE            # the second Mac if it can start it now, never here
-python3 scripts/eng admit --verify -- COMMAND          # a test or build: the second Mac, as a lane goes
+python3 scripts/eng admit -- COMMAND                   # any other heavy command: the second Mac first, as a lane goes
+python3 scripts/eng admit --here -- COMMAND            # this Mac: a command whose products the session uses here
 python3 scripts/eng remote run LANE [-- ARGUMENTS]     # any lane, on the second Mac
 python3 scripts/eng remote admit [--exclusive | --model] -- COMMAND
 python3 scripts/eng remote passed LANE [--commit REV]
@@ -505,7 +506,10 @@ unless it says why it stays on this Mac, as `"here": "REASON"`, which configurat
 requires to be a nonempty reason, and runs on this Mac when the second Mac is at capacity (the
 owner's decision, 2026-11-07). A lane says `here` when it needs a physical device, or a measurement
 tied to this Mac's hardware, such as goldens rendered on this Mac's GPU. A `self` lane runs where
-it starts, and its script's `eng admit` commands run there.
+it starts, and its script's `eng admit` commands run there: its parts share build products, a build
+and then an exclusive timed run of what was built, so `eng run` sets `VOCARO_SELF_LANE` to the
+lane's name in its command's environment, and each `eng admit` under it stays on that Mac, its
+receipt's `hereBecause` saying `a part of the self lane LANE, …`.
 A foreground lane, which takes the screen, goes to the second Mac and only there, where eng holds
 the second Mac's foreground for it ([second Mac foreground](second-mac-foreground.md)). Simulator
 lanes and background Mac UI lanes go to the second Mac like the rest, and a lane's first run there is its
@@ -572,9 +576,10 @@ guaranteed slots admitted the second gate whatever the load, and 8 of 12 gates t
 ended with no verdict; the rule above is what that cost.
 
 "The second Mac first" orders the offer; it does not keep work off this Mac. Some work is never
-offered: `eng admit` without `--verify`, `self` lanes, `--here` runs and lanes that say why they
-stay here run where they start, and the receipt's `hereBecause` says so. Light lanes were never
-offered until 2026-11-07; they are now, as every lane is. Offered work fills
+offered: `eng admit --here`, `self` lanes and the `eng admit` parts their scripts run, `--here` runs,
+foreground work and lanes that say why they stay here run where they start, and the receipt's
+`hereBecause` says so. Light lanes and `eng admit` without `--verify` were never offered until
+2026-11-07; they are now, as every lane is (the owner's decision, 2026-11-07). Offered work fills
 the second Mac's guaranteed slots first, so a whole-host lane, such as a gate, which needs all of
 them free, seldom finds them free there and starts on this Mac instead. On 2026-11-06 this
 Mac's fan ran while the second Mac's stayed quiet, yet the second Mac was 97% busy and had run
@@ -583,8 +588,9 @@ gate, for 84% of them; it took hand scripting to show it. Judge a Mac's use by i
 its fan: `eng admissions usage` shows both Macs' capacity now side by side, with whether each has
 room for a heavy and for a whole-host lane, the share of the last 3 hours (`--since` and `--until`
 set another period) each Mac spent at each count of admitted heavy jobs, and this Mac's admissions
-by why they ran here: never offered (`eng admit` without `--verify`, `eng run --here`, a lane that
-says `here`, nested work) or offered and declined, with the second Mac's reason. Admission lines
+by why they ran here: never offered (`eng admit --here`, a self lane's part, foreground work,
+`eng run --here`, a lane that says `here`, nested work, and in lines from before 2026-11-07
+`eng admit` without `--verify`) or offered and declined, with the second Mac's reason. Admission lines
 record their placement from 2026-11-07 on, and older ones count as unrecorded under their labels.
 A `self` lane takes no admission of its own and is not counted; the parts its script admits are.
 
@@ -679,7 +685,7 @@ after COMMIT was sent` with the changed paths, rather than run a tree other than
 ([vocaro-engineering#79](https://github.com/vocaro/vocaro-engineering/issues/79)). It holds a
 toolkit snapshot it sent to the same rule: `the toolkit's working tree changed after COMMIT was
 sent`. Restore the tree or run the lane again. Its receipt's `sent` names the commit, and `project` the tree as it stood
-once admitted. `eng admit --verify` does the same for its command.
+once admitted. `eng admit` does the same for its command.
 
 Each of this Mac's waits that ends unadmitted leaves its queue and is logged as withdrawn, as each
 declined offer is on the second Mac ([admission log](#admission-log)); an exclusive lane rejoins
@@ -740,8 +746,8 @@ stay in the second Mac's checkout until a later run there replaces them.
 
 Every run's receipt says where it ran. `ranOn` is `this Mac` or `second Mac`, which a receipt
 written before 2026-10-28 gives as `build host`, and `mac` names the Mac. On this Mac,
-`hereBecause` says why the run ran here: the lane's own reason, `--here`, `--serial`, nested
-work, no second Mac configured, the second Mac having no spare capacity (its CPU, a whole-host
+`hereBecause` says why the run ran here: the lane's own reason, `--here` or `eng admit --here`,
+`--serial`, nested work, a self lane's part, foreground work, no second Mac configured, the second Mac having no spare capacity (its CPU, a whole-host
 lane or exclusive work running there, or its guaranteed slots all busy), the second Mac being busy
 once offered, or why it could not be reached or could not run the work. The second Mac's own receipt, kept within the receipt that comes back,
 names the Mac that sent the run in `dispatchedFrom`. A receipt holds its lane's last run only.
@@ -750,31 +756,50 @@ each admission: `eng admissions` here and on a copy of the second Mac's log coun
 admissions by lane ([admission log](#admission-log)).
 
 The second Mac runs a lane in its own login shell's environment, not this Mac's, so a variable
-set for `eng run` here does not reach it. On 2026-10-27 a variable set for `eng remote admit`
+set for `eng run` or `eng admit` here does not reach it. On 2026-10-27 a variable set for `eng remote admit`
 read as unset there (toolkit `e137d7e`). A run that a variable selects, such as one that points a
-package at a binary built here into an ignored path, takes `--here`, or its lane names the
-setting in its command.
+package at a binary built here into an ignored path or sets an xcodebuild `TEST_RUNNER_` variable,
+takes `--here` (`eng run --here`, `eng admit --here`), or names the setting in its command.
 
-`eng admit -- COMMAND` runs here. Its command runs in the current directory, often a
-subdirectory of the checkout, and names paths relative to it, absolute paths in this checkout or
-in a scratch directory, and often a simulator or device by its identifier, all of which belong to
-this Mac. What it leaves, such as a build's products, DerivedData or a result bundle, is often
-what the session uses next, here, and nothing about a command tells a test from such a build. Run
-on the second Mac, in another checkout at another path, it would read and write the wrong places.
-So the session says which it is: `eng admit --verify -- COMMAND` marks the command as
-verification, a test or build whose result is its log and exit status and whose products this
-Mac does not use. Such a command goes as a lane does, at HEAD or a snapshot commit: to whichever Mac has
+`eng admit -- COMMAND` goes as a lane does, at HEAD or a snapshot commit: to whichever Mac has
 spare capacity for it, the second Mac first, to this Mac while the second Mac has none or cannot
 be reached, and while neither has to whichever admits it first, within its `--timeout`;
-`--if-free` asks each once. It runs
-in the directory of the second Mac's checkout that matches the current one, and its output and
-receipt come back to `.build/engineering/remote/admit/`. eng keeps it here, saying why, when the
-second Mac could not run it as it runs here: its directory is outside the checkout or one Git
-ignores, which the commit sent lacks, or its words name this checkout's path, a simulator by its
-identifier, which is a member of this Mac's pool, or a physical device of this Mac's record.
-Nested in an admission, it runs inside that admission, here. A test that a lane covers runs best
-as that lane, `eng run LANE -- FILTER`; `eng remote admit -- COMMAND` sends a command on purpose,
-to run in the root of a checkout there.
+`--if-free` asks each once (the owner's decision, 2026-11-07: all work first come, first served,
+the second Mac first; until then only `eng admit --verify` was offered, and `--verify` is still
+accepted, meaning the same). The two Macs share gigabit Ethernet, and a dispatch prepares and sends
+in about 4 s. The command runs in the directory of the second Mac's checkout that matches the
+current one, and its output and receipt come back to `.build/engineering/remote/admit/`. eng keeps
+it here, saying why, when the second Mac could not run it as it runs here: its directory is outside
+the checkout or one Git ignores, which the commit sent lacks, or its words name this checkout's
+path, a simulator by its identifier, which is a member of this Mac's pool, or a physical device of
+this Mac's record. Nested in an admission, it runs inside that admission, here; a part of a `self`
+lane stays on the Mac where the lane runs; foreground work runs where its foreground is held
+([attended Mac sessions](#attended-mac-sessions)); and work the second Mac runs for this Mac runs
+there. A test that a lane covers runs best as that lane, `eng run LANE -- FILTER`;
+`eng remote admit -- COMMAND` sends a command on purpose, to run in the root of a checkout there.
+
+`eng admit --here -- COMMAND` runs the command on this Mac and offers it nowhere, `hereBecause`
+saying `eng admit --here`. It is for a command whose products the session uses here afterwards:
+build output, DerivedData, a result bundle or other files outside version control, or an app it
+then launches. Nothing about a command tells such a build from a test whose result is its log and
+status, so the session says so. `eng app keep` builds the kept apps this way.
+
+What a command that ran on the second Mac changed in the checkout's files that Git does not
+ignore comes back and is applied here, so that `swift package resolve`, a formatter or a code
+generator does not lose its edits. Once the command ends there, however it ended, the second Mac
+stages the checkout's tree in a temporary index (tracked edits and deletions, and new untracked
+files no `.gitignore` names, as a snapshot commit stages them), writes `git diff --binary` against
+the commit sent to `changes.patch`, restores its checkout to that commit for the next run, and
+sends the patch back with the receipt, into the dispatch's results under
+`.build/engineering/remote/.dispatches/admit/`. Here eng applies it with `git apply --binary`, to
+the working tree and not the index, only while the working tree is still the tree that was sent,
+and says which files it changed; the exit status stays the command's. When the tree here changed
+meanwhile, or `git apply` refuses the patch (it applies all of it or none), eng applies nothing,
+keeps the patch as `.build/engineering/remote/unapplied/DISPATCH.patch`, says why and where it is,
+and exits 73 (`UNAPPLIED`, sysexits' `EX_CANTCREAT`, which no other eng status uses); apply it with
+`git apply --binary PATCH` once the tree allows, or run the command again. Files Git ignores, such
+as `.build` and its build products, stay on the second Mac, and one line says so, naming
+`eng admit --here`, which keeps them on this Mac.
 
 A caller that holds or will take its own admission here, such as a push keeper that runs a gate
 under the push's one admission, offers the lane with `eng run --offload-only LANE` instead:
@@ -890,7 +915,7 @@ Ignored files stay out, as they do from a commit: the second Mac's checkout has 
 its own. A large untracked file that no `.gitignore` names is sent too, and its copy stays among
 the repository's objects until Git's garbage collection prunes the snapshot, so ignore what the
 second Mac does not need.
-`eng run`, `eng admit --verify`, `eng remote run` and `eng remote admit` all send work this way.
+`eng run`, `eng admit`, `eng remote run` and `eng remote admit` all send work this way.
 The toolkit's checkout goes the same way, as a snapshot of its working tree when it has changes,
 untracked files included, rather than keep the work here (owner's decision, 2026-11-02,
 [vocaro-engineering#104](https://github.com/vocaro/vocaro-engineering/issues/104)); admission
@@ -916,8 +941,8 @@ over SSH and without hooks to bare repositories under
 prepares them first lists the processes earlier runs left running there
 ([processes left over from runs](#processes-left-over-from-runs)). There `offload_host.py`,
 sent along and run by the host's own Python, takes one of four persistent checkouts of the
-project, checks the commit out detached with the toolkit beside it, and runs `eng run` or
-`eng admit` in the checkout's root, or `eng admit --verify`'s command in the directory that matches
+project, checks the commit out detached with the toolkit beside it, and runs `eng run`, or
+`eng remote admit`'s command, in the checkout's root, or `eng admit`'s command in the directory that matches
 the one it was sent from. The work it runs knows it runs there for this Mac, whose name
 `VOCARO_DISPATCHED_FROM` gives, and its receipts say so. A checkout keeps its ignored inputs and
 build products, so its next build is warm; `eng remote` waits for one when all four are in use.
@@ -1134,7 +1159,7 @@ auto-updated by the eng scripts";
 
 The update runs in two places:
 
-- The connection that prepares each dispatch, so every `eng run`, `eng admit --verify`, `eng remote`
+- The connection that prepares each dispatch, so every `eng run`, `eng admit`, `eng remote`
   and merge-queue gate sent there. The dispatch passes the commit this Mac's `origin/main` names, and
   a checkout that already holds it counts as current without a fetch.
 - `eng doctor`, in what it fixes on both Macs (`cli.fix_hosts`). It always fetches.
@@ -1489,7 +1514,7 @@ shell that still uses one meant something by it, and ignoring it would move that
 - `VOCARO_BUILD_HOST`, set to anything, even beside `VOCARO_OFFLOAD_HOST`: refused; set
   `VOCARO_OFFLOAD_HOST` instead, to the same value. Ignored, it could send work to the second Mac
   that it was meant to keep here, so eng refuses it wherever it reads `VOCARO_OFFLOAD_HOST`: before
-  `eng run` or `eng admit --verify` chooses a Mac, in `eng remote run`, `admit` or `setup`
+  `eng run` or `eng admit` chooses a Mac, in `eng remote run`, `admit` or `setup`
   without `--host`, and in `eng doctor`. A command that neither chooses a Mac nor reaches the second Mac, such as a `self`
   lane, a lane that says `here`, `eng run --here` or `eng spelling`, never read it and runs as
   before, so the second Mac's own `eng run --here` does not stop for it. Every other lane, a
@@ -2278,7 +2303,7 @@ python3 scripts/eng remote run --device iPhone LANE -- ARGUMENTS
   checkout knows as an object, such as a commit's whole hash, or that a signing setting or
   option takes as a code-signing identity's SHA-1, name no device, with `--device` or
   without it. `eng run` keeps a lane whose arguments name a physical device of this record on
-  this Mac, and `eng admit --verify` a command that names any hardware UDID.
+  this Mac, and `eng admit` a command that names any hardware UDID.
 
 `eng doctor` reports both Macs' records under `deviceRecord`. It is an error for this Mac's record
 to defer physical devices, or for the second Mac's to hold one or to defer them to another Mac;

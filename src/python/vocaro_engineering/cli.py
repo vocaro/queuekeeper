@@ -642,13 +642,47 @@ def cleared_notifications(receipt):
         return evidence.UNMEASURED
 
 
+def here_because(args, inherited):
+    """Why `eng admit` runs its command on this Mac without offering it to the second Mac, or None to offer it there
+    first, as a lane is (the owner's decision, 2026-11-07; guides/shared-host.md, Which Mac runs a lane)."""
+    if args.here: return "eng admit --here"
+    # Work the second Mac runs for the Mac that sent it runs there, where it was sent.
+    if os.environ.get(remote.DISPATCHER): return "sent here by the Mac that dispatched it"
+    # Foreground work holds the foreground of the Mac it runs on (foreground.py).
+    if args.foreground: return "foreground work runs on the Mac whose foreground it holds"
+    if inherited: return "nested in the admission it inherits"
+    # The parts of a self lane share build products, so all run on the Mac where the lane runs (SELF_LANE).
+    lane = os.environ.get(SELF_LANE)
+    if lane: return f"a part of the self lane {lane}, whose parts share build products on the Mac where it runs"
+    return None
+
+
+# Set by eng run for the command of a self lane, to the lane's name: each `eng admit` its script runs stays on the
+# Mac where the lane runs, since one part builds what the next runs (config.unadmitted).
+SELF_LANE = "VOCARO_SELF_LANE"
+
+
+@contextlib.contextmanager
+def patch_environment(values):
+    """os.environ with values set, for the commands started meanwhile, and as it was afterwards."""
+    before = {key: os.environ.get(key) for key in values}
+    os.environ.update(values)
+    try:
+        yield
+    finally:
+        for key, value in before.items():
+            if value is None: os.environ.pop(key, None)
+            else: os.environ[key] = value
+
+
 def admit(root, args, config=None, *, device_window=None):
-    # A command runs here, in the current directory: its paths, devices and products are this Mac's
-    # (guides/shared-host.md, Which Mac runs a lane). Only --verify, which says that its result is its
-    # log and status, lets eng send it to the second Mac; eng remote admit sends one on purpose.
+    # A command goes to whichever Mac has spare capacity for it, the second Mac first, as a lane does, and runs there
+    # in the checkout's directory that matches the current one; what it changed in the checkout's files that Git does
+    # not ignore comes back (remote.brought_back). --here, its paths and devices, nested and foreground work, and a
+    # self lane's parts keep it here (guides/shared-host.md, Which Mac runs a lane).
     # Without a leading --, argparse collected the command, and a later -- belongs to it.
     command = args.command + ([] if args.passed is None else ["--", *args.passed]) if args.command else args.passed
-    if not command: raise ValueError("Name the command: eng admit [--exclusive | --model] [--verify] -- COMMAND")
+    if not command: raise ValueError("Name the command: eng admit [--exclusive | --model] [--here] -- COMMAND")
     if args.time_limit <= 0: raise ValueError("--time-limit needs a positive number of seconds")
     config = config if config is not None else load(root)
     kind = ["--exclusive"] if args.exclusive else ["--model"] if args.model else []
@@ -666,8 +700,7 @@ def admit(root, args, config=None, *, device_window=None):
     if args.foreground and not second: devices.require_foreground(os.environ.get(devices.OWNER))
     # Nested work runs inside the admission it inherits, here.
     inherited = bool(os.environ.get(resources.TOKEN))
-    reason = "eng admit runs here without --verify" if not args.verify else \
-        "nested in the admission it inherits" if inherited else None
+    reason = here_because(args, inherited)
     offered = None
     if reason is None:
         # Whichever Mac has spare capacity for it, the second Mac first (remote.first_command, admitted_here).
@@ -783,9 +816,11 @@ def main(argv=None):
         "processes of their own, side by side, each reporting its skips: eng xctest [-j JOBS] [--filter REGEX]; "
         "eng xctest -h for the rest")
     admission =commands.add_parser("admit", help="run any other heavy command (a build, swift test, xcodebuild "
-        "test, a simulator run, a gate suite) through the host's heavy-work admission: eng admit -- COMMAND; add "
-        "--model for a generative-model run, --exclusive only for work that needs the host to itself, and --verify "
-        "for a test or build whose result is its log and status, which may then run on the second Mac")
+        "test, a simulator run, a gate suite) through heavy-work admission on whichever Mac has spare capacity for "
+        "it, the second Mac first, as eng run places a lane: eng admit -- COMMAND; what it changes in the "
+        "checkout's files that Git does not ignore comes back and is applied here, while its build products stay "
+        "on the Mac that ran it. Add --here for a command whose products this session uses here afterwards, "
+        "--model for a generative-model run, and --exclusive only for work that needs the host to itself")
     kind = admission.add_mutually_exclusive_group()
     kind.add_argument("--exclusive", action="store_true", help="hold every slot, and the model with them, for the "
                       "timed run alone, built and set up beforehand as heavy work: a whole-machine or timing "
@@ -801,12 +836,20 @@ def main(argv=None):
         "as a crash-report alert names its process; repeat for each. A failed run during which eng cleared such an "
         "alert for another process, one that stood longer than one look, is unmeasured; one for NAME stays failed "
         "(guides/second-mac-foreground.md, Crash-report alerts)")
-    admission.add_argument("--verify", action="store_true", help="the command is verification, a test or build whose "
-        "result is its log and exit status and whose products this Mac does not use: send it to the second Mac, as "
-        "eng run sends a lane, to run in its checkout's directory that matches this one, at HEAD or a snapshot commit; "
-        "it stays here when it names this checkout's path, a simulator or device, or the second Mac cannot be reached")
+    placed = admission.add_mutually_exclusive_group()
+    placed.add_argument("--here", action="store_true", help="run the command on this Mac, never offering it to the "
+        "second Mac: for a command whose products this session uses here afterwards, such as build output, derived "
+        "data, files Git ignores or an app it then launches. Without it, the command goes to the second Mac first, "
+        "to run in its checkout's directory that matches this one, at HEAD or a snapshot commit, and stays here when "
+        "its directory is outside the checkout or one Git ignores, it names this checkout's path, a simulator or "
+        "device, it is nested in an admission or a self lane's part, or the second Mac has no spare capacity or "
+        f"cannot be reached. What it changed there in files Git does not ignore is applied here; exit {remote.UNAPPLIED} "
+        "says it could not be, and names the patch kept")
+    # The default since the owner's decision of 2026-11-07, still accepted from callers that pass it.
+    placed.add_argument("--verify", action="store_true", help="what eng admit does without --here: offer the "
+        "command to the second Mac first")
     admission.add_argument("--if-free", action="store_true", help=f"run only if heavy-work admission admits the "
-        f"command within {FREE_WAIT}s, on the second Mac or here with --verify; otherwise exit {BUSY} without running it")
+        f"command within {FREE_WAIT}s, on the second Mac or here; otherwise exit {BUSY} without running it")
     admission.add_argument("--timeout", type=float, default=5400, help="seconds to wait for admission (default 5400)")
     admission.add_argument("--time-limit", type=float, default=processes.DEFAULT_LIMIT, metavar="SECONDS",
         help=f"seconds the command may run once admitted before it and its processes are stopped and it exits "
@@ -1177,7 +1220,9 @@ def main(argv=None):
                 with processes.forwarding_signals():
                     if resource == "self":
                         if device_window is not None: devices.report_window(device_window, 0)
-                        result = execute()
+                        # Each part its script admits stays on this Mac, which holds what an earlier part built.
+                        with patch_environment({SELF_LANE: args.lane}):
+                            result = execute()
                     else:
                         with contextlib.ExitStack() as stack:
                             asked = time.monotonic()

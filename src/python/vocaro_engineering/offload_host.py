@@ -2232,6 +2232,44 @@ def changes(checkout):
     return git("status", "--porcelain", "--untracked-files=normal", cwd=checkout) if checkout.exists() else ""
 
 
+def gather_changes(checkout, path):
+    """Write to path, as a binary-safe patch against the commit the checkout holds, the changes a command left in
+    its files that Git does not ignore: tracked edits and deletions, and new untracked files no .gitignore names,
+    staged in a temporary index as remote.snapshot stages a tree. Then restore the checkout to that commit, so that
+    the next run can claim it (claim passes over a checkout with changes), and return the paths changed. Ignored
+    files, such as the command's build products, stay as they are. The sending Mac applies the patch to its own
+    tree (`eng admit`; the owner's decision, 2026-11-07). A failure raises before the checkout
+    is touched, and leaves the changes there."""
+    environment = {key: value for key, value in os.environ.items() if key not in GIT_LOCATION}
+
+    def run(*arguments, variables=None, text=False):
+        done = subprocess.run(["git", *arguments], cwd=checkout, env=variables or environment, capture_output=True)
+        if done.returncode:
+            raise RuntimeError(f"git {' '.join(arguments)} failed: {done.stderr.decode(errors='replace').strip()}")
+        return done.stdout.decode() if text else done.stdout
+
+    index = Path(run("rev-parse", "--path-format=absolute", "--git-path", "index", text=True).strip())
+    with tempfile.TemporaryDirectory(prefix="eng-changes-") as directory:
+        variables = {**environment, "GIT_INDEX_FILE": str(Path(directory) / "index")}
+        # A copy of the checkout's index keeps its file stats, so git add reads only the files that changed.
+        if index.is_file(): shutil.copy2(index, variables["GIT_INDEX_FILE"])
+        else: run("read-tree", "HEAD", variables=variables)
+        run("add", "-A", variables=variables)
+        patch = run("diff", "--cached", "--binary", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames",
+                    "HEAD", variables=variables)
+        files = run("diff", "--cached", "--name-only", "--no-renames", "-z", "HEAD", variables=variables,
+                    text=True).split("\0")
+    files = [name for name in files if name]
+    # The patch first, under .build/engineering, which every project ignores (guides/adoption.md), so the clean
+    # below leaves it.
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(patch)
+    if files:
+        run("reset", "--hard", "--quiet", "HEAD")
+        run("clean", "-d", "--force", "--quiet")
+    return files
+
+
 def distance(checkout, commit):
     """How many files differ between the tree a checkout last held and commit's, or None when that is
     unknown: no checkout yet, or a commit it cannot compare. The files that differ are what its builds
@@ -2705,6 +2743,13 @@ def main(plan):
             timed(stage, began)
             if result["exitStatus"] != 0: break
         result["stopped"] = _stop.is_set()
+        # What `eng admit`'s command changed in the checkout goes back as a patch, however it ended, and the
+        # checkout is restored for the next run (gather_changes).
+        if plan.get("changes") and result.get("stage") == "work":
+            try:
+                result["changes"] = {"files": gather_changes(checkout, checkout / plan["changes"])}
+            except (OSError, RuntimeError) as error:
+                result["changes"] = {"error": str(error)}
         receipt = checkout / plan["receipt"]
         # A command that failed before it wrote a receipt leaves the previous run's in place.
         fresh = receipt.is_file() and receipt.stat().st_mtime >= result["started"]

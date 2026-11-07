@@ -1058,7 +1058,8 @@ class ReapBeforeRunTests(unittest.TestCase):
         self.assertIn(f"eng: on {remote.HERE}, released {NAME} ({UDID}), held for owner session-gone", error)
 
     def test_a_command_eng_admit_runs_here_reaps_this_mac_first(self):
-        status, error = self.eng("admit", "--", sys.executable, "-c", "open('ran', 'a').write('ran')")
+        # --here, since plain eng admit offers the command to the second Mac first, and says so when it runs here.
+        status, error = self.eng("admit", "--here", "--", sys.executable, "-c", "open('ran', 'a').write('ran')")
         self.assertEqual(status, 0, error)
         self.assertEqual(self.calls, [((remote.ROOT, {"pools": ["Example"]}), False)])
         self.assertTrue((self.project / "ran").exists())

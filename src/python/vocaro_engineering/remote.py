@@ -15,9 +15,11 @@ whole lane's run on this Mac at a commit with no working changes (keep_here); a 
 and eng says so when it sends one.
 
 `eng run` sends every admitted lane to whichever Mac has spare capacity for it now,
-the second Mac first, unless the lane says why it stays on this Mac, and `eng admit --verify` a
-command whose result is its log and status. Before it offers the work it reads both Macs'
-capacity (offload_host.capacity, spare): the second Mac runs the work when it has a guaranteed
+the second Mac first, unless the lane says why it stays on this Mac, and `eng admit` a
+command the same way, unless `--here` or its paths and devices keep it on this Mac; what the command
+changed in the checkout's files that Git does not ignore comes back as a patch and is applied here
+(brought_back), while its build products stay there (the owner's decision, 2026-11-07). Before it
+offers the work it reads both Macs' capacity (offload_host.capacity, spare): the second Mac runs the work when it has a guaranteed
 slot free, all of them for a whole-host lane, its CPU's busy share is under its limit and no whole-host lane
 or exclusive work holds it, and then only if it can start the work now; when it has no spare
 capacity and this Mac has, this Mac takes the work at once, with the second Mac's reason in the
@@ -538,7 +540,7 @@ def no_toolkit(host, status, detail):
 
 
 def configured():
-    """The second Mac that `eng run` and `eng admit --verify` send work to, or None for this Mac only.
+    """The second Mac that `eng run` and `eng admit` send work to, or None for this Mac only.
 
     VOCARO_OFFLOAD_HOST names it, and `none` turns it off (named_host). Otherwise it is the ssh alias
     that ~/.ssh/config defines (alias).
@@ -1259,6 +1261,64 @@ def describe(identity):
 # back whole into the results' results/ here, however the run ended. The command finds that directory in
 # parallel.RESULTS_VARIABLE; a group's lanes each find results/LANE/ of the group's, which comes back with it.
 RESULTS = "results/"
+# What `eng admit`'s command changed on the second Mac in the checkout's files that Git does not ignore, as a binary
+# patch against the commit sent, which comes back beside the dispatch's results (offload_host.gather_changes).
+CHANGES = "changes.patch"
+# `eng admit`'s status when its command ran on the second Mac and the changes it made to the checkout could not be
+# applied here: the tree here changed after it was sent, the patch does not apply, or it did not come back. The
+# patch is kept under UNAPPLIED_DIRECTORY. sysexits' EX_CANTCREAT, which no other eng status uses.
+UNAPPLIED = 73
+UNAPPLIED_DIRECTORY = ".build/engineering/remote/unapplied"
+
+
+def brought_back(root, sent, status):
+    """`eng admit`'s status once what its command changed on the second Mac is applied to the checkout here: its own
+    status there, or UNAPPLIED, after saying why and where the patch is kept, when the changes cannot be applied.
+
+    The patch applies only while the tree here is still the one sent (changed_since): a session that edited the
+    checkout meanwhile keeps its edits, and the patch waits for it. git apply applies all of it or none. Files Git
+    ignores, such as the command's build products, stay on the second Mac, which is said in one line."""
+    ran = sent.get("ran")
+    if not ran: return status
+    print(f"eng: the command ran on the second Mac, so its build products and other files Git ignores stayed in "
+          f"{ran.get('checkout') or 'its checkout there'}; `eng admit --here` runs it on this Mac and keeps them here",
+          file=sys.stderr, flush=True)
+    changes = ran.get("changes")
+    # The command did not run there, as when the second Mac declined it, or its provision lane failed.
+    if changes is None: return status
+    if changes.get("error"):
+        print(f"eng: what the command changed in the checkout could not be gathered on the second Mac, so it stays "
+              f"in {ran.get('checkout')} there: {changes['error']}", file=sys.stderr, flush=True)
+        return UNAPPLIED
+    files = changes.get("files") or []
+    if not files: return status
+    patch = Path(ran["results"]) / CHANGES
+    named = ", ".join(files[:5]) + (f" and {len(files) - 5} more" if len(files) > 5 else "")
+    if not ran.get("returned") or not patch.is_file():
+        print(f"eng: the command changed {named} on the second Mac, and the patch did not come back; the second "
+              f"Mac's copy is {ran.get('checkout')}/.build/engineering/admit/{CHANGES}", file=sys.stderr, flush=True)
+        return UNAPPLIED
+    top = git(root, "rev-parse", "--show-toplevel")
+    # The project's tree alone, as changed_since reads it: the toolkit's is not what the patch applies to.
+    sent_commit, (now, _head) = sent["commit"], snapshot(root)
+    why = None
+    if git(root, "rev-parse", f"{now}^{{tree}}") != git(root, "rev-parse", f"{sent_commit}^{{tree}}"):
+        moved = git(root, "diff", "--name-status", "--no-renames", sent_commit, now)
+        why = f"the working tree here changed after {sent_commit[:12]} was sent:\n{moved}"
+    if why is None:
+        done = subprocess.run(["git", "apply", "--binary", "--whitespace=nowarn", str(patch)], cwd=top,
+                              env=environment(), capture_output=True, text=True)
+        if done.returncode == 0:
+            print(f"eng: applied here what the command changed on the second Mac: {named}", file=sys.stderr, flush=True)
+            return status
+        why = f"git apply refused it: {last_line(done.stderr) or f'exit {done.returncode}'}"
+    kept = Path(top) / UNAPPLIED_DIRECTORY / f"{Path(ran['results']).name}.patch"
+    kept.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(patch, kept)
+    print(f"eng: what the command changed on the second Mac ({named}) was not applied here: {why}\n"
+          f"eng: the patch is {kept}; apply it with `git apply --binary {kept}` once the tree allows, or run the "
+          f"command again (exit {UNAPPLIED}; guides/shared-host.md, Which Mac runs a lane)", file=sys.stderr, flush=True)
+    return UNAPPLIED
 
 
 def returned_path(path, returns):
@@ -1416,7 +1476,7 @@ def carrying(lease, root, host, work, name, send):
 
 
 def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, decline=False, lease=None,
-            serial=False, subdirectory=None, sent=None):
+            serial=False, subdirectory=None, sent=None, changes=False):
     """Run eng's work on the second Mac and return its exit status, with the log and receipt kept here.
 
     work is the second Mac's eng arguments: run [--serial] [--expect N] LANE [-- ARGUMENTS] or
@@ -1433,7 +1493,9 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     serial says the work runs a group's lanes in turn: the serial reference, whose result, like a
     snapshot's, is no commit's pass. sent, when given, keeps what the first call sent: a later call
     with it offers the same commits again, without a snapshot, the preparing connection or a push,
-    since the second Mac holds them.
+    since the second Mac holds them. With changes, what the command changed in the checkout's files that Git
+    does not ignore comes back as a patch, CHANGES, beside the results (offload_host.gather_changes), and sent's
+    ran says where the results are and what the patch holds (brought_back).
 
     The receipt's preparation records what came before the second Mac's queue: the seconds of
     staging the commits, the preparing connection and the pushes here, each push's record (send),
@@ -1482,7 +1544,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
         local = offload_host.identity(developer)
     kept = store(root) / commit
     members = group_files(config, lane)
-    returns = [*(members or []), RESULTS] if lane is not None else None
+    returns = [*(members or []), RESULTS] if lane is not None else [CHANGES] if changes else None
     plan = {"root": ROOT, "checkouts": CHECKOUTS, "project": project, "toolkit": kit, "work": work,
             "decline": decline, "busy": BUSY,
             "unlockedScreen": lane is not None and unlocked_screen(config.get("lanes", {}), lane),
@@ -1490,7 +1552,8 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
             "developerDir": developer, "xcode": local["xcode"],
             "log": f".build/engineering/{lane}/run.log" if lane is not None else None,
             "receipt": f".build/engineering/{name}/source.json",
-            "returns": {"directory": f".build/engineering/{lane}", "paths": returns} if returns else None,
+            "returns": {"directory": f".build/engineering/{name}", "paths": returns} if returns else None,
+            "changes": f".build/engineering/{name}/{CHANGES}" if changes else None,
             "deviceRecord": local["name"], "lease": lease.plan(local["name"]) if lease is not None else None,
             "dispatcher": local["name"], "subdirectory": subdirectory}
 
@@ -1667,6 +1730,9 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
                **({"serial": True} if serial else {}), **({"returned": returned} if members or returned else {}),
                **({"subdirectory": subdirectory} if subdirectory else {})}
     own = file_results(base, name, dispatch, staging, receipt)
+    if sent is not None:
+        sent["ran"] = {"results": str(own), "checkout": result.get("checkout"), "changes": result.get("changes"),
+                       "returned": CHANGES in returned}
     # A snapshot's result stays here: no branch holds it, so it is no commit's pass. Nor is a group's
     # serial reference: the group's pass is its lanes' side by side.
     if lane is not None and not arguments and expect is None and commit == head and not serial \
@@ -2319,7 +2385,7 @@ def simulators(command):
 
 
 def first_command(root, config, command, kind):
-    """Offer `eng admit --verify`'s command to the second Mac to start now, once, as first() offers a lane,
+    """Offer `eng admit`'s command to the second Mac to start now, once, as first() offers a lane,
     to run in the directory of its checkout that matches the current one here; return the Offer. The
     second Mac cannot run it as it runs here when its directory is outside the checkout or one Git
     ignores, which the commit sent lacks, or when its words name this checkout's path, a simulator by
@@ -2344,11 +2410,16 @@ def first_command(root, config, command, kind):
     elif named:
         refused = (f"it names the hardware UDID {', '.join(named)}, which the second Mac uses only under a "
                    "reservation `eng remote admit --device` carries from here")
-    # The second Mac's admission takes it now or declines it, as `eng run --if-free` does a lane.
+    # The second Mac's admission takes it now or declines it, as `eng run --if-free` does a lane. There it runs
+    # where it was sent, since it runs for the Mac that sent it (DISPATCHER).
     work = ["admit", *kind, "--if-free", "--", *command]
-    offered = Offer("the command", "`eng admit` without --verify", lambda host, sent: execute(
-        root, config, host, work, decline=True, subdirectory=None if relative in (None, ".") else relative,
-        sent=sent), refused, exclusive="--exclusive" in kind)
+
+    def send(host, sent):
+        # What the command changed in the checkout there comes back and is applied here (brought_back).
+        status = execute(root, config, host, work, decline=True,
+                         subdirectory=None if relative in (None, ".") else relative, sent=sent, changes=True)
+        return brought_back(root, sent, status)
+    offered = Offer("the command", "`eng admit --here`", send, refused, exclusive="--exclusive" in kind)
     offered.make()
     return offered
 
@@ -2477,7 +2548,7 @@ class Offer:
 # Seconds this Mac's admission waits between offers to the second Mac while both Macs are busy: at
 # first, after its FREE_WAIT, and at most. The wait doubles from one offer to the next.
 OVERFLOW_WAIT, OVERFLOW_WAIT_MAX = 15, 120
-# Seconds `eng run` and `eng admit --verify` wait in all for one Mac or the other to admit the work.
+# Seconds `eng run` and `eng admit` wait in all for one Mac or the other to admit the work.
 OVERFLOW_TIMEOUT = 5400
 
 
