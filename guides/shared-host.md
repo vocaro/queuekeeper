@@ -1496,8 +1496,8 @@ python3 scripts/eng disk
 
 It covers every project in `~/Development`, whichever project runs it, and reads only what those
 projects leave on the host: their worktrees, the simulators and runtimes their tests use, the
-DerivedData and SwiftPM caches their builds fill, the failure records their test runs keep, and
-the scratch builds and results their sessions leave in `/private/tmp` and the user temporary
+DerivedData and SwiftPM caches their builds fill, the failure records their test runs keep, the
+lane results eng keeps by commit in their Git directories, and the scratch builds and results their sessions leave in `/private/tmp` and the user temporary
 directory. It never surveys the home
 directory or the rest of the volume. It prints each item's size, the reason for its status and
 the exact command that would remove it.
@@ -1612,6 +1612,19 @@ the candidates, with their commands: exactly what `--delete` removes.
   it is a candidate, sized by those records, whose command is `eng failures prune CHECKOUT`; one
   with none past it, or whose records a process uses, is kept. `eng failures keep` applies the
   same rule as it keeps a record, on either Mac. Records alone never keep a landed worktree.
+- **Kept lane results**, beside the receipts in each main checkout's
+  `.git/vocaro-engineering/remote/COMMIT/LANE.results/`
+  ([a lane's results](parallel-tests.md#a-lanes-results)), counted by lane. Their rule keeps a
+  lane's results at its newest 10 commits, by the time its receipt was kept, and at every commit
+  kept in the last 14 days, and removes the rest; it never removes a receipt, which is small and
+  which eng release, a checkpoint and `eng remote passed` read, so a receipt's `keptResults` can
+  name a folder that is gone. A landing gate's iOS shards keep about 1 MB at each commit, so the
+  store would otherwise grow by that with every gated commit
+  ([#218](https://github.com/vocaro/vocaro-engineering/issues/218)). An open issue or evidence
+  that cites a commit's times does not keep them: evidence copies what it cites
+  ([evidence](evidence.md)). A repository with results past the rule is a candidate, sized by
+  them, whose command is `eng remote prune-results CHECKOUT` (`--dry-run` lists them); one with
+  none past it, or whose store a process uses, is kept.
 - **Evidence archives**, on a Mac that offloads to a second one. A folder in `~/Development` named
   `*-evidence`, `*-measurements` or `session-evidence` that is not a Git checkout, and a main
   checkout's `.build/session-evidence`, are owner items. Their command is

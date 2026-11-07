@@ -845,6 +845,11 @@ def main(argv=None):
         "exactly this commit; a snapshot's run never counts")
     remote_passed.add_argument("lane")
     remote_passed.add_argument("--commit", default="HEAD")
+    remote_prune = operations.add_parser("prune-results", help="remove the lane results kept by commit beside the "
+        f"receipts in the repository's Git directory that the rule reclaims, which {remote.KEPT_RESULTS_RULE}; "
+        "eng disk lists them")
+    remote_prune.add_argument("checkout", nargs="?", type=Path, help="a checkout of the repository (default: the project's)")
+    remote_prune.add_argument("--dry-run", action="store_true", help="list them; remove nothing")
     merge_queue.add_arguments(commands.add_parser("queue", help="land finished commits through the repository's one "
         "merge queue, which gates batches on origin/main and pushes them; a session adds its commit and moves on "
         "(guides/maintenance.md, The merge queue)"))
@@ -956,6 +961,9 @@ def main(argv=None):
         # which for its worker is a main checkout that may lag.
         if args.action == "land": return merge_queue.land(root, args, Path.cwd())
         if args.action == "queue": return merge_queue.main(root, args)
+        # The store is the repository's, named by any checkout of it, and eng disk runs this for every project.
+        if args.action == "remote" and args.operation == "prune-results":
+            return remote.prune_results_main(args.checkout or root, args.dry_run)
         config = load(root)
         if args.action == "app": return app_builds.execute(root, args, config)
         if args.action == "instructions": instructions(config)

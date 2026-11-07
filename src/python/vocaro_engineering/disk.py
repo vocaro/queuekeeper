@@ -44,6 +44,7 @@ CATEGORIES = {"worktree": "Linked worktrees", "simulator": "Simulators", "runtim
               "derived-data": "Xcode DerivedData", "scratch": "Scratch builds outside checkouts",
               "swiftpm-cache": "SwiftPM shared cache", "results": "Result directories",
               "failures": "Kept failure records (pruned by their rule)",
+              "kept-results": "Lane results kept by commit beside the receipts (pruned by their rule)",
               "evidence": "Evidence archives (offload to the second Mac)",
               "app-builds": "Kept app builds and their build caches (eng app)"}
 # --delete removes every candidate category without asking (the owner's decision, 2026-11-05, widening that
@@ -1013,6 +1014,35 @@ def failure_records(host, usage, sizes):
     return items
 
 
+def kept_results(host, usage, sizes):
+    """Each repository's lane results kept by commit beside its receipts, .git/vocaro-engineering/remote/COMMIT/
+    LANE.results/ (remote.keep), counted, with those past their rule (remote.KEPT_RESULTS_RULE) as one candidate,
+    which `eng remote prune-results` removes, leaving every receipt (vocaro-engineering#218)."""
+    from . import remote  # remote imports this module
+    items = []
+    for main in main_checkouts(host):
+        base = main / ".git/vocaro-engineering/remote"
+        found = remote.all_kept_results(base)
+        if not found: continue
+        counted = ", ".join(f"{lane} at {len(folders)} commit{'s' if len(folders) != 1 else ''}"
+                            for lane, folders in sorted(found.items()))
+        gone = remote.results_past_rule(base, host.now)
+        idle = host.now - max(remote.kept_results_at(folder) for folders in found.values() for folder in folders)
+        use = usage.of(base)
+        if use:
+            items.append(Item("kept-results", str(base), KEPT, f"{counted}; in use: {described(use)}", sizes.of(base),
+                              None, idle))
+        elif gone:
+            items.append(Item("kept-results", str(base), CANDIDATE, f"{counted}; {len(gone)} past the rule, which "
+                              f"{remote.KEPT_RESULTS_RULE}", sum(sizes.of(folder) for folder in gone),
+                              ["python3", str(TOOLKIT_ROOT / "bin/eng"), "remote", "prune-results", str(main)], idle))
+        else:
+            items.append(Item("kept-results", str(base), KEPT, f"{counted}; none past the rule, which "
+                              f"{remote.KEPT_RESULTS_RULE}", sum(sizes.of(folder) for folders in found.values() for folder in folders),
+                              None, idle))
+    return items
+
+
 def second_mac():
     """The second Mac this Mac offloads to, or None: here alone, or on the second Mac itself."""
     from . import remote  # remote imports this module
@@ -1108,6 +1138,7 @@ def inventory(host, sizes, categories=None):
     if "app-builds" in wanted: items += app_builds(host, usage, sizes)
     if "evidence" in wanted: items += evidence_archives(host, sizes)
     if "failures" in wanted: items += failure_records(host, usage, sizes)
+    if "kept-results" in wanted: items += kept_results(host, usage, sizes)
     if wanted & {"scratch", "results"}: items += [item for item in temp_items(host, usage, sizes) if item.category in wanted]
     return items
 

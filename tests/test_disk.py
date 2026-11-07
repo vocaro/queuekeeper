@@ -942,6 +942,74 @@ class FailureRecordTests(Fixture):
         self.assertEqual(items[str(results)].status, disk.CANDIDATE, items[str(results)].reason)
 
 
+class KeptResultsTests(Fixture):
+    """Lane results kept by commit beside the receipts in a repository's Git directory (#218)."""
+    def setUp(self):
+        super().setUp()
+        from vocaro_engineering import remote
+        self.remote, self.store, self.now = remote, self.main / ".git/vocaro-engineering/remote", time.time()
+
+    def kept(self, commit, days, lane="gate"):
+        folder = self.store / commit / f"{lane}.results"
+        (folder / "suites").mkdir(parents=True)
+        (folder / "suites/shard.log").write_text("passed after 0.7 seconds\n")
+        receipt = self.store / commit / f"{lane}.json"
+        receipt.write_text(json.dumps({"lane": lane, "commit": commit, "keptResults": folder.name}))
+        os.utime(receipt, (self.now - days * 86400,) * 2)
+        return folder
+
+    def fill(self):
+        newest = self.remote.KEPT_RESULTS_PER_LANE
+        folders = [self.kept(f"c{index:02}", index * 3) for index in range(newest + 2)]
+        return folders[:newest], folders[newest:]
+
+    def test_results_past_the_rule_are_a_candidate_and_within_it_are_kept(self):
+        young, old = self.fill()
+        items = self.items(self.host(now=self.now), ["kept-results"])
+        item = items[str(self.store)]
+        self.assertEqual(item.status, disk.CANDIDATE, item.reason)
+        self.assertIn(f"gate at {len(young) + len(old)} commits; {len(old)} past the rule", item.reason)
+        self.assertIn(self.remote.KEPT_RESULTS_RULE, item.reason)
+        self.assertEqual(item.command, ["python3", str(disk.TOOLKIT_ROOT / "bin/eng"), "remote", "prune-results",
+                                        str(self.main)])
+        # In use, it is kept.
+        processes = [disk.Process(301, "grep", paths=(str(old[0] / "suites/shard.log"),))]
+        self.assertEqual(self.items(self.host(processes, now=self.now), ["kept-results"])[str(self.store)].status,
+                         disk.KEPT)
+        # The negative control: within the rule, they are counted and kept, and the inventory removed nothing.
+        for folder in old: shutil.rmtree(folder)
+        item = self.items(self.host(now=self.now), ["kept-results"])[str(self.store)]
+        self.assertEqual(item.status, disk.KEPT)
+        self.assertIn("none past the rule", item.reason)
+        self.assertTrue(all(folder.exists() for folder in young))
+        # A repository with no kept results is not listed.
+        shutil.rmtree(self.store)
+        self.assertEqual(self.items(self.host(now=self.now), ["kept-results"]), {})
+
+    def test_delete_prunes_by_the_rule_through_eng_remote_and_leaves_every_receipt(self):
+        young, old = self.fill()
+        host = self.host(now=self.now)
+        [item] = disk.inventory(host, disk.Sizes(measure=False), ["kept-results"])
+        # The dry run of the command it runs removes nothing.
+        with contextlib.redirect_stdout(StringIO()) as said:
+            self.assertEqual(cli.main(item.command[2:] + ["--dry-run"]), 0)
+        self.assertIn(f"would prune {old[0]}", said.getvalue())
+        self.assertTrue(all(folder.exists() for folder in young + old))
+        def run(command, **_):
+            with contextlib.redirect_stdout(StringIO()): status = cli.main(command[2:])
+            return subprocess.CompletedProcess(command, status, "", "")
+        with contextlib.redirect_stdout(StringIO()):
+            removed = disk.delete([item], lambda category: disk.inventory(host, disk.Sizes(measure=False), [category]),
+                                  self.root / "ledger.jsonl", out=lambda *_: None, run=run)
+        self.assertEqual(removed, 1)
+        self.assertEqual([folder.exists() for folder in young + old], [True] * len(young) + [False] * len(old))
+        self.assertEqual(len(list(self.store.glob("*/gate.json"))), len(young) + len(old))
+        entry = json.loads((self.root / "ledger.jsonl").read_text())
+        self.assertEqual((entry["category"], entry["outcome"]), ("kept-results", "removed"))
+        # Once within the rule, a further --delete finds nothing to do.
+        self.assertEqual(self.items(self.host(now=self.now), ["kept-results"])[str(self.store)].status, disk.KEPT)
+
+
 class CommandTests(Fixture):
     def test_eng_disk_reports_and_changes_nothing(self):
         landed = self.worktree("landed")

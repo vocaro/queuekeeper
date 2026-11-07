@@ -996,6 +996,69 @@ def kept_results(kept, lane):
     return kept / f"{lane}.results"
 
 
+# The rule by which eng disk reclaims kept results (vocaro-engineering#218): a lane's results stay at its newest
+# KEPT_RESULTS_PER_LANE commits, and at every commit whose run is under KEPT_RESULTS_DAYS old. Receipts are never
+# pruned: they are small, and eng release, checkpoints and `eng remote passed` read them.
+KEPT_RESULTS_PER_LANE = 10
+KEPT_RESULTS_DAYS = 14
+KEPT_RESULTS_RULE = (f"keeps each lane's results at its newest {KEPT_RESULTS_PER_LANE} commits and at every commit "
+                     f"kept in the last {KEPT_RESULTS_DAYS} days, and never removes a receipt")
+
+
+def kept_results_at(folder):
+    """When a commit's LANE.results/ was kept: its receipt's time, which keep replaces with it, else its own."""
+    receipt = folder.parent / (folder.name[:-len(".results")] + ".json")
+    try: return receipt.stat().st_mtime
+    except OSError: return folder.stat().st_mtime
+
+
+def all_kept_results(base):
+    """Every LANE.results/ in a store, as {LANE: [folder, newest first]}."""
+    found = {}
+    if not Path(base).is_dir(): return found
+    for commit in Path(base).iterdir():
+        if commit.name.startswith(".") or not commit.is_dir() or commit.is_symlink(): continue
+        for folder in commit.glob("*.results"):
+            if folder.is_dir() and not folder.is_symlink():
+                found.setdefault(folder.name[:-len(".results")], []).append(folder)
+    for lane, folders in found.items():
+        folders.sort(key=lambda folder: (kept_results_at(folder), folder.parent.name), reverse=True)
+    return found
+
+
+def results_past_rule(base, now=None):
+    """The kept results of a store (store(root)) that KEPT_RESULTS_RULE removes."""
+    now = time.time() if now is None else now
+    return [folder for folders in all_kept_results(base).values() for index, folder in enumerate(folders)
+            if index >= KEPT_RESULTS_PER_LANE and now - kept_results_at(folder) >= KEPT_RESULTS_DAYS * 86400]
+
+
+def prune_results(base, now=None):
+    """Remove the kept results past KEPT_RESULTS_RULE, leaving every receipt, and return their paths. Each is
+    first renamed aside, so a run keeping that lane's results at that commit meanwhile keeps its own."""
+    pruned = []
+    for folder in results_past_rule(base, now):
+        aside = folder.parent / f".{folder.name}.pruned.{os.getpid()}"
+        try: folder.rename(aside)
+        except OSError: continue
+        shutil.rmtree(aside, ignore_errors=True)
+        pruned.append(folder)
+    return pruned
+
+
+def prune_results_main(checkout, dry_run=False):
+    """eng remote prune-results [CHECKOUT]: reclaim the repository's kept results by KEPT_RESULTS_RULE."""
+    base = store(Path(checkout).resolve())
+    if dry_run:
+        gone = results_past_rule(base)
+        for folder in gone: print(f"would prune {folder}")
+    else:
+        gone = prune_results(base)
+        for folder in gone: print(f"pruned {folder}")
+    print(f"{len(gone)} kept results {'past' if dry_run else 'pruned by'} the rule, which {KEPT_RESULTS_RULE}, in {base}")
+    return 0
+
+
 def keep(kept, lane, receipt, results=None):
     """Keep receipt as the lane's at the commit whose directory in the store is kept: whole or not at all,
     for a reader beside a run of the lane at this commit that ends at once. With results, the run's

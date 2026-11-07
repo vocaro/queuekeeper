@@ -3242,6 +3242,55 @@ class KeptSlotsTests(unittest.TestCase):
             self.assertIsInstance(offered.place, resources.Place)
 
 
+class KeptResultsPruneTests(unittest.TestCase):
+    """The rule by which eng disk reclaims the lane results kept by commit beside the receipts (#218)."""
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.base, self.now = Path(self.temp.name) / "store", time.time()
+        results = Path(self.temp.name) / "results"
+        (results / "suites").mkdir(parents=True)
+        (results / "suites/shard.log").write_text("passed after 0.7 seconds\n")
+        self.results = results
+
+    def kept(self, commit, lane, days):
+        remote.keep(self.base / commit, lane, {"lane": lane, "commit": commit}, self.results)
+        stamp = self.now - days * 86400
+        os.utime(self.base / commit / f"{lane}.json", (stamp, stamp))
+        return self.base / commit / f"{lane}.results"
+
+    def test_a_lane_keeps_its_newest_commits_and_its_recent_ones_and_every_receipt(self):
+        days = remote.KEPT_RESULTS_DAYS
+        gate = [self.kept(f"c{index:02}", "gate", index * 2) for index in range(remote.KEPT_RESULTS_PER_LANE + 3)]
+        # Another lane is counted apart: one old commit is within its own newest.
+        check = self.kept("c99", "check", days * 3)
+        # Recent runs beyond the newest are kept: c10 is past the count but under the age.
+        expected = [folder for index, folder in enumerate(gate)
+                    if index >= remote.KEPT_RESULTS_PER_LANE and index * 2 >= days]
+        self.assertTrue(expected)
+        self.assertNotIn(gate[remote.KEPT_RESULTS_PER_LANE - 1], expected)
+        self.assertEqual(sorted(remote.results_past_rule(self.base, self.now)), sorted(expected))
+        # Listing them removes nothing.
+        self.assertTrue(all(folder.exists() for folder in gate + [check]))
+        self.assertEqual(sorted(remote.prune_results(self.base, self.now)), sorted(expected))
+        for folder in gate + [check]:
+            with self.subTest(folder=folder.parent.name):
+                self.assertEqual(folder.exists(), folder not in expected)
+                # Every receipt stays, still naming its results.
+                receipt = json.loads((folder.parent / f"{folder.name[:-len('.results')]}.json").read_text())
+                self.assertEqual(receipt["keptResults"], folder.name)
+        self.assertEqual([path.name for path in self.base.glob("*/.*")], [])
+        # Within the rule, a second prune removes nothing more.
+        self.assertEqual(remote.prune_results(self.base, self.now), [])
+
+    def test_a_store_with_no_kept_results_prunes_nothing(self):
+        self.assertEqual(remote.results_past_rule(self.base), [])
+        remote.keep(self.base / "c00", "gate", {"lane": "gate"})
+        self.assertEqual(remote.all_kept_results(self.base), {})
+        self.assertEqual(remote.prune_results(self.base, self.now + 365 * 86400), [])
+        self.assertTrue((self.base / "c00/gate.json").exists())
+
+
 class SimulatorPositionTests(unittest.TestCase):
     """admit --verify keeps a command here for a UUID only where a simulator goes (#142)."""
 
