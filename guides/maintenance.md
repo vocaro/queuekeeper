@@ -407,6 +407,13 @@ hour later, from `eng queue status`
 ([#130](https://github.com/vocaro/vocaro-engineering/issues/130)). When a batch fails, the oldest half runs next, and so on until one entry fails
 alone; every entry that passes along the way lands.
 
+**A branch that goes on after a landing.** The queue lands a branch's commits under new IDs, so a
+branch that gets more work after one of its landings still holds the landed commits under their old
+IDs. `eng land` replays them onto `origin/main`, and one whose lines a later landed commit changed
+conflicts there, so the branch is refused as a merge it cannot replay (2026-11-07, #204). Start the
+next change from `origin/main`, or `git rebase origin/main`: git drops a commit whose patch is already
+on main, and `git rebase --skip` passes one it stops at whose change main holds in a later form.
+
 **A bisect's two halves gate at once.** While a bisect goes on, the newer half of its suspects gates
 beside the older half, in a second checkout, `~/Development/vocaro-queue/NAME/NAME-beside`, on the same
 `origin/main` (owner's decision, 2026-11-07, [#241](https://github.com/vocaro/vocaro-engineering/issues/241)).
