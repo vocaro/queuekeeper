@@ -313,6 +313,11 @@ or an argument is below the checkout, in its tree, outside the session worktrees
 own directory, where an argument relative to its working directory counts when it names a file there,
 or a folder by a path with a slash
 (owner's decision, 2026-11-02, [vocaro-engineering#104](https://github.com/vocaro/vocaro-engineering/issues/104)).
+A commit made in that checkout and landed through the queue is not one of its own: the queue lands it
+under another SHA, so `main` there is beside `origin/main` rather than behind it, and the worker, finding
+each such commit's change on `origin/main` by `git cherry`, moves `main` there with `git reset --keep`
+and says how many it moved past. One commit whose change `origin/main` lacks keeps the checkout as it is
+(2026-11-06: a session's commits there held it six commits behind).
 The checkout itself is no such use: every Claude session in a worktree inside it passes it as
 `--project-config-root`, and the session's MCP servers and language servers start there, while a run
 from it, such as `python3 scripts/eng`, names a file below it

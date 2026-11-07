@@ -2874,6 +2874,35 @@ class SharedCheckout(Fixture):
                 if name == "changed": self.assertEqual((self.repo / "AGENTS.md").read_text(), "a session's edit\n")
                 if name == "untracked": self.assertTrue((self.repo / "notes.txt").is_file())
 
+    def test_a_commit_made_in_the_shared_checkout_and_landed_does_not_hold_it_back(self):
+        # A session commits in the shared checkout and lands from it; the queue lands the change under
+        # another SHA, so the checkout's main is beside origin/main, not behind it (2026-11-06).
+        def made_here():
+            run(self.repo, "git", "cherry-pick", f"landed-{self.landings}")
+            run(self.repo, "git", "commit", "-q", "--amend", "-m", "The same change, as the session made it")
+        before, after, main, said = self.land(made_here)
+        self.assertNotEqual(before, main)
+        self.assertNotEqual(subprocess.run(["git", "merge-base", "--is-ancestor", before, main], cwd=self.repo).returncode, 0,
+                            "not plainly behind: a fast-forward alone could not move it")
+        self.assertEqual(after, main)
+        self.assertIn(f"moved {self.repo} from {before[:12]} to {main[:12]}, past 1 commit(s) of its own "
+                      "that origin/main already holds by their changes", said)
+        self.assertEqual(run(self.repo, "git", "status", "--porcelain"), "")
+
+    def test_a_landed_commit_beside_one_that_did_not_land_still_holds_it_back(self):
+        # The negative control: one commit of its own that origin/main does not hold keeps it as it is.
+        def made_here():
+            run(self.repo, "git", "cherry-pick", f"landed-{self.landings}")
+            run(self.repo, "git", "commit", "-q", "--amend", "-m", "The same change, as the session made it")
+            (self.repo / "own").write_text("x")
+            run(self.repo, "git", "add", "own")
+            run(self.repo, "git", "commit", "-qm", "A commit of its own")
+        before, after, main, said = self.land(made_here)
+        self.assertEqual(after, before)
+        self.assertIn(f"left {self.repo} as it is: its HEAD {before[:12]} has commits origin/main lacks, whose "
+                      "changes it does not hold either: 1, such as", said)
+        self.assertTrue((self.repo / "own").is_file())
+
     def test_a_process_started_from_the_shared_checkout_holds_it_back(self):
         def started(): self.held = subprocess.Popen(["sleep", "300"], cwd=self.repo / "scripts")
         before, after, main, said = self.land(started)

@@ -1035,7 +1035,8 @@ class Worker:
     def follow(self, quiet=False):
         """After a landing in the toolkit's own queue, fast-forward the shared checkout, the toolkit's main
         checkout, which every session's eng and the next worker read, to origin/main. Only when it is on main,
-        clean, holds no commit of its own, is behind, and no process started from it still runs there, since
+        clean, holds no commit of its own (one landed through the queue, whose change origin/main holds under another
+        SHA, is not), is behind, and no process started from it still runs there, since
         such a run would mix two toolkits (owner's decision, vocaro-engineering#104). Otherwise it is left as it
         is, and the log says why; nothing of this holds the queue. One left only for such a run is deferred, which
         catch_up tries again; quiet, for those tries, says only a fast-forward."""
@@ -1045,11 +1046,20 @@ class Worker:
             why = self.stays(shared)
             if why is None:
                 before = text(shared, "rev-parse", "HEAD")
-                merged = git(shared, "merge", "--ff-only", "--quiet", MAIN, hooks=False)
-                why = None if merged.returncode == 0 else \
-                    f"`git merge --ff-only` failed: {merged.stderr.strip() or 'no output'}"
+                # A commit made in the checkout and landed through the queue is on origin/main under another
+                # SHA, so the checkout is not behind it but beside it: move main to origin/main, which holds
+                # every change of its own (stays checked each by its patch).
+                landed = git(shared, "merge-base", "--is-ancestor", before, MAIN).returncode != 0
+                dropped = text(shared, "rev-list", "--count", f"{MAIN}..{before}") if landed else "0"
+                moved = git(shared, "reset", "--keep", "--quiet", MAIN, hooks=False) if landed else \
+                    git(shared, "merge", "--ff-only", "--quiet", MAIN, hooks=False)
+                how = "`git reset --keep`" if landed else "`git merge --ff-only`"
+                why = None if moved.returncode == 0 else f"{how} failed: {moved.stderr.strip() or 'no output'}"
                 if why is None:
-                    self.say(f"fast-forwarded {shared} from {before[:12]} to {text(shared, 'rev-parse', 'HEAD')[:12]}")
+                    after = text(shared, 'rev-parse', 'HEAD')[:12]
+                    self.say(f"moved {shared} from {before[:12]} to {after}, past {dropped} commit(s) of its own "
+                             "that origin/main already holds by their changes" if landed else
+                             f"fast-forwarded {shared} from {before[:12]} to {after}")
                     return
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
             why = str(error)
@@ -1065,8 +1075,10 @@ class Worker:
         if changed: return f"it has {len(changed)} changed or untracked path(s), such as {changed[0][3:]}"
         head, target = text(shared, "rev-parse", "HEAD"), text(shared, "rev-parse", MAIN)
         if head == target: return ""
-        if git(shared, "merge-base", "--is-ancestor", head, target).returncode:
-            return f"its HEAD {head[:12]} has commits origin/main lacks"
+        if git(shared, "merge-base", "--is-ancestor", head, target).returncode and self.unlanded(shared, head):
+            own = self.unlanded(shared, head)
+            return (f"its HEAD {head[:12]} has commits origin/main lacks, whose changes it does not hold either: "
+                    f"{len(own)}, such as {own[0][:12]}")
         # What runs in a session's worktree inside it, or opens Git's own files, is not running from its tree; nor
         # is what names only the checkout itself, as every session names its project root (disk.runners, #182).
         listed = text(shared, "worktree", "list", "--porcelain").splitlines()
@@ -1081,6 +1093,14 @@ class Worker:
             more = f"; and {len(users) - SHOWN_USERS} more" if len(users) > SHOWN_USERS else ""
             return f"{IN_USE}: {named}{more}"
         return None
+
+    @staticmethod
+    def unlanded(shared, head):
+        """The commits of head that origin/main lacks and whose change it does not hold either, by
+        `git cherry`'s patch identity: what a commit made in the checkout and landed through the queue,
+        which gives it another SHA, does not leave."""
+        listed = text(shared, "cherry", MAIN, head).splitlines()
+        return [line[2:] for line in listed if line.startswith("+ ")]
 
     def catch_up(self):
         """After the worker's rounds, while nothing waits, try follow again every FOLLOW_POLL seconds for up to
