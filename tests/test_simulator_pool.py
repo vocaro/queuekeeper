@@ -344,6 +344,68 @@ class PoolTests(unittest.TestCase):
         self.assertTrue(self.make("me").release(self.make("me").held(udid), outcome="done"))
         self.assertEqual(devices.Record(self.path).entry("Project Duo 1")["state"], "released")
 
+    def edit_entry(self, key, **fields):
+        """Change a record entry's fields in place, as another process's reservation would have left them."""
+        value = json.loads(self.path.read_text())
+        value["devices"][key].update(fields)
+        self.path.write_text(json.dumps(value))
+
+    def test_release_mine_releases_ended_takes_and_keeps_live_runs_and_others(self):
+        taken = [self.simctl.add(f"Project Duo {number}") for number in (1, 2, 3, 4, 5)]
+        for udid in taken[:4]:
+            self.simctl("boot", self.pool.take(DUO, RUNTIME, purpose="Tests").udid)
+        self.hold("Project Duo 5", taken[4])
+        # 1: its take has ended. 2: no holder recorded, as before holderProcess. 3: its holder, this test, runs.
+        # 4: an orphaned run of this owner. 5: another session's.
+        self.edit_entry("Project Duo 1", holderProcess={"pid": 2 ** 22 + 7, "start": "Thu Jan  1 00:00:00 1970"})
+        self.edit_entry("Project Duo 2", holderProcess=None)
+        self.edit_entry("Project Duo 4", activeRun=True, hostProcessIdentifier=2 ** 22 + 7, hostProcessStart="x")
+        released, kept = self.pool.release_mine()
+        self.assertEqual([key for key, _, _ in released], ["Project Duo 1", "Project Duo 2"])
+        self.assertEqual({key: why for key, _, why in kept},
+                         {"Project Duo 3": f"its holder process {os.getpid()} still runs",
+                          "Project Duo 4": "its reservation is orphan: recover it"})
+        record = devices.Record(self.path)
+        self.assertEqual([record.entry(f"Project Duo {n}")["state"] for n in (1, 2)], ["released", "released"])
+        self.assertEqual(record.entry("Project Duo 1")["run"], "Released at the session's closeout")
+        self.assertEqual([self.simctl.devices[udid]["state"] for udid in taken[:4]],
+                         ["Shutdown", "Shutdown", "Booted", "Booted"])
+        self.assertEqual(record.entry("Project Duo 5")["ownerChatID"], "another session")
+        self.assertNotIn(("shutdown", taken[4]), self.simctl.calls)
+        # Negative control: a shutdown that is not confirmed keeps the reservation for recovery.
+        self.edit_entry("Project Duo 3", holderProcess=None)
+        self.simctl.fail["shutdown"] = lambda rest: (1, "", "busy")
+        released, kept = self.pool.release_mine()
+        self.assertEqual(released, [])
+        self.assertIn(("Project Duo 3", taken[2], "its shutdown or release was not confirmed; kept for recovery"),
+                      kept)
+        self.assertEqual(devices.Record(self.path).entry("Project Duo 3")["ownerChatID"], "me")
+
+    def test_the_release_command_takes_a_udid_or_mine(self):
+        udid = self.simctl.add("Project Duo 1")
+        def command(*arguments):
+            out, err = StringIO(), StringIO()
+            with mock.patch.object(simulator_pool, "simctl", self.simctl), redirect_stdout(out), redirect_stderr(err):
+                try:
+                    status = simulator_pool.main(["--pool", "Project", "--owner", "me", *arguments])
+                except SystemExit as exit:
+                    status = exit.code
+            return status, out.getvalue(), err.getvalue()
+        self.assertEqual(command("release", "--mine"), (0, "me holds no Project pool member\n", ""))
+        for arguments in ((), (udid, "--mine")):
+            status, _, error = command("release", *arguments)
+            self.assertEqual(status, 2)
+            self.assertIn("one of them, not both", error)
+        self.pool.take(DUO, RUNTIME, purpose="Tests")
+        # This test is the holder, so the take is a live run's: kept, and the command fails.
+        status, output, _ = command("release", "--mine")
+        self.assertEqual((status, output), (1, f"KEPT Project Duo 1 ({udid}): its holder process {os.getpid()} "
+                                               "still runs\n"))
+        self.edit_entry("Project Duo 1", holderProcess=None)
+        status, output, _ = command("release", "--mine", "--outcome", "Closeout of issue 179")
+        self.assertEqual((status, output), (0, f"RELEASED Project Duo 1 ({udid}): shut down and released\n"))
+        self.assertEqual(devices.Record(self.path).entry("Project Duo 1")["run"], "Closeout of issue 179")
+
     def test_a_member_block_releases_its_device_however_the_block_ends(self):
         udid = self.simctl.add("Project Duo 1")
         with mock.patch.object(simulator_pool, "simctl", self.simctl):

@@ -908,6 +908,41 @@ class Pool:
                 return Lease(key, udid.upper(), entry["revision"], bool(entry.get("created")))
         raise device_record.Refused(f"{self.owner} holds no reservation of {udid}")
 
+    def release_mine(self, outcome="Released at the session's closeout"):
+        """Shut down and release every member this owner holds from a take: (released, kept), each a list
+        of (key, udid, why). A take's holder is the `take` command, which has ended once the session has the
+        UDID; a reservation whose holder still runs is a run's own, in progress, and stays with it. One that
+        is orphaned or uncertain stays for its recovery, and one whose shutdown is not confirmed is kept, as
+        release keeps it (vocaro-engineering#179)."""
+        listing = self.listing()
+        udids = {member.udid for member in self.members(listing)}
+        released, kept = [], []
+        for key, entry in sorted(self.record.load().get("devices", {}).items()):
+            if not isinstance(entry, dict) or entry.get("ownerChatID") != self.owner: continue
+            udid = str(entry.get("device") or "").upper()
+            if udid not in udids: continue
+            state = device_record.condition(entry)
+            if state == "released": continue
+            if state != "held":
+                kept.append((key, udid, f"its reservation is {state}: recover it"))
+                continue
+            holder = entry.get(device_record.HOLDER)
+            if isinstance(holder, dict) and isinstance(holder.get("pid"), int) and holder.get("start") is not None:
+                try:
+                    running = process_start(holder["pid"]) == holder["start"]
+                except OSError as error:
+                    kept.append((key, udid, f"whether its holder process {holder['pid']} runs is unknown: {error}"))
+                    continue
+                if running:
+                    kept.append((key, udid, f"its holder process {holder['pid']} still runs"))
+                    continue
+            lease = Lease(key, udid, entry["revision"], bool(entry.get("created")))
+            if self.release(lease, outcome=outcome):
+                released.append((key, udid, "shut down and released"))
+            else:
+                kept.append((key, udid, "its shutdown or release was not confirmed; kept for recovery"))
+        return released, kept
+
     def eligible(self, device_type=None, runtime=None, listing=None):
         """Each member with whether pruning may delete it, and why."""
         found, record, now = self.members(listing), self.record.load(), self.clock()
@@ -1150,8 +1185,11 @@ def main(argv, project=None):
                       "the take")
     take.add_argument("--boot-timeout", type=int, default=600, help="seconds the boot may take (default 600); "
                       f"past it the member is released and the command exits {evidence.UNMEASURED}")
-    release = action("release", help="shut a member you hold down and release it")
-    release.add_argument("udid")
+    release = action("release", help="shut a member you hold down and release it; --mine, every member you "
+                                     "hold from a take, as closeout does")
+    release.add_argument("udid", nargs="?")
+    release.add_argument("--mine", action="store_true", help="every member the owner holds whose take has ended, "
+                         "not a running lane's own; exit 1 if any is kept")
     release.add_argument("--outcome", default="Released")
     prune = action("prune", help="delete members unused for 14 days, never the lowest of a kind, and "
                                 "templates whose runtime is no longer installed")
@@ -1175,6 +1213,8 @@ def main(argv, project=None):
                        "reservation of the member, as `take` leaves it")
     check.add_argument("udid")
     args = parser.parse_args(argv)
+    if args.action == "release" and (args.udid is None) == (not args.mine):
+        parser.error("name one member's UDID or --mine: one of them, not both")
     if args.action == "reap":
         try:
             return reap_command(args.pool, project, dry_run=args.dry_run, here=args.here)
@@ -1238,6 +1278,12 @@ def main(argv, project=None):
             print(lease.udid)
         elif args.action == "check":
             print((pool.check_held if args.held else pool.check)(args.udid).udid)
+        elif args.action == "release" and args.mine:
+            released, kept = pool.release_mine(**({"outcome": args.outcome} if args.outcome != "Released" else {}))
+            for key, udid, why in released: print(f"RELEASED {key} ({udid}): {why}")
+            for key, udid, why in kept: print(f"KEPT {key} ({udid}): {why}")
+            if not released and not kept: print(f"{owner} holds no {name} pool member")
+            return 1 if kept else 0
         elif args.action == "release":
             return 0 if pool.release(pool.held(args.udid), outcome=args.outcome) else 1
         elif args.action == "prune":
