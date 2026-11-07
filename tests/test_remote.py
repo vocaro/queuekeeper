@@ -1156,47 +1156,81 @@ class RemoteTests(unittest.TestCase):
         self.assertFalse(Path(os.environ["FAKE_GATE"] + ".warm-push-guard").exists())
 
     def test_a_run_that_lost_its_dispatcher_is_listed_before_the_next_is_sent_and_left_running(self):
+        # Keep this fake host's census independent of the time to list every process on this Mac.
+        ps = self.tools / "ps.txt"
+        lsof = self.tools / "lsof.txt"
+        launchd = "1 0 0 Sat Nov 7 00:00:00 2026 /System/fake-launchd\n"
+        ps.write_text(launchd)
+        lsof.write_text("p1\nn/\n")
+        for name, arguments, listing in [
+            ("ps", "-axww -o pid=,ppid=,uid=,lstart=,args=", ps),
+            ("lsof", f"-nPw -a -u {os.getuid()} -d cwd -Fpn", lsof),
+        ]:
+            real = shutil.which(name)
+            fallback = f'exec {shlex.quote(real)} "$@"' if real else "exit 127"
+            host_isolation.executable(self.tools / name,
+                f'#!/bin/sh\nif [ "$HOME" = "$FAKE_HOME" ] && [ "$*" = {shlex.quote(arguments)} ]; then\n'
+                f'    exec /bin/cat {shlex.quote(str(listing))}\nfi\n{fallback}\n')
+
+        settings = self.project / "engineering.json"
+        project = json.loads(settings.read_text())
+        # The lane records its actual PID and the eng process supervising it, together.
+        project["lanes"]["linger"]["command"] = [sys.executable, "-c",
+            "import os, pathlib, time; marker = pathlib.Path('.build/linger.partial'); "
+            "marker.write_text(f'{os.getpid()} {os.getppid()}'); "
+            "marker.rename('.build/linger.processes'); time.sleep(3600)"]
+        settings.write_text(json.dumps(project))
+        self.commit = commit_all(self.project)
         command = [sys.executable, str(self.toolkit / "bin/eng"), "--project", str(self.project), "remote", "run",
                    "linger"]
         dispatcher = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        marker = self.checkout(0) / ".build/linger.pid"
-        deadline = time.monotonic() + stretched(60)
-        while not marker.exists() and dispatcher.poll() is None and time.monotonic() < deadline:
-            time.sleep(0.1)
-        self.assertTrue(marker.exists(), dispatcher.stdout.read().decode() if dispatcher.poll() is not None else "")
-        time.sleep(stretched(0.2))
-        lane, left = int(marker.read_text()), []
+        marker = self.checkout(0) / ".build/linger.processes"
+        lane = supervisor = None
         try:
+            deadline = time.monotonic() + stretched(60)
+            while not marker.exists() and dispatcher.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.1)
+            self.assertTrue(marker.exists(), dispatcher.stdout.read().decode() if dispatcher.poll() is not None else "")
+            lane, supervisor = map(int, marker.read_text().split())
+            record = json.loads((self.home / remote.ROOT / "checkouts/example/0.lock").read_text())
+            self.assertEqual(record["start"], resources.process_start(record["pid"]))
+            checkout = self.checkout(0).resolve()
+            uid, start = os.getuid(), record["start"]
+            lane_row = f"{lane} {supervisor} {uid} {start} python3 -c linger\n"
+            command = f"python3 bin/eng --project {checkout} run --here linger"
+            lsof.write_text(f"p{supervisor}\nn{checkout}\n")
+            ps.write_text(launchd + f"{record['pid']} 1 {uid} {start} python3 offload_host.py\n"
+                          + f"{supervisor} {record['pid']} {uid} {start} {command}\n" + lane_row)
             # A light lane takes no admission: its live run, which the checkout's slot lock records, accounts for it.
             census, missing = remote.leftover_census("fake")
             self.assertIsNone(missing)
             self.assertEqual(census["leftovers"], [])
-            record = json.loads((self.home / remote.ROOT / "checkouts/example/0.lock").read_text())
-            self.assertEqual(record["start"], resources.process_start(record["pid"]))
-            # The run there loses its dispatcher, as SIGKILL takes it, and leaves its lane running.
+
+            # Kill the dispatcher there. The surviving eng process now belongs to launchd.
             os.kill(record["pid"], signal.SIGKILL)
             dispatcher.communicate(timeout=stretched(60))
+            ps.write_text(launchd + f"{supervisor} 1 {uid} {start} {command}\n" + lane_row)
             census, missing = remote.leftover_census("fake")
             self.assertIsNone(missing)
-            left = [row["pid"] for row in census["leftovers"]]
-            self.assertEqual(len(left), 1, census)
+            self.assertEqual([row["pid"] for row in census["leftovers"]], [supervisor], census)
             row = census["leftovers"][0]
             self.assertIn("run --here linger", row["command"])
-            self.assertEqual((row["place"], row["path"]), ("checkout", str(self.checkout(0).resolve())))
-            # Beside the lane, the orphaned eng still samples it with ps from time to time.
+            self.assertEqual((row["place"], row["path"]), ("checkout", str(checkout)))
             self.assertIn(lane, [descendant["pid"] for descendant in row["descendants"]])
             # The next run is told before its work is sent, and runs; nothing is stopped.
             status, output, error = self.eng("remote", "run", "check")
             self.assertEqual(status, 0, output + error)
             self.assertIn("remote: fake runs 1 process left over from runs, which no live run or admission there "
                           "accounts for. These were not stopped; tell the owner", error)
-            self.assertIn(f"remote:   PID {left[0]}, parent 1, started {row['start']}, has written", error)
+            self.assertIn(f"remote:   PID {supervisor}, parent 1, started {row['start']}, has written", error)
             self.assertLess(error.index("left over from runs"), error.index("check at"))
             self.assertEqual(git(self.checkout(1), "rev-parse", "HEAD"), self.commit)
             os.kill(lane, 0)
+            os.kill(supervisor, 0)
         finally:
-            for pid in [lane, *left]:
-                with contextlib.suppress(ProcessLookupError): os.kill(pid, signal.SIGKILL)
+            for pid in (lane, supervisor):
+                if pid is not None:
+                    with contextlib.suppress(ProcessLookupError): os.kill(pid, signal.SIGKILL)
             if dispatcher.poll() is None: dispatcher.kill()
             dispatcher.communicate()
 
