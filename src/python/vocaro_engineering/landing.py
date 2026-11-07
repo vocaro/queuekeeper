@@ -51,7 +51,8 @@ def contained(git, base, tip):
 
     - ancestor: tip is reachable from base (a merge or a fast-forward).
     - patch-equivalent: every commit has one with the same diff in base (a rebase or a
-      cherry-pick), and none is a merge, whose own change a patch comparison never sees.
+      cherry-pick), and no merge brings in what base lacks (own_merges), whose own change a patch
+      comparison never sees.
     - content-merged: merging tip into base would change nothing (a squash). A squash that base
       has since edited over proves none of these.
     - resolved: every commit has an equal patch in base, or one that a rebase moved past a
@@ -65,20 +66,47 @@ def proof(git, base, tip):
     """(how, what it rests on) for contained: the second is empty but for resolved, where it names
     each commit, the commit base holds it as, and the files where only the lines around differ."""
     if git("merge-base", "--is-ancestor", tip, base).returncode == 0: return ANCESTOR, ""
-    merges = git("rev-list", "--count", "--merges", f"{base}..{tip}")
+    merges = own_merges(git, base, tip)
+    # git cherry passes over merges: pending is the commits of tip's own that base has no patch of.
     cherry = git("cherry", base, tip)
-    if merges.returncode or cherry.returncode: return None, ""
+    if merges is None or cherry.returncode: return None, ""
     pending = [line.split()[1] for line in cherry.stdout.splitlines() if line.startswith("+")]
-    if merges.stdout.strip() == "0" and not pending: return PATCH_EQUIVALENT, ""
+    if not merges and not pending: return PATCH_EQUIVALENT, ""
     merged = git("merge-tree", "--write-tree", base, tip)
     tree = git("rev-parse", f"{base}^{{tree}}")
     if merged.returncode == 0 and tree.returncode == 0 and merged.stdout.split("\n", 1)[0] == tree.stdout.strip():
         return CONTENT_MERGED, ""
-    if merges.stdout.strip() != "0": return None, ""
+    if merges: return None, ""
     found = resolutions(git, base, tip, pending)
     if not found: return None, ""
     return RESOLVED, "; ".join(f"{commit[:12]} as {landed[:12]}, whose patch differs only in where its lines sit in "
                                + ", ".join(paths) for commit, landed, paths in found)
+
+
+def own_merges(git, base, tip):
+    """The merges in base..tip that bring in work of their own, or None when git could not say. A merge
+    brings none when base holds each of its parents but its first and its tree is the one a clean merge
+    of its parents makes: a branch refreshed by merging main into it, as the desktop app's sync and a
+    `git merge origin/main` do. Its branch's work is then its other commits, which the merge queue lands
+    replayed onto main (merge_queue.linear), so equal patches prove it landed."""
+    listed = git("rev-list", "--merges", f"{base}..{tip}")
+    if listed.returncode: return None
+    found = []
+    for merge in listed.stdout.split():
+        parents = git("rev-list", "--parents", "-n", "1", merge)
+        if parents.returncode: return None
+        others = parents.stdout.split()[2:]
+        reached = [git("merge-base", "--is-ancestor", parent, base).returncode for parent in others]
+        if any(code not in (0, 1) for code in reached): return None
+        if any(reached):
+            found.append(merge)
+            continue
+        # A merge that settled a conflict, or added a change of its own, has a tree no clean merge makes.
+        clean = git("merge-tree", "--write-tree", *parents.stdout.split()[1:])
+        tree = git("rev-parse", f"{merge}^{{tree}}")
+        if tree.returncode: return None
+        if clean.returncode or clean.stdout.split("\n", 1)[0] != tree.stdout.strip(): found.append(merge)
+    return found
 
 
 def changes(git, commit):

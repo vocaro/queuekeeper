@@ -223,8 +223,13 @@ round goes on without waiting. That build is what `eng app run` opens ([kept app
 **A session does not run the full gate.** It runs the smallest relevant checks, commits and adds
 the commit. Adding is the decision to land: the owner approves that once, and no later step asks.
 What is added is the range the ref has and `origin/main` lacks, held by a ref of its own, so the
-session may end and its branch may move or go. A merge in the range is refused. Adding a branch
-again replaces what it added before.
+session may end and its branch may move or go. Refreshing a branch by merging `main`, by the
+app's sync or `git merge origin/main`, is fine: when each merge in the range brings in only commits
+`origin/main` holds, with the tree a clean merge makes, `eng land` replays the branch's own commits
+onto `origin/main` in a scratch worktree, queues that, says which merge it dropped, and leaves the
+branch as it is, whose work the landing check then finds as equal patches. Any other merge, or a
+replay that conflicts, is refused (vocaro-engineering#217). Adding a branch again replaces what it
+added before.
 
 **A fix in another repository lands there the same way.** Commit it in a worktree of that
 repository, then `eng land --repo NAME BRANCH --wait`, from wherever the session is. It joins that

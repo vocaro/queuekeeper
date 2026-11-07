@@ -142,7 +142,8 @@ GIT_TIMEOUT = 600
 # vocaro-engineering#104). The folders beside the main checkout it replaces, NAME-queue and NAME-queue-toolkit,
 # move there once nothing uses them.
 QUEUES = "vocaro-queue"
-# What locks eng land's scratch worktree while its trial integration lasts (trial), so that no sweep takes it.
+# What locks eng land's scratch worktrees while its trial integration (trial) or its replay of a branch's own
+# commits (linear) lasts, so that no sweep takes them.
 TRIAL_REASON = "eng land's trial integration of a new entry, removed when it ends"
 # The file whose conflicts the queue may settle, by its name in any directory and in any case.
 CHANGELOG = "changelog.md"
@@ -601,8 +602,20 @@ def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False
     commits = text(root, "rev-list", "--reverse", f"{base}..{tip}").split()
     merges = text(root, "rev-list", "--merges", f"{base}..{tip}").split()
     if merges:
-        raise ValueError(f"{merges[0][:12]} is a merge, which a queue would have to put on main: rebase the branch's "
-                         "own commits onto origin/main and add it again")
+        # A branch refreshed by merging main, as the app's sync does, lands as its own commits replayed (#217).
+        replayed = linear(queue, root, tip)
+        if replayed is None:
+            raise ValueError(f"{merges[0][:12]} is a merge, which a queue would have to put on main: rebase the "
+                             "branch's own commits onto origin/main and add it again")
+        if replayed == text(root, "rev-parse", MAIN):
+            print(f"origin/main already holds the commits of {tip[:12]} but its merges: nothing to queue")
+            return None
+        print(f"queue: dropped {', '.join(merge[:12] for merge in merges)}, "
+              f"{'merges' if len(merges) > 1 else 'a merge'} of origin/main, and queued the branch's own commits "
+              f"replayed onto origin/main as {replayed[:12]}; the branch is left as it is", file=sys.stderr)
+        replays, tip = tip, replayed
+        base = text(root, "merge-base", tip, MAIN)
+        commits = text(root, "rev-list", "--reverse", f"{base}..{tip}").split()
     if reference == "HEAD" and git(root, "status", "--porcelain").stdout.strip():
         print("queue: the checkout has uncommitted changes, which stay out: only commits are queued", file=sys.stderr)
     branch = git(root, "symbolic-ref", "--short", "-q", "HEAD").stdout.strip() if reference == "HEAD" else \
@@ -628,7 +641,7 @@ def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False
     identifier = f"{time.strftime('%Y%m%d-%H%M%S', time.localtime(now))}-{tip[:8]}"
     entry = {"id": identifier, "tip": tip, "base": base, "commits": commits, "branch": branch or None, "note": note,
              "subject": text(root, "log", "-1", "--format=%s", tip), "submitted": now, "state": QUEUED,
-             "directory": str(root), **flags}
+             "directory": str(root), **({"replays": replays} if merges else {}), **flags}
     text(root, "update-ref", f"refs/eng-queue/{identifier}", tip)
     with queue.locked(): queue.save(entry)
     print(f"queued {identifier}: {len(commits)} commit(s), {entry['subject']}")
@@ -1713,11 +1726,7 @@ def trial(queue, entry, ahead, base):
     it applies or main holds it already; against, the entries ahead that went on top; left, those ahead that a round
     would itself leave out, with why; touching, those of against that change a file in conflict; kept, the
     changelog conflicts of entry that a round would settle."""
-    folder = Path(tempfile.mkdtemp(prefix="eng-land-trial-"))
-    path = folder / queue.main_checkout.name
-    try:
-        git(queue.root, "worktree", "add", "--detach", "--lock", "--reason", TRIAL_REASON, str(path), base,
-            hooks=False, check=True)
+    with scratch(queue, base, "trial") as path:
         worker = Trial(queue, path)
         applied = worker.integrate([*ahead, entry], base)
         state, why = worker.outcomes.get(entry["id"], (None, None))
@@ -1733,11 +1742,41 @@ def trial(queue, entry, ahead, base):
                 "left": {other["id"]: worker.outcomes[other["id"]][1] for other in ahead
                          if other["id"] in worker.outcomes},
                 "kept": worker.notes.get(entry["id"], {}).get("kept", [])}
+
+
+@contextlib.contextmanager
+def scratch(queue, base, kind):
+    """A detached worktree of the repository at base, locked with TRIAL_REASON so that no sweep takes it, in a
+    folder of its own outside every checkout, which goes when the block ends (vocaro-engineering#178)."""
+    folder = Path(tempfile.mkdtemp(prefix=f"eng-land-{kind}-"))
+    path = folder / queue.main_checkout.name
+    try:
+        git(queue.root, "worktree", "add", "--detach", "--lock", "--reason", TRIAL_REASON, str(path), base,
+            hooks=False, check=True)
+        yield path
     finally:
         # Unlocked first, so that a worktree the removal leaves registered is one Git's own pruning takes.
         git(queue.root, "worktree", "unlock", str(path), hooks=False)
         git(queue.root, "worktree", "remove", "--force", "--force", str(path), hooks=False)
         shutil.rmtree(folder, ignore_errors=True)
+
+
+def linear(queue, root, tip):
+    """The commit that tip's own commits, replayed in order onto origin/main, make, or None when they cannot be:
+    a merge in origin/main..tip brings in work of its own (landing.own_merges), as a merge of another branch does, or a
+    commit conflicts. The merges are refreshes of the branch from main, as the desktop app's sync makes, which a
+    queue must not put on main; the branch and its worktree are left as they are, and a commit main already has
+    is passed over, as a round's pick does (vocaro-engineering#217)."""
+    if landing.own_merges(lambda *words: git(root, *words), MAIN, tip) != []: return None
+    own = text(root, "rev-list", "--reverse", "--no-merges", f"{MAIN}..{tip}").split()
+    with scratch(queue, text(root, "rev-parse", MAIN), "linear") as path:
+        for commit in own:
+            if git(path, "cherry-pick", commit, hooks=False).returncode == 0: continue
+            if text(path, "diff", "--name-only", "--diff-filter=U") or git(path, "status", "--porcelain").stdout.strip():
+                git(path, "cherry-pick", "--abort", hooks=False)
+                return None
+            git(path, "cherry-pick", "--skip", hooks=False, check=True)
+        return text(path, "rev-parse", "HEAD")
 
 
 def tried(found, base, front, elapsed):

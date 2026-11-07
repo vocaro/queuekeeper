@@ -274,11 +274,75 @@ class Landing(Fixture):
             self.assertIsNone(mq.add(self.repo, "a"))
         self.assertEqual(mq.Queue(self.repo).all(), [])
 
+    REFUSED = "is a merge, which a queue would have to put on main: rebase the branch's own commits onto origin/main"
+
     def test_a_merge_is_refused(self):
+        """A negative control: a merge that brings in another branch's work stays refused (#217)."""
         self.commit("a", "a"); self.commit("b", "b", start="origin/main")
         run(self.repo, "git", "merge", "-q", "--no-edit", "a")
-        with self.assertRaisesRegex(ValueError, "is a merge"), patch("builtins.print"):
+        with self.assertRaisesRegex(ValueError, self.REFUSED), patch("builtins.print"):
             mq.add(self.repo, "b")
+        self.assertEqual(mq.Queue(self.repo).all(), [])
+
+    def synced(self, branch, name, content="x"):
+        """branch with a commit adding name, refreshed by merging origin/main after main moves, as the app's
+        sync does, and then a commit after the merge. Returns the branch's tip and the merge."""
+        self.commit(name, branch, content)
+        self.commit("elsewhere", "main-work", start="origin/main")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        run(self.repo, "git", "checkout", "-q", branch)
+        run(self.repo, "git", "fetch", "-q", "origin")
+        run(self.repo, "git", "merge", "-q", "--no-edit", "origin/main")
+        merge = run(self.repo, "git", "rev-parse", "HEAD")
+        self.commit("after", branch, start=branch)
+        return run(self.repo, "git", "rev-parse", "HEAD"), merge
+
+    def test_a_branch_refreshed_by_merging_main_lands_linear(self):
+        """The app's sync merges origin/main into a session's branch: eng land replays the branch's own commits
+        onto origin/main, lands them with no merge, and leaves the branch alone, whose work the landing check
+        then finds on main (#217)."""
+        tip, merge = self.synced("b", "b")
+        with patch.object(mq.Queue, "start"), patch("builtins.print") as said:
+            identifier = mq.add(self.repo, "b")
+        lines = [" ".join(map(str, call.args)) for call in said.call_args_list]
+        self.assertEqual(len([line for line in lines if f"dropped {merge[:12]}, a merge of origin/main" in line]), 1)
+        entry = self.state(identifier)
+        self.assertEqual((entry["replays"], entry["branch"], len(entry["commits"])), (tip, "b", 2))
+        self.assertEqual(run(self.repo, "git", "rev-parse", "b"), tip)
+        self.assertEqual(self.work(), 0)
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertLessEqual({"b", "after", "elsewhere"}, self.main_files())
+        self.assertEqual(run(self.repo, "git", "rev-list", "--merges", "origin/main"), "")
+        self.assertEqual(run(self.repo, "git", "log", "--format=%s", "-3", "origin/main").splitlines(),
+                         ["Add after", "Add b", "Add elsewhere"])
+        # Closeout and eng disk's proof: the branch, merge and all, is on main as equal patches.
+        self.assertEqual(mq.landing.contained(lambda *words: mq.git(self.repo, *words), "origin/main", tip),
+                         mq.landing.PATCH_EQUIVALENT)
+
+    def test_a_refreshed_branch_whose_replay_conflicts_is_refused(self):
+        """A negative control: main changes the branch's file after the sync, so its commits do not replay."""
+        self.synced("b", "same", "branch")
+        self.commit("same", "main-again", "main", start="origin/main")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        with self.assertRaisesRegex(ValueError, self.REFUSED), patch("builtins.print"):
+            mq.add(self.repo, "b")
+        self.assertEqual(mq.Queue(self.repo).all(), [])
+        self.assertEqual(run(self.repo, "git", "worktree", "list", "--porcelain").count("worktree "), 1)
+
+    def test_a_sync_that_settled_a_conflict_is_refused(self):
+        """A negative control: a merge of main whose tree no clean merge makes carries a change of its own, which
+        neither the replay nor the landing check could see."""
+        start = run(self.repo, "git", "rev-parse", "origin/main")
+        self.commit("same", "main-work", "main")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        self.commit("same", "b", "branch", start=start)
+        subprocess.run(["git", "merge", "-q", "--no-edit", "origin/main"], cwd=self.repo, capture_output=True)
+        (self.repo / "same").write_text("both")
+        run(self.repo, "git", "commit", "-qam", "Merge origin/main")
+        tip = run(self.repo, "git", "rev-parse", "HEAD")
+        with self.assertRaisesRegex(ValueError, self.REFUSED), patch("builtins.print"):
+            mq.add(self.repo, "b")
+        self.assertIsNone(mq.landing.contained(lambda *words: mq.git(self.repo, *words), "origin/main", tip))
 
     def test_adding_a_branch_again_replaces_it(self):
         self.commit("a", "a")
