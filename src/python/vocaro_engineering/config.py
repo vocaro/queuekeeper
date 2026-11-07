@@ -19,6 +19,13 @@ def load(root):
     return parse((Path(root).resolve() / "engineering.json").read_text())
 
 
+# The keys a lane and a lane group take, which parse checks and schemas/engineering.schema.json lists (a test
+# compares them, vocaro-engineering#248).
+LANE_KEYS = frozenset({"command", "resource", "minimumTests", "timeout", "foreground", "here", "model", "display",
+                       "budgetMinutes", "wholeHost", "apps", "unlockedScreen"})
+GROUP_KEYS = frozenset({"parallel", "jobs", "resource", "here", "model", "budgetMinutes", "wholeHost", "unlockedScreen"})
+
+
 def parse(source):
     """A project's engineering.json, checked, from its text, wherever that came from."""
     value = json.loads(source)
@@ -69,9 +76,7 @@ def parse(source):
         if isinstance(lane, dict) and "parallel" in lane:
             group(name, lane, lanes)
             continue
-        if not isinstance(lane, dict) or set(lane) - {"command", "resource", "minimumTests", "timeout", "foreground",
-                                                       "here", "model", "display", "budgetMinutes", "wholeHost", "apps",
-                                                       "unlockedScreen"}:
+        if not isinstance(lane, dict) or set(lane) - LANE_KEYS:
             raise ValueError(f"Invalid lane {name}")
         apps(name, lane)
         for key in ["foreground", "model", "display", "wholeHost", "unlockedScreen"]:
@@ -395,7 +400,7 @@ def group(name, lane, lanes):
     """A lane group names other lanes to run side by side under its one admission, so it needs
     the heaviest resource among them, the model when one of them runs a model, and one lane at a
     time when several do (guides/parallel-tests.md)."""
-    if set(lane) - {"parallel", "jobs", "resource", "here", "model", "budgetMinutes", "wholeHost", "unlockedScreen"}:
+    if set(lane) - GROUP_KEYS:
         raise ValueError(f"Lane group {name} takes only parallel, jobs, resource, here, model, wholeHost, "
                          "unlockedScreen and budgetMinutes")
     members = lane["parallel"]
