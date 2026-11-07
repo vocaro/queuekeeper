@@ -548,6 +548,15 @@ EPUBLib gates side by side at a load of 719 while this Mac, 18 cores, idled at 3
 guaranteed slots admitted the second gate whatever the load, and 8 of 12 gates there that day
 ended with no verdict; the rule above is what that cost.
 
+"The second Mac first" orders the offer; it does not keep work off this Mac. Some work is never
+offered: `eng admit` without `--verify`, light lanes, `--here` runs and lanes that say why they
+stay here run where they start, and the receipt's `hereBecause` says so. Offered work fills
+the second Mac's guaranteed slots first, so a whole-host lane, such as a gate, which needs all of
+them free, seldom finds them free there and starts on this Mac instead. On 2026-11-06 this
+Mac's fan ran while the second Mac's stayed quiet, yet the second Mac was 97% busy and had run
+three or four heavy jobs for 48% of the previous three hours, while this Mac ran one, a whole-host
+gate, for 84% of them. Judge a Mac's use by its reading, not by its fan.
+
 The reading applies admission's rule for a whole-host request queued there
 ([heavy-work admission](#heavy-work-admission)): while one whose process runs has asked within
 HEAVY_PLACE_SECONDS, the Mac keeps its guaranteed slots for it, so a whole-host or exclusive lane
@@ -555,7 +564,7 @@ has no spare capacity there (`the guaranteed slots of the second Mac are kept fo
 lane queued ahead: LABEL, which the lane would wait behind`), and a lighter heavy lane has it only
 in a free slot beyond them (`…: LABEL, and every slot beyond them up to HEAVY_SLOTS_MAX=5 is
 busy`), and only as admission takes such a slot: once HEAVY_SETTLE_SECONDS have passed since the
-Mac's last admission (`…: LABEL, and the load of the second Mac does not yet show the job admitted
+Mac's last admission (`…: LABEL, and the CPU of the second Mac does not yet show the job admitted
 12s ago, within HEAVY_SETTLE_SECONDS=30`), under its HEAVY_BUSY_LIMIT, and while its memory
 pressure is level 1, normal, and can be read (`…: LABEL, and on the second Mac memory pressure is
 level 2 (warning), not 1 (normal)`). The reading reports the seconds since that admission, the

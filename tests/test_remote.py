@@ -3189,7 +3189,7 @@ class KeptSlotsTests(unittest.TestCase):
             (kept, None),
             ({**kept, "sinceAdmission": None}, None),
             ({**kept, "sinceAdmission": 30.0}, None),
-            ({**kept, "sinceAdmission": 12.7}, f"{self.HELD}, and the load of the second Mac does not yet show the job "
+            ({**kept, "sinceAdmission": 12.7}, f"{self.HELD}, and the CPU of the second Mac does not yet show the job "
                                                "admitted 12s ago, within HEAVY_SETTLE_SECONDS=30"),
             ({**kept, "memory": 2}, f"{self.HELD}, and on the second Mac memory pressure is level 2 (warning), not 1 (normal)"),
             ({**kept, "memory": 4}, f"{self.HELD}, and on the second Mac memory pressure is level 4 (critical), not 1 (normal)"),

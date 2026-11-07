@@ -2511,7 +2511,7 @@ def spare(reading, mac, whole_host=False, exclusive=False, screen=False):
         since, settle = reading.get("sinceAdmission"), reading.get("settle")
         if all(isinstance(value, (int, float)) and not isinstance(value, bool) for value in (since, settle)) \
                 and since < settle:
-            return (f"{held}, and the load of {mac} does not yet show the job admitted {int(since)}s ago, within "
+            return (f"{held}, and the CPU of {mac} does not yet show the job admitted {int(since)}s ago, within "
                     f"HEAVY_SETTLE_SECONDS={settle:g}")
     taken = [slot for slot in busy if slot < slots]
     if whole_host and taken:
