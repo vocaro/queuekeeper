@@ -18,12 +18,15 @@ from vocaro_engineering import app_builds, cli, config, device_pass, disk, merge
 
 BUNDLE = "com.example.demo"
 # A stand-in for `eng admit -- xcodebuild ...`: it makes the product xcodebuild would, Demo.app with its Info.plist,
-# in the -derivedDataPath it was given, or exits 65 as a failed build does when FAIL names a file that exists.
+# in the -derivedDataPath it was given, or exits 65 as a failed build does when FAIL names a file that exists,
+# printing what the file holds.
 BUILDER = f"""
 import os, pathlib, plistlib, sys
 words = sys.argv[1:]
 fail = os.environ.get("APP_BUILD_FAIL")
-if fail and os.path.exists(fail): raise SystemExit(65)
+if fail and os.path.exists(fail):
+    print(open(fail).read())
+    raise SystemExit(65)
 derived = pathlib.Path(words[words.index("-derivedDataPath") + 1])
 ios = "generic/platform=iOS" in words
 folder = derived / "Build/Products" / ("Debug-iphoneos" if ios else "Debug") / "Demo.app"
@@ -186,6 +189,19 @@ class Keeping(Fixture):
         self.assertEqual([build["commit"] for build in self.store.kept("mac")], [good])
         self.assertTrue(any("exited 65" in line and good[:12] in line for line in self.said), self.said)
 
+    def test_a_target_that_signs_manually_is_named_as_the_cause_and_another_failure_is_not(self):
+        # xcodebuild's words for BreezEPUB's Quick Look extensions, which signed manually (vocaro-engineering#206).
+        self.broken.write_text('BreezEPUB.xcodeproj: error: "BreezEPUBThumbnail" requires a provisioning profile. '
+                               "Select a provisioning profile in the Signing & Capabilities editor.")
+        self.assertEqual(self.keep(chosen=["ios"]), 1)
+        [failure] = [line for line in self.said if "exited 65" in line]
+        self.assertIn("CODE_SIGN_STYLE Automatic", failure)
+        self.said.clear()
+        self.broken.write_text("error: cannot find 'Thing' in scope")
+        self.assertEqual(self.keep(chosen=["ios"]), 1)
+        [failure] = [line for line in self.said if "exited 65" in line]
+        self.assertNotIn("CODE_SIGN_STYLE", failure)
+
     def test_the_newest_two_of_each_platform_are_kept_and_older_ones_removed(self):
         commits = [git(self.root, "rev-parse", "HEAD"), self.commit("second"), self.commit("third")]
         for commit in commits: self.keep(commit=commit, chosen=["mac"])
@@ -284,6 +300,31 @@ class Current(Fixture):
         lines = app_builds.describe(self.store, project(), self.root)
         self.assertIn("1 commits behind origin/main", lines[1])
         self.assertEqual(lines[2], "  ios: nothing kept yet")
+
+
+class Configured(Fixture):
+    def status(self):
+        return app_builds.execute(self.root, SimpleNamespace(operation="status"))
+
+    def test_a_checkout_behind_an_origin_main_that_configures_app_says_so(self):
+        # The owner's shared Pagepour checkout was behind the commit that added `app` (vocaro-engineering#206).
+        (self.root / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Demo"}))
+        git(self.root, "commit", "-q", "-am", "no app")
+        git(self.root, "push", "-q", "origin", "HEAD:main")
+        self.commit("app again")
+        self.commit("later")
+        git(self.root, "reset", "-q", "--hard", "HEAD~2")
+        self.assertEqual(self.status(), 2)
+        [said] = self.said
+        self.assertIn("2 commit(s) behind origin/main", said)
+        self.assertNotIn("add `app`", said)
+
+    def test_a_project_whose_origin_main_configures_no_app_is_told_to_add_it(self):
+        (self.root / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Demo"}))
+        git(self.root, "commit", "-q", "-am", "no app")
+        git(self.root, "push", "-q", "origin", "HEAD:main")
+        self.assertEqual(self.status(), 2)
+        self.assertEqual(self.said, ["engineering.json configures no app: add `app` (guides/app-builds.md)"])
 
 
 class Ps:
