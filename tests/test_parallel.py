@@ -91,6 +91,28 @@ class UnittestRunnerTests(unittest.TestCase):
         self.assertEqual(status, 1, output)
         self.assertIn("right never appeared", output)
 
+    def test_a_suite_with_host_isolation_runs_no_module_that_skips_it(self):
+        # The merge queue's full suite found a new module without the import (#209's capture_approvals); eng unittest,
+        # which a change's own modules run under, now refuses it before discovery imports anything.
+        passing = "import unittest\nclass P(unittest.TestCase):\n    def test_p(self): pass\n"
+        root = self.suite(("host_isolation", ""), ("test_isolated", "import host_isolation\n" + passing),
+                          ("test_forgot", passing))
+        status, output = self.run_suite(root)
+        self.assertEqual(status, 1, output)
+        self.assertIn("test_forgot.py must import host_isolation at its top level", output)
+        self.assertIn("nothing ran", output)
+        self.assertNotIn("==", output)
+        status, output = self.run_suite(root, "-p", "test_isolated.py", "-p", "test_forgot.py")
+        self.assertEqual(status, 1, output)
+        self.assertIn("test_forgot.py must import host_isolation", output)
+        # Controls: selecting only isolated modules runs, and a suite without host_isolation.py is not checked.
+        status, output = self.run_suite(root, "-p", "test_isolated.py", cwd=root)
+        self.assertEqual(status, 0, output)
+        for name in ("host_isolation.py", "test_isolated.py"): (root / name).unlink()
+        status, output = self.run_suite(root)
+        self.assertEqual(status, 0, output)
+        self.assertIn("== test_forgot: OK (1 tests", output)
+
     def test_a_process_past_its_timeout_is_stopped_and_leaves_the_run_unmeasured(self):
         # Stretched by load: the quick module and the failing one run under the same limit as the hung one, which
         # sleeps twelve times as long, so it is still stopped.

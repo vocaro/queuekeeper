@@ -1,4 +1,3 @@
-import ast
 import json
 import os
 from pathlib import Path
@@ -12,6 +11,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 from vocaro_engineering import offload_host, resources
+from vocaro_engineering.parallel import unisolated
 import host_isolation
 from host_isolation import stretched
 
@@ -57,17 +57,6 @@ HANGS = textwrap.dedent("""
         def test_a_command_that_ends(self):
             subprocess.run(["true"], timeout=stretched(30), check=True)
 """)
-
-
-def unisolated(paths):
-    """The test modules among paths that do not import host_isolation at their top level."""
-    found = []
-    for path in paths:
-        tree = ast.parse(Path(path).read_text(), str(path))
-        if not any(isinstance(node, ast.Import) and any(alias.name == "host_isolation" for alias in node.names)
-                   for node in tree.body):
-            found.append(Path(path).name)
-    return found
 
 
 class HostIsolationTests(unittest.TestCase):

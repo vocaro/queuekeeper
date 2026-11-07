@@ -6,6 +6,7 @@ take no slot of their own. Each lane writes its own log and receipt and keeps it
 group fails when any lane failed, and is otherwise unmeasured when any lane was.
 """
 import argparse
+import ast
 from concurrent.futures import ThreadPoolExecutor
 import fnmatch
 import glob
@@ -299,6 +300,14 @@ def unittest_main(argv):
     if args.timeout <= 0: parser.error("--timeout needs a positive number of seconds")
     start = Path(args.start_directory).resolve()
     top = Path(args.top_level_directory).resolve() if args.top_level_directory else start
+    # Before discovery imports any of them: a suite that keeps its tests off the real hosts in host_isolation.py
+    # runs no module that skips it, which otherwise only the full suite's own check found, in the merge queue.
+    if (start / ISOLATION).is_file():
+        forgot = unisolated(sorted({path for pattern in args.pattern or ["test*.py"] for path in start.glob(pattern)}))
+        if forgot:
+            print(f"eng unittest: {', '.join(forgot)} must import {ISOLATION.removesuffix('.py')} at its top level, "
+                  f"as every test module beside {start / ISOLATION} does; nothing ran", file=sys.stderr)
+            return 1
     # Discovery imports every module here, as unittest's own would, and each shard imports its own
     # again: from the top-level directory, then the directory eng runs in (#74).
     for directory in (os.getcwd(), str(top)):
@@ -362,6 +371,20 @@ def unittest_main(argv):
     print(f"eng unittest: {total} tests ({skipped} skipped) in {len(results)} processes, {args.jobs} at a time, "
           f"{time.monotonic() - began:.1f}s: " + verdict(failed, unmeasured), flush=True)
     return 1 if failed else evidence.UNMEASURED if unmeasured else 0
+
+
+ISOLATION = "host_isolation.py"
+
+
+def unisolated(paths):
+    """The names of the test modules among paths that do not import host_isolation at their top level."""
+    found = []
+    for path in paths:
+        tree = ast.parse(Path(path).read_text(), str(path))
+        if not any(isinstance(node, ast.Import) and any(alias.name == "host_isolation" for alias in node.names)
+                   for node in tree.body):
+            found.append(Path(path).name)
+    return found
 
 
 def verdict(failed, unmeasured):
