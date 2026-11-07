@@ -678,20 +678,23 @@ def admit(root, args, config=None, *, device_window=None):
             receipt["hereBecause"] = offered.status
             fell_back("the command", offered)
         reap_here(root, inherited)
-        alerts = guarded_alerts(stack, " ".join(command), receipt, args.app or ()) if args.foreground else None
-        if isinstance(alerts, int): return alerts
-        # The second Mac's Notification Center windows, under the foreground eng holds there (#204).
-        blocked = cleared_notifications(receipt) if second else None
-        if blocked is not None: return blocked
         def work():
-            github_artifacts.configured(root, config)
-            # A foreground command restores what it changed on the Mac before SIGKILL, VoiceOver first.
-            with app_registrations.around_run([command], Path.cwd()):
-                status = processes.supervise(command, cwd=Path.cwd(), on_stop=admission.interrupted,
-                                             timeout=args.time_limit,
-                                             kill_after=processes.FOREGROUND_KILL_AFTER if args.foreground
-                                             else processes.KILL_AFTER)
-                return alerts.judged(status) if alerts is not None else status
+            # Finalize the alert report before record() writes the receipt, while admission still holds.
+            with contextlib.ExitStack() as alert_stack:
+                alerts = guarded_alerts(alert_stack, " ".join(command), receipt, args.app or ()) \
+                    if args.foreground else None
+                if isinstance(alerts, int): return alerts
+                # The second Mac's Notification Center windows, under the foreground eng holds there (#204).
+                blocked = cleared_notifications(receipt) if second else None
+                if blocked is not None: return blocked
+                github_artifacts.configured(root, config)
+                # A foreground command restores what it changed on the Mac before SIGKILL, VoiceOver first.
+                with app_registrations.around_run([command], Path.cwd()):
+                    status = processes.supervise(command, cwd=Path.cwd(), on_stop=admission.interrupted,
+                                                 timeout=args.time_limit,
+                                                 kill_after=processes.FOREGROUND_KILL_AFTER if args.foreground
+                                                 else processes.KILL_AFTER)
+                    return alerts.judged(status) if alerts is not None else status
         try:
             return record(root / ".build/engineering/admit", receipt, work)
         except processes.TimedOut as error:

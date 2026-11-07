@@ -406,6 +406,15 @@ class ClearedAlertTests(HostTest):
                 self.assertEqual(summary["cleared"][0]["stoodSeconds"], round(stood, 1))
                 self.assertEqual(summary["cleared"][0]["process"], crash_alerts.crashed(alert))
 
+    def test_an_app_under_test_crash_keeps_the_failure_when_another_alert_also_stood(self):
+        for alerts in ((UNDER_TEST, OTHER), (OTHER, UNDER_TEST)):
+            with self.subTest(alerts=alerts), contextlib.redirect_stderr(StringIO()) as error:
+                run = crash_alerts.Run(self.said.append, lambda: [], ("epublib",))
+                run.cleared = [{"alert": alert, "since": START, "at": START + 17, "during": True}
+                               for alert in alerts]
+                self.assertEqual(run.judged(65), 65)
+                self.assertIn("was for EPUBLib, the app under test", error.getvalue())
+
     def test_a_passing_run_passed_and_an_alert_cleared_before_the_run_changes_nothing(self):
         status, error, summary = self.judged(OTHER, 30, status=0)
         self.assertEqual((status, error), (0, ""))
@@ -580,6 +589,12 @@ class LaneTests(HostTest):
             status, error = self.eng("admit", "--foreground", "--app", "EPUBLib", "--", *failing)
             self.assertEqual(status, evidence.UNMEASURED, error)
             self.assertIn("not the app under test (EPUBLib)", error)
+            receipt = json.loads((self.project / ".build/engineering/admit/source.json").read_text())
+            self.assertEqual(receipt["crashAlerts"]["cleared"], [{
+                "alert": crash_alerts.describe(OTHER), "process": "Crasher944",
+                "start": "2026-11-07T04:46:44+00:00", "stoodSeconds": 17.0, "duringRun": True
+            }])
+            self.assertTrue(receipt["crashAlerts"]["restored"])
             status, error = self.eng("admit", "--foreground", "--app", "Crasher944", "--", *failing)
             self.assertEqual(status, 4, error)
         self.assertEqual(self.eng("admit", "--app", "EPUBLib", "--", "true")[0], 2)

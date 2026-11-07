@@ -288,6 +288,9 @@ class Run:
                     self.left.append(alert)
         return left
 
+    def is_app_under_test(self, process):
+        return process is not None and any(process.casefold() == name.casefold() for name in self.apps)
+
     def verdict(self, entry):
         """(excuses, why): whether a crash-report alert eng cleared during a failed run makes the run unmeasured,
         and why or why not. It does when the alert stood longer than one look and was for a process other than
@@ -300,7 +303,7 @@ class Run:
         if not self.apps:
             return False, (f"was for {process}, and the run names no app under test (a lane's \"apps\", or eng admit "
                            f"--app), so eng counts it as the app under test's; it {standing}")
-        if process.casefold() in {name.casefold() for name in self.apps}:
+        if self.is_app_under_test(process):
             return False, f"was for {process}, the app under test, whose crash is the run's failure; it {standing}"
         if stood <= ONE_LOOK:
             return False, f"was for {process} and {standing}, within one look ({ONE_LOOK} s)"
@@ -311,15 +314,18 @@ class Run:
         """status, or UNMEASURED for a run that did not pass while a system alert eng could not clear was over
         the screen, at a look during the run or one as it ended, or after eng cleared during it a crash-report
         alert for a process other than the app under test that stood longer than one look: its clicks may have
-        gone to the alert. A failure under any other cleared alert stands, saying why."""
+        gone to the alert. A crash report cleared during the run for the app under test preserves the failure
+        even when another alert could make the run unmeasured."""
         if status in (0, evidence.UNMEASURED): return status
         self.look()
-        if self.left:
+        cleared_during_run = [entry for entry in self.cleared if entry["during"]]
+        app_crashed = any(self.is_app_under_test(crashed(entry["alert"])) for entry in cleared_during_run)
+        if self.left and not app_crashed:
             print(f"eng: unmeasured: the run ended with status {status} while {stopping(self.left)}", file=sys.stderr,
                   flush=True)
             return evidence.UNMEASURED
-        judged = [(entry, *self.verdict(entry)) for entry in self.cleared if entry["during"]]
-        excusing = [(entry, why) for entry, excuses, why in judged if excuses]
+        judged = [(entry, *self.verdict(entry)) for entry in cleared_during_run]
+        excusing = [(entry, why) for entry, excuses, why in judged if excuses and not app_crashed]
         for entry, why in excusing:
             print(f"eng: unmeasured: the run ended with status {status} after eng cleared a crash-report alert during "
                   f"it that {why}, so its clicks may have gone to the alert: {describe(entry['alert'])}",
