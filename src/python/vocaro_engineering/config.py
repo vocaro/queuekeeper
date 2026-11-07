@@ -70,8 +70,8 @@ def parse(source):
             group(name, lane, lanes)
             continue
         if not isinstance(lane, dict) or set(lane) - {"command", "resource", "minimumTests", "timeout", "foreground",
-                                                       "here", "model", "display", "budgetMinutes", "wholeHost",
-                                                       "unlockedScreen", "apps"}:
+                                                       "here", "model", "display", "budgetMinutes", "wholeHost", "apps",
+                                                       "unlockedScreen"}:
             raise ValueError(f"Invalid lane {name}")
         apps(name, lane)
         for key in ["foreground", "model", "display", "wholeHost", "unlockedScreen"]:
