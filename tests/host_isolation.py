@@ -7,7 +7,15 @@ named before, so that a test which admits work without redirecting them, by `cli
 test leaves has no process record, so recovery leaves it, and in the host's guard it blocked
 every session's heavy work until it was removed by hand (2026-10-31). The guard's default path is
 redirected too, for a test that clears the environment. A test that needs another namespace still
-sets its own; the process removes this one when it exits.
+sets its own; the process removes this one when it exits. The admission token the suite inherits is
+removed as well: the toolkit's gate is an admitted lane (the owner's decision, 2026-11-07,
+vocaro-engineering#200), so its tests run inside the gate's admission, and a test that admits work would
+otherwise reuse the host's admission rather than take one in its own namespace, and an exclusive one
+would be refused inside it.
+
+Every lane is admitted and offered to the second Mac first, so VOCARO_OFFLOAD_HOST is set to none: no lane a
+test runs, in this process or a child, reaches the real second Mac through the ssh alias. A test of the
+second Mac names its fake one, or clears the variable to read the alias, itself.
 
 `eng doctor` also fixes both Macs itself: it evens out their runtimes, deleting or copying them, and
 shuts down stale pool simulators (cli.fix_hosts). Most doctor tests compare this Mac with the real
@@ -26,7 +34,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
-from vocaro_engineering import cli, crash_alerts, device_notifications, notification_center, offload_host, resources
+from vocaro_engineering import cli, crash_alerts, device_notifications, notification_center, offload_host, remote, resources
 
 
 def stretched(seconds):
@@ -88,6 +96,11 @@ ROOT = Path(tempfile.mkdtemp(prefix="vocaro-test-host-")).resolve()
 atexit.register(lambda owner=os.getpid(): os.getpid() == owner and shutil.rmtree(ROOT, True))
 GATE = str(ROOT / "gate")
 os.environ.update(HEAVY_SLOT_DIR=str(ROOT / "slots"), SW_GATE_LOCK_FILE=GATE)
+os.environ.pop(resources.TOKEN, None)
+os.environ["VOCARO_OFFLOAD_HOST"] = "none"
+# A suite the second Mac runs for a dispatch, as the toolkit's gate is, inherits the dispatch's variables, which make every
+# receipt a test writes say it ran there; a test of a dispatch sets them itself.
+for variable in (remote.DISPATCHER, "VOCARO_DEVICE_LEASE"): os.environ.pop(variable, None)
 resources.GATE_LOCK = offload_host.GATE_LOCK = GATE
 # Nor does any reach the host's crash-report setting or its screen's alerts (#118): a foreground run a test
 # makes reads DialogType unset and no alert, and changes nothing. A test of either replaces these again.

@@ -133,10 +133,10 @@ MOVED = "moved"
 STARTS_LIMIT = 120
 BEFORE_GATE = ["spelling", "provision"]
 # eng land's emergency options, in every repository, by the entry field each sets: an entry tested next as a batch
-# of its own, and one landed alone on the light lanes without the gate, whose written reason --why gives (owner's
+# of its own, and one landed alone on the spelling lane without the gate, whose written reason --why gives (owner's
 # decision, 2026-11-04, vocaro-engineering#163). Neither is routine.
 OPTIONS = {"front": "--front", "noGate": "--no-gate"}
-# The lanes an ungated landing runs where the project has them: the light check a hand push ran.
+# The lanes an ungated landing runs where the project has them: the short check a hand push ran.
 UNGATED_LANES = ["spelling"]
 # The trailer an ungated landing adds to its tip, so that main's history says so (Worker.mark_ungated).
 UNGATED = "Landed-without-gate"
@@ -945,7 +945,7 @@ def check(root, queue, entry, ahead, front):
 def asked_for(name):
     """What an entry's option, a name of OPTIONS, does, for eng land's lines and `eng queue status`."""
     return ("is tested next, ahead of everything waiting, as a batch of its own" if name == "front" else
-            "lands alone on the light lanes, without the gate, and is recorded as ungated")
+            "lands alone on the spelling lane, without the gate, and is recorded as ungated")
 
 
 def because(entry):

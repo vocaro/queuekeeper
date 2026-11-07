@@ -13,7 +13,8 @@ import time
 
 from . import __version__, app_builds, app_registrations, budgets, crash_alerts, device_pass, devices, disk, docs, evidence, evidence_offload, failure_records, foreground, github_artifacts, keychain, merge_queue, \
     notification_center, offload_host, parallel, processes, release, remote, resources, skills, spelling, toolkit_copy, xctest_shards
-from .config import TOOLKIT_ROOT, CAPABILITIES, DEFAULT_TOOLKIT, load, source_identity, stays, unlocked_screen
+from .config import TOOLKIT_ROOT, CAPABILITIES, DEFAULT_TOOLKIT, admission as admission_of, load, source_identity, \
+    stays, unlocked_screen
 from .resources import BUSY, FREE_WAIT
 from .simulators import matrix, pool as simulator_pool
 
@@ -1001,11 +1002,6 @@ def main(argv=None):
                 required |= {"xcrun", "xcodebuild"}
             missing = sorted(name for name in required if not shutil.which(name))
             warnings = []
-            heavy = sorted({"simulator-pool", "measurement", "voiceover"}
-                           & set(config.get("capabilities", [])))
-            if heavy and not any(lane.get("resource") in {"heavy", "exclusive"} for lane in config.get("lanes", {}).values()):
-                warnings.append(f"{', '.join(heavy)} work is heavy, but no lane is heavy or exclusive: add heavy lanes "
-                                "for the tests and the gate (guides/adoption.md)")
             if "integration" not in config:
                 warnings.append("engineering.json declares no integration: add \"integration\": \"direct-main\", "
                                 "or \"pull-request\" for a project that takes changes only by pull request (agents/core.md)")
@@ -1106,13 +1102,14 @@ def main(argv=None):
                 offered = remote.first(root, config, args.lane, extra, args.expect)
                 if not isinstance(offered.status, str): return offered.status
                 reason = offered.status
-            resource = lane.get("resource", "light")
+            # Every lane is admitted, a light one as heavy work, except a self lane, whose script admits its parts.
+            resource = admission_of(lane)
             # A lane whose result depends on the screen has it read on the Mac that runs it, at its start and again
             # when it ends unmeasured (vocaro-engineering#185). One that needs it unlocked waits for that, unless it
             # is nested in an admission that placed it already.
             needs = unlocked_screen(config["lanes"], args.lane)
             reads_screen = needs or any(config["lanes"][name].get("display") for name in (group or [args.lane]))
-            policy_commit = refresh_policy(root) if resource != "light" else None
+            policy_commit = refresh_policy(root) if resource != "self" else None
             directory = root / ".build/engineering" / args.lane
             receipt = {"project": source_identity(root), "toolkit": source_identity(TOOLKIT_ROOT),
                        "policy": policy_commit, **placement(reason)}
@@ -1130,7 +1127,7 @@ def main(argv=None):
                 # What an earlier run left in results/ is not this run's, here as on the second Mac (remote.RESULTS).
                 # The lane finds the directory in ENG_RESULTS_DIR, and a group's lanes each find one of their own in it.
                 shutil.rmtree(directory / "results", ignore_errors=True)
-                if resource != "light": github_artifacts.configured(root, config)
+                if resource != "self": github_artifacts.configured(root, config)
                 commands = [config["lanes"][name]["command"] for name in group] if group is not None else [lane["command"]]
                 try:
                     with app_registrations.around_run(commands, root): return work()
@@ -1157,7 +1154,7 @@ def main(argv=None):
                                   results_directory=directory / "results")))
             try:
                 with processes.forwarding_signals():
-                    if resource == "light":
+                    if resource == "self":
                         if device_window is not None: devices.report_window(device_window, 0)
                         result = execute()
                     else:

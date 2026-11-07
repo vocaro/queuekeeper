@@ -284,9 +284,15 @@ class Placement(unittest.TestCase):
         heavy = {"command": command, "resource": "heavy", "timeout": 60}
         [warning] = budgets.doctor_warnings({"lanes": {"gate": gate, "device": heavy}})
         self.assertIn("device runs a device pass with no \"here\"", warning)
-        # The negative controls: a lane that says here, and a light lane, which runs where it starts.
+        # A lane that gives no resource, or light, is admitted and goes to the second Mac first too (the owner,
+        # 2026-11-07).
+        for lane in ({"command": command}, {"command": command, "resource": "light"}):
+            [warning] = budgets.doctor_warnings({"lanes": {"gate": gate, "device": lane}})
+            self.assertIn("device runs a device pass with no \"here\"", warning)
+        # The negative controls: a lane that says here, and a self lane, which runs where it starts.
         self.assertEqual(budgets.doctor_warnings({"lanes": {"gate": gate, "device": {**heavy, "here": "a device"}}}), [])
-        self.assertEqual(budgets.doctor_warnings({"lanes": {"gate": gate, "device": {"command": command}}}), [])
+        self.assertEqual(budgets.doctor_warnings({"lanes": {"gate": gate, "device": {"command": command,
+                                                                                     "resource": "self"}}}), [])
         # A gate that runs a device pass takes a physical device, which makes it a release check.
         warned = budgets.doctor_warnings({"lanes": {"gate": {**gate, "command": command}}})
         self.assertTrue(any("gate takes a physical device" in warning for warning in warned), warned)

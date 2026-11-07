@@ -483,8 +483,11 @@ class ConfigurationTests(unittest.TestCase):
             with self.subTest(keys), self.assertRaisesRegex(ValueError, f"{next(iter(keys))}, which configured "
                                                                          "GitHub's hosted Mac runner"):
                 self.load(keys)
-        with self.assertRaisesRegex(ValueError, "foreground needs a heavy or exclusive lane"):
-            self.load({"lanes": {"ui": {"command": ["true"], "foreground": True}}})
+        with self.assertRaisesRegex(ValueError, "foreground needs an admitted lane"):
+            self.load({"lanes": {"ui": {"command": ["true"], "resource": "self", "foreground": True}}})
+        # One that gives no resource, or light, is admitted as heavy work (the owner's decision, 2026-11-07).
+        for resource in ({}, {"resource": "light"}):
+            self.load({"lanes": {"ui": {"command": ["true"], "foreground": True, **resource}}})
         # The positive controls: a heavy foreground lane goes to the second Mac, and one that says why stays here.
         lanes = self.load({"lanes": {"ui": {"command": ["true"], "resource": "heavy", "foreground": True},
                                      "device": {"command": ["true"], "resource": "heavy", "foreground": True,

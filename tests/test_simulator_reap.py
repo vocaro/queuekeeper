@@ -997,7 +997,7 @@ class ReapBeforeRunTests(unittest.TestCase):
         ran = [sys.executable, "-c", "open('ran', 'a').write('ran')"]
         (self.project / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Project",
             "capabilities": ["simulator-pool"], "simulatorPool": "Example", "lanes": {"heavy": {"command": ran, "resource": "heavy"},
-                                                  "light": {"command": ran}}}))
+                                                  "own": {"command": ran, "resource": "self"}}}))
         # patch.dict puts back the whole environment when it stops, the switch host_isolation set among it.
         environment = patch.dict(os.environ, {"HEAVY_SLOT_DIR": str(self.root / "slots"),
                                               "SW_GATE_LOCK_FILE": str(self.root / "gate")})
@@ -1044,8 +1044,8 @@ class ReapBeforeRunTests(unittest.TestCase):
         self.assertIn(f"eng: on {remote.HERE}, stopped no further simulator: broken", error)
         self.assertTrue((self.project / "ran").exists())
 
-    def test_light_dispatched_switched_off_and_nested_work_does_not_reap(self):
-        cases = {"a light lane": ({}, ("run", "--here", "light")),
+    def test_self_dispatched_switched_off_and_nested_work_does_not_reap(self):
+        cases = {"a self lane": ({}, ("run", "--here", "own")),
                  "work a dispatch sent here": ({remote.DISPATCHER: "Sender"}, ("run", "--here", "heavy")),
                  "admitted work a dispatch sent here": ({remote.DISPATCHER: "Sender"},
                                                         ("admit", "--", sys.executable, "-c", "open('ran', 'a')")),

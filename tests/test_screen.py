@@ -305,10 +305,11 @@ class ConfigurationTests(unittest.TestCase):
         self.assertTrue(config.unlocked_screen(lanes["lanes"], "mac-tests"))
         self.assertFalse(config.unlocked_screen(lanes["lanes"], "docs"))
 
-    def test_a_light_lane_a_non_boolean_or_a_group_that_hides_it_is_refused(self):
+    def test_a_self_lane_a_non_boolean_or_a_group_that_hides_it_is_refused(self):
         command = ["true"]
         for lanes, said in [
-                ({"docs": {"command": command, "unlockedScreen": True}}, "docs.unlockedScreen needs a heavy"),
+                ({"docs": {"command": command, "resource": "self", "unlockedScreen": True}},
+                 "docs.unlockedScreen needs an admitted lane"),
                 ({"mac": {"command": command, "resource": "heavy", "unlockedScreen": "yes"}}, "must be true or false"),
                 ({"mac": {"command": command, "resource": "heavy", "unlockedScreen": True},
                   "gate": {"parallel": ["mac"], "resource": "heavy"}}, "gate runs mac, which needs an unlocked screen")]:

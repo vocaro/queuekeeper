@@ -1363,8 +1363,8 @@ def leftovers(root, listed=listing, written=disk_writes):
     A process runs from a place when its working directory lies in it or its command line names a
     path in it; a program under /System is macOS's own. It is a live run's when it or an ancestor
     is a live admission owner, as the guard or the admission log records it, or a live run of this
-    file, as its checkout's slot lock records it: a light lane and a provision lane take no
-    admission. Some of a run's processes launchd starts or adopts, and those a live run holds are
+    file, as its checkout's slot lock records it, for the moments between its admissions, such as its
+    checkout's placement. Some of a run's processes launchd starts or adopts, and those a live run holds are
     its own, with everything below them. A simulator's processes descend from launchd_sim, never
     from a run, so a device is a live run's while the device record holds it for one of that run's
     processes, as the pool records the process that reserved a member, or while one of them names
@@ -2631,7 +2631,10 @@ def main(plan):
         if plan.get("dispatcher"): environment["VOCARO_DISPATCHED_FROM"] = plan["dispatcher"]
         if (root / "git-credentials").is_file(): credentials(environment, root / "git-credentials")
         eng = [sys.executable, str(kit / "bin/eng"), "--project", str(checkout)]
-        steps = [("provision", [*eng, "run", "provision"], checkout / ".build/engineering/provision/run.log",
+        # The provision lane is admitted here as every lane is, and runs here, never offered on. Offered work that
+        # declines when it cannot start now has it decline too, rather than wait for a slot with the checkout held.
+        provision = [*eng, "run", "--here", *(["--if-free"] if plan.get("decline") else []), "provision"]
+        steps = [("provision", provision, checkout / ".build/engineering/provision/run.log",
                   checkout)] if plan.get("provision") else []
         # `eng admit --verify` runs its command in the checkout's directory that matches the sender's.
         steps.append(("work", [*eng, *plan["work"]], checkout / plan["log"] if plan.get("log") else None,
@@ -2658,8 +2661,8 @@ def main(plan):
         fresh = receipt.is_file() and receipt.stat().st_mtime >= result["started"]
         if fresh:
             result["receipt"] = json.loads(receipt.read_text())
-        # `eng run --if-free` declined the lane before running it, and wrote no receipt.
-        if plan.get("decline") and result.get("stage") == "work" and result["exitStatus"] == plan["busy"] \
+        # `eng run --if-free` declined the lane, or its provision lane, before running it, and wrote no receipt.
+        if plan.get("decline") and result.get("stage") in ("provision", "work") and result["exitStatus"] == plan["busy"] \
                 and not fresh:
             result.update(refused="its heavy-work queue cannot take the lane now", busy=True)
     except Refusal as refusal:

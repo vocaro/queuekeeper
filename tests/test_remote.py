@@ -271,6 +271,8 @@ class RemoteTests(unittest.TestCase):
                                   "if 'DEVELOPER_DIR' in os.environ else 'no developer dir')"],
                       "resource": "heavy", "minimumTests": 2},
             "fail": {"command": [python, "-c", "print('Ran 1 tests'); raise SystemExit(3)"]},
+            # A lane whose script admits each of its parts itself, which eng run runs where it starts, unadmitted.
+            "own": {"resource": "self", "command": [python, "-c", "print('Ran 1 tests')"]},
             # Outlives the test that stops it, however slowly the host runs it.
             "slow": {"command": [python, "-c", "import os, pathlib, time; "
                                  f"pathlib.Path('.build/slow.pid').write_text(str(os.getpid())); time.sleep({stretched(60)})"],
@@ -292,8 +294,10 @@ class RemoteTests(unittest.TestCase):
                                     python], "resource": "heavy"},
             # Outlives any test that holds it, which stops it: on a loaded Mac a test that expected a
             # 60 s lane to be running found it ended (#111).
+            # Unadmitted, so that only the checkout's slot lock accounts for its run there.
             "linger": {"command": [python, "-c", "import os, pathlib, time; "
-                                   "pathlib.Path('.build/linger.pid').write_text(str(os.getpid())); time.sleep(3600)"]},
+                                   "pathlib.Path('.build/linger.pid').write_text(str(os.getpid())); time.sleep(3600)"],
+                       "resource": "self"},
             "gate": {"command": [python, "-c", "import os; print('Ran 2 tests in', os.getcwd())"],
                      "resource": "heavy", "minimumTests": 2},
             # A gate that runs the project's suites side by side: a Mac's work, every guaranteed slot of it.
@@ -1201,7 +1205,7 @@ class RemoteTests(unittest.TestCase):
             lsof.write_text(f"p{supervisor}\nn{checkout}\n")
             ps.write_text(launchd + f"{record['pid']} 1 {uid} {start} python3 offload_host.py\n"
                           + f"{supervisor} {record['pid']} {uid} {start} {command}\n" + lane_row)
-            # A light lane takes no admission: its live run, which the checkout's slot lock records, accounts for it.
+            # A self lane takes no admission: its live run, which the checkout's slot lock records, accounts for it.
             census, missing = remote.leftover_census("fake")
             self.assertIsNone(missing)
             self.assertEqual(census["leftovers"], [])
@@ -1450,13 +1454,14 @@ class RemoteTests(unittest.TestCase):
         there = receipt["result"]["receipt"]
         self.assertEqual((there["ranOn"], there["dispatchedFrom"]), ("second Mac", offload_host.mac_name()))
         self.assertNotIn("hereBecause", there)
-        # build says why it stays here, and a group that runs it stays with it; a light lane runs where it starts.
+        # build says why it stays here, and a group that runs it stays with it; a self lane, whose script admits its
+        # own parts, runs where it starts.
         for lane, because in [("build", "the lane says: its goldens come from this Mac's GPU"),
                               ("local-pair", "its lane build says: its goldens come from this Mac's GPU"),
-                              ("fail", "a light lane runs where it starts")]:
+                              ("own", "a self lane runs where it starts, and its script admits each of its parts")]:
             with self.subTest(lane):
                 status, output, error = self.run_here(lane)
-                self.assertEqual(status, 3 if lane == "fail" else 0, output + error)
+                self.assertEqual(status, 0, output + error)
                 receipt = json.loads((self.project / ".build/engineering" / lane / "source.json").read_text())
                 self.assertEqual((receipt["ranOn"], receipt["mac"], receipt["hereBecause"]),
                                  ("this Mac", offload_host.mac_name(), because))
@@ -1845,6 +1850,40 @@ class RemoteTests(unittest.TestCase):
         self.assertIn(f"Ran 2 tests in {self.project.resolve()}",
                       (self.project / ".build/engineering" / lane / "run.log").read_text())
         return receipt
+
+    def test_every_lane_is_admitted_and_offered_to_the_second_mac_first_light_ones_included(self):
+        # The owner's decision, 2026-11-07 (vocaro-engineering#200): first come, first served, the second Mac first,
+        # and no light exception. fail says "light" and fails with 3; an unmarked lane is heavy work too.
+        lanes = json.loads((self.project / "engineering.json").read_text())
+        lanes["lanes"]["unmarked"] = {"command": [sys.executable, "-c", "print('Ran 1 tests')"]}
+        (self.project / "engineering.json").write_text(json.dumps(lanes))
+        for lane, expected in [("fail", 3), ("unmarked", 0)]:
+            with self.subTest(lane):
+                status, output, error = self.run_here(lane)
+                self.assertEqual(status, expected, output + error)
+                receipt = json.loads((self.project / ".build/engineering/remote" / lane / "source.json").read_text())
+                self.assertEqual((receipt["ranOn"], receipt["host"]), ("second Mac", "fake"))
+                self.assertFalse((self.project / ".build/engineering" / lane).exists())
+                # The second Mac admitted it, as it admits a heavy lane sent there: its wait in the queue there.
+                self.assertIsInstance(receipt["result"]["receipt"]["queueSeconds"], float)
+        # While the second Mac has no spare capacity, this Mac admits it, and the receipt says why.
+        shutil.rmtree(self.project / ".build/engineering/fail", ignore_errors=True)
+        with patch.dict(os.environ, {"FAKE_BUSY_LIMIT": "0"}):
+            status, output, error = self.run_here("fail")
+        self.assertEqual(status, 3, output + error)
+        receipt = json.loads((self.project / ".build/engineering/fail/source.json").read_text())
+        self.assertEqual(receipt["ranOn"], "this Mac")
+        self.assertRegex(receipt["hereBecause"], r"^the second Mac is busy \(CPU \d+% busy, at or above its "
+                                                 r"HEAVY_BUSY_LIMIT=0%\)$")
+        # Admitted here: its wait in this Mac's queue is recorded, and the policy was refreshed for it.
+        self.assertIsInstance(receipt["queueSeconds"], float)
+        self.assertEqual(receipt["policy"], "policy")
+        # A self lane, whose script admits each of its parts, runs here unadmitted, with no policy refresh.
+        status, output, error = self.run_here("own")
+        self.assertEqual(status, 0, output + error)
+        receipt = json.loads((self.project / ".build/engineering/own/source.json").read_text())
+        self.assertEqual((receipt["ranOn"], receipt["policy"]), ("this Mac", None))
+        self.assertNotIn("queueSeconds", receipt)
 
     def test_a_busy_second_mac_sends_the_lane_to_this_mac_when_this_mac_admits_it(self):
         # Exclusive work holds the second Mac, which its capacity reading shows before anything is offered: the
@@ -2455,7 +2494,7 @@ exec {shlex.quote(real)} "$@"
         shutil.rmtree(self.project / ".build/engineering/remote/gate")
         # A lane the second Mac never takes, and --here, contradict the mode.
         for lane, because in [("build", "the lane says: its goldens"), ("local-pair", "its lane build says"),
-                              ("fail", "a light lane runs where it starts")]:
+                              ("own", "a self lane runs where it starts")]:
             status, _output, error = self.run_here("--offload-only", lane)
             self.assertEqual(status, 2)
             self.assertIn(f"{lane} stays on this Mac ({because}", error)
@@ -2521,10 +2560,10 @@ exec {shlex.quote(real)} "$@"
                 self.assertFalse(self.ran.exists())
                 self.assertFalse((self.home / remote.ROOT).exists())
         # A command that neither chooses a Mac nor reaches the second Mac never read it, and runs as before:
-        # a light lane, a lane that says here, --here, and eng admit without --verify, all here; and eng remote
+        # a self lane, a lane that says here, --here, and eng admit without --verify, all here; and eng remote
         # given --host, there.
         with patch.dict(os.environ, {"VOCARO_BUILD_HOST": "none"}):
-            for arguments, status, place in [(["fail"], 3, "fail"), (["build"], 0, "build"), (["--here", "gate"], 0, "gate")]:
+            for arguments, status, place in [(["own"], 0, "own"), (["build"], 0, "build"), (["--here", "gate"], 0, "gate")]:
                 result = self.run_here(*arguments)
                 self.assertEqual(result[0], status, result)
                 self.assertEqual(receipt(place)["ranOn"], "this Mac")
@@ -2809,7 +2848,8 @@ exec {shlex.quote(real)} "$@"
         with self.assertRaises(ValueError) as raised: config.load(self.project)
         self.assertEqual(str(raised.exception), refused.format("a, c and g", "each"))
         # The positive control: the same lanes without it load, and the heavy ones go to the second Mac.
-        for lanes, reason in zip(kinds, [None, "a light lane runs where it starts", None,
+        # A light lane is admitted and goes to the second Mac first, as every lane does (the owner, 2026-11-07).
+        for lanes, reason in zip(kinds, [None, None, None,
                                          "the lane says: GPU goldens", None]):
             with self.subTest(lanes=lanes), contextlib.redirect_stderr(StringIO()) as said:
                 (self.project / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
@@ -2824,8 +2864,8 @@ exec {shlex.quote(real)} "$@"
             "a lane that stays here gives no reason": {"lane": {**heavy, "here": ""}},
             "a reason is words": {"lane": {**heavy, "here": True}},
             "a blank reason": {"lane": {**heavy, "here": "  "}},
-            "a light lane runs here already": {"lane": {"command": ["true"], "here": "GPU goldens"}},
-            "a light foreground lane is not admitted": {"lane": {"command": ["true"], "foreground": True}},
+            "a self lane runs here already": {"lane": {"command": ["true"], "resource": "self", "here": "GPU goldens"}},
+            "a self foreground lane is not admitted": {"lane": {"command": ["true"], "resource": "self", "foreground": True}},
             "a group's own reason": {"other": heavy, "group": {"parallel": ["other"], "resource": "heavy", "here": ""}}}
         for case, lanes in invalid.items():
             with self.subTest(case):

@@ -418,7 +418,8 @@ both halves fail, the older one is bisected first. The newer half instead waits 
 as before, when:
 
 - the second Mac declines it, or gives no verdict;
-- a lane runs only on this Mac (a light lane, or one that says `here`);
+- a lane runs only on this Mac (a `self` lane, or one that says `here`; a light lane is offered as
+  every lane is since 2026-11-07);
 - the round is docs-only, ungated or `--front`, or a newer entry was added with an option; or
 - a newer entry applies to `origin/main` only on top of an older entry.
 

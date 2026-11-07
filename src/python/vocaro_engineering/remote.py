@@ -14,7 +14,7 @@ the repository's Git directory, where every worktree of the repository can find 
 whole lane's run on this Mac at a commit with no working changes (keep_here); a snapshot's is not,
 and eng says so when it sends one.
 
-`eng run` sends every heavy or exclusive lane to whichever Mac has spare capacity for it now,
+`eng run` sends every admitted lane to whichever Mac has spare capacity for it now,
 the second Mac first, unless the lane says why it stays on this Mac, and `eng admit --verify` a
 command whose result is its log and status. Before it offers the work it reads both Macs'
 capacity (offload_host.capacity, spare): the second Mac runs the work when it has a guaranteed

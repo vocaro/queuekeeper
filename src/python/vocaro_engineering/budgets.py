@@ -148,12 +148,12 @@ def passes_devices(command):
 
 def misplaced_passes(config):
     """The lanes that run a device pass and would go to the second Mac, whose device record defers physical
-    devices to this Mac, so the pass refuses there: a heavy or exclusive lane, or group, without "here"."""
+    devices to this Mac, so the pass refuses there: an admitted lane, or group, without "here"."""
     lanes = config.get("lanes", {})
     found = []
     for name, lane in lanes.items():
         if "command" not in lane or not passes_devices(lane["command"]): continue
-        if lane.get("resource", "light") != "light" and not lane.get("here"): found.append(name)
+        if lane.get("resource") != "self" and not lane.get("here"): found.append(name)
     return found
 
 

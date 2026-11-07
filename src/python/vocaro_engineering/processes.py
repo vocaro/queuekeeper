@@ -37,7 +37,7 @@ KILL_WAIT = 5
 # Pagepour's tests; a lane that runs longer says so with its own timeout.
 DEFAULT_LIMIT = 7200
 # Seconds beyond KILL_AFTER that SIGKILL waits while a live admission owner is among the processes,
-# as a nested eng admit in a light lane's script is: it stops its own command, with a KILL_AFTER
+# as a nested eng admit in a self lane's script is: it stops its own command, with a KILL_AFTER
 # and KILL_WAIT of its own, then settles its guard entry, which SIGKILL would strand. It also
 # bounds an owner that never settles.
 SETTLE_WAIT = 30
