@@ -2639,20 +2639,26 @@ def dispatched(root, name, since):
     directory is named for the second it started (execute); one that only prepared, whose receipt says so,
     ran nothing there. A run that ended without a receipt, as a lost one does, ran on the configured second
     Mac."""
+    return dispatch(root, name, since)[1]
+
+
+def dispatch(root, name, since):
+    """(the directory of the newest dispatch of name from root that started at or after since and ran on the second
+    Mac, that Mac), or (None, None): dispatched, with the directory whose run.log holds what the lane printed there."""
     try: runs = sorted((Path(root) / ".build/engineering/remote" / DISPATCHES / name).iterdir(), reverse=True)
-    except OSError: return None
+    except OSError: return None, None
     for run in runs:
         try: started = calendar.timegm(time.strptime(run.name[:16], "%Y%m%dT%H%M%SZ"))
         except ValueError: continue
-        if started < int(since): return None
+        if started < int(since): return None, None
         try: receipt = json.loads((run / "source.json").read_text())
         except FileNotFoundError: receipt = {}
         except (OSError, ValueError): continue
         if not isinstance(receipt, dict) or receipt.get("stage") == "preparation": continue
-        if receipt.get("host"): return receipt["host"]
-        try: return configured()
-        except ValueError: return None
-    return None
+        if receipt.get("host"): return run, receipt["host"]
+        try: return run, configured()
+        except ValueError: return None, None
+    return None, None
 
 
 def reap_request(root):

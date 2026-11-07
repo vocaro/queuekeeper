@@ -1521,8 +1521,8 @@ class Worker:
         self.failed_lane = None
         for lane in lanes:
             log = self.queue.logs / f"{round_name}-{lane}.log"
-            # A lane run here logs to its own file, and one on the second Mac prints here. What an
-            # earlier round left there is not this one's.
+            # A lane run here logs to its own file, and one on the second Mac to its dispatch's run.log. What an
+            # earlier round left in the lane's own file is not this one's.
             lane_log = self.checkout / ".build/engineering" / lane / "run.log"
             with contextlib.suppress(OSError): lane_log.unlink()
             self.say(f"{lane} on {self.head()[:12]}")
@@ -1544,8 +1544,11 @@ class Worker:
                 if sampler: sampler.stopped.set()
                 raise
             ended = time.monotonic()
-            self.ran_on = remote.dispatched(self.checkout, lane, began)
-            with contextlib.suppress(OSError), log.open("a") as kept: kept.write(lane_log.read_text(errors="replace"))
+            ran, self.ran_on = remote.dispatch(self.checkout, lane, began)
+            # What the lane printed: here in its own file; on the second Mac in its dispatch's run.log, whose eng
+            # unittest summary names the failed tests that rerun reruns alone.
+            printed = lane_log if ran is None else ran / "run.log"
+            with contextlib.suppress(OSError), log.open("a") as kept: kept.write(printed.read_text(errors="replace"))
             self.ran_where = self.mac(lane, began)
             busy = sampler.finish() if sampler else {}
             self.say(f"{lane} exited {status_}{self.placed(lane, began)}")

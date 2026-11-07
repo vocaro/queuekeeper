@@ -3910,6 +3910,54 @@ class FlakyReruns(Fixture):
         self.assertEqual(self.main_messages().count(f"{mq.FLAKY}:"), 1)
         self.assertIn("flaky: test_flaky.Flaky.test_sometimes failed the gate at", mq.describe(entries[0]))
 
+    def second_mac(self):
+        """remote.dispatch as for a gate the second Mac ran: once the lane's own log holds eng unittest's summary, it
+        moves to a dispatch's run.log, as a second Mac's run leaves it, and the dispatch names fake-mac. Before
+        that, as while the lane runs, no dispatch."""
+        dispatches = self.base / "dispatches"
+        def dispatch(root, name, since):
+            own = Path(root) / ".build/engineering" / name / "run.log"
+            if not own.exists() or "eng unittest: " not in own.read_text(errors="replace"): return None, None
+            ran = dispatches / f"{len(list(dispatches.glob('*'))) if dispatches.exists() else 0}"
+            ran.mkdir(parents=True)
+            own.rename(ran / "run.log")
+            return ran, "fake-mac"
+        return patch.object(mq.remote, "dispatch", side_effect=dispatch)
+
+    def test_a_failed_test_of_a_gate_the_second_mac_ran_is_rerun_alone_from_its_dispatchs_log(self):
+        # The queue's log held only what eng run printed here, with no eng unittest summary, so a second Mac's
+        # failed test was never rerun and every batch bisected.
+        self.plan.write_text("F")
+        self.commit("a", "a"); self.commit("b", "b")
+        ids = self.add("a", "b")
+        with self.second_mac(), contextlib.redirect_stdout(io.StringIO()) as said: self.assertEqual(self.work(), 0)
+        log = said.getvalue()
+        self.assertIn("gate exited 1 on fake-mac", log)
+        self.assertIn(f": {self.TEST}; rerunning each alone up to {mq.RERUNS} times on that commit before a bisect", log)
+        self.assertNotIn("no eng unittest summary", log)
+        self.assertNotIn("fail together", log)
+        entries = [self.state(identifier) for identifier in ids]
+        self.assertEqual([entry["state"] for entry in entries], ["landed", "landed"])
+        self.assertIn(f"FAIL: test_sometimes ({self.TEST})", Path(entries[0]["flakes"][0]["gateLog"]).read_text())
+
+    def test_a_second_mac_gate_whose_dispatch_kept_no_log_bisects_and_says_why(self):
+        # The negative control: a dispatch with no run.log gives the rerun nothing to read.
+        self.plan.write_text("F")
+        self.commit("a", "a"); self.commit("b", "b")
+        ids = self.add("a", "b")
+        def lost(root, name, since):
+            own = Path(root) / ".build/engineering" / name / "run.log"
+            if not own.exists() or "eng unittest: " not in own.read_text(errors="replace"): return None, None
+            own.unlink()
+            return self.base, "fake-mac"
+        with patch.object(mq.remote, "dispatch", side_effect=lost), \
+                contextlib.redirect_stdout(io.StringIO()) as said:
+            self.assertEqual(self.work(), 0)
+        log = said.getvalue()
+        self.assertIn("gate failed with no failed test to rerun alone (its log has no eng unittest summary): bisecting",
+                      log)
+        self.assertEqual([self.state(identifier)["state"] for identifier in ids], ["landed", "landed"])
+
     def test_a_test_that_fails_again_alone_is_real_and_the_batch_bisects_with_nothing_recorded(self):
         # The gate fails, the first rerun passes and the second fails: real. Every run after passes.
         self.plan.write_text("F.F")
