@@ -28,7 +28,8 @@ shard_by = "class"
 
 # Fails when any tracked file is named bad*, passes otherwise; touches a counter so a test can count gates.
 LANE = """import pathlib, sys
-counter = pathlib.Path(sys.argv[1]); counter.write_text(counter.read_text() + "x" if counter.exists() else "x")
+# Appended, so that two gates at once, a bisect's halves (mq.Beside), count as two.
+with open(sys.argv[1], "a") as counter: counter.write("x")
 status = pathlib.Path(sys.argv[2])
 if status.exists(): sys.exit(int(status.read_text()))
 bad = sorted(path.name for path in pathlib.Path(".").glob("bad*"))
@@ -4050,6 +4051,124 @@ class FlakyParts(unittest.TestCase):
                 url, said = mq.hardening(Path("."), self.FLAKE, gh)
                 self.assertIsNone(url)
                 self.assertTrue(said.startswith(why), said)
+
+
+class BothHalves(Fixture):
+    """A bisect's two halves gate at once, the newer beside the older, one on each Mac (vocaro-engineering#241).
+    Here both run on this Mac, as the fixture has no second Mac: HERE and BESIDE are no options, and every lane
+    may go to the second Mac (offerable)."""
+    def setUp(self):
+        super().setUp()
+        for name, value in (("HERE", ()), ("BESIDE", ()), ("offerable", lambda config, lanes: None)):
+            patcher = patch.object(mq, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def worked(self):
+        with contextlib.redirect_stdout(io.StringIO()) as said:
+            self.assertEqual(self.work(), 0)
+        return said.getvalue()
+
+    @staticmethod
+    def rounds(log):
+        """The rounds the worker ran, each one gate of the batch or of a bisect's older half."""
+        return sum(1 for line in log.splitlines() if " testing " in line and "newer half" not in line
+                   and "of the bisect" not in line)
+
+    def test_the_good_older_half_lands_and_the_newer_bisects_at_once(self):
+        """[a b bad d] fail; [a b] and [bad d] gate at once, and a b land; [bad] and [d] at once: bad comes back and d
+        lands. The same 5 gates as one half at a time, in 3 rounds rather than 5."""
+        for name in ("a", "b", "bad", "d"): self.commit(name, name)
+        ids = self.add("a", "b", "bad", "d")
+        log = self.worked()
+        self.assertEqual([self.state(i)["state"] for i in ids], ["landed", "landed", "failed", "landed"])
+        self.assertEqual(self.gates(), 5)
+        self.assertEqual(self.rounds(log), 3, log)
+        self.assertIn("testing the newer 2 entries of the bisect", log)
+        self.assertIn("newer half: 2 commits fail together here too: they bisect once the older half has", log)
+        self.assertIn("testing the newer 1 entry of the bisect", log)
+        self.assertNotIn("bad", self.main_files())
+
+    def test_the_good_newer_half_lands_while_the_older_bisects(self):
+        """[a bad c d] fail; [a bad] and [c d] at once: c d land first, ahead of a, and [a] and [bad] gate at once."""
+        for name in ("a", "bad", "c", "d"): self.commit(name, name)
+        ids = self.add("a", "bad", "c", "d")
+        log = self.worked()
+        self.assertEqual([self.state(i)["state"] for i in ids], ["landed", "failed", "landed", "landed"])
+        self.assertEqual(self.gates(), 5)
+        self.assertEqual(self.rounds(log), 3, log)
+        subjects = run(self.repo, "git", "log", "--format=%s", "origin/main").splitlines()
+        self.assertLess(subjects.index("Add a"), subjects.index("Add d"))  # a, newest first, landed after c and d
+
+    def test_two_that_pass_alone_land_the_older_and_the_newer_gates_again(self):
+        """Each passes alone, and together they fail: the older lands, and the newer, whose result was of the main
+        before it, gates again on top of it and comes back, as one half at a time does."""
+        self.commit("left", "left"); self.commit("right", "right")
+        ids = self.add("left", "right")
+        log = self.worked()
+        self.assertEqual([self.state(i)["state"] for i in ids], ["landed", "failed"])
+        self.assertIn("passed beside the older half, which landed first", log)
+        self.assertNotIn("right", self.main_files())
+
+    def test_a_second_mac_that_declines_leaves_the_bisect_as_before(self):
+        """Negative control: when the second Mac cannot start the newer half now, it waits behind the older half,
+        and the bisect costs what it did, one half at a time: 5 gates in 5 rounds."""
+        for name in ("a", "bad", "c", "d"): self.commit(name, name)
+        ids = self.add("a", "bad", "c", "d")
+        real = mq.Beside.gate
+        def declined(worker, lanes, round_name, where=()):
+            worker.ran_where = ""
+            return mq.resources.BUSY, None
+        with patch.object(mq.Beside, "gate", declined):
+            log = self.worked()
+        self.assertIs(mq.Beside.gate, real)
+        self.assertEqual([self.state(i)["state"] for i in ids], ["landed", "failed", "landed", "landed"])
+        self.assertEqual(self.gates(), 5)
+        self.assertEqual(self.rounds(log), 5, log)
+        self.assertIn(f"newer half: no verdict (exit {mq.resources.BUSY}): queued again, behind the older half", log)
+
+    def test_a_lane_that_runs_only_here_keeps_one_half_at_a_time(self):
+        """Negative control: a lane that runs only on this Mac (offerable, whose own cases the test below covers)
+        sends no newer half beside the older, and the bisect is as before: 5 gates in 5 rounds."""
+        self.commit("a", "a"); self.commit("bad", "bad"); self.commit("c", "c"); self.commit("d", "d")
+        ids = self.add("a", "bad", "c", "d")
+        why = "gate runs only on this Mac: the lane says: the fixture's reason"
+        with patch.object(mq, "offerable", lambda config, lanes: why):
+            log = self.worked()
+        self.assertEqual([self.state(i)["state"] for i in ids], ["landed", "failed", "landed", "landed"])
+        self.assertEqual(self.gates(), 5)
+        self.assertEqual(self.rounds(log), 5, log)
+        self.assertIn(f"the newer 2 of the bisect wait for the older half, since {why}", log)
+        self.assertIn(f"the newer 1 of the bisect wait for the older half, since {why}", log)
+        self.assertNotIn("newer half", log)
+
+    def test_the_lanes_each_half_runs_say_where(self):
+        """The older half runs with eng run's --here, the newer with --offload-only, which never runs it here."""
+        self.assertEqual(OFFERED, (("--here",), ("--offload-only",)))
+        self.assertEqual(OFFERABLE({"lanes": {"gate": {"command": ["x"], "resource": "heavy"}}}, ["gate"]), None)
+        self.assertEqual(OFFERABLE({"lanes": {"gate": {"command": ["x"], "resource": "heavy", "here": "it builds the "
+                                                      "app"}}}, ["gate"]), "gate runs only on this Mac: the lane says: "
+                                                                              "it builds the app")
+        self.assertEqual(OFFERABLE({"lanes": {}}, ["gate"]), "gate runs only on this Mac: it is no configured lane")
+
+    def test_a_newer_entry_that_needs_an_older_one_waits_rather_than_come_back(self):
+        """A newer entry that conflicts with origin/main on its own may need an older entry of the bisect: it is
+        not sent back, as a conflict in a round would be, but waits for the older half."""
+        worker = mq.Worker(mq.Queue(self.repo))
+        beside = mq.Beside(worker)
+        entry = {"id": "x"}
+        with patch.object(mq.Queue, "settle") as settle:
+            beside.left_out(entry, mq.CONFLICT, why="conflicts")
+            settle.assert_not_called()
+            beside.left_out(entry, mq.LANDED, why="held")
+            settle.assert_called_once()
+        self.assertEqual(beside.unreachable, [entry])
+        self.assertEqual(beside.checkout.name, f"{self.repo.name}{mq.BESIDE_SUFFIX}")
+
+
+# What the module says before a test's patches: each half's placement option, and which lanes may go to the second Mac.
+OFFERED = (mq.HERE, mq.BESIDE)
+OFFERABLE = mq.offerable
 
 
 if __name__ == "__main__":

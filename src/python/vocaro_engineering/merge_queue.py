@@ -2,7 +2,8 @@
 
 One worker per repository takes everything waiting, cherry-picks it onto origin/main in a checkout
 of its own, runs the project's queue lanes there once, and pushes on a pass. When the lanes fail on
-a batch it halves the batch until it finds the commit to send back, landing the rest; first, when the lane is
+a batch it halves the batch until it finds the commit to send back, landing the rest, with each bisect's two halves
+gated at once, the newer on the second Mac when it can start them (Beside, vocaro-engineering#241); first, when the lane is
 eng unittest, it reruns the failed tests alone, and a batch whose failed tests all pass alone and that changes none
 of the files they import lands, with the flakes recorded (vocaro-engineering#231). Only a lane's
 verdict blames a commit: a run the host left unmeasured runs again, each time once the host has settled,
@@ -42,7 +43,7 @@ import time
 import urllib.request
 
 from . import app_builds, budgets, disk, evidence, landing, offload_host, processes, remote, resources
-from .config import TOOLKIT_ROOT, load, parse
+from .config import TOOLKIT_ROOT, load, parse, stays
 
 MAIN = "refs/remotes/origin/main"
 FETCH = ["fetch", "--no-tags", "origin", f"refs/heads/main:{MAIN}"]
@@ -50,6 +51,8 @@ QUEUED, TESTING, PASSED, LANDED, FAILED, CONFLICT, REMOVED = \
     "queued", "testing", "passed", "landed", "failed", "conflict", "removed"
 # Passed is a batch whose lanes passed and whose push has not landed it: Worker.keep and Worker.push_passed.
 WAITING = {QUEUED, TESTING, PASSED}
+# What Worker.older returns for a batch whose lanes gave no verdict, which is no entry's state.
+NO_VERDICT_OUTCOME = "no verdict"
 # What a lane exits with when it says nothing about the commits: unmeasured, no admission, and a
 # shared host's configuration, which stops for the owner.
 NO_VERDICT = {evidence.UNMEASURED, resources.BUSY, remote.MISCONFIGURED}
@@ -136,6 +139,13 @@ OPTIONS = {"front": "--front", "noGate": "--no-gate"}
 UNGATED_LANES = ["spelling"]
 # The trailer an ungated landing adds to its tip, so that main's history says so (Worker.mark_ungated).
 UNGATED = "Landed-without-gate"
+# While a bisect goes on, the newer half of its suspects gates beside the older half, at once, in a second checkout:
+# the older half on this Mac, the newer on the second Mac when it can start them now, which never runs them here
+# (owner's decision of 2026-11-07, vocaro-engineering#241). A second Mac that declines leaves the newer half waiting,
+# as before. The second checkout sits beside the worker's, with this suffix (Beside).
+HERE = ("--here",)
+BESIDE = ("--offload-only",)
+BESIDE_SUFFIX = "-beside"
 # A failed eng unittest gate's failed tests are each rerun alone on the batch's commit this many times before a
 # bisect, and any rerun's failure makes the failure real; a gate that failed more tests than RERUN_MOST bisects at
 # once, as that is no flake (Worker.rerun, owner's decision of 2026-11-07, vocaro-engineering#231).
@@ -427,6 +437,15 @@ def docs_lanes(config, changed):
     declared = config.get("queue", {}).get("docsOnly")
     if not declared or not changed: return None
     if all(any(named(path, key) for key in declared["paths"]) for path in changed): return declared["lanes"]
+    return None
+
+
+def offerable(config, lanes):
+    """Why one of lanes runs only on this Mac, as its configuration says (config.stays), so that a bisect's newer half
+    cannot gate on the second Mac beside the older half (Beside); None when every one can go there."""
+    for lane in lanes:
+        why = stays(config.get("lanes", {}), lane) if lane in config.get("lanes", {}) else "it is no configured lane"
+        if why: return f"{lane} runs only on this Mac: {why}"
     return None
 
 
@@ -1477,11 +1496,12 @@ class Worker:
         """What integrate records of an entry it put on top, the changelog conflicts it settled: in the queue."""
         self.queue.record(entry, **fields)
 
-    def gate(self, lanes, round_name):
+    def gate(self, lanes, round_name, where=()):
         """(status of the first of lanes that did not pass or 0, its log). ran_on is the second Mac that ran
         that lane, by its dispatch's record (remote.dispatched), or None when it ran here or nowhere. A pass of
         the gate lane leaves its wall time and the parts its log reports in self.measured, for the gate's
-        budget (budgets.py)."""
+        budget (budgets.py). where is eng run's placement option for each lane, HERE or BESIDE while a bisect's
+        halves run at once (Beside), and none otherwise, so that eng run chooses."""
         log, self.ran_on, self.measured, self.timed_out, self.ran_where = None, None, None, None, ""
         self.failed_lane = None
         for lane in lanes:
@@ -1495,7 +1515,7 @@ class Worker:
             started = time.monotonic()  # for the gate's measured duration
             sampler = BusySampler(self.checkout, lane, began).start() if lane == budgets.GATE else None
             try:
-                status_ = processes.run(["python3", "scripts/eng", "run", lane], cwd=self.checkout, log_path=log,
+                status_ = processes.run(["python3", "scripts/eng", "run", *where, lane], cwd=self.checkout, log_path=log,
                                         timeout=LANE_LIMIT, env=self.environment)
             except processes.TimedOut as error:
                 if sampler: sampler.stopped.set()
@@ -1876,7 +1896,8 @@ class Worker:
 
     def round(self):
         queue = self.queue
-        batch = self.choose(queue.waiting())
+        waiting = queue.waiting()
+        batch = self.choose(waiting)
         if not batch: return False
         passed = [entry for entry in batch if entry["state"] == PASSED]
         reach(queue.main_checkout, *FETCH, say=self.say, check=True)
@@ -1900,8 +1921,29 @@ class Worker:
         if docs: self.say(f"every path the batch changes is in main's queue.docsOnly: running only {', '.join(docs)}, "
                           "which is no gate of the pushed commit")
         round_name = f"{time.strftime('%Y%m%d-%H%M%S')}-{head[:8]}"
-        result, log = self.gate(ungated["lanes"] if ungated else docs or lanes_of(config), round_name)
+        beside = self.beside(waiting, batch, base, config, docs, ungated)
+        if beside: result, log = beside.both(self, lanes_of(config), round_name)
+        else: result, log = self.gate(ungated["lanes"] if ungated else docs or lanes_of(config), round_name)
         self.prune()
+        if not beside:
+            self.older(config, applied, base, head, docs, ungated, result, log, round_name)
+            return True
+        flakes = None
+        if result and result not in NO_VERDICT: flakes = self.rerun(config, applied, base, head, log, round_name)
+        older_passes = not result or bool(flakes)
+        # What passed beside lands at once while the older half bisects on; after the older half's push when both
+        # passed, since the older go first when both can (Beside.weigh).
+        if not older_passes: beside.weigh(config, base, older_landed=False)
+        outcome = self.older(config, applied, base, head, docs, ungated, result, log, round_name, flakes, reran=True)
+        if older_passes: beside.weigh(config, base, older_landed=outcome == LANDED)
+        self.after_beside(beside, applied, outcome)
+        return True
+
+    def older(self, config, applied, base, head, docs, ungated, result, log, round_name, flakes=None, reran=False):
+        """What becomes of applied, the round's batch, or a bisect's older half, after its lanes exited result:
+        NO_VERDICT_OUTCOME after no verdict, FAILED once bisected or sent back, QUEUED when it gates again, and
+        LANDED once pushed. reran says that rerun has already been asked, and flakes is what it found."""
+        queue = self.queue
         if result in NO_VERDICT:
             queue.mark(applied, QUEUED)
             self.no_verdicts += 1
@@ -1913,33 +1955,77 @@ class Worker:
             kind = OWNER if result == remote.MISCONFIGURED else SESSION
             if self.no_verdicts >= runs:
                 queue.hold(worded(kind, f"{gave}, the most queue.noVerdictRuns allows ({runs}); see {log}"))
-                return True
+                return NO_VERDICT_OUTCOME
             self.say(f"no verdict (exit {result})" + (f" from {self.ran_on}" if self.ran_on else "")
                      + f", run {self.no_verdicts} of at most {runs}")
             # Every retry waits, so that none starts into the load that voided the run before it.
             busy = self.settle("the lanes run", self.ran_on)
             if busy: queue.hold(worded(kind, f"{gave}, and {busy}; see {log}"))
-            return True
+            return NO_VERDICT_OUTCOME
         self.no_verdicts = 0
-        flakes = None
         if result:
             # A failure that a rerun alone does not repeat lands, when the batch cannot reach the test (#231).
-            flakes = self.rerun(config, applied, base, head, log, round_name)
-            if flakes is None:
+            if not reran: flakes = self.rerun(config, applied, base, head, log, round_name)
+            if not flakes:
                 self.failed(applied, log)
-                return True
+                return FAILED
         # An entry removed during the gate was part of what passed, so what is left has not been tested.
         current = [queue.read(entry["id"]) for entry in applied]
         if any(entry is None or entry["state"] not in WAITING for entry in current):
             self.say("an entry was removed during the run: gating what is left")
             queue.mark(applied, QUEUED)
-            return True
+            return QUEUED
         if ungated: head = self.mark_ungated(ungated, base)
         if flakes: head = self.mark_flaky(flakes, base)
         self.keep(applied, base, head, docs, ungated, flakes)
-        if self.push(config, applied, base, docs, ungated, flakes): self.passed(len(applied))
-        else: queue.mark(applied, QUEUED)
-        return True
+        if self.push(config, applied, base, docs, ungated, flakes):
+            self.passed(len(applied))
+            return LANDED
+        queue.mark(applied, QUEUED)
+        return QUEUED
+
+    def beside(self, waiting, batch, base, config, docs, ungated):
+        """The Beside that gates a bisect's newer half while batch, its older half, gates here, or None to gate batch
+        alone, as before: no bisect is going on, batch is an entry an option put on its own, a docs-only or ungated
+        round, a newer entry an option of eng land marked, a lane that runs only here (offerable), or a newer entry
+        that does not apply to origin/main without the older half, which waits for it (vocaro-engineering#241)."""
+        if self.alone or docs or ungated or not self.limit or self.suspects <= len(batch): return None
+        rest = waiting[len(batch):self.suspects]
+        if not rest or any(entry.get("front") or entry.get("noGate") or entry["state"] == PASSED for entry in rest):
+            return None
+        why = offerable(config, lanes_of(config))
+        if why:
+            self.say(f"the newer {len(rest)} of the bisect wait for the older half, since {why}")
+            return None
+        other = Beside(self)
+        other.prepare()
+        newer = other.integrate(rest, base)
+        if other.unreachable:
+            self.say(f"the newer {len(rest)} of the bisect wait for the older half, since "
+                     f"{', '.join(entry['id'] for entry in other.unreachable)} does not apply to origin/main without it")
+            return None
+        if not newer: return None
+        other.newer, other.tip = newer, other.head()
+        self.queue.mark(newer, TESTING)
+        self.say(f"testing the newer {len(newer)} entr{'y' if len(newer) == 1 else 'ies'} of the bisect at "
+                 f"{other.tip[:12]} on {base[:12]} beside them, on the second Mac if it can start them now")
+        return other
+
+    def after_beside(self, beside, applied, outcome):
+        """The bisect's next step once both halves are weighed, outcome the older half's (Worker.older) and
+        beside.outcome the newer's (Beside.weigh): the newer half alone, halved, when only it fails; the older half,
+        halved, when the newer landed beside it and the older gave no verdict; no bisect once the half that failed
+        has been sent back or both passed. Otherwise, as the older half's outcome left it."""
+        older, newer = len(applied), len(beside.newer)
+        if beside.outcome == FAILED and outcome != FAILED:
+            # The one newer entry was sent back, which explains the failure: the older half goes on unsuspected.
+            self.limit, self.suspects = None, 0
+        elif beside.outcome == BISECT and (outcome == LANDED or (outcome == FAILED and older == 1)):
+            self.suspects, self.limit = newer, max(1, newer // 2)
+        elif beside.outcome == LANDED and outcome in (NO_VERDICT_OUTCOME, QUEUED):
+            self.suspects, self.limit = older, max(1, older // 2)
+        elif beside.outcome == PASSED and outcome == LANDED:
+            self.limit, self.suspects = None, 0
 
     def ungated(self, applied, config):
         """What an ungated landing of applied records, the reason --why gave and the lanes it runs, when it is one
@@ -2050,6 +2136,105 @@ class Worker:
             self.arrived()
             if not more: return
             self.rounds += 1
+
+
+# What Beside.weigh records of a newer half that failed with several entries, which bisect once the older half has.
+BISECT = "bisect"
+
+
+class Beside(Worker):
+    """A bisect's newer half, gated in a checkout beside the worker's, on the second Mac when it can start it now,
+    while the older half gates on this Mac (owner's decision of 2026-11-07, vocaro-engineering#241). Both halves run
+    on the same origin/main. What passes beside lands while the older half bisects on; when both pass, the older lands
+    first and the newer gates again on the main that made, unless its result carries over (Worker.carry)."""
+    def __init__(self, worker):
+        super().__init__(worker.queue)
+        self.worker = worker
+        self.checkout = worker.queue.home / f"{worker.queue.main_checkout.name}{BESIDE_SUFFIX}"
+        self.code, self.environment = worker.code, worker.environment
+        self.unreachable = []  # the newer entries that apply to origin/main only after the older half (left_out)
+        self.newer, self.tip = [], None  # the newer half on top of origin/main, and its commit (Worker.beside)
+        self.result = None  # (status, log) of its lanes (both)
+        self.ran_where, self.round_name = "", None  # where its lanes ran (gate), and its round's name (both)
+        self.outcome = None  # LANDED, FAILED, BISECT, PASSED (passed, gating again) or QUEUED (weigh)
+
+    def say(self, words):
+        self.worker.say(f"newer half: {words}")
+
+    def prepare(self):
+        self.place(self.queue.main_checkout, self.checkout, self.checkout,
+                   "the merge queue's checkout for a bisect's newer half, beside its own")
+
+    def left_out(self, entry, state, **fields):
+        """A newer entry that conflicts may need an older one of the bisect: it waits rather than come back."""
+        if state == CONFLICT: self.unreachable.append(entry)
+        else: super().left_out(entry, state, **fields)
+
+    def both(self, worker, lanes, round_name):
+        """Gate the newer half here, on the second Mac (BESIDE), while worker gates the older half on this Mac
+        (HERE), and return the older half's (status, log). A second Mac that cannot start them now leaves the newer
+        half with no verdict (resources.BUSY), which weigh queues again."""
+        box = {}
+        name = f"{time.strftime('%Y%m%d-%H%M%S')}-{self.tip[:8]}"
+        self.round_name = name
+        def gate():
+            try: box["result"] = self.gate(lanes, name, where=BESIDE)
+            except BaseException as error: box["error"] = error
+        thread = threading.Thread(target=gate, name="newer half", daemon=True)
+        thread.start()
+        try: older = worker.gate(lanes, round_name, where=HERE)
+        finally: thread.join()
+        error = box.get("error")
+        if isinstance(error, processes.Interrupted):
+            self.queue.mark(self.newer, QUEUED)
+            raise error
+        if error is not None: self.say(f"its lanes could not run: {error}")
+        self.result = box.get("result") or (resources.BUSY, None)
+        return older
+
+    def weigh(self, config, base, older_landed):
+        """Settle the newer half by its lanes' result: send back the one entry that failed, queue several that failed
+        to bisect next (BISECT), land a pass, or, once the older half landed, land it only when its result carries
+        over, else queue it to gate again (PASSED). No verdict, the second Mac declining among them, queues it."""
+        result, log = self.result
+        if result in NO_VERDICT:
+            self.say(f"no verdict (exit {result}){self.ran_where}: queued again, behind the older half")
+            self.queue.mark(self.newer, QUEUED)
+            self.outcome = QUEUED
+            return
+        flakes = None
+        if result:
+            flakes = self.rerun(config, self.newer, base, self.tip, log, self.round_name)
+            if not flakes:
+                if len(self.newer) == 1:
+                    self.failed(self.newer, log)
+                    self.outcome = FAILED
+                else:
+                    self.say(f"{len(self.newer)} commits fail together here too: they bisect once the older half has")
+                    self.queue.mark(self.newer, QUEUED)
+                    self.outcome = BISECT
+                return
+        current = [self.queue.read(entry["id"]) for entry in self.newer]
+        if any(entry is None or entry["state"] not in WAITING for entry in current):
+            self.say("an entry was removed during the run: gating what is left")
+            self.queue.mark(self.newer, QUEUED)
+            self.outcome = QUEUED
+            return
+        if older_landed: self.say("passed beside the older half, which landed first: landing on top of it if the "
+                                  "result carries over, else gating again")
+        head = self.mark_flaky(flakes, base) if flakes else self.head()
+        self.keep(self.newer, base, head, None, None, flakes)
+        if self.push(config, self.newer, base, None, None, flakes):
+            self.outcome = LANDED
+        else:
+            self.queue.mark(self.newer, QUEUED)
+            self.outcome = PASSED
+
+    def failed(self, applied, log):
+        """The one newer entry that failed comes back, as a lone entry that fails does (Worker.failed)."""
+        why = "the queue's lanes fail on this commit on top of origin/main: fix it and add it again"
+        self.say(f"{applied[0]['id']}: {why}")
+        self.queue.settle(applied[0], FAILED, why=why, log=str(log))
 
 
 class Trial(Worker):

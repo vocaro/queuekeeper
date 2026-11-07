@@ -405,7 +405,25 @@ lands with `eng land --wait` run as a background command, whose end wakes it wit
 send-back; on 2026-11-03 a session that had run plain `eng land` learned of a conflict only half an
 hour later, from `eng queue status`
 ([#130](https://github.com/vocaro/vocaro-engineering/issues/130)). When a batch fails, the oldest half runs next, and so on until one entry fails
-alone; every entry that passes along the way lands. An entry that comes back keeps its ref until
+alone; every entry that passes along the way lands.
+
+**A bisect's two halves gate at once.** While a bisect goes on, the newer half of its suspects gates
+beside the older half, in a second checkout, `~/Development/vocaro-queue/NAME/NAME-beside`, on the same
+`origin/main` (owner's decision, 2026-11-07, [#241](https://github.com/vocaro/vocaro-engineering/issues/241)).
+The older half runs on this Mac (`eng run --here`) and the newer on the second Mac
+(`eng run --offload-only`), which runs it only if it can start it now. Whichever half passes lands,
+so a newer half that passes can land before the older one. When both pass, the older half lands first,
+and the newer one lands on top of it only if its result carries over; otherwise it gates again. When
+both halves fail, the older one is bisected first. The newer half instead waits behind the older one,
+as before, when:
+
+- the second Mac declines it, or gives no verdict;
+- a lane runs only on this Mac (a light lane, or one that says `here`);
+- the round is docs-only, ungated or `--front`, or a newer entry was added with an option; or
+- a newer entry applies to `origin/main` only on top of an older entry.
+
+Under #231 the rerun-alone check runs on each failed half, so the failure that splits a half is a
+real one. An entry that comes back keeps its ref until
 `eng queue remove ID`. Fix it, rebase and land it again.
 
 **A failed test that passes alone is a flake.** Before it bisects a batch whose failing lane is
