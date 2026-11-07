@@ -2569,6 +2569,8 @@ def run(root):
     reason says whom it is for (worded). A cause that clears by itself, a remote out of reach past its backoff,
     runs the round again after each of CLEARING_WAITS first, this process staying the worker through the wait,
     and holds for a session only when the last try fails too."""
+    # Its gate lanes inherit its signal dispositions, which must not depend on whether `eng land` ran as `&`.
+    processes.default_background_signals()
     queue = Queue(root)
     progress, tries = carried(), 0
     while True:
