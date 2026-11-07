@@ -770,6 +770,20 @@ command says what to add. Neither `eng land` nor the worker reads any checkout's
 this, so a main checkout that lags behind `origin/main` changes nothing: the worker reads its settings
 from `origin/main` in its own checkout, and `eng run` there reads each lane from the batch.
 
+**A deep queue.** `eng queue status` says why entries wait, from `eng-queue/round.json`, the
+worker's account of its round: whether it bisects, with how many suspects and the size of each
+half; each running gate's lane, the Mac it runs on and how long it has run; what a gate waits for,
+by the newest wait `eng run` printed in its log, such as admission behind another project's
+whole-host gate or a second Mac that cannot be reached; a gate stacked on the batch; and a wait for
+the host to settle after a run with no verdict. `--json` has the same under `round`. On 2026-11-07,
+with 3 entries testing and 6 queued, that took a dozen commands: a bisect of a spelling failure,
+its older half waiting more than 25 minutes for this Mac behind StudyWright's and BreezEPUB's
+whole-host gates, and the second Mac answering "No route to host". For more, the answers live in
+`eng-queue/worker.log`, the worker's own log; in each gate's log in `eng-queue/logs/`, named
+`ROUND-LANE.log`, which `eng queue status` names; and, for a gate the second Mac ran, its full
+output in the queue checkout's `.build/engineering/remote/.dispatches/LANE/*/run.log`, which the
+gate's log also copies once the lane ends.
+
 ## Working through a backlog
 
 Asked to close as many issues as possible, triage before fixing.

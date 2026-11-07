@@ -4838,6 +4838,128 @@ class RemovedWhileTesting(Fixture):
             self.assertIn("no worker runs, so no gate of it is left to stop", mq.stopping(queue, entry))
 
 
+class RoundAccount(Fixture):
+    """The worker's account of its round in eng-queue (ROUND_FILE), which `eng queue status` shows so that nobody has
+    to read worker.log to learn why entries wait: a bisect's halves, each gate's lane, Mac and time, and what it waits
+    for."""
+    UNREACHABLE = ("eng: gate waits for this Mac, and asks the second Mac again at the next offer: build-host cannot "
+                   "be reached: ssh: connect to host build-host port 22: No route to host")
+    WHOLE_HOST = ("heavy: waiting (0s): it waits behind a whole-host lane holding the host: StudyWright gate")
+
+    def setUp(self):
+        super().setUp()
+        for name, value in (("HERE", ()), ("BESIDE", ()), ("offerable", lambda config, lanes: None)):
+            patcher = patch.object(mq, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def shown(self, as_json=False, working=True):
+        with patch.object(mq.Queue, "working", return_value=working), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            mq.status(self.repo, as_json=as_json)
+        return json.loads(out.getvalue()) if as_json else out.getvalue()
+
+    def test_what_a_gate_log_says_it_waits_for(self):
+        self.assertEqual(mq.waited_for([self.WHOLE_HOST]),
+                         ("admission on this Mac: it waits behind a whole-host lane holding the host: StudyWright gate",
+                          False))
+        waiting, here = mq.waited_for(["eng: provision ok", self.UNREACHABLE])
+        self.assertIn("waits for this Mac, and asks the second Mac again", waiting)
+        self.assertIn("No route to host", waiting)
+        self.assertFalse(here)
+        self.assertEqual(mq.waited_for(["eng: trying gate on this Mac: build-host is at capacity"]),
+                         ("this Mac's admission, as the second Mac declined it: build-host is at capacity", False))
+        # An admission after the wait clears it, and says the lane runs on this Mac.
+        self.assertEqual(mq.waited_for([self.WHOLE_HOST, "heavy: slot 2 after 1500s: fixture gate"]), (None, True))
+        # Negative control: a lane's own output says nothing of a wait.
+        self.assertEqual(mq.waited_for(["bad: []", "heavy: the admission log was not written: x", "waiting for Godot"]),
+                         (None, False))
+
+    def test_a_gate_record_follows_its_log(self):
+        queue = mq.Queue(self.repo)
+        worker = mq.Worker(queue)
+        worker.gating = ["e1"]
+        log = queue.logs / "round-gate.log"
+        log.write_text(self.UNREACHABLE + "\n")
+        with patch.object(mq.Worker, "head", return_value="a" * 40):
+            watch = mq.GateWatch(worker, "gate", time.time() - 90, log)
+        watch.look()
+        gate = queue.round_state()["gates"]["batch"]
+        self.assertEqual((gate["lane"], gate["entries"], gate["mac"]), ("gate", ["e1"], None))
+        self.assertIn("No route to host", gate["waiting"])
+        with log.open("a") as more: more.write(self.WHOLE_HOST + "\nheavy: slot 1 after 3s: fixture gate\n")
+        watch.look()
+        gate = queue.round_state()["gates"]["batch"]
+        self.assertEqual((gate["mac"], gate["waiting"]), ("this Mac", None))
+        # A lane that a dispatch sent to the second Mac runs there.
+        with patch.object(mq.remote, "dispatched", return_value="build-host"): watch.look()
+        self.assertEqual(queue.round_state()["gates"]["batch"]["mac"], "the second Mac (build-host)")
+        watch.finish()
+        self.assertEqual(queue.round_state()["gates"], {})
+
+    def test_status_shows_the_round_and_why_its_gates_wait(self):
+        queue = mq.Queue(self.repo)
+        began = time.time() - 27 * 60
+        queue.note(lambda state: state.update(
+            round="20261107-120000-abcdef12", entries=["e1"], bisect={"suspects": 6, "older": 1, "newer": 2},
+            gates={"older half": {"lane": "gate", "began": began, "entries": ["e1"], "mac": None, "log": "/l/o.log",
+                                  "waiting": "admission on this Mac: it waits behind a whole-host lane holding the "
+                                             "host: StudyWright gate"},
+                   "newer half": {"lane": "gate", "began": began, "entries": ["e2", "e3"],
+                                  "mac": "the second Mac (build-host)", "waiting": None, "log": "/l/n.log"},
+                   "stacked": {"lane": "gate", "began": time.time() - 5, "entries": ["e4"], "mac": None,
+                               "waiting": "waits for this Mac: No route to host", "log": "/l/s.log"}}))
+        said = self.shown()
+        self.assertIn("round 20261107-120000-abcdef12: 1 entry; bisecting 6 entries: older half 1 entry, newer half 2",
+                      said)
+        self.assertIn("  older half (e1): gate lane on no Mac yet, running 27m", said)
+        self.assertIn("    waiting: admission on this Mac: it waits behind a whole-host lane holding the host: "
+                      "StudyWright gate", said)
+        self.assertIn("  newer half (e2, e3): gate lane on the second Mac (build-host), running 27m", said)
+        self.assertIn("  stacked gate (e4): gate lane on no Mac yet, running ", said)
+        self.assertIn("    waiting: waits for this Mac: No route to host", said)
+        self.assertLess(said.index("older half (e1)"), said.index("newer half (e2"))
+        self.assertLess(said.index("newer half (e2"), said.index("stacked gate"))
+        shown = self.shown(as_json=True)
+        self.assertEqual(shown["round"]["bisect"], {"suspects": 6, "older": 1, "newer": 2})
+        self.assertGreaterEqual(shown["round"]["gates"]["older half"]["runningSeconds"], 27 * 60)
+        self.assertEqual(shown["round"]["gates"]["stacked"]["entries"], ["e4"])
+        # Negative control: what a worker that stopped wrote is no round of the queue's.
+        self.assertNotIn("round ", self.shown(working=False))
+        self.assertIsNone(self.shown(as_json=True, working=False)["round"])
+
+    def test_a_bisect_records_both_halves_while_they_gate_and_nothing_once_the_worker_stops(self):
+        for name in ("a", "b", "bad", "d"): self.commit(name, name)
+        self.add("a", "b", "bad", "d")
+        queue, seen = mq.Queue(self.repo), []
+        real = mq.processes.run
+        def recorded(command, **options):
+            seen.append(queue.round_state())
+            return real(command, **options)
+        with patch.object(mq.processes, "run", recorded), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(self.work(), 0)
+        first = seen[0]
+        self.assertIsNone(first["bisect"])
+        self.assertEqual(list(first["gates"]), ["batch"])
+        self.assertEqual(len(first["gates"]["batch"]["entries"]), 4)
+        halves = [state for state in seen if state["bisect"]]
+        self.assertTrue(halves, seen)
+        self.assertEqual(halves[0]["bisect"], {"suspects": 4, "older": 2, "newer": 2})
+        roles = set().union(*(state["gates"] for state in halves))
+        self.assertLessEqual({"older half", "newer half"}, roles)
+        self.assertFalse(queue.round_file.exists())
+
+    def test_a_wait_for_the_host_to_settle_is_recorded_and_cleared(self):
+        worker = mq.Worker(mq.Queue(self.repo))
+        states = []
+        with self.host([("cpu", "busy: the fixture's load"), None],
+                       then=lambda: states.append(worker.queue.round_state())) as (slept, said):
+            self.assertIsNone(worker.settle("the lanes run"))
+        self.assertIn("the host to settle before the lanes run again, since busy: the fixture's load",
+                      states[0]["waiting"])
+        self.assertIsNone(worker.queue.round_state()["waiting"])
+
+
 # What the module says before a test's patches: each half's placement option, and which lanes may go to the second Mac.
 OFFERED = (mq.HERE, mq.BESIDE)
 OFFERABLE = mq.offerable

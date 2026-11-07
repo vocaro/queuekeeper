@@ -189,6 +189,17 @@ GH_TIMEOUT = 60
 # beside its wall time, so that the budget's median can leave out runs made on a loaded host (vocaro-engineering#235).
 BUSY_SAMPLE = 60
 GH_ENV = {"GH_PROMPT_DISABLED": "1", "GH_NO_UPDATE_NOTIFIER": "1"}
+# The worker's account of the round it runs, in eng-queue, which `eng queue status` shows so that nobody has to read
+# worker.log to learn why entries wait: the bisect's halves, each gate's lane, Mac and start, and what each waits for
+# (Queue.note, GateWatch). Each running gate's log is read for that this often.
+ROUND_FILE = "round.json"
+WATCH_POLL = 10
+# What eng run prints while a lane waits (resources.Admission, remote.Offer, remote.overflow), and once this Mac
+# admits it: GateWatch reads the newest of them in the gate's log.
+ADMISSION_WAIT = re.compile(r"^heavy: waiting \(\d+s\): (.+)$")
+OFFER_WAIT = re.compile(r"^eng: \S+ (waits for .+)$")
+DECLINED = re.compile(r"^eng: trying \S+ on this Mac: (.+)$")
+ADMITTED = re.compile(r"^heavy: slot ")
 WAIT_LIMIT = 6 * 3600
 KEPT_LOGS = 200
 GIT_TIMEOUT = 600
@@ -718,6 +729,65 @@ class BusySampler:
                 "busyLimit": self.readings[-1][1], "busyOn": self.readings[-1][2], "busyReadings": len(shares)}
 
 
+def waited_for(lines, waiting=None, here=False):
+    """(what the lane waits for, or None, and whether this Mac admitted it) after lines of its gate log, from
+    waiting and here as the lines before them left them: the newest wait eng run reported, cleared by an admission
+    on this Mac that follows it."""
+    for line in lines:
+        line = line.strip()
+        found = ADMISSION_WAIT.match(line)
+        if found: waiting = f"admission on this Mac: {found.group(1)}"
+        elif OFFER_WAIT.match(line): waiting = OFFER_WAIT.match(line).group(1)
+        elif DECLINED.match(line): waiting = f"this Mac's admission, as the second Mac declined it: {DECLINED.match(line).group(1)}"
+        elif ADMITTED.match(line): waiting, here = None, True
+    return waiting, here
+
+
+class GateWatch:
+    """The record of a running gate lane in the round's account (Queue.note): where it runs, by its dispatch's
+    record (remote.dispatched) or this Mac's admission in its log, and what it waits for, by its log (waited_for),
+    read every WATCH_POLL seconds. Nothing it reads or fails to read may end the gate."""
+    def __init__(self, worker, lane, began, log):
+        self.queue, self.checkout, self.role = worker.queue, worker.checkout, worker.role
+        self.lane, self.began, self.log = lane, began, log
+        self.offset, self.waiting, self.here, self.partial = 0, None, False, ""
+        self.stopped = threading.Event()
+        self.thread = threading.Thread(target=self.every, name="gate watch", daemon=True)
+        self.queue.note(lambda state: state.setdefault("gates", {}).__setitem__(self.role, {
+            "lane": lane, "began": began, "entries": list(worker.gating), "head": worker.head(), "log": str(log),
+            "mac": None, "waiting": None}))
+
+    def look(self):
+        try:
+            with open(self.log, "rb") as log:
+                log.seek(self.offset)
+                said = log.read()
+            self.offset += len(said)
+            lines = (self.partial + said.decode(errors="replace")).split("\n")
+            self.partial = lines.pop()
+            self.waiting, self.here = waited_for(lines, self.waiting, self.here)
+        except OSError: pass
+        try: host = remote.dispatched(self.checkout, self.lane, self.began)
+        except Exception: host = None  # noqa: BLE001
+        mac = f"the second Mac ({host})" if host else "this Mac" if self.here else None
+        self.queue.gate_note(self.role, mac=mac, waiting=self.waiting)
+
+    def every(self):
+        while not self.stopped.wait(WATCH_POLL):
+            try: self.look()
+            except Exception: pass  # noqa: BLE001
+
+    def start(self):
+        self.thread.start()
+        return self
+
+    def finish(self):
+        """Stop watching, and take the gate's record out of the account: it is no longer running."""
+        self.stopped.set()
+        if self.thread.ident is not None: self.thread.join(timeout=GH_TIMEOUT)
+        self.queue.note(lambda state: state.get("gates", {}).pop(self.role, None))
+
+
 class Queue:
     def __init__(self, root):
         self.root = Path(root)
@@ -727,6 +797,8 @@ class Queue:
         self.entries = self.directory / "entries"
         self.logs = self.directory / "logs"
         self.hold_file = self.directory / "hold"
+        self.round_file = self.directory / ROUND_FILE
+        self.round_lock = threading.Lock()  # between the threads of one worker, the only writer of round_file
         self.home = self.main_checkout.parent / QUEUES / self.main_checkout.name
         self.checkout = self.home / self.main_checkout.name
         # Where an earlier worker kept it, beside the main checkout, until it moves (Worker.place).
@@ -791,6 +863,32 @@ class Queue:
                     current.pop("passed", None)
                     if state != TESTING: current.pop("stopsWhenRemoved", None)
                     self.save(current)
+
+    def round_state(self):
+        """The worker's account of its round (ROUND_FILE), or None when there is none."""
+        try: found = json.loads(self.round_file.read_text())
+        except (OSError, ValueError): return None
+        return found if isinstance(found, dict) else None
+
+    def note(self, change):
+        """Apply change to the round's account and write it, atomically. An account that cannot be written is
+        left as it was: it explains the queue, and never stops it."""
+        with self.round_lock:
+            state = self.round_state() or {}
+            change(state)
+            state["updated"] = time.time()
+            staged = self.round_file.with_suffix(f".{os.getpid()}.tmp")
+            try:
+                staged.write_text(json.dumps(state, indent=2) + "\n")
+                os.replace(staged, self.round_file)
+            except OSError: pass
+
+    def gate_note(self, role, **fields):
+        """Set fields of the record of role's running gate, while it has one."""
+        def change(state):
+            gate = state.get("gates", {}).get(role)
+            if gate is not None: gate.update(fields)
+        self.note(change)
 
     def held(self):
         try: return self.hold_file.read_text().strip()
@@ -1076,6 +1174,43 @@ def describe(entry):
     return line
 
 
+def ago(began, at=None):
+    """How long ago began, an epoch time, was, in minutes or seconds."""
+    seconds = max(0, int((at or time.time()) - began))
+    return f"{seconds // 60}m{seconds % 60:02d}s" if seconds >= 60 else f"{seconds}s"
+
+
+def entries_word(count):
+    return f"{count} entr{'y' if count == 1 else 'ies'}"
+
+
+def round_lines(state, at=None):
+    """What `eng queue status` says of the worker's round from its account (ROUND_FILE): whether it bisects and how
+    far, each running gate's lane, Mac and time, what each gate and the round wait for, and any stacked gate."""
+    lines = []
+    if state.get("round"):
+        line = f"round {state['round']}: {entries_word(len(state.get('entries', [])))}"
+        if state.get("adopted"): line += ", whose gate began stacked on the batch that landed before it"
+        bisect = state.get("bisect")
+        if bisect:
+            line += (f"; bisecting {entries_word(bisect.get('suspects', 0))}: older half "
+                     f"{entries_word(bisect.get('older', 0))}, newer half "
+                     + (f"{bisect['newer']}" if bisect.get("newer") else "waiting for the older"))
+        lines.append(line)
+    order = {"batch": 0, "older half": 1, "newer half": 2, "stacked": 3}
+    for role, gate in sorted(state.get("gates", {}).items(), key=lambda item: (order.get(item[0], 9), item[0])):
+        what = "stacked gate" if role == "stacked" else role
+        line = (f"  {what} ({', '.join(gate.get('entries', [])) or 'no entry'}): {gate.get('lane')} lane"
+                f" on {gate.get('mac') or 'no Mac yet'}, running {ago(gate.get('began', 0), at)}")
+        if gate.get("waiting"): line += f"\n    waiting: {gate['waiting']}"
+        if gate.get("log"): line += f"\n    log: {gate['log']}"
+        lines.append(line)
+    if state.get("waiting"):
+        lines.append(f"  waiting for {state['waiting']}"
+                     + (f", for {ago(state['waitingSince'], at)}" if state.get("waitingSince") else ""))
+    return lines
+
+
 def status(root, as_json=False, recent=5):
     queue = Queue(root)
     entries = queue.all()
@@ -1086,12 +1221,17 @@ def status(root, as_json=False, recent=5):
     # Shown until a gate on main passes over it, however long ago it landed.
     ungated = [entry for entry in entries if entry["state"] == LANDED and entry.get("ungated")
                and not covered(root, entry, entries)]
+    # A worker that stopped leaves no round: what it wrote is not the queue's state.
+    current = queue.round_state() if working else None
+    for gate in (current or {}).get("gates", {}).values():
+        if isinstance(gate.get("began"), (int, float)): gate["runningSeconds"] = round(time.time() - gate["began"])
     if as_json:
-        print(json.dumps({"worker": working, "held": why, "waiting": waiting, "recent": done,
+        print(json.dumps({"worker": working, "held": why, "round": current, "waiting": waiting, "recent": done,
                           "ungated": [entry["id"] for entry in ungated]}, indent=2))
         return 0
     print(f"worker: {'running' if working else 'none'}" + (f"; held {why}" if why else ""))
     if waiting and not working and not why: print("waiting with no worker: `eng queue resume` starts one")
+    for line in round_lines(current or {}): print(line)
     for entry in ungated:
         print(f"ungated on main: {entry['id']} landed {entry['landedAs'][:12]} without the gate, which the next gate "
               "on main covers")
@@ -1220,6 +1360,7 @@ class Worker:
         self.pending = None  # the Stack started on this round's batch while it gates (watched)
         self.gating = ()  # the IDs of the entries integrate last put on top, which the gate tests (Removal)
         self.withdrawn = []  # those of them that left the queue, which stopped the last gate (gate)
+        self.role = "batch"  # what its gate is in the round's account (GateWatch): the batch, or a bisect's older half
 
     def say(self, words):
         print(f"queue: {time.strftime('%H:%M:%S')} {words}", flush=True)
@@ -1265,16 +1406,20 @@ class Worker:
                     if loads else "; the load average was unavailable")
             if busy is None:
                 if looks > 1: self.say(f"{where} settled after {int(waited)}s and {looks} looks{span}: {what} again")
+                if looks > 1: self.queue.note(lambda state: state.update(waiting=None, waitingSince=None))
                 return None
             kind, reason = busy
             if looks == 1:
                 self.say(f"{reason}: {what} again once {where} settles, waiting up to {SETTLE_LIMIT}s")
+                self.queue.note(lambda state: state.update(
+                    waiting=f"{where} to settle before {what} again, since {reason}", waitingSince=time.time()))
             elif (kind, where) != seen or now() - reported >= SETTLE_REPORT:
                 self.say(f"still waiting after {int(waited)}s: {reason}")
                 reported = now()
             seen = kind, where
             if waited >= SETTLE_LIMIT:
                 self.say(f"{where} did not settle in {int(waited)}s and {looks} looks{span}")
+                self.queue.note(lambda state: state.update(waiting=None, waitingSince=None))
                 return f"{where} did not settle in {int(waited)}s ({reason})"
             pause(min(SETTLE_POLL, max(0, SETTLE_LIMIT - waited)))
 
@@ -1648,9 +1793,12 @@ class Worker:
                 command = IMPLICIT_SPELLING
                 self.say(f"{lane}: the project has no spelling lane, so the queue runs the toolkit's: "
                          f"{shlex.join(command)}")
+            watch = GateWatch(self, lane, began, log).start()
             try:
-                status_ = processes.run(command, cwd=self.checkout, log_path=log,
-                                        timeout=LANE_LIMIT, env=self.environment, cancel=removal)
+                try:
+                    status_ = processes.run(command, cwd=self.checkout, log_path=log,
+                                            timeout=LANE_LIMIT, env=self.environment, cancel=removal)
+                finally: watch.finish()
             except processes.TimedOut as error:
                 if sampler: sampler.stopped.set()
                 self.ran_on = remote.dispatched(self.checkout, lane, began)
@@ -2142,6 +2290,8 @@ class Worker:
                           "which is no gate of the pushed commit")
         round_name = f"{time.strftime('%Y%m%d-%H%M%S')}-{head[:8]}"
         beside = self.beside(waiting, batch, base, config, docs, ungated)
+        self.role = "older half" if beside else "batch"
+        self.begun(round_name, head, base, applied, beside)
         if beside: result, log = beside.both(self, lanes_of(config), round_name)
         elif self.alone or docs or ungated or self.limit:
             result, log = self.gate(ungated["lanes"] if ungated else docs or lanes_of(config), round_name)
@@ -2165,6 +2315,20 @@ class Worker:
         if older_passes: beside.weigh(config, base, older_landed=outcome == LANDED)
         self.after_beside(beside, applied, outcome)
         return True
+
+    def begun(self, round_name, head, base, applied, beside=None, adopted=False):
+        """Start the round's account (ROUND_FILE): its batch, and, while bisecting, how many entries the bisect
+        suspects and the size of each half, the newer 0 while it waits for the older. The gates still running, a
+        stacked one among them, keep their records."""
+        bisect = None
+        if self.limit:
+            bisect = {"suspects": self.suspects, "older": len(applied), "newer": len(beside.newer) if beside else 0}
+        def change(state):
+            state.update(round=round_name, started=time.time(), head=head, base=base, pid=os.getpid(),
+                         entries=[entry["id"] for entry in applied], bisect=bisect, adopted=adopted, waiting=None,
+                         waitingSince=None)
+            state.setdefault("gates", {})
+        self.queue.note(change)
 
     def older(self, config, applied, base, head, docs, ungated, result, log, round_name, flakes=None, reran=False,
               runner=None):
@@ -2248,6 +2412,7 @@ class Worker:
         self.alone = False
         self.say(f"testing {len(applied)} entr{'y' if len(applied) == 1 else 'ies'} at {stacked.tip[:12]} on "
                  f"{base[:12]}, whose gate began on top of the batch that just landed")
+        self.begun(stacked.name, stacked.tip, base, applied, adopted=True)
         result, log = self.watched(stacked.runner, config, lanes, base, stacked.tip, applied, stacked.wait)
         self.prune()
         outcome = self.older(config, applied, base, stacked.tip, None, None, result, log, stacked.name,
@@ -2488,6 +2653,7 @@ class Worker:
                 self.rounds += 1
         finally:
             self.drop_stacked("the worker stops")
+            with contextlib.suppress(OSError): self.queue.round_file.unlink()
 
     def connected(self):
         """Raise NoLocalNetwork, before a round, when a second Mac is configured and macOS denies this process the
@@ -2511,6 +2677,7 @@ class Beside(Worker):
     def __init__(self, worker, checkout=None, label="newer half", settles=True):
         super().__init__(worker.queue)
         self.worker, self.label, self.settles = worker, label, settles
+        self.role = label
         self.checkout = checkout or worker.queue.home / f"{worker.queue.main_checkout.name}{BESIDE_SUFFIX}"
         self.code, self.environment = worker.code, worker.environment
         self.unreachable = []  # the newer entries that apply to origin/main only after the older half (left_out)
@@ -2824,6 +2991,8 @@ def run(root):
             # Whatever a worker that died left testing was never pushed. What it left passed is pushed first,
             # and a push that had gone through lands it then, as a push of what main already has.
             queue.mark([entry for entry in queue.all() if entry["state"] == TESTING], QUEUED)
+            # Nor is its account of its round this worker's (ROUND_FILE).
+            with contextlib.suppress(OSError): queue.round_file.unlink()
             worker = Worker(queue, progress)
             progress = None
             try:
@@ -2847,6 +3016,8 @@ def run(root):
                     worker.say(f"{error}: a cause that clears by itself, so the round runs again in {delay}s, "
                                f"try {tries} of {len(CLEARING_WAITS)}")
                     progress = worker.progress()
+                    queue.note(lambda state: state.update(
+                        waiting=f"the round to run again after {delay}s, since {error}", waitingSince=time.time()))
                     pause(delay)
                     continue
                 cause = f"{error}{passed_push(queue)}"
