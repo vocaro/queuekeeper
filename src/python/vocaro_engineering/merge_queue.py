@@ -550,10 +550,18 @@ def repository(root, named):
                      f"{Queue(root).main_checkout}")
 
 
-def land(root, args):
+def land(root, args, directory=None):
     """`eng land`: add to this repository's queue or, with --repo, another's, whose own queue, lanes and
     worker take it exactly as they take that repository's own sessions' commits. With another
-    repository's main checkout HEAD would be whatever it has checked out, so the commit is named."""
+    repository's main checkout HEAD would be whatever it has checked out, so the commit is named.
+    directory, the command's current directory, must be in this repository unless --repo names one:
+    each project's launcher lands its own repository, so another project's `scripts/eng land` run from
+    here would queue that project's HEAD, or report it landed (vocaro-engineering#210)."""
+    elsewhere = None if args.repo or directory is None else other_repository(root, directory)
+    if elsewhere is not None:
+        print(f"eng: this eng lands {root}, but the current directory is in {elsewhere}: run that "
+              "checkout's own scripts/eng land, or name the commit with --repo", file=sys.stderr)
+        return 1
     target = root
     if args.repo:
         target = repository(root, args.repo)
@@ -570,6 +578,17 @@ def land(root, args):
     status_ = wait(target, identifier, args.limit) if args.wait and identifier is not None else 0
     warn(target)
     return status_
+
+
+def other_repository(root, directory):
+    """The top of the Git repository directory is in, when that is not root's repository (a worktree
+    of root's is root's), or None. A directory in no repository is None too."""
+    def common(path):
+        done = git(path, "rev-parse", "--path-format=absolute", "--git-common-dir")
+        return Path(done.stdout.strip()).resolve() if done.returncode == 0 else None
+    here = common(directory)
+    if here is None or here == common(root): return None
+    return text(directory, "rev-parse", "--show-toplevel")
 
 
 def warn(root):

@@ -545,6 +545,30 @@ class CheckedWhenQueued(Fixture):
             self.assertEqual(len(mq.Queue(self.repo).all()), 1)
 
 
+    def test_eng_land_from_another_repository_refuses_and_from_a_worktree_or_none_lands(self):
+        """Each project's launcher lands its own repository: another project's eng land, run here, would
+        queue that project's HEAD or report it landed, exit 0 (vocaro-engineering#210)."""
+        import argparse
+        parser = argparse.ArgumentParser()
+        mq.land_arguments(parser)
+        other = self.base / "other"
+        run(self.base, "git", "init", "-q", str(other))
+        worktree = self.base / "worktree"
+        run(self.repo, "git", "worktree", "add", "-q", "--detach", str(worktree))
+        outside = self.base / "outside"
+        outside.mkdir()
+        self.commit("a", "a")
+        said = io.StringIO()
+        with patch.object(mq.Queue, "start"), contextlib.redirect_stdout(said), contextlib.redirect_stderr(said):
+            self.assertEqual(mq.land(self.repo, parser.parse_args(["a"]), other / "."), 1)
+        self.assertIn(f"eng: this eng lands {self.repo}, but the current directory is in {other.resolve()}",
+                      said.getvalue())
+        self.assertEqual(mq.Queue(self.repo).all(), [])
+        for directory in (worktree, outside, self.repo):
+            with patch.object(mq.Queue, "start"), patch("builtins.print"), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(mq.land(self.repo, parser.parse_args(["a"]), directory), 0, directory)
+        self.assertEqual(len(mq.Queue(self.repo).all()), 1)
+
 class NoVerdict(Fixture):
     @contextlib.contextmanager
     def no_verdict_for(self, runs, status="3"):

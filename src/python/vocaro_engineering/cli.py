@@ -954,7 +954,7 @@ def main(argv=None):
             return evidence_offload.offload(args.directory, to=args.to, keep=args.keep)
         # The queue reads a project's settings from its commits, and never from this working tree,
         # which for its worker is a main checkout that may lag.
-        if args.action == "land": return merge_queue.land(root, args)
+        if args.action == "land": return merge_queue.land(root, args, Path.cwd())
         if args.action == "queue": return merge_queue.main(root, args)
         config = load(root)
         if args.action == "app": return app_builds.execute(root, args, config)
