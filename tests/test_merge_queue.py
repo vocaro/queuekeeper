@@ -639,7 +639,7 @@ class NoVerdict(Fixture):
         worker.timed_out = "gate reached its limit: after 7200 s"
         self.assertEqual(worker.no_verdict_cause(3, log), "unmeasured: gate reached its limit: after 7200 s")
 
-    BUSY = ("load", "load 40.0 is at or above HEAVY_LOAD_LIMIT=13.5")
+    BUSY = ("cpu", "the CPU is 95% busy, at or above HEAVY_BUSY_LIMIT=75%")
 
     def test_a_retry_waits_while_the_load_is_high_and_starts_once_it_drops(self):
         self.status.write_text("3")
@@ -653,7 +653,7 @@ class NoVerdict(Fixture):
         self.assertEqual(self.state(identifier)["state"], "landed")
         self.assertIsNone(mq.Queue(self.repo).held())
         log = said.getvalue()
-        self.assertIn("load 40.0 is at or above HEAVY_LOAD_LIMIT=13.5: the lanes run again once the host settles", log)
+        self.assertIn("the CPU is 95% busy, at or above HEAVY_BUSY_LIMIT=75%: the lanes run again once the host settles", log)
         self.assertIn(f"the host settled after {3 * mq.SETTLE_POLL}s and 4 looks; one-minute load first 40, highest 40, "
                       "last 3: the lanes run again", log)
 
@@ -670,7 +670,7 @@ class NoVerdict(Fixture):
         self.assertEqual(self.state(identifier)["state"], "queued")
         held = mq.Queue(self.repo).held()
         self.assertIn(f"the lanes gave no verdict in 1 run in a row, the last with exit 3 on this Mac "
-                      f"({offload_host.mac_name()}), unmeasured, with no test its log names, and the host did not settle in {mq.SETTLE_LIMIT}s (load 40.0 is at or above", held)
+                      f"({offload_host.mac_name()}), unmeasured, with no test its log names, and the host did not settle in {mq.SETTLE_LIMIT}s (the CPU is 95% busy, at or above", held)
         self.assertIn("eng queue resume", held)
         self.assertIn(f"the host did not settle in {mq.SETTLE_LIMIT}s and {len(slept) + 1} looks", said.getvalue())
         # A line every SETTLE_REPORT while it waited, not one per look.
@@ -917,9 +917,9 @@ class SecondMacSettle(Fixture):
     """The settle wait reads the Mac the lane ran on (#140): the second Mac, faked at offload_host's answer
     (remote.ask), when the lane's dispatch says it ran there; this Mac otherwise."""
     HOST = "fake-mac"
-    LOCAL_BUSY = ("load", "load 40.0 is at or above HEAVY_LOAD_LIMIT=13.5")
-    THERE_BUSY = {"load": 30.0, "limit": 7.5, "memory": 1}
-    THERE_SETTLED = {"load": 2.0, "limit": 7.5, "memory": 1}
+    LOCAL_BUSY = ("cpu", "the CPU is 95% busy, at or above HEAVY_BUSY_LIMIT=75%")
+    THERE_BUSY = {"load": 30.0, "cpuBusy": 90.0, "busyLimit": 75.0, "memory": 1}
+    THERE_SETTLED = {"load": 2.0, "cpuBusy": 20.0, "busyLimit": 75.0, "memory": 1}
 
     def setUp(self):
         super().setUp()
@@ -974,7 +974,7 @@ class SecondMacSettle(Fixture):
         self.assertEqual(self.pressure.call_count, 0)
         log = said.getvalue()
         self.assertIn(f"no verdict (exit 3) from {self.HOST}", log)
-        self.assertIn(f"on {self.HOST}, load 30.0 is at or above HEAVY_LOAD_LIMIT=7.5: the lanes run again once "
+        self.assertIn(f"on {self.HOST}, the CPU is 90% busy, at or above HEAVY_BUSY_LIMIT=75%: the lanes run again once "
                       f"{self.HOST} settles", log)
         self.assertIn(f"{self.HOST} settled after {2 * mq.SETTLE_POLL}s and 3 looks; one-minute load first 30, "
                       "highest 30, last 2: the lanes run again", log)
@@ -985,7 +985,7 @@ class SecondMacSettle(Fixture):
         self.commit("a", "a")
         [identifier] = self.add("a")
         # This Mac is settled throughout: a wait that read it would run the lanes again at once.
-        with self.second_mac([{"load": 1.0, "limit": 7.5, "memory": 2}]), self.host([None]) as (slept, said):
+        with self.second_mac([{"load": 1.0, "cpuBusy": 10.0, "busyLimit": 75.0, "memory": 2}]), self.host([None]) as (slept, said):
             self.assertEqual(self.work(), 0)
         self.assertEqual(sum(slept), mq.SETTLE_LIMIT)
         self.assertEqual(self.gates(), 1)
@@ -1063,31 +1063,38 @@ class SecondMacReading(unittest.TestCase):
     """remote.pressure_there and remote.dispatched alone, and the reading offload_host gives."""
 
     def test_the_second_macs_reading_is_judged_by_its_own_limit(self):
-        cases = [({"load": 7.5, "limit": 7.5, "memory": 1}, ("load", "load 7.5 is at or above HEAVY_LOAD_LIMIT=7.5")),
-                 ({"load": 7.4, "limit": 7.5, "memory": 1}, None),
-                 ({"load": 7.4, "limit": 7.5, "memory": 4},
+        # The load is what the queue logs; the busy share is what judges, so a high load alone refuses nothing.
+        cases = [({"load": 2.0, "cpuBusy": 75.0, "busyLimit": 75.0, "memory": 1},
+                  ("cpu", "the CPU is 75% busy, at or above HEAVY_BUSY_LIMIT=75%")),
+                 ({"load": 66.0, "cpuBusy": 74.9, "busyLimit": 75.0, "memory": 1}, None),
+                 ({"load": 2.0, "cpuBusy": 40.0, "busyLimit": 75.0, "memory": 4},
                   ("memory", "memory pressure is level 4 (critical), not 1 (normal)")),
-                 ({"load": 7.4, "limit": 7.5, "memory": None},
+                 ({"load": None, "cpuBusy": 40.0, "busyLimit": 75.0, "memory": None},
                   ("memory", "memory pressure, which must be level 1 (normal), cannot be read")),
-                 ({"load": None, "limit": 7.5, "memory": 1},
-                  ("load", "the load average, which HEAVY_LOAD_LIMIT=7.5 bounds, is unavailable"))]
+                 ({"load": 2.0, "cpuBusy": None, "busyLimit": 75.0, "memory": 1},
+                  ("cpu", "the CPU's busy share, which HEAVY_BUSY_LIMIT=75% bounds, is unavailable")),
+                 ({"load": 2.0, "cpuBusy": True, "busyLimit": 75.0, "memory": 1},
+                  ("cpu", "the CPU's busy share, which HEAVY_BUSY_LIMIT=75% bounds, is unavailable"))]
         for answer, expected in cases:
             with self.subTest(answer=answer), patch.object(mq.remote, "ask", return_value=answer) as ask:
                 self.assertEqual(mq.remote.pressure_there("fake-mac"), (expected, answer["load"]))
                 ask.assert_called_once_with("fake-mac", {"pressure": True}, timeout=mq.remote.CENSUS_TIMEOUT)
 
-    def test_a_macs_capacity_is_judged_by_its_slots_its_load_and_what_runs_there(self):
+    def test_a_macs_capacity_is_judged_by_its_slots_its_cpu_and_what_runs_there(self):
         """remote.spare, which eng run judges both Macs by before it chooses one (vocaro-engineering#168)."""
-        idle = {"slots": 3, "slotsMax": 5, "busy": [], "load": 2.0, "limit": 7.5, "wholeHost": [], "exclusive": []}
+        idle = {"slots": 3, "slotsMax": 5, "busy": [], "load": 2.0, "cpuBusy": 20.0, "busyLimit": 75.0, "wholeHost": [],
+                "exclusive": []}
         cases = [
             (idle, {}, None),
             ({**idle, "busy": [0, 1]}, {}, None),
             ({**idle, "busy": [0, 1, 2]}, {}, "every guaranteed slot of the second Mac is busy (HEAVY_SLOTS=3)"),
             ({**idle, "busy": [0, 1, 2, 3]}, {}, "every guaranteed slot of the second Mac is busy (HEAVY_SLOTS=3)"),
             ({**idle, "busy": [3, 4]}, {}, None),
-            ({**idle, "load": 7.5}, {}, "the second Mac is loaded (load 7.5, at or above its HEAVY_LOAD_LIMIT=7.5)"),
-            ({**idle, "load": 719.04}, {}, "the second Mac is loaded (load 719.0, at or above its HEAVY_LOAD_LIMIT=7.5)"),
-            ({**idle, "load": None}, {}, "the load average of the second Mac, which HEAVY_LOAD_LIMIT=7.5 bounds, is unavailable"),
+            ({**idle, "cpuBusy": 75.0}, {}, "the second Mac is busy (CPU 75% busy, at or above its HEAVY_BUSY_LIMIT=75%)"),
+            ({**idle, "cpuBusy": 99.6}, {}, "the second Mac is busy (CPU 100% busy, at or above its HEAVY_BUSY_LIMIT=75%)"),
+            ({**idle, "cpuBusy": None}, {}, "the CPU busy share of the second Mac, which HEAVY_BUSY_LIMIT=75% bounds, is unavailable"),
+            # The case of vocaro-engineering#200: a load of 40 against the old limit of 7.5, with the CPU half idle.
+            ({**idle, "load": 40.0, "cpuBusy": 52.0}, {}, None),
             ({**idle, "busy": [0, 1, 2], "wholeHost": ["EPUBLib gate"]}, {},
              "the second Mac is running a whole-host lane: EPUBLib gate"),
             ({**idle, "busy": [0, 1, 2, 3, 4], "exclusive": ["Pagepour timed"]}, {},
@@ -1100,19 +1107,19 @@ class SecondMacReading(unittest.TestCase):
              "exclusive work needs every slot of the second Mac up to HEAVY_SLOTS_MAX=5 free, and 1 is busy"),
             ({**idle, "busy": [0, 3]}, {"exclusive": True},
              "exclusive work needs every slot of the second Mac up to HEAVY_SLOTS_MAX=5 free, and 2 are busy"),
-            ({**idle, "load": 8.0}, {"whole_host": True}, "the second Mac is loaded (load 8.0, at or above its HEAVY_LOAD_LIMIT=7.5)"),
+            ({**idle, "cpuBusy": 80.0}, {"whole_host": True}, "the second Mac is busy (CPU 80% busy, at or above its HEAVY_BUSY_LIMIT=75%)"),
         ]
         for reading, need, expected in cases:
             with self.subTest(reading=reading, need=need):
                 self.assertEqual(mq.remote.spare(reading, "the second Mac", **need), expected)
-        self.assertEqual(mq.remote.spare({**idle, "load": 9.0}, "this Mac"),
-                         "this Mac is loaded (load 9.0, at or above its HEAVY_LOAD_LIMIT=7.5)")
+        self.assertEqual(mq.remote.spare({**idle, "cpuBusy": 90.0}, "this Mac"),
+                         "this Mac is busy (CPU 90% busy, at or above its HEAVY_BUSY_LIMIT=75%)")
         # The second Mac's reading comes from offload_host, which must answer with one; an error there is its
         # owner's to fix, as a limits file admission cannot read refuses every request on that host.
         with patch.object(mq.remote, "ask", return_value=idle) as ask:
             self.assertEqual(mq.remote.capacity_there("fake-mac"), idle)
             ask.assert_called_once_with("fake-mac", {"capacity": True}, timeout=mq.remote.CENSUS_TIMEOUT, unsent=True)
-        for answer in [{"load": 1.0}, ["no"], None, {**idle, "busy": "none"}]:
+        for answer in [{"load": 1.0}, ["no"], None, {**idle, "busy": "none"}, {**idle, "busyLimit": None}]:
             with self.subTest(answer=answer), patch.object(mq.remote, "ask", return_value=answer):
                 with self.assertRaisesRegex(mq.remote.Unavailable, "fake-mac did not report its capacity"):
                     mq.remote.capacity_there("fake-mac")
@@ -1122,27 +1129,27 @@ class SecondMacReading(unittest.TestCase):
                 mq.remote.capacity_there("fake-mac")
 
     def test_a_second_mac_without_a_reading_is_unavailable(self):
-        for answer in [{"error": "HEAVY_LOAD_LIMIT is no number: x"}, {"load": 1.0}, ["no"], None]:
+        for answer in [{"error": "HEAVY_BUSY_LIMIT is no number: x"}, {"load": 1.0}, {"load": 1.0, "limit": 7.5}, ["no"], None]:
             with self.subTest(answer=answer), patch.object(mq.remote, "ask", return_value=answer):
-                with self.assertRaisesRegex(mq.remote.Unavailable, "fake-mac did not report its load"):
+                with self.assertRaisesRegex(mq.remote.Unavailable, "fake-mac did not report its CPU busy share"):
                     mq.remote.pressure_there("fake-mac")
 
     def test_the_reading_there_uses_admissions_limit(self):
         from vocaro_engineering import offload_host, resources
-        with patch.dict(os.environ, {"HEAVY_LOAD_LIMIT": "5"}):
+        with patch.dict(os.environ, {"HEAVY_BUSY_LIMIT": "50"}), patch.object(offload_host, "cpu_busy", return_value=30.0):
             read = offload_host.pressure()
-            self.assertEqual(read["limit"], resources.load_limit())
-        with patch.dict(os.environ):
-            os.environ.pop("HEAVY_LOAD_LIMIT", None)
-            self.assertEqual(offload_host.pressure()["limit"], resources.load_limit())
+            self.assertEqual((read["busyLimit"], read["cpuBusy"]), (resources.busy_limit(), 30.0))
+        with patch.dict(os.environ), patch.object(offload_host, "cpu_busy", return_value=30.0):
+            os.environ.pop("HEAVY_BUSY_LIMIT", None)
+            self.assertEqual(offload_host.pressure()["busyLimit"], resources.busy_limit())
         self.assertIsInstance(read["load"], float)
-        with patch.dict(os.environ, {"HEAVY_LOAD_LIMIT": "x"}):
+        with patch.dict(os.environ, {"HEAVY_BUSY_LIMIT": "x"}):
             self.assertIn("error", offload_host.pressure())
         # Answered as a request, not taken for a plan to run.
         done = subprocess.run([sys.executable, str(ROOT / "src/python/vocaro_engineering/offload_host.py"),
                                json.dumps({"pressure": True})], capture_output=True, text=True, timeout=60)
         self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertEqual(set(json.loads(done.stdout.splitlines()[-1])), {"load", "limit", "memory"})
+        self.assertEqual(set(json.loads(done.stdout.splitlines()[-1])), {"load", "cpuBusy", "busyLimit", "memory"})
 
     def test_only_a_dispatch_that_ran_there_since_the_lane_began_names_its_mac(self):
         root = Path(tempfile.mkdtemp())

@@ -90,10 +90,20 @@ strings -n 1 .build/SCRATCH/out/Intermediates.noindex/XCBuildData/*.xcbuilddata/
 ```
 
 While no exclusive or whole-host request waits, HEAVY_SLOTS jobs (3) are always admitted. Beyond them one job
-at a time is admitted, up to HEAVY_SLOTS_MAX (half the CPU count), while the one-minute load
-average is below HEAVY_LOAD_LIMIT (75% of the CPU count), macOS reports normal memory pressure
+at a time is admitted, up to HEAVY_SLOTS_MAX (half the CPU count), while the CPU's busy share is
+below HEAVY_BUSY_LIMIT (75, percent of the CPU's time), macOS reports normal memory pressure
 (`kern.memorystatus_vm_pressure_level` is 1), and no slot was taken in the last
-HEAVY_SETTLE_SECONDS (30) for the load average to show. Setting HEAVY_SLOTS_MAX to HEAVY_SLOTS
+HEAVY_SETTLE_SECONDS (30) for the CPU to show. The busy share is the part of the CPU's time spent
+outside idle over about the last 15 seconds, from the kernel's tick counters; every process on the
+host keeps its readings in `cpu-samples.json` in the slot directory, so that one reading spans that
+window without waiting for it, and a request's first five seconds of samples withhold the slot as
+`settle` rather than judging it on less. It replaced the one-minute load average
+([vocaro-engineering#200](https://github.com/vocaro/vocaro-engineering/issues/200)): on a Mac
+running simulators the load counts their many daemons' brief wake-ups, and on 2026-11-06 the second
+Mac read a load of 27 to 66 against a limit of 7.5 while its CPU was up to half idle; from 2026-11-05
+its load was under the limit only 26% of the time, about when nothing heavy ran, and 36 of 300
+admissions there took a slot beyond the guaranteed three. The load is still logged beside the busy
+share for audits. Setting HEAVY_SLOTS_MAX to HEAVY_SLOTS
 restores a fixed limit. Admission cannot preempt: a job admitted while the host was quiet may
 become heavy later. Exclusive work holds every slot up to the maximum. A whole-host lane, a gate
 that runs the project's suites side by side (`"wholeHost": true` on the lane or its group), takes
@@ -125,11 +135,12 @@ offered to both, to share where admission allows, only when neither has capacity
 A host's own limits go in its limits file, `admission-limits.json` beside the admission log
 (`~/Library/Application Support/vocaro-engineering/`; an isolated HEAVY_SLOT_DIR namespace keeps
 its own there), which every process on that host reads. Its keys are `slots`, `slotsMax`,
-`loadLimit` and `settleSeconds`, for the four limits above; each is a number, or
+`busyLimit` and `settleSeconds`, for the four limits above; each is a number, or
 `{"perCore": F}` for F times the CPU count, which for a slot count is rounded down and at least
 1. A key it leaves out keeps its default; without the file every default stands. For example,
-`{"slots": 4, "loadLimit": {"perCore": 3}}` on a 10-core Mac guarantees four slots and opens
-extra ones below a load of 30. A file admission cannot read, with an unknown key or a value of
+`{"slots": 4, "busyLimit": 85}` guarantees four slots and opens extra ones while the CPU is under
+85% busy; `busyLimit` is a percentage, and a share of the cores means nothing for it. The former
+`loadLimit` is now an unknown key. A file admission cannot read, with an unknown key or a value of
 the wrong kind, refuses every request on that host with an error naming the file: its owner
 fixes it rather than eng guessing the limits. Choosing the second Mac's and this Mac's values
 waits for the measurement #49 describes; neither has a file yet.
@@ -205,12 +216,12 @@ value, beside what the attempt read, so that a wait says which limit to look at:
 | Kind | Reason, as printed |
 | --- | --- |
 | `slots` | `all 3 guaranteed slots are busy and so is every slot up to HEAVY_SLOTS_MAX=9`, or `… and HEAVY_SLOTS_MAX=3 allows none beyond them`; for a whole-host lane, `a whole-host lane needs every guaranteed slot (HEAVY_SLOTS=3) free, and 1 is busy`; for exclusive work, `exclusive work needs every slot up to HEAVY_SLOTS_MAX=9 free, and 2 are busy` |
-| `settle` | `all 3 guaranteed slots are busy and the load does not yet show the job admitted 12s ago, within HEAVY_SETTLE_SECONDS=30` |
-| `load` | `all 3 guaranteed slots are busy and load 412.3 is at or above HEAVY_LOAD_LIMIT=13.5`, or `… the load average, which HEAVY_LOAD_LIMIT=13.5 bounds, is unavailable` |
+| `settle` | `all 3 guaranteed slots are busy and the CPU does not yet show the job admitted 12s ago, within HEAVY_SETTLE_SECONDS=30`, or `… and the CPU has been read over 2s, short of the 5s a reading spans` |
+| `cpu` | `all 3 guaranteed slots are busy and the CPU is 91% busy, at or above HEAVY_BUSY_LIMIT=75%`, or `… the CPU's busy share, which HEAVY_BUSY_LIMIT=75% bounds, is unavailable`; a toolkit older than vocaro-engineering#200 logged `load` for the load average |
 | `memory` | `all 3 guaranteed slots are busy and memory pressure is level 2 (warning), not 1 (normal)`, or `… memory pressure, which must be level 1 (normal), cannot be read` |
 | `model` | `the on-device model, one run at a time, is held by LABEL` |
 | `exclusive` | `it waits behind exclusive work queued ahead of it: LABEL`, or `… holding the host: LABEL` |
-| `wholeHost` | `it waits behind a whole-host lane queued ahead of it: LABEL`, for exclusive and whole-host requests, and `it waits behind a whole-host lane holding the host: LABEL` for other heavy work while one runs; for other heavy work behind a queued one, `a guaranteed slot is free but kept for a whole-host lane queued ahead of it: LABEL; and HEAVY_SLOTS_MAX=3 allows none beyond them`, or `… and every slot beyond them up to HEAVY_SLOTS_MAX=9 is busy`, or the `settle`, `load` or `memory` reason. With every guaranteed slot busy anyway, the reason is the `slots` or other kind's, as with nothing queued |
+| `wholeHost` | `it waits behind a whole-host lane queued ahead of it: LABEL`, for exclusive and whole-host requests, and `it waits behind a whole-host lane holding the host: LABEL` for other heavy work while one runs; for other heavy work behind a queued one, `a guaranteed slot is free but kept for a whole-host lane queued ahead of it: LABEL; and HEAVY_SLOTS_MAX=3 allows none beyond them`, or `… and every slot beyond them up to HEAVY_SLOTS_MAX=9 is busy`, or the `settle`, `cpu` or `memory` reason. With every guaranteed slot busy anyway, the reason is the `slots` or other kind's, as with nothing queued |
 | `stranded` | another reason above, then `; the guard entry of LABEL, PID 4242, is dead and requires inspection (it has no process record), and is counted as slot 1; …`, `uncertain` for an entry marked so, with why [recovery](#lock-reclamation) left it in parentheses (`its owner still runs`, `it has no process record`, `its process record cannot vouch for every command` or `2 of its processes still run: PID 4250, 4251`) and what it is counted as (`slots 0, 1, 2 and the model` for exclusive work); a model request's reason is `the on-device model, one run at a time, is counted as held` |
 | `guard` | `the guard PATH is unreadable or not in admission's format and requires inspection; …` |
 
@@ -332,20 +343,23 @@ A line holds:
 - `slots`: the slot numbers held, on `admitted` and `ended` lines.
 - `waited`: seconds from the request to its admission or withdrawal, on `admitted` and `withdrawn`
   lines; `held`: seconds from admission to its end, on `ended` lines.
-- `holders` and `load`, on `admitted` and `withdrawn` lines: how many admissions the guard recorded
-  when the request asked, a dead or uncertain one among them, and the one-minute load average then.
+- `holders`, `load` and `busy`, on `admitted` and `withdrawn` lines: how many admissions the guard
+  recorded when the request asked, a dead or uncertain one among them, the one-minute load average
+  then and the CPU's busy share, null until a reading spans five seconds.
   A request admitted at once records nothing more.
 - `wait`, on the `admitted` or `withdrawn` line of a request that an attempt refused: why it waited.
   `refusals` counts its refused attempts of each kind, about one a second; `first` and `last` are
   the kinds of its first and last refusals; `load` holds the one-minute load its last attempt read,
-  as `last`, and the highest any read, as `max`; and `memory` is the highest memory pressure level
-  read beside its refusals, 1 normal, 2 warning and 4 critical. A load or level that could not be
+  as `last`, and the highest any read, as `max`, and `busy` the same of the CPU's busy share; and
+  `memory` is the highest memory pressure level read beside its refusals, 1 normal, 2 warning and
+  4 critical. A load, busy share or level that could not be
   read is null. A refusal's kind is the check that refused it:
   - `slots`: for heavy or model work, every slot up to HEAVY_SLOTS_MAX is busy, which is every
     guaranteed one when no adaptive slots are configured; for exclusive work, any slot is;
-  - `settle`, `load` or `memory`: every guaranteed slot is busy, and a slot taken less than
-    HEAVY_SETTLE_SECONDS ago, a load average at or above HEAVY_LOAD_LIMIT or one that cannot be
-    read, or memory pressure that is not normal withholds another;
+  - `settle`, `cpu` or `memory`: every guaranteed slot is busy, and a slot taken less than
+    HEAVY_SETTLE_SECONDS ago or CPU samples spanning less than five seconds, a busy share at or
+    above HEAVY_BUSY_LIMIT or one that cannot be read, or memory pressure that is not normal
+    withholds another (`load`, in a line an older toolkit wrote, was the load average);
   - `model`: another run holds the on-device model;
   - `exclusive`: an exclusive request is queued ahead, or exclusive work holds the host, which
     refuses the request at its slots or the model;
@@ -377,8 +391,8 @@ prints `heavy: the admission log was not written: ERROR` and goes on.
 
 A request's `wait` says why it waited, which an audit could only infer from the holders logged
 beside it. Whether admission's limits hold back work the host could run turns on the kinds: a wait
-behind `slots` is the guaranteed and maximum counts, and one behind `load`, `memory` or `settle`
-the signals that open the slots between, at the load its line records
+behind `slots` is the guaranteed and maximum counts, and one behind `cpu`, `memory` or `settle`
+the signals that open the slots between, at the busy share and load its line records
 ([vocaro-engineering#49](https://github.com/vocaro/vocaro-engineering/issues/49)). A line an older
 toolkit wrote has no `holders`, `load` or `wait`, and is read as it is. One may also count `legacy`
 refusals, from when admission waited while a gate held StudyWright's former host lock
@@ -401,7 +415,8 @@ it in proportion to their refusals. Beside requests that say what they saw, thos
 logged count as `unrecorded`, with their whole waits; a kind or label with none of the former is
 summarized as before. `load when asked mean 45.1, max 412.3, while waiting max 858.0` gives the
 mean and highest load when its requests asked, and the highest that any attempt of a request that
-waited read. A request counts in the period in which it was admitted or withdrawn. A date or time
+waited read; `CPU busy when asked mean 48%, max 97%, while waiting max 100%` gives the same of the
+busy share. A request counts in the period in which it was admitted or withdrawn. A date or time
 without a zone is local. A period that begins before the log's first line is reported as such:
 older requests have rotated out and count nowhere. Lines that cannot be read, such as one a full
 volume cut short, are counted and skipped. Two projects' lanes of one name are counted apart, as
@@ -520,7 +535,7 @@ the owner's (the owner's decisions, 2026-10-28 and 2026-11-04,
 [vocaro-engineering#168](https://github.com/vocaro/vocaro-engineering/issues/168)). Before it
 offers the lane, `eng run` reads both Macs' capacity for it: a Mac has spare capacity while a
 guaranteed slot is free there, every guaranteed slot for a whole-host lane and every slot up to
-HEAVY_SLOTS_MAX for an exclusive one, its one-minute load is under its own HEAVY_LOAD_LIMIT, and
+HEAVY_SLOTS_MAX for an exclusive one, its CPU's busy share is under its own HEAVY_BUSY_LIMIT, and
 no whole-host lane or exclusive work runs there. On 2026-11-04 the second Mac, 10 cores, ran two
 EPUBLib gates side by side at a load of 719 while this Mac, 18 cores, idled at 3, since its three
 guaranteed slots admitted the second gate whatever the load, and 8 of 12 gates there that day
@@ -534,7 +549,7 @@ lane queued ahead: LABEL, which the lane would wait behind`), and a lighter heav
 in a free slot beyond them (`…: LABEL, and every slot beyond them up to HEAVY_SLOTS_MAX=5 is
 busy`), and only as admission takes such a slot: once HEAVY_SETTLE_SECONDS have passed since the
 Mac's last admission (`…: LABEL, and the load of the second Mac does not yet show the job admitted
-12s ago, within HEAVY_SETTLE_SECONDS=30`), under its HEAVY_LOAD_LIMIT, and while its memory
+12s ago, within HEAVY_SETTLE_SECONDS=30`), under its HEAVY_BUSY_LIMIT, and while its memory
 pressure is level 1, normal, and can be read (`…: LABEL, and on the second Mac memory pressure is
 level 2 (warning), not 1 (normal)`). The reading reports the seconds since that admission, the
 Mac's own HEAVY_SETTLE_SECONDS and its memory pressure level for this, read from the same limits
@@ -565,8 +580,8 @@ whose admission then held it back for as long as the exclusive work waited and r
    without running otherwise) and one of the project's four checkouts there is free.
 2. When the second Mac's reading shows no spare capacity and this Mac's shows some, the lane goes
    to this Mac's queue at once, and nothing is offered: `eng: trying LANE on this Mac:` says why,
-   and the receipt's `hereBecause` records it, naming the second Mac's load when that is it, as
-   `the second Mac is loaded (load 719.0, at or above its HEAVY_LOAD_LIMIT=7.5)`, else the
+   and the receipt's `hereBecause` records it, naming the second Mac's CPU when that is it, as
+   `the second Mac is busy (CPU 97% busy, at or above its HEAVY_BUSY_LIMIT=75%)`, else the
    whole-host lane or exclusive work running there, its guaranteed slots all busy, or those slots
    kept for a whole-host lane queued there, or exclusive work queued there. A second
    Mac whose reading shows capacity may still decline the lane as busy once it is offered, as
@@ -575,7 +590,7 @@ whose admission then held it back for as long as the exclusive work waited and r
    recording that the second Mac was busy. Busy is no configuration problem.
 3. While neither Mac's reading shows spare capacity, `eng: neither Mac has spare capacity for
    LANE now (…), so it goes to whichever admits it first, the second Mac asked first` says so, and
-   the lane is offered to the second Mac, whose guaranteed slots admit it whatever its load. While
+   the lane is offered to the second Mac, whose guaranteed slots admit it however busy its CPU. While
    both decline it, the lane waits for whichever admits it first. It waits in this Mac's queue,
    15 s at first, doubling to 120 s, and between those waits both Macs are read again and the lane
    is offered to the second Mac again when the reading allows, so the second Mac is asked at least
@@ -597,7 +612,8 @@ whole-host lane says `wholeHost` too, or is exclusive, as configuration validati
 light lane cannot be whole-host, since it is not admitted, and an exclusive lane holds the host
 already. Exclusive admission is unchanged. Each Mac's reading is `offload_host.py`'s `capacity`
 answer, read in the second Mac's login shell as a run there reads it: its guaranteed slots and
-their maximum, the slots busy among them, its load and limit, and the whole-host lanes and
+their maximum, the slots busy among them, its CPU's busy share (`cpuBusy`, read over up to two
+seconds when no kept sample spans one) and `busyLimit`, its load for the record, and the whole-host lanes and
 exclusive work its admission guard records as running. A second Mac that cannot answer with a
 reading runs the lane here, saying so; one whose admission limits cannot be read is misconfigured,
 as every request there is refused ([heavy-work admission](#heavy-work-admission)).
@@ -672,7 +688,7 @@ stay in the second Mac's checkout until a later run there replaces them.
 Every run's receipt says where it ran. `ranOn` is `this Mac` or `second Mac`, which a receipt
 written before 2026-10-28 gives as `build host`, and `mac` names the Mac. On this Mac,
 `hereBecause` says why the run ran here: the lane's own reason, `--here`, `--serial`, nested
-work, no second Mac configured, the second Mac having no spare capacity (its load, a whole-host
+work, no second Mac configured, the second Mac having no spare capacity (its CPU, a whole-host
 lane or exclusive work running there, or its guaranteed slots all busy), the second Mac being busy
 once offered, or why it could not be reached or could not run the work. The second Mac's own receipt, kept within the receipt that comes back,
 names the Mac that sent the run in `dispatchedFrom`. A receipt holds its lane's last run only.

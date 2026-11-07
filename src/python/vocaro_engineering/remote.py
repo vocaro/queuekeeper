@@ -18,7 +18,7 @@ and eng says so when it sends one.
 the second Mac first, unless the lane says why it stays on this Mac, and `eng admit --verify` a
 command whose result is its log and status. Before it offers the work it reads both Macs'
 capacity (offload_host.capacity, spare): the second Mac runs the work when it has a guaranteed
-slot free, all of them for a whole-host lane, its load is under its limit and no whole-host lane
+slot free, all of them for a whole-host lane, its CPU's busy share is under its limit and no whole-host lane
 or exclusive work holds it, and then only if it can start the work now; when it has no spare
 capacity and this Mac has, this Mac takes the work at once, with the second Mac's reason in the
 receipt (Loaded); and while neither has, the work goes to whichever admits it first, offered to
@@ -229,7 +229,7 @@ class Busy(Unavailable):
 class Loaded(Busy):
     """The second Mac has no spare capacity for the work now, by its reading, while this Mac has, by its
     own (spare): nothing was offered, and this Mac takes the work. Its text is the reason, as the
-    receipt's hereBecause gives it, naming the second Mac's load when that is it (vocaro-engineering#168).
+    receipt's hereBecause gives it, naming the second Mac's CPU busy share when that is it (#168, #200).
     The second Mac is read again before each later offer (Offer.again), so that it takes the work once
     it has capacity before this Mac admits it."""
 
@@ -2333,7 +2333,7 @@ def capacity_there(host):
                             f"correct the limits file or variable it names on {host} (guides/shared-host.md, "
                             "Heavy-work admission)")
     if not isinstance(answered, dict) or not all(isinstance(answered.get(key), int) for key in ("slots", "slotsMax")) \
-            or not isinstance(answered.get("busy"), list) or not isinstance(answered.get("limit"), (int, float)):
+            or not isinstance(answered.get("busy"), list) or not isinstance(answered.get("busyLimit"), (int, float)):
         raise Unavailable(f"{host} did not report its capacity: it answered {answered!r}")
     return answered
 
@@ -2351,15 +2351,15 @@ def screen_refusal(found, mac):
 def spare(reading, mac, whole_host=False, exclusive=False, screen=False):
     """Why mac, read as reading (offload_host.capacity), has no spare capacity now for the work, or None while
     it has (vocaro-engineering#168). The work needs a guaranteed slot free there, every guaranteed slot for a
-    whole-host lane and every slot up to the maximum for exclusive work, a one-minute load under the Mac's own
-    HEAVY_LOAD_LIMIT, no whole-host lane or exclusive work running there, and no exclusive work queued ahead
+    whole-host lane and every slot up to the maximum for exclusive work, a CPU busy share under the Mac's own
+    HEAVY_BUSY_LIMIT (vocaro-engineering#200), no whole-host lane or exclusive work running there, and no exclusive work queued ahead
     there (queuedExclusive), behind which admission holds every later request (vocaro-engineering#191). While the
     Mac's admission keeps the guaranteed slots for a whole-host lane queued ahead (kept), a whole-host or
     exclusive lane waits its turn behind it and other work needs a slot beyond them free, as admission rules
     (vocaro-engineering#174, #186), and that slot only as admission takes one, once the Mac has settled for
     HEAVY_SETTLE_SECONDS since its last admission (sinceAdmission, settle) and while its memory pressure is
     normal (memory), as resources.Admission._extra_refusal rules (vocaro-engineering#201). The reason names the
-    Mac and, for its load, the load read and the limit, and the request queued ahead; the receipt's hereBecause
+    Mac and, for its CPU, the busy share read and the limit, and the request queued ahead; the receipt's hereBecause
     carries it. With screen, for a lane
     that needs an unlocked screen, a Mac whose screen is locked or unknown has none (screen_refusal)."""
     if screen:
@@ -2398,16 +2398,17 @@ def spare(reading, mac, whole_host=False, exclusive=False, screen=False):
                 f"{'is' if len(taken) == 1 else 'are'} busy")
     if not exclusive and not whole_host and kept is None and len(taken) >= slots:
         return f"every guaranteed slot of {mac} is busy (HEAVY_SLOTS={slots})"
-    load, limit = reading.get("load"), reading["limit"]
-    if not isinstance(load, (int, float)):
-        return f"the load average of {mac}, which HEAVY_LOAD_LIMIT={limit:g} bounds, is unavailable"
-    if load >= limit:
-        return f"{mac} is loaded (load {load:.1f}, at or above its HEAVY_LOAD_LIMIT={limit:g})"
+    found, limit = reading.get("cpuBusy"), reading["busyLimit"]
+    busy = found if isinstance(found, (int, float)) and not isinstance(found, bool) else None
+    if busy is None:
+        return f"the CPU busy share of {mac}, which HEAVY_BUSY_LIMIT={limit:g}% bounds, is unavailable"
+    if busy >= limit:
+        return f"{mac} is busy (CPU {busy:.0f}% busy, at or above its HEAVY_BUSY_LIMIT={limit:g}%)"
     # Beyond the guaranteed slots, memory pressure that is not normal, or cannot be read, withholds the slot, judged
     # as admission judges it; an older toolkit's reading has no memory, and withholds nothing by it.
     if kept is not None and "memory" in reading:
         level = reading["memory"] if isinstance(reading["memory"], int) and not isinstance(reading["memory"], bool) else None
-        refused = resources.judged(load, limit, lambda: level)
+        refused = resources.judged(busy, limit, lambda: level)
         if refused is not None:
             return f"{held}, and on {mac} {refused[1]}"
     return None
@@ -2415,16 +2416,19 @@ def spare(reading, mac, whole_host=False, exclusive=False, screen=False):
 
 def pressure_there(host):
     """The second Mac's pressure as resources.pressure gives this Mac's, judged by resources.judged with the
-    limit it sets there (offload_host.pressure), and its one-minute load, None when unavailable: what the merge
+    limit it sets there (offload_host.pressure), and its one-minute load, None when unavailable, which the merge
+    queue logs beside it: what the merge
     queue's settle wait reads before it runs again a lane that ran there. A second Mac that cannot be reached,
     or that does not answer with its reading, raises Unavailable, and the wait reads this Mac instead."""
     answered = ask(host, {"pressure": True}, timeout=CENSUS_TIMEOUT)
-    if not isinstance(answered, dict) or not isinstance(answered.get("limit"), (int, float)):
+    if not isinstance(answered, dict) or not isinstance(answered.get("busyLimit"), (int, float)):
         why = answered.get("error") if isinstance(answered, dict) and answered.get("error") else f"it answered {answered!r}"
-        raise Unavailable(f"{host} did not report its load: {why}")
+        raise Unavailable(f"{host} did not report its CPU busy share: {why}")
     load = answered.get("load")
     load = load if isinstance(load, (int, float)) else None
-    return resources.judged(load, answered["limit"], lambda: answered.get("memory")), load
+    busy = answered.get("cpuBusy")
+    busy = busy if isinstance(busy, (int, float)) and not isinstance(busy, bool) else None
+    return resources.judged(busy, answered["busyLimit"], lambda: answered.get("memory")), load
 
 
 def dispatched(root, name, since):

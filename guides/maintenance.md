@@ -428,14 +428,14 @@ as [a hold says whom it is for](#the-merge-queue) below. Nothing fails over to a
 
 Each retry waits first for the host to settle, by the test heavy-work admission applies before it takes
 a slot beyond the guaranteed ones (`resources.pressure`; [heavy-work admission](shared-host.md#heavy-work-admission)):
-a one-minute load average below `HEAVY_LOAD_LIMIT`, three quarters of the cores by default, and memory
-pressure at level 1 (normal). A retry that started at once met the load that voided the run it repeated:
+a CPU busy share below `HEAVY_BUSY_LIMIT`, 75% by default, and memory pressure at level 1 (normal); the
+one-minute load average judged it until vocaro-engineering#200. A retry that started at once met the load that voided the run it repeated:
 on mpm's queue, two gate runs of about an hour each passed every row but voided a timing anchor at loads
 of 84 to 222, and the queue held until a manual resume once the load had fallen
 ([#124](https://github.com/vocaro/vocaro-engineering/issues/124)). The worker looks every 15 seconds
 (`SETTLE_POLL`) for up to an hour (`SETTLE_LIMIT`), no longer than the gate run the wait may save. Past
 that it holds, with every entry waiting, whatever runs the bound has left, and the hold names the
-reason it last read, such as `load 40.0 is at or above HEAVY_LOAD_LIMIT=13.5`. Its log names the
+reason it last read, such as `the CPU is 95% busy, at or above HEAVY_BUSY_LIMIT=75%`. Its log names the
 reason when the wait starts, again every ten minutes or when the reason changes, and at the end how long it waited, how many
 looks it took and the first, highest and last one-minute load. A stop request (SIGTERM, SIGINT or SIGHUP)
 ends the wait at its next look, with the entries still waiting. The test reads the Mac the lane ran
@@ -444,8 +444,8 @@ on, since a lane that the second Mac ran left its load there
 lane's dispatch, which `eng run` files under `.build/engineering/remote/.dispatches/LANE/` in the
 queue's checkout: one that started during the run and reached the second Mac, rather than only
 preparing, names it. Each look then asks the second Mac over SSH, as `eng doctor` does, for its
-one-minute load, the `HEAVY_LOAD_LIMIT` it sets there (three quarters of its own cores by default) and
-its memory pressure, and judges them as admission does; the log and the hold name that Mac. A second
+CPU busy share, the `HEAVY_BUSY_LIMIT` it sets there (75% by default), its one-minute load, which the log
+records, and its memory pressure, and judges them as admission does; the log and the hold name that Mac. A second
 Mac that cannot be reached, or does not answer with its reading, gives this Mac's reading for that look
 instead, and the log says so when that starts and again once it answers. A lane that ran here, or that
 no Mac ran, reads this Mac only. A lane that fails blames its commits at once, with no wait, and the

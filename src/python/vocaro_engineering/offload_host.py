@@ -25,7 +25,7 @@ there, for `eng keychain recover`; given `{"keepUnlocked": ...}`, at the owner's
 the login keychain's password and keeps it for runs to unlock that keychain with, for `eng keychain
 keep-unlocked`; given `{"foreground": true}`, what the Mac lacks for foreground work started over
 SSH and who holds its mac-foreground, for `eng remote foreground`; given `{"pressure": true}`, its
-load, the limit admission sets on it and its memory pressure, for the merge queue's settle wait;
+CPU's busy share, the limit admission sets on it and its memory pressure, for the merge queue's settle wait;
 given `{"capacity": true}`, its spare capacity for heavy work, which `eng run` reads on both Macs
 before it chooses one (remote.spare); given `{"screen": true}`, whether its console screen is locked, for
 `eng host screen --remote` (screen).
@@ -83,7 +83,7 @@ QUEUE, PLACE_SECONDS = "exclusive-queue.json", 180
 LIMIT_KEYS = {
     "slots": ("HEAVY_SLOTS", True, lambda cores, slots: 3),
     "slotsMax": ("HEAVY_SLOTS_MAX", True, lambda cores, slots: max(slots, cores // 2)),
-    "loadLimit": ("HEAVY_LOAD_LIMIT", False, lambda cores, slots: 0.75 * cores),
+    "busyLimit": ("HEAVY_BUSY_LIMIT", False, lambda cores, slots: 75.0),
     "settleSeconds": ("HEAVY_SETTLE_SECONDS", False, lambda cores, slots: 30.0),
 }
 # The simulators' devices, relative to the home: a booted device's processes name its directory.
@@ -959,7 +959,7 @@ def slot_directory():
 
 
 def limits():
-    """The admission limits the capacity reading needs, by key: HEAVY_SLOTS, HEAVY_SLOTS_MAX, HEAVY_LOAD_LIMIT and
+    """The admission limits the capacity reading needs, by key: HEAVY_SLOTS, HEAVY_SLOTS_MAX, HEAVY_BUSY_LIMIT and
     HEAVY_SETTLE_SECONDS, each from its environment variable, else the host's limits file, admission-limits.json
     beside the admission log, as a number or {"perCore": F}, else its default, as resources.limits reads them,
     which this file cannot import (#49). A file or variable admission could not read raises ValueError naming it, as admission does:
@@ -1029,6 +1029,59 @@ def since_admission(directory, count):
         except OSError: continue
         if status.st_size: latest = status.st_mtime if latest is None else max(latest, status.st_mtime)
     return None if latest is None else round(max(0.0, time.time() - latest), 1)
+
+
+# The CPU's busy share, read as resources.cpu_busy reads it, from the samples every process on the host keeps in
+# the slot directory: CPU_SAMPLES, BUSY_WINDOW, BUSY_MINIMUM, BUSY_QUICK and BUSY_KEEP as resources has them.
+CPU_SAMPLES, BUSY_WINDOW, BUSY_MINIMUM, BUSY_QUICK, BUSY_KEEP = "cpu-samples.json", 15.0, 5.0, 2.0, 120.0
+HOST_CPU_LOAD_INFO, CPU_STATES = 3, 4
+
+
+def cpu_ticks():
+    """The CPU's cumulative ticks, user, system, idle and nice, as resources.cpu_ticks reads them, or None."""
+    if sys.platform != "darwin": return None
+    try:
+        library = ctypes.CDLL("/usr/lib/libSystem.B.dylib")
+        library.mach_host_self.restype = ctypes.c_uint
+        info, count = (ctypes.c_uint * CPU_STATES)(), ctypes.c_uint(CPU_STATES)
+        if library.host_statistics(library.mach_host_self(), HOST_CPU_LOAD_INFO, info, ctypes.byref(count)) != 0:
+            return None
+    except (OSError, AttributeError): return None
+    return list(info)
+
+
+def busy_share(earlier, later):
+    """The percentage of the CPU's ticks between two readings spent outside idle, as resources.busy_share gives it."""
+    passed = [(after - before) % (1 << 32) for before, after in zip(earlier, later)]
+    total = sum(passed)
+    return None if total == 0 else round(100.0 * (total - passed[2]) / total, 1)
+
+
+def cpu_busy(directory):
+    """The CPU's busy share in percent now, None when unreadable, as resources.cpu_busy reads it with wait: against
+    a kept sample when one is old enough, else over BUSY_QUICK seconds of its own; it adds its sample."""
+    current, at = cpu_ticks(), time.time()
+    if current is None: return None
+    path = Path(directory) / CPU_SAMPLES
+    try:
+        kept = [sample for sample in json.loads(path.read_text())
+                if isinstance(sample, list) and len(sample) == 1 + CPU_STATES
+                and all(isinstance(value, (int, float)) and not isinstance(value, bool) for value in sample)
+                and at - BUSY_KEEP <= sample[0] <= at]
+    except (OSError, ValueError, TypeError): kept = []
+    if not kept or at - max(sample[0] for sample in kept) >= 1:
+        with contextlib.suppress(OSError):
+            Path(directory).mkdir(parents=True, exist_ok=True)
+            partial = path.with_name(f"{CPU_SAMPLES}.{os.getpid()}.{threading.get_ident()}")
+            partial.write_text(json.dumps(sorted(kept + [[round(at, 3), *current]])))
+            os.replace(partial, path)
+    old = [sample for sample in kept if at - sample[0] >= BUSY_MINIMUM]
+    full = [sample for sample in old if at - sample[0] >= BUSY_WINDOW]
+    base = max(full) if full else min(old) if old else None
+    if base is not None: return busy_share(base[1:], current)
+    time.sleep(BUSY_QUICK)
+    later = cpu_ticks()
+    return None if later is None else busy_share(current, later)
 
 
 def memory_level():
@@ -1119,8 +1172,9 @@ def queued_ahead(directory, slots, maximum, owners, own=None):
 def capacity(own=None):
     """This Mac's spare capacity for heavy work, which `eng run` reads on both Macs before it chooses one
     (remote.spare; vocaro-engineering#168): its guaranteed slots and their maximum; the slots busy among those
-    up to the maximum; its one-minute load, None when unavailable, and the limit at or above which its admission
-    finds no spare capacity; and the labels of the whole-host lanes and the exclusive work its guard records as
+    up to the maximum; its CPU's busy share in percent, None when unavailable (cpuBusy), and the limit at or above
+    which its admission finds no spare capacity (busyLimit), with its one-minute load beside them, which no longer
+    judges (load, vocaro-engineering#200); and the labels of the whole-host lanes and the exclusive work its guard records as
     running; the label of the whole-host request queued ahead for which admission keeps the guaranteed slots, or
     None (kept; own is the asking work's own place, vocaro-engineering#186); the label of the exclusive request
     queued ahead that holds every later request back, or None (queuedExclusive, vocaro-engineering#191), both
@@ -1140,7 +1194,7 @@ def capacity(own=None):
     label = lambda owner: str(owner.get("label") or "an unnamed owner")
     kind, ahead = queued_ahead(directory, found["slots"], found["slotsMax"], owners, own) or (None, None)
     return {"slots": found["slots"], "slotsMax": found["slotsMax"], "busy": busy_slots(directory, found["slotsMax"]),
-            "load": load, "limit": found["loadLimit"],
+            "load": load, "cpuBusy": cpu_busy(directory), "busyLimit": found["busyLimit"],
             "wholeHost": [label(owner) for owner in running if owner.get("wholeHost") and not owner.get("exclusive")],
             "exclusive": [label(owner) for owner in running if owner.get("exclusive")],
             "kept": ahead if kind == "wholeHost" else None,
@@ -2001,15 +2055,16 @@ def advertise(repository):
 
 
 def pressure():
-    """This Mac's one-minute load, None when unavailable; the limit at or above which its heavy-work
-    admission finds no spare capacity, HEAVY_LOAD_LIMIT, the host's limits file or three quarters of the
-    cores, as resources.load_limit sets it (limits); and its memory pressure level, None when unread. The merge queue judges them as admission does (resources.judged) before it runs again a lane
-    that ran here and gave no verdict (guides/maintenance.md, The merge queue)."""
+    """This Mac's CPU's busy share in percent, None when unavailable (cpuBusy); the limit at or above which its
+    heavy-work admission finds no spare capacity, HEAVY_BUSY_LIMIT, the host's limits file or 75, as
+    resources.busy_limit sets it (limits); its memory pressure level, None when unread; and its one-minute load,
+    which the merge queue logs. The merge queue judges them as admission does (resources.judged) before it runs
+    again a lane that ran here and gave no verdict (guides/maintenance.md, The merge queue)."""
     try: load = round(os.getloadavg()[0], 2)
     except OSError: load = None
-    try: limit = limits()["loadLimit"]
-    except ValueError as error: return {"error": str(error)}
-    return {"load": load, "limit": limit, "memory": memory_level()}
+    try: limit, directory = limits()["busyLimit"], slot_directory()
+    except (ValueError, RuntimeError) as error: return {"error": str(error)}
+    return {"load": load, "cpuBusy": cpu_busy(directory), "busyLimit": limit, "memory": memory_level()}
 
 
 def guarded_update(request):

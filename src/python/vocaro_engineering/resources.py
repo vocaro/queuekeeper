@@ -8,9 +8,13 @@ PDF slot. Crashed owners retain their guard for explicit inspection rather than 
 deadline as release.
 
 HEAVY_SLOTS jobs are always admitted while no exclusive request waits. More, up to
-HEAVY_SLOTS_MAX, are admitted one at a time while the load average and memory pressure show
+HEAVY_SLOTS_MAX, are admitted one at a time while the CPU's busy share and memory pressure show
 spare capacity: a fixed count left the host idle behind jobs waiting on simulators, while ten
-unqueued builds starved watchdogd until the kernel panicked (2026-10-14). Admission cannot
+unqueued builds starved watchdogd until the kernel panicked (2026-10-14). The busy share is the
+part of the CPU's time, over about the last BUSY_WINDOW seconds, spent outside idle. It replaced
+the one-minute load average, which on a Mac running simulators counts their many daemons' brief
+wake-ups: the second Mac read a load of 27 to 66 against a limit of 7.5 while its CPU was up to
+half idle, and its extra slots opened almost only when it was idle anyway (vocaro-engineering#200). Admission cannot
 preempt a job that becomes heavy later. A whole-host lane, a gate that runs a project's suites
 side by side, takes every guaranteed slot, so that two such lanes never run on one Mac at once
 (two EPUBLib gates at once put a 10-core Mac at a load of 719 on 2026-11-04, #168), and while it
@@ -36,7 +40,8 @@ driving one Mac's on-device model both stalled. Exclusive work holds the model w
 Each admission appends a line to the host's admission log, and its end another, so that an audit
 can count admissions, waits and holds instead of guessing (#46); `eng admissions` summarizes it.
 A request that waited says why, which an audit could only infer from the holders logged beside it
-(#49): how many of its attempts each kind of refusal refused, and the load and memory pressure read.
+(#49): how many of its attempts each kind of refusal refused, and the busy share, load and memory pressure
+read; the load is kept for audits beside the busy share, though it no longer refuses.
 Its waiting message names the limit that refused it and the limit's value, beside what it read.
 
 Beside its guard entry, each admission keeps a process record: what supervision in the owner's
@@ -54,6 +59,7 @@ from collections import Counter
 import contextlib
 from datetime import datetime, timezone
 import fcntl
+import functools
 import json
 import os
 from pathlib import Path
@@ -302,6 +308,84 @@ def one_minute_load():
         return None
 
 
+# The CPU's busy share is read from the kernel's cumulative ticks, host_statistics' HOST_CPU_LOAD_INFO (user,
+# system, idle and nice), which need no privilege. Every process on the host keeps its readings in CPU_SAMPLES in
+# the slot directory, so that one reading spans about BUSY_WINDOW seconds without waiting for them: it is taken
+# against the youngest kept sample at least BUSY_WINDOW seconds old, else the oldest at least BUSY_MINIMUM old. A
+# one-off reading with none to take it against waits BUSY_QUICK seconds for its own. Samples are kept for
+# BUSY_KEEP seconds, one a second at most. offload_host.py reads them the same way, which it cannot import.
+CPU_SAMPLES, BUSY_WINDOW, BUSY_MINIMUM, BUSY_QUICK, BUSY_KEEP = "cpu-samples.json", 15.0, 5.0, 2.0, 120.0
+HOST_CPU_LOAD_INFO, CPU_STATES = 3, 4
+
+
+@functools.lru_cache(maxsize=None)
+def _mach():
+    """libSystem and this task's host port, once: each mach_host_self call adds a send right."""
+    import ctypes
+    library = ctypes.CDLL("/usr/lib/libSystem.B.dylib")
+    library.mach_host_self.restype = ctypes.c_uint
+    return library, library.mach_host_self()
+
+
+def cpu_ticks():
+    """The CPU's cumulative ticks, user, system, idle and nice, or None when they cannot be read."""
+    if sys.platform != "darwin":
+        return None
+    import ctypes
+    try:
+        library, host = _mach()
+        info, count = (ctypes.c_uint * CPU_STATES)(), ctypes.c_uint(CPU_STATES)
+        if library.host_statistics(host, HOST_CPU_LOAD_INFO, info, ctypes.byref(count)) != 0:
+            return None
+    except (OSError, AttributeError):
+        return None
+    return list(info)
+
+
+def busy_share(earlier, later):
+    """The percentage of the CPU's ticks between two readings spent outside idle, or None when none passed. The
+    kernel's counters are 32-bit and wrap."""
+    passed = [(after - before) % (1 << 32) for before, after in zip(earlier, later)]
+    total = sum(passed)
+    return None if total == 0 else round(100.0 * (total - passed[2]) / total, 1)
+
+
+def cpu_busy(directory, wait=False, ticks=cpu_ticks, now=time.time, sleep=time.sleep):
+    """The CPU's busy share now, as (percent, seconds it spans), from the samples every process keeps in the slot
+    directory, adding this one. (None, None) when the ticks cannot be read; (None, seconds) when no kept sample is
+    BUSY_MINIMUM old yet, unless wait, for a one-off reading, which then waits BUSY_QUICK seconds for its own."""
+    current, at = ticks(), now()
+    if current is None:
+        return None, None
+    path = Path(directory) / CPU_SAMPLES
+    try:
+        kept = [sample for sample in json.loads(path.read_text())
+                if isinstance(sample, list) and len(sample) == 1 + CPU_STATES
+                and all(isinstance(value, (int, float)) and not isinstance(value, bool) for value in sample)
+                and at - BUSY_KEEP <= sample[0] <= at]
+    except (OSError, ValueError, TypeError):
+        kept = []
+    if not kept or at - max(sample[0] for sample in kept) >= 1:
+        # Written whole, under a name of its own, so that a reader never meets half a file; a lost race loses a sample.
+        with contextlib.suppress(OSError):
+            Path(directory).mkdir(parents=True, exist_ok=True)
+            partial = path.with_name(f"{CPU_SAMPLES}.{os.getpid()}.{threading.get_ident()}")
+            partial.write_text(json.dumps(sorted(kept + [[round(at, 3), *current]])))
+            os.replace(partial, path)
+    old = [sample for sample in kept if at - sample[0] >= BUSY_MINIMUM]
+    full = [sample for sample in old if at - sample[0] >= BUSY_WINDOW]
+    base = max(full) if full else min(old) if old else None
+    if base is None and wait:
+        sleep(BUSY_QUICK)
+        later, after = ticks(), now()
+        if later is None:
+            return None, None
+        return busy_share(current, later), round(after - at, 1)
+    if base is None:
+        return None, round(at - min(sample[0] for sample in kept), 1) if kept else 0.0
+    return busy_share(base[1:], current), round(at - base[0], 1)
+
+
 # The host's admission limits, beside its admission log: the limits its owner chose for this host (#49).
 LIMITS = "admission-limits.json"
 # Each limit by its key in the limits file: the environment variable that overrides it, whether it counts
@@ -309,7 +393,7 @@ LIMITS = "admission-limits.json"
 LIMIT_KEYS = {
     "slots": ("HEAVY_SLOTS", True, lambda cores, slots: (3, "3")),
     "slotsMax": ("HEAVY_SLOTS_MAX", True, lambda cores, slots: (max(slots, cores // 2), "half the cores, at least HEAVY_SLOTS")),
-    "loadLimit": ("HEAVY_LOAD_LIMIT", False, lambda cores, slots: (0.75 * cores, "three quarters of the cores")),
+    "busyLimit": ("HEAVY_BUSY_LIMIT", False, lambda cores, slots: (75.0, "75, percent of the CPU's time")),
     "settleSeconds": ("HEAVY_SETTLE_SECONDS", False, lambda cores, slots: (30.0, "30")),
 }
 
@@ -392,10 +476,10 @@ def limits():
     return found
 
 
-def load_limit():
-    """The one-minute load average at or above which the host has no spare capacity: HEAVY_LOAD_LIMIT, or the host's
-    limits file, or three quarters of the cores."""
-    return float(limits()["loadLimit"][0])
+def busy_limit():
+    """The CPU's busy share, in percent, at or above which the host has no spare capacity: HEAVY_BUSY_LIMIT, or the
+    host's limits file, or 75."""
+    return float(limits()["busyLimit"][0])
 
 
 def limits_main(argv=None, out=print):
@@ -416,26 +500,22 @@ def limits_main(argv=None, out=print):
 
 
 def pressure(limit=None):
-    """Why the host has no spare capacity now, by the load average and memory pressure, as the refusal's kind,
-    load or memory, and its reason, which names the limit and its value beside what was read; None when it has.
-    Admission takes a slot beyond the guaranteed ones only without it, and the merge queue waits for it to clear
-    before it runs a gate again that gave no verdict (guides/maintenance.md, The merge queue)."""
-    limit = load_limit() if limit is None else limit
-    try:
-        load = os.getloadavg()[0]
-    except OSError:
-        load = None
-    return judged(load, limit, memory_level)
+    """Why the host has no spare capacity now, by the CPU's busy share and memory pressure, as the refusal's kind,
+    cpu or memory, and its reason, which names the limit and its value beside what was read; None when it has.
+    The merge queue waits for it to clear before it runs a gate again that gave no verdict (guides/maintenance.md,
+    The merge queue); admission judges its own attempt's reading the same way (Admission._extra_refusal)."""
+    limit = busy_limit() if limit is None else limit
+    return judged(cpu_busy(slot_directory(), wait=True)[0], limit, memory_level)
 
 
-def judged(load, limit, level):
-    """pressure's answer for a reading of a Mac: its one-minute load, None when unavailable, the limit of that
-    Mac, and level, a function that reads its memory pressure level, called only when the load is below the
-    limit. The merge queue judges the second Mac's reading by it too (remote.pressure_there)."""
-    if load is None:
-        return "load", f"the load average, which HEAVY_LOAD_LIMIT={limit:g} bounds, is unavailable"
-    if load >= limit:
-        return "load", f"load {load:.1f} is at or above HEAVY_LOAD_LIMIT={limit:g}"
+def judged(busy, limit, level):
+    """pressure's answer for a reading of a Mac: its CPU's busy share in percent, None when unavailable, the limit
+    of that Mac, and level, a function that reads its memory pressure level, called only when the share is below
+    the limit. The merge queue judges the second Mac's reading by it too (remote.pressure_there)."""
+    if busy is None:
+        return "cpu", f"the CPU's busy share, which HEAVY_BUSY_LIMIT={limit:g}% bounds, is unavailable"
+    if busy >= limit:
+        return "cpu", f"the CPU is {busy:.0f}% busy, at or above HEAVY_BUSY_LIMIT={limit:g}%"
     level = level()
     if level is None:
         return "memory", "memory pressure, which must be level 1 (normal), cannot be read"
@@ -569,8 +649,8 @@ class Admission:
         # Each from its environment variable, the host's limits file or the default (#49).
         found = limits()
         self.slots, self.maximum = found["slots"][0], found["slotsMax"][0]
-        self.load_limit = float(found["loadLimit"][0])
-        # The one-minute load average shows a new job's load only gradually.
+        self.busy_limit = float(found["busyLimit"][0])
+        # The CPU's busy share, read over about BUSY_WINDOW seconds, shows a new job only once it has started work.
         self.settle = float(found["settleSeconds"][0])
         self.poll = float(os.environ.get("HEAVY_POLL_SECONDS", "1"))
         # How long a dead or uncertain entry that recovery left waits before it is checked again.
@@ -587,8 +667,9 @@ class Admission:
         # guard: the guard is unreadable or not in admission's format and needs inspection; stranded: a dead or
         # uncertain entry recovery left is counted among the busy slots, or as the model's holder (#89);
         # exclusive: exclusive work holds the host or is queued ahead; wholeHost: a whole-host request queued ahead
-        # keeps the guaranteed slots, one of them free; model: another run holds the model; slots: every slot the request may take is busy; settle, load or memory: the settling time, the
-        # load average or memory pressure withholds a slot beyond the guaranteed ones. An older toolkit's log
+        # keeps the guaranteed slots, one of them free; model: another run holds the model; slots: every slot the request may take is busy; settle, cpu or memory: the settling time, the
+        # CPU's busy share or memory pressure withholds a slot beyond the guaranteed ones; an older toolkit's
+        # load, the load average that once did. An older toolkit's log
         # lines also count legacy, a gate holding StudyWright's former host lock, which no longer refuses (#25).
         self.refusal = self.waiting = None
         # The dead or uncertain entries recovery left, by identity: when they were checked, and why they stayed.
@@ -597,9 +678,11 @@ class Admission:
         # then, as counted, each one's identity, entry, why, the slots it is counted as and whether the model.
         self.stranded, self.counted = {}, []
         # For the log line: the refused attempts by kind, in the order the kinds first refused it; the holders
-        # when it asked; the first, last and highest one-minute load its attempts read; and the highest memory
-        # pressure level read beside its refusals.
+        # when it asked; the first, last and highest one-minute load its attempts read, and so of the CPU's busy
+        # share; the latest attempt's busy share and the seconds it spans; and the highest memory pressure level
+        # read beside its refusals.
         self.refusals, self.holders, self.loads, self.memory = Counter(), None, None, None
+        self.busies, self.busy = None, (None, None)
         self.guard = guard_path(os.environ)
         # Exclusive and whole-host requests waiting for admission, first come first.
         self.queue = self.directory / QUEUE
@@ -737,7 +820,8 @@ class Admission:
     def _seen(self):
         """What the request saw, for its admitted or withdrawn line (#49): the holders and the one-minute load
         when it asked, and, once an attempt was refused, why it waited."""
-        fields = {"holders": self.holders, "load": self.loads[0] if self.loads else None}
+        fields = {"holders": self.holders, "load": self.loads[0] if self.loads else None,
+                  "busy": self.busies[0] if self.busies else None}
         if self.counted:
             # The stranded entries recovery left, which the latest attempt counted as the slots they held (#89).
             fields["stranded"] = [{"identity": identity, "pid": owner["pid"], "label": str(owner.get("label"))[:LABEL_LIMIT],
@@ -745,8 +829,10 @@ class Admission:
                                   for identity, owner, why, slots, model in self.counted]
         if self.refusals:
             last, peak = self.loads[1:] if self.loads else (None, None)
+            busy_last, busy_peak = self.busies[1:] if self.busies else (None, None)
             fields["wait"] = {"refusals": dict(self.refusals), "first": next(iter(self.refusals)), "last": self.refusal,
-                              "load": {"last": last, "max": peak}, "memory": self.memory}
+                              "load": {"last": last, "max": peak}, "busy": {"last": busy_last, "max": busy_peak},
+                              "memory": self.memory}
         return fields
 
     def _count(self):
@@ -775,9 +861,13 @@ class Admission:
             return "slots", f"HEAVY_SLOTS_MAX={self.maximum} allows none beyond them"
         settling = time.time() - last_admission(self.directory, self.maximum)
         if settling < self.settle:
-            return "settle", (f"the load does not yet show the job admitted {int(settling)}s ago, "
+            return "settle", (f"the CPU does not yet show the job admitted {int(settling)}s ago, "
                               f"within HEAVY_SETTLE_SECONDS={self.settle:g}")
-        return pressure(self.load_limit)
+        busy, seconds = self.busy
+        if busy is None and seconds is not None:
+            # The samples kept do not span a reading yet: the next attempts' will.
+            return "settle", f"the CPU has been read over {seconds:g}s, short of the {BUSY_MINIMUM:g}s a reading spans"
+        return judged(busy, self.busy_limit, memory_level)
 
     def _take_model(self):
         """The model lock's descriptor, or None with its holder named. The caller holds the coordination lock,
@@ -853,6 +943,10 @@ class Admission:
             load = one_minute_load()
             if load is not None:
                 self.loads = [load, load, load] if self.loads is None else [self.loads[0], load, max(self.loads[2], load)]
+            self.busy = cpu_busy(self.directory)
+            if self.busy[0] is not None:
+                busy = self.busy[0]
+                self.busies = [busy, busy, busy] if self.busies is None else [self.busies[0], busy, max(self.busies[2], busy)]
             waiters = self._waiters()
             if self.exclusive or self.whole_host:
                 mine = next((waiter for waiter in waiters if waiter["identity"] == self.queued_as), None)
@@ -1151,6 +1245,7 @@ def summarize(entries, since=None, until=None):
             return
         group["recorded"] += 1
         if first.get("load") is not None: group["loads"].append(first["load"])
+        if isinstance(first.get("busy"), (int, float)): group["busies"].append(first["busy"])
         wait = first.get("wait")
         if wait is None: return
         refusals = sum(wait["refusals"].values())
@@ -1158,6 +1253,8 @@ def summarize(entries, since=None, until=None):
             group["behind"][kind] += 1
             group["queued"][kind] += first["waited"] * count / refusals
         if wait["load"]["max"] is not None: group["peaks"].append(wait["load"]["max"])
+        busy = (wait.get("busy") or {}).get("max")
+        if isinstance(busy, (int, float)): group["busyPeaks"].append(busy)
 
     for lines in requests.values():
         first, end = lines.get("admitted") or lines.get("withdrawn"), lines.get("ended")
@@ -1167,7 +1264,8 @@ def summarize(entries, since=None, until=None):
         for key in [(first["kind"], None), (first["kind"], first["label"])]:
             group = groups.setdefault(key, {"admitted": 0, "withdrawn": Counter(), "ends": Counter(),
                                             "waited": [], "held": [], "recorded": 0, "behind": Counter(),
-                                            "queued": Counter(), "loads": [], "peaks": []})
+                                            "queued": Counter(), "loads": [], "peaks": [], "busies": [],
+                                            "busyPeaks": []})
             group["waited"].append(first["waited"])
             saw(group, first)
             if first["event"] == "withdrawn":
@@ -1195,6 +1293,10 @@ def summarize(entries, since=None, until=None):
         if loads:
             text += f"; load when asked mean {sum(loads) / len(loads):.1f}, max {max(loads):.1f}"
             if peaks: text += f", while waiting max {max(peaks):.1f}"
+        busies, busy_peaks = group["busies"], group["busyPeaks"]
+        if busies:
+            text += f"; CPU busy when asked mean {sum(busies) / len(busies):.0f}%, max {max(busies):.0f}%"
+            if busy_peaks: text += f", while waiting max {max(busy_peaks):.0f}%"
         if held: text += f"; held mean {duration(sum(held) / len(held))}, max {duration(max(held))}, total {duration(sum(held))}"
         if group["ends"]: text += f"; ends {counts(group['ends'])}"
         return text
