@@ -133,7 +133,7 @@ class GuardTests(HostTest):
                     self.assertEqual(self.host.changes, [crash_alerts.OFF, before])
                     self.assertFalse(self.record.exists())
                     self.assertEqual(receipt["crashAlerts"], {"dialogTypeBefore": before, "restored": True,
-                                                              "cleared": [], "left": []})
+                                                              "appsUnderTest": [], "cleared": [], "left": []})
         self.assertTrue(any("crash-report dialogs off for the run" in line for line in self.said))
         self.assertTrue(any("put back crash-report dialogs" in line for line in self.said))
         # Dialogs the owner had off already are neither changed nor put back.
@@ -229,6 +229,105 @@ class GuardTests(HostTest):
             self.assertEqual(crash_alerts.main([]), 2)
 
 
+OTHER = {**CRASH, "texts": ["Crasher944 quit unexpectedly.", "Click Reopen to open the application again."]}
+UNDER_TEST = {**CRASH, "texts": ["EPUBLib quit unexpectedly.", "Click Reopen to open the application again."]}
+NAMELESS = {**CRASH, "texts": ["An application crashed."]}
+# 2026-11-07 04:46:44 UTC, when vocaro/EPUBLib#944's alert came (#226).
+START = 1794026804.0
+
+
+class ClearedAlertTests(HostTest):
+    """A failed run during which eng cleared a crash-report alert (owner's decision, 2026-11-07, #226)."""
+
+    def judged(self, alert, stood, apps=("EPUBLib",), status=65, during=True):
+        """The status a run judges after one look cleared alert, whose press took stood seconds; the error
+        printed and the run's summary."""
+        now = [START]
+        real = crash_alerts.press
+        def press(target, button):
+            now[0] += stood
+            return real(target, button)
+        with patch.object(crash_alerts, "clock", lambda: now[0]), patch.object(crash_alerts, "press", press):
+            run = crash_alerts.Run(self.said.append, None, apps)
+            run.running = during
+            self.host.alerts = [alert]
+            run.look()
+            with contextlib.redirect_stderr(StringIO()) as error: result = run.judged(status)
+        return result, error.getvalue(), run.summary()
+
+    def test_the_process_an_alert_names_is_read_from_its_text(self):
+        self.assertEqual(crash_alerts.crashed(OTHER), "Crasher944")
+        self.assertEqual(crash_alerts.crashed(CRASH), "ColorPickerUIService")
+        self.assertEqual(crash_alerts.crashed({**CRASH, "texts": ["The application Finder quit unexpectedly."]}),
+                         "Finder")
+        self.assertEqual(crash_alerts.crashed({**CRASH, "texts": ["“Mail” unexpectedly quit."]}), "Mail")
+        self.assertIsNone(crash_alerts.crashed(NAMELESS))
+        self.assertIsNone(crash_alerts.crashed({**CRASH, "texts": ["The application quit unexpectedly."]}))
+        self.assertIsNone(crash_alerts.crashed({**CRASH, "texts": ["Click Reopen to open the application again."]}))
+        self.assertIsNone(crash_alerts.crashed({**CRASH, "texts": []}))
+
+    def test_another_process_s_alert_that_stood_longer_than_one_look_makes_a_failure_unmeasured(self):
+        status, error, summary = self.judged(OTHER, 17)
+        self.assertEqual(status, evidence.UNMEASURED)
+        self.assertIn("eng: unmeasured: the run ended with status 65 after eng cleared a crash-report alert during it "
+                      "that was for Crasher944, not the app under test (EPUBLib), and stood 17.0 s from "
+                      "2026-11-07T04:46:44+00:00, longer than one look (2 s)", error)
+        self.assertIn("UserNotificationCenter's window at x 734, y 201, 260×250", error)
+        self.assertEqual(summary["cleared"], [{"alert": crash_alerts.describe(OTHER), "process": "Crasher944",
+                                               "start": "2026-11-07T04:46:44+00:00", "stoodSeconds": 17.0,
+                                               "duringRun": True}])
+        self.assertEqual(summary["appsUnderTest"], ["EPUBLib"])
+        # The app under test is matched as the alert names it, in any case.
+        self.assertEqual(self.judged(OTHER, 17, apps=("epublib",))[0], evidence.UNMEASURED)
+
+    def test_a_failure_stands_under_a_short_alert_one_for_the_app_under_test_or_one_eng_cannot_name(self):
+        for alert, stood, apps, why in (
+                (OTHER, 0.5, ("EPUBLib",), "was for Crasher944 and stood 0.5 s from 2026-11-07T04:46:44+00:00, "
+                                           "within one look (2 s)"),
+                (OTHER, crash_alerts.ONE_LOOK, ("EPUBLib",), "within one look"),
+                (UNDER_TEST, 30, ("EPUBLib",), "was for EPUBLib, the app under test, whose crash is the run's failure"),
+                (UNDER_TEST, 30, ("epublib",), "the app under test"),
+                (NAMELESS, 30, ("EPUBLib",), "names no process eng can read, so eng counts it as the app under test's"),
+                (OTHER, 30, (), "the run names no app under test")):
+            with self.subTest(alert=alert["texts"][0], stood=stood, apps=apps):
+                status, error, summary = self.judged(alert, stood, apps)
+                self.assertEqual(status, 65, error)
+                self.assertIn("eng: the run's status 65 stands: the crash-report alert eng cleared during it ", error)
+                self.assertIn(why, error)
+                self.assertNotIn("unmeasured", error)
+                self.assertEqual(summary["cleared"][0]["stoodSeconds"], round(stood, 1))
+                self.assertEqual(summary["cleared"][0]["process"], crash_alerts.crashed(alert))
+
+    def test_a_passing_run_passed_and_an_alert_cleared_before_the_run_changes_nothing(self):
+        status, error, summary = self.judged(OTHER, 30, status=0)
+        self.assertEqual((status, error), (0, ""))
+        self.assertEqual(summary["cleared"][0]["process"], "Crasher944")
+        status, error, summary = self.judged(OTHER, 30, during=False)
+        self.assertEqual((status, error), (65, ""))
+        self.assertFalse(summary["cleared"][0]["duringRun"])
+        # An unmeasured run stays unmeasured.
+        self.assertEqual(self.judged(OTHER, 30, status=evidence.UNMEASURED)[0], evidence.UNMEASURED)
+
+    def test_an_alert_stands_from_the_first_look_that_listed_it_and_afresh_once_it_has_gone(self):
+        now = [START]
+        with patch.object(crash_alerts, "clock", lambda: now[0]):
+            run = crash_alerts.Run(self.said.append, None, ("EPUBLib",))
+            run.running = True
+            # One System Events could not press at the first look stands from it.
+            self.host = Host(alerts=[OTHER], pressable=False)
+            run.look()
+            now[0] += 20
+            self.host.pressable = True
+            run.look()
+            self.assertEqual(run.summary()["cleared"][0]["stoodSeconds"], 20)
+            # The same alert again, later, stands from the look that met it again.
+            now[0] += 100
+            self.host.alerts = [OTHER]
+            run.look()
+            self.assertEqual(run.summary()["cleared"][1]["stoodSeconds"], 0)
+            self.assertEqual(run.summary()["cleared"][1]["start"], "2026-11-07T04:48:44+00:00")
+
+
 class LaneTests(HostTest):
     def setUp(self):
         super().setUp()
@@ -241,7 +340,7 @@ class LaneTests(HostTest):
                                            f"print('Ran 1 tests'); raise SystemExit({status})"],
                                "resource": "heavy", "foreground": True}
         (self.project / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Project", "lanes": {
-            "ui-mac": lane(0), "broken-mac": lane(1)}}))
+            "ui-mac": lane(0), "broken-mac": lane(1), "tested-mac": {**lane(1), "apps": ["EPUBLib"]}}}))
         for patcher in (patch.dict(os.environ, {devices.OVERRIDE: str(self.device_record.path),
                                                 "HEAVY_SLOT_DIR": str(self.root / "slots"), "HEAVY_POLL_SECONDS": "0.01",
                                                 "SW_GATE_LOCK_FILE": str(self.root / "gate")}),
@@ -307,6 +406,81 @@ class LaneTests(HostTest):
             self.host.alerts = []
             self.assertEqual(self.eng("run", "--here", "ui-mac")[0], 0)
         self.assertTrue(self.ran.exists())
+
+    def test_a_lane_that_fails_after_eng_cleared_another_process_s_long_alert_is_unmeasured(self):
+        real, now = crash_alerts.Run.look, [START]
+        def look(run, alert):
+            # The alert appears once the run has started, and its press takes 17 s.
+            if run.running and not run.cleared: self.host.alerts = [alert]
+            return real(run)
+        def press(target, button):
+            now[0] += 17
+            self.host.alerts = []
+            return True
+        for alert, lane, outcome in ((OTHER, "tested-mac", evidence.UNMEASURED), (UNDER_TEST, "tested-mac", 1),
+                                     (OTHER, "broken-mac", 1)):
+            with self.subTest(alert=alert["texts"][0], lane=lane), \
+                    patch.object(crash_alerts, "clock", lambda: now[0]), patch.object(crash_alerts, "press", press), \
+                    patch.object(crash_alerts.Run, "look", lambda run, alert=alert: look(run, alert)):
+                self.host.alerts = []
+                status, error = self.eng("run", "--here", lane)
+                self.assertEqual(status, outcome, error)
+                receipt = json.loads((self.project / f".build/engineering/{lane}/source.json").read_text())
+                cleared = receipt["crashAlerts"]["cleared"]
+                self.assertEqual([(entry["process"], entry["stoodSeconds"], entry["duringRun"]) for entry in cleared],
+                                 [(crash_alerts.crashed(alert), 17.0, True)])
+                self.assertEqual(receipt["crashAlerts"]["appsUnderTest"], ["EPUBLib"] if lane == "tested-mac" else [])
+                if outcome == evidence.UNMEASURED:
+                    self.assertIn("after eng cleared a crash-report alert during it that was for Crasher944", error)
+                    self.assertEqual(receipt["outcome"], "unmeasured")
+                else:
+                    self.assertIn("eng: the run's status 1 stands", error)
+
+    def test_a_lanes_apps_are_names_of_a_foreground_lane(self):
+        from vocaro_engineering import config
+        command = {"command": ["true"], "resource": "heavy", "foreground": True}
+        for lane, words in (({**command, "apps": []}, "apps names the app under test"),
+                            ({**command, "apps": ["EPUBLib", ""]}, "apps names the app under test"),
+                            ({**command, "apps": "EPUBLib"}, "apps names the app under test"),
+                            ({**command, "apps": [" EPUBLib"]}, "apps names the app under test"),
+                            ({**command, "foreground": False, "apps": ["EPUBLib"]}, "apps needs a foreground lane")):
+            with self.subTest(lane):
+                (self.project / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Project",
+                                                                           "lanes": {"ui": lane}}))
+                with self.assertRaisesRegex(ValueError, words): config.load(self.project)
+        (self.project / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Project",
+                                                                   "lanes": {"ui": {**command, "apps": ["EPUBLib"]}}}))
+        self.assertEqual(config.load(self.project)["lanes"]["ui"]["apps"], ["EPUBLib"])
+        schema = json.loads((config.TOOLKIT_ROOT / "schemas/engineering.schema.json").read_text())
+        self.assertEqual(schema["properties"]["lanes"]["additionalProperties"]["properties"]["apps"]["type"], "array")
+
+    def test_admit_takes_the_app_under_test_and_remote_admit_sends_it(self):
+        self.host.alerts = []
+        now = [START]
+        real = crash_alerts.Run.look
+        def look(run):
+            if run.running and not run.cleared: self.host.alerts = [OTHER]
+            return real(run)
+        def press(target, button):
+            now[0] += 17
+            self.host.alerts = []
+            return True
+        failing = [sys.executable, "-c", "raise SystemExit(4)"]
+        with patch.object(crash_alerts, "clock", lambda: now[0]), patch.object(crash_alerts, "press", press), \
+                patch.object(crash_alerts.Run, "look", look):
+            status, error = self.eng("admit", "--foreground", "--app", "EPUBLib", "--", *failing)
+            self.assertEqual(status, evidence.UNMEASURED, error)
+            self.assertIn("not the app under test (EPUBLib)", error)
+            status, error = self.eng("admit", "--foreground", "--app", "Crasher944", "--", *failing)
+            self.assertEqual(status, 4, error)
+        self.assertEqual(self.eng("admit", "--app", "EPUBLib", "--", "true")[0], 2)
+        sent = []
+        with patch.object(remote, "execute", side_effect=lambda root, config, host, work, **options:
+                          sent.append(work) or 0), \
+                patch.object(remote, "offering_here", side_effect=lambda here, send: send()):
+            self.assertEqual(self.eng("remote", "admit", "--foreground", "--app", "EPUBLib", "--app", "EPUBLibUITests",
+                                      "--", "true")[0], 0)
+        self.assertEqual(sent, [["admit", "--foreground", "--app", "EPUBLib", "--app", "EPUBLibUITests", "--", "true"]])
 
 
 class ReportTests(unittest.TestCase):

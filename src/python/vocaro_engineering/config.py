@@ -71,8 +71,9 @@ def parse(source):
             continue
         if not isinstance(lane, dict) or set(lane) - {"command", "resource", "minimumTests", "timeout", "foreground",
                                                        "here", "model", "display", "budgetMinutes", "wholeHost",
-                                                       "unlockedScreen"}:
+                                                       "unlockedScreen", "apps"}:
             raise ValueError(f"Invalid lane {name}")
+        apps(name, lane)
         for key in ["foreground", "model", "display", "wholeHost", "unlockedScreen"]:
             if key in lane and type(lane[key]) is not bool:
                 raise ValueError(f"{name}.{key} must be true or false")
@@ -298,6 +299,20 @@ def whole_host_lane(lanes, name):
     """Whether the lane name takes every guaranteed slot of the Mac it runs on: a lane, or a group, that says
     "wholeHost": true. A group that runs such a lane says so itself, as validation requires."""
     return bool(lanes[name].get("wholeHost"))
+
+
+def apps(name, lane):
+    """A foreground lane's "apps" names the app under test, as a crash-report alert names the process that quit,
+    such as "EPUBLib": a failed run during which eng cleared an alert for any other process, one that stood longer
+    than one look, is unmeasured, while one for these stays failed (crash_alerts.py, vocaro-engineering#226)."""
+    if "apps" not in lane: return
+    names = lane["apps"]
+    if not isinstance(names, list) or not names or any(not isinstance(app, str) or not app.strip() or app != app.strip()
+                                                       for app in names):
+        raise ValueError(f"{name}.apps names the app under test, as a crash-report alert names its process: a list "
+                         "of nonempty names")
+    if not lane.get("foreground"):
+        raise ValueError(f"{name}.apps needs a foreground lane: eng clears crash-report alerts only during one")
 
 
 def screen(name, lane):

@@ -1693,8 +1693,11 @@ def main(root, config, args):
         raise ValueError("Name the command: eng remote admit [--exclusive | --model] [--foreground] -- COMMAND")
     if args.time_limit is not None and args.time_limit <= 0:
         raise ValueError("--time-limit needs a positive number of seconds")
-    kind = (["--exclusive"] if args.exclusive else ["--model"] if args.model else []) + \
+    if getattr(args, "app", None) and not args.foreground:
+        raise ValueError("--app names the app under test of foreground work: add --foreground")
+    kind =(["--exclusive"] if args.exclusive else ["--model"] if args.model else []) + \
         (["--foreground"] if args.foreground else []) + \
+        [word for app in (getattr(args, "app", None) or []) for word in ("--app", app)] + \
         (["--time-limit", f"{args.time_limit:g}"] if args.time_limit is not None else [])
     held = lease(args.device or [], args.device_owner or devices.default_owner(), command, root=root,
                  budget=args.time_limit)

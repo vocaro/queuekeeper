@@ -598,12 +598,12 @@ def admitted_tree(root, name, offered, receipt):
     return None
 
 
-def guarded_alerts(stack, purpose, receipt):
+def guarded_alerts(stack, purpose, receipt, apps=()):
     """Foreground work's crash_alerts.Run, with crash-report dialogs off and the screen's crash-report alerts
     cleared until the stack closes; or UNMEASURED, with nothing run, when an alert eng cannot clear is over the
-    screen (crash_alerts.py)."""
+    screen (crash_alerts.py). apps names the app under test, as a crash-report alert names its process."""
     try:
-        return stack.enter_context(crash_alerts.guarded(purpose, receipt=receipt))
+        return stack.enter_context(crash_alerts.guarded(purpose, receipt=receipt, apps=apps))
     except crash_alerts.Blocked as error:
         print(f"eng: unmeasured: {error}; nothing ran ({crash_alerts.GUIDE}, Crash-report alerts)", file=sys.stderr)
         receipt["outcome"] = "unmeasured"
@@ -644,6 +644,9 @@ def admit(root, args, config=None, *, device_window=None):
     if args.foreground and args.verify:
         raise ValueError("--verify never sends foreground work: send it to the second Mac with "
                          "eng remote admit --foreground -- COMMAND")
+    if args.app and not args.foreground:
+        raise ValueError("--app names the app under test of foreground work, whose crash-report alerts eng clears: "
+                         "add --foreground")
     if args.foreground and not second: devices.require_foreground(os.environ.get(devices.OWNER))
     # Nested work runs inside the admission it inherits, here.
     inherited = bool(os.environ.get(resources.TOKEN))
@@ -675,7 +678,7 @@ def admit(root, args, config=None, *, device_window=None):
             receipt["hereBecause"] = offered.status
             fell_back("the command", offered)
         reap_here(root, inherited)
-        alerts = guarded_alerts(stack, " ".join(command), receipt) if args.foreground else None
+        alerts = guarded_alerts(stack, " ".join(command), receipt, args.app or ()) if args.foreground else None
         if isinstance(alerts, int): return alerts
         # The second Mac's Notification Center windows, under the foreground eng holds there (#204).
         blocked = cleared_notifications(receipt) if second else None
@@ -775,6 +778,10 @@ def main(argv=None):
         "pointer, focus or speech, as Mac VoiceOver and Mac UI tests do: on the second Mac eng holds its foreground for "
         "the command, waiting while another run holds it; on this Mac the session must hold mac-foreground within "
         "the owner's window (guides/shared-host.md, Attended Mac sessions)")
+    admission.add_argument("--app", action="append", metavar="NAME", help="with --foreground, the app under test, "
+        "as a crash-report alert names its process; repeat for each. A failed run during which eng cleared such an "
+        "alert for another process, one that stood longer than one look, is unmeasured; one for NAME stays failed "
+        "(guides/second-mac-foreground.md, Crash-report alerts)")
     admission.add_argument("--verify", action="store_true", help="the command is verification, a test or build whose "
         "result is its log and exit status and whose products this Mac does not use: send it to the second Mac, as "
         "eng run sends a lane, to run in its checkout's directory that matches this one, at HEAD or a snapshot commit; "
@@ -850,6 +857,8 @@ def main(argv=None):
     kind.add_argument("--model", action="store_true", help="hold one slot and the model lock of the second Mac")
     remote_admit.add_argument("--foreground", action="store_true", help="hold the second Mac's foreground for the "
         "command, as Mac VoiceOver and Mac UI tests need, waiting while another run holds it")
+    remote_admit.add_argument("--app", action="append", metavar="NAME", help="with --foreground, the app under "
+        "test, as eng admit's")
     remote_admit.add_argument("--time-limit", type=float, metavar="SECONDS", help="seconds the command may run "
         f"there once admitted, as eng admit's (default {processes.DEFAULT_LIMIT})")
     remote_admit.add_argument("command", nargs=argparse.REMAINDER, help="the command and its arguments, after --")
@@ -1172,7 +1181,8 @@ def main(argv=None):
                                 fell_back(args.lane, offered)
                             reap_here(root, inherited)
                             if reads_screen: receipt["screen"] = screen_reading()
-                            alerts = guarded_alerts(stack, args.lane, receipt) if lane.get("foreground") else None
+                            alerts = guarded_alerts(stack, args.lane, receipt, lane.get("apps", ())) \
+                                if lane.get("foreground") else None
                             if isinstance(alerts, int): return alerts
                             blocked = cleared_notifications(receipt) if second else None
                             if blocked is not None: return blocked

@@ -9,7 +9,11 @@ died keeps its record, and the next eng command on that Mac puts the value back 
 the screen and while it runs, eng dismisses any crash-report alert with Ignore or OK, never Reopen or Report, and
 leaves every other system alert alone: a password, permission or keychain prompt is the owner's. One it cannot
 clear before the run leaves the run unmeasured with nothing run; one met during a run that then fails leaves that
-run unmeasured too, never failed (guides/second-mac-foreground.md, Crash-report alerts).
+run unmeasured too, never failed. One it cleared during a run that then fails leaves it unmeasured when the alert
+stood longer than one look and was for a process other than the app under test; a crash of the app under test,
+or of a process eng cannot name, stays a failure (owner's decision, 2026-11-07, vocaro-engineering#226). The
+receipt keeps each cleared alert's process, start and how long it stood (guides/second-mac-foreground.md,
+Crash-report alerts).
 """
 import contextlib
 from datetime import datetime, timezone
@@ -19,6 +23,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 
 from . import evidence, offload_host, resources
 
@@ -33,6 +38,16 @@ ATTEMPTS = 10
 # Report… opens another window; neither is pressed.
 DISMISS = ("Ignore", "OK")
 CRASH = re.compile(r"quit unexpectedly|unexpectedly quit|crashed", re.IGNORECASE)
+# The process an alert's text names as the one that quit: "Crasher944 quit unexpectedly.", or "The application
+# Finder quit unexpectedly."
+CRASHED = re.compile(r"^\s*(?:the application\s+)?[“\"]?(?P<name>[^“”\"]+?)[”\"]?\s+"
+                     r"(?:quit unexpectedly|unexpectedly quit|crashed)\b", re.IGNORECASE)
+# What such a text says in place of a name, which names no process.
+UNNAMED = {"the application", "an application", "application", "the app", "an app", "app"}
+# Seconds a cleared alert may stand and still count as cleared at the look that met it: the wait between looks
+# (WATCH), which a look that answers promptly fits well within, as on 2026-11-03. One that stood longer stood past
+# that look, as two did on the second Mac on 2026-11-07, 17 s and 30 s under load (#225, #226).
+ONE_LOOK = WATCH
 # An alert about any of these is the owner's, whatever process raised it.
 OWNERS = re.compile(r"password|passcode|keychain|permission|allow|access|authenticat|touch id|administrator",
                     re.IGNORECASE)
@@ -40,6 +55,7 @@ PROMPTS = ("SecurityAgent", "coreautha", "universalAccessAuthWarn")
 GUIDE = "guides/second-mac-foreground.md"
 # What the toolkit reads and changes on the Mac, through these alone, so that tests replace them (host_isolation).
 run = offload_host.output
+clock = time.time
 
 
 def change(value):
@@ -87,9 +103,10 @@ def dismissal(alert):
     return next((button for button in DISMISS if button in alert["buttons"]), None)
 
 
-def clear(said, windows=None):
-    """Dismiss the screen's crash-report alerts, one at a time, saying each; (cleared, left), left being the
-    system alerts still there, or None when they cannot be read."""
+def clear(said, windows=None, pressed=None):
+    """Dismiss the screen's crash-report alerts, one at a time, saying each and telling pressed, when given, of
+    each as its press returns; (cleared, left), left being the system alerts still there, or None when they cannot
+    be read."""
     windows = windows or (lambda: offload_host.system_alerts(run))
     cleared, missed = [], []
     for _ in range(ATTEMPTS):
@@ -104,8 +121,26 @@ def clear(said, windows=None):
             missed.append(target)
             continue
         said(f"eng: dismissed a crash-report alert with {button}: {describe(target)}")
+        if pressed is not None: pressed(target)
         cleared.append(target)
     return cleared, windows()
+
+
+def crashed(alert):
+    """The process alert says quit unexpectedly, or None when its text names none."""
+    for text in alert["texts"]:
+        found = CRASHED.match(text)
+        if found and found.group("name").strip().casefold() not in UNNAMED: return found.group("name").strip()
+    return None
+
+
+def key(alert):
+    """What tells one alert from another across looks."""
+    return alert["app"], tuple(alert["frame"]), tuple(alert["texts"])
+
+
+def stamp(when):
+    return datetime.fromtimestamp(when, timezone.utc).isoformat(timespec="seconds")
 
 
 def stopping(left):
@@ -151,40 +186,97 @@ def recover(said=None):
 
 
 class Run:
-    """What a guarded run met: crash-report alerts cleared and system alerts left over the screen."""
+    """What a guarded run met: crash-report alerts cleared, each with when eng first saw it and when its press
+    returned, and system alerts left over the screen. apps names the app under test, as a crash alert names its
+    process; running is set once the run has started, so that an alert cleared before it is told apart."""
 
-    def __init__(self, said, windows):
+    def __init__(self, said, windows, apps=()):
         self.said, self.windows = said, windows
+        self.apps = [name for name in apps if name]
         self.cleared, self.left = [], []
+        self.seen = {}
+        self.running = False
         self.lock = threading.Lock()
 
-    def look(self):
-        cleared, left = clear(self.said, self.windows)
+    def listed(self, started):
+        """The screen's system alerts, each first seen, however many looks it then stands, at the start of the
+        first look that listed it."""
+        alerts = (self.windows or (lambda: offload_host.system_alerts(run)))()
         with self.lock:
-            self.cleared += cleared
+            for alert in alerts or []: self.seen.setdefault(key(alert), started)
+        return alerts
+
+    def look(self):
+        started, presses = clock(), {}
+        cleared, left = clear(self.said, lambda: self.listed(started),
+                              lambda alert: presses.setdefault(key(alert), clock()))
+        with self.lock:
+            for alert in cleared:
+                self.cleared.append({"alert": alert, "since": self.seen.pop(key(alert), started),
+                                     "at": presses.get(key(alert), clock()), "during": self.running})
+            # One gone by itself, or pressed by another, is seen afresh when it comes back.
+            if left is not None:
+                standing = {key(alert) for alert in left}
+                self.seen = {name: since for name, since in self.seen.items() if name in standing}
             for alert in left or []:
                 if alert not in self.left:
                     self.said(f"eng: a system alert stays over the screen: {describe(alert)}")
                     self.left.append(alert)
         return left
 
+    def verdict(self, entry):
+        """(excuses, why): whether a crash-report alert eng cleared during a failed run makes the run unmeasured,
+        and why or why not. It does when the alert stood longer than one look and was for a process other than
+        the app under test (owner's decision, 2026-11-07, #226); one whose process eng cannot name, or a run that
+        names no app under test, counts as the app under test's."""
+        process, stood = crashed(entry["alert"]), entry["at"] - entry["since"]
+        standing = f"stood {stood:.1f} s from {stamp(entry['since'])}"
+        if process is None:
+            return False, f"names no process eng can read, so eng counts it as the app under test's; it {standing}"
+        if not self.apps:
+            return False, (f"was for {process}, and the run names no app under test (a lane's \"apps\", or eng admit "
+                           f"--app), so eng counts it as the app under test's; it {standing}")
+        if process.casefold() in {name.casefold() for name in self.apps}:
+            return False, f"was for {process}, the app under test, whose crash is the run's failure; it {standing}"
+        if stood <= ONE_LOOK:
+            return False, f"was for {process} and {standing}, within one look ({ONE_LOOK} s)"
+        return True, (f"was for {process}, not the app under test ({', '.join(self.apps)}), and {standing}, longer "
+                      f"than one look ({ONE_LOOK} s)")
+
     def judged(self, status):
         """status, or UNMEASURED for a run that did not pass while a system alert eng could not clear was over
-        the screen, at a look during the run or one as it ended: its clicks may have gone to the alert."""
+        the screen, at a look during the run or one as it ended, or after eng cleared during it a crash-report
+        alert for a process other than the app under test that stood longer than one look: its clicks may have
+        gone to the alert. A failure under any other cleared alert stands, saying why."""
         if status in (0, evidence.UNMEASURED): return status
         self.look()
-        if not self.left: return status
-        print(f"eng: unmeasured: the run ended with status {status} while {stopping(self.left)}", file=sys.stderr,
-              flush=True)
-        return evidence.UNMEASURED
+        if self.left:
+            print(f"eng: unmeasured: the run ended with status {status} while {stopping(self.left)}", file=sys.stderr,
+                  flush=True)
+            return evidence.UNMEASURED
+        judged = [(entry, *self.verdict(entry)) for entry in self.cleared if entry["during"]]
+        excusing = [(entry, why) for entry, excuses, why in judged if excuses]
+        for entry, why in excusing:
+            print(f"eng: unmeasured: the run ended with status {status} after eng cleared a crash-report alert during "
+                  f"it that {why}, so its clicks may have gone to the alert: {describe(entry['alert'])}",
+                  file=sys.stderr, flush=True)
+        if excusing: return evidence.UNMEASURED
+        for entry, _excuses, why in judged:
+            print(f"eng: the run's status {status} stands: the crash-report alert eng cleared during it {why}: "
+                  f"{describe(entry['alert'])}", file=sys.stderr, flush=True)
+        return status
 
     def summary(self):
-        return {"cleared": [describe(alert) for alert in self.cleared], "left": [describe(alert) for alert in self.left]}
+        cleared = [{"alert": describe(entry["alert"]), "process": crashed(entry["alert"]),
+                    "start": stamp(entry["since"]), "stoodSeconds": round(entry["at"] - entry["since"], 1),
+                    "duringRun": entry["during"]} for entry in self.cleared]
+        return {"appsUnderTest": self.apps, "cleared": cleared, "left": [describe(alert) for alert in self.left]}
 
 
 @contextlib.contextmanager
-def guarded(purpose, *, said=None, receipt=None, windows=None, watch=None):
+def guarded(purpose, *, said=None, receipt=None, windows=None, watch=None, apps=()):
     """Turn crash-report dialogs off for the run inside the block, and clear and watch the screen's alerts.
+    apps names the app under test, as a crash-report alert names the process that quit.
 
     It raises Blocked, with nothing run, when a system alert it cannot clear is over the screen before the
     run. The block's Run judges the run's status. However the block ends, DialogType's value from before it is
@@ -199,7 +291,7 @@ def guarded(purpose, *, said=None, receipt=None, windows=None, watch=None):
     kept = {"before": before, "owner": f"eng {os.getpid()} for {purpose}", "pid": os.getpid(),
             "start": resources.process_start(os.getpid()), "at": datetime.now(timezone.utc).isoformat()}
     path.write_text(json.dumps(kept))
-    state = Run(said, windows)
+    state = Run(said, windows, apps)
     # In the receipt from the start, for a receipt written while the run still holds it.
     report = {"dialogTypeBefore": before}
     if receipt is not None: receipt["crashAlerts"] = report
@@ -215,6 +307,8 @@ def guarded(purpose, *, said=None, receipt=None, windows=None, watch=None):
                  "cleared")
         elif left:
             raise Blocked(stopping(left))
+        # What a look clears from here on, it clears during the run.
+        state.running = True
         def watching():
             while not stop.wait(watch): state.look()
         if left is not None:
