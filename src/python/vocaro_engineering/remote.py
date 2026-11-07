@@ -60,7 +60,7 @@ import tempfile
 import threading
 import time
 
-from . import capture_approvals, devices, disk, offload_host, processes, resources
+from . import capture_approvals, devices, disk, offload_host, processes, resources, toolkit_copy
 from .config import TOOLKIT_ROOT, unlocked_screen
 from .resources import BUSY, FREE_WAIT
 from .simulators import pool as simulator_pool
@@ -554,6 +554,22 @@ def snapshot(root):
     commit = git(root, "commit-tree", tree, "-p", head, "-m", f"Snapshot of the working tree on {head}",
                  variables={**environment(), **SNAPSHOT_IDENTITY})
     return commit, head
+
+
+def toolkit_gap(toolkit):
+    """What to say when the toolkit a dispatch sends lacks commits of its origin/main as last fetched, or None.
+
+    The run there executes that toolkit, so a project change that needs newer toolkit code fails, and only as
+    an error from wherever it first reaches for it: on 2026-11-06 BreezEPUB's driver stopped on "cannot import
+    name 'capture_approvals'" while this Mac's shared checkout waited one landing behind for a process running
+    from it to end (vocaro-engineering#209; guides/maintenance.md, The shared checkout follows each toolkit
+    landing). It changes nothing about what is sent."""
+    count = toolkit_copy.behind(toolkit)
+    if not count: return None
+    return (f"the toolkit sent, {toolkit} at {toolkit_copy.git(toolkit, 'rev-parse', '--short=12', 'HEAD')}, is "
+            f"{count} commit{'s' * (count != 1)} behind its origin/main (last landed: {toolkit_copy.last_landed(toolkit)}): "
+            "a project change that needs newer toolkit code fails there; the shared checkout follows each landing "
+            "once nothing runs from it")
 
 
 def kit_snapshot(kit):
@@ -1333,6 +1349,9 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
             f"{{ [ -d {shlex.quote(path)} ] || {init(path)} 2>/dev/null || {{ sleep 1; {init(path)}; }}; }}"
             for path in repositories)])
         print(f"remote: sending {at} to {host}", file=sys.stderr, flush=True)
+        if kit is not None:
+            gap = toolkit_gap(toolkit)
+            if gap: print(f"remote: {gap}", file=sys.stderr, flush=True)
         # The connection that prepares the repositories also lists what earlier runs left running there,
         # before any work is sent: a connection to the second Mac can take seconds of its own. It has
         # each repository name the commits its checkouts hold, which the pushes then need not send.

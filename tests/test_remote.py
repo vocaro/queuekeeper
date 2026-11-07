@@ -5487,3 +5487,25 @@ class EarlierNameTests(unittest.TestCase):
         for read in ['if lane.get("buildHost"):', 'os.environ.get("VOCARO_BUILD_HOST")', "if args.build_host_only:",
                      "unchecked = args.build_host_unchecked"]:
             self.assertTrue(old.search(read), read)
+
+
+class ToolkitGapTests(unittest.TestCase):
+    """eng remote says when the toolkit it sends lacks origin/main's commits (#209)."""
+
+    def test_a_toolkit_behind_its_origin_main_is_named_and_a_current_one_is_not(self):
+        with tempfile.TemporaryDirectory() as directory:
+            origin, toolkit, seed = (Path(directory) / name for name in ("origin.git", "toolkit", "seed"))
+            git(directory, "init", "-q", "--bare", "-b", "main", str(origin))
+            git(directory, "clone", "-q", str(origin), str(seed))
+            (seed / "a.txt").write_text("a\n")
+            commit_all(seed)
+            git(seed, "push", "-q", "origin", "HEAD:main")
+            git(directory, "clone", "-q", str(origin), str(toolkit))
+            self.assertIsNone(remote.toolkit_gap(toolkit))  # control: current
+            land(seed, text="landed meanwhile\n")
+            git(toolkit, "fetch", "-q", "origin")
+            gap = remote.toolkit_gap(toolkit)
+            self.assertIn(f"{toolkit} at {git(toolkit, 'rev-parse', '--short=12', 'HEAD')}, is 1 commit behind", gap)
+            self.assertIn("needs newer toolkit code fails there", gap)
+            git(toolkit, "update-ref", "-d", "refs/remotes/origin/main")
+            self.assertIsNone(remote.toolkit_gap(toolkit))  # control: no origin/main to compare with
