@@ -2660,7 +2660,8 @@ class ToolkitCopy(Fixture):
 
     def test_the_old_layout_moves_once_nothing_uses_it_and_keeps_what_was_provisioned(self):
         old, old_kit = self.old_layout()
-        identifier, status = self.gate_once("a")
+        with patch.object(mq.disk, "census", return_value=[]):
+            identifier, status = self.gate_once("a")
         self.assertEqual(status, 0)
         self.assertEqual(self.state(identifier)["state"], "landed")
         self.assertFalse(old.exists())
