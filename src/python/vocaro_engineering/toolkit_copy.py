@@ -1,5 +1,7 @@
 """Which copy of the toolkit `scripts/eng` runs, in the toolkit's own repository (vocaro-engineering#189).
 
+It also lists, for `eng doctor`, leftover worktrees of the toolkit that would run old code (#220).
+
 A session worktree of vocaro-engineering (.claude/worktrees/*) holds a toolkit copy of its own, which
 falls behind origin/main as other sessions land: on 2026-11-05 one 63 commits behind ran `eng disk`
 rules two days old, found nothing to delete on a Mac at 20 GiB free, and said nothing. Project
@@ -33,6 +35,9 @@ TOOLKIT_PATHS = ("src/python", "scripts/eng", "integrations")
 HOST_COMMANDS = frozenset({"admissions", "admit", "app", "device-pass", "disk", "host", "keychain", "land", "policy", "queue",
                            "remote", "simulator-pool"})
 GIT_TIMEOUT = 10
+# Set to off, `eng doctor` lists no leftover worktrees: tests/host_isolation.py sets it, so that no doctor test
+# reads the host's own worktrees of the toolkit.
+LEFTOVER_SWITCH = "VOCARO_LEFTOVER_WORKTREES"
 
 
 def environment():
@@ -123,7 +128,63 @@ def choose(toolkit, argv):
     return toolkit, line
 
 
-def doctor_warnings(toolkit):
-    """`eng doctor`'s warning for a toolkit copy behind origin/main, from any project."""
+def worktrees(checkout):
+    """Each worktree of checkout's repository, from `git worktree list --porcelain`, as a dict of its
+    fields (worktree, HEAD, branch, detached, locked, prunable); the main checkout comes first."""
+    listed = git(checkout, "worktree", "list", "--porcelain")
+    entries = []
+    for block in (listed or "").split("\n\n"):
+        fields = dict((line.split(" ", 1) + [""])[:2] for line in block.splitlines() if line.strip())
+        if "worktree" in fields: entries.append(fields)
+    return entries
+
+
+def working_directories():
+    """The working directory of every live process lsof can see, or None when lsof cannot say."""
+    try:
+        done = subprocess.run(["lsof", "-nP", "-a", "-d", "cwd", "-Fn"], capture_output=True, text=True,
+                              stdin=subprocess.DEVNULL, timeout=GIT_TIMEOUT)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if not done.stdout: return None
+    return {Path(line[1:]) for line in done.stdout.splitlines() if line.startswith("n/")}
+
+
+def leftover_worktrees(toolkit, directories=None):
+    """Worktrees of the toolkit's repository nobody needs: detached, at a commit behind origin/main and
+    reachable from it, unlocked, with nothing uncommitted or untracked, and no live process's working
+    directory (when lsof can say). A session that sets VOCARO_ENGINEERING_ROOT to one runs old toolkit
+    code; one found on 2026-11-06 was three days behind. Each is (path, commit, commits behind); the main
+    checkout is never one. directories stands in for working_directories in tests."""
+    found = []
+    for entry in worktrees(toolkit)[1:]:
+        path = Path(entry["worktree"])
+        if "detached" not in entry or "locked" in entry or "prunable" in entry or not path.is_dir(): continue
+        head = entry.get("HEAD", "")
+        if git(path, "merge-base", "--is-ancestor", head, UPSTREAM) is None: continue
+        count = git(path, "rev-list", "--count", f"{head}..{UPSTREAM}")
+        if not count or not count.isdigit() or int(count) == 0: continue
+        if git(path, "status", "--porcelain", "--untracked-files=all") != "": continue
+        found.append((path, head, int(count)))
+    if found:
+        directories = working_directories() if directories is None else directories
+        if directories:
+            found = [item for item in found
+                     if not any(d == item[0].resolve() or item[0].resolve() in d.parents for d in directories)]
+    return found
+
+
+def leftover_line(path, head, count):
+    return (f"{path} is a leftover worktree of the toolkit: detached at {head[:12]}, {count} commit"
+            f"{'s' * (count != 1)} behind origin/main and already in it, clean and unused; a session pointed at it "
+            f"through VOCARO_ENGINEERING_ROOT runs old toolkit code. `git worktree remove {path}` removes it "
+            "(a landed leftover needs no owner, agents/core.md)")
+
+
+def doctor_warnings(toolkit, directories=None):
+    """`eng doctor`'s warnings for a toolkit copy behind origin/main, from any project, and for leftover
+    worktrees of the toolkit's repository, which it lists and never removes."""
     count = behind(toolkit)
-    return [gap_line(Path(toolkit).resolve(), count)] if count else []
+    warnings = [gap_line(Path(toolkit).resolve(), count)] if count else []
+    if os.environ.get(LEFTOVER_SWITCH) == "off": return warnings
+    return warnings + [leftover_line(*item) for item in leftover_worktrees(toolkit, directories)]

@@ -79,6 +79,10 @@ os.environ["VOCARO_EVIDENCE_RETRY"] = "off"
 # of the reap clears it.
 os.environ[cli.REAP_SWITCH] = "off"
 
+# Nor does any doctor a test runs list this host's own leftover worktrees of the toolkit
+# (toolkit_copy.leftover_worktrees), which come and go with other sessions. A test of the list clears it.
+os.environ[cli.toolkit_copy.LEFTOVER_SWITCH] = "off"
+
 
 def unfixed(root, hosts):
     hosts.pop("runtimesDiffer", None)
