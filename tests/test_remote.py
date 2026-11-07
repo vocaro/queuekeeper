@@ -3829,6 +3829,11 @@ class SecondMacDoctorTests(unittest.TestCase):
                         "addresses": [{"address": "192.0.2.7", "seconds": 0.004, "outcome": "connected"}]}
         self.connection = patch.object(remote, "connection", side_effect=lambda host: self.reached)
         self.connection.start()
+        # The census answers through the fake ssh on this Mac, in the gate beside other lanes; its fixed 60 s ran
+        # out there on 2026-11-07 (#251), so the bound stretches with load as the tests' other bounds do.
+        census = patch.object(remote, "CENSUS_TIMEOUT", round(stretched(remote.CENSUS_TIMEOUT)))
+        census.start()
+        self.addCleanup(census.stop)
 
     def tearDown(self):
         self.connection.stop()
@@ -5457,8 +5462,11 @@ class ToolkitUpdateTests(unittest.TestCase):
         self.temp.cleanup()
 
     def update(self, **request):
-        return offload_host.update_toolkit({"path": offload_host.TOOLKIT_CHECKOUT, "root": remote.ROOT, **request},
-                                           home=self.home)
+        # The update's 40 s deadline and its fetch's 25 s ran out under the gate's load on 2026-11-07, and ps had
+        # what was left of them (#251); they stretch with load here, as the tests' other bounds do.
+        with patch.object(offload_host, "UPDATE_FETCH_SECONDS", stretched(offload_host.UPDATE_FETCH_SECONDS)):
+            return offload_host.update_toolkit({"path": offload_host.TOOLKIT_CHECKOUT, "root": remote.ROOT, **request},
+                                               home=self.home, seconds=stretched(offload_host.UPDATE_SECONDS))
 
     def head(self):
         return git(self.checkout, "rev-parse", "HEAD")
@@ -5561,7 +5569,8 @@ class ToolkitUpdateTests(unittest.TestCase):
             asked.clear()
             with self.subTest(output=output):
                 found = offload_host.update_toolkit({"path": offload_host.TOOLKIT_CHECKOUT, "root": remote.ROOT},
-                                                    home=self.home, listed=listed(output))
+                                                    home=self.home, listed=listed(output),
+                                                    seconds=stretched(offload_host.UPDATE_SECONDS))
                 self.assertEqual(found["state"], "failed", found)
                 self.assertTrue(found["reason"].startswith(reason), found)
                 self.assertGreaterEqual(asked[0][1], offload_host.UPDATE_LISTING_SECONDS)
