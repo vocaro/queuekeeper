@@ -200,6 +200,11 @@ class TimedOut(TimeoutError):
     """The run's timeout expired, and then the command and every observed descendant ended."""
 
 
+class Canceled(TimedOut):
+    """The caller canceled the run (supervise's cancel), and then the command and every observed descendant ended,
+    as after a timeout: the merge queue throws away a gate stacked on a batch that did not land."""
+
+
 def request_stop(signum, _frame=None):
     """Record a stop for supervision to carry out. It never raises: an exception raised between
     publishing an admission and entering its context would strand the admission's entry."""
@@ -257,7 +262,7 @@ def released(on_start, pid, environment, go, told):
 
 
 def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None, on_start=None,
-              kill_after=KILL_AFTER):
+              kill_after=KILL_AFTER, cancel=None):
     """Wait for the owned root and observed descendants, including separate process groups.
 
     on_start(pid) runs once the root's process exists and before its command does, so the command
@@ -340,6 +345,7 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
     # When the timeout expired and when a stop was first seen, whether the signal reached the
     # root's group, and who else had it.
     expired, stopped, group_forwarded, forwarded = None, None, False, set()
+    canceled = False  # whether expired is the caller's cancel rather than the timeout
     # Whether the stop's or timeout's first signal went out, and when its SIGKILL began.
     signaled, killed = False, None
     # Each process seen as an admission owner, as (PID, start), and the PIDs SIGKILL was reported waiting for.
@@ -424,6 +430,11 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
                 expired = time.monotonic()
                 print(f"supervise: timed out after {timeout:g}s; sending SIGTERM to the command (PID {child.pid}) "
                       f"and its observed descendants, then SIGKILL after {kill_after:g}s", file=sys.stderr, flush=True)
+            if cancel is not None and exited is None and expired is None and cancel.is_set():
+                # Carried out as a timeout is, and reported as the caller's cancel.
+                expired, canceled = time.monotonic(), True
+                print(f"supervise: canceled; sending SIGTERM to the command (PID {child.pid}) and its observed "
+                      f"descendants, then SIGKILL after {kill_after:g}s", file=sys.stderr, flush=True)
             signum = requested()
             if signum is not None and stopped is None:
                 stopped = time.monotonic()
@@ -454,7 +465,7 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
                 signaled = True
             result = child.poll()
             cause = (f"Stopped by {signal.Signals(signum).name}" if signum is not None
-                     else f"Timed out after {timeout:g}s" if expired is not None
+                     else "Canceled" if canceled else f"Timed out after {timeout:g}s" if expired is not None
                      else f"{command[0]} exited with status {result}")
             if result is not None and not live:
                 # Sampling cannot prove that a failed, stopped or timed-out command orphaned nothing
@@ -476,6 +487,8 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
                 # Confirmed, so recovery has nothing of this command to check.
                 note(settled="stopped" if signum is not None else "timed-out" if expired is not None else "exited")
                 if signum is not None: raise Interrupted(signum, "after its command and observed descendants ended")
+                if canceled:
+                    raise Canceled(f"Owned command was canceled: {command[0]}; it and its observed descendants ended")
                 if expired is not None:
                     raise TimedOut(f"Owned command timed out after {timeout:g}s: {command[0]}; it and its observed "
                                    "descendants ended")
@@ -554,9 +567,9 @@ def bounded(command, *, cwd=None, timeout, pass_fds=(), kill_after=KILL_AFTER):
         return status, output.read()
 
 
-def run(command, *, cwd, log_path, timeout=None, env=None, on_stop=None, kill_after=KILL_AFTER):
+def run(command, *, cwd, log_path, timeout=None, env=None, on_stop=None, kill_after=KILL_AFTER, cancel=None):
     path = Path(log_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w") as log:
         return supervise(command, cwd=cwd, stdout=log, timeout=timeout, env=env, on_stop=on_stop,
-                         kill_after=kill_after)
+                         kill_after=kill_after, cancel=cancel)

@@ -3,7 +3,8 @@
 One worker per repository takes everything waiting, cherry-picks it onto origin/main in a checkout
 of its own, runs the project's queue lanes there once, and pushes on a pass. When the lanes fail on
 a batch it halves the batch until it finds the commit to send back, landing the rest, with each bisect's two halves
-gated at once, the newer on the second Mac when it can start them (Beside, vocaro-engineering#241); first, when the lane is
+gated at once, the newer on the second Mac when it can start them (Beside), and the entries that arrive during a
+gate gated stacked on its tip on the other Mac, landing once it has (Stack, vocaro-engineering#241); first, when the lane is
 eng unittest, it reruns the failed tests alone, and a batch whose failed tests all pass alone and that changes none
 of the files they import lands, with the flakes recorded (vocaro-engineering#231). Only a lane's
 verdict blames a commit: a run the host left unmeasured runs again, each time once the host has settled,
@@ -146,6 +147,11 @@ UNGATED = "Landed-without-gate"
 HERE = ("--here",)
 BESIDE = ("--offload-only",)
 BESIDE_SUFFIX = "-beside"
+# While a batch gates, the entries that arrive behind it gate stacked on its tip, on the other Mac, in the checkout
+# its gate does not use; the batch's push makes that tip origin/main, so the stacked gate's pass lands, and its
+# failure or no landing throws the stacked gate away (owner's decision of 2026-11-07, vocaro-engineering#241). The
+# worker looks for them this often (Worker.watched).
+STACK_POLL = 30
 # A failed eng unittest gate's failed tests are each rerun alone on the batch's commit this many times before a
 # bisect, and any rerun's failure makes the failure real; a gate that failed more tests than RERUN_MOST bisects at
 # once, as that is no flake (Worker.rerun, owner's decision of 2026-11-07, vocaro-engineering#231).
@@ -1124,6 +1130,9 @@ class Worker:
         self.measured = None  # the passing gate run of the last round, which its landed entries record
         self.alone = False  # whether this round's batch is one entry an option of eng land put on its own (choose)
         self.failed_lane = None  # the lane whose failure the last gate returned, or None (gate)
+        self.lane_now = None  # (lane, began, where) of the lane the gate runs or ran last (gate)
+        self.stacked = None  # a Stack whose batch below landed, which the next round adopts as its own (after_stack)
+        self.pending = None  # the Stack started on this round's batch while it gates (watched)
 
     def say(self, words):
         print(f"queue: {time.strftime('%H:%M:%S')} {words}", flush=True)
@@ -1257,6 +1266,9 @@ class Worker:
             copy = self.queue.home / (kit.parent.name if kit.name == ".git" else Path(TOOLKIT_ROOT).resolve().name)
         old = self.queue.old_checkout.with_name(f"{self.queue.old_checkout.name}-toolkit")
         self.place(TOOLKIT_ROOT, copy, old, "the merge queue's copy of the toolkit")
+        # A stacked gate runs with the copy as it is: it is thrown away before the copy moves (vocaro-engineering#241).
+        if self.stacked and text(copy, "rev-parse", "HEAD") != head:
+            self.drop_stacked(f"the toolkit copy moves to {head[:12]}")
         git(copy, "checkout", "--force", "--detach", head, hooks=False, check=True)
         git(copy, "clean", "-fdq", hooks=False, check=True)
         head = text(copy, "rev-parse", "HEAD")
@@ -1298,6 +1310,7 @@ class Worker:
         lock as this one's closes with the exec. One that returns is a failed exec, which holds."""
         self.say(f"moving to the toolkit at {head[:12]}, origin/main, from {self.code[:12]}, which this worker was "
                  "started from: the next worker is started from the copy")
+        self.drop_stacked("the worker moves to a newer toolkit")
         sys.stdout.flush()
         (self.queue.directory / MOVED).write_text(json.dumps({"from": self.code, "to": head, "at": time.time()}) + "\n")
         try: execute(self.queue.command(copy), {**environment(), PROGRESS_VARIABLE: json.dumps(self.progress())})
@@ -1496,12 +1509,14 @@ class Worker:
         """What integrate records of an entry it put on top, the changelog conflicts it settled: in the queue."""
         self.queue.record(entry, **fields)
 
-    def gate(self, lanes, round_name, where=()):
+    def gate(self, lanes, round_name, where=(), cancel=None):
         """(status of the first of lanes that did not pass or 0, its log). ran_on is the second Mac that ran
         that lane, by its dispatch's record (remote.dispatched), or None when it ran here or nowhere. A pass of
         the gate lane leaves its wall time and the parts its log reports in self.measured, for the gate's
         budget (budgets.py). where is eng run's placement option for each lane, HERE or BESIDE while a bisect's
-        halves run at once (Beside), and none otherwise, so that eng run chooses."""
+        halves run at once (Beside), and none otherwise, so that eng run chooses. A set cancel ends the lane as its
+        limit would (processes.Canceled), for a stacked gate thrown away (Stack). lane_now is (the lane running,
+        when it began, where), by which a gate stacked on this one goes to the other Mac (Worker.other_mac)."""
         log, self.ran_on, self.measured, self.timed_out, self.ran_where = None, None, None, None, ""
         self.failed_lane = None
         for lane in lanes:
@@ -1513,10 +1528,11 @@ class Worker:
             self.say(f"{lane} on {self.head()[:12]}")
             began = time.time()  # wall clock, to match the dispatch records' start times
             started = time.monotonic()  # for the gate's measured duration
+            self.lane_now = (lane, began, tuple(where))
             sampler = BusySampler(self.checkout, lane, began).start() if lane == budgets.GATE else None
             try:
                 status_ = processes.run(["python3", "scripts/eng", "run", *where, lane], cwd=self.checkout, log_path=log,
-                                        timeout=LANE_LIMIT, env=self.environment)
+                                        timeout=LANE_LIMIT, env=self.environment, cancel=cancel)
             except processes.TimedOut as error:
                 if sampler: sampler.stopped.set()
                 self.ran_on = remote.dispatched(self.checkout, lane, began)
@@ -1897,12 +1913,16 @@ class Worker:
     def round(self):
         queue = self.queue
         waiting = queue.waiting()
-        batch = self.choose(waiting)
+        if self.stacked:
+            why = self.stacked.stale(waiting)
+            if why: self.drop_stacked(why)
+        batch = self.stacked.entries if self.stacked else self.choose(waiting)
         if not batch: return False
-        passed = [entry for entry in batch if entry["state"] == PASSED]
+        passed = [entry for entry in batch if entry["state"] == PASSED] if not self.stacked else []
         reach(queue.main_checkout, *FETCH, say=self.say, check=True)
         self.prepare()
         self.toolkit()
+        if self.stacked: return self.adopted()
         if passed: return self.push_passed(passed)
         base = text(queue.main_checkout, "rev-parse", MAIN)
         applied = self.integrate(batch, base)
@@ -1923,10 +1943,16 @@ class Worker:
         round_name = f"{time.strftime('%Y%m%d-%H%M%S')}-{head[:8]}"
         beside = self.beside(waiting, batch, base, config, docs, ungated)
         if beside: result, log = beside.both(self, lanes_of(config), round_name)
-        else: result, log = self.gate(ungated["lanes"] if ungated else docs or lanes_of(config), round_name)
+        elif self.alone or docs or ungated or self.limit:
+            result, log = self.gate(ungated["lanes"] if ungated else docs or lanes_of(config), round_name)
+        else:
+            lanes = lanes_of(config)
+            result, log = self.watched(self, config, lanes, base, head, applied,
+                                       lambda: self.gate(lanes, round_name))
         self.prune()
         if not beside:
-            self.older(config, applied, base, head, docs, ungated, result, log, round_name)
+            outcome = self.older(config, applied, base, head, docs, ungated, result, log, round_name)
+            self.after_stack(outcome, self)
             return True
         flakes = None
         if result and result not in NO_VERDICT: flakes = self.rerun(config, applied, base, head, log, round_name)
@@ -1939,33 +1965,36 @@ class Worker:
         self.after_beside(beside, applied, outcome)
         return True
 
-    def older(self, config, applied, base, head, docs, ungated, result, log, round_name, flakes=None, reran=False):
+    def older(self, config, applied, base, head, docs, ungated, result, log, round_name, flakes=None, reran=False,
+              runner=None):
         """What becomes of applied, the round's batch, or a bisect's older half, after its lanes exited result:
         NO_VERDICT_OUTCOME after no verdict, FAILED once bisected or sent back, QUEUED when it gates again, and
-        LANDED once pushed. reran says that rerun has already been asked, and flakes is what it found."""
+        LANDED once pushed. reran says that rerun has already been asked, and flakes is what it found. runner is
+        the checkout's worker that gated it, this one's own unless it was a stacked gate (Stack)."""
         queue = self.queue
+        runner = runner or self
         if result in NO_VERDICT:
             queue.mark(applied, QUEUED)
             self.no_verdicts += 1
             runs = no_verdict_runs(config)
             gave = (f"the lanes gave no verdict in {self.no_verdicts} run{'' if self.no_verdicts == 1 else 's'} in a "
-                    f"row, the last with exit {result}{self.ran_where}, {self.no_verdict_cause(result, log)}")
+                    f"row, the last with exit {result}{runner.ran_where}, {runner.no_verdict_cause(result, log)}")
             # A shared host's configuration is the owner's; a host that stays busy, or tests left unmeasured, a
             # session reads, and resumes once the host has settled or the cause is gone.
             kind = OWNER if result == remote.MISCONFIGURED else SESSION
             if self.no_verdicts >= runs:
                 queue.hold(worded(kind, f"{gave}, the most queue.noVerdictRuns allows ({runs}); see {log}"))
                 return NO_VERDICT_OUTCOME
-            self.say(f"no verdict (exit {result})" + (f" from {self.ran_on}" if self.ran_on else "")
+            self.say(f"no verdict (exit {result})" + (f" from {runner.ran_on}" if runner.ran_on else "")
                      + f", run {self.no_verdicts} of at most {runs}")
             # Every retry waits, so that none starts into the load that voided the run before it.
-            busy = self.settle("the lanes run", self.ran_on)
+            busy = self.settle("the lanes run", runner.ran_on)
             if busy: queue.hold(worded(kind, f"{gave}, and {busy}; see {log}"))
             return NO_VERDICT_OUTCOME
         self.no_verdicts = 0
         if result:
             # A failure that a rerun alone does not repeat lands, when the batch cannot reach the test (#231).
-            if not reran: flakes = self.rerun(config, applied, base, head, log, round_name)
+            if not reran: flakes = runner.rerun(config, applied, base, head, log, round_name)
             if not flakes:
                 self.failed(applied, log)
                 return FAILED
@@ -1975,14 +2004,117 @@ class Worker:
             self.say("an entry was removed during the run: gating what is left")
             queue.mark(applied, QUEUED)
             return QUEUED
-        if ungated: head = self.mark_ungated(ungated, base)
-        if flakes: head = self.mark_flaky(flakes, base)
-        self.keep(applied, base, head, docs, ungated, flakes)
-        if self.push(config, applied, base, docs, ungated, flakes):
+        if ungated: head = runner.mark_ungated(ungated, base)
+        if flakes: head = runner.mark_flaky(flakes, base)
+        runner.keep(applied, base, head, docs, ungated, flakes)
+        if runner.push(config, applied, base, docs, ungated, flakes):
             self.passed(len(applied))
             return LANDED
         queue.mark(applied, QUEUED)
         return QUEUED
+
+    def adopted(self):
+        """This round's batch is the Stack gated on the tip of the batch that landed before it: it gates on, with
+        the entries that arrived meanwhile stacked on its tip in turn, and its result settles it as any round's
+        does. One whose base is no longer origin/main, or whose lanes main's configuration no longer names, is
+        thrown away, its entries queued again."""
+        stacked, self.stacked = self.stacked, None
+        base = text(self.queue.main_checkout, "rev-parse", MAIN)
+        if base != stacked.base:
+            stacked.drop(f"origin/main is {base[:12]}, not the tip {stacked.base[:12]} it was gated on")
+            return True
+        try:
+            config = config_at(self.queue.main_checkout, base)
+            lanes = lanes_of(config)
+        except ValueError as error:
+            stacked.drop(f"main's configuration at {base[:12]} cannot be read: {error}")
+            return True
+        if lanes != stacked.lanes:
+            stacked.drop(f"main at {base[:12]} names the lanes {', '.join(lanes)}, not those it ran")
+            return True
+        applied = [self.queue.read(entry["id"]) or entry for entry in stacked.entries]
+        self.alone = False
+        self.say(f"testing {len(applied)} entr{'y' if len(applied) == 1 else 'ies'} at {stacked.tip[:12]} on "
+                 f"{base[:12]}, whose gate began on top of the batch that just landed")
+        result, log = self.watched(stacked.runner, config, lanes, base, stacked.tip, applied, stacked.wait)
+        self.prune()
+        outcome = self.older(config, applied, base, stacked.tip, None, None, result, log, stacked.name,
+                             runner=stacked.runner)
+        self.after_stack(outcome, stacked.runner)
+        return True
+
+    def watched(self, runner, config, lanes, base, head, applied, gate):
+        """gate(), the lanes of applied at head in runner's checkout, while a thread looks every STACK_POLL for
+        entries that arrive behind them and gates them stacked on head in the other checkout, on the other Mac
+        (stack), which after_stack keeps or throws away."""
+        self.pending = None
+        ids = {entry["id"] for entry in applied}
+        stop, said = threading.Event(), set()
+        def stacker():
+            while not stop.wait(STACK_POLL):
+                try: self.stack(runner, config, lanes, head, ids, stop, said)
+                except Exception as error:  # a stacked gate is a saving, never the round's verdict
+                    self.say(f"no gate stacked on {head[:12]}: {error}")
+                    return
+        thread = threading.Thread(target=stacker, name="stacker", daemon=True)
+        thread.start()
+        try: return gate()
+        finally:
+            stop.set()
+            thread.join()
+
+    def stack(self, runner, config, lanes, head, ids, stop, said):
+        """Start self.pending, the waiting entries not in ids gated stacked on head, when there are any and none
+        is pending: on the Mac runner's lane does not run on (other_mac), in the checkout it does not use. One the
+        second Mac declined or left with no verdict is thrown away, for a later look to start again. An entry eng
+        land put first, or that it lands without the gate, starts none: it goes first, on main."""
+        if self.pending is not None:
+            if not self.pending.done(): return
+            result = self.pending.peek()
+            if result is not None and result[0] not in NO_VERDICT: return
+            self.pending.drop(f"it gave no verdict (exit {result[0] if result else 'none'})")
+            self.pending = None
+        fresh = [entry for entry in self.queue.waiting() if entry["id"] not in ids]
+        if not fresh or any(entry.get("front") or entry.get("noGate") or entry["state"] != QUEUED for entry in fresh):
+            return
+        where = self.other_mac(runner)
+        why = offerable(config, lanes) if where == BESIDE else None
+        if why:
+            if why not in said: self.say(f"the entries behind the batch wait for it, since {why}")
+            said.add(why)
+            return
+        other = Beside(self, self.queue.checkout if runner.checkout != self.queue.checkout else None, "stacked",
+                       settles=False)
+        stacked = Stack(self, other, fresh, head, lanes, where)
+        if not stop.is_set() and stacked.begin(): self.pending = stacked
+
+    def other_mac(self, runner):
+        """The placement option of eng run for a gate stacked on runner's: HERE when runner's lane runs on the
+        second Mac, by its option or the dispatch record it left (remote.dispatched), else BESIDE."""
+        lane, began, where = runner.lane_now or (None, time.time(), ())
+        if where and where == BESIDE: return HERE
+        if where and where == HERE: return BESIDE
+        return HERE if lane and remote.dispatched(runner.checkout, lane, began) else BESIDE
+
+    def after_stack(self, outcome, runner):
+        """Keep the pending Stack for the next round when the batch below it landed at exactly the tip it was
+        stacked on, and the queue goes on; else throw it away."""
+        pending, self.pending = self.pending, None
+        if pending is None: return
+        if pending.done() and (pending.peek() or (resources.BUSY,))[0] in NO_VERDICT:
+            pending.drop(f"it gave no verdict (exit {(pending.peek() or (resources.BUSY,))[0]})")
+        elif outcome == LANDED and runner.head() == pending.base and not self.queue.held():
+            self.say(f"the gate stacked on {pending.base[:12]} goes on as the next round, as that is origin/main now")
+            self.stacked = pending
+        else:
+            pending.drop("the batch below it did not land at the tip it was stacked on")
+
+    def drop_stacked(self, why):
+        """Throw away every stacked gate, its entries queued again: before the worker moves or stops."""
+        for name in ("pending", "stacked"):
+            stacked = getattr(self, name, None)
+            setattr(self, name, None)
+            if stacked is not None: stacked.drop(why)
 
     def beside(self, waiting, batch, base, config, docs, ungated):
         """The Beside that gates a bisect's newer half while batch, its older half, gates here, or None to gate batch
@@ -2131,11 +2263,14 @@ class Worker:
             with contextlib.suppress(OSError): path.unlink()
 
     def drain(self):
-        while not self.queue.held():
-            more = self.round()
-            self.arrived()
-            if not more: return
-            self.rounds += 1
+        try:
+            while not self.queue.held():
+                more = self.round()
+                self.arrived()
+                if not more: return
+                self.rounds += 1
+        finally:
+            self.drop_stacked("the worker stops")
 
 
 # What Beside.weigh records of a newer half that failed with several entries, which bisect once the older half has.
@@ -2147,28 +2282,37 @@ class Beside(Worker):
     while the older half gates on this Mac (owner's decision of 2026-11-07, vocaro-engineering#241). Both halves run
     on the same origin/main. What passes beside lands while the older half bisects on; when both pass, the older lands
     first and the newer gates again on the main that made, unless its result carries over (Worker.carry)."""
-    def __init__(self, worker):
+    def __init__(self, worker, checkout=None, label="newer half", settles=True):
         super().__init__(worker.queue)
-        self.worker = worker
-        self.checkout = worker.queue.home / f"{worker.queue.main_checkout.name}{BESIDE_SUFFIX}"
+        self.worker, self.label, self.settles = worker, label, settles
+        self.checkout = checkout or worker.queue.home / f"{worker.queue.main_checkout.name}{BESIDE_SUFFIX}"
         self.code, self.environment = worker.code, worker.environment
         self.unreachable = []  # the newer entries that apply to origin/main only after the older half (left_out)
+        self.kept_for = []  # the entries whose changelog resolutions it recorded (noted)
         self.newer, self.tip = [], None  # the newer half on top of origin/main, and its commit (Worker.beside)
         self.result = None  # (status, log) of its lanes (both)
         self.ran_where, self.round_name = "", None  # where its lanes ran (gate), and its round's name (both)
         self.outcome = None  # LANDED, FAILED, BISECT, PASSED (passed, gating again) or QUEUED (weigh)
 
     def say(self, words):
-        self.worker.say(f"newer half: {words}")
+        self.worker.say(f"{self.label}: {words}")
 
     def prepare(self):
+        if self.checkout == self.queue.checkout: return self.worker.prepare()
         self.place(self.queue.main_checkout, self.checkout, self.checkout,
-                   "the merge queue's checkout for a bisect's newer half, beside its own")
+                   "the merge queue's checkout for a bisect's newer half or a stacked gate, beside its own")
 
     def left_out(self, entry, state, **fields):
-        """A newer entry that conflicts may need an older one of the bisect: it waits rather than come back."""
-        if state == CONFLICT: self.unreachable.append(entry)
+        """A newer entry that conflicts may need an older one of the bisect: it waits rather than come back. A
+        stacked gate settles nothing (settles), since the batch below it may not land."""
+        if state == CONFLICT or not self.settles: self.unreachable.append(entry)
         else: super().left_out(entry, state, **fields)
+
+    def noted(self, entry, **fields):
+        """Record the changelog conflicts it settled, as the round's integrate does, and which entries it did so
+        for, which a stacked gate thrown away clears again (Stack.drop)."""
+        self.kept_for.append(entry["id"])
+        super().noted(entry, **fields)
 
     def both(self, worker, lanes, round_name):
         """Gate the newer half here, on the second Mac (BESIDE), while worker gates the older half on this Mac
@@ -2235,6 +2379,74 @@ class Beside(Worker):
         why = "the queue's lanes fail on this commit on top of origin/main: fix it and add it again"
         self.say(f"{applied[0]['id']}: {why}")
         self.queue.settle(applied[0], FAILED, why=why, log=str(log))
+
+
+class Stack:
+    """Entries that arrived while a batch gates, gated stacked on its tip, head, in runner's checkout, on the other
+    Mac (where), in a thread of their own (owner's decision of 2026-11-07, vocaro-engineering#241). The batch's push
+    makes head origin/main, and then the next round adopts the stacked gate as its own (Worker.adopted); any other
+    outcome throws it away (drop), canceling its lanes, with its entries queued again. It settles nothing itself."""
+    def __init__(self, worker, runner, entries, base, lanes, where):
+        self.worker, self.runner, self.entries, self.base, self.lanes = worker, runner, entries, base, lanes
+        self.where, self.tip, self.name = where, None, None
+        self.cancel, self.box, self.thread = threading.Event(), {}, None
+
+    def begin(self):
+        """Put the entries on base in runner's checkout and start their lanes; False when none applies there."""
+        self.runner.prepare()
+        applied = self.runner.integrate(self.entries, self.base)
+        if not applied: return False
+        self.entries, self.tip = applied, self.runner.head()
+        self.name = f"{time.strftime('%Y%m%d-%H%M%S')}-{self.tip[:8]}"
+        self.worker.queue.mark(applied, TESTING)
+        self.worker.say(f"testing {len(applied)} entr{'y' if len(applied) == 1 else 'ies'} that arrived during the gate, "
+                        f"at {self.tip[:12]}, stacked on {self.base[:12]}, "
+                        + ("on this Mac" if self.where == HERE else "on the second Mac if it can start them now"))
+        def gate():
+            try: self.box["result"] = self.runner.gate(self.lanes, self.name, where=self.where, cancel=self.cancel)
+            except BaseException as error: self.box["error"] = error
+        self.thread = threading.Thread(target=gate, name="stacked gate", daemon=True)
+        self.thread.start()
+        return True
+
+    def done(self):
+        return self.thread is None or not self.thread.is_alive()
+
+    def peek(self):
+        """(status, log) of a stacked gate that has ended, None for one whose lanes raised."""
+        return self.box.get("result")
+
+    def stale(self, waiting):
+        """Why the next round cannot adopt it, or None: an entry gone from the queue, or one eng land put first or
+        lands without the gate, or a batch that passed waiting for its push, all of which go first."""
+        ids = {entry["id"] for entry in waiting}
+        gone = [entry["id"] for entry in self.entries if entry["id"] not in ids]
+        if gone: return f"{', '.join(gone)} left the queue"
+        first = next((entry for entry in waiting if entry["id"] not in {e["id"] for e in self.entries}
+                      and (entry.get("front") or entry.get("noGate") or entry["state"] == PASSED)), None)
+        if first: return f"{first['id']} goes first"
+        return None
+
+    def wait(self):
+        """(status, log) of its lanes once they end. A stop request that ended them ends the round too."""
+        while self.thread.is_alive(): self.thread.join(1)
+        error = self.box.get("error")
+        if isinstance(error, processes.Interrupted): raise error
+        if error is not None:
+            self.runner.say(f"its lanes could not run: {error}")
+            return resources.BUSY, None
+        return self.box["result"]
+
+    def drop(self, why):
+        """Cancel its lanes, wait for them to end, and queue its entries again."""
+        self.cancel.set()
+        if self.thread is not None: self.thread.join()
+        # A resolution on top of a batch that did not land is no entry's: the next integration records its own.
+        for entry in self.entries:
+            if entry["id"] in self.runner.kept_for: self.worker.queue.record(entry, kept=[])
+        self.worker.say(f"the gate of {', '.join(entry['id'] for entry in self.entries)} stacked on {self.base[:12]} is "
+                        f"thrown away, since {why}: queued again")
+        self.worker.queue.mark(self.entries, QUEUED)
 
 
 class Trial(Worker):

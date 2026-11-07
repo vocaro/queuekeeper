@@ -7,6 +7,7 @@ import os
 import signal
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import call, patch
@@ -419,6 +420,25 @@ class ProcessTests(unittest.TestCase):
             self.assertIsInstance(result, processes.TimedOut)
             self.assertTrue((Path(directory) / "terminated").exists())
             self.assertIn(f"timed out after {limit}s; sending SIGTERM", error)
+
+    def test_a_cancel_ends_the_command_as_a_timeout_does_and_says_it_was_canceled(self):
+        """The merge queue throws away a gate stacked on a batch that did not land (vocaro-engineering#241): a set
+        cancel ends the command and raises Canceled, a TimedOut; one never set leaves the command's status."""
+        with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stderr(StringIO()) as said:
+            cancel = threading.Event()
+            threading.Timer(0.2, cancel.set).start()
+            began = time.monotonic()
+            with self.assertRaises(processes.Canceled) as raised:
+                # Fixed: the 30 s sleep outlasts the 0.2 s cancel under any load.
+                processes.run([sys.executable, "-c", "import time; time.sleep(30)"], cwd=directory,
+                              log_path=Path(directory) / "run.log", cancel=cancel, kill_after=5)
+            self.assertIsInstance(raised.exception, processes.TimedOut)
+            self.assertLess(time.monotonic() - began, 25)
+            self.assertIn("was canceled", str(raised.exception))
+            self.assertIn("supervise: canceled; sending SIGTERM", said.getvalue())
+            # Negative control: a cancel never set changes nothing.
+            self.assertEqual(processes.run([sys.executable, "-c", "raise SystemExit(3)"], cwd=directory,
+                                           log_path=Path(directory) / "other.log", cancel=threading.Event()), 3)
 
     def test_a_timeout_gives_a_command_that_handles_sigterm_one_signal(self):
         with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stderr(StringIO()):

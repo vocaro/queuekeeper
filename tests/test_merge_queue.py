@@ -10,7 +10,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import time
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -27,11 +27,13 @@ shard_by = "class"
 
 
 # Fails when any tracked file is named bad*, passes otherwise; touches a counter so a test can count gates.
-LANE = """import pathlib, sys
+LANE = """import pathlib, sys, time
 # Appended, so that two gates at once, a bisect's halves (mq.Beside), count as two.
 with open(sys.argv[1], "a") as counter: counter.write("x")
 status = pathlib.Path(sys.argv[2])
 if status.exists(): sys.exit(int(status.read_text()))
+# A tree with a file named slow gates for that many seconds, so that an entry can arrive meanwhile (mq.Stack).
+if pathlib.Path("slow").exists(): time.sleep(float(pathlib.Path("slow").read_text()))
 bad = sorted(path.name for path in pathlib.Path(".").glob("bad*"))
 print("bad:", bad)
 both = pathlib.Path("left").exists() and pathlib.Path("right").exists()
@@ -4173,6 +4175,114 @@ class BothHalves(Fixture):
             settle.assert_called_once()
         self.assertEqual(beside.unreachable, [entry])
         self.assertEqual(beside.checkout.name, f"{self.repo.name}{mq.BESIDE_SUFFIX}")
+
+
+class Stacked(Fixture):
+    """Entries that arrive while a batch gates gate stacked on its tip, on the other Mac, and land once it has,
+    without a gate of their own; a batch that does not land throws that gate away (vocaro-engineering#241). Both
+    run on this Mac here, as in BothHalves."""
+    SLOW = "4"  # seconds the first batch gates, which a stacked gate starts within: fixed, as it only has to outlast that
+
+    def setUp(self):
+        super().setUp()
+        for name, value in (("HERE", ()), ("BESIDE", ()), ("offerable", lambda config, lanes: None),
+                            ("STACK_POLL", 0.1)):
+            patcher = patch.object(mq, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        starting = patch.object(mq.Queue, "start")
+        starting.start()
+        self.addCleanup(starting.stop)
+
+    def arriving(self, branch, checked=True):
+        """While the first gate runs, branch is added to the queue, as a session's eng land does; unchecked, with no
+        trial integration, as when the batch ahead changes after it (Fixture.add)."""
+        real, first = mq.Worker.gate, []
+        def add():
+            with patch.object(mq, "check") if not checked else contextlib.nullcontext():
+                mq.add(self.repo, branch)
+        def gate(worker, lanes, round_name, where=(), cancel=None):
+            if not first:
+                first.append(True)
+                timer = threading.Timer(0.3, add)
+                timer.start()
+                self.addCleanup(timer.join)
+            return real(worker, lanes, round_name, where, cancel)
+        return patch.object(mq.Worker, "gate", gate)
+
+    def worked(self, *more):
+        with contextlib.redirect_stdout(io.StringIO()) as said, contextlib.ExitStack() as stack:
+            for context in more: stack.enter_context(context)
+            self.assertEqual(self.work(), 0)
+        return said.getvalue()
+
+    def added(self, branch):
+        return next(entry for entry in mq.Queue(self.repo).all() if entry["branch"] == branch)
+
+    def test_an_entry_that_arrives_during_a_gate_lands_on_its_gate_stacked_on_the_batch(self):
+        self.commit("slow", "a", self.SLOW); self.commit("b", "b")
+        [first] = self.add("a")
+        log = self.worked(self.arriving("b"))
+        b = self.added("b")
+        self.assertEqual((self.state(first)["state"], b["state"]), ("landed", "landed"), log)
+        self.assertEqual(self.gates(), 2, log)
+        self.assertIn("that arrived during the gate", log)
+        self.assertIn("goes on as the next round, as that is origin/main now", log)
+        self.assertIn("whose gate began on top of the batch that just landed", log)
+        # b went on top of a, and its gate was of exactly that commit.
+        self.assertEqual(run(self.repo, "git", "rev-parse", f"{b['landedAs']}^"), self.state(first)["landedAs"])
+        self.assertEqual(b["gatedOn"], self.state(first)["landedAs"])
+        self.assertLessEqual({"slow", "b"}, self.main_files())
+
+    def test_a_batch_that_fails_throws_away_the_gate_stacked_on_it(self):
+        """The batch below fails: its stacked gate is canceled, and the entry gates again on main and lands."""
+        self.commit("bad", "a", "x"); self.commit("slow", "a", self.SLOW, start="a"); self.commit("b", "b")
+        [first] = self.add("a")
+        log = self.worked(self.arriving("b"))
+        self.assertEqual((self.state(first)["state"], self.added("b")["state"]), ("failed", "landed"), log)
+        self.assertIn("is thrown away, since the batch below it did not land at the tip it was stacked on: queued "
+                      "again", log)
+        # Canceled, rather than run out on top of a's: its lane counts once it has started.
+        self.assertIn("stacked: gate: unmeasured: Owned command was canceled", log)
+        self.assertIn(self.gates(), (2, 3), log)
+        self.assertNotIn("slow", self.main_files())
+
+    def test_a_lane_that_runs_only_here_stacks_nothing(self):
+        """Negative control: with a lane that runs only on this Mac, the entry waits for the batch and gates on its
+        own, as before."""
+        self.commit("slow", "a", self.SLOW); self.commit("b", "b")
+        [first] = self.add("a")
+        why = "gate runs only on this Mac: the lane says: the fixture's reason"
+        log = self.worked(self.arriving("b"), patch.object(mq, "offerable", lambda config, lanes: why))
+        self.assertEqual((self.state(first)["state"], self.added("b")["state"]), ("landed", "landed"), log)
+        self.assertEqual(self.gates(), 2, log)
+        self.assertEqual(log.count(f"the entries behind the batch wait for it, since {why}"), 1, log)
+        self.assertNotIn("that arrived during the gate", log)
+
+    def test_a_stacked_gate_the_second_mac_declines_is_thrown_away_and_the_entry_gates_after(self):
+        """Negative control: a second Mac that cannot start it gives no verdict, which is thrown away, so the entry
+        gates after the batch, as before."""
+        self.commit("slow", "a", self.SLOW); self.commit("b", "b")
+        [first] = self.add("a")
+        def declined(worker, lanes, round_name, where=(), cancel=None):
+            worker.ran_where = ""
+            return mq.resources.BUSY, None
+        log = self.worked(self.arriving("b"), patch.object(mq.Beside, "gate", declined))
+        self.assertEqual((self.state(first)["state"], self.added("b")["state"]), ("landed", "landed"), log)
+        self.assertEqual(self.gates(), 2, log)
+        self.assertIn(f"is thrown away, since it gave no verdict (exit {mq.resources.BUSY}): queued again", log)
+        self.assertNotIn("goes on as the next round", log)
+
+    def test_an_entry_that_conflicts_with_the_batch_is_not_stacked_or_sent_back_by_it(self):
+        """A stacked gate settles nothing: an entry that conflicts with the batch below waits, and its own round
+        sends it back."""
+        self.commit("same", "a", "a"); self.commit("slow", "a", self.SLOW, start="a"); self.commit("same", "c", "c")
+        [first] = self.add("a")
+        log = self.worked(self.arriving("c", checked=False))
+        c = self.added("c")
+        self.assertEqual((self.state(first)["state"], c["state"]), ("landed", "conflict"), log)
+        self.assertNotIn("that arrived during the gate", log)
+        self.assertEqual(self.gates(), 1, log)
 
 
 # What the module says before a test's patches: each half's placement option, and which lanes may go to the second Mac.

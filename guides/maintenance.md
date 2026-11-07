@@ -423,7 +423,28 @@ as before, when:
 - a newer entry applies to `origin/main` only on top of an older entry.
 
 Under #231 the rerun-alone check runs on each failed half, so the failure that splits a half is a
-real one. An entry that comes back keeps its ref until
+real one.
+
+**Entries that arrive during a gate gate on top of it.** While a batch gates, the worker checks every
+`STACK_POLL` (30 s) for entries that have arrived behind it. When it finds some, it gates them stacked on
+the batch's tip, in the checkout the batch does not use, on the other Mac: on this Mac when the batch went
+to the second Mac, and otherwise on the second Mac if it can start them now (owner's decision, 2026-11-07,
+[#241](https://github.com/vocaro/vocaro-engineering/issues/241)). The batch's push makes that tip
+`origin/main`, so the next round adopts the stacked gate as its own: it gates on, and its result settles
+it as any round's would, with no gate of its own to start. Anything else throws the stacked gate away,
+canceling its lanes and queuing its entries again:
+
+- the batch fails or gives no verdict;
+- the batch lands at another commit (after a carry-over, or with a `Flaky-test` trailer);
+- the stacked gate gives no verdict, as when the second Mac declines it;
+- an entry goes first (`--front`, `--no-gate`, or a pass waiting for its push);
+- main's lanes change;
+- the queue holds; or
+- the worker stops or moves to a newer toolkit.
+
+Only one stacked gate runs at a time, so entries that arrive after it starts wait for the next round, where
+they stack on it in turn. A stacked gate settles nothing itself: an entry that conflicts with the batch below
+waits for its own round. A bisect stacks nothing, as both its halves already use both Macs. An entry that comes back keeps its ref until
 `eng queue remove ID`. Fix it, rebase and land it again.
 
 **A failed test that passes alone is a flake.** Before it bisects a batch whose failing lane is
@@ -858,7 +879,7 @@ a detector that stopped detecting fails instead of passing as a clean tree. Exit
 was checked. The rules and what each exemption was learned from are in
 `src/python/vocaro_engineering/spelling.py`.
 
-It already exempts other projects' British-spelled API names, such as Apple's `isCancelled` and
+It already exempts other projects' British-spelled API names, such as Apple's `isCanceled` and
 Unity's `MonoBehaviour`, URLs, a list item's first `<em>` (a cited title) and a line marked
 `spelling: keep` with a reason, such as a decoder reading a name stored before a rename. A
 project lists the rest in engineering.json's `spelling`, each mapped to its reason: `skip` for
@@ -870,7 +891,7 @@ skipped path keeps its own name as well as its contents, since a recording or up
 keeps the name it was given, and the skip key's text is exempt wherever it appears, so its entry
 and links to it spell the kept name; the directories above it are still judged. A bare case of
 another project's type cannot be
-told from a project's own name, so mark it: `case .cancelled:  // spelling: keep, URLError.Code`.
+told from a project's own name, so mark it: `case .canceled:  // spelling: keep, URLError.Code`.
 Fix a hit by spelling the word the American way; never widen a pattern to make one go away.
 An American word that a pattern mistakes for British, such as valise or hatred, is no project's
 exemption: it joins the checker's American words, with a sample in its controls. Proper names
