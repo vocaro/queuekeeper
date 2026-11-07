@@ -12,7 +12,7 @@ import unittest
 from unittest.mock import patch
 SOURCE = Path(__file__).resolve().parents[1] / "src/python"
 sys.path.insert(0, str(SOURCE))
-from vocaro_engineering import cli, evidence, resources
+from vocaro_engineering import cli, evidence, parallel, resources
 from vocaro_engineering.parallel import SPLITS
 import host_isolation
 from host_isolation import stretched
@@ -623,6 +623,43 @@ class LaneGroupTests(unittest.TestCase):
                 self.configure({**lanes, "group": group})
                 cli.load(self.root)
             self.assertEqual(error.getvalue(), "")
+
+
+class HandUpTests(unittest.TestCase):
+    """A lane nested in another copies its results/ into the outer lane's (vocaro-engineering#218)."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.inner, self.outer = self.root / "suites/results", self.root / "gate/results"
+        (self.inner / "ios-tests/simulator-tests").mkdir(parents=True)
+        (self.inner / "ios-tests/simulator-tests/iPhone-1.log").write_text("✔ Test \"t\" passed after 0.7 seconds.\n")
+        self.outer.mkdir(parents=True)
+
+    def hand_up(self, results=None, outer=None):
+        environment = {} if outer is False else {parallel.RESULTS_VARIABLE: str(outer or self.outer)}
+        return parallel.hand_up(results or self.inner, "suites", environment)
+
+    def test_a_nested_lanes_results_go_into_the_outer_lanes_under_its_name(self):
+        self.assertEqual(self.hand_up(), self.outer / "suites")
+        self.assertIn("passed after 0.7", (self.outer / "suites/ios-tests/simulator-tests/iPhone-1.log").read_text())
+        # Again, over what an earlier copy left, as a gate that runs its suites twice would.
+        (self.inner / "ios-tests/simulator-tests/iPhone-2.log").write_text("second\n")
+        self.assertEqual(self.hand_up(), self.outer / "suites")
+        self.assertEqual(sorted(p.name for p in (self.outer / "suites/ios-tests/simulator-tests").iterdir()),
+                         ["iPhone-1.log", "iPhone-2.log"])
+
+    def test_nothing_is_copied_outside_a_lane_from_an_empty_results_or_into_its_own(self):
+        self.assertIsNone(self.hand_up(outer=False))
+        empty = self.root / "empty/results"
+        empty.mkdir(parents=True)
+        self.assertIsNone(self.hand_up(results=empty))
+        self.assertIsNone(self.hand_up(results=self.root / "absent"))
+        # The lane's own results/, or a group's lane's folder inside them, is not another lane's.
+        self.assertIsNone(self.hand_up(outer=self.inner))
+        self.assertIsNone(self.hand_up(outer=self.inner / "ios-tests"))
+        self.assertEqual(list(self.outer.iterdir()), [])
 
 
 if __name__ == "__main__":

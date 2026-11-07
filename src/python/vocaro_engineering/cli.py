@@ -1089,14 +1089,18 @@ def main(argv=None):
             def concluded(status, **fields):
                 # The verdict in this checkout, and kept by commit for every worktree (vocaro-engineering#198).
                 conclude(directory, receipt, status, **fields)
-                remote.keep_here(root, args.lane, receipt, status, whole)
+                remote.keep_here(root, args.lane, receipt, status, whole, results=directory / "results")
             def prepared(work):
                 # What an earlier run left in results/ is not this run's, here as on the second Mac (remote.RESULTS).
                 # The lane finds the directory in ENG_RESULTS_DIR, and a group's lanes each find one of their own in it.
                 shutil.rmtree(directory / "results", ignore_errors=True)
                 if resource != "light": github_artifacts.configured(root, config)
                 commands = [config["lanes"][name]["command"] for name in group] if group is not None else [lane["command"]]
-                with app_registrations.around_run(commands, root): return work()
+                try:
+                    with app_registrations.around_run(commands, root): return work()
+                finally:
+                    # Nested in another lane, its results go into that lane's too, however it ended (#218).
+                    parallel.hand_up(directory / "results", args.lane)
             if group is None:
                 command = awake(lane, extra)
                 receipt.update(command=command, arguments=extra, timeout=lane.get("timeout", processes.DEFAULT_LIMIT))
