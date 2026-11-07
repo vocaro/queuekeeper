@@ -575,7 +575,7 @@ set another period) each Mac spent at each count of admitted heavy jobs, and thi
 by why they ran here: never offered (`eng admit` without `--verify`, `eng run --here`, a lane that
 says `here`, nested work) or offered and declined, with the second Mac's reason. Admission lines
 record their placement from 2026-11-07 on, and older ones count as unrecorded under their labels.
-Light lanes take no admission and are not counted.
+A `self` lane takes no admission of its own and is not counted; the parts its script admits are.
 
 The reading applies admission's rule for a whole-host request queued there
 ([heavy-work admission](#heavy-work-admission)): while one whose process runs has asked within
