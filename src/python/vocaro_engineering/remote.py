@@ -2384,12 +2384,59 @@ def simulators(command):
     return found
 
 
+# Where the system tools a command starts or uses as an interpreter live, the same on both Macs: a path under one of
+# these names no file of this Mac's alone (local_paths). /dev too, for /dev/null in a shell's redirection.
+SHARED_PATHS = ("/usr/", "/bin/", "/sbin/", "/dev/", "/opt/homebrew/", "/Library/Developer/")
+SHARED_PATTERNS = (re.compile(r"/Applications/Xcode[^/]*\.app(/|$)"),)
+# What separates paths within one word of a command: a shell's words in `sh -c '…'`, an option's value after = or :.
+PATH_SEPARATOR = re.compile(r"""[\s'"=:;&|()<>]+""")
+
+
+def local_paths(command, top):
+    """Why the second Mac cannot run command as it runs here because a word names a path of this Mac's alone, or
+    None: an absolute path outside the checkout, such as a session's scratchpad, /private/tmp, /tmp or the toolkit's
+    checkout, or one under ~, none of which the second Mac has. A path in the checkout says this checkout's path. The
+    system tools a command starts or uses as an interpreter are on both Macs: a path under SHARED_PATHS or Xcode, and
+    one that is what PATH resolves its name to."""
+    for word in map(str, command):
+        for part in PATH_SEPARATOR.split(word):
+            if part.startswith("~"):
+                return f"it names {part}, under this Mac's home, which the second Mac's checkout does not hold"
+            # A URL's //host/path, split at its scheme's colon, is no path.
+            if not part.startswith("/") or part == "/" or part.startswith("//"): continue
+            if part.startswith(SHARED_PATHS) or any(pattern.match(part) for pattern in SHARED_PATTERNS): continue
+            found = shutil.which(Path(part).name)
+            if found and os.path.realpath(found) == os.path.realpath(part): continue
+            resolved = Path(os.path.realpath(part))
+            if resolved == top or top in resolved.parents:
+                return f"it names this checkout's path {part}, which the second Mac's checkout is not"
+            return f"it names {part}, a path outside the checkout, which the second Mac does not have"
+    return None
+
+
+def local_environment(environment=None):
+    """Why the second Mac cannot run a command as it runs here because of this Mac's environment, or None. Its login
+    shell has none of this Mac's variables: an xcodebuild TEST_RUNNER_ variable would not reach the tests there.
+    DEVELOPER_DIR goes with every dispatch, and the second Mac refuses the work as misconfigured when its Xcode
+    there differs, which only an ssh call could compare beforehand; a command that selects one stays here."""
+    environment = os.environ if environment is None else environment
+    runner = sorted(key for key in environment if key.startswith("TEST_RUNNER_"))
+    if runner:
+        return f"its environment sets {', '.join(runner)}, which the second Mac's login shell does not have"
+    if environment.get("DEVELOPER_DIR"):
+        return (f"its environment selects DEVELOPER_DIR={environment['DEVELOPER_DIR']}, which the second Mac's Xcode "
+                "may not match")
+    return None
+
+
 def first_command(root, config, command, kind):
     """Offer `eng admit`'s command to the second Mac to start now, once, as first() offers a lane,
     to run in the directory of its checkout that matches the current one here; return the Offer. The
     second Mac cannot run it as it runs here when its directory is outside the checkout or one Git
     ignores, which the commit sent lacks, or when its words name this checkout's path, a simulator by
-    its identifier, or a hardware UDID (devices.named), all of which are this Mac's; a device goes
+    its identifier, or a hardware UDID (devices.named), all of which are this Mac's, a path of this Mac's
+    alone (local_paths), or when this Mac's environment sets TEST_RUNNER_ variables or DEVELOPER_DIR
+    (local_environment); a device goes
     to the second Mac only under a reservation `eng remote admit --device` carries. kind is
     --exclusive or --model, if either, and --time-limit when the command has a limit of its own."""
     top, directory, words = Path(root).resolve(), Path.cwd().resolve(), " ".join(command)
@@ -2410,6 +2457,8 @@ def first_command(root, config, command, kind):
     elif named:
         refused = (f"it names the hardware UDID {', '.join(named)}, which the second Mac uses only under a "
                    "reservation `eng remote admit --device` carries from here")
+    else:
+        refused = local_paths(command, top) or local_environment()
     # The second Mac's admission takes it now or declines it, as `eng run --if-free` does a lane. There it runs
     # where it was sent, since it runs for the Mac that sent it (DISPATCHER).
     work = ["admit", *kind, "--if-free", "--", *command]

@@ -2949,9 +2949,12 @@ exec {shlex.quote(real)} "$@"
 
     def probe(self):
         """A command that appends the directory it runs in to a file outside the checkout, which both Macs
-        reach: a command run here writes to this terminal, not to the output eng captures."""
+        reach: a command run here writes to this terminal, not to the output eng captures. The file is named in the
+        environment, which the fake second Mac shares, since a path outside the checkout in the command's words keeps
+        it here (remote.local_paths)."""
         self.ran = Path(self.temp.name) / "ran-in.txt"
-        return [sys.executable, "-c", "import os, sys; open(sys.argv[1], 'a').write(os.getcwd() + '\\n')", str(self.ran)]
+        os.environ["PROBE_FILE"] = str(self.ran)
+        return [sys.executable, "-c", "import os; open(os.environ['PROBE_FILE'], 'a').write(os.getcwd() + '\\n')"]
 
     def ran_in(self):
         return Path(self.ran.read_text().splitlines()[-1])
@@ -3004,12 +3007,18 @@ exec {shlex.quote(real)} "$@"
         probe = self.probe()
         # Nor does one in a file path argument, as a word of its own outside simctl, or after another option (#142).
         scratchpad = f"/private/tmp/claude-501/-Users-owner-project/{DUO.lower()}/scratchpad/venv/bin/python"
-        status, output, error = self.admit_in(self.project, "--verify", "--", *probe, scratchpad, f"--run={DUO}-1",
+        status, output, error = self.admit_in(self.project, "--verify", "--", *probe, f"--run={DUO}-1",
                                               f"{DUO}.xcresult", "--session", DUO, f"--build-id={DUO}")
         self.assertEqual(status, 0, output + error)
         self.assertEqual(self.ran_in(), self.checkout(0).resolve())
         receipt = json.loads((self.project / ".build/engineering/remote/admit/source.json").read_text())
         self.assertEqual(receipt["ranOn"], "second Mac")
+        # The scratchpad's path is this Mac's alone, which keeps the command here, though not for its UUID.
+        status, output, error = self.admit_in(self.project, "--", *probe, scratchpad, f"--run={DUO}-1")
+        self.assertEqual(status, 0, output + error)
+        self.assertEqual(self.ran_in(), self.project.resolve())
+        self.assertIn(f"eng: running the command on this Mac: it names {scratchpad}, a path outside the checkout", error)
+        self.assertNotIn("simulator", error)
 
     def test_admit_verify_keeps_here_what_the_second_mac_could_not_run_as_it_runs_here(self):
         probe = self.probe()
@@ -3088,6 +3097,52 @@ exec {shlex.quote(real)} "$@"
         # --here and --verify contradict each other.
         with self.assertRaises(SystemExit), contextlib.redirect_stderr(StringIO()):
             self.admit_in(self.project, "--here", "--verify", "--", *probe)
+
+    def test_admit_keeps_here_a_command_that_names_a_path_of_this_macs_alone(self):
+        probe = self.probe()
+        top = self.project.resolve()
+        outside = "a path outside the checkout, which the second Mac does not have"
+        for words, said in [(["/tmp/x"], f"it names /tmp/x, {outside}"),
+                            (["/private/tmp/claude-501/scratchpad/run.py"],
+                             f"it names /private/tmp/claude-501/scratchpad/run.py, {outside}"),
+                            ([str(self.toolkit.resolve() / "bin/eng")], f"it names {self.toolkit.resolve() / 'bin/eng'}, {outside}"),
+                            (["~/notes.txt"], "it names ~/notes.txt, under this Mac's home"),
+                            (["--output=/tmp/out"], f"it names /tmp/out, {outside}"),
+                            (["sh", "-c", "cat /tmp/in > out.txt"], f"it names /tmp/in, {outside}"),
+                            # The checkout by a path that resolves to it, /var for /private/var.
+                            ([str(self.project / "pkg")], f"it names this checkout's path {self.project / 'pkg'}")]:
+            with self.subTest(words):
+                self.assertTrue(remote.local_paths(words, top).startswith(said), remote.local_paths(words, top))
+        # The controls: the system tools a command starts or uses, a URL, and paths relative to the checkout go there.
+        which = shutil.which("git")
+        controls = ["/usr/bin/true", "/bin/sh", "2>/dev/null", "/opt/homebrew/bin/python3",
+                    "/Applications/Xcode-beta.app/Contents/Developer", "/Library/Developer/CommandLineTools",
+                    "pkg/README.md", "./pkg", "https://example.com/a/b", "--flag", *([which] if which else [])]
+        self.assertIsNone(remote.local_paths(controls, top))
+        # End to end: a scratch path keeps it here, naming why, and the controls go to the second Mac.
+        status, output, error = self.admit_in(self.project, "--", *probe, "/tmp/x")
+        self.assertEqual((status, self.ran_in()), (0, self.project.resolve()), output + error)
+        self.assertIn(f"eng: running the command on this Mac: it names /tmp/x, {outside}", error)
+        receipt = json.loads((self.project / ".build/engineering/admit/source.json").read_text())
+        self.assertTrue(receipt["hereBecause"].startswith("it names /tmp/x"), receipt)
+        status, output, error = self.admit_in(self.project, "--", *probe, "/usr/bin/true", "pkg/README.md")
+        self.assertEqual((status, self.ran_in()), (0, self.checkout(0).resolve()), output + error)
+
+    def test_admit_keeps_here_a_command_that_this_macs_environment_sets_up(self):
+        probe = self.probe()
+        for variables, said in [({"TEST_RUNNER_EXAMPLE_FLAG": "1"},
+                                 "its environment sets TEST_RUNNER_EXAMPLE_FLAG, which the second Mac's login shell"),
+                                ({"DEVELOPER_DIR": "/Applications/Xcode.app/Contents/Developer"},
+                                 "its environment selects DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer")]:
+            with self.subTest(variables), patch.dict(os.environ, variables):
+                status, output, error = self.admit_in(self.project, "--", *probe)
+                self.assertEqual((status, self.ran_in()), (0, self.project.resolve()), output + error)
+                self.assertIn(f"eng: running the command on this Mac: {said}", error)
+        # The controls: a variable of another name, or none, and DEVELOPER_DIR empty, keep nothing here.
+        self.assertIsNone(remote.local_environment({"RUNNER_TEST": "1", "DEVELOPER_DIR": "", "PATH": "/usr/bin"}))
+        with patch.dict(os.environ, {"EXAMPLE_FLAG": "1"}):
+            status, output, error = self.admit_in(self.project, "--", *probe)
+        self.assertEqual((status, self.ran_in()), (0, self.checkout(0).resolve()), output + error)
 
     def self_lane(self, name, inner):
         """Add a self lane whose script runs `eng admit` with inner's words twice, as a build and a run of it."""

@@ -771,8 +771,15 @@ in about 4 s. The command runs in the directory of the second Mac's checkout tha
 current one, and its output and receipt come back to `.build/engineering/remote/admit/`. eng keeps
 it here, saying why, when the second Mac could not run it as it runs here: its directory is outside
 the checkout or one Git ignores, which the commit sent lacks, or its words name this checkout's
-path, a simulator by its identifier, which is a member of this Mac's pool, or a physical device of
-this Mac's record. Nested in an admission, it runs inside that admission, here; a part of a `self`
+path, a simulator by its identifier, which is a member of this Mac's pool, a physical device of
+this Mac's record, or any other path of this Mac's alone: an absolute path outside the checkout,
+such as a session's scratchpad, `/private/tmp`, `/tmp` or the toolkit's checkout, or one under `~`.
+The system tools a command starts or uses as an interpreter are on both Macs, so a path under
+`/usr`, `/bin`, `/sbin`, `/dev`, `/opt/homebrew`, `/Applications/Xcode*.app` or
+`/Library/Developer`, or one that is what `PATH` resolves its name to, keeps nothing here. It stays
+here too when this Mac's environment sets it up, since the second Mac's login shell has none of
+it: any `TEST_RUNNER_` variable, or `DEVELOPER_DIR`, whose Xcode the second Mac would refuse as
+misconfigured were its own at that path another. Nested in an admission, it runs inside that admission, here; a part of a `self`
 lane stays on the Mac where the lane runs; foreground work runs where its foreground is held
 ([attended Mac sessions](#attended-mac-sessions)); and work the second Mac runs for this Mac runs
 there. A test that a lane covers runs best as that lane, `eng run LANE -- FILTER`;
