@@ -50,7 +50,7 @@ class Host:
         script = command[-1]
         assert int(re.search(r"unix id is (\d+)", script).group(1)) == CENTER
         if "perform action_" in script:
-            kind = re.search(r'kind is "([^"]+)"', script).group(1)
+            kind = re.search(r'kind_ is "([^"]+)"', script).group(1)
             place = [int(n) for n in re.search(r"is \{(\d+), (\d+)\} and .* is \{(\d+), (\d+)\}", script).groups()]
             for notification in self.notifications:
                 if notification["kind"] == kind and notification["frame"] == place:
@@ -130,6 +130,16 @@ class WindowTests(HostTest):
         self.assertEqual(found[0]["actions"], ["AXPress", "Close", "Show Details"])
         self.assertEqual([notification_center.closable(n) for n in found], [True, False])
 
+    def test_the_scripts_set_no_variable_that_a_system_events_term_takes(self):
+        # Inside `tell application "System Events"`, `kind` is a property of its own, so `set kind to ""` failed
+        # with -10006 on the second Mac on 2026-11-07 and no notification could be read (#204); `position of
+        # element_ as list` is not a list of the position either. Every variable the scripts set ends in `_`.
+        for name, script in (("ELEMENTS_SCRIPT", notification_center.ELEMENTS_SCRIPT),
+                             ("CLOSE_SCRIPT", notification_center.CLOSE_SCRIPT)):
+            names = set(re.findall(r"\bset (\w+) to\b", script)) | set(re.findall(r"\brepeat with (\w+) in\b", script))
+            self.assertEqual({n for n in names if not n.endswith("_") and n not in ("out", "proc")}, set(), name)
+            self.assertNotIn(" as list)", script, name)
+
 
 class DismissTests(HostTest):
     def test_a_notification_window_is_closed_and_confirmed_gone_under_the_lease(self):
@@ -144,7 +154,7 @@ class DismissTests(HostTest):
         self.assertIn("eng: closed a Notification Center banner at x 1380, y 40, 340×72", self.said[0])
         # Only Close: never AXPress, which opens a notification, nor Clear All.
         for command in self.host.pressed:
-            self.assertIn('label is "Close"', command[-1])
+            self.assertIn('label_ is "Close"', command[-1])
             self.assertNotIn("Clear All", command[-1])
         self.assert_no_content(json.dumps(report), *self.said)
 

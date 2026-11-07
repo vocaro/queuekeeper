@@ -72,33 +72,33 @@ tell application "System Events"
     set proc to first process whose unix id is %(pid)d
     repeat with window_ in windows of proc
         repeat with element_ in (entire contents of window_)
-            set kind to ""
+            set kind_ to ""
             try
-                set kind to subrole of element_ as text
+                set kind_ to subrole of element_ as text
             end try
-            if kind starts with "AXNotificationCenter" then
-                set place to position of element_
-                set extent to size of element_
-                set labels to ""
+            if kind_ starts with "AXNotificationCenter" then
+                set place_ to position of element_
+                set extent_ to size of element_
+                set labels_ to ""
                 try
                     repeat with action_ in actions of element_
-                        set label to ""
+                        set label_ to ""
                         try
-                            set label to description of action_ as text
+                            set label_ to description of action_ as text
                         end try
                         -- A custom action's name runs over lines, "Name:Close" first.
-                        if label is "" or label is "missing value" then set label to paragraph 1 of (name of action_ as text)
-                        set labels to labels & label & (ASCII character 31)
+                        if label_ is "" or label_ is "missing value" then set label_ to paragraph 1 of (name of action_ as text)
+                        set labels_ to labels_ & label_ & (ASCII character 31)
                     end repeat
                 end try
-                set texts to ""
+                set texts_ to ""
                 try
-                    set texts to my joined(value of static texts of element_)
+                    set texts_ to my joined(value of static texts of element_)
                 end try
                 try
-                    set texts to texts & (description of element_ as text) & (ASCII character 31)
+                    set texts_ to texts_ & (description of element_ as text) & (ASCII character 31)
                 end try
-                set out to out & kind & tab & (item 1 of place) & tab & (item 2 of place) & tab & (item 1 of extent) & tab & (item 2 of extent) & tab & labels & tab & texts & linefeed
+                set out to out & kind_ & tab & (item 1 of place_) & tab & (item 2 of place_) & tab & (item 1 of extent_) & tab & (item 2 of extent_) & tab & labels_ & tab & texts_ & linefeed
             end if
         end repeat
     end repeat
@@ -112,18 +112,20 @@ CLOSE_SCRIPT = """tell application "System Events"
     set proc to first process whose unix id is %(pid)d
     repeat with window_ in windows of proc
         repeat with element_ in (entire contents of window_)
-            set kind to ""
+            set kind_ to ""
             try
-                set kind to subrole of element_ as text
+                set kind_ to subrole of element_ as text
             end try
-            if kind is "%(kind)s" then
-                if (position of element_ as list) is {%(x)d, %(y)d} and (size of element_ as list) is {%(width)d, %(height)d} then
+            if kind_ is "%(kind)s" then
+                set place_ to position of element_
+                set extent_ to size of element_
+                if place_ is {%(x)d, %(y)d} and extent_ is {%(width)d, %(height)d} then
                     repeat with action_ in actions of element_
-                        set label to ""
+                        set label_ to ""
                         try
-                            set label to description of action_ as text
+                            set label_ to description of action_ as text
                         end try
-                        if label is "Close" or (name of action_ as text) starts with "Name:Close" then
+                        if label_ is "Close" or (name of action_ as text) starts with "Name:Close" then
                             perform action_
                             return "closed"
                         end if
