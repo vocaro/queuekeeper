@@ -23,9 +23,14 @@ from test_merge_queue import Fixture, run
 GATE = {"command": ["true"], "timeout": 60}
 
 
-def landed(number, seconds, parts=(), landed_as=None):
+def landed(number, seconds, parts=(), landed_as=None, **busy):
     return {"id": f"entry-{number}", "state": "landed", "settled": float(number), "landedAs": landed_as or f"c{number}",
-            "gate": {"seconds": seconds, "parts": [list(part) for part in parts]}}
+            "gate": {"seconds": seconds, "parts": [list(part) for part in parts], **busy}}
+
+
+def loaded(number, seconds, busy=90.0, limit=75.0):
+    """A gate run whose Mac's CPU was busy share busy against its limit."""
+    return landed(number, seconds, cpuBusy=busy, busyLimit=limit, busyOn="this Mac")
 
 
 class Parts(unittest.TestCase):
@@ -84,6 +89,46 @@ class GateBudget(unittest.TestCase):
         self.assertEqual(budgets.gate_warnings(self.config(budgetMinutes=1), own + others), [])
         apart = [{**entry, "landedTip": f"tip{n}"} for n, entry in enumerate(own)]
         self.assertEqual(len(budgets.gate_warnings(self.config(budgetMinutes=1), apart)), 1)
+
+    def test_runs_on_a_loaded_host_are_left_out_of_the_median_and_counted(self):
+        """The owner's decision on #235: the budget assumes an unloaded machine. Settled is newest last."""
+        unloaded = [loaded(n, 540, busy=40.0) for n in range(3)]
+        heavy = [loaded(n, 1740) for n in range(3, 7)]
+        # Every run counted, the 29-minute runs made under load put the median over a 15-minute budget.
+        self.assertEqual(len(budgets.gate_warnings(self.config(budgetMinutes=15),
+                                                   [{**e, "gate": {"seconds": e["gate"]["seconds"]}} for e in unloaded + heavy])), 1)
+        # Left out, the 9-minute runs are within it, and nothing warns.
+        self.assertEqual(budgets.gate_warnings(self.config(budgetMinutes=15), unloaded + heavy), [])
+        # Over budget on unloaded runs alone, the warning says how many it left out.
+        [warning] = budgets.gate_warnings(self.config(budgetMinutes=8), unloaded + heavy)
+        self.assertIn("over its last 3 passing runs in the merge queue is 9.0 min, leaving out 4 runs made with the CPU "
+                      "of the Mac it ran on at or above its busy limit, as the budget assumes an unloaded host, over its "
+                      "budget of 8 min", warning)
+        # Negative controls: none left out says nothing of loads; too few unloaded runs judge nothing.
+        [warning] = budgets.gate_warnings(self.config(budgetMinutes=8), unloaded)
+        self.assertNotIn("leaving out", warning)
+        self.assertEqual(budgets.gate_warnings(self.config(budgetMinutes=1), unloaded[:2] + heavy), [])
+
+    def test_a_run_is_loaded_at_or_above_its_own_macs_limit_and_unknown_counts(self):
+        self.assertTrue(budgets.loaded({"cpuBusy": 75.0, "busyLimit": 75.0}))
+        self.assertTrue(budgets.loaded({"cpuBusy": 61, "busyLimit": 60}))
+        for run in ({"cpuBusy": 74.9, "busyLimit": 75.0}, {"cpuBusy": 90.0, "busyLimit": 95.0}, {}, {"cpuBusy": None, "busyLimit": 75.0},
+                    {"cpuBusy": 90.0}, {"cpuBusy": True, "busyLimit": 0.5}, {"seconds": 60, "parts": []}):
+            with self.subTest(run=run):
+                self.assertFalse(budgets.loaded(run))
+        # The window is the latest unloaded runs: a loaded run older than them is not counted as left out.
+        entries = [loaded(0, 600)] + [loaded(n, 600, busy=10.0) for n in range(1, 1 + budgets.RECENT_RUNS)]
+        [warning] = budgets.gate_warnings(self.config(budgetMinutes=1), entries)
+        self.assertIn(f"over its last {budgets.RECENT_RUNS} passing runs", warning)
+        self.assertNotIn("leaving out", warning)
+
+    def test_the_worker_log_says_the_busy_share_and_when_a_run_is_left_out(self):
+        said = budgets.busy_words({"cpuBusy": 91.5, "cpuBusyHighest": 99.0, "busyLimit": 75.0, "busyOn": "this Mac",
+                                   "busyReadings": 29})
+        self.assertEqual(said, "the CPU of this Mac was 91.5% busy on average over 29 reading(s), at most 99%, against its "
+                               "busy limit of 75%: a loaded run, which the gate's budget median leaves out")
+        self.assertNotIn("loaded run", budgets.busy_words({"cpuBusy": 30.0, "busyLimit": 75.0}))
+        self.assertEqual(budgets.busy_words({}), "the CPU busy share of the Mac it ran on could not be read")
 
     def test_the_median_reads_only_the_recent_runs(self):
         old = [landed(n, 9000) for n in range(10)]
@@ -275,6 +320,48 @@ class Landing(Fixture):
         self.assertEqual(entry["state"], "landed")
         self.assertGreater(entry["gate"]["seconds"], 0)
         self.assertEqual(entry["gate"]["parts"], [["test_slow", 9.0], ["test_fast", 1.0]])
+        # Beside its wall time, the busy share of the Mac it ran on (#235): the fixture's one reading at the end.
+        self.assertEqual({key: entry["gate"][key] for key in ("cpuBusy", "cpuBusyHighest", "busyLimit", "busyOn", "busyReadings")},
+                         {"cpuBusy": 25.0, "cpuBusyHighest": 25.0, "busyLimit": 75.0, "busyOn": "this Mac", "busyReadings": 1})
+
+    def test_the_busy_share_is_read_while_the_gate_runs_and_of_the_mac_its_dispatch_names(self):
+        (self.repo / "lane.py").write_text("import time\ntime.sleep(2)\nprint('== test_slow: OK (1 tests, 2.0s)')\n")
+        run(self.repo, "git", "add", "lane.py")
+        run(self.repo, "git", "commit", "-qm", "Take a while")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        readings = iter([(80.0, 75.0, "fake-mac"), (90.0, 75.0, "fake-mac"), None])
+        self.busy_of.side_effect = lambda host: next(readings, (100.0, 75.0, "fake-mac"))
+        asked = []
+        real = mq.remote.dispatched
+        def dispatched(root, name, since):
+            asked.append(name)
+            return "fake-mac" if name == "gate" else real(root, name, since)
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        with patch.object(mq, "BUSY_SAMPLE", 0.4), patch.object(mq.remote, "dispatched", side_effect=dispatched), \
+                contextlib.redirect_stdout(io.StringIO()) as said:
+            self.work()
+        gate = self.state(identifier)["gate"]
+        hosts = [call.args[0] for call in self.busy_of.call_args_list]
+        self.assertGreaterEqual(len(hosts), 3)
+        self.assertEqual(set(hosts), {"fake-mac"})
+        # A reading that could not be taken is left out of the mean.
+        self.assertGreaterEqual(gate["busyReadings"], 2)
+        self.assertEqual(gate["busyReadings"], len(hosts) - 1)
+        self.assertGreaterEqual(gate["cpuBusy"], 85.0)
+        self.assertEqual((gate["busyLimit"], gate["busyOn"]), (75.0, "fake-mac"))
+        self.assertIn("the CPU of fake-mac was", said.getvalue())
+        self.assertIn("a loaded run, which the gate's budget median leaves out", said.getvalue())
+
+    def test_a_gate_whose_busy_share_cannot_be_read_records_its_time_alone(self):
+        self.busy_of.return_value = None
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        with contextlib.redirect_stdout(io.StringIO()) as said: self.work()
+        gate = self.state(identifier)["gate"]
+        self.assertGreater(gate["seconds"], 0)
+        self.assertNotIn("cpuBusy", gate)
+        self.assertIn("the CPU busy share of the Mac it ran on could not be read", said.getvalue())
 
     def test_eng_land_warns_after_its_result_when_the_gate_is_over_budget(self):
         self.budget(1)

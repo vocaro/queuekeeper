@@ -77,6 +77,10 @@ class Fixture(unittest.TestCase):
             self.tracked.append(dict(flake)), ("https://example.invalid/fixture/issues/1", None))[1])
         tracker.start()
         self.addCleanup(tracker.stop)
+        # A gate's busy share, read from no real Mac unless a test says otherwise (mq.busy_of, #235).
+        reading = patch.object(mq, "busy_of", return_value=(25.0, 75.0, "this Mac"))
+        self.busy_of = reading.start()
+        self.addCleanup(reading.stop)
         self.counter, self.status = self.base / "gates", self.base / "status"
         self.origin = self.base / "origin.git"
         run(self.base, "git", "init", "-q", "--bare", "-b", "main", str(self.origin))
@@ -1221,6 +1225,31 @@ class SecondMacReading(unittest.TestCase):
             with self.assertRaisesRegex(mq.remote.Misconfigured, "fake-mac could not read its admission limits: Invalid "
                                                                   "resource limits: x is not JSON"):
                 mq.remote.capacity_there("fake-mac")
+
+    def test_the_second_macs_busy_share_and_limit_are_what_a_gate_records(self):
+        for answer, expected in (({"load": 2.0, "cpuBusy": 82.5, "busyLimit": 75, "memory": 1}, (82.5, 75.0)),
+                                 ({"load": 2.0, "cpuBusy": None, "busyLimit": 60.0}, (None, 60.0)),
+                                 ({"load": 2.0, "cpuBusy": True, "busyLimit": 75.0}, (None, 75.0))):
+            with self.subTest(answer=answer), patch.object(mq.remote, "ask", return_value=answer):
+                self.assertEqual(mq.remote.busy_there("fake-mac"), expected)
+        with patch.object(mq.remote, "ask", return_value={"load": 1.0}):
+            with self.assertRaisesRegex(mq.remote.Unavailable, "fake-mac did not report its CPU busy share"):
+                mq.remote.busy_there("fake-mac")
+
+    def test_a_gates_busy_reading_is_of_the_mac_it_ran_on_and_none_when_unreadable(self):
+        with patch.object(mq.remote, "busy_there", return_value=(90.0, 75.0)) as there:
+            self.assertEqual(mq.busy_of("fake-mac"), (90.0, 75.0, "fake-mac"))
+            there.assert_called_once_with("fake-mac")
+        with patch.object(mq.remote, "busy_there", return_value=(None, 75.0)):
+            self.assertIsNone(mq.busy_of("fake-mac"))
+        with patch.object(mq.remote, "busy_there", side_effect=mq.remote.Unavailable("gone")):
+            self.assertIsNone(mq.busy_of("fake-mac"))
+        with patch.object(mq.resources, "cpu_busy", return_value=(40.0, 15.0)) as here, \
+                patch.object(mq.resources, "busy_limit", return_value=70.0):
+            self.assertEqual(mq.busy_of(None), (40.0, 70.0, "this Mac"))
+            self.assertTrue(here.call_args.kwargs["wait"])
+        with patch.object(mq.resources, "busy_limit", side_effect=ValueError("bad limits")):
+            self.assertIsNone(mq.busy_of(None))
 
     def test_a_second_mac_without_a_reading_is_unavailable(self):
         for answer in [{"error": "HEAVY_BUSY_LIMIT is no number: x"}, {"load": 1.0}, {"load": 1.0, "limit": 7.5}, ["no"], None]:

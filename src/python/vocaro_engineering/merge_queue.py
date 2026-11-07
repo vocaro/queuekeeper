@@ -155,6 +155,9 @@ FAILED_TEST = re.compile(r"^(?:FAIL|ERROR): (\S+) \(([^()\s]+)\)", re.M)
 RERUN_KEPT = {"-s", "--start-directory", "-p", "--pattern", "-t", "--top-level-directory", "--split", "--timeout"}
 RERUN_DROPPED = {"-j", "--jobs", "-k"}
 GH_TIMEOUT = 60
+# Seconds between readings of the CPU busy share of the Mac a gate lane runs on, which the gate's record keeps
+# beside its wall time, so that the budget's median can leave out runs made on a loaded host (vocaro-engineering#235).
+BUSY_SAMPLE = 60
 GH_ENV = {"GH_PROMPT_DISABLED": "1", "GH_NO_UPDATE_NOTIFIER": "1"}
 WAIT_LIMIT = 6 * 3600
 KEPT_LOGS = 200
@@ -597,6 +600,54 @@ def hardening(checkout, flake, gh=None):
     made = gh("issue", "create", "--title", title, "--body", body)
     if made.returncode: return None, "gh issue create failed: " + (made.stderr.strip().splitlines() or ["no message"])[0]
     return (made.stdout.strip().splitlines() or [None])[-1], None
+
+
+def busy_of(host):
+    """(the CPU busy share in percent, the busy limit it is judged by, the Mac read) of host, the second Mac, by
+    remote.busy_there, or with host None of this Mac, as admission reads it; None when it cannot be read."""
+    if host:
+        try: busy, limit = remote.busy_there(host)
+        except remote.Unavailable: return None
+        return None if busy is None else (busy, limit, host)
+    try: limit = resources.busy_limit()
+    except ValueError: return None
+    busy = resources.cpu_busy(resources.slot_directory(), wait=True)[0]
+    return None if busy is None else (busy, limit, "this Mac")
+
+
+class BusySampler:
+    """The CPU busy share of the Mac a gate lane runs on, read every BUSY_SAMPLE seconds while it runs, and once at its
+    end when no reading was taken (vocaro-engineering#235). The Mac is the second Mac once the lane's dispatch names it
+    (remote.dispatched), and this Mac before that. A reading that fails is left out."""
+    def __init__(self, checkout, lane, began):
+        self.checkout, self.lane, self.began = checkout, lane, began
+        self.readings = []
+        self.stopped = threading.Event()
+        self.thread = threading.Thread(target=self.every, name="gate busy share", daemon=True)
+
+    def read(self):
+        # A measurement only: nothing a reading raises may end the gate or the round.
+        try: found = busy_of(remote.dispatched(self.checkout, self.lane, self.began))
+        except Exception: found = None  # noqa: BLE001
+        if found: self.readings.append(found)
+
+    def every(self):
+        while not self.stopped.wait(BUSY_SAMPLE): self.read()
+
+    def start(self):
+        self.thread.start()
+        return self
+
+    def finish(self):
+        """What the gate's record keeps of the readings: cpuBusy, their mean, cpuBusyHighest, busyLimit and busyOn of
+        the last, and busyReadings; nothing when none was taken."""
+        self.stopped.set()
+        self.thread.join(timeout=GH_TIMEOUT)
+        if not self.readings: self.read()
+        if not self.readings: return {}
+        shares = [reading[0] for reading in self.readings]
+        return {"cpuBusy": round(sum(shares) / len(shares), 1), "cpuBusyHighest": max(shares),
+                "busyLimit": self.readings[-1][1], "busyOn": self.readings[-1][2], "busyReadings": len(shares)}
 
 
 class Queue:
@@ -1442,26 +1493,34 @@ class Worker:
             self.say(f"{lane} on {self.head()[:12]}")
             began = time.time()  # wall clock, to match the dispatch records' start times
             started = time.monotonic()  # for the gate's measured duration
+            sampler = BusySampler(self.checkout, lane, began).start() if lane == budgets.GATE else None
             try:
                 status_ = processes.run(["python3", "scripts/eng", "run", lane], cwd=self.checkout, log_path=log,
                                         timeout=LANE_LIMIT, env=self.environment)
             except processes.TimedOut as error:
+                if sampler: sampler.stopped.set()
                 self.ran_on = remote.dispatched(self.checkout, lane, began)
                 self.ran_where = self.mac(lane, began)
                 self.timed_out = f"{lane} reached its limit: {error}"
                 self.say(f"{lane}: unmeasured: {error}")
                 return evidence.UNMEASURED, log
+            except BaseException:
+                if sampler: sampler.stopped.set()
+                raise
+            ended = time.monotonic()
             self.ran_on = remote.dispatched(self.checkout, lane, began)
             with contextlib.suppress(OSError), log.open("a") as kept: kept.write(lane_log.read_text(errors="replace"))
             self.ran_where = self.mac(lane, began)
+            busy = sampler.finish() if sampler else {}
             self.say(f"{lane} exited {status_}{self.placed(lane, began)}")
             if status_:
                 self.failed_lane = lane
                 return status_, log
             if lane == budgets.GATE:
                 with contextlib.suppress(OSError):
-                    self.measured = {"seconds": round(time.monotonic() - started, 1),
-                                     "parts": budgets.parts(log.read_text(errors="replace"))[:budgets.KEPT_PARTS]}
+                    self.measured = {"seconds": round(ended - started, 1),
+                                     "parts": budgets.parts(log.read_text(errors="replace"))[:budgets.KEPT_PARTS], **busy}
+                if self.measured: self.say(f"{lane} took {budgets.minutes(self.measured['seconds'])}; {budgets.busy_words(busy)}")
         return 0, log
 
     def placed(self, lane, began):

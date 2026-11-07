@@ -2589,15 +2589,29 @@ def pressure_there(host):
     queue logs beside it: what the merge
     queue's settle wait reads before it runs again a lane that ran there. A second Mac that cannot be reached,
     or that does not answer with its reading, raises Unavailable, and the wait reads this Mac instead."""
+    answered, busy = reading_there(host)
+    load = answered.get("load")
+    load = load if isinstance(load, (int, float)) else None
+    return resources.judged(busy, answered["busyLimit"], lambda: answered.get("memory")), load
+
+
+def reading_there(host):
+    """(offload_host's pressure answer from the second Mac, its CPU busy share in percent or None when unavailable),
+    or Unavailable when the Mac cannot be reached or does not answer with its busy limit."""
     answered = ask(host, {"pressure": True}, timeout=CENSUS_TIMEOUT)
     if not isinstance(answered, dict) or not isinstance(answered.get("busyLimit"), (int, float)):
         why = answered.get("error") if isinstance(answered, dict) and answered.get("error") else f"it answered {answered!r}"
         raise Unavailable(f"{host} did not report its CPU busy share: {why}")
-    load = answered.get("load")
-    load = load if isinstance(load, (int, float)) else None
     busy = answered.get("cpuBusy")
-    busy = busy if isinstance(busy, (int, float)) and not isinstance(busy, bool) else None
-    return resources.judged(busy, answered["busyLimit"], lambda: answered.get("memory")), load
+    return answered, busy if isinstance(busy, (int, float)) and not isinstance(busy, bool) else None
+
+
+def busy_there(host):
+    """(the second Mac's CPU busy share in percent, None when unavailable; the busy limit it sets there): what the merge
+    queue records beside a gate's wall time when the gate ran there (vocaro-engineering#235). Unavailable as
+    pressure_there raises it."""
+    answered, busy = reading_there(host)
+    return busy, float(answered["busyLimit"])
 
 
 def dispatched(root, name, since):

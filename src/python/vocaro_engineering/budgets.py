@@ -2,16 +2,19 @@
 Keeping the split and Checkpoints, vocaro-engineering#135), which `eng land` prints after its result and
 `eng doctor` gives:
 
-- the gate's median wall time over its recent passing runs in the merge queue exceeds the gate lane's
-  budgetMinutes, naming its slowest parts;
+- the gate's median wall time over its recent passing runs in the merge queue made on an unloaded host exceeds the
+  gate lane's budgetMinutes, naming its slowest parts and how many loaded runs it left out;
 - origin/main holds more than release.maxCommits commits since the last commit that passed every lane
   in release.lanes, a release or a checkpoint;
 - and, from eng doctor alone, a direct-main gate with no budget, a gate that takes a physical device, and a
   device pass's lane that would go to the second Mac.
 
 The queue's worker records each landed entry's gate run (Worker.gate): its wall time as the queue saw
-it, wherever the lane ran, any wait for admission included, and the parts its log reports with their
-times.
+it, wherever the lane ran, any wait for admission included, the parts its log reports with their
+times, and the CPU busy share of the Mac it ran on over the run, beside the busy limit that Mac sets (cpuBusy and
+busyLimit, merge_queue.BusySampler). The budget and the owner's under-20-minute goal assume an unloaded machine, so
+a run whose busy share was at or above its limit is left out of the median (owner's decision of 2026-11-07,
+vocaro-engineering#235); a run recorded without a reading counts.
 """
 import re
 import statistics
@@ -76,12 +79,37 @@ def minutes(seconds):
     return f"{seconds / 60:.1f} min"
 
 
+def number(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def loaded(run):
+    """Whether a gate run was made on a loaded host: its CPU busy share over the run at or above the busy limit of the
+    Mac it ran on, the limit at which admission finds no spare capacity. A run without both readings is not."""
+    return number(run.get("cpuBusy")) and number(run.get("busyLimit")) and run["cpuBusy"] >= run["busyLimit"]
+
+
+def busy_words(busy):
+    """The worker log's words for a gate run's busy share (Worker.gate), saying when the budget leaves it out."""
+    if not number(busy.get("cpuBusy")) or not number(busy.get("busyLimit")):
+        return "the CPU busy share of the Mac it ran on could not be read"
+    return (f"the CPU of {busy.get('busyOn', 'the Mac it ran on')} was {busy['cpuBusy']:g}% busy on average over "
+            f"{busy.get('busyReadings', 1)} reading(s), at most {busy.get('cpuBusyHighest', busy['cpuBusy']):g}%, against "
+            f"its busy limit of {busy['busyLimit']:g}%"
+            + (": a loaded run, which the gate's budget median leaves out" if loaded(busy) else ""))
+
+
 def gate_warnings(config, entries):
-    """A warning when the median of the gate's recent passing runs exceeds its budget. None without a
-    budget, or with fewer than FEWEST_RUNS runs to judge it by."""
+    """A warning when the median of the gate's RECENT_RUNS latest passing runs made on an unloaded host (loaded)
+    exceeds its budget, saying how many loaded runs newer than the oldest of them it left out. None without a
+    budget, or with fewer than FEWEST_RUNS such runs to judge it by."""
     budget = config.get("lanes", {}).get(GATE, {}).get("budgetMinutes")
     if budget is None: return []
-    recent = runs(entries)[:RECENT_RUNS]
+    recent, left_out = [], 0
+    for run in runs(entries):
+        if len(recent) == RECENT_RUNS: break
+        if loaded(run): left_out += 1
+        else: recent.append(run)
     if len(recent) < FEWEST_RUNS: return []
     median = statistics.median(run["seconds"] for run in recent)
     if median <= budget * 60: return []
@@ -89,8 +117,10 @@ def gate_warnings(config, entries):
     named = (f"; its slowest parts in its latest run that reports them: "
              + ", ".join(f"{name} {seconds:g}s" for name, seconds in slowest)) if slowest \
         else "; its log reports no parts with their times"
+    loads = (f", leaving out {left_out} run{'' if left_out == 1 else 's'} made with the CPU of the Mac it ran on at or "
+             f"above its busy limit, as the budget assumes an unloaded host") if left_out else ""
     return [f"gate's median wall time over its last {len(recent)} passing runs in the merge queue is "
-            f"{minutes(median)}, over its budget of {budget} min (gate.budgetMinutes){named}. Propose on the "
+            f"{minutes(median)}{loads}, over its budget of {budget} min (gate.budgetMinutes){named}. Propose on the "
             f"project's issue tracker which check to move to release.lanes; the owner approves a move or a "
             f"higher budget ({SPLIT})"]
 
