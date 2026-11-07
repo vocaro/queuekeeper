@@ -593,7 +593,7 @@ class ProcessTests(unittest.TestCase):
         with patch.object(processes, "snapshot", lambda: listing), patch.object(processes, "session", sessions.get):
             self.assertEqual(processes.survivors({100, 200}, {200: closing}),
                              [(202, 200, 1), (203, 200, 1), (204, 200, 1), (300, 300, 100)])
-            # Without when it closed, as `eng admissions recover` runs it, every member is counted.
+            # With no recorded close time, every member is counted.
             self.assertEqual([pid for pid, _group, _sid in processes.survivors({100, 200})], [201, 202, 203, 204, 300])
 
     def test_a_failed_command_gives_the_census_when_its_group_was_found_empty(self):

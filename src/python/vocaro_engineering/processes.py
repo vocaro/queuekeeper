@@ -291,8 +291,8 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
 
     Inside an admission this process holds, the admission's process record gets the command before
     it starts, then its root, each process and each process group or session at the first sample
-    that sees it, and a confirmed end, so that `eng admissions recover` can run this census once
-    this process has gone.
+    that sees it, when each group or session is found without the command or used again, and a
+    confirmed end, so that `eng admissions recover` can run this census once this process has gone.
     """
     if requested() is not None:
         raise Interrupted(requested(), "before its command started")
@@ -403,17 +403,23 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
             live = {pid for pid, seen in known.items() if pid in current and current[pid][2] == seen[2]}
             sampled = {space for pid in live for space in (current[pid][1], session(pid)) if space is not None}
             identities = {pid: known[pid][2] for pid in live} | ({child.pid: born} if root_active else {})
-            if admission is not None:
-                # What this sample saw first.
-                fresh, opened = sorted(set(identities.items()) - noted), sorted(sampled - spaces)
-                if fresh or opened: note(processes=[(pid, " ".join(start.split())) for pid, start in fresh], spaces=opened)
-                noted.update(fresh)
-            spaces |= sampled
             # When each group or session was first found without the command (survivors).
             using = sampled | ({child.pid} if root_active else set())
-            for space in spaces:
-                if space in using: closed.pop(space, None)
-                else: closed.setdefault(space, moment)
+            reopened = closed.keys() & using
+            newly_closed = spaces - using - closed.keys()
+            for space in reopened:
+                del closed[space]
+            closed.update(dict.fromkeys(newly_closed, moment))
+            if admission is not None:
+                # Record a renewed use in the same line as any new process that shows it.
+                fresh, opened = sorted(set(identities.items()) - noted), sorted(sampled - spaces)
+                closed_updates = [(space, None) for space in sorted(reopened)]
+                closed_updates.extend((space, moment) for space in sorted(newly_closed))
+                if fresh or opened or closed_updates:
+                    note(processes=[(pid, " ".join(start.split())) for pid, start in fresh], spaces=opened,
+                         closed=closed_updates)
+                noted.update(fresh)
+            spaces |= sampled
             if timeout is not None and exited is None and expired is None and time.monotonic() - started >= timeout:
                 expired = time.monotonic()
                 print(f"supervise: timed out after {timeout:g}s; sending SIGTERM to the command (PID {child.pid}) "
@@ -454,10 +460,14 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
                 # Sampling cannot prove that a failed, stopped or timed-out command orphaned nothing
                 # between two samples, so its groups and sessions must hold nothing. A passing
                 # command has no census: a daemon it starts on purpose must not stop the host.
-                # A group or session the last sample still found the root in closed once poll found it gone.
-                ended = time.time()
-                left = survivors(spaces, {space: closed.get(space, ended) for space in spaces}) \
-                    if result or ending is not None else []
+                left = []
+                if result or ending is not None:
+                    # A group or session the last sample still found the root in closed once poll found it gone.
+                    final_closures = dict.fromkeys(sorted(spaces - closed.keys()), time.time())
+                    if final_closures:
+                        note(closed=list(final_closures.items()))
+                        closed.update(final_closures)
+                    left = survivors(spaces, closed)
                 if left:
                     raise RuntimeError(f"{cause}, but {len(left)} process(es) remain in process groups or "
                                        "sessions it was seen using: " + ", ".join(

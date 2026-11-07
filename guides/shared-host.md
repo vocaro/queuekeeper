@@ -2332,9 +2332,9 @@ Supervise the process group you own. The toolkit's `processes.supervise`, which 
 - Inside an admission that its own process holds, the supervisor appends what it sees to the
   admission's process record ([lock reclamation](#lock-reclamation)): the command before it
   starts, its root once started, each process with its start and each process group and session
-  at the first sample that sees it, and the command's confirmed end. When the admitting process
-  is killed before it settles its entry, `eng admissions recover` runs this census against the
-  record.
+  at the first sample that sees it, when a group or session is first seen without the command
+  or used again, and the command's confirmed end. When the admitting process is killed before it
+  settles its entry, `eng admissions recover` runs this census against the record.
 - A push keeper ([checkout provisioning and publication](#checkout-provisioning-and-publication))
   supervises its own commands and applies the same census to a command that fails on its own,
   with a positive status and no stop. When the census finds nothing, the keeper releases its
@@ -2809,9 +2809,11 @@ and logs a `recovered` line ([admission log](#admission-log)), only when all of 
 - It has a process record that reads whole and names the process of each command it has not
   settled.
 - The census a run ends with ([process supervision](#process-supervision)), run against that
-  record, finds nothing: no recorded process still runs with its recorded start, and no live
-  process is in a process group or session the commands were seen using, but for an ID that is now
-  a live process's PID.
+  record, finds nothing. It checks recorded processes by PID and start, and live processes in
+  groups or sessions an unsettled command used. It skips an ID that is now a live process's PID
+  and skips a process for a group or session if its birth follows the recorded close for every
+  unsettled command that used that ID. Without a close time for any such command, the space is
+  still checked without a birth cutoff.
 
 Otherwise it changes nothing, exits 1 and says why: each process still running, by PID with why it
 counts and a `ps` listing, or what to check by hand. Stop or wait for what still runs, then run it
@@ -2822,10 +2824,11 @@ the entry. The toolkit's supervision in the admitting process (`eng admit`, `eng
 resource CLI, and `processes.supervise` inside an `Admission` the same process holds) appends JSON
 lines to it, each naming one command by a key of its own: `argv` before the command starts; `root`,
 its PID, once started; at each sample that sees something new, the `processes` first seen, as
-`[PID, start]`, and the process groups and sessions first seen, as `spaces`; and `settled` once the
-run confirms that the command ended, by exiting, or by a stop or timeout that saw it and every
-observed descendant end and whose census found nothing. Recovery checks no settled command, so a
-daemon a passing command starts on purpose does not keep the entry, as it does not keep the run
+`[PID, start]`, and the process groups and sessions first seen, as `spaces`; `closed` updates as
+`[ID, epoch seconds]` when first seen without the command, or `[ID, null]` when used again; and
+`settled` once the run confirms that the command ended, by exiting, or by a stop or timeout that
+saw it and every observed descendant end and whose census found nothing. Recovery checks no
+settled command, so a daemon a passing command starts on purpose does not keep the entry or the run
 uncertain. Nested work in another process reuses the admission and writes nothing to the record,
 since the outer supervisor sees its processes. Release deletes the record after the entry; an
 uncertain end keeps it. A line that cannot be written deletes the record and ends recording, with

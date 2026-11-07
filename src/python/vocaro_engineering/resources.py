@@ -61,6 +61,7 @@ from datetime import datetime, timedelta, timezone
 import fcntl
 import functools
 import json
+import math
 import os
 from pathlib import Path
 import pwd
@@ -1097,7 +1098,8 @@ class Admission:
         command (#61). processes.supervise writes it, and so does a caller that supervises its own
         commands, as StudyWright's push keeper does: a dictionary with the command's own key as
         `command`, and `argv` before it starts, `root` and its `spaces` once started, the `processes`
-        ([PID, start]) and `spaces` each sample sees first, or `settled` once its end is confirmed.
+        ([PID, start]) and `spaces` each sample sees first, `closed` updates ([space, close time or
+        None if used again]), or `settled` once its end is confirmed.
         Recovery trusts a record only whole, so a line that cannot be written removes the record and
         ends recording, and recovery then leaves the entry for a check by hand. As with the log, a
         failure never fails or holds up the run."""
@@ -1577,7 +1579,8 @@ def census(path):
 
     It is the census a run ends with (processes.survivors): each recorded process has ended, by PID and
     start, and no live process is in a group or session one was seen using, but for an ID that is now a
-    live process's PID (#26). A command the record settled was confirmed ended by its own supervision.
+    live process's PID (#26) or a process born after the last recorded close of the space (#244).
+    A command the record settled was confirmed ended by its own supervision.
     """
     from vocaro_engineering.processes import snapshot, survivors
     commands = {}
@@ -1588,13 +1591,21 @@ def census(path):
                 if not isinstance(line["command"], str) or not isinstance(line.get("argv", []), list):
                     raise TypeError("an unexpected value")
                 command = commands.setdefault(line["command"], {"argv": [], "root": None, "processes": set(),
-                                                                "spaces": set(), "settled": False})
+                                                                "spaces": set(), "closed": {}, "settled": False})
                 processes = {(pid, start) for pid, start in line.get("processes", [])}
                 spaces, root = set(line.get("spaces", [])), line.get("root", command["root"])
                 if not all(type(pid) is int and isinstance(start, str) for pid, start in processes) or \
                         not all(type(space) is int for space in spaces) or not (root is None or type(root) is int):
                     raise TypeError("an unexpected value")
-            except (ValueError, KeyError, TypeError, AttributeError):
+                for space, when in line.get("closed", []):
+                    if type(space) is not int or (when is not None and (
+                            type(when) not in (int, float) or not math.isfinite(when))):
+                        raise TypeError("an unexpected value")
+                    if when is None:
+                        command["closed"].pop(space, None)
+                    else:
+                        command["closed"][space] = when
+            except (ValueError, KeyError, TypeError, AttributeError, OverflowError):
                 raise ValueError(f"line {number} of {path} cannot be read") from None
             command["argv"], command["root"] = line.get("argv", command["argv"]), root
             command["processes"] |= processes
@@ -1606,14 +1617,21 @@ def census(path):
             raise ValueError(f"its command `{' '.join(map(str, command['argv']))[:LABEL_LIMIT]}` may have started before "
                              "the record named its process")
     current, left = snapshot(), {}
+    spaces, unclosed, closed = set(), set(), {}
     for command in unsettled:
         for pid, start in command["processes"]:
             if pid in current and " ".join(current[pid][2].split()) == " ".join(start.split()):
                 left[pid] = "a recorded process, still running"
         if command["root"] in current and all(pid != command["root"] for pid, _start in command["processes"]):
             left.setdefault(command["root"], "its command's PID, whose start the record never saw, is in use")
-    spaces = set().union(*(command["spaces"] | {command["root"]} for command in unsettled))
-    for pid, group, sid in survivors(spaces):
+        used = command["spaces"] | {command["root"]}
+        spaces |= used
+        # A process can be a leftover of any unsettled command that used the space.
+        unclosed |= used - command["closed"].keys()
+        for space in used & command["closed"].keys():
+            when = command["closed"][space]
+            closed[space] = max(closed.get(space, when), when)
+    for pid, group, sid in survivors(spaces, {space: when for space, when in closed.items() if space not in unclosed}):
         left.setdefault(pid, f"group {group}, session {sid}")
     return left, len(unsettled), sum(len(command["processes"]) for command in unsettled), len(spaces)
 
