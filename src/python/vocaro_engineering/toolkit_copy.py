@@ -38,6 +38,9 @@ GIT_TIMEOUT = 10
 # Set to off, `eng doctor` lists no leftover worktrees: tests/host_isolation.py sets it, so that no doctor test
 # reads the host's own worktrees of the toolkit.
 LEFTOVER_SWITCH = "VOCARO_LEFTOVER_WORKTREES"
+# Set to off, `eng doctor` names no gap between this copy and origin/main: tests/host_isolation.py sets it, so that
+# no doctor test fails because the worktree running it fell behind (#224). scripts/eng still names the gap.
+GAP_SWITCH = "VOCARO_TOOLKIT_GAP"
 
 
 def environment():
@@ -201,7 +204,7 @@ def leftover_line(path, head, count):
 def doctor_warnings(toolkit, directories=None):
     """`eng doctor`'s warnings for a toolkit copy behind origin/main, from any project, and for leftover
     worktrees of the toolkit's repository, which it lists and never removes."""
-    count = behind(toolkit)
+    count = None if os.environ.get(GAP_SWITCH) == "off" else behind(toolkit)
     warnings = [gap_line(Path(toolkit).resolve(), count)] if count else []
     if os.environ.get(LEFTOVER_SWITCH) == "off": return warnings
     return warnings + [leftover_line(*item) for item in leftover_worktrees(toolkit, directories)]
