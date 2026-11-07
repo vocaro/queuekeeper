@@ -76,7 +76,8 @@ class Simctl:
             if source["state"] != "Shutdown":
                 return subprocess.CompletedProcess(arguments, 1, "", "Unable to clone device in current state: Booted")
             udid = str(uuid.uuid4()).upper()
-            shutil.copytree(self.data(rest[0]), self.data(udid))
+            # As simctl clone does, links are copied as they are, the source's absolute ones among them.
+            shutil.copytree(self.data(rest[0]), self.data(udid), symlinks=True)
             self.devices[udid] = {**source, "name": rest[1], "lastUsedAt": None, "dataPath": str(self.data(udid))}
             output = udid
         elif action == "erase":
@@ -122,6 +123,28 @@ class Simctl:
         return [call[1] if action == "create" else call[2] for call in self.calls if call[0] == action]
 
 
+def plant(data, udid):
+    """Give a data folder what a booted simulator leaves naming its own device: absolute links into its logs
+    and its data, a relative link, and LaunchServices' store."""
+    (data / "Library").mkdir(parents=True, exist_ok=True)
+    (data / "Media").mkdir(exist_ok=True)
+    (data / "var/db/lsd").mkdir(parents=True, exist_ok=True)
+    for path in (data / "Library/Logs", data / "Media/Preview.jpg", data / "Media/Relative"):
+        if path.is_symlink(): path.unlink()
+    os.symlink(f"{LOGS}/{udid}", data / "Library/Logs")
+    os.symlink(f"{DEVICES}/{udid}/data/Media/Thumb.jpg", data / "Media/Preview.jpg")
+    os.symlink("Thumb.jpg", data / "Media/Relative")
+    (data / "var/db/lsd/com.apple.LaunchServices-1-v2.csstore").write_text(f"{DEVICES}/{udid}/data/Containers")
+
+
+def links(data):
+    return {name: os.readlink(data / name) for name in ("Library/Logs", "Media/Preview.jpg", "Media/Relative")}
+
+
+LOGS = "/Users/someone/Library/Logs/CoreSimulator"
+DEVICES = "/Users/someone/Library/Developer/CoreSimulator/Devices"
+
+
 class Warm:
     """A stand-in for template.warm: it boots the template through the pool's simctl, marks its data as warmed
     and says what it heard. off and warmed say whether VoiceOver was confirmed off and spoke, settled whether
@@ -138,6 +161,9 @@ class Warm:
         simctl("boot", udid)
         # What the template's data carries after the warm-up, for a reset or a clone to copy.
         Path(simctl.devices[udid]["dataPath"], "origin").write_text(f"warmed {udid}")
+        # And what the system leaves in it naming the template's own folders: absolute links into its logs and
+        # data, and LaunchServices' store of its container paths (vocaro-engineering#216).
+        plant(Path(simctl.devices[udid]["dataPath"]), udid)
         said = "spoke 50.0 s after it was switched on" if self.warmed else f"silent for {voiceover_limit} s, so it is not warmed"
         voices = {"limit": voices_limit, "settled": True, "firstUse": {"seconds": 57.0, "count": 180},
                   "rebootSeconds": 6.0, "secondUse": {"seconds": 24.0, "count": 180},
@@ -1076,6 +1102,76 @@ class PoolTests(unittest.TestCase):
         self.assertEqual([call for call in self.simctl.calls[before:] if source in call or call[0] == "erase"], [])
         self.assertEqual(self.simctl.origin(free), f"warmed {source}")
         self.assertEqual(self.sleeps, [])
+
+    def test_relocate_points_a_copy_at_its_own_device_and_stray_finds_what_it_missed(self):
+        data, own, other, older = Path(tempfile.mkdtemp(prefix="relocate-")), *(str(uuid.uuid4()).upper() for _ in range(3))
+        self.addCleanup(shutil.rmtree, data)
+        plant(data, other)
+        os.symlink(f"{DEVICES}/{older}/data/Library/Shortcuts/Tools.sqlite", data / "Library/Tools-active")
+        os.symlink(f"{DEVICES}/{own}/data/Media/Thumb.jpg", data / "Media/Own")
+        self.assertIn("links to", simulator_pool.stray(data, own))
+        # Links into any other device, the template's and a copy's earlier source's, become this device's; its
+        # own and relative links stay, and LaunchServices' store of the source's paths is removed.
+        self.assertEqual(simulator_pool.relocate(data, own), 3)
+        self.assertEqual(links(data), {"Library/Logs": f"{LOGS}/{own}", "Media/Preview.jpg": f"{DEVICES}/{own}/data/Media/Thumb.jpg",
+                                       "Media/Relative": "Thumb.jpg"})
+        self.assertEqual(os.readlink(data / "Library/Tools-active"), f"{DEVICES}/{own}/data/Library/Shortcuts/Tools.sqlite")
+        self.assertEqual(os.readlink(data / "Media/Own"), f"{DEVICES}/{own}/data/Media/Thumb.jpg")
+        self.assertEqual(list((data / "var/db/lsd").iterdir()), [])
+        self.assertIsNone(simulator_pool.stray(data, own))
+        self.assertEqual(simulator_pool.relocate(data, own), 0)
+        # Negative controls: a store left behind, or one link, is reported.
+        (data / "var/db/lsd/com.apple.LaunchServices-1-v2.csstore").write_text("copied")
+        self.assertIn("LaunchServices", simulator_pool.stray(data, own))
+        (data / "var/db/lsd/com.apple.LaunchServices-1-v2.csstore").unlink()
+        os.symlink(f"{LOGS}/{other}", data / "Library/Stray")
+        self.assertEqual(simulator_pool.stray(data, own), f"Library/Stray links to {LOGS}/{other}")
+
+    def test_a_reset_or_clone_member_points_at_its_own_folders_and_leaves_the_template_alone(self):
+        warm = Warm()
+        pool = self.make("me", warm=warm)
+        lease = pool.take(DUO, RUNTIME, purpose="Tests")
+        template = "Project iPhone Duo template (iOS-27-1)"
+        source, = [udid for udid, device in self.simctl.devices.items() if device["name"] == template]
+        # The clone: its links name it, not the template, and it carries no copied LaunchServices store.
+        self.assertEqual(lease.cloned, template)
+        self.assertEqual(links(self.simctl.data(lease.udid))["Library/Logs"], f"{LOGS}/{lease.udid}")
+        self.assertFalse(any((self.simctl.data(lease.udid) / "var/db/lsd").iterdir()))
+        self.assertTrue(pool.release(lease, outcome="done"))
+        # The reset of the same member from the template, which copies the template's links again.
+        again = pool.take(DUO, RUNTIME, purpose="Tests")
+        self.assertEqual((again.udid, again.reset), (lease.udid, template))
+        self.assertEqual(links(self.simctl.data(again.udid)), {
+            "Library/Logs": f"{LOGS}/{again.udid}", "Media/Preview.jpg": f"{DEVICES}/{again.udid}/data/Media/Thumb.jpg",
+            "Media/Relative": "Thumb.jpg"})
+        self.assertIsNone(simulator_pool.stray(self.simctl.data(again.udid), again.udid))
+        # The template keeps its own links and store: the copy and its relocation changed nothing in it.
+        self.assertEqual(links(self.simctl.data(source))["Library/Logs"], f"{LOGS}/{source}")
+        self.assertTrue(any((self.simctl.data(source) / "var/db/lsd").iterdir()))
+        self.assertTrue(pool.release(again, outcome="done"))
+
+    def test_a_copy_still_pointing_into_the_template_is_erased_not_used(self):
+        warm = Warm()
+        pool = self.make("me", warm=warm)
+        free = self.simctl.add("Project Duo 1")
+        template = "Project Duo template (iOS-27-1)"
+        with mock.patch.object(simulator_pool, "relocate", return_value=0):
+            lease = pool.take(DUO, RUNTIME, purpose="Tests")
+        self.assertEqual((lease.udid, lease.reset), (free, None))
+        self.assertEqual(self.simctl.origin(free), "erased")
+        why = devices.Record(self.path).entry("Project Duo 1")["erasedBecause"]
+        self.assertTrue(why.startswith(f"the copy of {template}'s data into Project Duo 1 still points into another "
+                                       "device: "), why)
+        self.assertEqual(devices.Record(self.path).entry(template)["run"], "Not copied into Project Duo 1 for Tests")
+        self.assertTrue(pool.release(lease, outcome="done"))
+        # A new clone that still points into the template is erased too, and recorded as created, not cloned.
+        self.simctl.devices[free]["state"] = "Booted"
+        with mock.patch.object(simulator_pool, "relocate", return_value=0):
+            made = pool.take(DUO, RUNTIME, purpose="Tests")
+        self.assertEqual((made.created, made.cloned), (True, None))
+        self.assertEqual(self.simctl.origin(made.udid), "erased")
+        self.assertNotIn("clonedFrom", devices.Record(self.path).entry(made.key))
+        self.assertTrue(any("still pointed into another device" in line and "so it was erased" in line for line in self.log))
 
     def test_a_take_falls_back_to_an_erase_and_says_why_when_no_template_can_be_copied(self):
         warm = Warm()

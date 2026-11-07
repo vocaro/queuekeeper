@@ -295,6 +295,61 @@ def copy_data(source, target):
         raise OSError(number, f"clonefile: {os.strerror(number)}", str(source), None, str(target))
 
 
+# Another device's folder in a symbolic link's target: its data or its logs (vocaro-engineering#216).
+FOREIGN = re.compile(r"(?<=/CoreSimulator/Devices/)([0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12})(?=/|$)"
+                     r"|(?<=/Logs/CoreSimulator/)([0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12})(?=/|$)")
+# LaunchServices' store, which keeps each container's absolute path: the copy's names the source's folders,
+# so simctl get_app_container, and the system's own lookups, answered with the template's Files storage
+# until it was removed. The system rebuilds it at the next boot.
+LAUNCH_SERVICES = Path("var/db/lsd")
+
+
+def foreign(target, udid):
+    """The other device a link target names, else None."""
+    for match in FOREIGN.finditer(target):
+        named = match.group(1) or match.group(2)
+        if named != udid: return named
+    return None
+
+
+def relocate(data, udid):
+    """Make a copied data folder its own device's: every symbolic link into another device's data or logs is
+    pointed at this device's, and LaunchServices' store, which keeps the copy's source's container paths, is
+    removed for the boot to rebuild. Without it the member's app-group containers, Files' storage among them,
+    resolved into the template's folder, so lanes staged books into the template and members shared one
+    storage (vocaro-engineering#216). The number of links changed."""
+    data, changed = Path(data), 0
+    for folder, names, files in os.walk(data):
+        for name in names + files:
+            path = Path(folder) / name
+            if not path.is_symlink(): continue
+            target = os.readlink(path)
+            if foreign(target, udid) is None: continue
+            fixed = FOREIGN.sub(udid, target)
+            path.unlink()
+            os.symlink(fixed, path)
+            changed += 1
+    store = data / LAUNCH_SERVICES
+    if store.is_dir():
+        for path in store.glob("*.csstore"): path.unlink()
+    return changed
+
+
+def stray(data, udid):
+    """Where a data folder still points into another device: the first link that does, or LaunchServices'
+    copied store, else None. A reset or clone that leaves one is not used."""
+    data = Path(data)
+    for folder, names, files in os.walk(data):
+        for name in names + files:
+            path = Path(folder) / name
+            if path.is_symlink() and foreign(os.readlink(path), udid) is not None:
+                return f"{path.relative_to(data)} links to {os.readlink(path)}"
+    store = data / LAUNCH_SERVICES
+    if store.is_dir() and any(store.glob("*.csstore")):
+        return f"{LAUNCH_SERVICES} still holds the copied LaunchServices store"
+    return None
+
+
 def entries_for(member, record):
     """The record's entries for a member: its name's, and any other key naming its UDID."""
     return {key: entry for key, entry in record.get("devices", {}).items() if isinstance(entry, dict) and
@@ -619,6 +674,14 @@ class Pool:
             copy_data(data_path(template, source.udid), data_path(member, lease.udid))
         except OSError as error:
             return False, f"the copy of {source.key}'s data into {lease.key} failed: {error}"
+        target = data_path(member, lease.udid)
+        try:
+            relocate(target, lease.udid)
+        except OSError as error:
+            return False, f"the copy of {source.key}'s data into {lease.key} could not be made its own: {error}"
+        left = stray(target, lease.udid)
+        if left is not None:
+            return False, f"the copy of {source.key}'s data into {lease.key} still points into another device: {left}"
         seconds = round(time.monotonic() - started, 1)
         voices = details.get("voices") or {}
         lease.revision = self.record.update(lease.key, owner=self.owner, revision=lease.revision, resetFrom={
@@ -788,6 +851,20 @@ class Pool:
                                    f"{created.stderr.strip()}")
             udid = found[0]
         changes = {"device": udid, "createdAt": self.clock().isoformat()}
+        if source is not None:
+            # simctl clone copies the template's links and LaunchServices store as they are (#216).
+            target = data_path(self.entries().get(udid) or {}, udid)
+            try:
+                relocate(target, udid)
+                left = stray(target, udid)
+            except OSError as error:
+                left = str(error)
+            if left is not None:
+                erased = self.run("erase", udid)
+                self.log(f"the clone {key} still pointed into another device ({left}), so it was erased")
+                if erased.returncode != 0:
+                    raise RuntimeError(f"simctl erase {key} exited {erased.returncode}: {erased.stderr.strip()}")
+                source = None
         if source is not None:
             changes.update(clonedFrom={"template": source.key, "udid": source.udid,
                                        "runtimeBuild": details.get("runtimeBuild"), "warmedAt": details.get("warmedAt")},
