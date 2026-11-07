@@ -255,10 +255,15 @@ def merge_queue(queue, lanes):
     each path with why no such lane reads it, the commands that main's change must pass first, and
     which of the lanes cover the pre-push hook, each with what of the hook it runs, the paths a
     docs-only batch changes, each with why no code lane reads it, with the lanes it runs instead, and how
-    many runs in a row may give no verdict before the queue holds (guides/maintenance.md, The merge queue)."""
+    many runs in a row may give no verdict before the queue holds, and spelling, false for a project whose queue
+    runs no spelling check of the toolkit's in place of a spelling lane (guides/maintenance.md, The merge queue)."""
     if not isinstance(queue, dict) or set(queue) - {"lanes", "carryOver", "carryOverChecks", "hookCoveredBy", "docsOnly",
-                                                    "noVerdictRuns"}:
-        raise ValueError("queue supports only lanes, carryOver, carryOverChecks, hookCoveredBy, docsOnly and noVerdictRuns")
+                                                    "noVerdictRuns", "spelling"}:
+        raise ValueError("queue supports only lanes, carryOver, carryOverChecks, hookCoveredBy, docsOnly, noVerdictRuns "
+                         "and spelling")
+    if "spelling" in queue and queue["spelling"] is not False:
+        raise ValueError("queue.spelling can only be false, which stops the queue running the toolkit's spelling check "
+                         "for a project with no spelling lane; true is the default")
     if "noVerdictRuns" in queue and (type(queue["noVerdictRuns"]) is not int or queue["noVerdictRuns"] < 1):
         raise ValueError("queue.noVerdictRuns is how many runs in a row may give no verdict before the queue holds, "
                          "a positive integer")

@@ -28,6 +28,8 @@ shard_by = "class"
 
 
 # Fails when any tracked file is named bad*, passes otherwise; touches a counter so a test can count gates.
+# A British spelling, built so this file holds none, that eng spelling fails on.
+BRITISH = "a label" + "led point\n"
 LANE = """import pathlib, sys, time
 # Appended, so that two gates at once, a bisect's halves (mq.Beside), count as two.
 with open(sys.argv[1], "a") as counter: counter.write("x")
@@ -1836,10 +1838,10 @@ class DocsOnly(Fixture):
         with patch.object(mq.Worker, "say", lambda worker, words: said.append(words)): self.assertEqual(self.work(), 0)
         self.assertEqual([self.state(i)["state"] for i in ids], ["landed"] * 3)
         self.assertEqual((self.gates(), self.docs_runs()), (0, 1))
-        self.assertEqual([self.state(i)["docsOnly"] for i in ids], [["docs"]] * 3)
+        self.assertEqual([self.state(i)["docsOnly"] for i in ids], [["spelling", "docs"]] * 3)
         self.assertLessEqual({"doc", "README.md"}, self.main_files())
-        self.assertTrue(any("queue.docsOnly: running only docs" in words for words in said), said)
-        self.assertIn("docs lanes only (docs): no gate of that commit", mq.describe(self.state(ids[0])))
+        self.assertTrue(any("queue.docsOnly: running only spelling, docs" in words for words in said), said)
+        self.assertIn("docs lanes only (spelling, docs): no gate of that commit", mq.describe(self.state(ids[0])))
 
     def test_a_mixed_batch_runs_every_lane(self):
         self.commit("doc/guide.md", "guide"); self.commit("code", "code")
@@ -1968,6 +1970,86 @@ class DocsOnly(Fixture):
         declared = schema["properties"]["queue"]["properties"]["docsOnly"]
         self.assertEqual(set(declared["properties"]), {"paths", "lanes"})
         self.assertEqual(declared["properties"]["lanes"]["items"]["not"], {"const": "gate"})
+
+
+class ImplicitSpelling(Fixture):
+    """The toolkit's spelling check, which the queue runs before the gate in a project with no spelling lane, unless
+    main's queue.spelling is false; a project's own spelling lane runs in its place."""
+
+    def rounds(self):
+        said = []
+        with patch.object(mq.Worker, "say", lambda _, words: said.append(words)): self.work()
+        return said
+
+    def test_a_clean_batch_passes_the_toolkits_spelling_and_then_the_gate(self):
+        self.commit("fix", "fix", content="a labeled point\n")
+        [identifier] = self.add("fix")
+        said = self.rounds()
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual(self.gates(), 1)
+        self.assertTrue(any("runs the toolkit's: python3 scripts/eng spelling" in words for words in said), said)
+        logs = sorted(path.name for path in mq.Queue(self.repo).logs.glob("*.log"))
+        self.assertTrue(any(name.endswith("-spelling.log") for name in logs), logs)
+
+    def test_a_british_spelling_fails_before_the_gate(self):
+        self.commit("fix", "fix", content=BRITISH)
+        [identifier] = self.add("fix", checked=False)
+        self.rounds()
+        self.assertEqual(self.state(identifier)["state"], "failed")
+        self.assertEqual(self.gates(), 0)
+        self.assertNotIn("fix", self.main_files())
+
+    def test_turned_off_the_gate_alone_decides(self):
+        config = json.loads((self.repo / "engineering.json").read_text())
+        config["queue"]["spelling"] = False
+        self.publish(config, "Turn the toolkit's spelling off")
+        self.commit("fix", "fix", content=BRITISH)
+        [identifier] = self.add("fix", checked=False)
+        said = self.rounds()
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual(self.gates(), 1)
+        self.assertFalse(any("toolkit's" in words for words in said), said)
+
+    def test_a_projects_own_spelling_lane_runs_in_its_place(self):
+        own, own_status = self.base / "own-spelling", self.base / "own-status"
+        config = json.loads((self.repo / "engineering.json").read_text())
+        config["lanes"]["spelling"] = {"command": ["python3", "lane.py", str(own), str(own_status)]}
+        self.publish(config, "Add a spelling lane")
+        # The project's lane passes it, so the toolkit's never read it.
+        self.commit("fix", "fix", content=BRITISH)
+        [identifier] = self.add("fix", checked=False)
+        said = self.rounds()
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual((len(own.read_text()), self.gates()), (1, 1))
+        self.assertFalse(any("toolkit's" in words for words in said), said)
+
+    def test_a_branch_that_drops_the_spelling_lane_gets_the_toolkits(self):
+        # Main's lane names spelling; the batch's checkout, which eng run reads, no longer has it.
+        own, own_status = self.base / "own-spelling", self.base / "own-status"
+        config = json.loads((self.repo / "engineering.json").read_text())
+        config["lanes"]["spelling"] = {"command": ["python3", "lane.py", str(own), str(own_status)]}
+        self.publish(config, "Add a spelling lane")
+        run(self.repo, "git", "checkout", "-q", "-B", "drop", "origin/main")
+        del config["lanes"]["spelling"]
+        (self.repo / "engineering.json").write_text(json.dumps(config))
+        run(self.repo, "git", "commit", "-qam", "Drop the spelling lane")
+        [identifier] = self.add("drop")
+        said = self.rounds()
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertFalse(own.exists())
+        self.assertTrue(any("runs the toolkit's" in words for words in said), said)
+
+    def test_queue_spelling_can_only_turn_it_off(self):
+        config = json.loads((self.repo / "engineering.json").read_text())
+        config["queue"]["spelling"] = False
+        (self.repo / "engineering.json").write_text(json.dumps(config))
+        self.assertIs(self.config()["queue"]["spelling"], False)
+        for bad in (True, "no", 0, None):
+            with self.subTest(bad=bad):
+                (self.repo / "engineering.json").write_text(json.dumps({**config, "queue": {"spelling": bad}}))
+                with self.assertRaisesRegex(ValueError, "queue.spelling can only be false"): self.config()
+        schema = json.loads((ROOT / "schemas/engineering.schema.json").read_text())
+        self.assertEqual(schema["properties"]["queue"]["properties"]["spelling"]["const"], False)
 
 
 class AheadOfTheQueue(Fixture):
@@ -2114,7 +2196,7 @@ class AheadOfTheQueue(Fixture):
         self.assertNotIn(mq.UNGATED, self.tip_message())
         self.assertNotIn("ungated on main", self.queue_status())
 
-    def test_a_project_without_a_spelling_lane_runs_no_lane(self):
+    def test_a_project_without_a_spelling_lane_lands_ungated_on_the_toolkits(self):
         config = json.loads(json.dumps(self.configured))
         del config["lanes"]["spelling"]
         run(self.repo, "git", "checkout", "-q", "--detach", "origin/main")
@@ -2122,10 +2204,39 @@ class AheadOfTheQueue(Fixture):
         self.counter.unlink(missing_ok=True)
         self.commit("fix", "fix")
         identifier = self.ungated("fix")
-        self.rounds()
+        _, said = self.rounds()
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual((self.gates(), self.light()), (0, 0))
+        self.assertEqual(self.state(identifier)["ungated"]["lanes"], ["spelling"])
+        self.assertTrue(any("runs the toolkit's: python3 scripts/eng spelling" in words for words in said), said)
+
+    def test_a_project_without_a_spelling_lane_that_turned_the_toolkits_off_runs_no_lane(self):
+        config = json.loads(json.dumps(self.configured))
+        del config["lanes"]["spelling"]
+        config["queue"]["spelling"] = False
+        run(self.repo, "git", "checkout", "-q", "--detach", "origin/main")
+        self.publish(config, "No spelling lane")
+        self.counter.unlink(missing_ok=True)
+        self.commit("fix", "fix")
+        identifier = self.ungated("fix")
+        _, said = self.rounds()
         self.assertEqual(self.state(identifier)["state"], "landed")
         self.assertEqual((self.gates(), self.light()), (0, 0))
         self.assertEqual(self.state(identifier)["ungated"]["lanes"], [])
+        self.assertFalse(any("toolkit's" in words for words in said), said)
+
+    def test_an_ungated_landing_fails_on_the_toolkits_spelling(self):
+        config = json.loads(json.dumps(self.configured))
+        del config["lanes"]["spelling"]
+        run(self.repo, "git", "checkout", "-q", "--detach", "origin/main")
+        self.publish(config, "No spelling lane")
+        self.counter.unlink(missing_ok=True)
+        self.commit("fix", "fix", content=BRITISH)
+        identifier = self.ungated("fix")
+        self.rounds()
+        self.assertEqual(self.state(identifier)["state"], "failed")
+        self.assertEqual(self.gates(), 0)
+        self.assertNotIn("fix", self.main_files())
 
     def test_a_docs_only_landing_does_not_cover_an_ungated_one(self):
         config = json.loads(json.dumps(self.configured))
@@ -2859,9 +2970,11 @@ class ToolkitsOwnWorker(Fixture):
         shutil.copytree(ROOT / "src/python", self.repo / "src/python", ignore=shutil.ignore_patterns("__pycache__"))
         # The policy every admitted lane reads, as the toolkit's origin holds it (cli.refresh_policy).
         shutil.copytree(ROOT / "policies", self.repo / "policies")
-        # Its own toolkit, as the toolkit's engineering.json names it.
+        # Its own toolkit, as the toolkit's engineering.json names it, with the toolkit's spelling exemptions, which
+        # its Python needs to pass the spelling check the queue runs before the gate.
         config = json.loads((self.repo / "engineering.json").read_text())
-        (self.repo / "engineering.json").write_text(json.dumps({**config, "toolkit": {"path": "."}}))
+        (self.repo / "engineering.json").write_text(json.dumps(
+            {**config, "toolkit": {"path": "."}, "spelling": configuration.load(ROOT).get("spelling", {})}))
         run(self.repo, "git", "add", "src", "policies", "engineering.json")
         run(self.repo, "git", "commit", "-qm", "Toolkit")
         run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
@@ -3713,10 +3826,32 @@ class Refusals(Fixture):
         with self.assertRaisesRegex(ValueError, "nothing to run"): mq.add(self.repo, "HEAD")
 
     def test_named_lanes_come_first_and_gate_is_the_default(self):
-        self.assertEqual(mq.lanes_of({"queue": {"lanes": ["a"]}, "lanes": {"a": {}, "gate": {}}}), ["a"])
-        self.assertEqual(mq.lanes_of({"lanes": {"gate": {}}}), ["gate"])
+        self.assertEqual(mq.lanes_of({"queue": {"lanes": ["a"]}, "lanes": {"a": {}, "gate": {}}}), ["spelling", "a"])
+        self.assertEqual(mq.lanes_of({"lanes": {"gate": {}}}), ["spelling", "gate"])
         self.assertEqual(mq.lanes_of({"lanes": {"gate": {}, "provision": {}, "spelling": {}, "docs": {}}}),
                          ["spelling", "provision", "gate"])
+
+    def test_a_project_without_a_spelling_lane_gets_the_toolkits_unless_it_turned_it_off(self):
+        off = {"spelling": False}
+        self.assertEqual(mq.lanes_of({"lanes": {"gate": {}}}), ["spelling", "gate"])
+        self.assertEqual(mq.lanes_of({"lanes": {"gate": {}, "provision": {}}}), ["spelling", "provision", "gate"])
+        self.assertEqual(mq.lanes_of({"lanes": {"gate": {}}, "queue": off}), ["gate"])
+        # A project's own lane is the one that runs, turned off or not, and only once.
+        self.assertEqual(mq.lanes_of({"lanes": {"gate": {}, "spelling": {}}, "queue": off}), ["spelling", "gate"])
+        self.assertEqual(mq.ungated_lanes({"lanes": {"gate": {}}}), ["spelling"])
+        self.assertEqual(mq.ungated_lanes({"lanes": {"gate": {}}, "queue": off}), [])
+        self.assertEqual(mq.ungated_lanes({"lanes": {"gate": {}, "spelling": {}}, "queue": off}), ["spelling"])
+        declared = {"paths": {"doc/": "no code lane reads it"}, "lanes": ["docs"]}
+        lanes = {"gate": {}, "docs": {}}
+        self.assertEqual(mq.docs_lanes({"lanes": lanes, "queue": {"docsOnly": declared}}, ["doc/a.md"]), ["spelling", "docs"])
+        self.assertEqual(mq.docs_lanes({"lanes": lanes, "queue": {"docsOnly": declared, **off}}, ["doc/a.md"]), ["docs"])
+        self.assertIsNone(mq.docs_lanes({"lanes": lanes, "queue": {"docsOnly": declared}}, ["doc/a.md", "code"]))
+        named = {**declared, "lanes": ["docs", "spelling"]}
+        self.assertEqual(mq.docs_lanes({"lanes": {**lanes, "spelling": {}}, "queue": {"docsOnly": named}}, ["doc/a.md"]),
+                         ["docs", "spelling"])
+        # The toolkit's check runs in either checkout, so it holds no bisect half on this Mac; an unknown lane does.
+        self.assertIsNone(mq.offerable({"lanes": {"gate": {}}}, ["spelling", "gate"]))
+        self.assertIn("no configured lane", mq.offerable({"lanes": {"gate": {}}, "queue": off}, ["spelling", "gate"]))
 
     def test_configuration_is_checked(self):
         config = json.loads((self.repo / "engineering.json").read_text())
@@ -4465,6 +4600,10 @@ class RemovedWhileTesting(Fixture):
         starting = patch.object(mq.Queue, "start")
         starting.start()
         self.addCleanup(starting.stop)
+        # The removal lands on the gate lane these tests time, not on the toolkit's spelling check ahead of it, which a
+        # loaded Mac can stretch past the moment a test removes the entry.
+        config = json.loads((self.repo / "engineering.json").read_text())
+        self.publish({**config, "queue": {**config["queue"], "spelling": False}}, "Turn the toolkit's spelling off")
 
     def remove(self, identifier):
         """Remove identifier as `eng queue remove` does from another process while the worker runs, whose lines

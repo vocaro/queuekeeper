@@ -252,7 +252,12 @@ commit of its own, and land that in the dependent's queue.
 onto `origin/main` in its own checkout, `~/Development/vocaro-queue/NAME/NAME`, and runs the project's queue lanes through
 `eng run`: its `spelling` and `provision` lanes when it has them, and then its `gate` lane, or
 `queue.lanes` in engineering.json for a project that needs others, read from `main`, or from the
-batch until `main` has any, so that the commit naming them can land. The
+batch until `main` has any, so that the commit naming them can land. A project with no `spelling`
+lane gets the toolkit's: the worker runs `python3 scripts/eng spelling` in its checkout, on this Mac,
+before anything else, so that a British spelling fails in about a minute instead of after a full
+gate and a bisect, in every project without each declaring the same lane. A project's own
+`spelling` lane runs in its place, and `"queue": {"spelling": false}` on `main` turns the toolkit's
+off for a project that cannot pass it yet; the round's log says when the toolkit's ran. The
 lanes therefore go where every lane goes, to whichever Mac has spare capacity for them, the second Mac
 first ([which Mac runs a lane](shared-host.md#which-mac-runs-a-lane)), and the round's log says where
 each ran and why; one gate serves the whole batch. On a pass it pushes
@@ -660,7 +665,7 @@ python3 scripts/eng land --no-gate --why "an unrelated flaky test fails the gate
   projects' workers move to the toolkit at `origin/main` each round.
 - `--no-gate` needs a written reason, `--why TEXT`, and is refused without one. It lands the entry
   alone, in its turn: the worker rebases it onto `origin/main`, runs only the project's `spelling`
-  lane, where it has one, and the pre-push hook, unless `main`'s `queue.hookCoveredBy` says the gate
+  lane, or the toolkit's where it has none and has not turned it off, and the pre-push hook, unless `main`'s `queue.hookCoveredBy` says the gate
   covers the hook, and pushes. The reason is recorded everywhere the skip is: the entry's `ungated`,
   with the lanes; the worker's log; the landed tip's `Landed-without-gate:` trailer, its author,
   message and patch otherwise its own; and `eng queue status`. Example: an important fix is held up by
@@ -699,8 +704,9 @@ paths runs instead of every queue lane:
 ```
 
 When every path the batch changes, counting a moved file's old path, is a listed file or under a
-listed directory ending in `/`, the worker runs only those lanes, in order, and lands the batch on
-their pass (owner's decision, 2026-11-02,
+listed directory ending in `/`, the worker runs only those lanes, in order, after the
+spelling lane, the project's or the toolkit's, where they do not name it, since documents are where
+words change, and lands the batch on their pass (owner's decision, 2026-11-02,
 [#112](https://github.com/vocaro/vocaro-engineering/issues/112)). Several docs-only entries land
 together as one batch. A batch with any other path, a mixed batch, and every batch of a project
 that declares nothing run every lane, as does a batch that changes nothing. Only `main`'s

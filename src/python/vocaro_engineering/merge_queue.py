@@ -132,6 +132,12 @@ MOVED = "moved"
 # Seconds the toolkit at origin/main has to import what a worker runs before a worker moves to it (starts).
 STARTS_LIMIT = 120
 BEFORE_GATE = ["spelling", "provision"]
+SPELLING = "spelling"
+# The toolkit's spelling check, which the queue runs as the spelling lane of a project that has none, before the gate,
+# on an ungated landing and before a docs-only batch's lanes, unless main's queue.spelling is false: a British spelling
+# then fails in a minute, not after a full gate and a bisect (vocaro-engineering, 2026-11-07). It runs in the queue's
+# checkout, on this Mac, as a carry-over check does: a project's own spelling lane, which eng run places, comes first.
+IMPLICIT_SPELLING = ["python3", "scripts/eng", SPELLING]
 # eng land's emergency options, in every repository, by the entry field each sets: an entry tested next as a batch
 # of its own, and one landed alone on the spelling lane without the gate, whose written reason --why gives (owner's
 # decision, 2026-11-04, vocaro-engineering#163). Neither is routine.
@@ -346,16 +352,28 @@ def text(directory, *arguments):
     return git(directory, *arguments, check=True).stdout.strip()
 
 
+def implicit_spelling(config):
+    """Whether the queue runs the toolkit's spelling check, IMPLICIT_SPELLING, as the project's spelling lane: when
+    the project has no spelling lane of its own and main's queue.spelling does not opt out with false."""
+    return SPELLING not in config.get("lanes", {}) and config.get("queue", {}).get("spelling", True) is not False
+
+
+def spelled(config, name):
+    """Whether name is a lane the queue can run for this project: one it configures, or the implicit spelling lane."""
+    return name in config.get("lanes", {}) or (name == SPELLING and implicit_spelling(config))
+
+
 def lanes_of(config):
-    """The lanes a batch must pass, in order: the project's spelling and provision lanes when it has
-    them, the cheap checks and setup that a gate assumes, and then `queue.lanes` or its gate lane."""
+    """The lanes a batch must pass, in order: the project's spelling lane, or the toolkit's when it has
+    none (implicit_spelling), and its provision lane when it has one, the cheap checks and setup that a
+    gate assumes, and then `queue.lanes` or its gate lane."""
     lanes = config.get("lanes", {})
     named = config.get("queue", {}).get("lanes") or (["gate"] if "gate" in lanes else None)
     if not named:
         raise ValueError(f"{config.get('name')} has no gate lane, so the queue has nothing to run: name the lane "
                          "holding what a commit must pass before it lands gate (guides/maintenance.md, "
                          "The merge queue)")
-    return [name for name in BEFORE_GATE if name in lanes and name not in named] + named
+    return [name for name in BEFORE_GATE if spelled(config, name) and name not in named] + named
 
 
 def config_at(root, commit):
@@ -430,8 +448,9 @@ def no_verdict_runs(config):
 
 
 def ungated_lanes(config):
-    """The lanes an ungated landing runs instead of the queue's: UNGATED_LANES that the project has."""
-    return [name for name in UNGATED_LANES if name in config.get("lanes", {})]
+    """The lanes an ungated landing runs instead of the queue's: UNGATED_LANES that the project has, its spelling lane
+    the toolkit's when it has none (implicit_spelling)."""
+    return [name for name in UNGATED_LANES if spelled(config, name)]
 
 
 def ahead(front, no_gate, why):
@@ -449,18 +468,22 @@ def ahead(front, no_gate, why):
 
 
 def docs_lanes(config, changed):
-    """The lanes main's queue.docsOnly names when every path a batch changes is one it lists, else None:
-    a batch that changes nothing, or anything else, runs every lane."""
+    """The lanes main's queue.docsOnly names when every path a batch changes is one it lists, after the spelling
+    lane, the project's or the toolkit's (implicit_spelling), where they do not name it, since documents are where
+    words change; else None: a batch that changes nothing, or anything else, runs every lane."""
     declared = config.get("queue", {}).get("docsOnly")
     if not declared or not changed: return None
-    if all(any(named(path, key) for key in declared["paths"]) for path in changed): return declared["lanes"]
-    return None
+    if not all(any(named(path, key) for key in declared["paths"]) for path in changed): return None
+    first = [SPELLING] if spelled(config, SPELLING) and SPELLING not in declared["lanes"] else []
+    return first + declared["lanes"]
 
 
 def offerable(config, lanes):
     """Why one of lanes runs only on this Mac, as its configuration says (config.stays), so that a bisect's newer half
     cannot gate on the second Mac beside the older half (Beside); None when every one can go there."""
     for lane in lanes:
+        # The toolkit's spelling check runs in whichever checkout gates, on this Mac, and holds no half back.
+        if lane == SPELLING and implicit_spelling(config): continue
         why = stays(config.get("lanes", {}), lane) if lane in config.get("lanes", {}) else "it is no configured lane"
         if why: return f"{lane} runs only on this Mac: {why}"
     return None
@@ -1609,8 +1632,13 @@ class Worker:
             started = time.monotonic()  # for the gate's measured duration
             self.lane_now = (lane, began, tuple(where))
             sampler = BusySampler(self.checkout, lane, began).start() if lane == budgets.GATE else None
+            command = ["python3", "scripts/eng", "run", *where, lane]
+            if lane == SPELLING and not self.has_lane(lane):
+                command = IMPLICIT_SPELLING
+                self.say(f"{lane}: the project has no spelling lane, so the queue runs the toolkit's: "
+                         f"{shlex.join(command)}")
             try:
-                status_ = processes.run(["python3", "scripts/eng", "run", *where, lane], cwd=self.checkout, log_path=log,
+                status_ = processes.run(command, cwd=self.checkout, log_path=log,
                                         timeout=LANE_LIMIT, env=self.environment, cancel=removal)
             except processes.TimedOut as error:
                 if sampler: sampler.stopped.set()
@@ -1644,6 +1672,12 @@ class Worker:
                                      "parts": budgets.parts(log.read_text(errors="replace"))[:budgets.KEPT_PARTS], **busy}
                 if self.measured: self.say(f"{lane} took {budgets.minutes(self.measured['seconds'])}; {budgets.busy_words(busy)}")
         return 0, log
+
+    def has_lane(self, lane):
+        """Whether the checkout's own engineering.json, which eng run reads, configures lane: one that does not runs
+        the toolkit's check in its place (IMPLICIT_SPELLING)."""
+        try: return lane in load(self.checkout).get("lanes", {})
+        except (OSError, ValueError): return False
 
     def placed(self, lane, began):
         """Where the lane ran, for the log, which eng run chose by both Macs' capacity (vocaro-engineering#168):
@@ -2771,7 +2805,7 @@ def options(parser):
                         "queued changes: test it next, ahead of everything waiting, as a batch of its own, once a gate "
                         "already running finishes. Again with a commit already queued, it moves that entry")
     parser.add_argument("--no-gate", action="store_true", help="for an emergency, such as an important fix held up by "
-                        "an unrelated flaky test: land it alone on the spelling lane, where the project has one, and "
+                        "an unrelated flaky test: land it alone on the spelling lane, the project's or the toolkit's, and "
                         "the pre-push hook, without the gate, and record it as ungated, which the next gate on main "
                         "covers. Needs --why; tell the owner you used it and why. With --front it lands at once")
     parser.add_argument("--why", metavar="TEXT", help="the reason for --front or --no-gate, which --no-gate requires: "
