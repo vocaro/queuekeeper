@@ -83,7 +83,7 @@ XCRUN = textwrap.dedent("""\
     if tool == "devicectl":
         # devicectl's audio and VoiceOver state of a simulator: volume 60 and VoiceOver off until set.
         verb, what, udid = rest[0], rest[1], rest[rest.index("--device") + 1]
-        with (state / "devicectl.log").open("a") as log: log.write(" ".join(rest) + "\n")
+        with (state / "devicectl.log").open("a") as log: log.write(" ".join(rest) + "\\n")
         path = devices / udid
         value = json.loads(path.read_text())
         if verb == "settings":
