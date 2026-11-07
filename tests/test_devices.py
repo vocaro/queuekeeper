@@ -39,8 +39,8 @@ import contextlib, sys, time
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 from vocaro_engineering import devices
-path, key, ready, count, mode, release_by, window = sys.argv[2:9]
-record = devices.Record(path)
+path, key, ready, count, mode, release_by, window, wait = sys.argv[2:10]
+record = devices.Record(path, timeout=float(wait))
 if mode == "unlocked":
     record._exclusive = contextlib.nullcontext
 load = record.load
@@ -153,8 +153,12 @@ class DeviceRecordTests(unittest.TestCase):
         ready.mkdir()
         path = self.root / f"{mode}.json"
         # The window in which a writer composes its change stretches by load, so that unlocked writers still overlap.
+        window = stretched(0.3)
+        # Locked writers take turns, so the last waits out every other's window: its lock timeout, which only catches
+        # a hang, is all of them plus a stretched margin, not Record's fixed 30 s, which a loaded host outlasts (#230).
+        wait = count * window + stretched(30)
         writers = [subprocess.Popen([sys.executable, "-c", WRITER, str(SOURCE), str(path), f"device-{index}",
-                                     str(ready), str(count), mode, later(), str(stretched(0.3))],
+                                     str(ready), str(count), mode, later(), str(window), str(wait)],
                                     stderr=subprocess.PIPE, text=True)
                    for index in range(count)]
         errors = [writer.communicate(timeout=stretched(60))[1] for writer in writers]
