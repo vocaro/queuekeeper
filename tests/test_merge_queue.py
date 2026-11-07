@@ -43,6 +43,14 @@ def run(directory, *words):
     return subprocess.run(words, cwd=directory, check=True, capture_output=True, text=True).stdout.strip()
 
 
+def accepting_lane_key(source, key):
+    """Give a fixture's config parser one more allowed key for command lanes."""
+    lane_keys = "if not isinstance(lane, dict) or set(lane) - {"
+    if source.count(lane_keys) != 1:
+        raise AssertionError("expected exactly one command lane key check in config.py")
+    return source.replace(lane_keys, f"{lane_keys}{json.dumps(key)}, ")
+
+
 def never_exec(command, env):
     """What a test's worker must never do: replace the test process (merge_queue.execute)."""
     raise AssertionError(f"the worker would exec {shlex.join(command)}")
@@ -2507,8 +2515,7 @@ class ToolkitCopy(Fixture):
         other = self.base / f"other-knows-{key}"
         run(self.base, "git", "clone", "-q", str(self.kit_origin), str(other))
         source = other / "src/python/vocaro_engineering/config.py"
-        edited = source.read_text().replace('"unlockedScreen"}', f'"unlockedScreen", "{key}"}}')
-        self.assertNotEqual(edited, source.read_text())
+        edited = accepting_lane_key(source.read_text(), key)
         source.write_text(edited)
         run(other, "git", "add", "src/python/vocaro_engineering/config.py")
         run(other, "git", "commit", "-qm", f"Accept {key}")
@@ -2826,8 +2833,9 @@ class ToolkitsOwnWorker(Fixture):
         run(self.repo, "git", "checkout", "-q", "-B", branch, "origin/main")
         name = "config.py" if key else "merge_queue.py"
         source = self.repo / "src/python/vocaro_engineering" / name
-        edited = source.read_text().replace('"unlockedScreen"}', f'"unlockedScreen", "{key}"}}') if key else edit(source.read_text())
-        self.assertNotEqual(edited, source.read_text())
+        original = source.read_text()
+        edited = accepting_lane_key(original, key) if key else edit(original)
+        self.assertNotEqual(edited, original)
         source.write_text(edited)
         if key:
             config = json.loads((self.repo / "engineering.json").read_text())
