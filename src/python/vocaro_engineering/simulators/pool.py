@@ -1119,14 +1119,19 @@ def reap_command(pool, project, *, dry_run, here):
 
 
 def main(argv, project=None):
-    parser = argparse.ArgumentParser(prog="eng simulator-pool", description=__doc__.split("\n\n")[0])
-    parser.add_argument("--pool", help="the pool's name, the start of every member's (default: the project's "
-                        "simulatorPool in engineering.json)")
-    parser.add_argument("--owner", help=f"the session reservations name (default: ${device_record.OWNER}, else the "
-                        "agent's session)")
+    # --pool and --owner read the same before or after the action, as in `template --owner NAME`: each
+    # parser has them, and an action's own leave the value given before it unless they are given again.
+    def scoping(parser, default):
+        parser.add_argument("--pool", default=default, help="the pool's name, the start of every member's "
+                            "(default: the project's simulatorPool in engineering.json)")
+        parser.add_argument("--owner", default=default, help=f"the session reservations name (default: "
+                            f"${device_record.OWNER}, else the agent's session)")
+        return parser
+    parser = scoping(argparse.ArgumentParser(prog="eng simulator-pool", description=__doc__.split("\n\n")[0]), None)
     commands = parser.add_subparsers(dest="action", required=True)
-    commands.add_parser("list", help="every member, its state and whether pruning may delete it")
-    take = commands.add_parser("take", help="reserve, reset from the kind's template (or erase: --erase, or when "
+    def action(name, **options): return scoping(commands.add_parser(name, **options), argparse.SUPPRESS)
+    action("list", help="every member, its state and whether pruning may delete it")
+    take = action("take", help="reserve, reset from the kind's template (or erase: --erase, or when "
                                "no settled template can be copied; neither with --keep-state) and boot a free "
                                "member of a kind, or create the next; prints its UDID")
     take.add_argument("--device", required=True, metavar="TYPE", help="a device type, such as iPhone-17-Pro")
@@ -1145,18 +1150,18 @@ def main(argv, project=None):
                       "the take")
     take.add_argument("--boot-timeout", type=int, default=600, help="seconds the boot may take (default 600); "
                       f"past it the member is released and the command exits {evidence.UNMEASURED}")
-    release = commands.add_parser("release", help="shut a member you hold down and release it")
+    release = action("release", help="shut a member you hold down and release it")
     release.add_argument("udid")
     release.add_argument("--outcome", default="Released")
-    prune = commands.add_parser("prune", help="delete members unused for 14 days, never the lowest of a kind, and "
+    prune = action("prune", help="delete members unused for 14 days, never the lowest of a kind, and "
                                 "templates whose runtime is no longer installed")
     prune.add_argument("udids", nargs="*", metavar="UDID", help="only these members or templates")
-    reap = commands.add_parser("reap", help="shut down members and warmed templates left booted for 2 hours that "
+    reap = action("reap", help="shut down members and warmed templates left booted for 2 hours that "
                                "nothing accounts for, on this Mac and the second Mac (guides/shared-host.md, Stale "
                                "pool simulators)")
     reap.add_argument("--dry-run", action="store_true", help="say what it would stop and keep, and stop nothing")
     reap.add_argument("--here", action="store_true", help="only this Mac")
-    template = commands.add_parser("template", help="warm the kind's template now, with the full limits for VoiceOver's "
+    template = action("template", help="warm the kind's template now, with the full limits for VoiceOver's "
                                    "start and each use of the system's voices, or remake it when its runtime moved, its "
                                    "VoiceOver stayed cold or its voices did not settle, so that a lane's members are "
                                    "reset from it and new ones cloned from it")
@@ -1164,7 +1169,7 @@ def main(argv, project=None):
     template.add_argument("--runtime", required=True, help="a runtime, such as iOS-27-1")
     template.add_argument("--label", help="the kind's label (default: the pool's own, else the device type's name)")
     template.add_argument("--refresh", action="store_true", help="remake the template whatever its state")
-    check = commands.add_parser("check", help="print a pool member's canonical UDID; exit 1 for any other device, "
+    check = action("check", help="print a pool member's canonical UDID; exit 1 for any other device, "
                                 "such as one of Xcode's default devices, a name or `booted`")
     check.add_argument("--held", action="store_true", help="also exit 1 unless the owner holds a live "
                        "reservation of the member, as `take` leaves it")
