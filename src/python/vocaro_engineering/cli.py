@@ -524,11 +524,9 @@ def admitted_here(stack, name, label, timeout, offered=None, once=False, exclusi
     try:
         if offered is not None and offered.busy is not None:
             return remote.overflow(offered, admit, timeout, once)
-        if not once and not screen:
-            return stack.enter_context(resources.Admission(label, exclusive=exclusive, timeout=timeout, model=model,
-                                                           whole_host=whole_host, place=place, placement=placement))
+        # A wait that runs out is BUSY, as with once: nothing ran, which the merge queue counts as no verdict.
+        # Raised, TimeoutError is an OSError, which eng run reports as its own error, exit 2 (#268).
         admission = admit(FREE_WAIT if once else timeout)
-        if admission is None and not once and not isinstance(refused[-1], str): raise refused[-1]
         if admission is None:
             print(f"eng: {name} not run on {this_mac()}: {refused[-1]}", file=sys.stderr)
             return BUSY
