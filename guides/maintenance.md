@@ -178,6 +178,14 @@ by a branch that would fix it, and not by a merge that records such a branch as 
   verb before a number as a keyword whatever comes before the verb. "Fixes #A and #B" closes
   only #A, and "does not close #N" closes #N. Give each issue its own `Closes #N.` line, and
   write "leaves #N open" for one that stays open.
+- An issue left open after its change lands, until something is seen in real use, says what
+  closes it and how to check: the observation, and the command or path that shows it. Nothing
+  else brings anyone back to look, so a session that later claims, comments on or closes out
+  work on that issue runs the check first, and closes the issue with the result when it passes.
+  When the observation is near, such as the next routine gate, the landing session waits for it
+  instead. [#218](https://github.com/vocaro/vocaro-engineering/issues/218) stayed open on "until
+  a real gate on the second Mac shows the files" after the first such gate had written them, two
+  hours after landing, through two later comments by sessions that did not look (2026-11-07).
 
 A closing-commit check holds this mechanically from Git alone, offline: it finds each empty
 merge, fails one that strands a closure claim unless a recorded reconciliation names it, notes
