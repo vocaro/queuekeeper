@@ -2,7 +2,9 @@
 
 One worker per repository takes everything waiting, cherry-picks it onto origin/main in a checkout
 of its own, runs the project's queue lanes there once, and pushes on a pass. When the lanes fail on
-a batch it halves the batch until it finds the commit to send back, landing the rest. Only a lane's
+a batch it halves the batch until it finds the commit to send back, landing the rest; first, when the lane is
+eng unittest, it reruns the failed tests alone, and a batch whose failed tests all pass alone and that changes none
+of the files they import lands, with the flakes recorded (vocaro-engineering#231). Only a lane's
 verdict blames a commit: a run the host left unmeasured runs again, each time once the host has settled,
 until queue.noVerdictRuns runs in a row (3 by default) have given none, and then holds the queue for the
 owner, with every commit still waiting (guides/maintenance.md, The merge queue). A batch whose lanes
@@ -23,6 +25,7 @@ each waiting commit, so a branch that moves or goes takes nothing with it:
     ../vocaro-queue/NAME/NAME            the worker's checkout, in a folder beside the main checkouts
     ../vocaro-queue/NAME/TOOLKIT         its copy of the toolkit, which ../TOOLKIT names from the checkout
 """
+import ast
 import contextlib
 import fcntl
 import json
@@ -38,7 +41,7 @@ import threading
 import time
 import urllib.request
 
-from . import app_builds, budgets, disk, evidence, landing, processes, remote, resources
+from . import app_builds, budgets, disk, evidence, landing, offload_host, processes, remote, resources
 from .config import TOOLKIT_ROOT, load, parse
 
 MAIN = "refs/remotes/origin/main"
@@ -133,6 +136,26 @@ OPTIONS = {"front": "--front", "noGate": "--no-gate"}
 UNGATED_LANES = ["spelling"]
 # The trailer an ungated landing adds to its tip, so that main's history says so (Worker.mark_ungated).
 UNGATED = "Landed-without-gate"
+# A failed eng unittest gate's failed tests are each rerun alone on the batch's commit this many times before a
+# bisect, and any rerun's failure makes the failure real; a gate that failed more tests than RERUN_MOST bisects at
+# once, as that is no flake (Worker.rerun, owner's decision of 2026-11-07, vocaro-engineering#231).
+RERUNS = 3
+RERUN_MOST = 5
+# The trailer a landing whose gate failed only flaky tests adds to its tip, one per test (Worker.mark_flaky).
+FLAKY = "Flaky-test"
+# What eng unittest prints last (parallel.unittest_main), each failed process in its verdict as `NAME (RESULT)`,
+# each process's output under `== NAME: RESULT (N tests, S s)`, and unittest's line for each failed test.
+UNITTEST_SUMMARY = re.compile(r"^eng unittest: \d+ tests \(\d+ skipped\) in \d+ processes, \d+ at a time, "
+                              r"[\d.]+s: (.*)$", re.M)
+FAILED_SHARD = re.compile(r"(\S+) \(((?:[^()]|\([^()]*\))*)\)")
+SHARD_HEADER = re.compile(r"^== (\S+): .* \(\d+ tests, [\d.]+s\)$", re.M)
+FAILED_TEST = re.compile(r"^(?:FAIL|ERROR): (\S+) \(([^()\s]+)\)", re.M)
+# The options of eng unittest a rerun keeps, and those it drops, each with its value: it names its own test and
+# runs one process at a time.
+RERUN_KEPT = {"-s", "--start-directory", "-p", "--pattern", "-t", "--top-level-directory", "--split", "--timeout"}
+RERUN_DROPPED = {"-j", "--jobs", "-k"}
+GH_TIMEOUT = 60
+GH_ENV = {"GH_PROMPT_DISABLED": "1", "GH_NO_UPDATE_NOTIFIER": "1"}
 WAIT_LIMIT = 6 * 3600
 KEPT_LOGS = 200
 GIT_TIMEOUT = 600
@@ -423,6 +446,157 @@ def carry_checks(config, moved, base):
         if "paths" not in check or any(named(path, key) for path in moved for key in check["paths"]):
             commands.append([word.replace("{base}", base) for word in check["command"]])
     return commands
+
+
+def rerun_command(command):
+    """The command, without its test, that reruns one test of a lane whose command is eng unittest
+    (vocaro-engineering#231): the lane's command through `unittest`, its -s, -p, -t, --split and --timeout, one
+    process at a time and verbose. None for a lane that is not eng unittest, as a project's own lane, a group or
+    one with an option the rerun cannot carry, which then bisects as before."""
+    if not isinstance(command, list) or not all(isinstance(word, str) for word in command): return None
+    at = next((index for index, word in enumerate(command[:-1])
+               if Path(word).name == "eng" and command[index + 1] == "unittest"), None)
+    if at is None: return None
+    kept, words, index = command[:at + 2], command[at + 2:], 0
+    while index < len(words):
+        word = words[index]
+        name, equals, _ = word.partition("=")
+        if word in ("-v", "--verbose"):
+            index += 1
+        elif name in RERUN_KEPT | RERUN_DROPPED:
+            taken = words[index:index + 1] if equals else words[index:index + 2]
+            if len(taken) < (1 if equals else 2): return None
+            if name in RERUN_KEPT: kept += taken
+            index += len(taken)
+        elif word.startswith("-"):
+            return None
+        else:
+            index += 1  # a name the lane selects: the rerun names its own test
+    return kept + ["-j", "1", "-v"]
+
+
+def failed_tests(log):
+    """(the ids of the tests an eng unittest lane's log reports failed, None), or (None, why it reports none it
+    can rerun): its last summary must say FAILED, with nothing UNMEASURED, and each failed process's output must
+    name at least one failed test, none of them a module that did not load, and none ran other than it was given."""
+    summaries = UNITTEST_SUMMARY.findall(log)
+    if not summaries: return None, "its log has no eng unittest summary"
+    verdict = summaries[-1]
+    if "UNMEASURED: " in verdict: return None, "eng unittest also left tests unmeasured"
+    if not verdict.startswith("FAILED: "): return None, f"eng unittest's verdict is {verdict}"
+    shards = FAILED_SHARD.findall(verdict[len("FAILED: "):])
+    if not shards: return None, f"eng unittest's verdict names no process: {verdict}"
+    headers = list(SHARD_HEADER.finditer(log))
+    outputs = {}
+    for number, header in enumerate(headers):
+        end = headers[number + 1].start() if number + 1 < len(headers) else len(log)
+        outputs.setdefault(header.group(1), log[header.end():end])
+    found = []
+    for name, detail in shards:
+        if detail.startswith("ran "): return None, f"{name} {detail}"
+        ids = []
+        for match in FAILED_TEST.finditer(outputs.get(name, "")):
+            method, where = match.groups()
+            # unittest names the test's id in parentheses since Python 3.11, and its class before.
+            ids.append(where if where.endswith(f".{method}") else f"{where}.{method}")
+        if not ids: return None, f"the output of {name} names no failed test"
+        if any(identity.startswith("unittest.") for identity in ids): return None, f"{name} did not load"
+        found += ids
+    return list(dict.fromkeys(found)), None
+
+
+def imported_files(checkout, top, test):
+    """The repository's files that the module of test, a test id, is and imports, each relative to checkout: the
+    module's own import statements, at any depth of it, each with the packages' __init__.py on the way, not what those
+    files import in turn (owner's decision of 2026-11-07, vocaro-engineering#231: "the toolkit files it imports"). An
+    absolute import is looked for under top, the suite's top-level directory, then src/python, src and checkout, where
+    a test finds the project's code; one found under none, as the standard library's, is not the project's. None when
+    no file under top is the test's module."""
+    checkout, top = Path(checkout).resolve(), Path(top).resolve()
+    roots = [top, checkout / "src/python", checkout / "src", checkout]
+
+    def module(base, parts):
+        """The files that importing parts from base loads: each package's __init__.py on the way, and the module."""
+        found, place = [], base
+        for number, part in enumerate(parts):
+            place = place / part
+            if (place / "__init__.py").is_file(): found.append(place / "__init__.py")
+            elif number == len(parts) - 1 and place.with_suffix(".py").is_file(): found.append(place.with_suffix(".py"))
+            else: return []
+        return found
+
+    def absolute(dotted):
+        parts = dotted.split(".")
+        return next((found for found in (module(root, parts) for root in roots) if found), [])
+
+    parts = test.split(".")
+    start = next((found[-1] for count in range(len(parts), 0, -1) for found in [module(top, parts[:count])]
+                  if found), None)
+    if start is None: return None
+    files = [start]
+    try: tree = ast.parse(start.read_text(errors="replace"), str(start))
+    except (OSError, SyntaxError, ValueError): tree = ast.Module(body=[], type_ignores=[])
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names: files += absolute(alias.name)
+        elif isinstance(node, ast.ImportFrom) and node.level:
+            base = start.parent
+            for _ in range(node.level - 1): base = base.parent
+            named = node.module.split(".") if node.module else []
+            files += module(base, named) if named else [base / "__init__.py"] if (base / "__init__.py").is_file() else []
+            for alias in node.names: files += module(base, [*named, alias.name])
+        elif isinstance(node, ast.ImportFrom):
+            files += absolute(node.module)
+            for alias in node.names: files += absolute(f"{node.module}.{alias.name}")
+    found = {path.resolve() for path in files}
+    return sorted(path.relative_to(checkout).as_posix() for path in found if path.is_relative_to(checkout))
+
+
+def gh_runner(checkout):
+    """gh in checkout, whose origin names the project's repository, never prompting, bounded by GH_TIMEOUT."""
+    def gh(*arguments):
+        try:
+            return subprocess.run(["gh", *arguments], cwd=checkout, capture_output=True, text=True, timeout=GH_TIMEOUT,
+                                  stdin=subprocess.DEVNULL, env={**os.environ, **GH_ENV})
+        except FileNotFoundError: return subprocess.CompletedProcess(["gh"], 127, "", "gh is not installed")
+        except subprocess.TimeoutExpired: return subprocess.CompletedProcess(["gh"], 124, "", f"gh took over {GH_TIMEOUT}s")
+    return gh
+
+
+def flake_words(flake):
+    """One line for a flake: in the worker's log, the landed tip's trailer and the tracker."""
+    return (f"{flake['test']} failed the gate at {flake['commit'][:12]} and passed alone {len(flake['rerunLogs'])} "
+            f"times there; gate log {flake['gateLog']}; reruns {', '.join(flake['rerunLogs'])}")
+
+
+def hardening(checkout, flake, gh=None):
+    """(the issue's URL, None) once the project's tracker has the flake: a comment on the first open issue a search
+    made just before finds naming the test's name, or a new hardening issue; (None, why) when gh could not, which
+    stops nothing (owner's decision of 2026-11-07, vocaro-engineering#231, and the rule that every flaky test gets a
+    hardening issue). gh(*arguments) runs gh for the project, gh_runner's by default; tests give their own."""
+    gh = gh or gh_runner(checkout)
+    name = flake["test"].rsplit(".", 1)[-1]
+    body = (f"The merge queue's gate failed `{flake['test']}` at {flake['commit'][:12]}, and it then passed alone "
+            f"{len(flake['rerunLogs'])} of {len(flake['rerunLogs'])} times on that commit, so it is flaky. "
+            f"{flake['outcome']}\n\n- Gate log: `{flake['gateLog']}`\n"
+            + "".join(f"- Rerun: `{path}`\n" for path in flake["rerunLogs"])
+            + f"- Mac: {flake.get('mac') or 'this Mac'}\n\n"
+            "Recorded by the merge queue (vocaro/vocaro-engineering#231).\n")
+    listed = gh("issue", "list", "--state", "open", "--search", f"\"{name}\" in:title,body,comments", "--json",
+                "number,url,title", "--limit", "10")
+    if listed.returncode:
+        return None, "gh issue list failed: " + (listed.stderr.strip().splitlines() or ["no message"])[0]
+    try: found = json.loads(listed.stdout or "[]")
+    except ValueError as error: return None, f"gh issue list printed no issue list ({error})"
+    if found and isinstance(found[0], dict) and found[0].get("url"):
+        said = gh("issue", "comment", str(found[0]["number"]), "--body", body)
+        if said.returncode:
+            return None, f"gh issue comment on {found[0]['url']} failed: " + (said.stderr.strip().splitlines() or ["no message"])[0]
+        return found[0]["url"], None
+    title = f"Harden the flaky test {name} ({flake['test'].rsplit('.', 1)[0]})"
+    made = gh("issue", "create", "--title", title, "--body", body)
+    if made.returncode: return None, "gh issue create failed: " + (made.stderr.strip().splitlines() or ["no message"])[0]
+    return (made.stdout.strip().splitlines() or [None])[-1], None
 
 
 class Queue:
@@ -756,6 +930,10 @@ def describe(entry):
         for name in OPTIONS:
             if entry.get(name): line += f"\n         {asked_for(name)} ({OPTIONS[name]}){because(entry)}"
     for kept in entry.get("kept", []): line += f"\n         {kept}"
+    for flake in entry.get("flakes", []):
+        line += (f"\n         flaky: {flake['test']} failed the gate at {flake['commit'][:12]} and passed alone "
+                 f"{len(flake['rerunLogs'])} times"
+                 + (f"; {flake['issue']}" if flake.get("issue") else f"; not on the tracker: {flake.get('trackerError')}"))
     if entry.get("why"): line += f"\n         {entry['why']}"
     if entry.get("log"): line += f"\n         log: {entry['log']}"
     return line
@@ -875,6 +1053,7 @@ class Worker:
         self.environment = environment()  # what the lanes, the hook and the carry-over checks run in
         self.measured = None  # the passing gate run of the last round, which its landed entries record
         self.alone = False  # whether this round's batch is one entry an option of eng land put on its own (choose)
+        self.failed_lane = None  # the lane whose failure the last gate returned, or None (gate)
 
     def say(self, words):
         print(f"queue: {time.strftime('%H:%M:%S')} {words}", flush=True)
@@ -1253,6 +1432,7 @@ class Worker:
         the gate lane leaves its wall time and the parts its log reports in self.measured, for the gate's
         budget (budgets.py)."""
         log, self.ran_on, self.measured, self.timed_out, self.ran_where = None, None, None, None, ""
+        self.failed_lane = None
         for lane in lanes:
             log = self.queue.logs / f"{round_name}-{lane}.log"
             # A lane run here logs to its own file, and one on the second Mac prints here. What an
@@ -1275,7 +1455,9 @@ class Worker:
             with contextlib.suppress(OSError), log.open("a") as kept: kept.write(lane_log.read_text(errors="replace"))
             self.ran_where = self.mac(lane, began)
             self.say(f"{lane} exited {status_}{self.placed(lane, began)}")
-            if status_: return status_, log
+            if status_:
+                self.failed_lane = lane
+                return status_, log
             if lane == budgets.GATE:
                 with contextlib.suppress(OSError):
                     self.measured = {"seconds": round(time.monotonic() - started, 1),
@@ -1350,7 +1532,7 @@ class Worker:
         self.say(f"carried the result over {len(moved)} file(s) on main: {', '.join(moved[:5])}")
         return new_base, self.head()
 
-    def push(self, config, batch, base, docs=None, ungated=None):
+    def push(self, config, batch, base, docs=None, ungated=None, flakes=None):
         """Push HEAD to main. True on a push, False to gate again; a refusal that is no race holds, as a remote
         that stays out of reach does.
         The project's pre-push hook runs here rather than inside the push, unless main's queue.hookCoveredBy
@@ -1359,6 +1541,7 @@ class Worker:
         batch's paths. The landed entries record docs, since such a landing is no gate of the pushed commit.
         An ungated landing, whose lanes ungated names, runs the hook unless those lanes cover it, which the gate's then
         do and it skips; its entry records ungated, and its tip carries the UNGATED trailer, again after a carry-over.
+        A landing whose gate failed only flaky tests (rerun) carries a FLAKY trailer for each, again after a carry-over.
         Any other landing records gatedOn, the base its gate ran on, by which `eng queue status` knows that a gate on
         main has passed over an earlier ungated landing (covered)."""
         head = self.head()
@@ -1373,6 +1556,7 @@ class Worker:
                 if carried is None: return False
                 base, head = carried
                 if ungated: head = self.mark_ungated(ungated, base)
+                if flakes: head = self.mark_flaky(flakes, base)
             if covered:
                 self.say(f"no pre-push hook: main's queue.hookCoveredBy says {', '.join(covered)} cover it"
                          + (", and this landing skips them" if ungated and not set(covered) <= set(ungated["lanes"]) else ""))
@@ -1505,6 +1689,98 @@ class Worker:
         self.say(f"pre-push hook exited {result}")
         return result, log
 
+    def rerun(self, config, applied, base, head, log, round_name):
+        """The flakes a batch whose gate failed lands with, or None to bisect it as before (owner's decision of
+        2026-11-07, vocaro-engineering#231). When the failed lane is eng unittest and its log names the failed tests,
+        the worker waits for this Mac, where they run, to settle as for a retry, and reruns each alone on head up to
+        RERUNS times. A rerun that fails makes the failure real. When every rerun passes, each test is a flake,
+        recorded in the entries and on the tracker (hardening), and the batch lands only when none of its commits
+        changes a file the test's module is or imports (imported_files); otherwise it bisects."""
+        lane = self.failed_lane
+        command = rerun_command(config.get("lanes", {}).get(lane, {}).get("command")) if lane else None
+        if command is None: return None
+        try: said = log.read_text(errors="replace")
+        except OSError as error:
+            self.say(f"{lane}'s log cannot be read, so no failed test is rerun: {error}")
+            return None
+        tests, why = failed_tests(said)
+        if tests is None:
+            self.say(f"{lane} failed with no failed test to rerun alone ({why}): bisecting")
+            return None
+        if len(tests) > RERUN_MOST:
+            self.say(f"{lane} failed {len(tests)} tests, more than the {RERUN_MOST} a flake would: bisecting")
+            return None
+        self.say(f"{lane} failed {len(tests)} test{'' if len(tests) == 1 else 's'} at {head[:12]}: {', '.join(tests)}; "
+                 f"rerunning each alone up to {RERUNS} times on that commit before a bisect")
+        busy = self.settle("the failed tests run alone")
+        if busy:
+            self.say(f"the failed tests are not rerun, as {busy}: bisecting")
+            return None
+        if self.head() != head: self.reset(head)
+        flakes = []
+        for number, test in enumerate(tests, 1):
+            logs = []
+            for attempt in range(1, RERUNS + 1):
+                path = self.queue.logs / f"{round_name}-rerun-{number}-{attempt}.log"
+                logs.append(str(path))
+                try: status_ = processes.run([*command, test], cwd=self.checkout, log_path=path, timeout=LANE_LIMIT,
+                                             env=self.environment)
+                except processes.TimedOut as error: status_ = f"unmeasured, {error}"
+                except OSError as error: status_ = f"not started, {error}"
+                if status_:
+                    self.say(f"{test} failed again alone, on rerun {attempt} (exit {status_}), so the failure is real: "
+                             f"bisecting; see {path}")
+                    return None
+            flakes.append({"test": test, "commit": head, "gateLog": str(log), "rerunLogs": logs,
+                           "mac": offload_host.mac_name()})
+        changed = {path for path in text(self.checkout, "log", "--format=", "--name-only", "--no-renames",
+                                         f"{base}..{head}").splitlines() if path}
+        top = self.suite_top(command)
+        touching = {}
+        for flake in flakes:
+            files = imported_files(self.checkout, top, flake["test"])
+            reached = sorted(changed & set(files)) if files is not None else None
+            if reached is None: touching[flake["test"]] = "whose module the worker cannot find"
+            elif reached: touching[flake["test"]] = f"which changes {', '.join(reached[:5])}, which it imports"
+        for flake in flakes:
+            flake["outcome"] = ("The batch was bisected, as one of its commits changes the module of a failed test, or "
+                                "a file it imports." if touching else
+                                f"No commit of the batch's {len(applied)} changes its module or a file it imports, so "
+                                "the batch landed.")
+            flake["issue"], flake["trackerError"] = hardening(self.checkout, flake)
+            if flake["issue"] is None: del flake["issue"]
+            else: del flake["trackerError"]
+            self.say(f"flaky: {flake_words(flake)}; "
+                     + (f"tracker: {flake['issue']}" if "issue" in flake else f"the tracker has no record: {flake['trackerError']}"))
+        for entry in applied:
+            current = self.queue.read(entry["id"]) or entry
+            self.queue.record(entry, flakes=current.get("flakes", []) + flakes)
+        if touching:
+            self.say(f"every failed test passed alone, but the batch reaches {'; '.join(f'{test}, {why}' for test, why in touching.items())}: bisecting")
+            return None
+        self.say(f"every failed test passed alone {RERUNS} times and no commit of the batch changes its module or a file "
+                 "it imports: landing the batch")
+        return flakes
+
+    def suite_top(self, command):
+        """The top-level directory of the suite command runs, as eng unittest takes it: -t, else -s, else the checkout."""
+        found = {}
+        for index, word in enumerate(command):
+            name, equals, value = word.partition("=")
+            if name in ("-s", "--start-directory", "-t", "--top-level-directory"):
+                found[name.lstrip("-")[0]] = value if equals else (command[index + 1] if index + 1 < len(command) else ".")
+        return self.checkout / found.get("t", found.get("s", "."))
+
+    def mark_flaky(self, flakes, base):
+        """Add a FLAKY trailer for each flake to HEAD, the tip of a batch that lands with them, and return the new
+        HEAD, as mark_ungated does; a HEAD at base stays."""
+        if self.head() == base: return base
+        trailers = [word for flake in flakes for word in ("--trailer", f"{FLAKY}: {flake_words(flake)}"
+                                                          + (f"; {flake['issue']}" if flake.get("issue") else ""))]
+        git(self.checkout, "commit", "--amend", "--no-verify", "--no-edit", "--allow-empty", *trailers, hooks=False,
+            check=True)
+        return self.head()
+
     def failed(self, applied, log):
         """Bisect: the oldest half next. A lone entry that fails is the one to send back."""
         if len(applied) == 1:
@@ -1586,9 +1862,13 @@ class Worker:
             if busy: queue.hold(worded(kind, f"{gave}, and {busy}; see {log}"))
             return True
         self.no_verdicts = 0
+        flakes = None
         if result:
-            self.failed(applied, log)
-            return True
+            # A failure that a rerun alone does not repeat lands, when the batch cannot reach the test (#231).
+            flakes = self.rerun(config, applied, base, head, log, round_name)
+            if flakes is None:
+                self.failed(applied, log)
+                return True
         # An entry removed during the gate was part of what passed, so what is left has not been tested.
         current = [queue.read(entry["id"]) for entry in applied]
         if any(entry is None or entry["state"] not in WAITING for entry in current):
@@ -1596,8 +1876,9 @@ class Worker:
             queue.mark(applied, QUEUED)
             return True
         if ungated: head = self.mark_ungated(ungated, base)
-        self.keep(applied, base, head, docs, ungated)
-        if self.push(config, applied, base, docs, ungated): self.passed(len(applied))
+        if flakes: head = self.mark_flaky(flakes, base)
+        self.keep(applied, base, head, docs, ungated, flakes)
+        if self.push(config, applied, base, docs, ungated, flakes): self.passed(len(applied))
         else: queue.mark(applied, QUEUED)
         return True
 
@@ -1662,13 +1943,14 @@ class Worker:
             raise Hold(SESSION, f"{error}, judging {what} with the toolkit at "
                                 f"{self.code[:12] if self.code else 'no commit'}") from error
 
-    def keep(self, batch, base, head, docs, ungated=None):
+    def keep(self, batch, base, head, docs, ungated=None, flakes=None):
         """Record a batch's pass before its push. A hold the push meets, a refusal or a remote out of reach, then
         leaves the batch passed rather than queued, and `eng queue resume` pushes head instead of gating the same
         tree again (vocaro-engineering#150): EPUBLib's queue spent an hour of the second Mac doing that."""
         verdict = {"head": head, "base": base, "batch": [entry["id"] for entry in batch], "at": time.time()}
         if docs: verdict["docsOnly"] = docs
         if ungated: verdict["ungated"] = ungated
+        if flakes: verdict["flakes"] = flakes
         if self.alone: verdict["alone"] = True
         if self.measured: verdict["gate"] = self.measured
         for entry in batch: self.queue.record(entry, state=PASSED, passed=verdict)
@@ -1688,12 +1970,13 @@ class Worker:
             return True
         batch = sorted(passed, key=lambda entry: verdict["batch"].index(entry["id"]))
         base, head, docs, ungated = verdict["base"], verdict["head"], verdict.get("docsOnly"), verdict.get("ungated")
+        flakes = verdict.get("flakes")
         config = self.settings(base, head)
         self.measured = verdict.get("gate")
         self.alone = bool(verdict.get("alone"))
         self.say(f"{len(batch)} entr{'y' if len(batch) == 1 else 'ies'} passed at {head[:12]} on {base[:12]}: "
                  "pushing without gating again")
-        if self.push(config, batch, base, docs, ungated): self.passed(len(batch))
+        if self.push(config, batch, base, docs, ungated, flakes): self.passed(len(batch))
         else: self.queue.mark(batch, QUEUED)
         return True
 

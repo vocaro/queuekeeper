@@ -71,6 +71,12 @@ class Fixture(unittest.TestCase):
         settled = patch.object(mq.resources, "pressure", return_value=None)
         self.pressure = settled.start()
         self.addCleanup(settled.stop)
+        # No test reaches GitHub's tracker: a flake the queue records goes here (mq.hardening, #231).
+        self.tracked = []
+        tracker = patch.object(mq, "hardening", side_effect=lambda checkout, flake: (
+            self.tracked.append(dict(flake)), ("https://example.invalid/fixture/issues/1", None))[1])
+        tracker.start()
+        self.addCleanup(tracker.stop)
         self.counter, self.status = self.base / "gates", self.base / "status"
         self.origin = self.base / "origin.git"
         run(self.base, "git", "init", "-q", "--bare", "-b", "main", str(self.origin))
@@ -3727,6 +3733,294 @@ class Refusals(Fixture):
         while (left := {pid: stat for pid, stat in children().items() if pid not in before}) and time.monotonic() < deadline:
             time.sleep(0.1)
         self.assertEqual(left, {})
+
+
+# A fixture suite for an eng unittest gate: test_sometimes fails on each run whose letter in PLAN is F, counting its
+# runs in RUNS, and imports fixturelib.helper, which imports fixturelib.deeper.
+FLAKY_MODULE = """import pathlib, sys, unittest
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src/python"))
+from fixturelib import helper
+
+RUNS, PLAN = pathlib.Path({runs!r}), pathlib.Path({plan!r})
+
+
+class Flaky(unittest.TestCase):
+    def test_sometimes(self):
+        done = len(RUNS.read_text()) if RUNS.exists() else 0
+        RUNS.write_text("x" * (done + 1))
+        plan = PLAN.read_text() if PLAN.exists() else ""
+        self.assertNotEqual(plan[done:done + 1], "F", f"run {{done + 1}} fails, as planned")
+
+    def test_steady(self):
+        self.assertEqual(helper.VALUE, 1)
+"""
+
+
+class FlakyReruns(Fixture):
+    """A failed eng unittest gate's failed tests rerun alone before a bisect, and a batch whose failed tests all pass
+    alone and that reaches none of their files lands, with the flake recorded (owner's decision of 2026-11-07, #231)."""
+    BUSY = ("cpu", "the CPU is 95% busy, at or above HEAVY_BUSY_LIMIT=75%")
+    TEST = "test_flaky.Flaky.test_sometimes"
+
+    def setUp(self):
+        super().setUp()
+        self.runs, self.plan = self.base / "runs", self.base / "plan"
+        (self.repo / "tests").mkdir()
+        (self.repo / "tests/test_flaky.py").write_text(FLAKY_MODULE.format(runs=str(self.runs), plan=str(self.plan)))
+        library = self.repo / "src/python/fixturelib"
+        library.mkdir(parents=True)
+        (library / "__init__.py").write_text("")
+        (library / "helper.py").write_text("from . import deeper\nVALUE = 1\n")
+        (library / "deeper.py").write_text("DEPTH = 1\n")
+        config = self.config()
+        config["lanes"]["gate"] = {"command": ["python3", "scripts/eng", "unittest", "-s", "tests", "-v"], "timeout": 600}
+        (self.repo / "engineering.json").write_text(json.dumps(config))
+        run(self.repo, "git", "add", ".")
+        run(self.repo, "git", "commit", "-qm", "Gate on an eng unittest suite")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+
+    def runs_of_the_test(self):
+        return len(self.runs.read_text()) if self.runs.exists() else 0
+
+    def tip_message(self):
+        run(self.repo, "git", "fetch", "-q", "origin")
+        return run(self.repo, "git", "log", "-1", "--format=%B", "origin/main")
+
+    def main_messages(self):
+        return run(self.repo, "git", "log", "--format=%B", "origin/main")
+
+    def test_a_test_that_fails_once_and_passes_alone_lands_the_batch_after_a_settle_and_is_recorded(self):
+        self.plan.write_text("F")
+        self.commit("a", "a"); self.commit("b", "b")
+        ids = self.add("a", "b")
+        with self.host([self.BUSY, None]) as (slept, said):
+            self.assertEqual(self.work(), 0)
+        log = said.getvalue()
+        entries = [self.state(identifier) for identifier in ids]
+        self.assertEqual([entry["state"] for entry in entries], ["landed", "landed"])
+        # One gate and its reruns, each alone, after the host settled, and no bisect.
+        self.assertEqual(self.runs_of_the_test(), 1 + mq.RERUNS)
+        self.assertEqual(slept, [mq.SETTLE_POLL])
+        self.assertNotIn("fail together", log)
+        self.assertIn(f"gate failed 1 test at ", log)
+        self.assertIn(f": {self.TEST}; rerunning each alone up to {mq.RERUNS} times on that commit before a bisect", log)
+        self.assertIn("the failed tests run alone again once the host settles", log)
+        self.assertIn("no commit of the batch changes its module or a file it imports: landing the batch", log)
+        # Recorded in each entry, with both logs, on the tracker and in the landed tip's trailer.
+        for entry in entries:
+            [flake] = entry["flakes"]
+            self.assertEqual(flake["test"], self.TEST)
+            self.assertTrue(Path(flake["gateLog"]).is_file())
+            self.assertIn(f"FAIL: test_sometimes ({self.TEST})", Path(flake["gateLog"]).read_text())
+            self.assertEqual(len(flake["rerunLogs"]), mq.RERUNS)
+            self.assertTrue(all("OK" in Path(path).read_text() for path in flake["rerunLogs"]))
+            self.assertEqual(flake["issue"], "https://example.invalid/fixture/issues/1")
+        self.assertEqual(entries[0]["landedTip"], entries[1]["landedTip"])
+        [tracked] = self.tracked
+        self.assertEqual(tracked["test"], self.TEST)
+        self.assertIn("the batch landed", tracked["outcome"])
+        self.assertIn(f"flaky: {self.TEST} failed the gate at", log)
+        tip = self.tip_message()
+        self.assertIn(f"{mq.FLAKY}: {self.TEST} failed the gate at ", tip)
+        self.assertIn(f"passed alone {mq.RERUNS} times there; gate log {entries[0]['flakes'][0]['gateLog']}", tip)
+        self.assertIn("https://example.invalid/fixture/issues/1", tip)
+        self.assertEqual(self.main_messages().count(f"{mq.FLAKY}:"), 1)
+        self.assertIn("flaky: test_flaky.Flaky.test_sometimes failed the gate at", mq.describe(entries[0]))
+
+    def test_a_test_that_fails_again_alone_is_real_and_the_batch_bisects_with_nothing_recorded(self):
+        # The gate fails, the first rerun passes and the second fails: real. Every run after passes.
+        self.plan.write_text("F.F")
+        self.commit("a", "a"); self.commit("b", "b")
+        ids = self.add("a", "b")
+        with contextlib.redirect_stdout(io.StringIO()) as said: self.assertEqual(self.work(), 0)
+        log = said.getvalue()
+        self.assertIn(f"{self.TEST} failed again alone, on rerun 2 (exit 1), so the failure is real: bisecting", log)
+        self.assertIn("2 commits fail together: next the oldest 1", log)
+        self.assertEqual([self.state(identifier)["state"] for identifier in ids], ["landed", "landed"])
+        self.assertEqual(self.runs_of_the_test(), 3 + 2)
+        self.assertEqual(self.tracked, [])
+        self.assertTrue(all("flakes" not in self.state(identifier) for identifier in ids))
+        self.assertNotIn(f"{mq.FLAKY}:", self.main_messages())
+
+    def test_a_flake_in_a_batch_that_changes_a_file_its_module_imports_bisects_and_is_still_recorded(self):
+        self.plan.write_text("F")
+        self.commit("src/python/fixturelib/helper.py", "a", "from . import deeper\nVALUE = 1  # changed\n")
+        self.commit("b", "b")
+        ids = self.add("a", "b")
+        with contextlib.redirect_stdout(io.StringIO()) as said: self.assertEqual(self.work(), 0)
+        log = said.getvalue()
+        self.assertIn(f"every failed test passed alone, but the batch reaches {self.TEST}, which changes "
+                      "src/python/fixturelib/helper.py, which it imports: bisecting", log)
+        self.assertIn("2 commits fail together: next the oldest 1", log)
+        self.assertEqual([self.state(identifier)["state"] for identifier in ids], ["landed", "landed"])
+        self.assertEqual(self.runs_of_the_test(), 1 + mq.RERUNS + 2)
+        [tracked] = self.tracked
+        self.assertIn("bisected", tracked["outcome"])
+        self.assertTrue(all(self.state(identifier)["flakes"][0]["test"] == self.TEST for identifier in ids))
+        self.assertNotIn(f"{mq.FLAKY}:", self.main_messages())
+
+    def test_a_file_the_tests_module_does_not_import_itself_does_not_stop_the_landing(self):
+        """Only the module's own imports count: deeper.py, which helper.py imports, is not one of them."""
+        self.plan.write_text("F")
+        self.commit("src/python/fixturelib/deeper.py", "a", "DEPTH = 2\n")
+        [identifier] = self.add("a")
+        with contextlib.redirect_stdout(io.StringIO()) as said: self.assertEqual(self.work(), 0)
+        self.assertIn("landing the batch", said.getvalue())
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertIn(f"{mq.FLAKY}: {self.TEST}", self.tip_message())
+
+    def test_a_host_that_does_not_settle_bisects_without_rerunning(self):
+        self.plan.write_text("F")
+        self.commit("a", "a"); self.commit("b", "b")
+        ids = self.add("a", "b")
+        with self.host([self.BUSY]) as (slept, said):
+            self.assertEqual(self.work(), 0)
+        self.assertIn(f"the failed tests are not rerun, as the host did not settle in {mq.SETTLE_LIMIT}s", said.getvalue())
+        self.assertIn("2 commits fail together", said.getvalue())
+        self.assertEqual(sum(slept), mq.SETTLE_LIMIT)
+        self.assertEqual([self.state(identifier)["state"] for identifier in ids], ["landed", "landed"])
+        self.assertEqual(self.runs_of_the_test(), 3)
+        self.assertEqual(self.tracked, [])
+
+    def test_more_failed_tests_than_a_flake_would_bisect_at_once(self):
+        self.plan.write_text("F")
+        self.commit("a", "a"); self.commit("b", "b")
+        self.add("a", "b")
+        with patch.object(mq, "RERUN_MOST", 0), contextlib.redirect_stdout(io.StringIO()) as said:
+            self.assertEqual(self.work(), 0)
+        self.assertIn("gate failed 1 tests, more than the 0 a flake would: bisecting", said.getvalue())
+        self.assertEqual(self.runs_of_the_test(), 3)
+        self.assertEqual(self.pressure.call_count, 0)
+
+    def test_a_gate_that_is_not_eng_unittest_bisects_at_once_as_before(self):
+        config = self.config()
+        config["lanes"]["gate"] = {"command": ["python3", "lane.py", str(self.counter), str(self.status)]}
+        self.publish(config)
+        self.commit("a", "a"); self.commit("bad", "bad")
+        ids = self.add("a", "bad")
+        with contextlib.redirect_stdout(io.StringIO()) as said: self.assertEqual(self.work(), 0)
+        self.assertEqual([self.state(identifier)["state"] for identifier in ids], ["landed", "failed"])
+        self.assertNotIn("rerun", said.getvalue())
+        self.assertEqual(self.pressure.call_count, 0)
+        self.assertEqual(self.tracked, [])
+
+
+UNITTEST_LOG = """queue: 12:00:00 gate on abc
+== test_a.A.test_fine: OK (1 tests, 0.4s)
+test_fine (test_a.A.test_fine) ... ok
+== test_b.B: FAILED (failures=1, errors=1) (3 tests, 2.0s)
+test_one (test_b.B.test_one) ... FAIL
+test_two (test_b.B.test_two) ... ERROR
+======================================================================
+FAIL: test_one (test_b.B.test_one)
+----------------------------------------------------------------------
+AssertionError
+======================================================================
+ERROR: test_two (test_b.B.test_two) (case=1)
+----------------------------------------------------------------------
+RuntimeError
+== test_c: FAILED (failures=1) (1 tests, 1.0s)
+FAIL: test_old (test_c.C)
+----------------------------------------------------------------------
+eng unittest: 5 tests (0 skipped) in 3 processes, 4 at a time, 3.4s: FAILED: test_b.B (FAILED (failures=1, errors=1), status 1), test_c (FAILED (failures=1), status 1)
+"""
+
+
+class FlakyParts(unittest.TestCase):
+    """The parts of #231's reruns alone: the failed tests a log names, the rerun's command, a test module's imports and
+    the tracker, which a fake gh stands in for."""
+
+    def test_the_failed_tests_are_read_from_each_failed_process_output(self):
+        self.assertEqual(mq.failed_tests(UNITTEST_LOG), (["test_b.B.test_one", "test_b.B.test_two", "test_c.C.test_old"], None))
+
+    def test_a_log_whose_failure_cannot_be_rerun_alone_names_why(self):
+        summary = UNITTEST_LOG.splitlines()[-1]
+        cases = {
+            "its log has no eng unittest summary": UNITTEST_LOG.replace(summary, "FAILED"),
+            "eng unittest's verdict is OK": UNITTEST_LOG.replace(summary.split("s: ", 1)[1], "OK"),
+            "eng unittest also left tests unmeasured": UNITTEST_LOG.replace(summary, summary + "; UNMEASURED: test_d (timed out after 1800s)"),
+            "test_c ran 0 of 1 tests": UNITTEST_LOG.replace("test_c (FAILED (failures=1), status 1)", "test_c (ran 0 of 1 tests)"),
+            "the output of test_c names no failed test": UNITTEST_LOG.replace("FAIL: test_old (test_c.C)", "Segmentation fault"),
+            "test_c did not load": UNITTEST_LOG.replace("FAIL: test_old (test_c.C)", "ERROR: test_c (unittest.loader._FailedTest.test_c)"),
+        }
+        for why, log in cases.items():
+            with self.subTest(why=why):
+                self.assertEqual(mq.failed_tests(log), (None, why))
+
+    def test_the_rerun_keeps_the_suites_options_and_names_its_own_test(self):
+        own = ["python3", "scripts/eng", "unittest", "-s", "tests", "--split", "test", "-v"]
+        self.assertEqual(mq.rerun_command(own), ["python3", "scripts/eng", "unittest", "-s", "tests", "--split", "test", "-j", "1", "-v"])
+        self.assertEqual(mq.rerun_command(["eng", "unittest", "-p", "test_x*.py", "-j", "8", "-k", "slow", "--timeout=60",
+                                           "-t", ".", "test_x.Selected"]),
+                         ["eng", "unittest", "-p", "test_x*.py", "--timeout=60", "-t", ".", "-j", "1", "-v"])
+        # Negative controls: a lane that is not eng unittest, an option the rerun cannot carry, a value left out.
+        for command in (["python3", "lane.py"], ["python3", "scripts/eng", "xctest"], ["python3", "-m", "unittest"],
+                        ["python3", "scripts/eng", "unittest", "--failfast"], ["python3", "scripts/eng", "unittest", "-s"],
+                        None, "python3 scripts/eng unittest"):
+            with self.subTest(command=command):
+                self.assertIsNone(mq.rerun_command(command))
+
+    def test_a_test_modules_files_are_itself_and_the_projects_files_it_imports_directly(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            files = {"tests/test_x.py": "import os\nfrom pkg import a\nimport pkg.b as bb\n"
+                                        "def later():\n    from pkg.c import thing\n",
+                     "tests/suite/__init__.py": "", "tests/suite/test_y.py": "from . import helper\nfrom .more import x\n",
+                     "tests/suite/helper.py": "", "tests/suite/more.py": "x = 1\n",
+                     "src/python/pkg/__init__.py": "", "src/python/pkg/a.py": "from pkg import d\n",
+                     "src/python/pkg/b.py": "", "src/python/pkg/c.py": "thing = 1\n", "src/python/pkg/d.py": ""}
+            for name, body in files.items():
+                (root / name).parent.mkdir(parents=True, exist_ok=True)
+                (root / name).write_text(body)
+            self.assertEqual(mq.imported_files(root, root / "tests", "test_x.X.test_one"),
+                             ["src/python/pkg/__init__.py", "src/python/pkg/a.py", "src/python/pkg/b.py",
+                              "src/python/pkg/c.py", "tests/test_x.py"])
+            self.assertEqual(mq.imported_files(root, root / "tests", "suite.test_y.Y.test_two"),
+                             ["tests/suite/__init__.py", "tests/suite/helper.py", "tests/suite/more.py",
+                              "tests/suite/test_y.py"])
+            self.assertIsNone(mq.imported_files(root, root / "tests", "test_missing.X.test_one"))
+
+    FLAKE = {"test": "test_b.B.test_one", "commit": "c" * 40, "gateLog": "/logs/gate.log",
+             "rerunLogs": ["/logs/rerun-1.log", "/logs/rerun-2.log"], "outcome": "The batch landed.", "mac": "fixture-mac"}
+
+    def gh(self, answers):
+        """A fake gh: each call's answer by its first two words, recorded in calls."""
+        calls = []
+        def gh(*arguments):
+            calls.append(arguments)
+            code, out, err = answers[" ".join(arguments[:2])]
+            return subprocess.CompletedProcess(["gh", *arguments], code, out, err)
+        return gh, calls
+
+    def test_the_tracker_comments_on_the_open_issue_that_names_the_test(self):
+        gh, calls = self.gh({"issue list": (0, json.dumps([{"number": 230, "url": "https://x/issues/230", "title": "t"}]), ""),
+                             "issue comment": (0, "https://x/issues/230#c\n", "")})
+        self.assertEqual(mq.hardening(Path("."), self.FLAKE, gh), ("https://x/issues/230", None))
+        self.assertEqual([call[:2] for call in calls], [("issue", "list"), ("issue", "comment")])
+        self.assertIn('"test_one" in:title,body,comments', calls[0])
+        self.assertEqual(calls[1][2], "230")
+        body = calls[1][calls[1].index("--body") + 1]
+        for said in ("`test_b.B.test_one`", "passed alone 2 of 2 times", "The batch landed.", "`/logs/gate.log`",
+                     "`/logs/rerun-2.log`", "fixture-mac", "vocaro/vocaro-engineering#231"):
+            self.assertIn(said, body)
+
+    def test_the_tracker_files_a_hardening_issue_when_none_names_the_test(self):
+        gh, calls = self.gh({"issue list": (0, "[]", ""), "issue create": (0, "https://x/issues/240\n", "")})
+        self.assertEqual(mq.hardening(Path("."), self.FLAKE, gh), ("https://x/issues/240", None))
+        self.assertEqual([call[:2] for call in calls], [("issue", "list"), ("issue", "create")])
+        self.assertEqual(calls[1][calls[1].index("--title") + 1], "Harden the flaky test test_one (test_b.B)")
+
+    def test_a_tracker_gh_cannot_reach_is_said_and_stops_nothing(self):
+        for answers, why in (({"issue list": (1, "", "boom\n")}, "gh issue list failed: boom"),
+                             ({"issue list": (0, "not json", "")}, "gh issue list printed no issue list"),
+                             ({"issue list": (0, json.dumps([{"number": 1, "url": "u"}]), ""), "issue comment": (1, "", "no\n")},
+                              "gh issue comment on u failed: no"),
+                             ({"issue list": (0, "[]", ""), "issue create": (1, "", "denied\n")}, "gh issue create failed: denied")):
+            with self.subTest(why=why):
+                gh, _ = self.gh(answers)
+                url, said = mq.hardening(Path("."), self.FLAKE, gh)
+                self.assertIsNone(url)
+                self.assertTrue(said.startswith(why), said)
 
 
 if __name__ == "__main__":

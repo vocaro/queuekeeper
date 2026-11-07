@@ -405,6 +405,33 @@ hour later, from `eng queue status`
 alone; every entry that passes along the way lands. An entry that comes back keeps its ref until
 `eng queue remove ID`. Fix it, rebase and land it again.
 
+**A failed test that passes alone is a flake.** Before it bisects a batch whose failing lane is
+`eng unittest`, the worker reruns the failed tests alone on the same batch commit (owner's decision,
+2026-11-07, [#231](https://github.com/vocaro/vocaro-engineering/issues/231)). It reads their IDs from the
+lane's log: unittest's `FAIL:` and `ERROR:` lines under each failed process. It first waits for this
+Mac, where the reruns run, to settle, as for a retry with no verdict below. Then it runs each test by
+itself, with the lane's `-s`, `-p`, `-t`, `--split` and `--timeout`, one process at a time, up to `RERUNS`
+times (3). Any rerun that fails, or ends unmeasured, makes the failure real, and the batch bisects as
+before. When every rerun of every failed test passes, each test is a flake, and option (b) applies: the
+batch lands only if none of its commits changes the test's module or a file of the project that module
+imports. Only its own import statements count, at any depth of the module, looked up under the suite's
+top-level directory, `src/python`, `src` and the checkout, with each package's `__init__.py`. The files
+those imports import in turn do not count. A batch that changes one of them bisects. Either way the
+flake is recorded in four places: in each entry's `flakes` (the test ID, the gate's log and the reruns'
+logs, which `eng queue status` shows); in the worker's log; in a `Flaky-test:` trailer on a landed tip,
+one per test, which survives a carry-over; and on the tracker. For the tracker the worker searches the
+project's open issues for the test's name just before it writes, then comments on the first match, or
+files a hardening issue. A tracker gh cannot reach is noted in the entry and stops nothing.
+
+The worker bisects at once, as before, when the failing lane is not `eng unittest` (a project's own
+lane or a lane group), when its log names no test it can rerun (no `eng unittest` summary, tests also
+left unmeasured, a process with no failed test named or that ran other than it was given, or a module
+that did not load), when more than `RERUN_MOST` (5) tests failed, and when this Mac does not settle
+within `SETTLE_LIMIT`. On 2026-11-06 a load flake ([#230](https://github.com/vocaro/vocaro-engineering/issues/230))
+split a 5-entry batch, and every entry behind it paid a 20-minute gate more. Rerunning the one failed
+test alone takes seconds. That batch changed `cli.py`, which `test_devices` imports, so under (b) it
+would still have bisected.
+
 **After it lands, start again from `main`.** The round may change a commit as it puts it on
 `main`, as when it keeps both sides of `CHANGELOG.md`, so `main` holds it under another hash and
 another patch. Rebasing the branch onto `origin/main` then replays the landed commit and
@@ -520,7 +547,9 @@ The lanes must be ones the queue runs, so their passing is what the worker just 
 admission there is a lane's no verdict. The worker then does not run the hook, and its log says so.
 Keep the opt-in only while it is true: a hook that checks something no lane does stays a hook. A person's own `git push` still runs the hook.
 
-**A gate that fails on a test the change cannot reach.** Record the failure on that test's issue,
+**A gate that fails on a test the change cannot reach.** On an `eng unittest` gate the queue does this
+itself when the test passes alone ([a failed test that passes alone is a flake](#the-merge-queue)).
+Otherwise, record the failure on that test's issue,
 or file one by the project's labels, before adding the entry again: an entry added again with no
 record leaves the flake nobody's to fix. On 2026-11-05 the fix for
 [EPUBLib#978](https://github.com/vocaro/EPUBLib/issues/978) went through EPUBLib's queue four
