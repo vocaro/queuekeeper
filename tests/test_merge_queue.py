@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -222,6 +223,32 @@ class Landing(Fixture):
         self.assertEqual(worker.placed("gate", 0), "")
         receipt.write_text(json.dumps({"ranOn": "second Mac"}))
         self.assertEqual(worker.placed("gate", 0), "")
+
+    def test_a_gate_sees_sigint_at_its_default_from_a_worker_started_as_a_background_job(self):
+        """A non-interactive shell starts `eng land &` with SIGINT and SIGQUIT ignored, and its worker passed that to
+        every gate lane until the worker put back the defaults (vocaro/BreezEPUB#47). Without that reset, the
+        negative control, the gate's command sees them ignored."""
+        record = self.base / "signals"
+        (self.repo / "signals.py").write_text(
+            "import signal, sys\nwith open(sys.argv[1], 'a') as out:\n"
+            "    out.write(' '.join('ignored' if signal.getsignal(n) == signal.SIG_IGN else 'default'\n"
+            "                       for n in (signal.SIGINT, signal.SIGQUIT)) + '\\n')\n")
+        run(self.repo, "git", "add", "signals.py")
+        self.publish({"schemaVersion": 1, "name": "fixture", "integration": "direct-main",
+                      "lanes": {"gate": {"command": ["python3", "signals.py", str(record)]}}})
+        before = {number: signal.getsignal(number) for number in (signal.SIGINT, signal.SIGQUIT)}
+        for number, handler in before.items(): self.addCleanup(signal.signal, number, handler)
+        for reset, seen in ((contextlib.nullcontext(), "default default"),
+                            (patch.object(mq.processes, "default_background_signals"), "ignored ignored")):
+            with self.subTest(seen=seen):
+                for number in before: signal.signal(number, signal.SIG_IGN)
+                record.unlink(missing_ok=True)
+                self.commit(f"change-{seen[0]}", f"change-{seen[0]}")
+                [identifier] = self.add(f"change-{seen[0]}")
+                with reset, contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(self.work(), 0)
+                self.assertEqual(self.state(identifier)["state"], "landed")
+                self.assertEqual(record.read_text(), seen + "\n")
 
     def test_one_gate_lands_a_whole_batch(self):
         self.commit("a", "a"); self.commit("b", "b"); self.commit("c", "c")

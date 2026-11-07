@@ -44,6 +44,9 @@ SETTLE_WAIT = 30
 # The signals forwarding_signals carries out as a supervised stop. SIGKILL cannot be caught.
 STOP_SIGNALS = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
 _stops = []
+# The signals a POSIX shell starts a `cmd &` job with ignored when it has no job control, as a non-interactive
+# zsh or sh does. Every process inherits an ignored signal through exec (vocaro/BreezEPUB#47).
+BACKGROUND_IGNORED = (signal.SIGINT, signal.SIGQUIT)
 # Seconds supervise waits for a held command's exec once on_start has released it, which covers an
 # interpreter start on a busy host; not measured. Past it the run goes on, and a failed exec then shows
 # only as status 127, not NotStarted.
@@ -203,6 +206,16 @@ class TimedOut(TimeoutError):
 class Canceled(TimedOut):
     """The caller canceled the run (supervise's cancel), and then the command and every observed descendant ended,
     as after a timeout: the merge queue throws away a gate stacked on a batch that did not land."""
+
+
+def default_background_signals():
+    """Put back the default for each of BACKGROUND_IGNORED this process ignores, so that the commands it starts do
+    not inherit how it was launched: a merge-queue worker that `eng land &` started passes SIG_IGN for SIGINT to every
+    gate lane, and a test that sends its helper SIGINT then fails. Only from the main thread, as signal requires;
+    a handler someone installed stays."""
+    if threading.current_thread() is not threading.main_thread(): return
+    for number in BACKGROUND_IGNORED:
+        if signal.getsignal(number) == signal.SIG_IGN: signal.signal(number, signal.SIG_DFL)
 
 
 def request_stop(signum, _frame=None):

@@ -132,13 +132,14 @@ class WindowTests(HostTest):
 
     def test_the_scripts_set_no_variable_that_a_system_events_term_takes(self):
         # Inside `tell application "System Events"`, `kind` is a property of its own, so `set kind to ""` failed
-        # with -10006 on the second Mac on 2026-11-07 and no notification could be read (#204); `position of
-        # element_ as list` is not a list of the position either. Every variable the scripts set ends in `_`.
+        # with -10006 on the second Mac on 2026-11-07 and no notification could be read (#204), and `item 1 of
+        # (position of b)` fails to be a specifier. Every variable the scripts set ends in `_`, and each position
+        # is kept in a variable before an item of it is read.
         for name, script in (("ELEMENTS_SCRIPT", notification_center.ELEMENTS_SCRIPT),
                              ("CLOSE_SCRIPT", notification_center.CLOSE_SCRIPT)):
             names = set(re.findall(r"\bset (\w+) to\b", script)) | set(re.findall(r"\brepeat with (\w+) in\b", script))
             self.assertEqual({n for n in names if not n.endswith("_") and n not in ("out", "proc")}, set(), name)
-            self.assertNotIn(" as list)", script, name)
+            self.assertNotIn("of (position of", script, name)
             # `entire contents` of the window listed no banner there either; the scripts walk UI elements.
             self.assertNotIn("entire contents", script, name)
 

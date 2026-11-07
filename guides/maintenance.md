@@ -178,6 +178,14 @@ by a branch that would fix it, and not by a merge that records such a branch as 
   verb before a number as a keyword whatever comes before the verb. "Fixes #A and #B" closes
   only #A, and "does not close #N" closes #N. Give each issue its own `Closes #N.` line, and
   write "leaves #N open" for one that stays open.
+- An issue left open after its change lands, until something is seen in real use, says what
+  closes it and how to check: the observation, and the command or path that shows it. Nothing
+  else brings anyone back to look, so a session that later claims, comments on or closes out
+  work on that issue runs the check first, and closes the issue with the result when it passes.
+  When the observation is near, such as the next routine gate, the landing session waits for it
+  instead. [#218](https://github.com/vocaro/vocaro-engineering/issues/218) stayed open on "until
+  a real gate on the second Mac shows the files" after the first such gate had written them, two
+  hours after landing, through two later comments by sessions that did not look (2026-11-07).
 
 A closing-commit check holds this mechanically from Git alone, offline: it finds each empty
 merge, fails one that strands a closure claim unless a recorded reconciliation names it, notes
@@ -406,6 +414,13 @@ send-back; on 2026-11-03 a session that had run plain `eng land` learned of a co
 hour later, from `eng queue status`
 ([#130](https://github.com/vocaro/vocaro-engineering/issues/130)). When a batch fails, the oldest half runs next, and so on until one entry fails
 alone; every entry that passes along the way lands.
+
+**A branch that goes on after a landing.** The queue lands a branch's commits under new IDs, so a
+branch that gets more work after one of its landings still holds the landed commits under their old
+IDs. `eng land` replays them onto `origin/main`, and one whose lines a later landed commit changed
+conflicts there, so the branch is refused as a merge it cannot replay (2026-11-07, #204). Start the
+next change from `origin/main`, or `git rebase origin/main`: git drops a commit whose patch is already
+on main, and `git rebase --skip` passes one it stops at whose change main holds in a later form.
 
 **A bisect's two halves gate at once.** While a bisect goes on, the newer half of its suspects gates
 beside the older half, in a second checkout, `~/Development/vocaro-queue/NAME/NAME-beside`, on the same
