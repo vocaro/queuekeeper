@@ -499,11 +499,11 @@ class SimulatorMatrixTests(unittest.TestCase):
         self.assertEqual(self.entries()["Project iPad Air 13-inch (M4) 1"]["ownerChatID"], "another session")
         self.assert_every_device_returned()
 
-    def test_members_unused_for_fourteen_days_are_pruned_but_never_the_lowest_of_a_kind(self):
+    def test_members_unused_for_an_hour_are_pruned_but_never_the_lowest_of_a_kind(self):
         lowest = self.add("Project iPhone 17 Pro 1", days=30)
         busy = self.add("Project iPhone 17 Pro 2", state="Booted", days=30)
-        recent = self.add("Project iPhone 17 Pro 3", days=3)
-        stale = self.add("Project iPhone 17 Pro 4", days=15)
+        recent = self.add("Project iPhone 17 Pro 3", days=0.5 / 24)
+        stale = self.add("Project iPhone 17 Pro 4", days=2 / 24)
         older = self.add("Project iPhone 17 Pro 5", days=20)
         ipad = self.add("Project iPad Air 13-inch (M4) 7", IPAD, days=20)
         self.others = {"Project iPhone 17 Pro 2"}

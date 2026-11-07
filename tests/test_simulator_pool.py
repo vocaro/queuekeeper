@@ -220,14 +220,14 @@ class PoolTests(unittest.TestCase):
 
     def test_pruning_needs_every_condition_and_keeps_the_lowest_of_each_kind(self):
         self.simctl.add("Project Duo 1", days=40)
-        cases = {"Project Duo 2": dict(days=20), "Project Duo 3": dict(days=10), "Project Duo 4": dict(days=20, state="Booted"),
+        cases = {"Project Duo 2": dict(days=20), "Project Duo 3": dict(days=1 / 48), "Project Duo 4": dict(days=20, state="Booted"),
                  "Project Duo 5": dict(days=20), "Project Duo 6": dict(days=20), "Project Duo 7": dict(days=20),
                  "Project Duo 8": dict(days=20, available=False), "Project Duo 9": dict(days=20)}
         udids = {name: self.simctl.add(name, **values) for name, values in cases.items()}
         # Another kind: its only member is the lowest of that kind.
         self.simctl.add("Project Duo 10", runtime=OTHER_RUNTIME, days=40)
         self.simctl.add("Other Duo 2", days=40)
-        self.release_entry("Project Duo 5", udids["Project Duo 5"], days=3)
+        self.release_entry("Project Duo 5", udids["Project Duo 5"], days=1 / 48)
         self.release_entry("Project Duo 6", udids["Project Duo 6"], days=20)
         self.hold("Project Duo 7", udids["Project Duo 7"])
         # An entry under another key that names the device counts too.
@@ -238,7 +238,7 @@ class PoolTests(unittest.TestCase):
                          {"Project Duo 2", "Project Duo 6", "Project Duo 8"})
         self.assertIn("lowest-numbered", reasons["Project Duo 1"][1])
         self.assertIn("lowest-numbered", reasons["Project Duo 10"][1])
-        self.assertIn("within 14 days", reasons["Project Duo 3"][1])
+        self.assertIn("within 1 hour", reasons["Project Duo 3"][1])
         self.assertIn("Booted", reasons["Project Duo 4"][1])
         self.assertIn("was released", reasons["Project Duo 5"][1])
         self.assertIn("held", reasons["Project Duo 7"][1])
@@ -250,6 +250,26 @@ class PoolTests(unittest.TestCase):
         self.assertEqual(entry["state"], "released")
         self.assertEqual(entry["pruned"]["udid"], udids["Project Duo 6"])
         self.assertIn("Pruned: deleted", entry["run"])
+
+    def test_any_member_but_the_lowest_goes_an_hour_after_its_use_and_release(self):
+        # vocaro-engineering#259: no idle limit beyond an hour's grace keeps a member, however recently a burst of
+        # runs used it, while every other condition still holds; the lowest-numbered of each kind stays.
+        minutes = lambda count: count / 1440
+        self.assertEqual(simulator_pool.PRUNE_AFTER, timedelta(hours=1))
+        cases = {"Project Duo 1": dict(days=0), "Project Duo 2": dict(days=minutes(90)),
+                 "Project Duo 3": dict(days=minutes(50)), "Project Duo 4": dict(days=minutes(90)),
+                 "Project Duo 5": dict(days=minutes(90)), "Project Duo 6": dict(days=minutes(90), state="Booted")}
+        udids = {name: self.simctl.add(name, **values) for name, values in cases.items()}
+        self.release_entry("Project Duo 4", udids["Project Duo 4"], days=minutes(30))
+        self.release_entry("Project Duo 5", udids["Project Duo 5"], days=minutes(70))
+        reasons = self.reasons()
+        self.assertEqual({name for name, (allowed, _) in reasons.items() if allowed}, {"Project Duo 2", "Project Duo 5"})
+        self.assertIn("lowest-numbered", reasons["Project Duo 1"][1])
+        self.assertIn("more than 1 hour", reasons["Project Duo 2"][1])
+        self.assertIn("within 1 hour", reasons["Project Duo 3"][1])
+        self.assertIn("was released", reasons["Project Duo 4"][1])
+        self.assertIn("Booted", reasons["Project Duo 6"][1])
+        self.assertEqual(self.pool.prune(), ["Project Duo 5", "Project Duo 2"])
 
     def test_a_member_used_after_it_was_found_eligible_is_not_pruned(self):
         self.simctl.add("Project Duo 1", days=40)

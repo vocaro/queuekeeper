@@ -12,8 +12,8 @@ template, `POOL LABEL template (RUNTIME)`, which is made, or remade when the run
 change or `eng simulator-pool template --refresh` asks, under its own reservation (template.py). A take
 with erase erases the member as before, and one with keep_state reserves and boots it without resetting
 or erasing it. Pruning deletes a member
-unused for 14 days, never the lowest-numbered of its kind, and a template whose runtime is no longer
-installed, and records each deletion (guides/simulator-testing.md, Reserved simulator pool). Nothing
+unused and released for an hour, never the lowest-numbered of its kind, and a template whose runtime
+is no longer installed, and records each deletion (guides/simulator-testing.md, Reserved simulator pool). Nothing
 else here deletes or renames a simulator, except a template whose runtime moved, which is replaced.
 Reaping shuts down a member, or a template, left booted past its time, such as by a killed warm-up
 (offload_host.reap; guides/shared-host.md, Stale pool simulators).
@@ -45,7 +45,11 @@ from .. import devices as device_record, evidence, offload_host
 from ..resources import process_start
 from . import lifecycle, template as warmed
 
-PRUNE_AFTER = timedelta(days=14)
+# How long a member other than its kind's lowest-numbered must be unused, and its record entry released, before
+# pruning deletes it: a grace that keeps a member for a lane between two takes. A member is no warmer than a new
+# clone of its kind's template, which takes seconds, so no longer idle limit keeps one (owner's decision,
+# 2026-11-07, vocaro-engineering#259, replacing the 14 days of 2026-10-26).
+PRUNE_AFTER = timedelta(hours=1)
 DEVICE_TYPE = "com.apple.CoreSimulator.SimDeviceType."
 RUNTIME = "com.apple.CoreSimulator.SimRuntime."
 NUMBER = re.compile(r"(?P<label>.+) (?P<number>[1-9][0-9]*)")
@@ -373,7 +377,7 @@ def prunable(member, pool_members, entries, now):
     if member.last_used is None:
         return False, "simctl records no last use"
     if now - member.last_used <= PRUNE_AFTER:
-        return False, f"last used {member.last_used:%Y-%m-%d}, within {PRUNE_AFTER.days} days"
+        return False, f"last used {member.last_used:%Y-%m-%d %H:%M}, within {span(PRUNE_AFTER)}"
     for key, entry in entries.items():
         if device_record.condition(entry) != "released":
             return False, f"its record entry {key} is {device_record.condition(entry)}"
@@ -381,7 +385,13 @@ def prunable(member, pool_members, entries, now):
         if released is None or now - released <= PRUNE_AFTER:
             return False, f"its record entry {key} was released {entry.get('releasedAt') or 'at an unrecorded time'}"
     gone = "" if member.available else "; its runtime is no longer installed"
-    return True, f"unused since {member.last_used:%Y-%m-%d}, more than {PRUNE_AFTER.days} days{gone}"
+    return True, f"unused since {member.last_used:%Y-%m-%d %H:%M}, more than {span(PRUNE_AFTER)}{gone}"
+
+
+def span(delta):
+    """A limit as words, in hours."""
+    hours = delta / timedelta(hours=1)
+    return f"{hours:g} hour{'s' if hours != 1 else ''}"
 
 
 @dataclass
@@ -1230,8 +1240,8 @@ def main(argv, project=None):
                          "not a running lane's own; exit 1 if any is kept")
     release.add_argument("--outcome", help=f"what the record says of the release (default: {RELEASED!r}; with "
                          f"--mine, {CLOSEOUT!r})")
-    prune = action("prune", help="delete members unused for 14 days, never the lowest of a kind, and "
-                                "templates whose runtime is no longer installed")
+    prune = action("prune", help=f"delete members unused and released for {span(PRUNE_AFTER)}, never the "
+                                "lowest of a kind, and templates whose runtime is no longer installed")
     prune.add_argument("udids", nargs="*", metavar="UDID", help="only these members or templates")
     reap = action("reap", help="shut down members and warmed templates left booted for 2 hours that "
                                "nothing accounts for, on this Mac and the second Mac (guides/shared-host.md, Stale "

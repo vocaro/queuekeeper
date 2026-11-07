@@ -7,8 +7,8 @@
 Each device is a member of the pool, `POOL LABEL N`: a free one of its kind is reserved in the
 host's device record and reset from its kind's warmed template (erased with --erase, or when no settled
 template can be copied), or, with --keep-state, kept as earlier runs left it, or, when none is
-free, the next is cloned from that template, or created, and kept in the pool, after members unused
-for 14 days are pruned (guides/simulator-testing.md, Reserved simulator pool).
+free, the next is cloned from that template, or created, and kept in the pool, after members idle
+past the pruning rule's limits are pruned (guides/simulator-testing.md, Reserved simulator pool).
 With --app-accessibility each member's app processes get UIKit's and SwiftUI's own accessibility, for tests
 hosted in an app that read system views (guides/simulator-testing.md, App accessibility). With --voiceover each
 member's VoiceOver sound cues are switched off and its volume held at 0 before its tests, for a probe that
