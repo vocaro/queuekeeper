@@ -12,7 +12,7 @@ import sys
 import time
 
 from . import __version__, app_builds, app_registrations, budgets, crash_alerts, device_pass, devices, disk, docs, evidence, evidence_offload, failure_records, foreground, github_artifacts, keychain, merge_queue, \
-    notification_center, offload_host, parallel, processes, release, remote, resources, skills, spelling, toolkit_copy, xctest_shards
+    notification_center, offload_host, parallel, processes, release, remote, resources, skills, spelling, storekit_config, toolkit_copy, xctest_shards
 from .config import TOOLKIT_ROOT, CAPABILITIES, DEFAULT_TOOLKIT, admission as admission_of, load, source_identity, \
     stays, unlocked_screen
 from .resources import BUSY, FREE_WAIT
@@ -916,6 +916,8 @@ def main(argv=None):
     documentation = commands.add_parser("docs")
     documentation.add_argument("operation", choices=["check"])
     documentation.add_argument("paths", nargs="*")
+    commands.add_parser("storekit", help="check StoreKit configuration files against App Store Connect's limits "
+        "before a product is created (check)")
     spell = commands.add_parser("spelling", help="find British spellings in the project's text, identifiers "
         "included, and file names; exit 1 on any, 2 when nothing was checked")
     spell.add_argument("paths", nargs="*", help="files or directories; untracked files under them are read too")
@@ -959,6 +961,7 @@ def main(argv=None):
     if argv[first:first + 1] == ["simulator-pool"]: return simulator_pool.main(argv[first + 1:], project)
     if argv[first:first + 1] == ["device-pass"]: return device_pass.main(argv[first + 1:], project)
     if argv[first:first + 1] == ["failures"]: return failure_records.main(argv[first + 1:], project)
+    if argv[first:first + 1] == ["storekit"]: return storekit_config.main(argv[first + 1:], project)
     # Recovery, like the admission log, covers the whole host and reads no project.
     if argv[first:first + 2] == ["admissions", "recover"]: return resources.recover_main(argv[first + 2:])
     if argv[first:first + 2] == ["admissions", "limits"]: return resources.limits_main(argv[first + 2:])
