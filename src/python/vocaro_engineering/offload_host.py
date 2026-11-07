@@ -2629,7 +2629,10 @@ def main(plan):
         for stage, command, log, directory in steps:
             if _stop.is_set(): break
             begun, began = True, time.monotonic()
-            result.update(stage=stage, exitStatus=step(command, directory, environment, lock, log))
+            work_environment = environment
+            if stage == "work" and "cleanupSeconds" in (plan.get("lease") or {}):
+                work_environment = {**environment, "VOCARO_DEVICE_WINDOW": environment["VOCARO_DEVICE_LEASE"]}
+            result.update(stage=stage, exitStatus=step(command, directory, work_environment, lock, log))
             timed(stage, began)
             if result["exitStatus"] != 0: break
         result["stopped"] = _stop.is_set()

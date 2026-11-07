@@ -980,6 +980,27 @@ class BoundedRunTests(unittest.TestCase):
             code = devices.main(list(arguments))
         return code, output.getvalue(), error.getvalue()
 
+    def test_window_report_warns_when_admission_wait_consumes_the_budget(self):
+        start = datetime(2026, 11, 7, tzinfo=timezone.utc)
+        deadline = start + timedelta(seconds=180)
+        window = {"devices": {"iPad": TABLET}, "until": deadline.isoformat(),
+                  "cleanupSeconds": 60, "budgetSeconds": 120}
+        with patch.object(devices, "datetime", wraps=datetime) as clock, contextlib.redirect_stderr(StringIO()) as output:
+            clock.now.side_effect = [start, start + timedelta(seconds=20), deadline + timedelta(seconds=1)]
+            devices.report_window(window)
+            devices.report_window(window, 12)
+            devices.report_window({**window, "budgetSeconds": None}, 173)
+        before, after, expired = output.getvalue().splitlines()
+        self.assertIn("before dispatch: 180s left", before)
+        self.assertNotIn("Warning", before)
+        self.assertIn("after 12.00s waiting for admission: 160s left", after)
+        self.assertIn("the 120s run budget plus cleanup no longer fits", after)
+        self.assertIn("0s left", expired)
+        self.assertNotIn("Warning", expired)
+        for line in (before, after, expired):
+            self.assertIn(f"ends {deadline.isoformat()}, 60s reserved for cleanup", line)
+            self.assertNotIn(TABLET, line)
+
     def test_a_run_on_the_held_device_is_recorded_in_its_entry_which_stays_reserved(self):
         held = self.hold()
         during = self.root / "during.json"

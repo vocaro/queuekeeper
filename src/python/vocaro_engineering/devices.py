@@ -99,6 +99,8 @@ SIGNING = re.compile(r"""(?:IDENTITY=|--IDENTITY\s+|\bCODESIGN\b[^;&|\n]*?\s(?:-
 # The reservations a run on the second Mac may use, held in the sending Mac's record, as JSON:
 # {"record": MAC, "devices": {KEY: UDID}, "until": the reservations' end}. offload_host.py sets it for the run.
 LEASE = "VOCARO_DEVICE_LEASE"
+# A lease's timing report, passed only to the top-level work on the second Mac.
+WINDOW = "VOCARO_DEVICE_WINDOW"
 # Seconds a bounded run keeps before its reservation ends for its own end once its bound expires:
 # supervision's wait for descendants that outlive the command, then its SIGTERM, settling and
 # SIGKILL waits (processes.py).
@@ -207,6 +209,19 @@ def moment(value):
     except ValueError:
         return None
     return result if result.tzinfo else None
+
+
+def report_window(window, queued=None):
+    """Report the fixed device window before dispatch or after the work's admission."""
+    deadline = moment(window["until"])
+    left = max(0, (deadline - datetime.now(timezone.utc)).total_seconds())
+    cleanup, budget = window["cleanupSeconds"], window.get("budgetSeconds")
+    phase = "before dispatch" if queued is None else f"after {queued:.2f}s waiting for admission"
+    message = (f"devices: {' and '.join(window['devices'])} {phase}: {left:.0f}s left in the reservation "
+               f"(ends {deadline.isoformat()}, {cleanup:g}s reserved for cleanup)")
+    if budget is not None and budget + cleanup > left:
+        message += f". Warning: the {budget:g}s run budget plus cleanup no longer fits"
+    print(message, file=sys.stderr, flush=True)
 
 
 def condition(entry):

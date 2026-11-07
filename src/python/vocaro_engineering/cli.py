@@ -618,7 +618,7 @@ def cleared_notifications(receipt):
         return evidence.UNMEASURED
 
 
-def admit(root, args, config=None):
+def admit(root, args, config=None, *, device_window=None):
     # A command runs here, in the current directory: its paths, devices and products are this Mac's
     # (guides/shared-host.md, Which Mac runs a lane). Only --verify, which says that its result is its
     # log and status, lets eng send it to the second Mac; eng remote admit sends one on purpose.
@@ -662,6 +662,7 @@ def admit(root, args, config=None):
         stopped = admitted_tree(root, "the command", offered, receipt)
         if stopped is not None: return stopped
         receipt["queueSeconds"] = round(time.monotonic() - asked, 3)
+        if device_window is not None: devices.report_window(device_window, receipt["queueSeconds"])
         if offered is not None:
             receipt["hereBecause"] = offered.status
             fell_back("the command", offered)
@@ -924,6 +925,9 @@ def main(argv=None):
     if argv[first:first + 2] == ["admissions", "limits"]: return resources.limits_main(argv[first + 2:])
     split = argv.index("--") if "--" in argv else len(argv)
     args = parser.parse_args(argv[:split])
+    # Only the remote work itself reports its admission. Provisioning and nested commands do not.
+    window = os.environ.pop(devices.WINDOW, None)
+    device_window = json.loads(window) if window is not None else None
     args.passed = argv[split + 1:] if split < len(argv) else None
     if args.passed is not None and (args.action, getattr(args, "operation", None)) not in {
             ("run", None), ("admit", None), ("remote", "run"), ("remote", "admit")}:
@@ -1013,7 +1017,7 @@ def main(argv=None):
             return int(bool(missing or hosts["errors"]))
         elif args.action == "github-artifacts": github_artifacts.prepare(root, args.package, args.cache_path)
         elif args.action == "policy": refresh_policy(root)
-        elif args.action == "admit": return admit(root, args, config)
+        elif args.action == "admit": return admit(root, args, config, device_window=device_window)
         elif args.action == "remote": return remote.main(root, config, args)
         elif args.action == "release": return release.main(root, config, args)
         elif args.action == "source":
@@ -1129,7 +1133,9 @@ def main(argv=None):
                                   results_directory=directory / "results")))
             try:
                 with processes.forwarding_signals():
-                    if resource == "light": result = execute()
+                    if resource == "light":
+                        if device_window is not None: devices.report_window(device_window, 0)
+                        result = execute()
                     else:
                         with contextlib.ExitStack() as stack:
                             asked = time.monotonic()
@@ -1147,6 +1153,7 @@ def main(argv=None):
                             if stopped is not None: return stopped
                             # The wait in the queue, apart from what came before it (remote.execute).
                             receipt["queueSeconds"] = round(time.monotonic() - asked, 3)
+                            if device_window is not None: devices.report_window(device_window, receipt["queueSeconds"])
                             if offered is not None:
                                 receipt["hereBecause"] = offered.status
                                 fell_back(args.lane, offered)

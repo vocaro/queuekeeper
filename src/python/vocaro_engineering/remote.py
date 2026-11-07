@@ -1263,6 +1263,11 @@ class Lease(devices.BoundedRun):
     so the owner's lines never leave it, and offload_host.py, which imports nothing of the toolkit,
     runs no copy of the watch."""
 
+    def __init__(self, keys, owner, words, *, record, root, budget):
+        super().__init__(keys, owner, words, record=record, root=root)
+        self.window = {"devices": dict(self.devices), "until": self.deadline.isoformat(),
+                       "cleanupSeconds": self.keep, "budgetSeconds": budget}
+
     def execute(self, send, *, run=None, watch=None, **_unused):
         """send()'s status, the dispatch, with the run it makes recorded in each leased entry here, and what
         watch, a watch of the devices' logs (device_notifications.Watch), saw during it as its
@@ -1276,6 +1281,7 @@ class Lease(devices.BoundedRun):
         outcome = None
         try:
             try:
+                devices.report_window(self.window)
                 status = send()
             finally:
                 if watch is not None: self.run = {**self.run, "notificationWatch": watch.stop()}
@@ -1289,7 +1295,7 @@ class Lease(devices.BoundedRun):
             self.finish(outcome)
 
     def plan(self, mac):
-        return {"record": mac, "devices": dict(self.devices), "until": self.deadline.isoformat()}
+        return {"record": mac, **self.window}
 
     def connected(self, pid):
         try: self.own(pid)
@@ -1307,7 +1313,7 @@ def named_devices(words, record=None):
             if devices.physical(udid) and udid in named}
 
 
-def lease(keys, owner, words, record=None, root=None):
+def lease(keys, owner, words, record=None, root=None, *, budget=None):
     """The reservations held here that a run on the second Mac carries, or None when it uses no physical
     device.
 
@@ -1332,7 +1338,7 @@ def lease(keys, owner, words, record=None, root=None):
         return None
     if not owner:
         raise ValueError(f"name the session whose reservations --device carries: --device-owner, or {devices.OWNER}")
-    return Lease(keys, owner, words, record=record, root=root)
+    return Lease(keys, owner, words, record=record, root=root, budget=budget)
 
 
 def carrying(lease, root, host, work, name, send):
@@ -1672,7 +1678,8 @@ def main(root, config, args):
         # The second Mac runs a group's lanes in turn under its own admission, as `eng run --serial` does here.
         work = ["run", "--here", *(["--serial"] if args.serial else []),
                 *(["--expect", str(args.expect)] if args.expect else []), args.lane, *(["--", *extra] if extra else [])]
-        held = lease(args.device or [], args.device_owner or devices.default_owner(), extra, root=root)
+        budget = lane.get("timeout") if "parallel" not in lane else None
+        held = lease(args.device or [], args.device_owner or devices.default_owner(), extra, root=root, budget=budget)
         # A leased run sent again, after a notification reached it, offers the same commits (carrying).
         sent = {}
         send = lambda: execute(root, config, host, work, lane=args.lane, arguments=extra, expect=args.expect,
@@ -1689,7 +1696,8 @@ def main(root, config, args):
     kind = (["--exclusive"] if args.exclusive else ["--model"] if args.model else []) + \
         (["--foreground"] if args.foreground else []) + \
         (["--time-limit", f"{args.time_limit:g}"] if args.time_limit is not None else [])
-    held = lease(args.device or [], args.device_owner or devices.default_owner(), command, root=root)
+    held = lease(args.device or [], args.device_owner or devices.default_owner(), command, root=root,
+                 budget=args.time_limit)
     work = ["admit", *kind, "--", *command]
     sent = {}
     send = lambda: execute(root, config, host, work, lease=held, sent=sent)

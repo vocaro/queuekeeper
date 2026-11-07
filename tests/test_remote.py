@@ -738,6 +738,24 @@ class RemoteTests(unittest.TestCase):
         # Two runs, each marked active, given its connection and ended.
         self.assertEqual(entry["revision"], held["revision"] + 6)
 
+    def test_leased_admit_reports_the_declared_budget_before_dispatch_and_after_admission(self):
+        held = self.hold()
+        marker = "device command started"
+        watches = Watches({"watched": True, "presented": 0})
+        status, output, error, _runs = self.leased(watches, 0, "admit", "--time-limit", "3600",
+                                                  "--device", "iPhone", "--device-owner", "session-a",
+                                                  "--", sys.executable, "-c", f"print({marker!r})")
+        self.assertEqual(status, 0, output + error)
+        before = next(line for line in error.splitlines() if "iPhone before dispatch" in line)
+        lines = output.splitlines()
+        after, = [line for line in lines if "iPhone after" in line]
+        self.assertRegex(after, r"after [0-9.]+s waiting for admission: [0-9]+s left")
+        for line in (before, after):
+            self.assertIn(held["expectedReleaseBy"], line)
+            self.assertIn("the 3600s run budget plus cleanup no longer fits", line)
+        self.assertLess(lines.index(after), lines.index(marker))
+        self.assertNotIn(PHONE, before + after)
+
     def test_a_leased_run_no_notification_reached_runs_once_with_its_status(self):
         self.hold()
         watches = Watches({"watched": True, "presented": 0})
@@ -778,6 +796,7 @@ class RemoteTests(unittest.TestCase):
                                                     f"open({str(runs)!r}, 'a').write('x')")
         self.assertEqual((status, count, watches.devices), (0, 1, []), error)
         self.assertNotIn("notification", error)
+        self.assertNotIn("left in the reservation", _output + error)
 
     def test_a_leased_lane_and_every_leased_device_are_watched(self):
         self.hold()
@@ -788,6 +807,8 @@ class RemoteTests(unittest.TestCase):
         status, output, error, _runs = self.leased(watches, 0, "run", "check", "--device", "iPhone", "--device", "iPad")
         self.assertEqual(status, 0, output + error)
         self.assertEqual(watches.devices, [PHONE, TABLET, PHONE, TABLET])
+        self.assertEqual(error.count("iPhone and iPad before dispatch"), 2)
+        self.assertEqual(output.count("iPhone and iPad after"), 2)
         self.assertIn("devices: unmeasured: a notification was presented as a banner, the first at 00:52:13", error)
         self.assertIn(f"remote: offering {self.commit[:12]} to fake again", error)
         for key in ("iPhone", "iPad"):
