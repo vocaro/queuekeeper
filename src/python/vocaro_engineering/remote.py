@@ -563,7 +563,8 @@ def toolkit_gap(toolkit):
     an error from wherever it first reaches for it: on 2026-11-06 BreezEPUB's driver stopped on "cannot import
     name 'capture_approvals'" while this Mac's shared checkout waited one landing behind for a process running
     from it to end (vocaro-engineering#209; guides/maintenance.md, The shared checkout follows each toolkit
-    landing). It changes nothing about what is sent."""
+    landing). A dispatch says it only when it sends the checkout's own tree: a clean checkout on main that is
+    only behind sends origin/main instead (followed)."""
     count = toolkit_copy.behind(toolkit)
     if not count: return None
     return (f"the toolkit sent, {toolkit} at {toolkit_copy.git(toolkit, 'rev-parse', '--short=12', 'HEAD')}, is "
@@ -572,16 +573,43 @@ def toolkit_gap(toolkit):
             "once nothing runs from it")
 
 
+def followed(toolkit, commit, head):
+    """origin/main's commit, as last fetched, when the toolkit checkout is clean (commit, its snapshot, is
+    head), on main, and only behind origin/main; otherwise None.
+
+    A dispatch then sends origin/main rather than the checkout's HEAD: the shared checkout waits behind
+    while a process runs from it, and a project change that needs a just-landed toolkit API failed on every
+    run sent from this Mac until it followed (owner's decision, 2026-11-07, vocaro-engineering#227, which
+    replaces #104's rule that a dispatch sends what a run here would read). A dirty checkout, one on another
+    branch, one current, or one with commits of its own sends its own tree, as before."""
+    if commit != head: return None
+    if toolkit_copy.git(toolkit, "symbolic-ref", "--quiet", "--short", "HEAD") != "main": return None
+    upstream = toolkit_copy.git(toolkit, "rev-parse", "--verify", "--quiet", f"{toolkit_copy.UPSTREAM}^{{commit}}")
+    if not upstream or upstream == head: return None
+    if toolkit_copy.git(toolkit, "merge-base", "--is-ancestor", head, upstream) is None: return None
+    return upstream
+
+
+def following_line(kit):
+    """What a dispatch says when it sends origin/main's toolkit rather than the checkout's HEAD (followed)."""
+    count = kit["behind"]
+    return (f"sending the toolkit at origin/main's {kit['commit'][:12]}, not the shared checkout's HEAD "
+            f"{kit['checkoutHead'][:12]}, which is clean, on main and {count} commit{'s' * (count != 1)} behind it "
+            "(vocaro-engineering#227); a run on this Mac reads the checkout until it follows")
+
+
 def kit_snapshot(kit):
     """Whether the toolkit sent is a snapshot of its checkout's working tree rather than its HEAD."""
     return bool(kit) and kit["commit"] != kit.get("head", kit["commit"])
 
 
 def toolkit_identity(kit, commit):
-    """A receipt's toolkit: the commit that ran, a snapshot when its checkout had changes, and the HEAD it
-    was made on. The toolkit's own project runs as its own commit."""
+    """A receipt's toolkit: the commit that ran, a snapshot when its checkout had changes, the HEAD it
+    was made on, and the checkout's HEAD beside it, another commit only when origin/main was sent in its
+    place (followed). The toolkit's own project runs as its own commit."""
     if not kit: return {"toolkit": commit}
-    return {"toolkit": kit["commit"], "toolkitHead": kit.get("head", kit["commit"]),
+    head = kit.get("head", kit["commit"])
+    return {"toolkit": kit["commit"], "toolkitHead": head, "toolkitCheckoutHead": kit.get("checkoutHead", head),
             "toolkitSnapshot": kit_snapshot(kit)}
 
 
@@ -592,10 +620,13 @@ def changed_since(root, offered):
     as it is."""
     sent = offered.sent if offered is not None else {}
     if sent.get("commit") is None: return None
-    # The toolkit's tree too, which goes as a snapshot of its own when its checkout has changes.
+    # The toolkit's tree too, which goes as a snapshot of its own when its checkout has changes. When
+    # origin/main went in place of the checkout's HEAD (followed), a run here reads the checkout, as any run
+    # here does, so the tree it must still hold is that HEAD's.
     kit = sent.get("kit") or {}
+    kept = kit.get("checkoutHead") or kit.get("commit")
     for checkout, commit, what in [(root, sent["commit"], "working tree"),
-                                   *([(TOOLKIT_ROOT, kit["commit"], "toolkit's working tree")] if kit else [])]:
+                                   *([(TOOLKIT_ROOT, kept, "toolkit's working tree")] if kit else [])]:
         now, _head = snapshot(checkout)
         if git(checkout, "rev-parse", f"{now}^{{tree}}") == git(checkout, "rev-parse", f"{commit}^{{tree}}"): continue
         changes = git(checkout, "diff", "--name-status", "--no-renames", commit, now)
@@ -1114,7 +1145,8 @@ def keep_here(root, lane, receipt, status, whole=True, results=None):
         return None
     kept = {"ranOn": HERE, "mac": receipt.get("mac"), "checkout": str(Path(root).resolve()), "commit": commit,
             "head": commit, "snapshot": False, "toolkit": toolkit.get("revision"),
-            "toolkitHead": toolkit.get("revision"), "toolkitSnapshot": False, "lane": lane, "arguments": [],
+            "toolkitHead": toolkit.get("revision"), "toolkitCheckoutHead": toolkit.get("revision"),
+            "toolkitSnapshot": False, "lane": lane, "arguments": [],
             "result": {"exitStatus": status, "outcome": receipt.get("outcome"), "stopped": False,
                        "receipt": receipt}}
     try:
@@ -1367,12 +1399,18 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
             if toolkit == Path(root).resolve():
                 project["origin"] = origin(root)
             else:
-                # The toolkit's working tree goes as the project's does, a snapshot when it has changes: a
-                # run here would read that same tree (owner's decision, vocaro-engineering#104).
+                # The toolkit's working tree goes as the project's does, a snapshot when it has changes
+                # (owner's decision, vocaro-engineering#104), but a clean checkout on main that is only
+                # behind sends origin/main instead (owner's decision, vocaro-engineering#227).
                 kit_commit, kit_head = snapshot(toolkit)
                 kit_directory = checkout_name(toolkit)
+                upstream = followed(toolkit, kit_commit, kit_head)
+                sending_kit = upstream or kit_commit
                 kit = {"directory": kit_directory, "repository": f"repositories/{kit_directory}.git",
-                       "commit": kit_commit, "head": kit_head, "ref": f"{REF}{kit_commit}", "origin": origin(toolkit)}
+                       "commit": sending_kit, "head": upstream or kit_head, "ref": f"{REF}{sending_kit}",
+                       "origin": origin(toolkit)}
+                if upstream:
+                    kit.update(checkoutHead=kit_head, behind=toolkit_copy.behind(toolkit) or 0)
         except RuntimeError as error:  # Git cannot name a commit to send, so nothing is sent.
             raise Unavailable(str(error)) from error
         preparation["seconds"]["staging"] = round(time.monotonic() - began, 3)
@@ -1412,7 +1450,9 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
             f"{{ [ -d {shlex.quote(path)} ] || {init(path)} 2>/dev/null || {{ sleep 1; {init(path)}; }}; }}"
             for path in repositories)])
         print(f"remote: sending {at} to {host}", file=sys.stderr, flush=True)
-        if kit is not None:
+        if kit is not None and kit.get("checkoutHead"):
+            print(f"remote: {following_line(kit)}", file=sys.stderr, flush=True)
+        elif kit is not None:
             gap = toolkit_gap(toolkit)
             if gap: print(f"remote: {gap}", file=sys.stderr, flush=True)
         # The connection that prepares the repositories also lists what earlier runs left running there,

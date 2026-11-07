@@ -531,6 +531,91 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual((receipt["toolkit"], receipt["toolkitHead"], receipt["toolkitSnapshot"]), (head, head, False))
         self.assertEqual(self.eng("remote", "passed", "check")[0], 0)
 
+    def landed_ahead(self):
+        """origin/main one commit ahead of the toolkit checkout's HEAD, as a landing fetched and not yet
+        followed leaves it; returns that commit and HEAD."""
+        head = git(self.toolkit, "rev-parse", "HEAD")
+        (self.toolkit / "landed.txt").write_text("landed meanwhile\n")
+        upstream = commit_all(self.toolkit)
+        git(self.toolkit, "update-ref", "refs/remotes/origin/main", upstream)
+        git(self.toolkit, "reset", "-q", "--hard", head)
+        return upstream, head
+
+    def sent_toolkit(self):
+        status, output, error = self.eng("remote", "run", "check")
+        self.assertEqual(status, 0, output + error)
+        receipt = json.loads((self.project / ".build/engineering/remote/check/source.json").read_text())
+        kit = self.checkout(0).parent / "vocaro-engineering"
+        self.assertEqual(git(kit, "rev-parse", "HEAD"), receipt["toolkit"])
+        return receipt, error
+
+    def test_a_clean_toolkit_checkout_on_main_only_behind_sends_origin_main(self):
+        # vocaro-engineering#227: a dispatch sends origin/main's toolkit, and says so, rather than the HEAD of a
+        # shared checkout left behind while a process ran from it.
+        upstream, head = self.landed_ahead()
+        receipt, error = self.sent_toolkit()
+        self.assertEqual((receipt["toolkit"], receipt["toolkitHead"], receipt["toolkitCheckoutHead"],
+                          receipt["toolkitSnapshot"]), (upstream, upstream, head, False))
+        self.assertTrue((self.checkout(0).parent / "vocaro-engineering/landed.txt").is_file())
+        said = " ".join(error.split())
+        self.assertIn(f"sending the toolkit at origin/main's {upstream[:12]}, not the shared checkout's HEAD "
+                      f"{head[:12]}, which is clean, on main and 1 commit behind it", said)
+        self.assertNotIn("behind its origin/main (last landed", said)
+        # The checkout itself is untouched, and a landed toolkit counts for the project's commit.
+        self.assertEqual((git(self.toolkit, "rev-parse", "HEAD"), git(self.toolkit, "status", "--porcelain")), (head, ""))
+        self.assertEqual(self.eng("remote", "passed", "check")[0], 0)
+
+    def test_a_toolkit_checkout_dirty_on_another_branch_diverged_or_current_sends_its_own_tree(self):
+        # The negative controls: each keeps #104's rule, and the first three still name the gap.
+        def dirty():
+            (self.toolkit / "untracked.txt").write_text("new\n")
+            return False
+
+        def other_branch():
+            git(self.toolkit, "checkout", "-q", "-b", "other")
+            return False
+
+        def diverged():
+            (self.toolkit / "own.txt").write_text("a commit of its own\n")
+            commit_all(self.toolkit)
+            return False
+
+        def current():
+            git(self.toolkit, "update-ref", "refs/remotes/origin/main", git(self.toolkit, "rev-parse", "HEAD"))
+            return True
+
+        start = git(self.toolkit, "rev-parse", "HEAD")
+        # Diverged comes last: the second Mac's policy refresh fetches main, which must never move back.
+        for make in (dirty, other_branch, current, diverged):
+            with self.subTest(make.__name__):
+                git(self.toolkit, "checkout", "-q", "main")
+                git(self.toolkit, "reset", "-q", "--hard", start)
+                git(self.toolkit, "clean", "-q", "-fd")
+                upstream, _ = self.landed_ahead()
+                is_current = make()
+                head = git(self.toolkit, "rev-parse", "HEAD")
+                receipt, error = self.sent_toolkit()
+                sent = git(self.toolkit, "rev-parse", f"{receipt['toolkit']}^") if make is dirty else receipt["toolkit"]
+                self.assertEqual(sent, head)
+                self.assertEqual((receipt["toolkitHead"], receipt["toolkitCheckoutHead"]), (head, head))
+                self.assertEqual(receipt["toolkitSnapshot"], make is dirty)
+                said = " ".join(error.split())
+                self.assertNotIn("sending the toolkit at origin/main", said)
+                if is_current: self.assertNotIn("behind its origin/main", said)
+                else: self.assertIn(f"is 1 commit behind its origin/main", said)
+        git(self.toolkit, "checkout", "-q", "main")
+
+    def test_work_taken_here_after_origin_main_was_sent_runs_while_the_checkout_is_as_it_was(self):
+        # A run here reads the checkout, so what it must still hold is the checkout's HEAD, not origin/main's tree.
+        upstream, head = self.landed_ahead()
+        kit = {"commit": upstream, "head": upstream, "checkoutHead": head, "behind": 1}
+        offered = remote.Offer("check", "`eng run --here check`", lambda host, sent: 0)
+        offered.sent = {"commit": self.commit, "kit": kit}
+        with patch.object(remote, "TOOLKIT_ROOT", self.toolkit):
+            self.assertIsNone(remote.changed_since(self.project, offered))
+            (self.toolkit / "engineering.json").write_text("{}\n")
+            self.assertIn("toolkit's working tree changed after", remote.changed_since(self.project, offered))
+
     def test_a_different_xcode_on_the_second_mac_is_refused(self):
         local = {**offload_host.identity(None), "xcode": "Xcode 99.0\nBuild version 99A1"}
         with patch.object(remote, "developer_directory", return_value=self.temp.name), \

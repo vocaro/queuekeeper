@@ -856,11 +856,22 @@ second Mac does not need.
 `eng run`, `eng admit --verify`, `eng remote run` and `eng remote admit` all send work this way.
 The toolkit's checkout goes the same way, as a snapshot of its working tree when it has changes,
 untracked files included, rather than keep the work here (owner's decision, 2026-11-02,
-[vocaro-engineering#104](https://github.com/vocaro/vocaro-engineering/issues/104)). A run here
-would read that same tree, so this changes where the work runs, not what it runs; admission
-chooses the Mac. Nothing the second Mac does needs a toolkit commit a branch holds: the policy
-refresh there reads the toolkit's `origin/main`, not the commit checked out. A queue's gate uses a
-clean copy of the toolkit instead ([which toolkit a gate runs](maintenance.md#the-merge-queue)).
+[vocaro-engineering#104](https://github.com/vocaro/vocaro-engineering/issues/104)); admission
+chooses the Mac. A checkout that is clean, on `main` and only behind its `origin/main`, as last
+fetched, sends `origin/main`'s commit instead of its HEAD, and the dispatch says so in one line
+(`sending the toolkit at origin/main's COMMIT, not the shared checkout's HEAD OLD, which is clean,
+on main and N commits behind it`). The shared checkout waits behind while a process runs from it
+([guides/maintenance.md](maintenance.md), The shared checkout follows each toolkit landing), and
+a project change that needed a just-landed toolkit API failed on every run sent from this Mac
+until it followed. Such a run there executes landed code that a run here does not yet read, which
+replaces #104's rule that a dispatch sends what a run here would read (owner's decision,
+2026-11-07, [vocaro-engineering#227](https://github.com/vocaro/vocaro-engineering/issues/227)). A
+checkout with changes, on another branch, current, or with commits of its own sends its own tree
+as before, and a toolkit so sent that is behind its `origin/main` is named in one line (`the
+toolkit sent, …, is N commits behind its origin/main`). Work this Mac takes after offering it runs
+while the toolkit checkout still holds the HEAD it had, as a run here reads the checkout. Nothing
+the second Mac does needs a toolkit commit a branch holds: the policy refresh there reads the
+toolkit's `origin/main`, not the commit checked out. A queue's gate uses a clean copy of the toolkit instead ([which toolkit a gate runs](maintenance.md#the-merge-queue)).
 
 `eng remote` takes no slot here. It pushes the commit, and the toolkit commit that runs it, by git
 over SSH and without hooks to bare repositories under
@@ -985,9 +996,10 @@ dispatch's results unfiled
 
 The receipt names the commit that ran (`commit`) and the HEAD it was sent from (`head`), the same
 commit unless `snapshot` is true, and likewise the toolkit's: `toolkit`, `toolkitHead` and
-`toolkitSnapshot`. A snapshot's receipt, of either, stays in `.build/engineering/remote/LANE/`:
-no branch holds the snapshot, so its result is no commit's pass, and `eng remote passed` never
-counts it, for HEAD or for the snapshot itself. Commit the work and run the lane again for a pass
+`toolkitSnapshot`, with the toolkit checkout's own HEAD beside them as `toolkitCheckoutHead`, which
+differs from `toolkitHead` only when `origin/main` was sent in its place. A snapshot's receipt, of
+either, stays in `.build/engineering/remote/LANE/`: no branch holds the snapshot, so its result is
+no commit's pass, and `eng remote passed` never counts it, for HEAD or for the snapshot itself. Commit the work and run the lane again for a pass
 that counts. `eng run` and `eng remote run` say so as they send a snapshot of the whole lane,
 naming the changed and untracked files, as `eng run` does for a run here on such a tree
 ([vocaro-engineering#197](https://github.com/vocaro/vocaro-engineering/issues/197)).
