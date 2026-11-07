@@ -29,9 +29,26 @@ from . import evidence, offload_host, resources
 
 DOMAIN, KEY = offload_host.CRASH_DIALOG
 OFF = "none"
-# Seconds between looks at the screen's system alerts while a run holds the foreground. An alert came about 1 s
-# after its app's crash on the second Mac, and a look takes under one (2026-11-03).
+# Seconds between looks at the screen's system alerts while a run holds the foreground: the wait from one look's
+# end to the next one's start, not their cadence. An alert came about 1 s after its app's crash on the second Mac,
+# and a look took under one (2026-11-03); under load a System Events look took 17 s and 30 s there (2026-11-07,
+# #225), so each look first glances at the window list, which answers at once, and asks System Events only when
+# the list shows a window of a process that raises system alerts.
 WATCH = 2
+# Seconds after which a look asks System Events even when the window list shows no such window, in case a
+# process's window-list owner name differs from the name System Events knows it by.
+RECHECK = 30
+# The on-screen windows of the processes that raise system alerts (offload_host.ALERT_PROCESSES), each as its
+# owner, layer and bounds, which CGWindowListCopyWindowInfo gives without any permission (#204); a crash report is
+# UserNotificationCenter's window at layer 8. Never a window's name.
+GLANCE_SCRIPT = """ObjC.import('CoreGraphics');
+var names = %s;
+var list = ObjC.deepUnwrap(ObjC.castRefToObject($.CGWindowListCopyWindowInfo($.kCGWindowListOptionOnScreenOnly,
+    $.kCGNullWindowID))) || [];
+JSON.stringify(list.filter(function (w) { return names.indexOf(w.kCGWindowOwnerName) >= 0; }).map(function (w) {
+  var b = w.kCGWindowBounds || {};
+  return {app: w.kCGWindowOwnerName, layer: w.kCGWindowLayer, frame: [b.X, b.Y, b.Width, b.Height]};
+}));""" % json.dumps(list(offload_host.ALERT_PROCESSES))
 # Crash-report alerts dismissed in one clearing, each looked for again after the last one went.
 ATTEMPTS = 10
 # The buttons that dismiss a crash-report alert, in preference order. Reopen starts the app again and
@@ -64,6 +81,27 @@ def change(value):
         ["defaults", "write", DOMAIN, KEY, "-string", value]
     try: return subprocess.run(command, capture_output=True, timeout=60).returncode == 0
     except (OSError, subprocess.SubprocessError): return False
+
+
+def glance():
+    """The on-screen windows of the processes that raise system alerts, each as {"app", "layer", "frame"}, from
+    the window list, which needs no permission; None when it cannot be read."""
+    found = run(["osascript", "-l", "JavaScript", "-e", GLANCE_SCRIPT])
+    if found is None: return None
+    try: listed = json.loads(found)
+    except ValueError: return None
+    if not isinstance(listed, list): return None
+    windows = []
+    for window in listed:
+        try:
+            app, layer = str(window["app"]), int(window["layer"])
+            frame = [int(float(value)) for value in window["frame"]]
+        except (KeyError, TypeError, ValueError):
+            continue
+        # A window with no extent covers nothing.
+        if app in offload_host.ALERT_PROCESSES and len(frame) == 4 and frame[2] and frame[3]:
+            windows.append({"app": app, "layer": layer, "frame": frame})
+    return windows
 
 
 def press(alert, button):
@@ -188,15 +226,27 @@ def recover(said=None):
 class Run:
     """What a guarded run met: crash-report alerts cleared, each with when eng first saw it and when its press
     returned, and system alerts left over the screen. apps names the app under test, as a crash alert names its
-    process; running is set once the run has started, so that an alert cleared before it is told apart."""
+    process; running is set once the run has started, so that an alert cleared before it is told apart. A look
+    that cannot read the alerts is followed by the next, WATCH s later, as any other (#225); looks counts the
+    looks that read them, that failed, and that the window list showed no need for."""
 
-    def __init__(self, said, windows, apps=()):
-        self.said, self.windows = said, windows
+    def __init__(self, said, windows, apps=(), watch=WATCH):
+        self.said, self.windows, self.watch = said, windows, watch
         self.apps = [name for name in apps if name]
         self.cleared, self.left = [], []
         self.seen = {}
         self.running = False
+        self.failing = False
+        self.asked = None
+        self.looks = {"read": 0, "failed": 0, "glanced": 0}
         self.lock = threading.Lock()
+
+    def quiet(self, now):
+        """Whether the window list shows no window of a process that raises system alerts, so that this look
+        need not ask System Events, which under load takes many seconds: never with windows given, as a test
+        gives them, nor RECHECK s after System Events was last asked."""
+        if self.windows is not None or self.asked is None or now - self.asked > RECHECK: return False
+        return glance() == []
 
     def listed(self, started):
         """The screen's system alerts, each first seen, however many looks it then stands, at the start of the
@@ -206,11 +256,25 @@ class Run:
             for alert in alerts or []: self.seen.setdefault(key(alert), started)
         return alerts
 
-    def look(self):
+    def look(self, full=False):
+        """The system alerts left over the screen once this look has cleared what it may, or None when they
+        cannot be read. A full look always asks System Events; another first glances at the window list."""
         started, presses = clock(), {}
+        if not full and self.quiet(started):
+            with self.lock: self.looks["glanced"] += 1
+            return []
+        self.asked = started
         cleared, left = clear(self.said, lambda: self.listed(started),
                               lambda alert: presses.setdefault(key(alert), clock()))
         with self.lock:
+            self.looks["failed" if left is None else "read"] += 1
+            # Said once as looks start failing and once as one reads them again, however many fail between.
+            if left is None and not self.failing:
+                self.said(f"eng: the screen's system alerts cannot be read (System Events needs accessibility, or did "
+                          f"not answer), so none is cleared now; eng looks again every {self.watch:g} s")
+            elif left is not None and self.failing:
+                self.said("eng: the screen's system alerts can be read again")
+            self.failing = left is None
             for alert in cleared:
                 self.cleared.append({"alert": alert, "since": self.seen.pop(key(alert), started),
                                      "at": presses.get(key(alert), clock()), "during": self.running})
@@ -264,13 +328,17 @@ class Run:
         for entry, _excuses, why in judged:
             print(f"eng: the run's status {status} stands: the crash-report alert eng cleared during it {why}: "
                   f"{describe(entry['alert'])}", file=sys.stderr, flush=True)
+        if not self.looks["read"] and not self.looks["glanced"]:
+            print(f"eng: the run's status {status} stands, though no look during it could read the screen's system "
+                  "alerts, so eng cannot say whether one took its clicks", file=sys.stderr, flush=True)
         return status
 
     def summary(self):
         cleared = [{"alert": describe(entry["alert"]), "process": crashed(entry["alert"]),
                     "start": stamp(entry["since"]), "stoodSeconds": round(entry["at"] - entry["since"], 1),
                     "duringRun": entry["during"]} for entry in self.cleared]
-        return {"appsUnderTest": self.apps, "cleared": cleared, "left": [describe(alert) for alert in self.left]}
+        return {"appsUnderTest": self.apps, "cleared": cleared, "left": [describe(alert) for alert in self.left],
+                "looks": dict(self.looks)}
 
 
 @contextlib.contextmanager
@@ -291,7 +359,7 @@ def guarded(purpose, *, said=None, receipt=None, windows=None, watch=None, apps=
     kept = {"before": before, "owner": f"eng {os.getpid()} for {purpose}", "pid": os.getpid(),
             "start": resources.process_start(os.getpid()), "at": datetime.now(timezone.utc).isoformat()}
     path.write_text(json.dumps(kept))
-    state = Run(said, windows, apps)
+    state = Run(said, windows, apps, watch)
     # In the receipt from the start, for a receipt written while the run still holds it.
     report = {"dialogTypeBefore": before}
     if receipt is not None: receipt["crashAlerts"] = report
@@ -301,19 +369,16 @@ def guarded(purpose, *, said=None, receipt=None, windows=None, watch=None, apps=
         if before != OFF:
             if change(OFF): said(f"eng: crash-report dialogs off for the run: {DOMAIN} {KEY} was {before or 'unset'}")
             else: said(f"eng: could not turn crash-report dialogs off ({DOMAIN} {KEY}); alerts are cleared instead")
-        left = state.look()
-        if left is None:
-            said("eng: the screen's system alerts cannot be read (System Events needs accessibility), so none is "
-                 "cleared")
-        elif left:
-            raise Blocked(stopping(left))
+        left = state.look(full=True)
+        if left: raise Blocked(stopping(left))
         # What a look clears from here on, it clears during the run.
         state.running = True
+        # Watched even when this look could not read the alerts: on the second Mac on 2026-11-07 one such look
+        # was a slow System Events call, not a missing grant, and the alert it missed stood the rest of the run.
         def watching():
             while not stop.wait(watch): state.look()
-        if left is not None:
-            watcher = threading.Thread(target=watching, name="crash-alerts", daemon=True)
-            watcher.start()
+        watcher = threading.Thread(target=watching, name="crash-alerts", daemon=True)
+        watcher.start()
         yield state
     finally:
         stop.set()

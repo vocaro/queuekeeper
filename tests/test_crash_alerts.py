@@ -31,14 +31,24 @@ ACCESS = {"app": "UserNotificationCenter", "frame": [600, 300, 400, 220],
 class Host:
     """A Mac's DialogType and system alerts, behind the commands crash_alerts runs: defaults and osascript."""
 
-    def __init__(self, value=None, alerts=(), pressable=True):
+    def __init__(self, value=None, alerts=(), pressable=True, readable=True, listable=True):
         self.value, self.alerts, self.pressable = value, list(alerts), pressable
+        # Whether System Events answers a listing, which can be a count of listings it fails first, and whether
+        # the window list can be read.
+        self.readable, self.listable = readable, listable
         self.changes, self.pressed = [], []
+        self.listings = self.glances = 0
         self.lock = threading.Lock()
 
     def run(self, command, environment=None):
         with self.lock:
             if command[:2] == ["defaults", "read"]: return self.value
+            if command[:3] == ["osascript", "-l", "JavaScript"]:
+                self.glances += 1
+                self.assertGlance(command[-1])
+                if not self.listable: return None
+                return json.dumps([{"app": alert["app"], "layer": 8, "frame": alert["frame"]} for alert in self.alerts]
+                                  + [{"app": "Finder", "layer": 0, "frame": [0, 0, 800, 600]}])
             script = command[-1]
             if "click button" in script:
                 button = re.search(r'click button "([^"]+)"', script).group(1)
@@ -49,8 +59,20 @@ class Host:
                         self.pressed.append((alert["app"], button))
                         return "pressed"
                 return ""
+            self.listings += 1
+            if self.readable is not True:
+                if not self.readable: return None
+                self.readable -= 1
+                if self.readable == 0: self.readable = True
+                return None
             return "".join("\t".join([alert["app"], *map(str, alert["frame"]), "\x1f".join(alert["texts"]) + "\x1f",
                                       "\x1f".join(alert["buttons"])]) + "\n" for alert in self.alerts)
+
+    @staticmethod
+    def assertGlance(script):
+        # The window list alone, of the alert processes, and never a window's name.
+        assert "CGWindowListCopyWindowInfo" in script and "kCGWindowName" not in script, script
+        assert all(f'"{name}"' in script for name in offload_host.ALERT_PROCESSES), script
 
     def change(self, value):
         self.changes.append(value)
@@ -133,7 +155,8 @@ class GuardTests(HostTest):
                     self.assertEqual(self.host.changes, [crash_alerts.OFF, before])
                     self.assertFalse(self.record.exists())
                     self.assertEqual(receipt["crashAlerts"], {"dialogTypeBefore": before, "restored": True,
-                                                              "appsUnderTest": [], "cleared": [], "left": []})
+                                                              "appsUnderTest": [], "cleared": [], "left": [],
+                                                              "looks": {"read": 1, "failed": 0, "glanced": 0}})
         self.assertTrue(any("crash-report dialogs off for the run" in line for line in self.said))
         self.assertTrue(any("put back crash-report dialogs" in line for line in self.said))
         # Dialogs the owner had off already are neither changed nor put back.
@@ -227,6 +250,91 @@ class GuardTests(HostTest):
             with patch.object(crash_alerts, "run", return_value=None):
                 self.assertEqual(crash_alerts.main(["check"]), 1)
             self.assertEqual(crash_alerts.main([]), 2)
+
+
+class WatchTests(HostTest):
+    """Looks after a failed one, and the window list's glance before System Events (#225)."""
+
+    def test_a_failed_first_look_still_starts_the_watcher_which_clears_a_later_alert(self):
+        # The first listing fails, as a slow System Events call did on the second Mac on 2026-11-07.
+        self.host = Host("basic", readable=1)
+        with self.guarded(watch=0.02) as run:
+            self.host.alerts.append(CRASH)
+            deadline = time.monotonic() + stretched(5)
+            while not self.host.pressed and time.monotonic() < deadline: threading.Event().wait(0.01)
+        self.assertEqual(self.host.pressed, [("UserNotificationCenter", "Ignore")])
+        self.assertEqual(sum("system alerts cannot be read" in line for line in self.said), 1)
+        self.assertIn("eng looks again every 0.02 s", next(line for line in self.said if "cannot be read" in line))
+        self.assertEqual(sum("system alerts can be read again" in line for line in self.said), 1)
+        self.assertEqual(run.summary()["looks"]["failed"], 1)
+        self.assertGreaterEqual(run.summary()["looks"]["read"], 1)
+
+    def test_looks_that_keep_failing_are_said_once_and_a_failure_stands_saying_none_could_read(self):
+        self.host = Host("basic", alerts=[CRASH], readable=False)
+        run = crash_alerts.Run(self.said.append, None, ("EPUBLib",))
+        self.assertIsNone(run.look(full=True))
+        for _ in range(3): self.assertIsNone(run.look())
+        self.assertEqual(sum("cannot be read" in line for line in self.said), 1)
+        self.assertEqual(run.looks, {"read": 0, "failed": 4, "glanced": 0})
+        with contextlib.redirect_stderr(StringIO()) as error:
+            self.assertEqual(run.judged(5), 5)
+        self.assertIn("eng: the run's status 5 stands, though no look during it could read the screen's system alerts",
+                      error.getvalue())
+        # A run whose looks read the screen says nothing of it.
+        self.host = Host("basic")
+        run = crash_alerts.Run(self.said.append, None, ("EPUBLib",))
+        run.look(full=True)
+        with contextlib.redirect_stderr(StringIO()) as error: self.assertEqual(run.judged(5), 5)
+        self.assertEqual(error.getvalue(), "")
+
+    def test_the_window_list_spares_a_system_events_look_while_it_shows_no_alert_window(self):
+        now = [START]
+        with patch.object(crash_alerts, "clock", lambda: now[0]):
+            run = crash_alerts.Run(self.said.append, None)
+            self.assertEqual(run.look(full=True), [])
+            self.assertEqual(self.host.listings, 1)
+            # Finder's window is in the list, and no alert process's is: System Events is not asked.
+            for _ in range(3): self.assertEqual(run.look(), [])
+            self.assertEqual((self.host.listings, self.host.glances), (1, 3))
+            # A crash report's window in the list sends the look to System Events, which clears it.
+            self.host.alerts = [CRASH]
+            self.assertEqual(run.look(), [])
+            # Listed once to find it and once to see it gone.
+            self.assertEqual((self.host.listings, self.host.pressed), (3, [("UserNotificationCenter", "Ignore")]))
+            # A window list that cannot be read does too.
+            self.host.listable = False
+            run.look()
+            self.assertEqual(self.host.listings, 4)
+            self.host.listable = True
+            # And RECHECK s after System Events was last asked, it is asked anyway.
+            now[0] += crash_alerts.RECHECK - 1
+            run.look()
+            self.assertEqual(self.host.listings, 4)
+            now[0] += 2
+            run.look()
+            self.assertEqual(self.host.listings, 5)
+        self.assertEqual(run.looks, {"read": 4, "failed": 0, "glanced": 4})
+        # Windows given, as a test gives them, are always read.
+        given = []
+        run = crash_alerts.Run(self.said.append, lambda: given.append(True) or [])
+        run.look(full=True)
+        run.look()
+        self.assertEqual(len(given), 2)
+
+    def test_the_glance_reads_only_alert_processes_windows_of_some_extent(self):
+        listed = json.dumps([{"app": "UserNotificationCenter", "layer": 8, "frame": [734, 202, 260, 318]},
+                             {"app": "SecurityAgent", "layer": 1000, "frame": [600, 300, 400, 220]},
+                             {"app": "UserNotificationCenter", "layer": 8, "frame": [0, 0, 0, 0]},
+                             {"app": "Finder", "layer": 0, "frame": [0, 0, 800, 600]},
+                             {"app": "UserNotificationCenter", "frame": [1, 2, 3, 4]}, "not a window"])
+        with patch.object(crash_alerts, "run", return_value=listed):
+            self.assertEqual(crash_alerts.glance(), [
+                {"app": "UserNotificationCenter", "layer": 8, "frame": [734, 202, 260, 318]},
+                {"app": "SecurityAgent", "layer": 1000, "frame": [600, 300, 400, 220]}])
+        for answer in (None, "", "not json", "{}"):
+            with self.subTest(answer), patch.object(crash_alerts, "run", return_value=answer):
+                self.assertIsNone(crash_alerts.glance())
+        Host.assertGlance(crash_alerts.GLANCE_SCRIPT)
 
 
 OTHER = {**CRASH, "texts": ["Crasher944 quit unexpectedly.", "Click Reopen to open the application again."]}
@@ -391,9 +499,9 @@ class LaneTests(HostTest):
 
     def test_a_lane_that_fails_under_an_alert_raised_during_it_is_unmeasured(self):
         real = crash_alerts.Run.look
-        def look(run):
+        def look(run, **options):
             # The alert appears once the run has started: after the look before it.
-            left = real(run)
+            left = real(run, **options)
             self.host.alerts = [REOPEN_ONLY]
             return left
         with patch.object(crash_alerts.Run, "look", look):
@@ -409,10 +517,10 @@ class LaneTests(HostTest):
 
     def test_a_lane_that_fails_after_eng_cleared_another_process_s_long_alert_is_unmeasured(self):
         real, now = crash_alerts.Run.look, [START]
-        def look(run, alert):
+        def look(run, alert, **options):
             # The alert appears once the run has started, and its press takes 17 s.
             if run.running and not run.cleared: self.host.alerts = [alert]
-            return real(run)
+            return real(run, **options)
         def press(target, button):
             now[0] += 17
             self.host.alerts = []
@@ -421,7 +529,8 @@ class LaneTests(HostTest):
                                      (OTHER, "broken-mac", 1)):
             with self.subTest(alert=alert["texts"][0], lane=lane), \
                     patch.object(crash_alerts, "clock", lambda: now[0]), patch.object(crash_alerts, "press", press), \
-                    patch.object(crash_alerts.Run, "look", lambda run, alert=alert: look(run, alert)):
+                    patch.object(crash_alerts.Run, "look", lambda run, alert=alert, **options: look(run, alert,
+                                                                                                     **options)):
                 self.host.alerts = []
                 status, error = self.eng("run", "--here", lane)
                 self.assertEqual(status, outcome, error)
@@ -458,9 +567,9 @@ class LaneTests(HostTest):
         self.host.alerts = []
         now = [START]
         real = crash_alerts.Run.look
-        def look(run):
+        def look(run, **options):
             if run.running and not run.cleared: self.host.alerts = [OTHER]
-            return real(run)
+            return real(run, **options)
         def press(target, button):
             now[0] += 17
             self.host.alerts = []
