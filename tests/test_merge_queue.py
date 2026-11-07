@@ -203,7 +203,7 @@ class Landing(Fixture):
         with contextlib.redirect_stdout(io.StringIO()) as said:
             self.assertEqual(self.work(), 0)
         self.assertEqual(self.state(identifier)["state"], "landed")
-        self.assertIn("gate exited 0 on this Mac (a light lane runs where it starts)", said.getvalue())
+        self.assertIn("gate exited 0 on this Mac (no second Mac is configured)", said.getvalue())
         # A dispatch record of a run on the second Mac names it; a receipt an earlier run wrote here does not.
         worker = mq.Worker.__new__(mq.Worker)
         worker.checkout = self.base / "checkout"
@@ -2429,6 +2429,8 @@ class ToolkitCopy(Fixture):
         self.kit = self.base / "toolkit"
         run(self.base, "git", "clone", "-q", str(self.kit_origin), str(self.kit))
         shutil.copytree(ROOT / "src/python", self.kit / "src/python", ignore=shutil.ignore_patterns("__pycache__"))
+        # The policy every admitted lane reads, as the toolkit's origin holds it (cli.refresh_policy).
+        shutil.copytree(ROOT / "policies", self.kit / "policies")
         run(self.kit, "git", "add", ".")
         run(self.kit, "git", "commit", "-qm", "Toolkit")
         run(self.kit, "git", "push", "-q", "origin", "HEAD:main")
@@ -2576,13 +2578,16 @@ class ToolkitCopy(Fixture):
         tests the oldest alone, as the one it replaces was about to, costing no gate."""
         config = json.loads((self.repo / "engineering.json").read_text())
         config["lanes"]["gate"]["command"] = ["python3", "lane.py", str(self.counter), str(self.status)]
+        # Kept on this Mac, so that the bisect gates one half at a time, which the count below follows, rather than its
+        # halves at once (Beside): every lane is admitted and offerable since the owner's decision of 2026-11-07.
+        config["lanes"]["gate"]["here"] = "the test counts its gates one after another"
         run(self.repo, "git", "checkout", "-q", "-B", "start", "origin/main")
         self.publish(config, "Fail on bad files")
         self.commit("a", "a"); self.commit("bad", "bad")
         ids = self.add("a", "bad")
         real = mq.Worker.gate
-        def gate(worker, *arguments):
-            result = real(worker, *arguments)
+        def gate(worker, *arguments, **keywords):
+            result = real(worker, *arguments, **keywords)
             if self.gates() == 1: self.advance_origin("between")
             return result
         with patch.object(mq.Worker, "gate", gate), patch("builtins.print"): self.assertEqual(self.work(), 0)
@@ -2786,10 +2791,12 @@ class ToolkitsOwnWorker(Fixture):
     def setUp(self):
         super().setUp()
         shutil.copytree(ROOT / "src/python", self.repo / "src/python", ignore=shutil.ignore_patterns("__pycache__"))
+        # The policy every admitted lane reads, as the toolkit's origin holds it (cli.refresh_policy).
+        shutil.copytree(ROOT / "policies", self.repo / "policies")
         # Its own toolkit, as the toolkit's engineering.json names it.
         config = json.loads((self.repo / "engineering.json").read_text())
         (self.repo / "engineering.json").write_text(json.dumps({**config, "toolkit": {"path": "."}}))
-        run(self.repo, "git", "add", "src", "engineering.json")
+        run(self.repo, "git", "add", "src", "policies", "engineering.json")
         run(self.repo, "git", "commit", "-qm", "Toolkit")
         run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
         self.started = self.base / "started"
@@ -4157,6 +4164,13 @@ class BothHalves(Fixture):
         """The older half runs with eng run's --here, the newer with --offload-only, which never runs it here."""
         self.assertEqual(OFFERED, (("--here",), ("--offload-only",)))
         self.assertEqual(OFFERABLE({"lanes": {"gate": {"command": ["x"], "resource": "heavy"}}}, ["gate"]), None)
+        # A light gate, such as the toolkit's was, or one with no resource, is admitted and offered as every lane is
+        # (the owner's decision, 2026-11-07), so its halves run one on each Mac; a self lane stays here.
+        for resource in ({"resource": "light"}, {}):
+            self.assertEqual(OFFERABLE({"lanes": {"gate": {"command": ["x"], **resource}}}, ["gate"]), None)
+        self.assertEqual(OFFERABLE({"lanes": {"gate": {"command": ["x"], "resource": "self"}}}, ["gate"]),
+                         "gate runs only on this Mac: a self lane runs where it starts, and its script admits each of "
+                         "its parts")
         self.assertEqual(OFFERABLE({"lanes": {"gate": {"command": ["x"], "resource": "heavy", "here": "it builds the "
                                                       "app"}}}, ["gate"]), "gate runs only on this Mac: the lane says: "
                                                                               "it builds the app")

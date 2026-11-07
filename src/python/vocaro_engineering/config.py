@@ -77,21 +77,20 @@ def parse(source):
         for key in ["foreground", "model", "display", "wholeHost", "unlockedScreen"]:
             if key in lane and type(lane[key]) is not bool:
                 raise ValueError(f"{name}.{key} must be true or false")
-        if lane.get("foreground") and lane.get("resource", "light") == "light":
-            raise ValueError(f"{name}.foreground needs a heavy or exclusive lane: the second Mac's foreground is held "
-                             "inside the run's admission, and a light lane is not admitted")
+        resource_of(name, lane)
+        if lane.get("foreground") and unadmitted(lane):
+            raise ValueError(f"{name}.foreground needs an admitted lane: the second Mac's foreground is held inside the "
+                             "run's admission, and a self lane is not admitted")
         place(name, lane)
         model(name, lane)
         whole_host(name, lane)
         screen(name, lane)
-        if lane.get("display") and lane.get("resource", "light") == "light":
-            raise ValueError(f"{name}.display needs a heavy or exclusive lane: only an admitted test run holds the "
-                             "display's assertions, and a light lane is not admitted")
+        if lane.get("display") and unadmitted(lane):
+            raise ValueError(f"{name}.display needs an admitted lane: only an admitted test run holds the display's "
+                             "assertions, and a self lane is not admitted")
         command = lane.get("command")
         if not isinstance(command, list) or not command or any(not isinstance(x, str) or not x for x in command):
             raise ValueError(f"Lane {name} needs an argv list, never shell source")
-        if lane.get("resource", "light") not in {"light", "heavy", "exclusive"}:
-            raise ValueError(f"Invalid resource for {name}")
         for key in ["minimumTests", "timeout"]:
             if key in lane and (type(lane[key]) is not int or lane[key] <= 0):
                 raise ValueError(f"{name}.{key} must be a positive integer")
@@ -111,7 +110,35 @@ def parse(source):
     return value
 
 
-RESOURCES = ["light", "heavy", "exclusive"]
+# What a lane takes of its Mac. Every lane is admitted, first come, first served, and offered to the second Mac
+# first (the owner's decision, 2026-11-07, vocaro-engineering#200): heavy, one slot of heavy-work admission, which a
+# lane that gives no resource takes too; light, which once ran unadmitted where it started, now means heavy, so
+# that the engineering.json files that give it keep loading; exclusive, the host to itself; and self, a lane whose
+# script admits each of its parts itself, such as a calibration that builds under `eng admit` and then times under
+# `eng admit --exclusive`, which an admission of its own would refuse, so eng run runs it where it starts, unadmitted
+# (guides/shared-host.md, Heavy-work admission).
+RESOURCES = ["light", "heavy", "exclusive", "self"]
+# How heavily a lane's admission holds its Mac, so that a group's is at least each of its lanes'.
+WEIGHT = {"heavy": 0, "exclusive": 1}
+
+
+def resource_of(name, lane):
+    """The admission the lane or group takes: heavy, exclusive or self, light and no resource meaning heavy."""
+    resource = lane.get("resource", "heavy")
+    if resource not in RESOURCES:
+        raise ValueError(f"Invalid resource for {name}: {resource!r} is none of {', '.join(RESOURCES)}")
+    return "heavy" if resource == "light" else resource
+
+
+def unadmitted(lane):
+    """Whether eng runs the lane, or group, without admission of its own: a self lane, whose script admits each of
+    its parts."""
+    return lane.get("resource") == "self"
+
+
+def admission(lane):
+    """The admission eng run takes for the lane, or group: heavy, exclusive, or self for none."""
+    return resource_of("the lane", lane)
 # The platforms `eng app` builds an app for, and whether each is kept after every gated landing unless the
 # project says otherwise: the Mac build is, so that the newest landed app opens at once; a device build is
 # made when a device asks for it (app_builds.py).
@@ -284,15 +311,15 @@ def retired(lanes):
 
 
 def place(name, lane):
-    """A heavy or exclusive lane goes to the second Mac unless "here" says why it stays on this Mac, such as
+    """Every admitted lane goes to the second Mac first unless "here" says why it stays on this Mac, such as
     a physical device or a measurement tied to this Mac's hardware, like goldens rendered on its GPU
     (guides/shared-host.md, Which Mac runs a lane)."""
     if "here" not in lane: return
     if not isinstance(lane["here"], str) or not lane["here"].strip():
         raise ValueError(f"{name}.here says why the lane stays on this Mac, such as a physical device or a "
                          "measurement tied to this Mac's hardware: a nonempty reason")
-    if lane.get("resource", "light") == "light":
-        raise ValueError(f"{name}.here keeps a heavy or exclusive lane on this Mac, and a light lane runs here already")
+    if unadmitted(lane):
+        raise ValueError(f"{name}.here keeps a lane on this Mac, and a self lane runs where it starts already")
 
 
 def whole_host_lane(lanes, name):
@@ -319,10 +346,10 @@ def screen(name, lane):
     """A lane that needs an unlocked console screen, "unlockedScreen": true, such as a Mac suite whose tests read
     their own window through the accessibility API, which a lock hides, runs only on a Mac whose screen eng reads
     as unlocked when it places the lane, and otherwise waits for one, instead of running unmeasured
-    (vocaro-engineering#185; guides/shared-host.md, Which Mac runs a lane). A light lane is not placed."""
-    if lane.get("unlockedScreen") and lane.get("resource", "light") == "light":
-        raise ValueError(f"{name}.unlockedScreen needs a heavy or exclusive lane: eng places only an admitted lane on "
-                         "a Mac, and a light lane runs where it starts")
+    (vocaro-engineering#185; guides/shared-host.md, Which Mac runs a lane). A self lane is not placed."""
+    if lane.get("unlockedScreen") and unadmitted(lane):
+        raise ValueError(f"{name}.unlockedScreen needs an admitted lane: eng places only an admitted lane on a Mac, "
+                         "and a self lane runs where it starts")
 
 
 def unlocked_screen(lanes, name):
@@ -333,11 +360,12 @@ def unlocked_screen(lanes, name):
 
 def stays(lanes, name):
     """Why the lane name runs only on this Mac, as its configuration says, or None for a lane that goes to the
-    second Mac: a light lane runs where it starts, and a lane, or a lane of a group, says why with "here". A
+    second Mac first: a self lane runs where it starts, and a lane, or a lane of a group, says why with "here". A
     group runs its lanes under its one admission on one Mac, so a lane of it that stays here keeps the group
-    here. A foreground lane goes to the second Mac too, and only there (foreground.py)."""
+    here. A light lane is placed as every lane is (the owner's decision, 2026-11-07). A foreground lane goes to the
+    second Mac too, and only there (foreground.py)."""
     lane = lanes[name]
-    if lane.get("resource", "light") == "light": return "a light lane runs where it starts"
+    if unadmitted(lane): return "a self lane runs where it starts, and its script admits each of its parts"
     if lane.get("here"): return f"the lane says: {lane['here']}"
     for member in lane.get("parallel", []):
         if lanes[member].get("here"): return f"its lane {member} says: {lanes[member]['here']}"
@@ -345,10 +373,10 @@ def stays(lanes, name):
 
 
 def model(name, lane):
-    """A generative-model lane takes one heavy slot and the host's model lock. A light lane is not
+    """A generative-model lane takes one heavy slot and the host's model lock. A self lane is not
     admitted, and exclusive admission holds the model already (guides/shared-host.md)."""
-    if lane.get("model") and lane.get("resource", "light") != "heavy":
-        raise ValueError(f"{name}.model needs a heavy lane: a light lane is not admitted, and exclusive "
+    if lane.get("model") and admission(lane) != "heavy":
+        raise ValueError(f"{name}.model needs a heavy lane: a self lane is not admitted, and exclusive "
                          "admission holds the model already")
 
 
@@ -356,10 +384,10 @@ def whole_host(name, lane):
     """A whole-host lane, "wholeHost": true, is a Mac's work: a gate that runs the project's suites side by
     side. It takes every guaranteed slot of the Mac it runs on, so that a second such lane never runs
     beside it there, and eng sends it to the Mac that has them all free, while a lighter heavy lane still
-    shares (vocaro-engineering#168; guides/shared-host.md, Which Mac runs a lane). A light lane is not
+    shares (vocaro-engineering#168; guides/shared-host.md, Which Mac runs a lane). A self lane is not
     admitted, and exclusive admission holds the host already."""
-    if lane.get("wholeHost") and lane.get("resource", "light") != "heavy":
-        raise ValueError(f"{name}.wholeHost needs a heavy lane: a light lane is not admitted, and exclusive "
+    if lane.get("wholeHost") and admission(lane) != "heavy":
+        raise ValueError(f"{name}.wholeHost needs a heavy lane: a self lane is not admitted, and exclusive "
                          "admission holds the host already")
 
 
@@ -374,18 +402,21 @@ def group(name, lane, lanes):
     if not isinstance(members, list) or not members or len(set(members)) != len(members) \
             or any(not isinstance(member, str) for member in members):
         raise ValueError(f"{name}.parallel must list distinct lane names")
-    resource = lane.get("resource", "light")
-    if resource not in RESOURCES:
-        raise ValueError(f"Invalid resource for {name}")
+    resource = resource_of(name, lane)
+    if resource == "self":
+        raise ValueError(f"{name} runs its lanes under its one admission, so it cannot be a self lane, which takes none")
     for member in members:
         other = lanes.get(member)
         if not isinstance(other, dict) or "command" not in other:
             raise ValueError(f"{name}.parallel names {member}, which is not a lane with a command")
         if other.get("foreground"):
             raise ValueError(f"{name}.parallel names {member}, which takes the screen and runs alone")
-        if RESOURCES.index(other.get("resource", "light")) > RESOURCES.index(resource):
-            raise ValueError(f"{name} runs {member} under its own admission, so it needs a resource of at least "
-                             f"{other.get('resource')}")
+        kind = resource_of(member, other)
+        if kind == "self":
+            raise ValueError(f"{name} runs {member} under its own admission, inside which {member}'s script could not "
+                             "take the admissions of its own that a self lane takes")
+        if WEIGHT[kind] > WEIGHT[resource]:
+            raise ValueError(f"{name} runs {member} under its own admission, so it needs a resource of at least {kind}")
         if other.get("model") and not lane.get("model") and resource != "exclusive":
             raise ValueError(f"{name} runs {member} under its own admission, so it needs \"model\": true or an "
                              "exclusive resource")

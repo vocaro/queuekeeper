@@ -126,6 +126,22 @@ class HostIsolationTests(unittest.TestCase):
             self.assertTrue(resources.guard_path(os.environ).is_relative_to(root))
             self.assertTrue(Path(offload_host.GATE_LOCK).is_relative_to(root))
 
+    def test_a_suite_run_inside_an_admission_takes_its_tests_out_of_it_and_off_the_second_mac(self):
+        # The toolkit's gate is admitted (#200), so its suite inherits the gate's token; a test must not reuse it, nor
+        # send a lane it runs to the real second Mac.
+        token = '{"schemaVersion": 1, "locks": []}'
+        source = str(Path(resources.__file__).resolve().parents[1])
+        environment = {**os.environ, resources.TOKEN: token, "VOCARO_OFFLOAD_HOST": "build-host"}
+        seen = {}
+        for mode, imports in (("isolated", "import host_isolation; "), ("control", "")):
+            code = (f"import os, sys; sys.path.insert(0, sys.argv[1]); {imports}"
+                    "print(os.environ.get(sys.argv[2]), os.environ.get('VOCARO_OFFLOAD_HOST'))")
+            result = subprocess.run([sys.executable, "-c", code, source, resources.TOKEN], env=environment, cwd=TESTS,
+                                    capture_output=True, text=True, timeout=stretched(60))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            seen[mode] = result.stdout.strip()
+        self.assertEqual(seen, {"isolated": "None none", "control": f"{token} build-host"})
+
     def test_an_admission_that_forgets_to_redirect_stays_out_of_the_namespace_it_inherited(self):
         # The inherited namespace stands in for the host's: a test must never admit into the real one.
         with tempfile.TemporaryDirectory() as directory:

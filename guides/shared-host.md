@@ -9,7 +9,12 @@ universal behavior on later operating systems or in a different application.
 On the shared host, builds, `swift test`, `xcodebuild test`, gate suites, corpus lanes and
 conversions run through heavy-work admission: one host-wide resource namespace with bounded
 concurrency. Run a configured lane with `python3 scripts/eng run LANE`; a lane whose `resource`
-is `heavy` or `exclusive` is admitted, and a `light` lane runs directly. Arguments after `--`,
+is `heavy`, `light` or unset takes one slot, an `exclusive` one the host, and a `self` lane runs
+directly, since its script admits each of its parts. Every lane waits its turn, first come, first
+served: a short check, such as docs or spelling, waits for a slot like any other lane (the owner's
+decision, 2026-11-07, [vocaro-engineering#200](https://github.com/vocaro/vocaro-engineering/issues/200)).
+`light` once ran unadmitted where it started, and loads now as `heavy`, so a project may drop it
+or the whole `resource` key. Arguments after `--`,
 as in `eng run test -- --filter SUITE`, are appended to the lane's command. Run any other heavy
 command with `eng admit`:
 
@@ -29,7 +34,9 @@ run is exclusive: build, install and set up first under `eng admit`, beside othe
 work, then admit the timed run alone with `--exclusive`, as a separate command, such as
 `xcodebuild build-for-testing` and then `test-without-building`. Setup, recovery and a functional
 run whose seconds are not meant as figures are heavy work. An exclusive request inside heavy
-admission is refused, so a lane whose run needs both is `light`, and its script admits each part.
+admission is refused, so a lane whose run needs both is `self`, and its script admits each part,
+as BreezEPUB's `book-opening` and PDFReflowLib's `memory-platform-calibration` do; a lane group can
+be neither `self` nor run a `self` lane, since its one admission would hold the script's own.
 A gate suite is heavy work, never exclusive: one that runs the project's suites side by side says
 `"wholeHost": true`, which keeps every other heavy job off its Mac while it runs
 ([heavy-work admission](#heavy-work-admission)).
@@ -479,10 +486,12 @@ python3 scripts/eng remote setup --runtimes [--check]     # both Macs' simulator
 
 ### Which Mac runs a lane
 
-Every heavy or exclusive lane in engineering.json goes to the second Mac unless it says why it
-stays on this Mac, as `"here": "REASON"`, which configuration validation requires to be a
-nonempty reason. A lane says `here` when it needs a physical device, or a measurement tied to
-this Mac's hardware, such as goldens rendered on this Mac's GPU. A light lane runs where it starts.
+Every lane in engineering.json, a short check as much as a gate, goes to the second Mac first
+unless it says why it stays on this Mac, as `"here": "REASON"`, which configuration validation
+requires to be a nonempty reason, and runs on this Mac when the second Mac is at capacity (the
+owner's decision, 2026-11-07). A lane says `here` when it needs a physical device, or a measurement
+tied to this Mac's hardware, such as goldens rendered on this Mac's GPU. A `self` lane runs where
+it starts, and its script's `eng admit` commands run there.
 A foreground lane, which takes the screen, goes to the second Mac and only there, where eng holds
 the second Mac's foreground for it ([second Mac foreground](second-mac-foreground.md)). Simulator
 lanes and background Mac UI lanes go to the second Mac like the rest, and a lane's first run there is its
@@ -549,8 +558,9 @@ guaranteed slots admitted the second gate whatever the load, and 8 of 12 gates t
 ended with no verdict; the rule above is what that cost.
 
 "The second Mac first" orders the offer; it does not keep work off this Mac. Some work is never
-offered: `eng admit` without `--verify`, light lanes, `--here` runs and lanes that say why they
-stay here run where they start, and the receipt's `hereBecause` says so. Offered work fills
+offered: `eng admit` without `--verify`, `self` lanes, `--here` runs and lanes that say why they
+stay here run where they start, and the receipt's `hereBecause` says so. Light lanes were never
+offered until 2026-11-07; they are now, as every lane is. Offered work fills
 the second Mac's guaranteed slots first, so a whole-host lane, such as a gate, which needs all of
 them free, seldom finds them free there and starts on this Mac instead. On 2026-11-06 this
 Mac's fan ran while the second Mac's stayed quiet, yet the second Mac was 97% busy and had run
@@ -632,7 +642,7 @@ A gate that runs the project's suites side by side is a whole Mac's work: it say
 runs on, so that two such lanes never run on one Mac at once, while a lighter heavy lane still
 shares the Mac ([heavy-work admission](#heavy-work-admission)). A lane group that runs a
 whole-host lane says `wholeHost` too, or is exclusive, as configuration validation requires; a
-light lane cannot be whole-host, since it is not admitted, and an exclusive lane holds the host
+`self` lane cannot be whole-host, since it is not admitted, and an exclusive lane holds the host
 already. Exclusive admission is unchanged. Each Mac's reading is `offload_host.py`'s `capacity`
 answer, read in the second Mac's login shell as a run there reads it: its guaranteed slots and
 their maximum, the slots busy among them, its CPU's busy share (`cpuBusy`, read over up to two
@@ -899,7 +909,9 @@ In index order alone, PDFReflowLib's queue gate there spent 406 to 733 s in its 
 slot that had last built an older tree, against 362 to 365 s warm (2026-11-05;
 [vocaro-engineering#183](https://github.com/vocaro/vocaro-engineering/issues/183)).
 A project's `provision` lane, when it has one, runs first to provision the checkout's ignored
-inputs, and the work runs only if it passes. The work runs with `PYTHONDONTWRITEBYTECODE=1`, so
+inputs, and the work runs only if it passes. It runs there as `eng run --here provision`, admitted as
+every lane is, and with `--if-free` when the work was offered to start now, so that a second Mac with
+no free slot declines the work rather than hold the checkout while the provision lane waits. The work runs with `PYTHONDONTWRITEBYTECODE=1`, so
 its Python leaves no `__pycache__` in the checkout, which a project's `.gitignore` need not name;
 only a process that sets its own environment can still write one. A checkout that a run left with
 changes stays as it is for inspection and is passed over. Once it is read, remove it with
@@ -1253,7 +1265,7 @@ the keychain from an SSH session: it fails with `-25308`, and the clone fails
 gives each run's git that file through the store helper and no other helper, by
 `GIT_CONFIG_COUNT` variables that reach only the run, so the owner's own git configuration on
 the second Mac is unchanged. A token reaches only the repositories it names, read-only, and it
-expires: renew it before then. Check the second Mac with a light lane first, such as this
+expires: renew it before then. Check the second Mac with a short lane first, such as this
 toolkit's `python3 scripts/eng remote run gate`.
 
 Private GitHub release assets need the authenticated API as well as Git source access.
@@ -1421,9 +1433,10 @@ shell that still uses one meant something by it, and ignoring it would move that
   `VOCARO_OFFLOAD_HOST` instead, to the same value. Ignored, it could send work to the second Mac
   that it was meant to keep here, so eng refuses it wherever it reads `VOCARO_OFFLOAD_HOST`: before
   `eng run` or `eng admit --verify` chooses a Mac, in `eng remote run`, `admit` or `setup`
-  without `--host`, and in `eng doctor`. A command that neither chooses a Mac nor reaches the second Mac, such as a light
+  without `--host`, and in `eng doctor`. A command that neither chooses a Mac nor reaches the second Mac, such as a `self`
   lane, a lane that says `here`, `eng run --here` or `eng spelling`, never read it and runs as
-  before, so a pre-push check, or the second Mac's own `eng run --here`, does not stop for it.
+  before, so the second Mac's own `eng run --here` does not stop for it. Every other lane, a
+  light one included, chooses a Mac, and is refused while it is set.
 
 Nothing reads the other renamed words, so nothing refuses them: a receipt's `ranOn`, now
 `second Mac`, and a device record's recovery, which records its check of the second Mac as
@@ -1728,7 +1741,7 @@ it:
 - A live run accounts for the process when the process or an ancestor is a live admission
   owner, as the guard or the [admission log](#admission-log) records it, or a live
   `offload_host.py`, which writes its PID and start into the checkout slot's lock file when it
-  takes the slot: a light lane, and a project's `provision` lane, take no admission. A recorded
+  takes the slot, for the moments between the run's admissions, such as its checkout's placement. A recorded
   PID counts only while its process has the recorded start, and an admission that the log has
   not ended counts only for a process that started before it.
 - Some of a run's processes launchd starts or adopts, and what a live run holds is its own with
@@ -1779,7 +1792,7 @@ in the connection that lists leftovers before work is sent to the second Mac, an
 before it starts, so that a run here frees what is left over before it takes simulators
 ([vocaro-engineering#156](https://github.com/vocaro/vocaro-engineering/issues/156)). Work a dispatch sent
 to the second Mac does not reap again, since its dispatch just did, nor does work nested in an admission
-it inherits, nor a light lane. It runs
+it inherits, nor a `self` lane, whose `eng admit` commands reap each as it is admitted. It runs
 `xcrun simctl shutdown UDID` on a simulator only when all of these hold:
 
 1. It is a member of a project's pool: named `POOL LABEL N`, for a pool named by the project, or by a
@@ -2389,13 +2402,13 @@ Supervise the process group you own. The toolkit's `processes.supervise`, which 
   or the grace, and the root or an observed descendant is an admission owner (its PID and start
   time are an owner's in the guard), the supervisor sends no SIGKILL until every such owner has
   ended, for at most `SETTLE_WAIT` (30 s) more. Such an owner is an `eng admit` or resource CLI
-  run inside a command that holds no admission, such as a light lane's script, so it has a guard
+  run inside a command that holds no admission, such as a `self` lane's script, so it has a guard
   entry of its own. It has received the signal too, so it stops its own command, with its own
   10 s to SIGKILL and 5 s after, and then removes its entry, or keeps it uncertain if a process
   of its command is left. Then SIGKILL reaches what remains, an owner that never settled
   included, which leaves its entry for recovery; a stopped or timed-out run is
   uncertain if any process is still running 5 s after that SIGKILL. Until 2026-10-27 SIGKILL
-  came 10 s after the stop whatever ran, so a light lane whose script admits its own work, as
+  came 10 s after the stop whatever ran, so a lane whose script admits its own work, as
   BreezEPUB's book-opening lane does, could end its `eng admit` while Xcode's tools were still
   ending, and the entry left behind refused every session's heavy work until the guard was
   recovered by hand.
@@ -2665,7 +2678,7 @@ for recovery. Until 2026-10-22 none of these signals was handled. SIGTERM and SI
 admitting process at once, leaving its entry dead and its command, in its own session, running
 unsupervised; SIGINT stopped only the command's process group and left the entry uncertain.
 
-A job admitted inside another supervised command, as when a light lane's script runs `eng admit`,
+A job admitted inside another supervised command, as when a `self` lane's script runs `eng admit`,
 is stopped in this order. The outer supervisor sends the stop's signal to the lane's processes,
 the nested `eng admit` and its command among them, and leaves the nested job's later children
 to it. The nested job marks its entry uncertain and stops its command: the signal, then SIGKILL

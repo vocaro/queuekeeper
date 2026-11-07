@@ -601,10 +601,11 @@ class LaneGroupTests(unittest.TestCase):
         # from starting.
         closed = next(fd for fd in range(200, 1000) if not is_open(fd))
         token = json.dumps({"schemaVersion": 1, "locks": [{"fd": closed, "path": str(self.root / "slot0"), "nonce": "outer"}]})
-        self.configure({"one": {"command": [sys.executable, "-c", "print('Ran 1 test')"], "minimumTests": 1},
-                        "two": {"command": [sys.executable, "-c", "print('Ran 1 test')"], "minimumTests": 1},
-                        "group": {"parallel": ["one", "two"]}})
-        for lane in ["one", "group"]:
+        # Unadmitted, as the lanes were before every lane was admitted (2026-11-07): an admitted lane checks the token.
+        self.configure({"one": {"command": [sys.executable, "-c", "print('Ran 1 test')"], "minimumTests": 1,
+                                "resource": "self"},
+                        "two": {"command": [sys.executable, "-c", "print('Ran 1 test')"], "minimumTests": 1}})
+        for lane in ["one"]:
             with self.subTest(lane), patch.dict(os.environ, {"VOCARO_RESOURCE_TOKEN": token}):
                 status, output = self.run_lane(lane)
                 self.assertEqual(status, 0, output)
@@ -622,7 +623,7 @@ class LaneGroupTests(unittest.TestCase):
         lanes = {"one": command, "two": command, "heavy": {**command, "resource": "heavy"},
                  "screen": {**command, "resource": "heavy", "foreground": True}}
         invalid = [{"parallel": []}, {"parallel": ["one", "one"]}, {"parallel": ["missing"]},
-                   {"parallel": ["one", "inner"]}, {"parallel": ["heavy"]},
+                   {"parallel": ["one", "inner"]}, {"parallel": ["one"], "resource": "self"},
                    {"parallel": ["heavy"], "resource": "heavy", "foreground": True},
                    {"parallel": ["screen"], "resource": "heavy"}, {"parallel": ["one", "two"], "jobs": 0},
                    {"parallel": ["one", "two"], "jobs": 3}, {"parallel": ["one"], "command": ["true"]},
@@ -640,7 +641,9 @@ class LaneGroupTests(unittest.TestCase):
                 self.assertEqual(status, 2, said)
                 self.assertIn("engineering.json gives group \"buildHost\", which vocaro-engineering#58 removed", said)
         # The positive controls, the second the group above without buildHost.
-        for group in ({"parallel": ["one", "two"], "jobs": 1}, {"parallel": ["heavy", "one"], "resource": "exclusive"}):
+        # A group that gives no resource is heavy, as its lanes are (the owner's decision, 2026-11-07).
+        for group in ({"parallel": ["one", "two"], "jobs": 1}, {"parallel": ["heavy", "one"], "resource": "exclusive"},
+                      {"parallel": ["heavy"]}):
             with self.subTest(group), contextlib.redirect_stderr(StringIO()) as error:
                 self.configure({**lanes, "group": group})
                 cli.load(self.root)
