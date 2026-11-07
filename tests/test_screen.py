@@ -93,7 +93,7 @@ class PlacementTests(unittest.TestCase):
     """remote.spare, which Offer.choose reads for both Macs, with the screen in each reading."""
 
     def capacity(self, state):
-        return {"slots": 3, "slotsMax": 6, "busy": [], "load": 1.0, "limit": 13.5, "screen": reading(state)}
+        return {"slots": 3, "slotsMax": 6, "busy": [], "load": 1.0, "cpuBusy": 10.0, "busyLimit": 75.0, "screen": reading(state)}
 
     def test_a_locked_mac_is_refused_and_an_unlocked_one_taken_for_a_lane_that_needs_it(self):
         refused = remote.spare(self.capacity("locked"), "the second Mac", screen=True)
