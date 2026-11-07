@@ -47,10 +47,10 @@ def run(directory, *words):
 
 
 def accepting_lane_key(source, key):
-    """Give a fixture's config parser one more allowed key for command lanes."""
-    lane_keys = "if not isinstance(lane, dict) or set(lane) - {"
+    """Give a fixture's config parser one more allowed key for command lanes, in config.LANE_KEYS (#248)."""
+    lane_keys = "LANE_KEYS = frozenset({"
     if source.count(lane_keys) != 1:
-        raise AssertionError("expected exactly one command lane key check in config.py")
+        raise AssertionError("expected exactly one LANE_KEYS definition in config.py")
     return source.replace(lane_keys, f"{lane_keys}{json.dumps(key)}, ")
 
 
