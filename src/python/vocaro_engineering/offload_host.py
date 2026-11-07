@@ -27,7 +27,8 @@ keep-unlocked`; given `{"foreground": true}`, what the Mac lacks for foreground 
 SSH and who holds its mac-foreground, for `eng remote foreground`; given `{"pressure": true}`, its
 CPU's busy share, the limit admission sets on it and its memory pressure, for the merge queue's settle wait;
 given `{"capacity": true}`, its spare capacity for heavy work, which `eng run` reads on both Macs
-before it chooses one (remote.spare); given `{"screen": true}`, whether its console screen is locked, for
+before it chooses one (remote.spare); given `{"admissionLog": SINCE}`, its admission log's lines from
+SINCE, an epoch time, for `eng admissions usage`; given `{"screen": true}`, whether its console screen is locked, for
 `eng host screen --remote` (screen).
 """
 import base64
@@ -1245,6 +1246,21 @@ def capacity(own=None):
             "memory": memory_level(), "screen": screen()}
 
 
+def admission_log(since):
+    """The lines of this Mac's admission log, both generations, oldest first, written at or after since, an epoch
+    time, for `eng admissions usage` on the sending Mac (resources.read_entry reads them there). A line whose time
+    cannot be read is passed on for that Mac to count as unreadable."""
+    directory, found = admission_directory(), []
+    for name in ADMISSION_LOGS:
+        try: lines = (directory / name).read_text(errors="replace").splitlines()
+        except OSError: continue
+        for line in lines:
+            try: moment = datetime.fromisoformat(json.loads(line)["time"]).timestamp()
+            except (ValueError, KeyError, TypeError): moment = None
+            if moment is None or moment >= since: found.append(line)
+    return {"lines": found}
+
+
 def unended():
     """(PID, when it was admitted, in seconds since the epoch) of each admission the admission log
     records without an end: one still held, or one SIGKILL ended."""
@@ -2127,6 +2143,7 @@ def answer(request):
     if "foreground" in request: return foreground()
     if "pressure" in request: return pressure()
     if "capacity" in request: return capacity()
+    if "admissionLog" in request: return admission_log(request["admissionLog"])
     if "screen" in request: return screen()
     if "leftovers" in request or "device" in request:
         reaped = reap(request["leftovers"], **request["reap"]) if "reap" in request else None
@@ -2663,6 +2680,6 @@ if __name__ == "__main__":
     request = json.loads(sys.argv[1])
     if "keepUnlocked" in request: sys.exit(keep_unlocked(request["keepUnlocked"]))
     if {"toolchain", "images", "deleteRuntime", "receive", "leftovers", "device", "keychain", "foreground",
-            "pressure", "capacity", "screen", "toolkitCheckout"} & request.keys():
+            "pressure", "capacity", "admissionLog", "screen", "toolkitCheckout"} & request.keys():
         print(json.dumps(answer(request)))
     else: main(request)

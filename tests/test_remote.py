@@ -3397,6 +3397,33 @@ class KeptResultsPruneTests(unittest.TestCase):
         self.assertTrue((self.base / "c00/gate.json").exists())
 
 
+class AdmissionLogThereTests(unittest.TestCase):
+    """The second Mac's admission log, which `eng admissions usage` fetches over ssh as capacity_there asks."""
+
+    def test_the_second_mac_sends_its_lines_from_a_time_and_this_mac_reads_them(self):
+        line = lambda moment, identity: json.dumps({"time": moment, "event": "admitted", "identity": identity, "pid": 1,
+                                                    "kind": "heavy", "label": "Alpha gate", "slots": [0], "waited": 0})
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"HEAVY_SLOT_DIR": directory}):
+            # Both generations, oldest first; a line too old is left out, and one without a readable time is
+            # passed on for this Mac to count as unreadable.
+            Path(directory, "admissions.1.jsonl").write_text(line("2026-11-06T08:00:00+00:00", "old") + "\n"
+                                                             + line("2026-11-06T09:30:00+00:00", "a") + "\n")
+            Path(directory, "admissions.jsonl").write_text(line("2026-11-06T10:00:00+00:00", "b") + "\nnot json\n")
+            since = datetime(2026, 11, 6, 9, tzinfo=timezone.utc)
+            sent = offload_host.admission_log(since.timestamp())
+        self.assertEqual([json.loads(each)["identity"] if each != "not json" else each for each in sent["lines"]],
+                         ["a", "b", "not json"])
+        with patch.object(remote, "ask", return_value=sent) as asked:
+            entries = remote.admission_log_there("build-host", since)
+        self.assertEqual(asked.call_args.args, ("build-host", {"admissionLog": since.timestamp()}))
+        self.assertEqual([entry["identity"] for entry in entries], ["a", "b"])
+        # The negative control: an answer without lines, from an older toolkit or a failure there, is unavailable.
+        for answer in [{"error": "no log"}, None, {"lines": "x"}]:
+            with self.subTest(answer=answer), patch.object(remote, "ask", return_value=answer), \
+                    self.assertRaisesRegex(remote.Unavailable, "build-host did not send its admission log"):
+                remote.admission_log_there("build-host", since)
+
+
 class SimulatorPositionTests(unittest.TestCase):
     """admit --verify keeps a command here for a UUID only where a simulator goes (#142)."""
 

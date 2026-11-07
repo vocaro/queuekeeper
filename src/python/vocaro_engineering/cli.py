@@ -427,6 +427,14 @@ def placement(reason):
     return {"ranOn": "this Mac", "mac": offload_host.mac_name(), "hereBecause": reason}
 
 
+def admission_placement(offered, reason):
+    """What a run's admission line says of its placement, which `eng admissions usage` counts: whether eng offered it
+    to the second Mac first (offered) and why it runs here (because), or the Mac that sent it (remote.DISPATCHER)."""
+    sender = os.environ.get(remote.DISPATCHER)
+    if sender: return {"dispatchedFrom": sender}
+    return {"offered": offered is not None, "because": reason}
+
+
 def this_mac():
     """The Mac this eng runs on, as messages name it: `this Mac (NAME)`, or `the second Mac (NAME)` for work the
     second Mac runs for the Mac that sent it (remote.DISPATCHER), so that a log never leaves the Mac to be guessed
@@ -465,7 +473,7 @@ def screen_wait(name, seconds, said):
 
 
 def admitted_here(stack, name, label, timeout, offered=None, once=False, exclusive=False, model=False, whole_host=False,
-                  screen=False):
+                  screen=False, placement=None):
     """This Mac's heavy-work admission of the work label names, entered in stack, or the work's status
     instead: its status on the second Mac when the second Mac took it after all, MISCONFIGURED, or
     BUSY when no admission came, after saying so. Work the second Mac did not take (offered), declined
@@ -474,7 +482,7 @@ def admitted_here(stack, name, label, timeout, offered=None, once=False, exclusi
     seconds, or with once FREE_WAIT, and only once declines. A whole-host lane takes every guaranteed slot,
     and keeps one place in this Mac's queue across its waits until it no longer waits here (resources.Place). A
     lane that needs an unlocked screen (screen) is admitted only while this Mac's screen reads unlocked, and waits
-    for it as for a slot (screen_wait)."""
+    for it as for a slot (screen_wait). Its admission line says placement (admission_placement)."""
     refused, said = [], []
     place = resources.Place() if whole_host and not exclusive else None
     # Its own place is no request queued ahead of it when eng reads this Mac's capacity for it (#186).
@@ -490,7 +498,7 @@ def admitted_here(stack, name, label, timeout, offered=None, once=False, exclusi
             seconds = max(seconds - (time.monotonic() - began), 0)
         try:
             return stack.enter_context(resources.Admission(label, exclusive=exclusive, timeout=seconds, model=model,
-                                                           whole_host=whole_host, place=place))
+                                                           whole_host=whole_host, place=place, placement=placement))
         except TimeoutError as error:
             # Admission published nothing but the place, which the finally below leaves.
             refused.append(error)
@@ -500,7 +508,7 @@ def admitted_here(stack, name, label, timeout, offered=None, once=False, exclusi
             return remote.overflow(offered, admit, timeout, once)
         if not once and not screen:
             return stack.enter_context(resources.Admission(label, exclusive=exclusive, timeout=timeout, model=model,
-                                                           whole_host=whole_host, place=place))
+                                                           whole_host=whole_host, place=place, placement=placement))
         admission = admit(FREE_WAIT if once else timeout)
         if admission is None and not once and not isinstance(refused[-1], str): raise refused[-1]
         if admission is None:
@@ -657,7 +665,7 @@ def admit(root, args, config=None, *, device_window=None):
         # The second Mac's foreground first, so that a command waiting for it holds no slot.
         if second: stack.enter_context(foreground.slot(" ".join(command), timeout=args.timeout))
         admission = admitted_here(stack, "the command", " ".join(command), args.timeout, offered, args.if_free,
-                                  args.exclusive, args.model)
+                                  args.exclusive, args.model, placement=admission_placement(offered, reason))
         if isinstance(admission, int): return admission
         stopped = admitted_tree(root, "the command", offered, receipt)
         if stopped is not None: return stopped
@@ -780,11 +788,14 @@ def main(argv=None):
     admission.add_argument("command", nargs=argparse.REMAINDER, help="the command and its arguments, after --; "
         "it runs in the current directory")
     logged = commands.add_parser("admissions", usage="%(prog)s [-h] [--since WHEN] [--until WHEN] [log ...]\n"
-        "       %(prog)s recover [OWNER]\n       %(prog)s limits", help="summarize this host's heavy-work admission "
+        "       %(prog)s recover [OWNER]\n       %(prog)s limits\n"
+        "       %(prog)s usage [--since WHEN] [--until WHEN] [--there LOG ...]", help="summarize this host's heavy-work admission "
         "log: for each kind and label, the requests admitted and withdrawn, how long they waited and held, and how "
         "admissions ended; eng admissions recover lists the guard's dead or uncertain entries, and eng admissions "
         "recover OWNER removes that owner's once a census against its process record finds nothing it ran still "
-        "running; eng admissions limits prints the admission limits in force and where each comes from",
+        "running; eng admissions limits prints the admission limits in force and where each comes from; eng "
+        "admissions usage shows both Macs' capacity now, the share of the last 3 hours each spent at each count of "
+        "heavy jobs, and why this Mac's work ran here, never offered to the second Mac or declined by it",
         description="Summarize the admission log, or, with recover, list the guard's dead or uncertain entries and "
         "recover one: its owner, named by PID or identity, has ended, and nothing of the commands its process "
         "record leaves unsettled still runs. A live owner's entry, an entry without a process record and a "
@@ -923,6 +934,7 @@ def main(argv=None):
     # Recovery, like the admission log, covers the whole host and reads no project.
     if argv[first:first + 2] == ["admissions", "recover"]: return resources.recover_main(argv[first + 2:])
     if argv[first:first + 2] == ["admissions", "limits"]: return resources.limits_main(argv[first + 2:])
+    if argv[first:first + 2] == ["admissions", "usage"]: return resources.usage_main(argv[first + 2:])
     split = argv.index("--") if "--" in argv else len(argv)
     args = parser.parse_args(argv[:split])
     # Only the remote work itself reports its admission. Provisioning and nested commands do not.
@@ -1147,7 +1159,8 @@ def main(argv=None):
                                                       remote.OVERFLOW_TIMEOUT, offered, args.if_free,
                                                       resource == "exclusive", lane.get("model", False),
                                                       lane.get("wholeHost", False),
-                                                      needs and not os.environ.get(resources.TOKEN))
+                                                      needs and not os.environ.get(resources.TOKEN),
+                                                      admission_placement(offered, reason))
                             if isinstance(admission, int): return admission
                             stopped = admitted_tree(root, args.lane, offered, receipt)
                             if stopped is not None: return stopped

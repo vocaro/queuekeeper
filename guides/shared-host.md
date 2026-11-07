@@ -555,7 +555,14 @@ the second Mac's guaranteed slots first, so a whole-host lane, such as a gate, w
 them free, seldom finds them free there and starts on this Mac instead. On 2026-11-06 this
 Mac's fan ran while the second Mac's stayed quiet, yet the second Mac was 97% busy and had run
 three or four heavy jobs for 48% of the previous three hours, while this Mac ran one, a whole-host
-gate, for 84% of them. Judge a Mac's use by its reading, not by its fan.
+gate, for 84% of them; it took hand scripting to show it. Judge a Mac's use by its reading, not by
+its fan: `eng admissions usage` shows both Macs' capacity now side by side, with whether each has
+room for a heavy and for a whole-host lane, the share of the last 3 hours (`--since` and `--until`
+set another period) each Mac spent at each count of admitted heavy jobs, and this Mac's admissions
+by why they ran here: never offered (`eng admit` without `--verify`, `eng run --here`, a lane that
+says `here`, nested work) or offered and declined, with the second Mac's reason. Admission lines
+record their placement from 2026-11-07 on, and older ones count as unrecorded under their labels.
+Light lanes take no admission and are not counted.
 
 The reading applies admission's rule for a whole-host request queued there
 ([heavy-work admission](#heavy-work-admission)): while one whose process runs has asked within
