@@ -57,7 +57,7 @@ the slots it held, every slot for exclusive work, so that only work beyond them 
 import argparse
 from collections import Counter
 import contextlib
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import fcntl
 import functools
 import json
@@ -634,8 +634,12 @@ class Place:
 
 
 class Admission:
-    def __init__(self, label, exclusive=False, timeout=5400, model=False, whole_host=False, place=None):
+    def __init__(self, label, exclusive=False, timeout=5400, model=False, whole_host=False, place=None, placement=None):
         self.label, self.exclusive, self.timeout = label, exclusive, timeout
+        # Why the work is asking this Mac, for its admitted and withdrawn lines, or None: whether eng offered it to
+        # the second Mac first and why it is here (offered, because), or the Mac that sent it (dispatchedFrom).
+        # `eng admissions usage` counts it.
+        self.placement = placement
         # Exclusive work holds the host, the model with it.
         self.model = model or exclusive
         # A whole-host lane, a gate that runs a project's suites side by side, takes every guaranteed slot, so
@@ -821,7 +825,8 @@ class Admission:
         """What the request saw, for its admitted or withdrawn line (#49): the holders and the one-minute load
         when it asked, and, once an attempt was refused, why it waited."""
         fields = {"holders": self.holders, "load": self.loads[0] if self.loads else None,
-                  "busy": self.busies[0] if self.busies else None}
+                  "busy": self.busies[0] if self.busies else None,
+                  **({"placement": self.placement} if self.placement else {})}
         if self.counted:
             # The stranded entries recovery left, which the latest attempt counted as the slots they held (#89).
             fields["stranded"] = [{"identity": identity, "pid": owner["pid"], "label": str(owner.get("label"))[:LABEL_LIMIT],
@@ -1336,6 +1341,205 @@ def report(paths=None, since=None, until=None, out=print):
         for line in summary: out(line)
     if unreadable: out(f"{unreadable} line(s) could not be read.")
     return 0
+
+
+# `eng admissions usage`: whether the second Mac is being used, and why work is on this Mac, read from both Macs'
+# capacity and admission logs rather than from the sound of a fan (guides/shared-host.md, Which Mac runs a lane).
+USAGE_WINDOW = 3 * 3600
+# An admission with no end logged that began longer than this before the window's end is taken as one whose process
+# died unrecorded, and counts as running no longer: lanes' time limits are 2 h by default (processes.DEFAULT_LIMIT).
+UNENDED_SECONDS = 12 * 3600
+# Why work that eng never offered to the second Mac runs here, as cli's placement reasons say it, by the category
+# usage counts it under.
+NOT_OFFERED = [("eng admit runs here without --verify", "eng admit without --verify"),
+               ("--here", "eng run --here"), ("--serial", "eng run --serial"),
+               ("the lane says: ", "a lane that stays on this Mac"), ("its lane ", "a lane that stays on this Mac"),
+               ("nested in the admission it inherits", "nested in an admission it inherits")]
+# A lane run's label, a project's name and its lane (cli.lane_label): two words with neither a path nor an option.
+LANE_LABEL = re.compile(r"[A-Za-z0-9_.-]+ [A-Za-z0-9_.-]+")
+# The labels usage names under each kind of unrecorded admission, those that held the longest.
+LABELS_SHOWN = 3
+
+
+def spans(entries, since, until):
+    """The admissions of entries that overlap [since, until), each as (start, end, whole host) clipped to it, and how
+    many admissions with no end logged are taken as ended. An admission is held from its admitted line to its ended or,
+    without one, its recovered line; one admitted before the log's first line begins its held seconds before its end."""
+    lines = {}
+    for entry in entries:
+        lines.setdefault(entry["identity"], {})[entry["event"]] = entry
+    found, dead = [], 0
+    for each in lines.values():
+        admitted, end = each.get("admitted"), each.get("ended") or each.get("recovered")
+        if admitted is not None: start = admitted["time"]
+        elif each.get("ended") is not None: start = end["time"] - timedelta(seconds=end["held"])
+        else: continue
+        if end is None and (until - start).total_seconds() > UNENDED_SECONDS:
+            dead += 1
+            continue
+        low, high = max(start, since), min(end["time"] if end else until, until)
+        if high > low: found.append((low, high, bool((admitted or {}).get("wholeHost"))))
+    return found, dead
+
+
+def occupancy(entries, since, until):
+    """The seconds of [since, until) that a Mac spent at each count of admitted heavy jobs, the seconds a whole-host
+    lane held it, and how many admissions with no end logged spans took as ended."""
+    held, dead = spans(entries, since, until)
+    changes = sorted([(start, 1, whole) for start, _end, whole in held] + [(end, -1, whole) for _start, end, whole in held],
+                     key=lambda change: (change[0], change[1]))
+    seconds, count, wholes, whole_seconds, moment = Counter(), 0, 0, 0.0, since
+    for at, step, whole in changes:
+        seconds[count] += (at - moment).total_seconds()
+        if wholes: whole_seconds += (at - moment).total_seconds()
+        count, wholes, moment = count + step, wholes + (step if whole else 0), at
+    seconds[count] += (until - moment).total_seconds()
+    if wholes: whole_seconds += (until - moment).total_seconds()
+    return {count: value for count, value in seconds.items() if value > 0}, whole_seconds, dead
+
+
+def placed(entry):
+    """Where an admitted line's work stands with the second Mac, as (group, reason): never offered to it, offered and
+    declined by it, sent from another Mac, or unrecorded, for a line that names no placement, which an older toolkit
+    and admission's other callers write. A declined reason's numbers read as N, so that like reasons count together."""
+    placement = entry.get("placement")
+    if not isinstance(placement, dict):
+        return "unrecorded", "a lane" if LANE_LABEL.fullmatch(entry["label"]) else "a command"
+    if placement.get("dispatchedFrom"): return "sent", f"sent by {placement['dispatchedFrom']}"
+    because = str(placement.get("because") or "no reason given")
+    if placement.get("offered"): return "declined", re.sub(r"\d+(?:\.\d+)?", "N", because)
+    return "never", next((name for prefix, name in NOT_OFFERED if because.startswith(prefix)), because)
+
+
+def shares(seconds, total):
+    return ", ".join(f"{count} {100 * value / total:.0f}%" for count, value in sorted(seconds.items()))
+
+
+def window_lines(mac, entries, since, until):
+    """What one Mac's admission log says of [since, until): its share of time at each count of admitted heavy jobs."""
+    total = (until - since).total_seconds()
+    seconds, whole, dead = occupancy(entries, since, until)
+    mean = sum(count * value for count, value in seconds.items()) / total if total else 0
+    begun = sum(1 for entry in entries if entry["event"] == "admitted" and since <= entry["time"] < until)
+    text = (f"  {mac}: {begun} admitted; time at N heavy jobs: {shares(seconds, total)}; mean {mean:.1f}; "
+            f"a whole-host lane held it {100 * whole / total:.0f}%")
+    if dead: text += f"; {dead} admission(s) with no end logged, begun over {UNENDED_SECONDS // 3600} h before, not counted"
+    return [text]
+
+
+def placement_lines(entries, since, until):
+    """This Mac's admissions made in [since, until) by where they stand with the second Mac (placed), each with the
+    admissions and the time they held, ended or not."""
+    lines = {}
+    for entry in entries:
+        lines.setdefault(entry["identity"], {})[entry["event"]] = entry
+    groups = {}
+    for each in lines.values():
+        admitted = each.get("admitted")
+        if admitted is None or not since <= admitted["time"] < until: continue
+        end = each.get("ended") or each.get("recovered")
+        held = ((end["time"] if end else min(until, datetime.now(timezone.utc))) - admitted["time"]).total_seconds()
+        group, reason = placed(admitted)
+        counted = groups.setdefault(group, {}).setdefault(reason, [0, 0.0, Counter()])
+        counted[0] += 1
+        counted[1] += max(held, 0)
+        # An unrecorded line says only its label, so the labels that held the longest stand in for the reason.
+        counted[2][admitted["label"]] += max(held, 0)
+    heads = {"never": "never offered to the second Mac", "declined": "offered to the second Mac and declined",
+             "sent": "sent here by another Mac", "unrecorded": "placement unrecorded (an older toolkit's line, or a "
+             "caller's own admission, such as eng admit's before it logged placement)"}
+    out = []
+    for group in ["never", "declined", "sent", "unrecorded"]:
+        if group not in groups: continue
+        reasons = groups[group]
+        out.append(f"  {heads[group]}: {sum(each[0] for each in reasons.values())}, held "
+                   f"{duration(sum(each[1] for each in reasons.values()))}")
+        for reason, (count, held, labels) in sorted(reasons.items(), key=lambda item: (-item[1][1], item[0])):
+            out.append(f"    {reason}: {count}, held {duration(held)}")
+            if group == "unrecorded":
+                out += [f"      {label[:80]}: held {duration(seconds)}" for label, seconds in labels.most_common(LABELS_SHOWN)]
+    if not out: out.append("  none")
+    out.append("  Light lanes take no admission and are not logged: each runs where it starts, never offered.")
+    return out
+
+
+def capacity_lines(readings):
+    """Both Macs' capacity side by side, readings being (column name, the name remote.spare's verdict gives the Mac,
+    reading or why it is unavailable), with remote.spare's
+    verdict for an ordinary heavy lane and for a whole-host lane on each."""
+    from vocaro_engineering import remote
+    def cells(name, short, reading):
+        if isinstance(reading, str) or "error" in reading:
+            why = reading if isinstance(reading, str) else reading["error"]
+            return {"": name, "slots busy": f"unavailable: {why}"}
+        busy = sorted(reading.get("busy") or [])
+        cpu = reading.get("cpuBusy")
+        memory = reading.get("memory")
+        return {"": name,
+                "slots busy": f"{len(busy)} of {reading['slots']} guaranteed, {reading['slotsMax']} at most"
+                              + (f" (slots {', '.join(map(str, busy))})" if busy else ""),
+                "CPU busy": (f"{cpu:.0f}%" if isinstance(cpu, (int, float)) else "unavailable")
+                            + f" (limit {reading['busyLimit']:g}%)",
+                "memory": PRESSURE.get(memory, "unread" if memory is None else f"level {memory}"),
+                "whole-host": ", ".join(reading.get("wholeHost") or []) or "none",
+                "exclusive": ", ".join(reading.get("exclusive") or []) or "none",
+                "queued ahead": reading.get("kept") or reading.get("queuedExclusive") or "none",
+                "heavy lane": remote.spare(reading, short) or "spare capacity",
+                "whole-host lane": remote.spare(reading, short, whole_host=True) or "spare capacity"}
+    columns = [cells(name, short, reading) for name, short, reading in readings]
+    rows = list(dict.fromkeys(key for column in columns for key in column))
+    width = max(len(row) for row in rows)
+    return [f"  {row:<{width}}  " + " | ".join(column.get(row, "-") for column in columns) for row in rows]
+
+
+def usage(here, there, since, until, out=print):
+    """Print the usage report: here and there are each (name, short name, capacity reading or why unavailable,
+    admission log entries or why unavailable), this Mac's first."""
+    shown = lambda moment: moment.astimezone().strftime("%Y-%m-%d %H:%M %Z")
+    out("Capacity now:")
+    for line in capacity_lines([here[:3], there[:3]]): out(line)
+    out(f"Admitted heavy jobs from {shown(since)} to {shown(until)} (time at N heavy jobs at once):")
+    for name, _short, _reading, entries in [here, there]:
+        if isinstance(entries, str): out(f"  {name}: log unavailable: {entries}")
+        else:
+            for line in window_lines(name, entries, since, until): out(line)
+    out("Why this Mac's admissions made in the period ran here:")
+    if isinstance(here[3], str): out(f"  log unavailable: {here[3]}")
+    else:
+        for line in placement_lines(here[3], since, until): out(line)
+    return 0
+
+
+def usage_main(argv=None, out=print):
+    """eng admissions usage: whether the second Mac is being used, and why work is on this Mac."""
+    from vocaro_engineering import offload_host, remote
+    parser = argparse.ArgumentParser(prog="eng admissions usage", description="Show both Macs' capacity now, side by "
+        "side, with whether each has spare capacity for a heavy and for a whole-host lane; the share of the period "
+        "each Mac spent at each count of admitted heavy jobs; and why this Mac's admissions ran here: never offered "
+        "to the second Mac, and why, or offered and declined, and why (guides/shared-host.md, Which Mac runs a lane).")
+    parser.add_argument("--since", type=local_time, metavar="WHEN", help="the period's start, an ISO 8601 date or "
+                        "time, local unless it names a zone (default 3 hours before --until)")
+    parser.add_argument("--until", type=local_time, metavar="WHEN", help="the period's end (default now)")
+    parser.add_argument("--there", type=Path, action="append", metavar="LOG", help="a copy of the second Mac's "
+                        "admission log to read instead of asking it over ssh; name the previous generation first")
+    args = parser.parse_args(argv)
+    until = args.until or datetime.now(timezone.utc)
+    since = args.since or until - timedelta(seconds=USAGE_WINDOW)
+    if since >= until: parser.error("--since must come before --until")
+    here = (f"this Mac ({offload_host.mac_name()})", "this Mac", offload_host.capacity(), read_log()[0])
+    try: host = remote.configured()
+    except ValueError as error: host, why = None, str(error)
+    else: why = "no second Mac is configured"
+    if host is None: there = ("second Mac", "the second Mac", why, why)
+    else:
+        try: reading = remote.capacity_there(host)
+        except (remote.Unreachable, remote.Unavailable, remote.Misconfigured) as error: reading = str(error)
+        if args.there: entries = read_log(args.there)[0]
+        else:
+            try: entries = remote.admission_log_there(host, since - timedelta(seconds=UNENDED_SECONDS))
+            except (remote.Unreachable, remote.Unavailable, remote.Misconfigured) as error: entries = str(error)
+        there = (f"second Mac ({host})", host, reading, entries)
+    return usage(here, there, since, until, out)
 
 
 # What recovery tells a person to do about an entry it leaves.

@@ -2459,6 +2459,16 @@ def capacity_there(host):
     return answered
 
 
+def admission_log_there(host, since):
+    """The second Mac's admission log entries written at or after since, a datetime, as resources.read_log reads
+    this Mac's, for `eng admissions usage`. A second Mac that cannot be reached or does not answer with its lines
+    raises Unavailable, as capacity_there does."""
+    answered = ask(host, {"admissionLog": since.timestamp()}, timeout=CENSUS_TIMEOUT, unsent=True)
+    if not isinstance(answered, dict) or not isinstance(answered.get("lines"), list):
+        raise Unavailable(f"{host} did not send its admission log: it answered {str(answered)[:200]!r}")
+    return [entry for entry in map(resources.read_entry, answered["lines"]) if entry is not None]
+
+
 def screen_refusal(found, mac):
     """Why a Mac whose screen eng read as found (offload_host.screen) cannot take a lane that needs an unlocked
     screen, or None when its screen is unlocked. A reading that is missing or unknown refuses too: eng never
