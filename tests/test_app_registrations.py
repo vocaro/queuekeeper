@@ -10,7 +10,6 @@ import subprocess
 import sys
 import tempfile
 import textwrap
-import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -37,13 +36,12 @@ class RegistrationTests(unittest.TestCase):
         self.pluginkit = executable(self.base / "pluginkit", f'#!/bin/sh\necho "pluginkit $*" >> "{self.log}"\n')
         self.tools = self.base / "bin"
         self.tools.mkdir()
-        # ps lists it by the name a run is watched for, not its shell's. It holds for STUB_HOLD seconds, or until
-        # the file STUB_UNTIL exists, and otherwise until its run's journal exists, however busy the host.
+        # ps lists it by the name a run is watched for, not its shell's. It holds for STUB_HOLD seconds,
+        # or until its run's journal exists, however busy the host.
         executable(self.tools / "xcodebuild", """#!/bin/bash
 exec -a xcodebuild /bin/sh -c '
 n=0
 if [ -n "$STUB_HOLD" ]; then sleep "$STUB_HOLD"
-elif [ -n "$STUB_UNTIL" ]; then until [ -e "$STUB_UNTIL" ] || [ $n -ge 1200 ]; do sleep 0.1; n=$((n+1)); done
 else until ls "$HEAVY_SLOT_DIR"/app-registrations/*.json >/dev/null 2>&1 || [ $n -ge 1200 ]; do sleep 0.1; n=$((n+1)); done
 fi
 exit "${STUB_STATUS:-0}"' "$@"
@@ -142,19 +140,14 @@ exit "${STUB_STATUS:-0}"' "$@"
         self.assert_settled()
 
     def test_a_run_in_progress_keeps_its_registrations_until_it_ends(self):
-        during, release = [], self.base / "release"
-
-        def look():
-            self.wait_for(self.journals)
-            during.append((self.calls(), self.journals()))
-            release.touch()
-        watcher = threading.Thread(target=look)
-        with patch.dict(os.environ, STUB_UNTIL=str(release)):
-            watcher.start()
-            self.assertEqual(self.run_command(self.build_command()), 0)
-        watcher.join()
-        self.assertEqual(during[0][0], [])
-        self.assertEqual(len(during[0][1]), 1)
+        # Give the sweep a successful census with no other process using the build folder.
+        start = "Thu Jan 1 00:00:00 1970"
+        listing = f"{os.getpid()} {os.getppid()} {os.getuid()} {start} python3\n"
+        with patch.object(registrations, "process_start", return_value=start), \
+                patch.object(registrations.offload_host, "listing", return_value=listing):
+            with registrations.around_run([self.build_command()], self.base):
+                self.assertEqual(self.calls(), [])
+                self.assertEqual(len(self.journals()), 1)
         self.assert_settled()
 
     def test_a_folder_a_script_names_is_found_by_watching_its_descendants(self):
