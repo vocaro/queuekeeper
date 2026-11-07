@@ -330,12 +330,29 @@ class PolicyUnavailable(RuntimeError):
     """The toolkit's main could not be fetched, which says nothing of the work: unmeasured, not failed."""
 
 
+# The tries of the policy's fetch, and the seconds between them. Runs that start together fetch into one toolkit
+# checkout, as a bisect's two halves do (merge_queue.Beside): when main has moved, all but one of them fail to lock
+# origin/main, which the first has already moved, and a second try finds it current (vocaro-engineering#249).
+POLICY_TRIES, POLICY_RETRY_SECONDS = 3, 0.5
+
+
 def refresh_policy(root, stream=None):
-    try:
-        subprocess.run(["git", "-C", str(TOOLKIT_ROOT), "fetch", "origin",
-                        "refs/heads/main:refs/remotes/origin/main"], check=True, timeout=120)
-    except subprocess.SubprocessError as error:
-        raise PolicyUnavailable(f"the current policy could not be fetched, so nothing ran: {error}") from error
+    for tried in range(1, POLICY_TRIES + 1):
+        try:
+            subprocess.run(["git", "-C", str(TOOLKIT_ROOT), "fetch", "origin",
+                            "refs/heads/main:refs/remotes/origin/main"], check=True, timeout=120)
+            break
+        except subprocess.CalledProcessError as error:
+            if tried == POLICY_TRIES:
+                tries = f" in {tried} tries" if tried > 1 else ""
+                raise PolicyUnavailable(f"the current policy could not be fetched{tries}, so nothing ran: "
+                                        f"{error}") from error
+            print(f"eng: the policy's fetch exited {error.returncode}, perhaps beside another run's fetch: trying "
+                  f"again ({tried + 1} of {POLICY_TRIES})", file=sys.stderr, flush=True)
+            time.sleep(POLICY_RETRY_SECONDS)
+        except subprocess.SubprocessError as error:
+            # A fetch that ran out of time is not retried, so that an unreachable origin costs one wait, not three.
+            raise PolicyUnavailable(f"the current policy could not be fetched, so nothing ran: {error}") from error
     commit = subprocess.check_output(["git", "-C", str(TOOLKIT_ROOT), "rev-parse", "origin/main"], text=True).strip()
     text = subprocess.check_output(["git", "-C", str(TOOLKIT_ROOT), "show", f"{commit}:policies/shared-host.md"], text=True)
     print(f"Policy source: {commit}\n\n{text}", file=stream)
