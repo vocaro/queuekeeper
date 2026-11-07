@@ -472,6 +472,23 @@ class PoolTests(unittest.TestCase):
         status, output, error = command(held, owner="someone else")
         self.assertEqual((status, output), (1, ""))
         self.assertIn("someone else holds no reservation of; me holds it (Project Duo 1)", error)
+        # --pool and --owner read the same after the action, and one given there wins over one before it.
+        def placed(*arguments):
+            out, err = StringIO(), StringIO()
+            with mock.patch.object(simulator_pool, "simctl", self.simctl), \
+                    mock.patch.object(simulator_pool, "default_devices", return_value=frozenset({default})), \
+                    mock.patch.object(simulator_pool, "default_owner", return_value=None), \
+                    redirect_stdout(out), redirect_stderr(err):
+                try: status = simulator_pool.main(list(arguments))
+                except SystemExit as stop: status = f"exit {stop.code}: {err.getvalue()}"
+            return status, out.getvalue()
+        self.assertEqual(placed("check", "--pool", "Project", "--owner", "me", "--held", held), (0, held + "\n"))
+        self.assertEqual(placed("--pool", "Project", "--owner", "someone else", "check", "--owner", "me", "--held",
+                                held), (0, held + "\n"))
+        self.assertEqual(placed("--pool", "Project", "--owner", "me", "check", "--owner", "someone else", "--held",
+                                held), (1, ""))
+        status, _ = placed("--pool", "Project", "check", "--held", held)
+        self.assertRegex(status, r"(?s)^exit 2: .*name the owner with --owner")
         status, output, error = command(theirs)
         self.assertEqual((status, output), (1, ""))
         self.assertIn(f"Project Duo 2 ({theirs}) is a Project pool member that me holds no reservation of; "
