@@ -579,6 +579,36 @@ class ProcessTests(unittest.TestCase):
         with patch.object(processes, "snapshot", lambda: listing), patch.object(processes, "session", sessions.get):
             self.assertEqual(processes.survivors({100, 200}), [(300, 300, 100)])
 
+    def test_the_census_skips_a_process_born_after_its_group_was_found_empty(self):
+        # #240: group 200 was found without the command at closing. The kernel then gave PID 200 to a
+        # launcher, which made group 200 for 201 and exited. 202 is in group 200 but was born before,
+        # 203 in the same second as closing (lstart drops the fraction), 204 with a start ps printed
+        # oddly: each could be the command's, so each is still found. 300 is the command's leftover
+        # in session 100, which was never found empty.
+        closing = time.mktime(time.strptime("Sat Nov  7 01:50:00 2026", "%a %b %d %H:%M:%S %Y")) + 0.5
+        def at(seconds): return time.strftime("%a %b %e %H:%M:%S %Y", time.localtime(closing + seconds))
+        listing = {201: (1, 200, at(180)), 202: (1, 200, at(-60)), 203: (1, 200, at(0)), 204: (1, 200, "soon"),
+                   300: (1, 300, at(600)), 400: (1, 400, at(-600))}
+        sessions = {201: 1, 202: 1, 203: 1, 204: 1, 300: 100, 400: 1}
+        with patch.object(processes, "snapshot", lambda: listing), patch.object(processes, "session", sessions.get):
+            self.assertEqual(processes.survivors({100, 200}, {200: closing}),
+                             [(202, 200, 1), (203, 200, 1), (204, 200, 1), (300, 300, 100)])
+            # Without when it closed, as `eng admissions recover` runs it, every member is counted.
+            self.assertEqual([pid for pid, _group, _sid in processes.survivors({100, 200})], [201, 202, 203, 204, 300])
+
+    def test_a_failed_command_gives_the_census_when_its_group_was_found_empty(self):
+        given = []
+        def census(spaces, closed=None):
+            given.append((set(spaces), dict(closed or {})))
+            return []
+        with tempfile.TemporaryDirectory() as directory, patch.object(processes, "survivors", census):
+            before = time.time()
+            self.assertEqual(processes.supervise([sys.executable, "-c", "raise SystemExit(5)"], cwd=directory), 5)
+            after = time.time()
+        [(spaces, closed)] = given
+        self.assertEqual(closed.keys(), spaces)
+        self.assertTrue(all(before <= moment <= after for moment in closed.values()), closed)
+
     def test_a_stop_before_the_command_starts_runs_nothing(self):
         self.addCleanup(processes._stops.clear)
         processes.request_stop(signal.SIGHUP)
