@@ -151,7 +151,8 @@ its own there), which every process on that host reads. Its keys are `slots`, `s
 the wrong kind, refuses every request on that host with an error naming the file: its owner
 fixes it rather than eng guessing the limits. Since 2026-11-07 the owner has the second Mac
 loaded as much as possible and this Mac a little less: the second Mac's file is
-`{"slots": 4, "slotsMax": 7, "busyLimit": 90}` (10 cores) and this Mac's
+`{"slotsMax": 7, "busyLimit": 90}` (10 cores; four guaranteed slots kept whole-host gates off it,
+since such a gate needs every one free) and this Mac's
 `{"slotsMax": 7, "busyLimit": 70}` (18 cores). The measurement #49 describes may still revise them.
 
 So a key a toolkit adds to the file is a breaking change for every copy older than it: such a copy
@@ -618,7 +619,13 @@ whose admission then held it back for as long as the exclusive work waited and r
    and the receipt's `hereBecause` records it, naming the second Mac's CPU when that is it, as
    `the second Mac is busy (CPU 97% busy, at or above its HEAVY_BUSY_LIMIT=75%)`, else the
    whole-host lane or exclusive work running there, its guaranteed slots all busy, or those slots
-   kept for a whole-host lane queued there, or exclusive work queued there. A second
+   kept for a whole-host lane queued there, or exclusive work queued there. The CPU limit counts
+   only when the lane would need a slot beyond the guaranteed ones: a free guaranteed slot is
+   spare capacity however busy the CPU, as admission admits work into one. Until 2026-11-07 the
+   reading refused a Mac whose CPU was over its limit even with guaranteed slots free, so the
+   second Mac declined work it would have admitted, at 93% busy against its 90% with two of four
+   guaranteed slots free, and this Mac's queue took it; the owner wants the second Mac loaded as
+   much as possible, never the other way round. A second
    Mac whose reading shows capacity may still decline the lane as busy once it is offered, as
    when every checkout of the project there is in use or the model is held: this Mac's own
    admission then gets the same five seconds, and the lane runs here if it admits it, the receipt

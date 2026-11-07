@@ -45,7 +45,7 @@ ADVERTISED = remote.advertised
 # login, and FAKE_SSH_SAYS fail with the lines it holds, as ssh says them of a failure of its own.
 # FAKE_TMPDIR gives the second Mac a temporary directory of its own, and FAKE_DEVICE_RECORD its
 # device record, which is never this Mac's. FAKE_BUSY_LIMIT sets the second Mac's HEAVY_BUSY_LIMIT apart
-# from this Mac's, which both read from the one environment otherwise: 0 makes it busy at any CPU reading.
+# from this Mac's, which both read from the one environment otherwise: 0 puts it over its limit at any CPU reading.
 # FAKE_SCREEN_IOREG names the recorded IORegistry the second Mac reads its screen from, and this Mac's
 # VOCARO_SCREEN_IOREG never reaches it (offload_host.SCREEN_RECORDING).
 FAKE_SSH = """#!/bin/sh
@@ -365,7 +365,7 @@ class RemoteTests(unittest.TestCase):
             "FAKE_SHELL": str(tools / "login-shell"), "HEAVY_SLOT_DIR": str(base / "slots"),
             "SW_GATE_LOCK_FILE": str(base / "gate"), "HEAVY_POLL_SECONDS": "0.01", "VOCARO_OFFLOAD_HOST": "fake",
             # Both Macs have spare capacity by their CPU whatever this Mac's real reading, so that eng's choice of a
-            # Mac is the test's to set: FAKE_BUSY_LIMIT busies the second Mac, HEAVY_BUSY_LIMIT this Mac (#168, #200).
+            # Mac is the test's to set: FAKE_BUSY_LIMIT loads the second Mac, HEAVY_BUSY_LIMIT this Mac (#168, #200).
             "HEAVY_BUSY_LIMIT": "1000",
             "FAKE_SLOTS": str(base / "second-mac-slots"), "FAKE_GATE": str(base / "second-mac-gate"),
             "FAKE_TMPDIR": str(base / "second-mac-tmp"), devices.OVERRIDE: str(self.record_here),
@@ -1868,13 +1868,12 @@ class RemoteTests(unittest.TestCase):
                 self.assertIsInstance(receipt["result"]["receipt"]["queueSeconds"], float)
         # While the second Mac has no spare capacity, this Mac admits it, and the receipt says why.
         shutil.rmtree(self.project / ".build/engineering/fail", ignore_errors=True)
-        with patch.dict(os.environ, {"FAKE_BUSY_LIMIT": "0"}):
+        with self.busy_second_mac():
             status, output, error = self.run_here("fail")
         self.assertEqual(status, 3, output + error)
         receipt = json.loads((self.project / ".build/engineering/fail/source.json").read_text())
         self.assertEqual(receipt["ranOn"], "this Mac")
-        self.assertRegex(receipt["hereBecause"], r"^the second Mac is busy \(CPU \d+% busy, at or above its "
-                                                 r"HEAVY_BUSY_LIMIT=0%\)$")
+        self.assertTrue(receipt["hereBecause"].startswith("exclusive work holds the second Mac: "), receipt)
         # Admitted here: its wait in this Mac's queue is recorded, and the policy was refreshed for it.
         self.assertIsInstance(receipt["queueSeconds"], float)
         self.assertEqual(receipt["policy"], "policy")
@@ -1925,45 +1924,34 @@ class RemoteTests(unittest.TestCase):
         self.assertFalse((self.project / ".build/engineering/gate").exists())
         self.assertTrue((self.project / ".build/engineering/remote/gate/source.json").exists())
 
-    def test_a_loaded_second_mac_sends_the_lane_to_this_mac_when_this_mac_has_spare_capacity(self):
-        """The owner's rule (vocaro-engineering#168): when one Mac is busy and the other idle, the work goes to the
-        idle one. The second Mac's CPU busy share is at or above its limit, this Mac's is under its own."""
+    def test_a_second_mac_over_its_cpu_limit_still_takes_a_lane_into_a_free_guaranteed_slot(self):
+        """The owner's rule (2026-11-07): the second Mac is loaded as much as possible, so a free guaranteed slot
+        there is spare capacity however busy its CPU, as its admission admits work into one. Until then a second Mac
+        at or above its HEAVY_BUSY_LIMIT sent the lane to this Mac with guaranteed slots free there (#168, #200)."""
         with patch.dict(os.environ, {"FAKE_BUSY_LIMIT": "0"}):
             status, output, error = self.run_here("gate")
         self.assertEqual(status, 0, output + error)
-        loaded = "the second Mac is busy (CPU "
-        self.assertIn(f"eng: trying gate on this Mac: {loaded}", error)
-        self.assertRegex(error, r"the second Mac is busy \(CPU \d+% busy, at or above its HEAVY_BUSY_LIMIT=0%\)")
-        # Nothing was sent: the reading decided before the offer.
-        self.assertNotIn("remote: sending", error)
-        self.assertNotIn("waits for whichever", error)
-        receipt = self.ran_here()
-        self.assertEqual(receipt["ranOn"], "this Mac")
-        self.assertRegex(receipt["hereBecause"], r"^the second Mac is busy \(CPU \d+% busy, at or above its "
-                                                 r"HEAVY_BUSY_LIMIT=0%\)$")
-        self.assertFalse((self.project / ".build/engineering/remote/gate").exists())
-        # The negative control: with both Macs under their limits, the second Mac takes it, as before.
-        shutil.rmtree(self.project / ".build/engineering/gate")
-        status, output, error = self.run_here("gate")
-        self.assertEqual(status, 0, output + error)
         self.assertNotIn("on this Mac", error)
-        self.assertFalse((self.project / ".build/engineering/gate").exists())
-        self.assertEqual(json.loads((self.project / ".build/engineering/remote/gate/source.json").read_text())["ranOn"],
-                         "second Mac")
-        # With neither Mac under its limit, the lane goes to whichever admits it first, the second Mac asked
-        # first, as before the reading: its guaranteed slot admits the lane whatever its load.
-        shutil.rmtree(self.project / ".build/engineering/remote/gate")
-        with patch.dict(os.environ, {"FAKE_BUSY_LIMIT": "0", "HEAVY_BUSY_LIMIT": "0"}):
-            status, output, error = self.run_here("gate")
-        self.assertEqual(status, 0, output + error)
-        self.assertRegex(error, r"eng: neither Mac has spare capacity for gate now \(the second Mac is busy \(CPU "
-                                r"\d+% busy, at or above its HEAVY_BUSY_LIMIT=0%\); this Mac is busy \(CPU \d+% busy, at "
-                                r"or above its HEAVY_BUSY_LIMIT=0%\)\), so it goes to whichever admits it first, the "
-                                r"second Mac asked first")
+        self.assertNotIn("neither Mac has spare capacity", error)
         self.assertIn("remote: sending", error)
         self.assertFalse((self.project / ".build/engineering/gate").exists())
         self.assertEqual(json.loads((self.project / ".build/engineering/remote/gate/source.json").read_text())["ranOn"],
                          "second Mac")
+        # With both Macs over their limits, the second Mac still takes it at once: no wait for whichever admits first.
+        shutil.rmtree(self.project / ".build/engineering/remote/gate")
+        with patch.dict(os.environ, {"FAKE_BUSY_LIMIT": "0", "HEAVY_BUSY_LIMIT": "0"}):
+            status, output, error = self.run_here("gate")
+        self.assertEqual(status, 0, output + error)
+        self.assertNotIn("neither Mac has spare capacity", error)
+        self.assertEqual(json.loads((self.project / ".build/engineering/remote/gate/source.json").read_text())["ranOn"],
+                         "second Mac")
+        # The negative control: a second Mac with no spare capacity by its slots sends the lane here.
+        shutil.rmtree(self.project / ".build/engineering/remote/gate")
+        with self.busy_second_mac():
+            status, output, error = self.run_here("gate")
+        self.assertEqual(status, 0, output + error)
+        self.assertIn("eng: trying gate on this Mac: exclusive work holds the second Mac: ", error)
+        self.assertEqual(self.ran_here()["ranOn"], "this Mac")
 
     def test_a_lane_that_needs_an_unlocked_screen_runs_only_where_the_screen_reads_unlocked(self):
         """vocaro-engineering#185: a lane that says "unlockedScreen": true goes to a Mac whose screen eng reads as
@@ -2936,15 +2924,15 @@ exec {shlex.quote(real)} "$@"
         self.assertTrue(receipt["hereBecause"].startswith("exclusive work holds the second Mac: "), receipt)
         self.assertIn("eng: trying the command on this Mac: exclusive work holds the second Mac: ", error)
         self.assertNotIn("remote: sending", error)
-        # A loaded second Mac keeps the command here the same way, naming its load.
+        # A second Mac over its CPU limit with a guaranteed slot free takes the command (owner's decision, 2026-11-07).
         shutil.rmtree(self.project / ".build/engineering/admit")
         with patch.dict(os.environ, {"FAKE_BUSY_LIMIT": "0"}):
             status, output, error = self.admit_in(self.project / "pkg", "--verify", "--", *probe)
         self.assertEqual(status, 0, output + error)
-        self.assertEqual(self.ran_in(), (self.project / "pkg").resolve())
-        receipt = json.loads((self.project / ".build/engineering/admit/source.json").read_text())
-        self.assertRegex(receipt["hereBecause"], r"^the second Mac is busy \(CPU \d+% busy, at or above its HEAVY_BUSY_LIMIT=0%\)$")
-        shutil.rmtree(self.project / ".build/engineering/admit")
+        self.assertIn("remote: sending", error)
+        self.assertEqual(json.loads((self.project / ".build/engineering/remote/admit/source.json").read_text())["ranOn"],
+                         "second Mac")
+        self.assertFalse((self.project / ".build/engineering/admit").exists())
         # The negative control: without --verify it runs here.
         status, output, error = self.admit_in(self.project / "pkg", "--", *probe)
         self.assertEqual(status, 0, output + error)
@@ -3402,7 +3390,8 @@ class KeptSlotsTests(unittest.TestCase):
         """A whole-host lane that waits here keeps its place in this Mac's queue between offers (resources.Place);
         eng's reading of this Mac for it does not count that place as a request queued ahead of it."""
         offered = remote.Offer("gate", "", lambda host, sent: 0, whole_host=True)
-        loaded = {**self.IDLE, "cpuBusy": 90.0, "screen": None}
+        # A busy guaranteed slot there, which a whole-host lane needs free, so that choose reads this Mac.
+        loaded = {**self.IDLE, "busy": [0], "screen": None}
         with patch.object(remote, "capacity_there", return_value=loaded), \
                 patch.object(remote.offload_host, "capacity", return_value={**self.IDLE, "screen": None}) as here:
             self.assertIsNotNone(offered.choose())

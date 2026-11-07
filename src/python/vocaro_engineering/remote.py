@@ -2533,12 +2533,15 @@ def screen_refusal(found, mac):
 def spare(reading, mac, whole_host=False, exclusive=False, screen=False):
     """Why mac, read as reading (offload_host.capacity), has no spare capacity now for the work, or None while
     it has (vocaro-engineering#168). The work needs a guaranteed slot free there, every guaranteed slot for a
-    whole-host lane and every slot up to the maximum for exclusive work, a CPU busy share under the Mac's own
-    HEAVY_BUSY_LIMIT (vocaro-engineering#200), no whole-host lane or exclusive work running there, and no exclusive work queued ahead
-    there (queuedExclusive), behind which admission holds every later request (vocaro-engineering#191). While the
+    whole-host lane and every slot up to the maximum for exclusive work, no whole-host lane or exclusive work
+    running there, and no exclusive work queued ahead there (queuedExclusive), behind which admission holds every
+    later request (vocaro-engineering#191). A free guaranteed slot is spare capacity however busy the Mac's CPU
+    is, as admission admits work into one: the owner wants the second Mac loaded as much as possible, never idle
+    beside a loaded Mac (owner's decision, 2026-11-07). While the
     Mac's admission keeps the guaranteed slots for a whole-host lane queued ahead (kept), a whole-host or
     exclusive lane waits its turn behind it and other work needs a slot beyond them free, as admission rules
-    (vocaro-engineering#174, #186), and that slot only as admission takes one, once the Mac has settled for
+    (vocaro-engineering#174, #186), and that slot only as admission takes one: while the CPU busy share is under
+    the Mac's own HEAVY_BUSY_LIMIT (vocaro-engineering#200), once the Mac has settled for
     HEAVY_SETTLE_SECONDS since its last admission (sinceAdmission, settle) and while its memory pressure is
     normal (memory), as resources.Admission._extra_refusal rules (vocaro-engineering#201). The reason names the
     Mac and, for its CPU, the busy share read and the limit, and the request queued ahead; the receipt's hereBecause
@@ -2580,6 +2583,9 @@ def spare(reading, mac, whole_host=False, exclusive=False, screen=False):
                 f"{'is' if len(taken) == 1 else 'are'} busy")
     if not exclusive and not whole_host and kept is None and len(taken) >= slots:
         return f"every guaranteed slot of {mac} is busy (HEAVY_SLOTS={slots})"
+    # A guaranteed slot is admitted whatever the CPU and memory read, so they bound only a slot beyond them.
+    if kept is None:
+        return None
     found, limit = reading.get("cpuBusy"), reading["busyLimit"]
     busy = found if isinstance(found, (int, float)) and not isinstance(found, bool) else None
     if busy is None:
@@ -2588,7 +2594,7 @@ def spare(reading, mac, whole_host=False, exclusive=False, screen=False):
         return f"{mac} is busy (CPU {busy:.0f}% busy, at or above its HEAVY_BUSY_LIMIT={limit:g}%)"
     # Beyond the guaranteed slots, memory pressure that is not normal, or cannot be read, withholds the slot, judged
     # as admission judges it; an older toolkit's reading has no memory, and withholds nothing by it.
-    if kept is not None and "memory" in reading:
+    if "memory" in reading:
         level = reading["memory"] if isinstance(reading["memory"], int) and not isinstance(reading["memory"], bool) else None
         refused = resources.judged(busy, limit, lambda: level)
         if refused is not None:

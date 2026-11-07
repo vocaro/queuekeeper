@@ -1226,9 +1226,14 @@ class SecondMacReading(unittest.TestCase):
             ({**idle, "busy": [0, 1, 2]}, {}, "every guaranteed slot of the second Mac is busy (HEAVY_SLOTS=3)"),
             ({**idle, "busy": [0, 1, 2, 3]}, {}, "every guaranteed slot of the second Mac is busy (HEAVY_SLOTS=3)"),
             ({**idle, "busy": [3, 4]}, {}, None),
-            ({**idle, "cpuBusy": 75.0}, {}, "the second Mac is busy (CPU 75% busy, at or above its HEAVY_BUSY_LIMIT=75%)"),
-            ({**idle, "cpuBusy": 99.6}, {}, "the second Mac is busy (CPU 100% busy, at or above its HEAVY_BUSY_LIMIT=75%)"),
-            ({**idle, "cpuBusy": None}, {}, "the CPU busy share of the second Mac, which HEAVY_BUSY_LIMIT=75% bounds, is unavailable"),
+            # A free guaranteed slot is spare capacity however busy the CPU, as admission admits work into one
+            # (owner's decision, 2026-11-07): the second Mac at 93% against its 90% with two of four slots free.
+            ({**idle, "cpuBusy": 75.0}, {}, None),
+            ({**idle, "cpuBusy": 99.6}, {}, None),
+            ({**idle, "cpuBusy": None}, {}, None),
+            ({**idle, "slots": 4, "busy": [0, 1], "cpuBusy": 93.0, "busyLimit": 90.0}, {}, None),
+            # The negative control: with every guaranteed slot busy, the Mac still refuses, whatever its CPU.
+            ({**idle, "busy": [0, 1, 2], "cpuBusy": 10.0}, {}, "every guaranteed slot of the second Mac is busy (HEAVY_SLOTS=3)"),
             # The case of vocaro-engineering#200: a load of 40 against the old limit of 7.5, with the CPU half idle.
             ({**idle, "load": 40.0, "cpuBusy": 52.0}, {}, None),
             ({**idle, "busy": [0, 1, 2], "wholeHost": ["EPUBLib gate"]}, {},
@@ -1243,12 +1248,15 @@ class SecondMacReading(unittest.TestCase):
              "exclusive work needs every slot of the second Mac up to HEAVY_SLOTS_MAX=5 free, and 1 is busy"),
             ({**idle, "busy": [0, 3]}, {"exclusive": True},
              "exclusive work needs every slot of the second Mac up to HEAVY_SLOTS_MAX=5 free, and 2 are busy"),
-            ({**idle, "cpuBusy": 80.0}, {"whole_host": True}, "the second Mac is busy (CPU 80% busy, at or above its HEAVY_BUSY_LIMIT=75%)"),
+            ({**idle, "cpuBusy": 80.0}, {"whole_host": True}, None),
+            ({**idle, "cpuBusy": 80.0}, {"exclusive": True}, None),
         ]
         for reading, need, expected in cases:
             with self.subTest(reading=reading, need=need):
                 self.assertEqual(mq.remote.spare(reading, "the second Mac", **need), expected)
-        self.assertEqual(mq.remote.spare({**idle, "cpuBusy": 90.0}, "this Mac"),
+        self.assertIsNone(mq.remote.spare({**idle, "cpuBusy": 90.0}, "this Mac"))
+        # Beyond the guaranteed slots, the CPU's busy share still bounds the work (KeptSlotsTests).
+        self.assertEqual(mq.remote.spare({**idle, "cpuBusy": 90.0, "kept": "EPUBLib gate"}, "this Mac"),
                          "this Mac is busy (CPU 90% busy, at or above its HEAVY_BUSY_LIMIT=75%)")
         # The second Mac's reading comes from offload_host, which must answer with one; an error there is its
         # owner's to fix, as a limits file admission cannot read refuses every request on that host.
