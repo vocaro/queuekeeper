@@ -455,7 +455,7 @@ as before, when:
 - a newer entry applies to `origin/main` only on top of an older entry.
 
 Under #231 the rerun-alone check runs on each failed half, so the failure that splits a half is a
-real one.
+real one, and a half whose real failure blames one entry sends it back instead of splitting (below).
 
 **Entries that arrive during a gate gate on top of it.** While a batch gates, the worker checks every
 `STACK_POLL` (30 s) for entries that have arrived behind it. When it finds some, it gates them stacked on
@@ -499,7 +499,7 @@ lane's log: unittest's `FAIL:` and `ERROR:` lines under each failed process. It 
 Mac, where the reruns run, to settle, as for a retry with no verdict below. Then it runs each test by
 itself, with the lane's `-s`, `-p`, `-t`, `--split` and `--timeout`, one process at a time, up to `RERUNS`
 times (3). Any rerun that fails, or ends unmeasured, makes the failure real, and the batch bisects as
-before. When every rerun of every failed test passes, each test is a flake, and option (b) applies: the
+before unless one entry explains it (below). When every rerun of every failed test passes, each test is a flake, and option (b) applies: the
 batch lands only if none of its commits changes the test's module or a file of the project that module
 imports. Only its own import statements count, at any depth of the module, looked up under the suite's
 top-level directory, `src/python`, `src` and the checkout, with each package's `__init__.py`. The files
@@ -509,6 +509,20 @@ logs, which `eng queue status` shows); in the worker's log; in a `Flaky-test:` t
 one per test, which survives a carry-over; and on the tracker. For the tracker the worker searches the
 project's open issues for the test's name just before it writes, then comments on the first match, or
 files a hardening issue. A tracker gh cannot reach is noted in the entry and stops nothing.
+
+**A real failure that one entry explains sends that entry back without a bisect.** When a rerun
+confirms the failure of a batch of several entries, the worker reruns the other failed tests too, and
+then looks for the one entry that explains them all (owner's decision, 2026-11-07). A failed test
+points at an entry when that entry's commits change a path the failing rerun's output names, as
+`eng spelling`'s `PATH:LINE:` lines do, or the test's module or a file it imports, as above. A path
+counts only whole and only with a directory or an extension, so a bare word is not taken for a
+file. When every failed test points at the same single entry, the worker sends that entry back, says
+in its log which entry it blamed and why, and queues the rest to gate again at once, without the
+halves a bisect costs (about 30 minutes each for vocaro-engineering). Any doubt bisects as before: a
+test that points at no entry or at several, tests that point at different entries, a test whose
+module the worker cannot find, a failed test that passed alone beside the real failure, or a rerun
+that ended with no verdict. On 2026-11-07 a 6-entry batch bisected for about 2 hours over one spelling
+test whose output named a file only one commit changed.
 
 The worker bisects at once, as before, when the failing lane is not `eng unittest` (a project's own
 lane or a lane group), when its log names no test it can rerun (no `eng unittest` summary, tests also

@@ -6,7 +6,9 @@ a batch it halves the batch until it finds the commit to send back, landing the 
 gated at once, the newer on the second Mac when it can start them (Beside), and the entries that arrive during a
 gate gated stacked on its tip on the other Mac, landing once it has (Stack, vocaro-engineering#241); first, when the lane is
 eng unittest, it reruns the failed tests alone, and a batch whose failed tests all pass alone and that changes none
-of the files they import lands, with the flakes recorded (vocaro-engineering#231). Only a lane's
+of the files they import lands, with the flakes recorded (vocaro-engineering#231), and a batch whose real failures
+all point at one entry, by a path their output names or a file they import, sends that entry back and gates the
+rest at once instead of bisecting (Worker.blame). Only a lane's
 verdict blames a commit: a run the host left unmeasured runs again, each time once the host has settled,
 until queue.noVerdictRuns runs in a row (3 by default) have given none, and then holds the queue for the
 owner, with every commit still waiting (guides/maintenance.md, The merge queue). A batch whose lanes
@@ -614,6 +616,13 @@ def imported_files(checkout, top, test):
     return sorted(path.relative_to(checkout).as_posix() for path in found if path.is_relative_to(checkout))
 
 
+def named_in(path, output):
+    """Whether output, a failing test's, names path, a repository path: whole, not inside a longer path or word,
+    and with a directory or an extension, so that a bare word such as a top-level file's name is not taken for it."""
+    if "/" not in path and "." not in path: return False
+    return re.search(rf"(?<![\w./-]){re.escape(path)}(?![\w/-]|\.\w)", output) is not None
+
+
 def gh_runner(checkout):
     """gh in checkout, whose origin names the project's repository, never prompting, bounded by GH_TIMEOUT."""
     def gh(*arguments):
@@ -1204,6 +1213,8 @@ class Worker:
         self.measured = None  # the passing gate run of the last round, which its landed entries record
         self.alone = False  # whether this round's batch is one entry an option of eng land put on its own (choose)
         self.failed_lane = None  # the lane whose failure the last gate returned, or None (gate)
+        self.confirmed = None  # the failed tests the last rerun confirmed, which blame reads (rerun)
+        self.blamed = False  # whether the last failed batch older settled sent back one entry by blame
         self.lane_now = None  # (lane, began, where) of the lane the gate runs or ran last (gate)
         self.stacked = None  # a Stack whose batch below landed, which the next round adopts as its own (after_stack)
         self.pending = None  # the Stack started on this round's batch while it gates (watched)
@@ -1910,7 +1921,9 @@ class Worker:
         the worker waits for this Mac, where they run, to settle as for a retry, and reruns each alone on head up to
         RERUNS times. A rerun that fails makes the failure real. When every rerun passes, each test is a flake,
         recorded in the entries and on the tracker (hardening), and the batch lands only when none of its commits
-        changes a file the test's module is or imports (imported_files); otherwise it bisects."""
+        changes a file the test's module is or imports (imported_files); otherwise it bisects. In a batch of several
+        entries, a rerun that fails goes on to rerun the other failed tests, so that blame can weigh them all."""
+        self.confirmed = None
         lane = self.failed_lane
         command = rerun_command(config.get("lanes", {}).get(lane, {}).get("command")) if lane else None
         if command is None: return None
@@ -1932,7 +1945,7 @@ class Worker:
             self.say(f"the failed tests are not rerun, as {busy}: bisecting")
             return None
         if self.head() != head: self.reset(head)
-        flakes = []
+        flakes, real = [], {}
         for number, test in enumerate(tests, 1):
             logs = []
             for attempt in range(1, RERUNS + 1):
@@ -1943,11 +1956,25 @@ class Worker:
                 except processes.TimedOut as error: status_ = f"unmeasured, {error}"
                 except OSError as error: status_ = f"not started, {error}"
                 if status_:
-                    self.say(f"{test} failed again alone, on rerun {attempt} (exit {status_}), so the failure is real: "
-                             f"bisecting; see {path}")
-                    return None
+                    self.say(f"{test} failed again alone, on rerun {attempt} (exit {status_}), so the failure is real; "
+                             f"see {path}")
+                    # Only a rerun that ran and failed confirms the failure, whose output blame reads.
+                    real[test] = path if isinstance(status_, int) else None
+                    break
+            if test in real:
+                if len(applied) == 1: return None
+                continue
             flakes.append({"test": test, "commit": head, "gateLog": str(log), "rerunLogs": logs,
                            "mac": offload_host.mac_name()})
+        if real:
+            if flakes:
+                self.say(f"{', '.join(flake['test'] for flake in flakes)} passed alone beside the real failure, so "
+                         "no commit is blamed")
+            elif None in real.values():
+                self.say("a rerun ended with no verdict, so no commit is blamed")
+            else:
+                self.confirmed = {"tests": real, "top": self.suite_top(command)}
+            return None
         changed = {path for path in text(self.checkout, "log", "--format=", "--name-only", "--no-renames",
                                          f"{base}..{head}").splitlines() if path}
         top = self.suite_top(command)
@@ -1976,6 +2003,59 @@ class Worker:
         self.say(f"every failed test passed alone {RERUNS} times and no commit of the batch changes its module or a file "
                  "it imports: landing the batch")
         return flakes
+
+    def blame(self, applied):
+        """(the one entry of applied that every failed test the last rerun confirmed reaches, why), to send back while
+        the rest gate again at once, sparing the bisect's gates; or None to bisect. A test reaches an entry whose
+        commits change a path its failing rerun's output names, as `eng spelling`'s `PATH:LINE:` lines do, or a file
+        its module is or imports (imported_files). Any doubt bisects: no confirmed failure, a module the worker cannot
+        find, a test that reaches no entry or several, or tests that reach different entries."""
+        confirmed, self.confirmed = self.confirmed, None
+        if not confirmed or len(applied) < 2: return None
+        changes = {entry["id"]: {path for path in text(self.checkout, "log", "--no-walk", "--format=", "--name-only",
+                                                       "--no-renames", *entry["commits"]).splitlines() if path}
+                   for entry in applied}
+        prefix = f"{self.checkout.resolve()}/"
+        found, whys = set(), []
+        for test, path in confirmed["tests"].items():
+            try: output = Path(path).read_text(errors="replace").replace(prefix, "").replace(f"{self.checkout}/", "")
+            except OSError as error:
+                self.say(f"the rerun log of {test} cannot be read, so no commit is blamed: {error}; bisecting")
+                return None
+            files = imported_files(self.checkout, confirmed["top"], test)
+            if files is None:
+                self.say(f"the worker cannot find the module of {test}, so no commit is blamed: bisecting")
+                return None
+            reached = {}
+            for identifier, changed in changes.items():
+                named = sorted(changed_path for changed_path in changed if named_in(changed_path, output))
+                imported = sorted(changed & set(files))
+                if named or imported:
+                    reached[identifier] = (f"its failure names {', '.join(named[:5])}" if named else
+                                           f"it imports {', '.join(imported[:5])}")
+            if len(reached) != 1:
+                self.say(f"{test} reaches {'no entry' if not reached else f'{len(reached)} entries'} of the batch's "
+                         f"{len(applied)}" + (f" ({'; '.join(f'{key}: {why}' for key, why in reached.items())})"
+                                              if reached else "") + ", so no commit is blamed: bisecting")
+                return None
+            [(identifier, why)] = reached.items()
+            found.add(identifier)
+            whys.append(f"{test}, which failed alone, as {why}, which only {identifier} changes")
+        if len(found) != 1:
+            self.say(f"the failed tests reach different entries ({'; '.join(whys)}), so no commit is blamed: bisecting")
+            return None
+        [identifier] = found
+        entry = next(entry for entry in applied if entry["id"] == identifier)
+        why = "; ".join(whys)
+        self.say(f"blaming {identifier} ({entry.get('subject') or entry['tip'][:12]}): {why}; sending it back and "
+                 f"gating the other {len(applied) - 1} at once instead of bisecting")
+        return entry, why
+
+    def send_back(self, applied, log, entry, why):
+        """Settle entry, the one of applied that blame found, as failed, and queue the rest to gate again at once."""
+        self.queue.settle(entry, FAILED, why=f"the queue's lanes fail on this commit on top of origin/main: {why}. Fix "
+                                            "it and add it again", log=str(log))
+        self.queue.mark([other for other in applied if other["id"] != entry["id"]], QUEUED)
 
     def suite_top(self, command):
         """The top-level directory of the suite command runs, as eng unittest takes it: -t, else -s, else the checkout."""
@@ -2094,6 +2174,7 @@ class Worker:
         the checkout's worker that gated it, this one's own unless it was a stacked gate (Stack)."""
         queue = self.queue
         runner = runner or self
+        self.blamed = False
         if result == WITHDRAWN:
             self.say(f"{', '.join(runner.withdrawn)} left the queue, which stopped the gate: gating what is left")
             queue.mark(applied, QUEUED)
@@ -2121,6 +2202,12 @@ class Worker:
             # A failure that a rerun alone does not repeat lands, when the batch cannot reach the test (#231).
             if not reran: flakes = runner.rerun(config, applied, base, head, log, round_name)
             if not flakes:
+                blamed = runner.blame(applied)
+                if blamed:
+                    self.send_back(applied, log, *blamed)
+                    if not self.alone: self.limit, self.suspects = None, 0
+                    self.blamed = True
+                    return FAILED
                 self.failed(applied, log)
                 return FAILED
         # An entry removed during the gate was part of what passed, so what is left has not been tested.
@@ -2276,12 +2363,12 @@ class Worker:
         """The bisect's next step once both halves are weighed, outcome the older half's (Worker.older) and
         beside.outcome the newer's (Beside.weigh): the newer half alone, halved, when only it fails; the older half,
         halved, when the newer landed beside it and the older gave no verdict; no bisect once the half that failed
-        has been sent back or both passed. Otherwise, as the older half's outcome left it."""
+        has been sent back, alone or by blame, or both passed. Otherwise, as the older half's outcome left it."""
         older, newer = len(applied), len(beside.newer)
         if beside.outcome == FAILED and outcome != FAILED:
             # The one newer entry was sent back, which explains the failure: the older half goes on unsuspected.
             self.limit, self.suspects = None, 0
-        elif beside.outcome == BISECT and (outcome == LANDED or (outcome == FAILED and older == 1)):
+        elif beside.outcome == BISECT and (outcome == LANDED or (outcome == FAILED and (older == 1 or self.blamed))):
             self.suspects, self.limit = newer, max(1, newer // 2)
         elif beside.outcome == LANDED and outcome in (NO_VERDICT_OUTCOME, QUEUED):
             self.suspects, self.limit = older, max(1, older // 2)
@@ -2494,7 +2581,11 @@ class Beside(Worker):
         if result:
             flakes = self.rerun(config, self.newer, base, self.tip, log, self.round_name)
             if not flakes:
-                if len(self.newer) == 1:
+                blamed = self.blame(self.newer)
+                if blamed:
+                    self.send_back(self.newer, log, *blamed)
+                    self.outcome = FAILED
+                elif len(self.newer) == 1:
                     self.failed(self.newer, log)
                     self.outcome = FAILED
                 else:

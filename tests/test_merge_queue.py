@@ -4037,6 +4037,20 @@ class Flaky(unittest.TestCase):
         self.assertEqual(helper.VALUE, 1)
 """
 
+# A word check of docs/, whose failure names each PATH:LINE, as eng spelling's does.
+WORDS_MODULE = """import pathlib, unittest
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+
+class Words(unittest.TestCase):
+    def test_spelling(self):
+        found = [f"{path.relative_to(ROOT)}:{number}: misspelling wrongword"
+                 for path in sorted((ROOT / "docs").rglob("*.md"))
+                 for number, line in enumerate(path.read_text().splitlines(), 1) if "wrongword" in line]
+        self.assertEqual(found, [], "\\n".join(found))
+"""
+
 
 class FlakyReruns(Fixture):
     """A failed eng unittest gate's failed tests rerun alone before a bisect, and a batch whose failed tests all pass
@@ -4049,6 +4063,7 @@ class FlakyReruns(Fixture):
         self.runs, self.plan = self.base / "runs", self.base / "plan"
         (self.repo / "tests").mkdir()
         (self.repo / "tests/test_flaky.py").write_text(FLAKY_MODULE.format(runs=str(self.runs), plan=str(self.plan)))
+        (self.repo / "tests/test_words.py").write_text(WORDS_MODULE)
         library = self.repo / "src/python/fixturelib"
         library.mkdir(parents=True)
         (library / "__init__.py").write_text("")
@@ -4164,13 +4179,108 @@ class FlakyReruns(Fixture):
         ids = self.add("a", "b")
         with contextlib.redirect_stdout(io.StringIO()) as said: self.assertEqual(self.work(), 0)
         log = said.getvalue()
-        self.assertIn(f"{self.TEST} failed again alone, on rerun 2 (exit 1), so the failure is real: bisecting", log)
+        self.assertIn(f"{self.TEST} failed again alone, on rerun 2 (exit 1), so the failure is real", log)
+        # Neither commit changes the test's module, a file it imports or a path its failure names: no blame.
+        self.assertIn(f"{self.TEST} reaches no entry of the batch's 2, so no commit is blamed: bisecting", log)
         self.assertIn("2 commits fail together: next the oldest 1", log)
         self.assertEqual([self.state(identifier)["state"] for identifier in ids], ["landed", "landed"])
         self.assertEqual(self.runs_of_the_test(), 3 + 2)
         self.assertEqual(self.tracked, [])
         self.assertTrue(all("flakes" not in self.state(identifier) for identifier in ids))
         self.assertNotIn(f"{mq.FLAKY}:", self.main_messages())
+
+    WORDS = "test_words.Words.test_spelling"
+
+    def test_a_real_failure_whose_output_names_a_path_one_commit_changes_sends_that_commit_back_without_a_bisect(self):
+        self.commit("c", "c")
+        self.commit("docs/a.md", "a", "The wrongword\n")
+        self.commit("docs/b.md", "b", "The word\n")
+        ids = self.add("c", "a", "b")
+        with contextlib.redirect_stdout(io.StringIO()) as said: self.assertEqual(self.work(), 0)
+        log = said.getvalue()
+        self.assertIn(f"{self.WORDS} failed again alone, on rerun 1 (exit 1), so the failure is real", log)
+        self.assertIn(f"blaming {ids[1]} (Add docs/a.md): {self.WORDS}, which failed alone, as its failure names "
+                      f"docs/a.md, which only {ids[1]} changes; sending it back and gating the other 2 at once instead "
+                      "of bisecting", log)
+        self.assertNotIn("fail together", log)
+        entries = [self.state(identifier) for identifier in ids]
+        self.assertEqual([entry["state"] for entry in entries], ["landed", "failed", "landed"])
+        self.assertIn("its failure names docs/a.md", entries[1]["why"])
+        # One gate for the batch and one for the other two, with no half gated.
+        self.assertEqual(self.runs_of_the_test(), 2)
+        self.assertEqual(self.tracked, [])
+
+    def test_a_real_failure_of_a_test_whose_import_one_commit_changes_sends_that_commit_back(self):
+        self.plan.write_text("FF")
+        self.commit("b", "b")
+        self.commit("src/python/fixturelib/helper.py", "a", "from . import deeper\nVALUE = 1  # changed\n")
+        ids = self.add("b", "a")
+        with contextlib.redirect_stdout(io.StringIO()) as said: self.assertEqual(self.work(), 0)
+        log = said.getvalue()
+        self.assertIn(f"blaming {ids[1]} (Add src/python/fixturelib/helper.py): {self.TEST}, which failed alone, as it "
+                      f"imports src/python/fixturelib/helper.py, which only {ids[1]} changes", log)
+        self.assertNotIn("fail together", log)
+        self.assertEqual([self.state(identifier)["state"] for identifier in ids], ["landed", "failed"])
+        self.assertEqual(self.runs_of_the_test(), 3)
+
+    def test_a_failure_that_names_paths_of_two_commits_bisects(self):
+        self.commit("docs/a.md", "a", "The wrongword\n")
+        self.commit("docs/b.md", "b", "The wrongword\n")
+        ids = self.add("a", "b")
+        with contextlib.redirect_stdout(io.StringIO()) as said: self.assertEqual(self.work(), 0)
+        log = said.getvalue()
+        self.assertIn(f"{self.WORDS} reaches 2 entries of the batch's 2 ({ids[0]}: its failure names docs/a.md; "
+                      f"{ids[1]}: its failure names docs/b.md), so no commit is blamed: bisecting", log)
+        self.assertIn("2 commits fail together: next the oldest 1", log)
+        self.assertNotIn("blaming", log)
+        self.assertEqual([self.state(identifier)["state"] for identifier in ids], ["failed", "failed"])
+
+    def test_failed_tests_that_reach_different_commits_bisect(self):
+        self.plan.write_text("FF")
+        self.commit("docs/a.md", "a", "The wrongword\n")
+        self.commit("src/python/fixturelib/helper.py", "b", "from . import deeper\nVALUE = 1  # changed\n")
+        ids = self.add("a", "b")
+        with contextlib.redirect_stdout(io.StringIO()) as said: self.assertEqual(self.work(), 0)
+        log = said.getvalue()
+        self.assertIn("the failed tests reach different entries (", log)
+        self.assertIn("2 commits fail together: next the oldest 1", log)
+        self.assertNotIn("blaming", log)
+        self.assertEqual([self.state(identifier)["state"] for identifier in ids], ["failed", "landed"])
+
+    def test_a_test_whose_module_cannot_be_found_bisects(self):
+        self.commit("docs/a.md", "a", "The wrongword\n")
+        self.commit("b", "b")
+        ids = self.add("a", "b")
+        with patch.object(mq, "imported_files", return_value=None), \
+                contextlib.redirect_stdout(io.StringIO()) as said:
+            self.assertEqual(self.work(), 0)
+        log = said.getvalue()
+        self.assertIn(f"the worker cannot find the module of {self.WORDS}, so no commit is blamed: bisecting", log)
+        self.assertIn("2 commits fail together", log)
+        self.assertEqual([self.state(identifier)["state"] for identifier in ids], ["failed", "landed"])
+
+    def test_a_flake_beside_a_real_failure_blames_no_commit(self):
+        # The flaky test fails in the gate only; the spelling failure is real and names a.
+        self.plan.write_text("F")
+        self.commit("docs/a.md", "a", "The wrongword\n")
+        self.commit("b", "b")
+        ids = self.add("a", "b")
+        with contextlib.redirect_stdout(io.StringIO()) as said: self.assertEqual(self.work(), 0)
+        log = said.getvalue()
+        self.assertIn(f"{self.TEST} passed alone beside the real failure, so no commit is blamed", log)
+        self.assertIn("2 commits fail together", log)
+        self.assertNotIn("blaming", log)
+        self.assertEqual([self.state(identifier)["state"] for identifier in ids], ["failed", "landed"])
+
+    def test_a_lone_entry_whose_failure_is_real_stops_at_the_first_real_rerun(self):
+        self.plan.write_text("FF")
+        self.commit("docs/a.md", "a", "The wrongword\n")
+        [identifier] = self.add("a")
+        with contextlib.redirect_stdout(io.StringIO()) as said: self.assertEqual(self.work(), 0)
+        log = said.getvalue()
+        self.assertEqual(log.count("so the failure is real"), 1)
+        self.assertNotIn("blaming", log)
+        self.assertEqual(self.state(identifier)["state"], "failed")
 
     def test_a_flake_in_a_batch_that_changes_a_file_its_module_imports_bisects_and_is_still_recorded(self):
         self.plan.write_text("F")
@@ -4276,6 +4386,16 @@ class FlakyParts(unittest.TestCase):
         for why, log in cases.items():
             with self.subTest(why=why):
                 self.assertEqual(mq.failed_tests(log), (None, why))
+
+    def test_a_path_is_named_only_whole_and_with_a_directory_or_an_extension(self):
+        for output in ("docs/a.md:3: misspelling wrongword", "see docs/a.md.", "'docs/a.md'", "(docs/a.md)"):
+            with self.subTest(output=output):
+                self.assertTrue(mq.named_in("docs/a.md", output))
+        # Negative controls: a longer path or name around it, and a bare word.
+        for path, output in (("docs/a.md", "docs/a.mdx:1:"), ("docs/a.md", "old/docs/a.md:1:"),
+                             ("docs/a.md", "docs/a.md.orig:1:"), ("a", "a failure"), ("README", "README:1:")):
+            with self.subTest(path=path, output=output):
+                self.assertFalse(mq.named_in(path, output))
 
     def test_the_rerun_keeps_the_suites_options_and_names_its_own_test(self):
         own = ["python3", "scripts/eng", "unittest", "-s", "tests", "--split", "test", "-v"]
