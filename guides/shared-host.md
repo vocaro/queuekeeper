@@ -149,8 +149,10 @@ its own there), which every process on that host reads. Its keys are `slots`, `s
 85% busy; `busyLimit` is a percentage, and a share of the cores means nothing for it. The former
 `loadLimit` is now an unknown key. A file admission cannot read, with an unknown key or a value of
 the wrong kind, refuses every request on that host with an error naming the file: its owner
-fixes it rather than eng guessing the limits. Choosing the second Mac's and this Mac's values
-waits for the measurement #49 describes; neither has a file yet.
+fixes it rather than eng guessing the limits. Since 2026-11-07 the owner has the second Mac
+loaded as much as possible and this Mac a little less: the second Mac's file is
+`{"slots": 4, "slotsMax": 7, "busyLimit": 90}` (10 cores) and this Mac's
+`{"slotsMax": 7, "busyLimit": 70}` (18 cores). The measurement #49 describes may still revise them.
 
 So a key a toolkit adds to the file is a breaking change for every copy older than it: such a copy
 refuses all its heavy work on that host as misconfigured. Write a new key to a host's file only once
