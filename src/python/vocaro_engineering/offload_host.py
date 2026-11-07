@@ -51,6 +51,7 @@ import sys
 import tempfile
 import threading
 import time
+from urllib.parse import unquote, urlparse
 
 # Seconds between reports while every checkout is in use, and before waiting for one gives up.
 REPORT_SECONDS, CLAIM_TIMEOUT = 300, 5400
@@ -537,6 +538,44 @@ def foreground_problems():
     return found
 
 
+CAPTURE_APPROVALS = "Library/Group Containers/group.com.apple.replayd/ScreenCaptureApprovals.plist"
+CAPTURE_RUNNERS = "Library/Application Support/VocaroEngineering/foreground-runners"
+# The programs a command started over SSH runs under: Remote Login's commands' own captures prompt for them.
+CAPTURE_SSH_HOSTS = ("/usr/libexec/sshd-keygen-wrapper", "/usr/libexec/sshd-session", "com.apple.sshd-session")
+
+
+def capture_approval_name(key):
+    """An approval's key as a path where it is a file URL, else as recorded."""
+    if key.startswith("file://"):
+        return unquote(urlparse(key).path).rstrip("/")
+    return key
+
+
+def screen_capture_approvals(home=None, path=None):
+    """macOS's direct screen-capture approvals that eng's runs depend on (capture_approvals.py): the stable
+    runner paths' and the SSH command host's, each as {"app", "allowed", "lapses"} with ISO 8601 UTC times,
+    soonest first; None when the record cannot be read, [] when it holds none of them. It reads the record and
+    nothing else, and never writes it."""
+    home = Path(home if home is not None else Path.home())
+    try:
+        entries = plistlib.loads(Path(path or home / CAPTURE_APPROVALS).read_bytes())
+    except (OSError, ValueError, plistlib.InvalidFileException):
+        return None
+    runners = str(home / CAPTURE_RUNNERS) + "/"
+    found = []
+    for key, entry in entries.items() if isinstance(entries, dict) else ():
+        name = capture_approval_name(key)
+        if not isinstance(entry, dict) or not (name.startswith(runners) or name in CAPTURE_SSH_HOSTS):
+            continue
+        times = [entry.get(field) for field in ("kScreenCaptureApprovalLastAlerted", "kScreenCapturePrivacyHintDate")]
+        if not all(isinstance(value, datetime) for value in times):
+            continue
+        allowed, lapse = (value.replace(tzinfo=value.tzinfo or timezone.utc).astimezone(timezone.utc)
+                          .isoformat(timespec="seconds") for value in times)
+        found.append({"app": name, "allowed": allowed, "lapses": lapse})
+    return sorted(found, key=lambda item: item["lapses"])
+
+
 def crash_dialog(run=output):
     """com.apple.CrashReporter's DialogType, or None when it is unset, macOS's default, which shows an app's
     "quit unexpectedly" alert."""
@@ -629,7 +668,7 @@ def foreground():
     # VoiceOver may belong to the current holder. Even its baseline is read only after a
     # run acquires the lease; on is a valid baseline, preserved by the foreground state guard.
     return {"mac": mac_name(), "problems": foreground_problems(), "voiceoverManagedUnderLease": True, "entry": entry,
-            "crashDialogs": crash_dialogs()}
+            "crashDialogs": crash_dialogs(), "captureApprovals": screen_capture_approvals()}
 
 
 def toolchain(developer_dir):

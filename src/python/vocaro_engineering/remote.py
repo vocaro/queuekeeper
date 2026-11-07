@@ -60,7 +60,7 @@ import tempfile
 import threading
 import time
 
-from . import devices, disk, offload_host, processes, resources
+from . import capture_approvals, devices, disk, offload_host, processes, resources
 from .config import TOOLKIT_ROOT, unlocked_screen
 from .resources import BUSY, FREE_WAIT
 from .simulators import pool as simulator_pool
@@ -1583,6 +1583,8 @@ def foreground_report(host):
         f"expected release {entry.get('expectedReleaseBy')}"
     print(f"{found.get('mac')}'s foreground: {holder}")
     for line in crash_dialog_report(found.get("crashDialogs"), entry): print(line)
+    if "captureApprovals" in found:  # a second Mac whose toolkit predates them says nothing
+        for line in capture_approvals.report(found["captureApprovals"]): print(line)
     for problem, fix in found.get("problems", []):
         print(f"- {problem}: {fix}")
     if found.get("problems"):
