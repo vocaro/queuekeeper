@@ -131,9 +131,12 @@ def app(declared):
         if key in declared and (Path(declared[key]).is_absolute() or ".." in Path(declared[key]).parts):
             raise ValueError(f"app.{key} is a path inside the checkout")
     prepare = declared.get("prepare")
-    if prepare is not None and (not isinstance(prepare, list) or not prepare or
-                                any(not isinstance(word, str) or not word for word in prepare)):
-        raise ValueError("app.prepare needs an argv list, never shell source")
+    if prepare is not None:
+        steps = prepare if isinstance(prepare, list) and prepare and all(isinstance(step, list) for step in prepare) \
+            else [prepare]
+        if any(not isinstance(step, list) or not step or any(not isinstance(word, str) or not word for word in step)
+               for step in steps):
+            raise ValueError("app.prepare needs an argv list, or a list of them run in order, never shell source")
     platforms = [name for name in APP_PLATFORMS if name in declared]
     if not platforms:
         raise ValueError("app names at least one platform to build: mac or ios")

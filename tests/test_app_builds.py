@@ -53,6 +53,8 @@ class Validation(unittest.TestCase):
         self.parse({"workspace": "Demo.xcworkspace", "directory": "app", "configuration": "Release",
                     "prepare": ["xcodegen", "generate"], "mac": {"scheme": "Demo", "product": "Demo.app",
                     "settings": {"DEVELOPMENT_TEAM": "ABC"}, "afterLanding": False}})
+        # Or a list of commands, run in order.
+        self.parse({**APP, "prepare": [["xcodegen", "generate"], ["python3", "lock.py"]]})
 
     def test_what_an_app_may_not_say_is_refused(self):
         for app, words in [
@@ -65,6 +67,10 @@ class Validation(unittest.TestCase):
                 ({"project": "A.xcodeproj", "mac": {"scheme": "Demo", "settings": {"x": "1"}}}, "build setting"),
                 ({"project": "A.xcodeproj", "mac": {"scheme": "Demo", "afterLanding": "yes"}}, "true or false"),
                 ({"project": "A.xcodeproj", "prepare": "xcodegen generate", "mac": {"scheme": "Demo"}}, "argv"),
+                ({"project": "A.xcodeproj", "prepare": [], "mac": {"scheme": "Demo"}}, "argv"),
+                ({"project": "A.xcodeproj", "prepare": [["xcodegen"], []], "mac": {"scheme": "Demo"}}, "argv"),
+                ({"project": "A.xcodeproj", "prepare": [["xcodegen"], "generate"], "mac": {"scheme": "Demo"}}, "argv"),
+                ({"project": "A.xcodeproj", "prepare": [["xcodegen", ""]], "mac": {"scheme": "Demo"}}, "argv"),
                 ({"project": "../A.xcodeproj", "mac": {"scheme": "Demo"}}, "inside the checkout")]:
             with self.subTest(app=app), self.assertRaisesRegex(ValueError, words):
                 self.parse(app)
@@ -204,6 +210,32 @@ class Keeping(Fixture):
         self.assertEqual(app_builds.keep(self.root, project(app), store=self.store, admit=self.admit, commit=head,
                                          chosen=["mac"]), 1)
         self.assertEqual(len(self.store.kept("mac")), 1)
+
+    def test_a_list_of_prepare_commands_runs_in_order_and_a_failing_one_stops_the_rest_and_the_build(self):
+        # As a generated project's lock is seeded after xcodegen makes the project.
+        trace = self.temp / "trace"
+        step = lambda name, code=0: [sys.executable, "-c",
+                                     f"open({str(trace)!r}, 'a').write({name!r} + ' ' + __import__('os').getcwd()"
+                                     f" + '\\n'); raise SystemExit({code})"]
+        (self.root / "app").mkdir()
+        (self.root / "app/keep").write_text("")
+        git(self.root, "add", "app/keep")
+        app = {**APP, "directory": "app", "prepare": [step("generate"), step("lock")]}
+        head = self.commit("two steps", app=app)
+        self.assertEqual(app_builds.keep(self.root, project(app), store=self.store, admit=self.admit, commit=head,
+                                         chosen=["mac"]), 0, self.said)
+        here = str((self.store.source / "app").resolve())
+        self.assertEqual([line.split(" ", 1) for line in trace.read_text().splitlines()],
+                         [["generate", here], ["lock", here]])
+        self.assertEqual(len(self.builds()), 1)
+        trace.unlink()
+        app["prepare"] = [step("generate", 3), step("lock")]
+        head = self.commit("first step fails", app=app)
+        self.assertEqual(app_builds.keep(self.root, project(app), store=self.store, admit=self.admit, commit=head,
+                                         chosen=["mac"]), 1)
+        self.assertEqual(trace.read_text().split(), ["generate", here])
+        self.assertEqual(len(self.builds()), 1)
+        self.assertTrue(any("exited 3" in line and "prepare-1.log" in line for line in self.said), self.said)
 
     def test_two_products_need_the_one_to_keep_named(self):
         derived = self.temp / "derived"

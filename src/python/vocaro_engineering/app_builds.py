@@ -11,7 +11,8 @@ engineering.json's `app` says how to build (config.app):
     "app": {"project": "Name.xcodeproj",        # or "workspace": "Name.xcworkspace"
             "directory": ".",                   # where the project is, inside the checkout
             "configuration": "Debug",
-            "prepare": ["xcodegen", "generate"],  # run in directory before each build, when needed
+            "prepare": ["xcodegen", "generate"],  # run in directory before each build, when needed; or a
+                                                  # list of such argv lists, run in order
             "mac": {"scheme": "Name", "product": "Name.app", "settings": {"NAME": "VALUE"},
                     "afterLanding": true},
             "ios": {"scheme": "Name", "afterLanding": false}}
@@ -257,6 +258,13 @@ def checkout(source, commit):
     if (source / ".gitmodules").exists(): git(source, "submodule", "update", "--init", "--recursive")
 
 
+def prepare_steps(app):
+    """The commands app.prepare runs in order before each build: its one argv list, or each of its argv lists."""
+    prepare = app.get("prepare")
+    if not prepare: return []
+    return prepare if all(isinstance(step, list) for step in prepare) else [prepare]
+
+
 def build_command(app, platform, derived):
     """The xcodebuild that builds platform's app into derived."""
     given = app[platform]
@@ -305,14 +313,15 @@ def build(root, store, config, platform, commit, *, admit=None):
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     log = store.logs / f"{stamp}-{platform}-{commit[:12]}.log"
     store.logs.mkdir(parents=True, exist_ok=True)
-    if app.get("prepare"):
-        say(f"preparing {platform} at {commit[:12]}: {' '.join(app['prepare'])}")
+    steps = prepare_steps(app)
+    for number, step in enumerate(steps, 1):
+        say(f"preparing {platform} at {commit[:12]}: {' '.join(step)}")
+        prepared = log.with_suffix(".prepare.log" if len(steps) == 1 else f".prepare-{number}.log")
         try:
-            status = processes.run(app["prepare"], cwd=directory, log_path=log.with_suffix(".prepare.log"),
-                                   timeout=PREPARE_LIMIT)
+            status = processes.run(step, cwd=directory, log_path=prepared, timeout=PREPARE_LIMIT)
         except processes.TimedOut as error:
             raise Failed(f"app.prepare reached its limit: {error}")
-        if status: raise Failed(f"app.prepare exited {status}; see {log.with_suffix('.prepare.log')}")
+        if status: raise Failed(f"app.prepare's {step[0]} exited {status}; see {prepared}")
     derived = store.derived(platform)
     command = build_command(app, platform, derived)
     say(f"building {platform} at {commit[:12]}; log {log}")
