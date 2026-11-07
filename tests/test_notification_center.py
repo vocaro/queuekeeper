@@ -139,6 +139,8 @@ class WindowTests(HostTest):
             names = set(re.findall(r"\bset (\w+) to\b", script)) | set(re.findall(r"\brepeat with (\w+) in\b", script))
             self.assertEqual({n for n in names if not n.endswith("_") and n not in ("out", "proc")}, set(), name)
             self.assertNotIn(" as list)", script, name)
+            # `entire contents` of the window listed no banner there either; the scripts walk UI elements.
+            self.assertNotIn("entire contents", script, name)
 
 
 class DismissTests(HostTest):

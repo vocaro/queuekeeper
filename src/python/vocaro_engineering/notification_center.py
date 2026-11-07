@@ -55,10 +55,35 @@ JSON.stringify(list.map(function (w) {
           frame: [b.X, b.Y, b.Width, b.Height]};
 }));"""
 
+# Every element at or under el whose subrole begins AXNotificationCenter, found by walking UI elements: on macOS
+# 27.2 `entire contents` of Notification Center's window (SwiftUI) lists none of them, though the banner is there,
+# an AXGroup under a scroll area (2026-11-07, second Mac, #204).
+PRESENTED_HANDLER = """on presented(el, depth)
+    set found_ to {}
+    set kind_ to ""
+    set kids_ to {}
+    tell application "System Events"
+        try
+            set kind_ to subrole of el as text
+        end try
+        try
+            set kids_ to UI elements of el
+        end try
+    end tell
+    if kind_ starts with "AXNotificationCenter" then set end of found_ to el
+    if depth < 12 then
+        repeat with k_ in kids_
+            set found_ to found_ & my presented(contents of k_, depth + 1)
+        end repeat
+    end if
+    return found_
+end presented
+"""
+
 # Lists, as one line each, every presented notification in the windows of the process with unix id %(pid)d: its
 # subrole, x, y, width and height, its actions' descriptions and its texts, the last two separated by the unit
 # separator. It reads only: nothing here performs an action.
-ELEMENTS_SCRIPT = """on joined(found)
+ELEMENTS_SCRIPT = PRESENTED_HANDLER + """on joined(found)
     set out to ""
     repeat with item_ in found
         try
@@ -68,54 +93,48 @@ ELEMENTS_SCRIPT = """on joined(found)
     return out
 end joined
 set out to ""
-tell application "System Events"
-    set proc to first process whose unix id is %(pid)d
-    repeat with window_ in windows of proc
-        repeat with element_ in (entire contents of window_)
-            set kind_ to ""
+tell application "System Events" to set windows_ to windows of (first process whose unix id is %(pid)d)
+repeat with window_ in windows_
+    repeat with element_ in my presented(contents of window_, 0)
+        set element_ to contents of element_
+        tell application "System Events"
+            set kind_ to subrole of element_ as text
+            set place_ to position of element_
+            set extent_ to size of element_
+            set labels_ to ""
             try
-                set kind_ to subrole of element_ as text
+                repeat with action_ in actions of element_
+                    set label_ to ""
+                    try
+                        set label_ to description of action_ as text
+                    end try
+                    -- A custom action's name runs over lines, "Name:Close" first.
+                    if label_ is "" or label_ is "missing value" then set label_ to paragraph 1 of (name of action_ as text)
+                    set labels_ to labels_ & label_ & (ASCII character 31)
+                end repeat
             end try
-            if kind_ starts with "AXNotificationCenter" then
-                set place_ to position of element_
-                set extent_ to size of element_
-                set labels_ to ""
-                try
-                    repeat with action_ in actions of element_
-                        set label_ to ""
-                        try
-                            set label_ to description of action_ as text
-                        end try
-                        -- A custom action's name runs over lines, "Name:Close" first.
-                        if label_ is "" or label_ is "missing value" then set label_ to paragraph 1 of (name of action_ as text)
-                        set labels_ to labels_ & label_ & (ASCII character 31)
-                    end repeat
-                end try
-                set texts_ to ""
-                try
-                    set texts_ to my joined(value of static texts of element_)
-                end try
-                try
-                    set texts_ to texts_ & (description of element_ as text) & (ASCII character 31)
-                end try
-                set out to out & kind_ & tab & (item 1 of place_) & tab & (item 2 of place_) & tab & (item 1 of extent_) & tab & (item 2 of extent_) & tab & labels_ & tab & texts_ & linefeed
-            end if
-        end repeat
+            set texts_ to ""
+            try
+                set texts_ to my joined(value of static texts of element_)
+            end try
+            try
+                set texts_ to texts_ & (description of element_ as text) & (ASCII character 31)
+            end try
+            set out to out & kind_ & tab & (item 1 of place_) & tab & (item 2 of place_) & tab & (item 1 of extent_) & tab & (item 2 of extent_) & tab & labels_ & tab & texts_ & linefeed
+        end tell
     end repeat
-end tell
+end repeat
 return out"""
 
 # Performs the Close action of the notification of subrole %(kind)s at the frame given, in the process with unix
 # id %(pid)d, found again by both; "closed" when it did, "none" when the notification has no Close action, and
 # "gone" when no such notification is there.
-CLOSE_SCRIPT = """tell application "System Events"
-    set proc to first process whose unix id is %(pid)d
-    repeat with window_ in windows of proc
-        repeat with element_ in (entire contents of window_)
-            set kind_ to ""
-            try
-                set kind_ to subrole of element_ as text
-            end try
+CLOSE_SCRIPT = PRESENTED_HANDLER + """tell application "System Events" to set windows_ to windows of (first process whose unix id is %(pid)d)
+repeat with window_ in windows_
+    repeat with element_ in my presented(contents of window_, 0)
+        set element_ to contents of element_
+        tell application "System Events"
+            set kind_ to subrole of element_ as text
             if kind_ is "%(kind)s" then
                 set place_ to position of element_
                 set extent_ to size of element_
@@ -133,9 +152,9 @@ CLOSE_SCRIPT = """tell application "System Events"
                     return "none"
                 end if
             end if
-        end repeat
+        end tell
     end repeat
-end tell
+end repeat
 return "gone\""""
 
 
