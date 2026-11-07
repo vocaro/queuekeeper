@@ -13,6 +13,8 @@ import threading
 import time
 import uuid
 
+# How ps prints a process's start (lstart), with its spacing collapsed.
+STARTED = "%a %b %d %H:%M:%S %Y"
 # Seconds an observed descendant may outlive the root before it is stopped, and then before
 # SIGTERM becomes SIGKILL. Xcode's DTServiceHub can outlive xcodebuild by minutes, ignoring SIGTERM.
 LINGER, KILL_AFTER = 60, 10
@@ -89,19 +91,35 @@ def session(pid):
     except OSError: return None
 
 
-def survivors(spaces):
+def birth_time(start):
+    """A start as ps prints it (lstart), in seconds since the epoch, or None."""
+    try: return time.mktime(time.strptime(" ".join(start.split()), STARTED))
+    except (AttributeError, TypeError, ValueError, OverflowError): return None
+
+
+def survivors(spaces, closed=None):
     """Every live process in these process groups and sessions, as (pid, group, session).
 
     The command and every process it was seen with have ended, and the kernel never gives a new
     process a PID that still names a group or session. An ID that is a live process's PID was
     therefore taken over after the command's group or session ended, and is skipped.
+
+    closed gives, for a group or session, when the first sample found nothing of the command in it
+    (time.time()). A process born after that is not counted for it: the kernel can give the ID's PID
+    to a newcomer once the group is empty, and the newcomer can make a group of its own and exit, as
+    the owner's Riot Client launcher did on 2026-11-07 (#240). A leftover born before is still found,
+    and so is one born after that the command's own unseen leftover is in, by that leftover.
     """
     current = snapshot()
     spaces = spaces - current.keys()
+    closed = closed or {}
     found = []
-    for pid, (_parent, group, _birth) in current.items():
+    for pid, (_parent, group, birth) in current.items():
         sid = session(pid)
-        if group in spaces or sid in spaces: found.append((pid, group, sid))
+        born = birth_time(birth)
+        if any(space in spaces and (space not in closed or born is None or born <= closed[space])
+               for space in (group, sid)):
+            found.append((pid, group, sid))
     return found
 
 
@@ -316,6 +334,8 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
     # The process groups and sessions the command was seen using, for the census at its end. The
     # root's own are its PID. Never every observed PID: the PID space can wrap during a long run.
     spaces = {child.pid}
+    # When the first sample found nothing of the command in each of them, by group or session.
+    closed = {}
     started = time.monotonic()
     # When the timeout expired and when a stop was first seen, whether the signal reached the
     # root's group, and who else had it.
@@ -359,6 +379,9 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
                 note(settled="not-started")
                 raise NotStarted(f"Command did not start: {failure}")
         while True:
+            # Before the sample, so that a process born after it is born after this moment too: lstart
+            # drops the fraction of its second.
+            moment = time.time()
             current = snapshot()
             row = current.get(child.pid)
             if born is None and child.returncode is None and row is not None and row[:2] == (os.getpid(), child.pid):
@@ -386,6 +409,11 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
                 if fresh or opened: note(processes=[(pid, " ".join(start.split())) for pid, start in fresh], spaces=opened)
                 noted.update(fresh)
             spaces |= sampled
+            # When each group or session was first found without the command (survivors).
+            using = sampled | ({child.pid} if root_active else set())
+            for space in spaces:
+                if space in using: closed.pop(space, None)
+                else: closed.setdefault(space, moment)
             if timeout is not None and exited is None and expired is None and time.monotonic() - started >= timeout:
                 expired = time.monotonic()
                 print(f"supervise: timed out after {timeout:g}s; sending SIGTERM to the command (PID {child.pid}) "
@@ -426,7 +454,10 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
                 # Sampling cannot prove that a failed, stopped or timed-out command orphaned nothing
                 # between two samples, so its groups and sessions must hold nothing. A passing
                 # command has no census: a daemon it starts on purpose must not stop the host.
-                left = survivors(spaces) if result or ending is not None else []
+                # A group or session the last sample still found the root in closed once poll found it gone.
+                ended = time.time()
+                left = survivors(spaces, {space: closed.get(space, ended) for space in spaces}) \
+                    if result or ending is not None else []
                 if left:
                     raise RuntimeError(f"{cause}, but {len(left)} process(es) remain in process groups or "
                                        "sessions it was seen using: " + ", ".join(
