@@ -408,7 +408,11 @@ took 1.5 to 2.7 s and 3 to 9 s.
 **What comes back to the author.** `eng queue status` and `eng queue wait` name each entry's state,
 reason and log. An entry that conflicts with what is ahead of it, which the check could not see
 when it was queued, comes back at once and costs the others nothing. Its reason names the files in
-conflict and the entries ahead of it, which may still be in their gate: once those land, rebase onto `origin/main` and add it again. A session therefore
+conflict and what it conflicts with: `origin/main` when no entry ahead changes those files; only the
+entries ahead that change them, by ID, when `origin/main` still holds those files as the commit's parent
+did; and otherwise `origin/main` and every entry ahead
+([#247](https://github.com/vocaro/vocaro-engineering/issues/247)). Those entries may still be in their
+gate: once they land, rebase onto `origin/main` and add it again. A session therefore
 lands with `eng land --wait` run as a background command, whose end wakes it within seconds of a
 send-back; on 2026-11-03 a session that had run plain `eng land` learned of a conflict only half an
 hour later, from `eng queue status`
@@ -453,6 +457,7 @@ canceling its lanes and queuing its entries again:
 - the batch fails or gives no verdict;
 - the batch lands at another commit (after a carry-over, or with a `Flaky-test` trailer);
 - the stacked gate gives no verdict, as when the second Mac declines it;
+- an entry of it is removed;
 - an entry goes first (`--front`, `--no-gate`, or a pass waiting for its push);
 - main's lanes change;
 - the queue holds; or
@@ -460,8 +465,20 @@ canceling its lanes and queuing its entries again:
 
 Only one stacked gate runs at a time, so entries that arrive after it starts wait for the next round, where
 they stack on it in turn. A stacked gate settles nothing itself: an entry that conflicts with the batch below
-waits for its own round. A bisect stacks nothing, as both its halves already use both Macs. An entry that comes back keeps its ref until
+waits for its own round, and the worker's log names the entries below that it conflicts with. A bisect stacks
+nothing, as both its halves already use both Macs. An entry that comes back keeps its ref until
 `eng queue remove ID`. Fix it, rebase and land it again.
+
+**Removing an entry that is testing stops its gate.** `eng queue remove ID`, or `eng land` of the branch
+again, takes the entry out of the queue at once. The worker looks every `REMOVAL_POLL` (5 s) for an entry
+of the gate it runs that has left the queue, and then stops that gate's lanes as it does a stacked gate's
+it throws away, on this Mac or the second, which ends the run there and frees its admission. It gates what
+is left of the batch again, with no verdict counted and no hold, and stacks nothing on a batch an entry of
+which has left, since that tip will not land (owner's request,
+[#247](https://github.com/vocaro/vocaro-engineering/issues/247)). On 2026-11-07 a removed entry's gate on the
+second Mac held PDFReflowLib's queue for about 15 more minutes. `eng queue remove` says so of an entry that was
+testing; under a worker started from a toolkit older than this, it says instead that the gate runs on until
+its lanes end, at most `LANE_LIMIT` a lane, holding the queue until then.
 
 **A failed test that passes alone is a flake.** Before it bisects a batch whose failing lane is
 `eng unittest`, the worker reruns the failed tests alone on the same batch commit (owner's decision,

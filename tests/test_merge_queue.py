@@ -299,8 +299,10 @@ class Landing(Fixture):
         self.work()
         self.assertEqual([self.state(i)["state"] for i in ids], ["landed", "conflict", "landed"])
         self.assertIn("same", self.state(ids[1])["why"])
-        # Its author learns which entry to wait for before rebasing (#130).
-        self.assertIn(f"ahead of it, origin/main and {ids[0]}, in same:", self.state(ids[1])["why"])
+        # Its author learns which entry to wait for before rebasing (#130), and that it alone conflicts (#247).
+        self.assertIn(f"conflicts with {ids[0]}, ahead of it, not with origin/main, in same: once it lands, rebase",
+                      self.state(ids[1])["why"])
+        self.assertNotIn(ids[2], self.state(ids[1])["why"])
         self.assertEqual(self.gates(), 1)
 
     def test_a_conflict_with_main_alone_names_no_entry(self):
@@ -313,6 +315,34 @@ class Landing(Fixture):
         why = self.state(identifier)["why"]
         self.assertIn("conflicts with origin/main, in same: rebase onto origin/main", why)
         self.assertNotIn("once those land", why)
+
+    def test_a_conflict_with_main_behind_an_entry_that_does_not_touch_its_file_names_main(self):
+        """Negative control of #247: an entry ahead that changes other files is not what it conflicts with."""
+        start = run(self.repo, "git", "rev-parse", "origin/main")
+        self.commit("same", "one", "one")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        self.commit("c", "c")
+        self.commit("same", "two", "two", start)
+        ids = self.add("c", "two", checked=False)
+        self.work()
+        why = self.state(ids[1])["why"]
+        self.assertEqual([self.state(i)["state"] for i in ids], ["landed", "conflict"])
+        self.assertIn("conflicts with origin/main, in same: rebase onto origin/main", why)
+        self.assertNotIn(ids[0], why)
+
+    def test_a_conflict_with_main_and_an_entry_ahead_names_both(self):
+        """When origin/main has changed the file since the commit's parent as well as an entry ahead, both may be
+        what it conflicts with, as before #247."""
+        start = run(self.repo, "git", "rev-parse", "origin/main")
+        self.commit("same", "main", "main")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        self.commit("same", "one", "one")
+        self.commit("same", "two", "two", start)
+        ids = self.add("one", "two", checked=False)
+        self.work()
+        why = self.state(ids[1])["why"]
+        self.assertEqual([self.state(i)["state"] for i in ids], ["landed", "conflict"])
+        self.assertIn(f"conflicts with what is ahead of it, origin/main and {ids[0]}, in same: once those land", why)
 
     def test_a_commit_main_already_holds_needs_no_gate(self):
         tip = self.commit("a", "a")
@@ -432,7 +462,8 @@ class CheckedWhenQueued(Fixture):
                          sorted(f"refs/eng-queue/{i}" for i in ahead))
         # The files and the entries: all it was checked against, in order, and the one that changes the file.
         self.assertIn("is not queued", error)
-        self.assertIn(f"conflicts with what is ahead of it, origin/main and {ahead[0]}, {ahead[1]}, in same:", error)
+        # Only the entry that changes the file, since origin/main holds it as the commit's parent did (#247).
+        self.assertIn(f"conflicts with {ahead[0]}, ahead of it, not with origin/main, in same: once it lands", error)
         self.assertIn(f"and, in order, {ahead[0]}, {ahead[1]}; {ahead[0]} changes the files in conflict", error)
         self.assertNotIn(f"{ahead[1]} change", error)
         # The scratch worktree is gone, and Git knows of no other.
@@ -4380,6 +4411,139 @@ class Stacked(Fixture):
         self.assertEqual((self.state(first)["state"], c["state"]), ("landed", "conflict"), log)
         self.assertNotIn("that arrived during the gate", log)
         self.assertEqual(self.gates(), 1, log)
+        # Its stacked look names the entry below it, which it conflicts with, not origin/main (#247).
+        self.assertIn(f"stacked: {c['id']}: ", log)
+        self.assertIn(f"conflicts with {first}, ahead of it, not with origin/main, in same: once it lands", log)
+        self.assertNotIn(f"stacked: {c['id']}: {c['tip'][:12]} conflicts with origin/main", log)
+
+
+class RemovedWhileTesting(Fixture):
+    """`eng queue remove` of an entry whose gate runs stops that gate, by the cancel a thrown-away stacked gate's lanes
+    end with, and what is left gates again; nothing stacks on a batch an entry of which has left (#247)."""
+    SLOW = "60"  # seconds the gate of the removed entry would take, far past what the test waits
+
+    def setUp(self):
+        super().setUp()
+        for name, value in (("HERE", ()), ("BESIDE", ()), ("offerable", lambda config, lanes: None),
+                            ("STACK_POLL", 0.1), ("REMOVAL_POLL", 0.1)):
+            patcher = patch.object(mq, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        starting = patch.object(mq.Queue, "start")
+        starting.start()
+        self.addCleanup(starting.stop)
+
+    def remove(self, identifier):
+        """Remove identifier as `eng queue remove` does from another process while the worker runs, whose lines
+        go to the worker's log here, as stdout is one for both."""
+        mq.remove(mq.Queue(self.repo), identifier)
+
+    def arrive(self, branch):
+        """Add branch as a session's eng land does, without its trial, as when the batch ahead changes after it."""
+        with patch.object(mq, "check"): mq.add(self.repo, branch)
+        return self.added(branch)["id"]
+
+    def during(self, action, after=0.5):
+        """action runs on its own thread after seconds of the first gate, as a session's commands do."""
+        real, first = mq.Worker.gate, []
+        def gate(worker, lanes, round_name, where=(), cancel=None):
+            if not first:
+                first.append(True)
+                timer = threading.Timer(after, action)
+                timer.start()
+                self.addCleanup(timer.join)
+            return real(worker, lanes, round_name, where, cancel)
+        return patch.object(mq.Worker, "gate", gate)
+
+    def added(self, branch):
+        return next(entry for entry in mq.Queue(self.repo).all() if entry["branch"] == branch)
+
+    def worked(self, *more):
+        with contextlib.redirect_stdout(io.StringIO()) as said, contextlib.ExitStack() as stack:
+            for context in more: stack.enter_context(context)
+            began = time.monotonic()
+            self.assertEqual(self.work(), 0)
+        return said.getvalue(), time.monotonic() - began
+
+    def test_removing_a_testing_entry_stops_its_gate_and_the_rest_lands(self):
+        self.commit("slow", "a", self.SLOW); self.commit("b", "b")
+        a, b = self.add("a", "b")
+        log, took = self.worked(self.during(lambda: self.remove(a)))
+        self.assertLess(took, float(self.SLOW) / 2, log)
+        self.assertEqual((self.state(a)["state"], self.state(b)["state"]), ("removed", "landed"), log)
+        self.assertRegex(log, f"gate: stopped[^\\n]*, as {a} left the queue")
+        self.assertIn(f"{a} left the queue, which stopped the gate: gating what is left", log)
+        self.assertNotIn("unmeasured", log)
+        self.assertNotIn("no verdict", log)
+        self.assertIsNone(mq.Queue(self.repo).held())
+        self.assertNotIn("slow", self.main_files())
+        self.assertIn("b", self.main_files())
+        # What `eng queue remove` said: the worker stops the gate, rather than letting it hold the queue.
+        self.assertIn(f"removed {a}\n", log)
+        self.assertIn(f"{a} was testing: the worker stops its gate within about 0.1s", log)
+
+    def test_a_replacement_that_conflicts_only_with_the_removed_entry_is_not_stacked_on_it(self):
+        """The case of #247: the replacement, based on origin/main, changes the removed entry's file. It stacks on
+        nothing, is told it conflicts with the removed entry rather than origin/main, and lands once that entry's gate
+        has stopped."""
+        self.commit("slow", "a", self.SLOW); self.commit("same", "a", "a", start="a"); self.commit("same", "c", "c")
+        [a] = self.add("a")
+        def replace():
+            self.arrive("c")
+            time.sleep(1)  # some looks of the stacker, which finds c conflicting with a
+            self.remove(a)
+        log, took = self.worked(self.during(replace))
+        c = self.added("c")
+        self.assertLess(took, float(self.SLOW) / 2, log)
+        self.assertEqual((self.state(a)["state"], c["state"]), ("removed", "landed"), log)
+        self.assertIn(f"stacked: {c['id']}: {c['tip'][:12]} conflicts with {a}, ahead of it, not with "
+                      "origin/main, in same: once it lands, rebase onto origin/main and add it again", log)
+        self.assertNotIn("conflicts with origin/main", log)
+        self.assertNotIn("that arrived during the gate", log)
+        self.assertRegex(log, f"gate: stopped[^\\n]*, as {a} left the queue")
+
+    def test_removing_a_queued_entry_leaves_the_gate_running(self):
+        """Negative control: removing an entry that waits behind the batch, not stacked on it, stops nothing; the
+        batch lands, and remove says nothing of a gate."""
+        self.commit("slow", "a", "2"); self.commit("b", "b")
+        [a] = self.add("a")
+        with patch.object(mq, "STACK_POLL", 30):  # b stays queued, not stacked
+            log, _ = self.worked(self.during(lambda: self.remove(self.arrive("b")), after=0.3))
+        b = self.added("b")
+        self.assertEqual((self.state(a)["state"], b["state"]), ("landed", "removed"), log)
+        self.assertIn(f"removed {b['id']}\n", log)
+        self.assertNotIn("left the queue", log)
+        self.assertNotIn("was testing", log)
+        self.assertEqual(self.gates(), 1, log)
+
+    def test_remove_says_what_becomes_of_a_testing_entrys_gate(self):
+        """Its line after `removed ID`: only for an entry that was testing."""
+        self.commit("a", "a"); self.commit("b", "b")
+        a, b = self.add("a", "b")
+        queue = mq.Queue(self.repo)
+        queue.mark([{"id": a}], mq.TESTING)
+        queue.record({"id": a}, stopsWhenRemoved=5)
+        with contextlib.redirect_stdout(io.StringIO()) as said, patch.object(mq.Queue, "working", return_value=True):
+            mq.remove(queue, a)
+            mq.remove(queue, b)
+        self.assertEqual(said.getvalue(), f"removed {a}\n{a} was testing: the worker stops its gate within about 5s, "
+                         "on this Mac or the second, which frees its admission there, and gates the rest of its batch "
+                         f"again\nremoved {b}\n")
+
+    def test_what_remove_says_of_a_testing_entry(self):
+        """A worker that records stopsWhenRemoved stops the gate; an older one lets it run on, which remove says,
+        with how long it may hold the queue; and with no worker, no gate is left."""
+        self.commit("a", "a")
+        [a] = self.add("a")
+        queue = mq.Queue(self.repo)
+        entry = dict(queue.read(a), state=mq.TESTING)
+        with patch.object(mq.Queue, "working", return_value=True):
+            self.assertIn("stops its gate within about 5s", mq.stopping(queue, dict(entry, stopsWhenRemoved=5)))
+            older = mq.stopping(queue, entry)
+        self.assertIn("does not stop a gate for a removal: its gate runs on until its lanes end, at most 6 h a lane, "
+                      "and holds the queue until then", older)
+        with patch.object(mq.Queue, "working", return_value=False):
+            self.assertIn("no worker runs, so no gate of it is left to stop", mq.stopping(queue, entry))
 
 
 # What the module says before a test's patches: each half's placement option, and which lanes may go to the second Mac.
