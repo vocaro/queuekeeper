@@ -5297,6 +5297,31 @@ class ToolkitUpdateTests(unittest.TestCase):
         found = self.update()
         self.assertEqual(found["state"], "updated", found)
 
+    def test_its_process_listing_keeps_a_floor_when_the_deadline_is_nearly_spent(self):
+        # Under the gate's load the git steps used nearly all of the deadline, and ps given 1 s listed nothing (#221).
+        floor = offload_host.UPDATE_LISTING_SECONDS
+        self.assertEqual(offload_host.listing_budget(100.0, now=99.5), floor)
+        self.assertEqual(offload_host.listing_budget(100.0, now=100.5), floor)
+        self.assertEqual(offload_host.listing_budget(100.0, now=60.0), 40.0)  # control: more left than the floor
+
+    def test_a_ps_that_did_not_finish_is_told_apart_from_one_that_listed_nothing(self):
+        land(self.seed)
+        asked = []
+        def listed(output):
+            def run(command, timeout=60):
+                asked.append((command[0], timeout))
+                return output if command[0] == "ps" else ""
+            return run
+        for output, reason in [(None, "ps did not finish within"), ("", "ps listed no processes, so what runs")]:
+            asked.clear()
+            with self.subTest(output=output):
+                found = offload_host.update_toolkit({"path": offload_host.TOOLKIT_CHECKOUT, "root": remote.ROOT},
+                                                    home=self.home, listed=listed(output))
+                self.assertEqual(found["state"], "failed", found)
+                self.assertTrue(found["reason"].startswith(reason), found)
+                self.assertGreaterEqual(asked[0][1], offload_host.UPDATE_LISTING_SECONDS)
+        self.assertEqual(self.head(), self.start)
+
     def test_another_branch_or_a_detached_head_leaves_it_as_it_is(self):
         land(self.seed)
         git(self.checkout, "checkout", "-q", "-b", "experiment")

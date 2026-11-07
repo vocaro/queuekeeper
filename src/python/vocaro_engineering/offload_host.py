@@ -172,6 +172,9 @@ TOOLKIT = f"~/{TOOLKIT_CHECKOUT}/src/python"
 # Seconds one update_toolkit may take in all, the bound it adds to the connection that prepares a dispatch,
 # and at most for its fetch; and its lock beside the second Mac's repositories, under ROOT.
 UPDATE_SECONDS, UPDATE_FETCH_SECONDS = 40, 25
+# Seconds its ps and its lsof each have at least, whatever is left of that bound: under load, the git steps
+# before them used nearly all of it, and a ps given the last second listed nothing (vocaro-engineering#221).
+UPDATE_LISTING_SECONDS = 10
 UPDATE_LOCK = "toolkit-update.lock"
 
 _output = threading.Lock()
@@ -2314,7 +2317,8 @@ def update_toolkit(request, home=None, seconds=UPDATE_SECONDS, listed=listing):
 
     With request["want"], a commit the sending Mac's origin/main names, a checkout that holds it already is
     "current" without a fetch, so most connections cost a few git reads. Every step shares one deadline,
-    seconds, the fetch at most UPDATE_FETCH_SECONDS of it, and git can never prompt. While another
+    seconds, the fetch at most UPDATE_FETCH_SECONDS of it, the process listing at least
+    UPDATE_LISTING_SECONDS past it, and git can never prompt. While another
     connection updates the checkout, this one leaves it to that one ("busy"). Nothing here raises for the
     checkout's sake: whatever went wrong is the answer's reason."""
     home = Path.home() if home is None else Path(home)
@@ -2407,8 +2411,8 @@ def update_toolkit(request, home=None, seconds=UPDATE_SECONDS, listed=listing):
         if listed_worktrees is None: return ended("failed", why)
         apart = [line[len("worktree "):] for line in listed_worktrees.splitlines()[1:] if line.startswith("worktree ")]
         apart.append(str(checkout / ".git"))
-        users = running_from(checkout, max(1, deadline - time.monotonic()), listed, apart)
-        if users is None: return ended("failed", "ps listed no processes, so what runs from it is unknown")
+        users, why = running_from(checkout, listing_budget(deadline), listed, apart)
+        if users is None: return ended("failed", f"{why}, so what runs from it is unknown")
         if users:
             more = f"; and {len(users) - 3} more" if len(users) > 3 else ""
             return ended("left", f"a process runs from it: {'; '.join(users[:3])}{more}")
@@ -2417,15 +2421,23 @@ def update_toolkit(request, home=None, seconds=UPDATE_SECONDS, listed=listing):
         return ended("updated", to=upstream)
 
 
+def listing_budget(deadline, now=None):
+    """Seconds update_toolkit's process listing has: what is left before deadline, a time.monotonic() value, and
+    never under UPDATE_LISTING_SECONDS (vocaro-engineering#221)."""
+    return max(UPDATE_LISTING_SECONDS, deadline - (time.monotonic() if now is None else now))
+
+
 def running_from(checkout, seconds, listed=listing, apart=()):
     """What of this account, other than this process and its ancestors, may run code from checkout's own tree, as
     lines naming each process: its working directory, as lsof lists it, or an argument is below checkout, not at
     checkout itself and not below any of apart, where an argument relative to its working directory counts when
     it names a file there, or a folder by a path with a slash. This is disk.runners' rule, which this file cannot
-    import, without open files (vocaro-engineering#182). None when ps listed no processes. ps and lsof each have
-    at most seconds."""
-    table = process_table(listed(["ps", "-axww", "-o", "pid=,ppid=,uid=,lstart=,args="], timeout=seconds))
-    if not table: return None
+    import, without open files (vocaro-engineering#182). ps and lsof each have at most seconds. Returned with
+    None, or with why there are none: ps that did not finish or could not run, or that listed no processes."""
+    output = listed(["ps", "-axww", "-o", "pid=,ppid=,uid=,lstart=,args="], timeout=seconds)
+    if output is None: return None, f"ps did not finish within {seconds:.0f} s, or could not run"
+    table = process_table(output)
+    if not table: return None, "ps listed no processes"
     uid = os.getuid()
     directories = working_directories(listed(["lsof", "-nPw", "-a", "-u", str(uid), "-d", "cwd", "-Fpn"],
                                              timeout=seconds))
@@ -2445,7 +2457,7 @@ def running_from(checkout, seconds, listed=listing, apart=()):
                 if os.path.isfile(named) or ("/" in token and os.path.exists(named)): uses.append((named, "naming"))
         hit = next(((how, value) for value, how in uses if below(value)), None)
         if hit: found.append(f"PID {pid}, {hit[0]} {hit[1]}: {row['args']}")
-    return found
+    return found, None
 
 
 def defer_devices(kit, mac):
