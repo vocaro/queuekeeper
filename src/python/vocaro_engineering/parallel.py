@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import sys
 import threading
 import time
@@ -51,6 +52,27 @@ def results_environment(directory, base=None):
     directory = Path(directory).resolve()
     directory.mkdir(parents=True, exist_ok=True)
     return {**(os.environ if base is None else base), RESULTS_VARIABLE: str(directory)}
+
+
+def hand_up(results, lane, environment=None):
+    """Copy a nested lane's results/ into results/LANE/ of the lane it runs inside, which RESULTS_VARIABLE
+    names in environment (os.environ), and return that folder, or None when there is nothing to copy or
+    no lane outside it. A gate whose script runs `eng run --here suites` then brings the suites' lanes'
+    results, such as each iOS shard's per-test lines, back with its own dispatch from the second Mac and
+    keeps them by commit with its receipt (vocaro-engineering#218)."""
+    outer = (os.environ if environment is None else environment).get(RESULTS_VARIABLE)
+    if not outer: return None
+    results, outer = Path(results).resolve(), Path(outer).resolve()
+    # A lane's own results/, or one inside them, is not another lane's to copy into.
+    if outer == results or results in outer.parents or outer in results.parents: return None
+    try:
+        if not results.is_dir() or not any(results.iterdir()): return None
+        target = outer / lane
+        shutil.copytree(results, target, symlinks=True, dirs_exist_ok=True)
+    except OSError as error:
+        print(f"eng: {lane}'s results were not copied into {outer}: {error}", file=sys.stderr, flush=True)
+        return None
+    return target
 
 
 def lanes(root, members, directory, jobs, judge, receipt, on_stop=None, results_directory=None):

@@ -286,6 +286,10 @@ class RemoteTests(unittest.TestCase):
                                   "print('results in', folder); (folder / 'note.txt').write_text('noted'); "
                                   "print('Ran 1 tests')"], "resource": "heavy", "minimumTests": 1},
             "notes": {"parallel": ["noted", "left"], "resource": "heavy"},
+            # Runs noted inside itself, as a gate's script runs its suites with `eng run --here suites` (#218).
+            # A shell, as the gate's script is, keeps the admission's descriptor open for the nested run.
+            "nesting": {"command": ["sh", "-c", '"$0" "$VOCARO_ENGINEERING_ROOT/bin/eng" --project . run --here noted',
+                                    python], "resource": "heavy"},
             # Outlives any test that holds it, which stops it: on a loaded Mac a test that expected a
             # 60 s lane to be running found it ended (#111).
             "linger": {"command": [python, "-c", "import os, pathlib, time; "
@@ -1436,6 +1440,59 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual(status, 0, output + error)
         self.assertEqual((self.project / ".build/engineering/remote/noted/results/note.txt").read_text(), "noted")
         self.assertNotIn(", from ", error)
+
+    def test_a_lane_nested_in_a_dispatched_lane_brings_its_results_back_and_they_are_kept_by_commit(self):
+        # The gate at a commit keeps its suites' per-test results, which the slot's next run would overwrite (#218).
+        results = self.project / ".build/engineering/remote/nesting"
+        status, output, error = self.eng("run", "nesting")
+        self.assertEqual(status, 0, (results / "run.log").read_text(errors="replace") if (results / "run.log").exists()
+                         else output + error)
+        self.assertEqual((results / "results/noted/note.txt").read_text(), "noted")
+        kept = remote.store(self.project) / self.commit
+        receipt = json.loads((kept / "nesting.json").read_text())
+        self.assertEqual(receipt["keptResults"], "nesting.results")
+        self.assertEqual((kept / "nesting.results/noted/note.txt").read_text(), "noted")
+        status, output, _ = self.eng("remote", "passed", "nesting")
+        self.assertEqual(status, 0, output)
+        self.assertIn(f"Its results are kept in {kept / 'nesting.results'}", output)
+        # The nested lane's own results stay where they were, in the slot's checkout.
+        self.assertEqual((self.checkout(0) / ".build/engineering/noted/results/note.txt").read_text(), "noted")
+        # The negative control: a lane that writes nothing in results/ keeps none, and the earlier run's go.
+        status, output, error = self.eng("run", "check")
+        self.assertEqual(status, 0, output + error)
+        self.assertNotIn("keptResults", json.loads((kept / "check.json").read_text()))
+        self.assertFalse((kept / "check.results").exists())
+
+    def test_keep_keeps_a_runs_results_beside_its_receipt_in_place_of_an_earlier_runs(self):
+        base = Path(self.temp.name) / "keeping"
+        kept, results = base / "store/COMMIT", base / "results"
+        (results / "suites/ios-tests").mkdir(parents=True)
+        (results / "suites/ios-tests/shard.log").write_text("✔ Test \"t\" passed after 0.7 seconds.\n")
+        remote.keep(kept, "gate", {"lane": "gate"}, results)
+        self.assertEqual(json.loads((kept / "gate.json").read_text())["keptResults"], "gate.results")
+        self.assertIn("passed after 0.7", (kept / "gate.results/suites/ios-tests/shard.log").read_text())
+        # A later run replaces them whole: nothing of the earlier run's stays beside the later's.
+        shutil.rmtree(results)
+        (results / "other").mkdir(parents=True)
+        (results / "other/note.txt").write_text("later")
+        remote.keep(kept, "gate", {"lane": "gate"}, results)
+        self.assertEqual(sorted(str(p.relative_to(kept)) for p in kept.rglob("*") if p.is_file()),
+                         ["gate.json", "gate.results/other/note.txt"])
+        # A run with no results/, or an empty one, keeps none, and the earlier run's go.
+        for missing in (None, base / "absent", base / "empty"):
+            with self.subTest(missing=missing):
+                if missing is not None and missing.name == "empty": missing.mkdir(exist_ok=True)
+                remote.keep(kept, "gate", {"lane": "gate"}, results)
+                remote.keep(kept, "gate", {"lane": "gate"}, missing)
+                self.assertNotIn("keptResults", json.loads((kept / "gate.json").read_text()))
+                self.assertFalse((kept / "gate.results").exists())
+        # More than the limit keeps none, and says where they stay.
+        with patch.object(remote, "KEPT_RESULTS_LIMIT", 3), \
+                contextlib.redirect_stderr(StringIO()) as said:
+            remote.keep(kept, "gate", {"lane": "gate"}, results)
+        self.assertFalse((kept / "gate.results").exists())
+        self.assertIn(f"stay only in {results}", said.getvalue())
+        self.assertEqual(sorted(p.name for p in kept.iterdir()), ["gate.json"])
 
     def test_a_group_on_the_second_mac_brings_each_lanes_log_and_receipt_back(self):
         results = self.project / ".build/engineering/remote/pair"

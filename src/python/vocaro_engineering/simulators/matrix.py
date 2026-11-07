@@ -37,6 +37,12 @@ With --build-only it builds and tests nothing: it takes the first device's membe
 booting it, only to name the build's destination, and returns it once the build ends. A gate can then
 build while its earlier stages run, and the full run that follows finds the build up to date
 (vocaro/EPUBLib#958).
+
+Under a lane, whose command finds its results/ in ENG_RESULTS_DIR, each test run, a shard or a device,
+also keeps there, in simulator-tests/, the lines of its log that give each test's and suite's outcome and
+seconds, KIND.log, and its result bundle's summary and each class's or suite's seconds, KIND.json: they
+come back from the second Mac with the lane's dispatch, and are kept by commit beside its receipt, where
+the logs folder's are overwritten by the next run (vocaro-engineering#218).
 """
 import argparse
 import contextlib
@@ -45,6 +51,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -53,7 +60,7 @@ import time
 import uuid
 
 from .. import evidence, processes
-from ..parallel import TAIL, combined, outcome
+from ..parallel import RESULTS_VARIABLE, TAIL, combined, outcome
 from . import pool as simulator_pool
 from .pool import DEVICE_TYPE, RUNTIME, qualified
 
@@ -160,6 +167,13 @@ def system_views(app_accessibility, environment):
 
 # Each class's or suite's seconds in the last sharded run, Bundle/Suite, which packs the next one's shards.
 SHARD_TIMINGS = "shard-timings.json"
+# The folder under a lane's results/ in which each test run keeps its per-test lines and summary (kept).
+KEPT = "simulator-tests"
+# A log's lines that give one test's, suite's or run's outcome, with its seconds, or an XCTest failure: Swift
+# Testing's `✔ Test "t" passed after 0.7 seconds.` and `✔ Suite S passed after 4.0 seconds.`, XCTest's
+# `Test Case '-[B.C t]' passed (0.7 seconds).`, `Test Suite 'C' passed at ...` and `Executed N tests`.
+RESULT_LINE = re.compile(r"^(?:\S+ (?:Test|Suite) |Test [Cc]ase '|Test Suite '|\s*Executed \d+ tests?\b|.*: error: -\[)")
+STARTED_LINE = re.compile(r"(?: started\.| started at [-0-9: .]+)$")
 # The -only-testing and -skip-testing arguments, which a sharded run applies when it lists the tests.
 SELECTING = ("-only-testing", "-skip-testing")
 
@@ -198,13 +212,12 @@ def packed(tests, partial, seconds, count):
     return [names for _, names in bins]
 
 
-def suite_seconds(bundle):
-    """{Bundle/Suite: seconds} over a result bundle's test cases, or {} when xcresulttool cannot read it."""
-    try:
-        found = subprocess.run(["xcrun", "xcresulttool", "get", "test-results", "tests", "--path", str(bundle)],
-                               capture_output=True, text=True, timeout=300, check=True)
-        tests = json.loads(found.stdout)
-    except (OSError, ValueError, subprocess.SubprocessError): return {}
+def suite_seconds(bundle, record=None):
+    """{Bundle/Suite: seconds} over a result bundle's test cases, or {} when xcresulttool cannot read it.
+    record is the bundle's, as bundle_record read it, when it has been read already."""
+    record = record if record is not None else bundle_record(bundle)
+    if record is None: return {}
+    tests = record[1]
     seconds = {}
     def walk(node, path):
         kind = node.get("nodeType")
@@ -215,6 +228,34 @@ def suite_seconds(bundle):
         for child in node.get("children", []): walk(child, path)
     for node in tests.get("testNodes", []): walk(node, [])
     return seconds
+
+
+def kept(kind, log, record, status, seconds, results=None):
+    """Keep what a reader cites of one test run in its lane's results/, KEPT/KIND.log and KIND.json, and
+    return that folder, or None outside a lane (no RESULTS_VARIABLE): the log's lines that give each test's
+    and suite's outcome and seconds (RESULT_LINE), and the result bundle's summary, as xcresulttool prints
+    it, with each class's or suite's seconds. record is the bundle's (bundle_record), None when it could not
+    be read; a log that is missing keeps no lines, and its JSON says so. status is None for a run stopped
+    at its limit."""
+    results = results if results is not None else os.environ.get(RESULTS_VARIABLE)
+    if not results: return None
+    folder = Path(results) / KEPT
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        lines = None
+        if log.exists():
+            lines = [line for line in log.read_text(errors="replace").splitlines()
+                     if RESULT_LINE.match(line) and not STARTED_LINE.search(line)]
+            (folder / f"{kind}.log").write_text("".join(f"{line}\n" for line in lines))
+        (folder / f"{kind}.json").write_text(json.dumps({
+            "run": kind, "status": status, "seconds": seconds, "log": log.name if lines is not None else None,
+            "resultLines": None if lines is None else len(lines),
+            "summary": record[0] if record is not None else None,
+            "suiteSeconds": suite_seconds(None, record) if record is not None else None}, indent=1) + "\n")
+    except OSError as error:
+        print(f"eng simulator-tests: {kind}'s results were not kept in {folder}: {error}", file=sys.stderr, flush=True)
+        return None
+    return folder
 
 
 class Run:
@@ -354,20 +395,23 @@ class Run:
                                    env={**os.environ, **forwarded(args.forward_env, os.environ),
                                         **system_views(args.app_accessibility, os.environ)})
         except processes.TimedOut:
+            kept(kind, log, bundle_record(bundle), None, None)
             if selection is not None: return evidence.UNMEASURED, 0, 0, [], f"{kind}'s tests exceeded {args.test_timeout}s"
             return self.finish(kind, evidence.UNMEASURED, f"the tests exceeded {args.test_timeout}s", log)
         seconds = round(time.monotonic() - started)
         text = log.read_text(errors="replace")
         # Tests that skipped ran nothing, so they are reported beside the count, not in it. The result
         # bundle's record counts them; the console, with no bundle to read, is the fallback.
-        recorded = bundle_results(bundle, kind)
+        record = bundle_record(bundle)
+        kept(kind, log, record, status, seconds)
+        recorded = bundle_results(bundle, kind, record)
         if recorded is not None: executed, skipped, from_bundle = recorded
         else: executed, skipped, from_bundle = evidence.executed_tests(text) or 0, evidence.skipped_tests(text), []
         counted = f"Executed {executed} tests" + (f", {skipped} skipped" if skipped else "")
         if selection is not None:
             console = evidence.unmeasured_tests(text)
             if recorded is not None: console = [line for line in console if "Test skipped - Unmeasured:" not in line]
-            with self.lock: self.seconds.update(suite_seconds(bundle))
+            with self.lock: self.seconds.update(suite_seconds(bundle, record))
             # Not "Executed N tests", which a lane would count beside the device's own total.
             self.say(f"SHARD {kind}: status {status}, ran {executed} tests" + (f", {skipped} skipped" if skipped else "")
                      + f" in {seconds}s; log: {log}")
@@ -475,18 +519,25 @@ class Run:
         self.test(kind, device, xctestrun)
 
 
-def bundle_results(bundle, kind):
-    """(executed, skipped, unmeasured lines) as a result bundle records them, or None when xcresulttool
-    cannot read it. Once parallel testing is on, xcodebuild's console prints each test's outcome but
-    no totals and no skip reason (Xcode 27.2, 2026-10-31), so the bundle is what counts, either way.
-    Each skip whose message begins "Test skipped - Unmeasured:" is a line evidence.UNMEASURED_TEST
-    reads, naming the device and the test."""
+def bundle_record(bundle):
+    """(summary, tests) as xcresulttool prints a result bundle's, or None when it cannot read them."""
     def read(what):
         found = subprocess.run(["xcrun", "xcresulttool", "get", "test-results", what, "--path", str(bundle)],
                                capture_output=True, text=True, timeout=300, check=True)
         return json.loads(found.stdout)
-    try: summary, tests = read("summary"), read("tests")
+    try: return read("summary"), read("tests")
     except (OSError, ValueError, subprocess.SubprocessError): return None
+
+
+def bundle_results(bundle, kind, record=None):
+    """(executed, skipped, unmeasured lines) as a result bundle records them, or None when xcresulttool
+    cannot read it. Once parallel testing is on, xcodebuild's console prints each test's outcome but
+    no totals and no skip reason (Xcode 27.2, 2026-10-31), so the bundle is what counts, either way.
+    Each skip whose message begins "Test skipped - Unmeasured:" is a line evidence.UNMEASURED_TEST
+    reads, naming the device and the test. record is the bundle's (bundle_record) when read already."""
+    record = record if record is not None else bundle_record(bundle)
+    if record is None: return None
+    summary, tests = record
     unmeasured = []
     def walk(node, test=None):
         if node.get("nodeType") == "Test Case": test = node.get("nodeIdentifier") or node.get("name")

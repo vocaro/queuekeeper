@@ -970,16 +970,51 @@ HERE = "this Mac"
 CLEAN = hashlib.sha256().hexdigest()
 
 
-def keep(kept, lane, receipt):
+# The most of a run's results/ kept by commit beside its receipt; a run that wrote more keeps them only in its
+# dispatch's or checkout's results, and says so. A landing gate's iOS shards keep about 1 MB (vocaro-engineering#218).
+KEPT_RESULTS_LIMIT = 64 * 1024 * 1024
+
+
+def kept_results(kept, lane):
+    """Where the store keeps, beside the lane's receipt at a commit, what its run wrote in results/."""
+    return kept / f"{lane}.results"
+
+
+def keep(kept, lane, receipt, results=None):
     """Keep receipt as the lane's at the commit whose directory in the store is kept: whole or not at all,
-    for a reader beside a run of the lane at this commit that ends at once."""
+    for a reader beside a run of the lane at this commit that ends at once. With results, the run's
+    results/ folder, what it holds is kept beside it, in LANE.results/ (kept_results), in place of an
+    earlier run's, and the receipt's keptResults names it: per-test lines and times that the second Mac's
+    checkout slot or the next run here would overwrite (vocaro-engineering#218). A run that wrote nothing
+    there, or more than KEPT_RESULTS_LIMIT, keeps none, and an earlier run's go."""
     kept.mkdir(parents=True, exist_ok=True)
-    partial = kept / f".{lane}.json.{os.getpid()}"
+    folder, pid = kept_results(kept, lane), os.getpid()
+    fresh, previous = kept / f".{lane}.results.{pid}", kept / f".{lane}.results.{pid}.previous"
+    for path in (fresh, previous): shutil.rmtree(path, ignore_errors=True)
+    files = [path for path in Path(results).rglob("*") if path.is_file() and not path.is_symlink()] \
+        if results is not None and Path(results).is_dir() else []
+    size = sum(path.stat().st_size for path in files)
+    if files and size <= KEPT_RESULTS_LIMIT:
+        try:
+            for path in files:
+                (fresh / path.relative_to(results)).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(path, fresh / path.relative_to(results))
+            receipt = {**receipt, "keptResults": folder.name}
+        except OSError as error:
+            shutil.rmtree(fresh, ignore_errors=True)
+            print(f"remote: {lane}'s results were not kept by commit in {folder}: {error}", file=sys.stderr, flush=True)
+    elif files:
+        print(f"remote: {lane}'s results, {size} bytes, are more than the {KEPT_RESULTS_LIMIT} kept by commit, so "
+              f"they stay only in {results}", file=sys.stderr, flush=True)
+    partial = kept / f".{lane}.json.{pid}"
     partial.write_text(json.dumps(receipt, indent=2) + "\n")
+    with contextlib.suppress(FileNotFoundError): folder.rename(previous)
+    if fresh.is_dir(): fresh.rename(folder)
     partial.replace(kept / f"{lane}.json")
+    shutil.rmtree(previous, ignore_errors=True)
 
 
-def keep_here(root, lane, receipt, status, whole=True):
+def keep_here(root, lane, receipt, status, whole=True, results=None):
     """Keep a judged run of the whole lane on this Mac by commit in the repository's Git directory, beside
     the second Mac's, and return its path, or None when it is no commit's run. Every worktree reads it
     there, as eng release, a checkpoint and `eng remote passed` do: the merge queue's gate on this Mac ran
@@ -990,7 +1025,7 @@ def keep_here(root, lane, receipt, status, whole=True):
     (whole), at the checkout's commit with no working changes, by a toolkit with none, and run for this
     Mac, not for a Mac that sent it (DISPATCHER), which keeps the receipt itself. status is the lane's
     judged status, 0 only for a pass. A run with no verdict, interrupted or past its timeout, is not
-    kept, and leaves what the store holds."""
+    kept, and leaves what the store holds. results is the run's results/, kept beside the receipt (keep)."""
     if not whole or receipt.get("arguments") or receipt.get("ranOn") != HERE or os.environ.get(DISPATCHER):
         return None
     project, toolkit = receipt.get("project") or {}, receipt.get("toolkit") or {}
@@ -1005,7 +1040,7 @@ def keep_here(root, lane, receipt, status, whole=True):
                        "receipt": receipt}}
     try:
         directory = store(root) / commit
-        keep(directory, lane, kept)
+        keep(directory, lane, kept, results)
     except (OSError, RuntimeError, subprocess.SubprocessError) as error:
         print(f"remote: {lane}'s result at {commit[:12]} was not kept by commit, so other worktrees cannot read "
               f"it: {error}", file=sys.stderr, flush=True)
@@ -1450,7 +1485,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     # serial reference: the group's pass is its lanes' side by side.
     if lane is not None and not arguments and expect is None and commit == head and not serial \
             and not kit_snapshot(kit):
-        keep(kept, lane, receipt)
+        keep(kept, lane, receipt, own / RESULTS)
     if preparation:
         print(f"remote: {preparing(preparation, result.get('phases') or {}, result.get('receipt'))}", file=sys.stderr,
               flush=True)
@@ -1499,6 +1534,8 @@ def main(root, config, args):
             print(f"No passing run of the whole {args.lane} lane at {args.commit} kept by commit, from either Mac")
             return 1
         print(f"{args.lane} passed at {receipt['commit']} {ran_where(receipt)}")
+        if receipt.get("keptResults"):
+            print(f"Its results are kept in {store(root) / receipt['commit'] / receipt['keptResults']}")
         return 0
     host = args.host or named_host() or alias() or DEFAULT_HOST
     if args.operation == "setup": return setup(host, args.formulae, args.imports or [], args.check, args.runtimes)

@@ -213,6 +213,13 @@ XCODEBUILD = textwrap.dedent("""\
         for name, result in (("T.testA()", "skipped"), ("T.testB()", "passed"), ("T.testC()", "passed")):
             print(f"Test case '{name}' {result} on 'Clone 1 of {kind} - xctest (1)' (0.001 seconds)")
         sys.exit(65 if kind in os.environ.get("FAKE_TEST_FAIL", "") else 0)
+    if os.environ.get("FAKE_RESULT_LINES"):
+        # Each test's outcome and seconds, as Swift Testing and XCTest print them, among lines that give none.
+        print('\\u25c7 Test "testB()" started.')
+        print('\\u2714 Test "testB()" passed after 0.010 seconds.')
+        print("Test Case '-[T.C testC]' started.")
+        print("Test Case '-[T.C testC]' passed (0.020 seconds).")
+        print("2026-11-06 16:16:45.147 xctest[1:2] noise that names no outcome")
     if unmeasured:
         print("/p/T.swift:5: -[P.T testA] : Test skipped - Unmeasured: the host was busy")
     print("Test Suite 'All tests' passed at 2026-10-24 01:00:00.000.")
@@ -888,6 +895,48 @@ class SimulatorMatrixTests(unittest.TestCase):
         shares = sorted(sorted(a for a in call if a.startswith("-only-testing")) for call in self.shard_runs()
                         if self.devices_by_udid()[call[call.index("-destination") + 1].split("id=")[1]] == "iPhone-17-Pro")
         self.assertIn(["-only-testing:T/D"], shares, output)
+
+    def test_each_shard_keeps_its_per_test_lines_and_bundle_summary_in_its_lanes_results(self):
+        # They come back with the lane's dispatch and are kept by commit, where the logs folder's are overwritten (#218).
+        results = self.root / "lane-results"
+        status, output = self.run_matrix("--shards", "2", FAKE_TESTS=json.dumps(self.SHARDED), FAKE_BUNDLE="1",
+                                         FAKE_RESULT_LINES="1", FAKE_TEST_FAIL="iPad-Air-13-inch-M4",
+                                         ENG_RESULTS_DIR=str(results))
+        self.assertEqual(status, 1, output)
+        kept = results / "simulator-tests"
+        runs = ["iPad-Air-13-inch-M4-1", "iPad-Air-13-inch-M4-2", "iPhone-17-Pro-1", "iPhone-17-Pro-2"]
+        self.assertEqual(sorted(p.name for p in kept.iterdir()),
+                         sorted(f"{run}.{suffix}" for run in runs for suffix in ("json", "log")))
+        for run in runs:
+            with self.subTest(run):
+                lines = (kept / f"{run}.log").read_text().splitlines()
+                self.assertEqual(lines, ['✔ Test "testB()" passed after 0.010 seconds.',
+                                         "Test Case '-[T.C testC]' passed (0.020 seconds).",
+                                         "Test Suite 'All tests' passed at 2026-10-24 01:00:00.000.",
+                                         lines[-1]])
+                self.assertRegex(lines[-1], r"^\s*Executed \d+ tests")
+                record = json.loads((kept / f"{run}.json").read_text())
+                # A failed shard keeps its lines and summary too, with its status.
+                self.assertEqual(record["status"], 65 if run.startswith("iPad") else 0)
+                self.assertEqual((record["run"], record["log"], record["resultLines"]), (run, f"{run}.log", 4))
+                self.assertEqual(record["summary"]["totalTestCount"], 3)
+                self.assertIsInstance(record["suiteSeconds"], dict)
+                self.assertIsInstance(record["seconds"], int)
+
+    def test_outside_a_lane_nothing_is_kept_and_a_missing_log_or_bundle_keeps_no_lines(self):
+        status, output = self.run_matrix("--shards", "2", FAKE_TESTS=json.dumps(self.SHARDED), FAKE_BUNDLE="1")
+        self.assertEqual(status, 0, output)
+        self.assertFalse(list(self.root.rglob("iPhone-17-Pro-1.json")), output)
+        from vocaro_engineering.simulators import matrix
+        with mock.patch.dict(os.environ, clear=True):
+            self.assertIsNone(matrix.kept("iPhone-17-Pro-1", self.root / "absent.log", None, 0, 1))
+        results = self.root / "lane-results"
+        self.assertEqual(matrix.kept("iPad-Air-13-inch-M4-2", self.root / "absent.log", None, None, None, results),
+                         results / "simulator-tests")
+        self.assertEqual(sorted(p.name for p in (results / "simulator-tests").iterdir()), ["iPad-Air-13-inch-M4-2.json"])
+        record = json.loads((results / "simulator-tests/iPad-Air-13-inch-M4-2.json").read_text())
+        self.assertEqual(record, {"run": "iPad-Air-13-inch-M4-2", "status": None, "seconds": None, "log": None,
+                                  "resultLines": None, "summary": None, "suiteSeconds": None})
 
     def test_shards_and_workers_cannot_be_asked_for_together(self):
         status, output = self.run_matrix("--shards", "2", "--workers", "2")

@@ -959,7 +959,9 @@ at exactly that commit. A whole lane's run on this Mac, at a commit with no work
 by a toolkit with none, is kept there too, with `ranOn` `this Mac` and the worktree it ran in, so
 that a gate the merge queue ran here counts from a session's checkout
 ([vocaro-engineering#198](https://github.com/vocaro/vocaro-engineering/issues/198)). A later run
-of the lane at that commit, on either Mac, replaces it. A push path that
+of the lane at that commit, on either Mac, replaces it. What the run wrote in its `results/` is
+kept beside the receipt, in `LANE.results/`
+([a lane's results](parallel-tests.md#a-lanes-results)). A push path that
 accepts it in place of running the gate again prints both Macs' macOS versions from the receipt.
 
 Each dispatch also keeps its own copy of its results, in
