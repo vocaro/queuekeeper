@@ -54,6 +54,39 @@ def silence_cues(udid, run_command=None):
     return run("xcrun", "simctl", "spawn", udid, "defaults", "read", CUE_DOMAIN, CUE_KEY, timeout=30).strip() == "0"
 
 
+# Readings of volume 0 in a row, one a second, before VoiceOver may speak on a member: 20 of 24 kept or
+# cloned members put their volume back to 60 3 to 17 s after the mute (vocaro-engineering#146), so the
+# mute is held as the pool's template warm-up holds it (template.MUTE_HELD and MUTE_LIMIT).
+MUTE_HELD = 20
+MUTE_LIMIT = 90
+
+
+def hold_mute(udid, *, state_reader=None, readings=MUTE_HELD, limit=MUTE_LIMIT, sleep=time.sleep, clock=time.monotonic):
+    """Mute the booted simulator udid and read its volume each second until it has read 0 `readings` times
+    in a row, muting it again on any other reading; a reading with no answer neither counts nor breaks the
+    run. Returns (seconds it took, the other volumes read); RuntimeError when it did not hold within limit
+    seconds, or the first mute failed (guides/voiceover-simulator.md, Muted speech capture)."""
+    state = state_reader or globals()["state"]
+    unmuted, held, began = [], 0, clock()
+    state(udid, "audio", "--volume", "0")
+    while held < readings:
+        if clock() - began > limit:
+            raise RuntimeError(f"the volume did not hold at 0 for {readings} readings in {limit:g} s"
+                               + (f" (it read {', '.join(map(str, unmuted))})" if unmuted else ""))
+        try:
+            volume = state(udid, "audio", timeout=5)["volume"]
+        except (RuntimeError, ValueError, KeyError):
+            volume = None
+        if volume == 0:
+            held += 1
+        elif volume is not None:
+            held = 0
+            unmuted.append(volume)
+            state(udid, "audio", "--volume", "0")
+        if held < readings: sleep(1)
+    return clock() - began, unmuted
+
+
 def keep_muted(session, state_reader=None):
     state = state_reader or globals()["state"]
     """A simulator whose display server restarts comes back at its default volume, VoiceOver still on."""

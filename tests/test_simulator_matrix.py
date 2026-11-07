@@ -80,6 +80,19 @@ XCRUN = textwrap.dedent("""\
         if not record.exists(): sys.exit(f"Error: {bundle} is not a result bundle")
         print(record.read_text())
         sys.exit(0)
+    if tool == "devicectl":
+        # devicectl's audio and VoiceOver state of a simulator: volume 60 and VoiceOver off until set.
+        verb, what, udid = rest[0], rest[1], rest[rest.index("--device") + 1]
+        with (state / "devicectl.log").open("a") as log: log.write(" ".join(rest) + "\n")
+        path = devices / udid
+        value = json.loads(path.read_text())
+        if verb == "settings":
+            if what == "audio": value["volume"] = int(rest[rest.index("--volume") + 1])
+            else: value["voiceover"] = "--enable" in rest
+            path.write_text(json.dumps(value))
+        print(json.dumps({"result": {"volume": value.get("volume", 60)} if what == "audio" else
+                                    {"enabled": value.get("voiceover", False)}}))
+        sys.exit(0)
     with (state / "simctl.log").open("a") as log: log.write(" ".join([action, *rest]) + "\\n")
     def device(udid): return json.loads((devices / udid).read_text())
     def change(udid, **values): (devices / udid).write_text(json.dumps({**device(udid), **values}))
@@ -196,6 +209,16 @@ XCODEBUILD = textwrap.dedent("""\
         if time.monotonic() > deadline: sys.exit(f"{kind} never met the other devices")
         time.sleep(0.05)
     if kind in os.environ.get("FAKE_NO_TESTS", ""): sys.exit(0)
+    if os.environ.get("FAKE_VOICEOVER"):
+        # A speech probe's phrase; on a kind in FAKE_VOICEOVER_LEFT_ON it leaves VoiceOver on, and on one in
+        # FAKE_UNMUTED the simulator's volume comes back while it runs.
+        print("VOICEOVER_EVENT 2026-11-06T00:00:00.000Z touch: One Button")
+        record = state / "devices" / udid
+        value = json.loads(record.read_text())
+        if kind in os.environ.get("FAKE_VOICEOVER_LEFT_ON", ""): value["voiceover"] = True
+        if kind in os.environ.get("FAKE_UNMUTED", ""): value["volume"] = 60
+        record.write_text(json.dumps(value))
+        if kind in os.environ.get("FAKE_UNMUTED", ""): time.sleep(3)
     skipped = os.environ.get("FAKE_SKIPPED", "0") if kind in os.environ.get("FAKE_SKIPPED_ON", "") else "0"
     unmeasured = kind in os.environ.get("FAKE_UNMEASURED", "")
     if os.environ.get("FAKE_BUNDLE"):
@@ -583,6 +606,52 @@ class SimulatorMatrixTests(unittest.TestCase):
         tests = [call for call in self.calls() if call[0] == "test-without-building"]
         self.assertEqual(len(tests), 1)
         self.assert_every_device_returned()
+
+    def devicectl(self, udid):
+        log = self.state / "devicectl.log"
+        return [line for line in (log.read_text().splitlines() if log.exists() else []) if f"--device {udid}" in line]
+
+    def test_voiceover_silences_each_member_before_its_tests_and_fails_one_that_was_heard(self):
+        iphone = self.add("Project iPhone 17 Pro 1")
+        ipad = self.add("Project iPad Air 13-inch (M4) 1", IPAD)
+        status, output = self.run_matrix("--voiceover", FAKE_MEET="2", FAKE_VOICEOVER="1",
+                                         FAKE_UNMUTED="iPad-Air-13-inch-M4", FAKE_VOICEOVER_LEFT_ON="iPad-Air-13-inch-M4")
+        self.assertEqual(status, 1, output)
+        simctl = (self.state / "simctl.log").read_text().splitlines()
+        for kind, udid in (("iPhone-17-Pro", iphone), ("iPad-Air-13-inch-M4", ipad)):
+            # Cues off after the boot, then muted until twenty readings of 0, all before the tests.
+            cues = f"spawn {udid} defaults write com.apple.VoiceOverTouch VoiceOverUseSoundEffects -bool false"
+            self.assertLess(simctl.index(f"bootstatus {udid} -b"), simctl.index(cues))
+            calls = self.devicectl(udid)
+            self.assertEqual(calls[0], f"settings audio --device {udid} --volume 0")
+            self.assertGreaterEqual(len([call for call in calls if call.startswith("info audio")]), 20)
+            self.assertIn(f"MUTED {kind}: VoiceOver's sound cues off; the volume read 0 20 times in a row", output)
+            self.assertLess(output.index(f"MUTED {kind}"), output.index(f"TEST {kind}"))
+            # The probe's phrases reach the run's own output.
+            self.assertIn(f"{kind} VOICEOVER_EVENT 2026-11-06T00:00:00.000Z touch: One Button", output)
+        self.assertIn("PASS iPhone-17-Pro: Executed 3 tests", output)
+        self.assertIn("VOICEOVER iPhone-17-Pro: 1 lines; VoiceOver off and the volume 0 after the tests", output)
+        # The negative control: the iPad's volume came back while its tests ran and they left VoiceOver on.
+        self.assertRegex(output, r"FAIL iPad-Air-13-inch-M4: the simulator was heard or left speaking: \S+ UNMUTED "
+                                 r"the volume was 60; muted again; VoiceOver was left on; it has been switched off")
+        self.assertFalse(self.devices()["Project iPad Air 13-inch (M4) 1"]["voiceover"])
+        self.assert_every_device_returned()
+
+    def test_voiceover_whose_cues_cannot_be_switched_off_runs_no_test_on_that_member(self):
+        # The iPad's write is taken and the switch still reads unset, so its VoiceOver would play cues.
+        status, output = self.run_matrix("--voiceover", FAKE_DEFAULTS_IGNORED="iPad-Air-13-inch-M4")
+        self.assertEqual(status, 1, output)
+        self.assertIn("FAIL iPad-Air-13-inch-M4: VoiceOver's sound cues could not be switched off", output)
+        self.assertIn("PASS iPhone-17-Pro: Executed 3 tests", output)
+        self.assertEqual(len([call for call in self.calls() if call[0] == "test-without-building"]), 1)
+        self.assert_every_device_returned()
+
+    def test_voiceover_runs_one_test_process_on_each_member(self):
+        for option in (["--workers", "2"], ["--shards", "2"], ["--build-only"]):
+            with self.subTest(option=option):
+                status, output = self.run_matrix("--voiceover", *option)
+                self.assertEqual(status, 2, output)
+                self.assertIn("--voiceover runs one test process on each member", output)
 
     def test_xcodegen_generates_the_project_before_the_build_and_its_failure_fails_the_build(self):
         status, output = self.run_matrix("--xcode-project", "Hosted/Host.xcodeproj", "--xcodegen", "Hosted/project.yml",

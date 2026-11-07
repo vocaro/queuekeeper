@@ -10,7 +10,10 @@ template can be copied), or, with --keep-state, kept as earlier runs left it, or
 free, the next is cloned from that template, or created, and kept in the pool, after members unused
 for 14 days are pruned (guides/simulator-testing.md, Reserved simulator pool).
 With --app-accessibility each member's app processes get UIKit's and SwiftUI's own accessibility, for tests
-hosted in an app that read system views (guides/simulator-testing.md, App accessibility). With --xcodegen SPEC
+hosted in an app that read system views (guides/simulator-testing.md, App accessibility). With --voiceover each
+member's VoiceOver sound cues are switched off and its volume held at 0 before its tests, for a probe that
+switches VoiceOver on, and its volume is watched while they run (guides/voiceover-simulator.md, Muted speech
+capture). With --xcodegen SPEC
 the Xcode project is generated from SPEC before the build. Every device boots while the tests build, and is shut down and released however the run ends. The
 build is one `xcodebuild build-for-testing` for the first device's destination; each device
 then runs `xcodebuild test-without-building` on the same .xctestrun, with its own log, result
@@ -57,11 +60,12 @@ import subprocess
 import sys
 import threading
 import time
+from types import SimpleNamespace
 import uuid
 
 from .. import evidence, processes
 from ..parallel import RESULTS_VARIABLE, TAIL, combined, outcome
-from . import pool as simulator_pool
+from . import pool as simulator_pool, speech
 from .pool import DEVICE_TYPE, RUNTIME, qualified
 
 # Seconds simctl boot itself may take; bootstatus has --boot-timeout.
@@ -110,6 +114,11 @@ def parse(argv):
                         "accessibility on in each member's app processes once it has booted, for tests hosted in an "
                         "app that read system views; a device whose setting does not read on fails "
                         "(guides/simulator-testing.md, App accessibility)")
+    parser.add_argument("--voiceover", action="store_true", help="for tests that switch VoiceOver on, such as a "
+                        "speech probe's: switch each member's VoiceOver sound cues off and hold its volume at 0 before "
+                        "its tests, read it each second while they run, switch off a VoiceOver they left on, and print "
+                        "their VOICEOVER_ lines; a member that could not be silenced, or was heard, fails "
+                        "(guides/voiceover-simulator.md, Muted speech capture)")
     parser.add_argument("--build-only", action="store_true", help="build the tests for the first device and "
                         "test nothing, so that a later run with the same options finds the build up to date; the "
                         "member is taken without erasing or booting it, only to name the build's destination")
@@ -143,6 +152,9 @@ def parse(argv):
     if args.xcodegen is not None and not args.xcode_project:
         parser.error("--xcodegen generates an Xcode project: name it with --xcode-project")
     if not all(args.forward_env): parser.error("--forward-env needs a prefix: an empty one would forward everything")
+    if args.voiceover and (args.workers or args.shards or args.build_only):
+        # A clone or a shard's member would speak unmuted; a build plays nothing.
+        parser.error("--voiceover runs one test process on each member: not with --workers, --shards or --build-only")
     return args
 
 
@@ -308,7 +320,65 @@ class Run:
         elif self.args.app_accessibility:
             self.say(f"APP ACCESSIBILITY {kind}: on ({simulator_pool.APP_ACCESSIBILITY_DOMAIN} "
                      f"{simulator_pool.APP_ACCESSIBILITY_KEY} reads 1)")
+        return self.silence(kind, device, log) if self.args.voiceover else True
+
+    def silence(self, kind, device, log):
+        """With --voiceover, VoiceOver's sound cues off and the volume held at 0 before any test runs: a
+        simulator's VoiceOver speaks through the Mac's own output, and its cues play past the mute. False,
+        with the device failed, when either could not be done (guides/voiceover-simulator.md, Muted speech
+        capture)."""
+        try:
+            off, why = speech.silence_cues(device.udid), "it did not read back off"
+        except (RuntimeError, OSError, subprocess.SubprocessError) as error:
+            off, why = False, str(error).strip() or type(error).__name__
+        if not off:
+            self.finish(kind, 1, f"VoiceOver's sound cues could not be switched off ({why}), so no test ran", log)
+            return False
+        try:
+            seconds, unmuted = speech.hold_mute(device.udid)
+        except (RuntimeError, OSError, subprocess.SubprocessError, ValueError, KeyError) as error:
+            self.finish(kind, 1, f"it could not be muted ({error}), so no test ran", log)
+            return False
+        again = f", muted again after reading {', '.join(map(str, unmuted))}" if unmuted else ""
+        self.say(f"MUTED {kind}: VoiceOver's sound cues off; the volume read 0 {speech.MUTE_HELD} times in a row "
+                 f"in {round(seconds)}s{again}")
         return True
+
+    @contextlib.contextmanager
+    def heard(self, kind, device):
+        """With --voiceover, the volume read each second while the device's tests run and muted again when
+        it comes back, then VoiceOver switched off if they left it on; the device fails when either
+        happened. Its log's VOICEOVER_ lines are printed after its result, so that a run whose result is
+        its output carries the transcript."""
+        session = SimpleNamespace(udid=device.udid, unmuted=[], unread=[])
+        done = threading.Event()
+        def watch():
+            while not done.wait(1): speech.keep_muted(session)
+        watcher = threading.Thread(target=watch, daemon=True)
+        watcher.start()
+        try:
+            yield
+        finally:
+            done.set()
+            watcher.join(timeout=30)
+            problems = list(session.unmuted)
+            try:
+                if speech.state(device.udid, "voiceover")["enabled"]:
+                    still = speech.state(device.udid, "voiceover", "--disable")["enabled"]
+                    problems.append(f"VoiceOver was left on; it {'is still on' if still else 'has been switched off'}")
+                volume = speech.state(device.udid, "audio")["volume"]
+                if volume != 0: problems.append(f"the volume read {volume} after the tests")
+            except (RuntimeError, ValueError, KeyError) as error:
+                problems.append(f"VoiceOver's state is unknown: {error}")
+            log = self.logs / f"{kind}.log"
+            lines = [line for line in (log.read_text(errors="replace").splitlines() if log.exists() else [])
+                     if line.startswith(("VOICEOVER_EVENT ", "VOICEOVER_TREE "))]
+            unread = f"; {len(session.unread)} volume checks got no reading" if session.unread else ""
+            self.say(*(f"{kind} {line}" for line in lines),
+                     f"VOICEOVER {kind}: {len(lines)} lines; " + ("; ".join(problems) if problems else
+                                                                 "VoiceOver off and the volume 0 after the tests") + unread)
+            if problems and kind in self.results:
+                self.finish(kind, 1, "the simulator was heard or left speaking: " + "; ".join(problems))
 
     def build(self, destination):
         """The .xctestrun the build wrote, or None after reporting why there is none."""
@@ -516,7 +586,8 @@ class Run:
         xctestrun = built.result()
         if xctestrun is None:
             return self.finish(kind, 1, "not tested: the build failed")
-        self.test(kind, device, xctestrun)
+        with self.heard(kind, device) if self.args.voiceover else contextlib.nullcontext():
+            self.test(kind, device, xctestrun)
 
 
 def bundle_record(bundle):

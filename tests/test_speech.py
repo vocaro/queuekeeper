@@ -62,3 +62,42 @@ class SimulatorViewTests(unittest.TestCase):
         self.assertIsNone(self.check(set()))
         # pgrep -x matches whole names only: Device Hub's helpers are not its window.
         self.assertIsNone(self.check({"DevicesTrampoline", "DevicesSystemUpdater", "CoreSimulatorService"}))
+
+
+class HoldMuteTests(unittest.TestCase):
+    UDID = "2BBC94CE-0D99-4A08-9763-269B5711AC97"
+
+    def hold(self, volumes, readings=3, limit=90):
+        """hold_mute against readings that give `volumes` in turn, then 0; each sleep is a second."""
+        calls, now, given = [], [0.0], list(volumes)
+        def state(udid, kind, *change, timeout=20):
+            calls.append((udid, kind, *change))
+            if change: return {"volume": 0}
+            value = given.pop(0) if given else 0
+            if isinstance(value, Exception): raise value
+            return {"volume": value}
+        def sleep(seconds): now[0] += seconds
+        result = speech.hold_mute(self.UDID, state_reader=state, readings=readings, limit=limit, sleep=sleep,
+                                  clock=lambda: now[0])
+        return result, calls
+
+    def test_the_volume_is_muted_then_read_until_it_holds_at_zero(self):
+        (seconds, unmuted), calls = self.hold([])
+        self.assertEqual(calls[0], (self.UDID, "audio", "--volume", "0"))
+        self.assertEqual(calls[1:], [(self.UDID, "audio")] * 3)
+        self.assertEqual((seconds, unmuted), (2, []))
+
+    def test_a_volume_that_comes_back_is_muted_again_and_the_count_starts_over(self):
+        (_, unmuted), calls = self.hold([0, 60, 0])
+        self.assertEqual(unmuted, [60])
+        self.assertEqual(calls.count((self.UDID, "audio", "--volume", "0")), 2)
+        self.assertEqual(len([call for call in calls if call == (self.UDID, "audio")]), 5)
+
+    def test_a_reading_with_no_answer_neither_counts_nor_breaks_the_run(self):
+        (_, unmuted), calls = self.hold([RuntimeError("no answer"), 0, 0, 0])
+        self.assertEqual(unmuted, [])
+        self.assertEqual(len([call for call in calls if call == (self.UDID, "audio")]), 4)
+
+    def test_a_mute_that_never_holds_raises(self):
+        with self.assertRaisesRegex(RuntimeError, "did not hold at 0 for 3 readings in 5 s"):
+            self.hold([60] * 100, limit=5)
