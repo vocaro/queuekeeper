@@ -225,7 +225,10 @@ def unittest_main(argv):
     parser = argparse.ArgumentParser(prog="eng unittest", description="Discover a unittest suite as `python3 -m "
         "unittest discover` does, and run its modules in processes of their own, JOBS at a time.")
     parser.add_argument("-s", "--start-directory", default=".")
-    parser.add_argument("-p", "--pattern", default="test*.py")
+    # Repeatable: each -p adds the modules it matches. A second -p once replaced the first without a word, so a run
+    # meant for three modules ran one and reported its count as the whole (vocaro-engineering, 2026-11-06).
+    parser.add_argument("-p", "--pattern", action="append", metavar="PATTERN",
+                        help="a module file pattern, as unittest discover takes; repeat it for several (default test*.py)")
     parser.add_argument("-t", "--top-level-directory")
     parser.add_argument("-j", "--jobs", type=int, default=DEFAULT_JOBS,
                         help=f"processes at a time (default {DEFAULT_JOBS}); 1 runs them one after another")
@@ -244,10 +247,17 @@ def unittest_main(argv):
     # again: from the top-level directory, then the directory eng runs in (#74).
     for directory in (os.getcwd(), str(top)):
         if directory not in sys.path: sys.path.insert(0, directory)
-    loader = OriginLoader()
-    found = shards(loader.discover(str(start), args.pattern, str(top)), args.split, loader.origins)
+    loader, patterns = OriginLoader(), args.pattern or ["test*.py"]
+    # A test two patterns both match runs once: the first pattern's copy of it is kept.
+    tests, seen = [], set()
+    for pattern in patterns:
+        for test in flattened(loader.discover(str(start), pattern, str(top))):
+            if test.id() not in seen:
+                seen.add(test.id())
+                tests.append(test)
+    found = shards(unittest.TestSuite(tests), args.split, loader.origins)
     if not found:
-        print(f"eng unittest: no tests found in {start} matching {args.pattern}", file=sys.stderr)
+        print(f"eng unittest: no tests found in {start} matching {' or '.join(patterns)}", file=sys.stderr)
         return NO_TESTS
     expected = {name: len(tests) for name, tests in found.items()}
     # Each shard holds the admission lock descriptors this process holds and no others, as a test in

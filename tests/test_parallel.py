@@ -256,6 +256,28 @@ class UnittestRunnerTests(unittest.TestCase):
         self.assertEqual(status, 1, output)
         self.assertIn("No module named 'helpers'", output)
 
+    def test_each_pattern_adds_the_modules_it_matches_and_a_module_two_match_runs_once(self):
+        """A second -p once replaced the first without a word: a run meant for three modules ran one."""
+        root = self.suite(
+            module("test_alpha", "class A(unittest.TestCase):\n    def test_a(self): pass\n"),
+            module("test_beta", "class B(unittest.TestCase):\n    def test_b(self): pass\n    def test_c(self): pass\n"),
+            module("test_gamma", "class G(unittest.TestCase):\n    def test_g(self): self.fail('not asked for')\n"))
+        status, output = self.run_suite(root, "-p", "test_alpha.py", "-p", "test_beta.py")
+        self.assertEqual(status, 0, output)
+        self.assertEqual(evidence.executed_tests(output), 3)
+        self.assertIn("3 tests (0 skipped) in 2 processes", output)
+        # Overlapping patterns run a module once.
+        status, output = self.run_suite(root, "-p", "test_beta.py", "-p", "test_b*.py")
+        self.assertEqual((status, evidence.executed_tests(output)), (0, 2), output)
+        # Negative controls: one pattern alone is as before, and the default still finds every module.
+        self.assertEqual(evidence.executed_tests(self.run_suite(root, "-p", "test_alpha.py")[1]), 1)
+        status, output = self.run_suite(root)
+        self.assertEqual((status, evidence.executed_tests(output)), (1, 4), output)
+        # A pattern that matches nothing names every pattern asked for.
+        status, output = self.run_suite(root, "-p", "test_none.py", "-p", "test_nada.py")
+        self.assertEqual(status, 5, output)
+        self.assertIn("matching test_none.py or test_nada.py", output)
+
     def test_a_suite_without_tests_is_not_a_pass(self):
         root = self.suite(module("helper", "VALUE = 1\n"))
         status, output = self.run_suite(root)

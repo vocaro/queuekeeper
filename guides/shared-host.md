@@ -145,6 +145,13 @@ the wrong kind, refuses every request on that host with an error naming the file
 fixes it rather than eng guessing the limits. Choosing the second Mac's and this Mac's values
 waits for the measurement #49 describes; neither has a file yet.
 
+So a key a toolkit adds to the file is a breaking change for every copy older than it: such a copy
+refuses all its heavy work on that host as misconfigured. Write a new key to a host's file only once
+nothing on that host runs an older copy: work started before the key landed has ended, no
+`VOCARO_ENGINEERING_ROOT` names an older copy, and no session worktree of the toolkit that runs its
+own code is behind the landing. The shared checkouts move to `origin/main` by themselves. `busyLimit`,
+which replaced `loadLimit` on 2026-11-06 (vocaro-engineering#200), was the first such key.
+
 A limit's environment variable overrides the file for the process it is set in. Each process
 reads its own environment, so set one for every session or for none: an exclusive job holds only
 the slots below its own maximum, and a caller with a higher one can take slots above it.
