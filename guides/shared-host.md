@@ -1833,8 +1833,10 @@ it inherits, nor a `self` lane, whose `eng admit` commands reap each as it is ad
 owner booted by hand. To keep one running, boot a simulator outside the pool, or reserve it with
 `python3 -m vocaro_engineering.devices reserve`, which records no process and so counts as live. A
 session that took a member with `eng simulator-pool take`, whose process ends when it prints the
-UDID, holds a reservation whose process is gone, which counts as live until its expected release;
-to work past that, it records a running process of its own (`devices update KEY --own PID`).
+UDID, holds a reservation whose process is gone, which counts as live until its expected release,
+an hour after the take unless `take --hold MINUTES` asked for longer. To work past that, it runs
+`eng simulator-pool extend UDID [--hold MINUTES]` (an hour from now by default), or records a running
+process of its own (`devices update KEY --own PID`) (vocaro-engineering#179).
 
 **A template stays while its warm-up runs.** The pool reserves a template in the warming process's name,
 its `holderProcess`, before it boots it, so a live warm-up's reservation keeps it running however long

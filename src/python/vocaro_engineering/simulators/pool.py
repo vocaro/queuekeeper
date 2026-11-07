@@ -62,8 +62,13 @@ CLONED = ("Synthetic test state: a clone of the warmed template {template}, boot
 RESET = ("Synthetic test state: a copy of the warmed template {template}, made {at} on runtime build {build} (booted, "
          "VoiceOver started once, the system's voices used twice with a reboot between), with nothing installed; the "
          "next holder may reset or erase this pool member")
-# How long a reservation is expected to last; an overdue one releases nothing.
+# How long a reservation is expected to last; an overdue one releases nothing. A run's holds its members while
+# its process runs, so this bounds only how long reap waits on one whose process has gone.
 HOLD = timedelta(hours=8)
+# How long a member `eng simulator-pool take` hands to a session is held: the take/release leases the record kept
+# lasted 2 to 6 min and the longest pool lease of any kind 42 min, so a session that needs longer extends it, and a
+# member a crashed session leaves is released by reap an hour after its take, not eight (vocaro-engineering#179).
+TAKE_HOLD = timedelta(hours=1)
 # Seconds a take or a creation waits for the kind's template while another session holds it, as for its
 # own copy or clone of a few seconds, polling every TEMPLATE_POLL, before it erases or creates instead.
 TEMPLATE_WAIT, TEMPLATE_POLL = 60, 2
@@ -393,8 +398,8 @@ class Lease:
 
 class Pool:
     def __init__(self, name, *, owner, record=None, run=None, log=None, clock=None, warm=True, sleep=time.sleep,
-                 alone=False):
-        """warm warms a new template, by default template.warm; None keeps no templates: it creates new members
+                 alone=False, hold=HOLD):
+        """hold is how long each reservation is expected to last, TAKE_HOLD for `take`. warm warms a new template, by default template.warm; None keeps no templates: it creates new members
         instead of cloning them and erases taken ones instead of resetting them. sleep waits for a held template.
         alone says that this process holds what it reserves only while it runs, as a run does that releases its
         members when it ends, so that reap may release one whose holder has gone before its expected release
@@ -407,6 +412,7 @@ class Pool:
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.warm = warmed.warm if warm is True else warm
         self.sleep = sleep
+        self.hold = hold
         self.alone = alone
 
     def listing(self):
@@ -695,9 +701,17 @@ class Pool:
                  f"{details.get('runtimeBuild')}, in {seconds} s")
         return True, None
 
-    @staticmethod
-    def _release_by():
-        return (datetime.now(timezone.utc) + HOLD).isoformat()
+    def _release_by(self, hold=None):
+        return (datetime.now(timezone.utc) + (self.hold if hold is None else hold)).isoformat()
+
+    def extend(self, udid, hold=TAKE_HOLD):
+        """Move the expected release of this owner's live reservation of a member to hold from now; the new
+        expected release. Anything check_held refuses is refused."""
+        member = self.check_held(udid)
+        lease = self.held(member.udid)
+        until = self._release_by(hold)
+        self.record.update(lease.key, owner=self.owner, revision=lease.revision, expectedReleaseBy=until)
+        return until
 
     def _reserve(self, key, purpose, device=None, revision=None, **details):
         """Reserve a key at the revision read, by default its current one; the new revision. The
@@ -1185,6 +1199,14 @@ def main(argv, project=None):
                       "the take")
     take.add_argument("--boot-timeout", type=int, default=600, help="seconds the boot may take (default 600); "
                       f"past it the member is released and the command exits {evidence.UNMEASURED}")
+    take.add_argument("--hold", type=int, default=int(TAKE_HOLD.total_seconds() // 60), metavar="MINUTES",
+                      help=f"minutes the member is held before reap may release it once its session has gone "
+                           f"(default {int(TAKE_HOLD.total_seconds() // 60)}); `extend` moves it later")
+    extend = action("extend", help="hold a member you took for longer: its expected release moves to --hold "
+                                   "minutes from now")
+    extend.add_argument("udid")
+    extend.add_argument("--hold", type=int, default=int(TAKE_HOLD.total_seconds() // 60), metavar="MINUTES",
+                        help=f"minutes from now (default {int(TAKE_HOLD.total_seconds() // 60)})")
     release = action("release", help="shut a member you hold down and release it; --mine, every member you "
                                      "hold from a take, as closeout does")
     release.add_argument("udid", nargs="?")
@@ -1229,7 +1251,9 @@ def main(argv, project=None):
         parser.error(f"name the owner with --owner or ${device_record.OWNER}")
     try:
         # Only take hands its member to a session that holds it after this command has ended.
-        pool = Pool(name, owner=owner, alone=args.action != "take")
+        if getattr(args, "hold", 1) <= 0: parser.error("--hold is a positive number of minutes")
+        pool = Pool(name, owner=owner, alone=args.action != "take",
+                    hold=timedelta(minutes=args.hold) if args.action == "take" else HOLD)
         if args.action == "list":
             listing = pool.listing()
             record = pool.record.load().get("devices", {})
@@ -1276,6 +1300,8 @@ def main(argv, project=None):
                        if args.app_accessibility and status == 1 else ""), file=sys.stderr)
                 return status if status != 124 else evidence.UNMEASURED
             print(lease.udid)
+        elif args.action == "extend":
+            print(pool.extend(args.udid, timedelta(minutes=args.hold)))
         elif args.action == "check":
             print((pool.check_held if args.held else pool.check)(args.udid).udid)
         elif args.action == "release" and args.mine:

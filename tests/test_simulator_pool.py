@@ -381,6 +381,45 @@ class PoolTests(unittest.TestCase):
                       kept)
         self.assertEqual(devices.Record(self.path).entry("Project Duo 3")["ownerChatID"], "me")
 
+    def test_a_take_is_held_an_hour_unless_asked_and_extend_moves_it(self):
+        udid = self.simctl.add("Project Duo 1")
+        theirs = self.simctl.add("Project Duo 2")
+        self.hold("Project Duo 2", theirs)
+        def command(*arguments):
+            out, err = StringIO(), StringIO()
+            with mock.patch.object(simulator_pool, "simctl", self.simctl), redirect_stdout(out), redirect_stderr(err):
+                try:
+                    status = simulator_pool.main(["--pool", "Project", "--owner", "me", *arguments])
+                except SystemExit as exit:
+                    status = exit.code
+            return status, out.getvalue(), err.getvalue()
+        def held_for():
+            due = datetime.fromisoformat(devices.Record(self.path).entry("Project Duo 1")["expectedReleaseBy"])
+            return (due - datetime.now(timezone.utc)).total_seconds() / 60
+        self.assertEqual(simulator_pool.TAKE_HOLD, timedelta(hours=1))
+        self.assertEqual(command("take", "--device", "iPhone-Duo", "--runtime", "iOS-27-1")[1].strip(), udid)
+        self.assertTrue(59 < held_for() <= 60, held_for())
+        status, output, _ = command("extend", udid, "--hold", "180")
+        self.assertEqual(status, 0)
+        self.assertEqual(output.strip(), devices.Record(self.path).entry("Project Duo 1")["expectedReleaseBy"])
+        self.assertTrue(179 < held_for() <= 180, held_for())
+        self.assertEqual(devices.Record(self.path).entry("Project Duo 1")["ownerChatID"], "me")
+        # Negative controls: another session's member, and a hold that is not a positive number of minutes.
+        status, _, error = command("extend", theirs)
+        self.assertEqual(status, 1)
+        self.assertIn("holds no reservation", error)
+        for hold in ("0", "-5"):
+            self.assertEqual(command("extend", udid, "--hold", hold)[0], 2)
+        self.assertTrue(command("release", udid)[0] == 0)
+        status, _, error = command("extend", udid)
+        self.assertEqual(status, 1)
+        # A take that asks for longer, and a run's own pool, keep the longer hold.
+        command("take", "--device", "iPhone-Duo", "--runtime", "iOS-27-1", "--hold", "240")
+        self.assertTrue(239 < held_for() <= 240, held_for())
+        command("release", udid)
+        self.pool.take(DUO, RUNTIME, purpose="A run")
+        self.assertTrue(479 < held_for() <= 480, held_for())
+
     def test_the_release_command_takes_a_udid_or_mine(self):
         udid = self.simctl.add("Project Duo 1")
         def command(*arguments):
