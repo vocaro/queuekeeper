@@ -1,4 +1,5 @@
 import contextlib
+from functools import partial
 from io import StringIO
 import json
 from pathlib import Path
@@ -8,7 +9,7 @@ import sys
 import tempfile
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import call, patch
 SOURCE = Path(__file__).resolve().parents[1] / "src/python"
 sys.path.insert(0, str(SOURCE))
 from vocaro_engineering import processes, resources
@@ -33,22 +34,17 @@ HANDLES_TERM = READY + ("def stop(*_): (here / 'terminated').touch(); os._exit(0
                         "signal.signal(signal.SIGTERM, stop)\n(here / f'ready-{os.getpid()}').touch()\ntime.sleep(120)")
 FINISHES = READY + ("parent = os.getppid()\n(here / f'ready-{os.getpid()}').touch()\n"
                     "while os.getppid() == parent: time.sleep(0.01)\n(here / 'finished').touch()")
-# ROOT that also starts, for each argument "xcode:PATH", /bin/sleep as the program PATH inside a stand-in Xcode
-# in the test's directory, as xcodebuild leaves DTServiceHub or a build ibtoold: ps shows that path.
+# ROOT that starts /bin/cat with the command line of each stand-in. Its input stays open in the test
+# process, so the stand-in runs until signaled and exits on EOF if the test ends before it is observed.
 HELPERS_ROOT = ROOT.replace(
     'children = [subprocess.Popen([sys.executable, "-c", code, str(here)], start_new_session=True).pid for code in sys.argv[2:]]',
-    'children = []\n'
-    'for code in sys.argv[2:]:\n'
-    '    if code.startswith("xcode:"):\n'
-    '        child = subprocess.Popen([str(here / "Xcode.app/Contents" / code[6:]), "120"], executable="/bin/sleep",\n'
-    '                                 start_new_session=True).pid\n'
-    '        (here / f"ready-{child}").touch()\n'
-    '    else:\n'
-    '        child = subprocess.Popen([sys.executable, "-c", code, str(here)], start_new_session=True).pid\n'
-    '    children.append(child)')
-DTSERVICEHUB = "xcode:SharedFrameworks/DVTInstrumentsFoundation.framework/Resources/DTServiceHub"
-IBTOOLD = "xcode:Developer/usr/bin/ibtoold"
-XCODEBUILD = "xcode:Developer/usr/bin/xcodebuild"
+    'with (here / "stand-in-input").open("rb", buffering=0) as hold:\n'
+    '    children = [subprocess.Popen([str(here / path)], executable="/bin/cat", stdin=hold,\n'
+    '                                 start_new_session=True).pid for path in sys.argv[2:]]\n'
+    'for child in children: (here / f"ready-{child}").touch()')
+DTSERVICEHUB = "Xcode.app/Contents/SharedFrameworks/DVTInstrumentsFoundation.framework/Resources/DTServiceHub"
+IBTOOLD = "Xcode.app/Contents/Developer/usr/bin/ibtoold"
+XCODEBUILD = "Xcode.app/Contents/Developer/usr/bin/xcodebuild"
 # ROOT that stays once its descendants are adopted, until a signal ends it.
 STAYS = ROOT.replace("raise SystemExit(3)", "time.sleep(120)")
 # Logs each SIGTERM and takes half a second to shut down after the first, as a test runner can.
@@ -165,6 +161,11 @@ IGNORES_TERM, HANDLES_TERM, STAYS, ORPHANS, STUCK_OWNER, SLOW_TO_END = (
 
 
 class ProcessTests(unittest.TestCase):
+    def hold_stand_ins(self, directory):
+        fifo = Path(directory) / "stand-in-input"
+        os.mkfifo(fifo)
+        return fifo.open("rb+", buffering=0)
+
     # supervise takes its kill_after when it is defined, so a test passes the grace it needs:
     # patching KILL_AFTER changes nothing, and with 10 s a loaded host failed these tests (#81).
     def outlive_the_root(self, directory, *descendants, root=ROOT, timeout=None, kill_after=processes.KILL_AFTER,
@@ -178,15 +179,18 @@ class ProcessTests(unittest.TestCase):
         # The grace a test gives is a wait the supervisor makes on purpose, without a cue, so a stall is bounded
         # beyond it: a grace stretched by load at a test's start once outlasted the stall bound read later (#128).
         grace = limits.get("LINGER", processes.LINGER)
+        stall = stretched(30)
+        # The deadline checked between samples also needs a bound on each real ps call.
+        run = partial(processes.subprocess.run, timeout=stall)
         def observed():
             # Bound a stall here, from the latest cue: the start, the root's listing of its
             # descendants, their adoption. A timeout bounds only the root, so a lingering
             # descendant must not hold the run until the test is stopped.
-            if time.monotonic() - cue["at"] > grace + stretched(30):
+            if time.monotonic() - cue["at"] > grace + stall:
                 self.fail("supervision stalled for 30 s past its grace, stretched by load")
             if awaits is not None and "stopping" in error.getvalue():
                 while not (Path(directory) / awaits).exists():
-                    if time.monotonic() - cue["at"] > grace + stretched(30):
+                    if time.monotonic() - cue["at"] > grace + stall:
                         self.fail(f"no {awaits} within 30 s, stretched by load, of the stop")
                     time.sleep(0.01)
             current = real()
@@ -202,15 +206,19 @@ class ProcessTests(unittest.TestCase):
                 (Path(directory) / "adopted").touch()
             return current
         def cleanup():
+            if not births: return
+            with patch.object(processes.subprocess, "run", run):
+                current = real()
             for pid, birth in births.items():
-                if real().get(pid, (0, 0, None))[2] == birth: os.kill(pid, signal.SIGKILL)
+                if current.get(pid, (0, 0, None))[2] == birth:
+                    with contextlib.suppress(ProcessLookupError): os.kill(pid, signal.SIGKILL)
         self.addCleanup(cleanup)
         with patch.object(processes, "snapshot", observed), contextlib.redirect_stderr(StringIO()) as error, \
-             patch.dict(processes.__dict__, limits):
+             patch.object(processes.subprocess, "run", run), patch.dict(processes.__dict__, limits):
             try: result = processes.supervise([sys.executable, "-c", root, directory, *descendants], cwd=directory, timeout=timeout,
                                                 kill_after=kill_after)
             except TimeoutError as expired: result = expired
-        current = real()
+            current = real()
         self.assertEqual({pid for pid, birth in births.items() if current.get(pid, (0, 0, None))[2] == birth}, set())
         return result, error.getvalue(), births
 
@@ -272,7 +280,7 @@ class ProcessTests(unittest.TestCase):
             self.assertIn("stopping 1 process(es)", error)
 
     def test_xcodes_own_programs_left_to_launchd_are_stopped_without_the_grace(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, self.hold_stand_ins(directory):
             # Fixed: a grace of 600 s, which the run must not wait; the bound on it stretches by load.
             began = time.monotonic()
             result, error, births = self.outlive_the_root(directory, DTSERVICEHUB, IBTOOLD, root=HELPERS_ROOT,
@@ -281,25 +289,27 @@ class ProcessTests(unittest.TestCase):
             self.assertEqual(result, 3)
             self.assertIn("stopping 2 Xcode program(s) that launchd adopted when the command", error)
             self.assertIn("without waiting 600s, with SIGTERM, then SIGKILL after 0.5s", error)
-            self.assertIn("/Xcode.app/Contents/SharedFrameworks/DVTInstrumentsFoundation.framework/Resources/DTServiceHub 120",
-                          error)
+            self.assertIn(str(Path(directory) / DTSERVICEHUB), error)
             self.assertEqual(len(births), 2)
 
     def test_anything_else_still_running_keeps_the_whole_grace_for_all(self):
-        for name, descendants in (("beside a process of its own", (DTSERVICEHUB, HANDLES_TERM)),
+        for name, descendants in (("beside a process of its own", (DTSERVICEHUB, "ordinary-program")),
                                   ("xcodebuild itself", (XCODEBUILD,)),
-                                  ("a process of its own", (HANDLES_TERM,))):
-            with self.subTest(name), tempfile.TemporaryDirectory() as directory:
-                # The grace stretches by load: the run must wait it out before anything is stopped.
-                grace = stretched(2)
+                                  ("a process of its own", ("ordinary-program",))):
+            with self.subTest(name), tempfile.TemporaryDirectory() as directory, self.hold_stand_ins(directory):
+                # Fixed: waiting out the grace is the behavior under test. Only the stall bound stretches.
+                grace = 2
                 began = time.monotonic()
-                result, error, _births = self.outlive_the_root(directory, *descendants, root=HELPERS_ROOT,
-                                                               LINGER=grace, kill_after=0.5)
+                with patch.object(processes, "xcode_helper", wraps=processes.xcode_helper) as classify:
+                    result, error, _births = self.outlive_the_root(directory, *descendants, root=HELPERS_ROOT,
+                                                                   LINGER=grace, kill_after=0.5)
                 self.assertGreaterEqual(time.monotonic() - began, grace)
                 self.assertEqual(result, 3)
                 self.assertIn(f"stopping {len(descendants)} process(es) still running {grace:g}s after the command",
                               error)
                 self.assertNotIn("Xcode program", error)
+                if XCODEBUILD in descendants:
+                    self.assertIn(call(1, str(Path(directory) / XCODEBUILD)), classify.call_args_list)
 
     def test_an_xcode_helper_is_a_program_inside_an_xcode_that_launchd_adopted_other_than_xcodebuild(self):
         hub = "/Applications/Xcode.app/Contents/SharedFrameworks/DVTInstrumentsFoundation.framework/Resources/DTServiceHub"
