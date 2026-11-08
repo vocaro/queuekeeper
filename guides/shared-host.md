@@ -648,8 +648,8 @@ whose admission then held it back for as long as the exclusive work waited and r
 
 A gate that runs the project's suites side by side is a whole Mac's work: it says
 `"wholeHost": true`, on the lane or on the group, and takes every guaranteed slot of the Mac it
-runs on, so that two such lanes never run on one Mac at once, while a lighter heavy lane still
-shares the Mac ([heavy-work admission](#heavy-work-admission)). A lane group that runs a
+runs on and holds that Mac until it ends, so that no other heavy lane runs beside it, a lighter
+one included ([heavy-work admission](#heavy-work-admission), vocaro-engineering#196). A lane group that runs a
 whole-host lane says `wholeHost` too, or is exclusive, as configuration validation requires; a
 `self` lane cannot be whole-host, since it is not admitted, and an exclusive lane holds the host
 already. Exclusive admission is unchanged. Each Mac's reading is `offload_host.py`'s `capacity`
