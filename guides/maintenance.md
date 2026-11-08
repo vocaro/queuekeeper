@@ -417,6 +417,24 @@ leaves any conflict to the round. It costs a worktree checkout and the cherry-pi
 tree of 10,000 files, where each cherry-pick adds about 0.3 s. Whole `eng land` runs, fetch included,
 took 1.5 to 2.7 s and 3 to 9 s.
 
+**Checked before it is queued.** First, `eng land` and `eng queue add` run `eng unittest`'s own checks
+before a run, the ones whose refusal ends `nothing ran`, on the entry's tree, for each queue lane on
+`origin/main` whose command is `eng unittest`, with that lane's `-s` and `-p`. In a suite that keeps
+its tests off the real hosts in `host_isolation.py`, a test module that does not import
+`host_isolation` at its top level, or does not parse, refuses every gate that holds it, in seconds,
+with no summary and no failed test to rerun or blame, so a batch holding it bisected blind. On
+2026-11-07 one such entry, queued twice unchanged, cost the toolkit's queue a bisect of 11 entries and
+then of 6, and held six good entries for hours
+([#280](https://github.com/vocaro/vocaro-engineering/issues/280),
+[#290](https://github.com/vocaro/vocaro-engineering/issues/290)). Such an entry is refused at once,
+with nothing queued and exit 1, and the refusal quotes the line the gate would print. A refusal
+`origin/main` already gives, made past the queue, is not the entry's, so it does not refuse an entry
+that adds nothing to it. `--no-gate` does not skip the check, since the next gate on `main` would run
+nothing. A syntax error in a test module once ended `eng unittest` with a traceback; it is now a
+refusal line too. The check reads the suite's files from the entry's commit, not a working tree; on
+the toolkit's 45 test modules it took 0.7 to 1.2 s on this Mac at a one-minute load of about 200
+(2026-11-08).
+
 **What comes back to the author.** `eng queue status` and `eng queue wait` name each entry's state,
 reason and log. An entry that conflicts with what is ahead of it, which the check could not see
 when it was queued, comes back at once and costs the others nothing. Its reason names the files in
@@ -783,6 +801,35 @@ whole-host gates, and the second Mac answering "No route to host". For more, the
 `ROUND-LANE.log`, which `eng queue status` names; and, for a gate the second Mac ran, its full
 output in the queue checkout's `.build/engineering/remote/.dispatches/LANE/*/run.log`, which the
 gate's log also copies once the lane ends.
+
+**A queue that is stuck: `eng queue doctor`.** `eng queue status` says what the queue is doing; `eng
+queue doctor` says whether that is testing or being stuck, from signals the queue already keeps, and
+for each what it means and what heals it ([#290](https://github.com/vocaro/vocaro-engineering/issues/290)).
+It reads the entries, the hold, whether a worker runs, and the logs of the newest twelve gates of the
+`eng unittest` lanes back to the last that gave a verdict, a pass or a failure; a gate still running
+is left out. Its signals:
+
+- **refused gates**: gates that `eng unittest` refused before running anything (a line ending
+  `nothing ran`), how many in a row with the same refusal, their logs, and the waiting entry whose
+  tree alone gives that refusal. Only when exactly one entry does is it named as the cause.
+- **refused before running**: a waiting entry whose tree `eng unittest` refuses, as `eng land` now
+  refuses before queuing, for an entry queued before that check or by an older toolkit.
+- **no verdict**: two or more gates in a row since the last verdict that printed no `eng unittest`
+  summary or left tests unmeasured, such as a lane at its limit or a second Mac out of reach
+  ([#253](https://github.com/vocaro/vocaro-engineering/issues/253),
+  [#268](https://github.com/vocaro/vocaro-engineering/issues/268),
+  [#282](https://github.com/vocaro/vocaro-engineering/issues/282)).
+- **came back**: a waiting entry holding the very change, by its stable patch ID, that an earlier entry
+  from the same branch, or with the same subject, held when it failed or was taken out.
+- **no worker**: entries waiting, the queue not held, and no worker running
+  ([#287](https://github.com/vocaro/vocaro-engineering/issues/287)); **held**: the hold's reason.
+
+It exits 0 and says `healthy` when it finds none of these, and 1 otherwise; `--json` gives the same.
+It changes nothing: no entry, no hold, no worker. The worker does not run it yet, and does not send an
+entry back on its word: an entry sent back without a failed test that a rerun confirmed is a change
+to the gate's policy, which waits for the owner's decision (#280, #290). Until then a session that
+reads a finding acts on it itself, as its `next:` line says, such as `eng queue remove ID` for the one
+entry that brings a refusal.
 
 ## Working through a backlog
 

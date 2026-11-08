@@ -113,6 +113,23 @@ class UnittestRunnerTests(unittest.TestCase):
         self.assertEqual(status, 0, output)
         self.assertIn("== test_forgot: OK (1 tests", output)
 
+    def test_a_module_that_does_not_parse_refuses_the_run_with_a_line_not_a_traceback(self):
+        # A gate it ended with a traceback printed no summary and no refusal line, and bisected blind (#290).
+        passing = "import unittest\nimport host_isolation\nclass P(unittest.TestCase):\n    def test_p(self): pass\n"
+        root = self.suite(("host_isolation", ""), ("test_isolated", passing), ("test_broken", "def (:\n"),
+                          ("test_forgot", "import unittest\n"))
+        status, output = self.run_suite(root)
+        self.assertEqual(status, 1, output)
+        self.assertIn("eng unittest: test_broken.py does not parse (invalid syntax, line 1); nothing ran", output)
+        self.assertIn("eng unittest: test_forgot.py must import host_isolation", output)
+        self.assertNotIn("test_broken.py, ", output)
+        self.assertNotIn("Traceback", output)
+        self.assertNotIn("==", output)
+        # The control: without it, the rest runs.
+        for name in ("test_broken.py", "test_forgot.py"): (root / name).unlink()
+        status, output = self.run_suite(root)
+        self.assertEqual(status, 0, output)
+
     def test_a_process_past_its_timeout_is_stopped_and_leaves_the_run_unmeasured(self):
         # Stretched by load: the quick module and the failing one run under the same limit as the hung one, which
         # sleeps twelve times as long, so it is still stopped.

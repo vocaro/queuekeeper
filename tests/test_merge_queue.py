@@ -650,6 +650,244 @@ class CheckedWhenQueued(Fixture):
                 self.assertEqual(mq.land(self.repo, parser.parse_args(["a"]), directory), 0, directory)
         self.assertEqual(len(mq.Queue(self.repo).all()), 1)
 
+
+ISOLATED = "import unittest\nimport host_isolation\n\nclass T(unittest.TestCase):\n    def test_t(self): pass\n"
+UNISOLATED = "import unittest\n\nclass T(unittest.TestCase):\n    def test_t(self): pass\n"
+# What the gate of 2026-11-07 was refused with, in the checkout it ran in (vocaro-engineering#280, #290).
+REFUSED_LINE = ("eng unittest: test_forgot.py must import host_isolation at its top level, as every test module beside "
+                "/queue/checkout/tests/host_isolation.py does; nothing ran")
+
+
+class UnittestGate(Fixture):
+    """A project whose gate is eng unittest over tests/, which keeps its tests off the real hosts in host_isolation.py,
+    as the toolkit's does. No test here runs a gate: eng land's checks and `eng queue doctor` read trees and logs."""
+    def setUp(self):
+        super().setUp()
+        config = self.config()
+        config["lanes"]["gate"] = {"command": ["python3", "scripts/eng", "unittest", "-s", "tests", "--split", "test",
+                                               "-v"]}
+        (self.repo / "tests").mkdir()
+        (self.repo / "tests/host_isolation.py").write_text("")
+        (self.repo / "tests/test_ok.py").write_text(ISOLATED)
+        run(self.repo, "git", "add", "tests")
+        self.publish(config, "Gate on eng unittest")
+
+    def land(self, branch, **options):
+        """(the new entry's ID or None, what eng land said, the error it refused with or None), no worker started."""
+        said, error = io.StringIO(), None
+        with patch.object(mq.Queue, "start"), contextlib.redirect_stdout(said), contextlib.redirect_stderr(said):
+            try: mq.add(self.repo, branch, **options)
+            except mq.Refused as refused: error = str(refused)
+        identifier = next((e["id"] for e in reversed(mq.Queue(self.repo).all())
+                           if e["branch"] == branch and e["state"] in mq.WAITING), None)
+        return identifier, said.getvalue(), error
+
+
+class CheckedBeforeRunning(UnittestGate):
+    """eng land and `eng queue add` run eng unittest's checks before a run on the entry's tree, and refuse an entry
+    that a gate would refuse in seconds having run nothing (vocaro-engineering#290)."""
+    def test_a_module_without_host_isolation_is_refused_with_the_refusal_line_and_nothing_is_queued(self):
+        self.commit("tests/test_forgot.py", "forgot", UNISOLATED)
+        identifier, _, error = self.land("forgot")
+        self.assertIsNone(identifier)
+        self.assertEqual(mq.Queue(self.repo).all(), [])
+        self.assertEqual(run(self.repo, "git", "for-each-ref", "refs/eng-queue"), "")
+        self.assertIn("is not queued: eng unittest would refuse every gate holding it before running anything", error)
+        self.assertIn(f"eng unittest: test_forgot.py must import host_isolation at its top level, as every test module "
+                      f"beside {self.repo}/tests/host_isolation.py does; nothing ran", error)
+
+    def test_eng_land_says_the_refusal_and_exits_1(self):
+        import argparse
+        parser = argparse.ArgumentParser()
+        mq.land_arguments(parser)
+        self.commit("tests/test_forgot.py", "forgot", UNISOLATED)
+        said = io.StringIO()
+        with patch.object(mq.Queue, "start"), contextlib.redirect_stdout(said), contextlib.redirect_stderr(said):
+            self.assertEqual(mq.land(self.repo, parser.parse_args(["forgot"]), self.repo), 1)
+        self.assertIn("eng: ", said.getvalue())
+        self.assertIn("test_forgot.py must import host_isolation", said.getvalue())
+        self.assertEqual(mq.Queue(self.repo).all(), [])
+
+    def test_a_module_that_does_not_parse_is_refused(self):
+        self.commit("tests/test_broken.py", "broken", "import host_isolation\ndef (:\n")
+        identifier, _, error = self.land("broken")
+        self.assertIsNone(identifier)
+        self.assertIn("eng unittest: test_broken.py does not parse (invalid syntax, line 2); nothing ran", error)
+
+    def test_an_isolated_module_is_queued(self):
+        # The positive control.
+        self.commit("tests/test_new.py", "new", ISOLATED)
+        identifier, _, error = self.land("new")
+        self.assertIsNone(error)
+        self.assertEqual(self.state(identifier)["state"], "queued")
+
+    def test_a_refusal_main_already_has_is_not_the_entrys(self):
+        # main took a module without the import past the queue: an entry that adds nothing of the kind is queued.
+        run(self.repo, "git", "checkout", "-q", "main")
+        (self.repo / "tests/test_old.py").write_text(UNISOLATED)
+        run(self.repo, "git", "add", "tests/test_old.py")
+        run(self.repo, "git", "commit", "-qm", "Past the queue")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        self.commit("other", "other")
+        identifier, _, error = self.land("other")
+        self.assertIsNone(error)
+        self.assertEqual(self.state(identifier)["state"], "queued")
+        # An entry that adds a second such module is still refused, naming its own.
+        self.commit("tests/test_forgot.py", "forgot", UNISOLATED)
+        identifier, _, error = self.land("forgot")
+        self.assertIsNone(identifier)
+        self.assertIn("test_forgot.py, test_old.py must import host_isolation", error)
+
+    def test_a_gate_that_is_not_eng_unittest_is_not_checked(self):
+        config = self.config()
+        config["lanes"]["gate"] = {"command": ["python3", "lane.py", str(self.counter), str(self.status)]}
+        self.publish(config)
+        self.commit("tests/test_forgot.py", "forgot", UNISOLATED)
+        identifier, _, error = self.land("forgot")
+        self.assertIsNone(error)
+        self.assertEqual(self.state(identifier)["state"], "queued")
+
+    def test_a_suite_without_host_isolation_or_a_module_its_pattern_skips_is_not_refused(self):
+        config = self.config()
+        config["lanes"]["gate"]["command"] += ["-p", "test_ok.py"]
+        self.publish(config)
+        self.commit("tests/test_forgot.py", "forgot", UNISOLATED)
+        self.assertIsNone(self.land("forgot")[2])
+        # Every module, in a suite without host_isolation.py.
+        run(self.repo, "git", "checkout", "-q", "main")
+        run(self.repo, "git", "rm", "-q", "tests/host_isolation.py")
+        config["lanes"]["gate"]["command"] = config["lanes"]["gate"]["command"][:-2]
+        self.publish(config, "No isolation")
+        self.commit("tests/test_bare.py", "bare", UNISOLATED)
+        self.assertIsNone(self.land("bare")[2])
+
+    def test_the_suites_of_a_lanes_command(self):
+        self.assertEqual(mq.suite_of(["python3", "scripts/eng", "unittest", "-s", "tests", "--split", "test", "-v"]),
+                         ("tests", None))
+        self.assertEqual(mq.suite_of(["python3", "scripts/eng", "unittest", "--start-directory=t", "-p", "a*.py",
+                                      "--pattern=b*.py", "-j", "4"]), ("t", ["a*.py", "b*.py"]))
+        self.assertEqual(mq.suite_of(["python3", "scripts/eng", "unittest"]), (".", None))
+        self.assertIsNone(mq.suite_of(["python3", "lane.py"]))
+
+
+class Doctor(UnittestGate):
+    """`eng queue doctor` reads the queue for the signs that it is stuck rather than testing, says what each means and
+    what heals it, and changes nothing (vocaro-engineering#290)."""
+    def doctor(self, working=True):
+        said = io.StringIO()
+        with patch.object(mq.Queue, "working", return_value=working), contextlib.redirect_stdout(said):
+            status_ = mq.doctor(self.repo)
+        with patch.object(mq.Queue, "working", return_value=working), contextlib.redirect_stdout(io.StringIO()) as js:
+            self.assertEqual(mq.doctor(self.repo, as_json=True), status_)
+        return status_, said.getvalue(), json.loads(js.getvalue())
+
+    def gate_log(self, name, text, at):
+        path = mq.Queue(self.repo).logs / f"{name}-gate.log"
+        path.write_text(text)
+        os.utime(path, (at, at))
+        return path
+
+    def snapshot(self):
+        queue = mq.Queue(self.repo)
+        return [(e["id"], e["state"]) for e in queue.all()], queue.held()
+
+    def test_a_healthy_queue_is_healthy(self):
+        # The negative control: an entry waiting with a worker, and the newest gate gave a verdict, even though an
+        # older one was refused.
+        self.commit("tests/test_new.py", "new", ISOLATED)
+        self.add("new")
+        self.gate_log("20261107-150000-aaaaaaaa", REFUSED_LINE + "\n", 1000)
+        self.gate_log("20261107-160000-bbbbbbbb", "eng unittest: 9 tests (0 skipped) in 9 processes, 4 at a time, "
+                      "1.0s: FAILED: test_x.T.test_t (FAILED (failures=1), status 1)\n", 2000)
+        status_, said, found = self.doctor()
+        self.assertEqual(status_, 0, said)
+        self.assertIn("eng queue doctor: healthy: 1 entry waiting, worker running", said)
+        self.assertEqual(found["findings"], [])
+        self.assertTrue(found["healthy"])
+
+    def test_gates_refused_before_running_name_the_entry_that_brings_the_refusal_and_change_nothing(self):
+        self.commit("tests/test_new.py", "new", ISOLATED)
+        self.commit("tests/test_forgot.py", "forgot", UNISOLATED)
+        self.commit("c", "c")
+        # Queued as before eng land checked: by an older toolkit, or as the entry of 2026-11-07 was.
+        with patch.object(mq, "checked_before_running"): ids = self.add("new", "forgot", "c")
+        self.gate_log("20261107-165720-19efdd1d", REFUSED_LINE + "\n", 1000)
+        self.gate_log("20261107-165854-a956c211", "heavy: slot 1\n" + REFUSED_LINE + "\n", 2000)
+        before = self.snapshot()
+        status_, said, found = self.doctor()
+        self.assertEqual(status_, 1, said)
+        signals = {finding["signal"]: finding for finding in found["findings"]}
+        self.assertEqual(set(signals), {"refused gates", "refused before running"}, said)
+        refused = signals["refused gates"]
+        self.assertIn("2 gates since the last verdict ran nothing", refused["diagnosis"])
+        self.assertIn(REFUSED_LINE, refused["diagnosis"])
+        self.assertIn("20261107-165854-a956c211-gate.log, 20261107-165720-19efdd1d-gate.log", refused["diagnosis"])
+        self.assertIn(f"{ids[1]} brings it", refused["remedy"])
+        self.assertIn(f"`eng queue remove {ids[1]}`", refused["remedy"])
+        self.assertNotIn(ids[0], said)
+        self.assertNotIn(ids[2], said)
+        self.assertIn(f"eng unittest refuses {ids[1]}'s tree before running anything", said)
+        self.assertIn("and it changed nothing", said)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_a_refusal_no_waiting_entry_brings_is_not_blamed_on_one(self):
+        self.commit("c", "c")
+        self.add("c")
+        self.gate_log("20261107-165720-19efdd1d", REFUSED_LINE + "\n", 1000)
+        status_, said, found = self.doctor()
+        self.assertEqual(status_, 1, said)
+        self.assertEqual([f["signal"] for f in found["findings"]], ["refused gates"])
+        self.assertIn("1 gate since the last verdict ran nothing", said)
+        self.assertIn("no waiting entry's tree alone is refused so", said)
+
+    def test_gates_in_a_row_with_no_verdict_are_a_finding_and_one_is_not(self):
+        self.gate_log("20261107-100000-aaaaaaaa", "eng: lane gate reached its limit\n", 1000)
+        status_, said, _ = self.doctor()
+        self.assertEqual(status_, 0, said)
+        self.gate_log("20261107-110000-bbbbbbbb", "eng unittest: 9 tests (0 skipped) in 9 processes, 4 at a time, "
+                      "1.0s: UNMEASURED: test_x (timed out after 1800s)\n", 2000)
+        status_, said, found = self.doctor()
+        self.assertEqual(status_, 1, said)
+        self.assertEqual([f["signal"] for f in found["findings"]], ["no verdict"])
+        self.assertIn("2 gates since the last verdict gave none", said)
+
+    def test_a_hold_and_entries_waiting_with_no_worker_are_findings(self):
+        self.commit("c", "c")
+        self.add("c")
+        status_, said, found = self.doctor(working=False)
+        self.assertEqual(status_, 1, said)
+        self.assertEqual([f["signal"] for f in found["findings"]], ["no worker"])
+        self.assertIn("1 entry wait and no worker runs", said)
+        mq.Queue(self.repo).hold_file.write_text("for a session: something\n")
+        status_, said, found = self.doctor(working=False)
+        self.assertEqual([f["signal"] for f in found["findings"]], ["held"])
+        self.assertIn("the queue is held for a session: something", said)
+
+    def test_an_entry_queued_again_unchanged_came_back_and_a_changed_one_did_not(self):
+        self.commit("c", "c")
+        first = self.add("c")[0]
+        mq.remove(mq.Queue(self.repo), first, quiet=True)
+        with patch("time.time", return_value=time.time() + 5): again = self.add("c")[0]
+        status_, said, found = self.doctor()
+        self.assertEqual(status_, 1, said)
+        self.assertEqual([f["signal"] for f in found["findings"]], ["came back"])
+        self.assertIn(f"{again} holds the very change {first} held, which was taken out", said)
+        # The control: the branch, changed, comes back as another change.
+        mq.remove(mq.Queue(self.repo), again, quiet=True)
+        run(self.repo, "git", "checkout", "-q", "c")
+        (self.repo / "c").write_text("fixed")
+        run(self.repo, "git", "commit", "-qam", "Fix c")
+        with patch("time.time", return_value=time.time() + 10): self.add("c")
+        status_, said, _ = self.doctor()
+        self.assertEqual(status_, 0, said)
+
+    def test_the_command_line_takes_doctor(self):
+        import argparse
+        parser = argparse.ArgumentParser()
+        mq.add_arguments(parser)
+        self.assertEqual(vars(parser.parse_args(["doctor", "--json"])), {"operation": "doctor", "json": True})
+
+
 class NoVerdict(Fixture):
     @contextlib.contextmanager
     def no_verdict_for(self, runs, status="3"):

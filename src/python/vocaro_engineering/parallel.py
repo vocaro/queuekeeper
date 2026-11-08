@@ -302,12 +302,10 @@ def unittest_main(argv):
     top = Path(args.top_level_directory).resolve() if args.top_level_directory else start
     # Before discovery imports any of them: a suite that keeps its tests off the real hosts in host_isolation.py
     # runs no module that skips it, which otherwise only the full suite's own check found, in the merge queue.
-    if (start / ISOLATION).is_file():
-        forgot = unisolated(sorted({path for pattern in args.pattern or ["test*.py"] for path in start.glob(pattern)}))
-        if forgot:
-            print(f"eng unittest: {', '.join(forgot)} must import {ISOLATION.removesuffix('.py')} at its top level, "
-                  f"as every test module beside {start / ISOLATION} does; nothing ran", file=sys.stderr)
-            return 1
+    refused = refusals(start, args.pattern)
+    if refused:
+        for line in refused: print(line, file=sys.stderr)
+        return 1
     # Discovery imports every module here, as unittest's own would, and each shard imports its own
     # again: from the top-level directory, then the directory eng runs in (#74).
     for directory in (os.getcwd(), str(top)):
@@ -374,6 +372,28 @@ def unittest_main(argv):
 
 
 ISOLATION = "host_isolation.py"
+
+
+def refusals(start, patterns=None):
+    """The lines eng unittest refuses a suite with before discovery imports any of its modules, each ending `nothing
+    ran`, or none. In a suite that keeps its tests off the real hosts in host_isolation.py, a module patterns match
+    that does not parse, or that does not import host_isolation at its top level, refuses the run. eng land and `eng
+    queue add` run these on an entry's tree before queuing it, as they take seconds and a refusal costs a whole gate
+    (merge_queue.prerun, vocaro-engineering#290)."""
+    if not (start / ISOLATION).is_file(): return []
+    paths, broken = sorted({path for pattern in patterns or ["test*.py"] for path in start.glob(pattern)}), {}
+    for path in paths:
+        try: ast.parse(path.read_text(), str(path))
+        except (SyntaxError, ValueError) as error:
+            line = getattr(error, "lineno", None)
+            broken[path] = f"{path.name} does not parse ({getattr(error, 'msg', error)}" + \
+                (f", line {line})" if line else ")")
+    lines = [f"eng unittest: {why}; nothing ran" for why in broken.values()]
+    forgot = unisolated([path for path in paths if path not in broken])
+    if forgot:
+        lines.append(f"eng unittest: {', '.join(forgot)} must import {ISOLATION.removesuffix('.py')} at its top level, "
+                     f"as every test module beside {start / ISOLATION} does; nothing ran")
+    return lines
 
 
 def unisolated(paths):

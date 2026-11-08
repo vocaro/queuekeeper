@@ -32,6 +32,7 @@ each waiting commit, so a branch that moves or goes takes nothing with it:
 import ast
 import contextlib
 import fcntl
+import fnmatch
 import json
 import os
 from pathlib import Path
@@ -45,7 +46,7 @@ import threading
 import time
 import urllib.request
 
-from . import app_builds, budgets, disk, evidence, landing, offload_host, processes, remote, resources
+from . import app_builds, budgets, disk, evidence, landing, offload_host, parallel, processes, remote, resources
 from .config import TOOLKIT_ROOT, load, parse, stays
 
 MAIN = "refs/remotes/origin/main"
@@ -177,6 +178,12 @@ FLAKY = "Flaky-test"
 # each process's output under `== NAME: RESULT (N tests, S s)`, and unittest's line for each failed test.
 UNITTEST_SUMMARY = re.compile(r"^eng unittest: \d+ tests \(\d+ skipped\) in \d+ processes, \d+ at a time, "
                               r"[\d.]+s: (.*)$", re.M)
+# What eng unittest prints when it refuses a suite before running anything (parallel.refusals).
+REFUSAL = re.compile(r"^eng unittest: .*; nothing ran$", re.M)
+# How many of the newest gate logs `eng queue doctor` reads back to the last that gave a verdict, and how many of
+# them in a row with no verdict make a finding (doctor).
+DOCTOR_LOGS = 12
+DOCTOR_NO_VERDICTS = 2
 FAILED_SHARD = re.compile(r"(\S+) \(((?:[^()]|\([^()]*\))*)\)")
 SHARD_HEADER = re.compile(r"^== (\S+): .* \(\d+ tests, [\d.]+s\)$", re.M)
 FAILED_TEST = re.compile(r"^(?:FAIL|ERROR): (\S+) \(([^()\s]+)\)", re.M)
@@ -550,6 +557,100 @@ def rerun_command(command):
         else:
             index += 1  # a name the lane selects: the rerun names its own test
     return kept + ["-j", "1", "-v"]
+
+
+def suite_of(command):
+    """(start directory, patterns or None) of a lane whose command is eng unittest, by the options rerun_command keeps,
+    or None for any other lane."""
+    words = rerun_command(command)
+    if words is None: return None
+    words = words[words.index("unittest") + 1:]
+    start, patterns, index = ".", [], 0
+    while index < len(words):
+        name, equals, value = words[index].partition("=")
+        if not equals and name in RERUN_KEPT and index + 1 < len(words):
+            index += 1
+            value = words[index]
+        if name in ("-s", "--start-directory"): start = value
+        elif name in ("-p", "--pattern"): patterns.append(value)
+        index += 1
+    return start, patterns or None
+
+
+def unittest_lanes(config):
+    """{lane: (start, patterns)} of config's queue lanes (lanes_of) whose command is eng unittest."""
+    lanes, found = config.get("lanes", {}), {}
+    for lane in lanes_of(config):
+        suite = suite_of(lanes[lane].get("command")) if isinstance(lanes.get(lane), dict) else None
+        if suite: found[lane] = suite
+    return found
+
+
+def suite_tree(root, commit, start, patterns, into):
+    """Write the files at the top of commit's start directory that eng unittest's checks before a run read
+    (parallel.refusals), its Python files and those patterns match, into into. False when commit has no such
+    directory."""
+    relative = os.path.normpath(start)
+    listed = git(root, "ls-tree", "-z", commit if relative == "." else f"{commit}:{relative}")
+    if listed.returncode: return False
+    names = {}
+    for record in listed.stdout.split("\0"):
+        meta, _, name = record.partition("\t")
+        fields = meta.split()
+        # A file, not a directory, a submodule or a symbolic link, which eng unittest's checks would follow.
+        if not name or len(fields) != 3 or fields[0] not in ("100644", "100755"): continue
+        if name.endswith(".py") or any(fnmatch.fnmatchcase(name, pattern) for pattern in patterns or ["test*.py"]):
+            names[name] = fields[2]
+    into.mkdir(parents=True, exist_ok=True)
+    if not names: return True
+    done = subprocess.run(["git", "-C", str(root), "cat-file", "--batch"], capture_output=True, env=environment(),
+                          input="".join(f"{sha}\n" for sha in names.values()).encode(), timeout=GIT_TIMEOUT)
+    if done.returncode: raise RuntimeError(f"git cat-file could not read {commit[:12]}:{relative}")
+    blobs, offset = {}, 0
+    while offset < len(done.stdout):
+        end = done.stdout.index(b"\n", offset)
+        sha, _, size = done.stdout[offset:end].decode().split()
+        blobs[sha] = done.stdout[end + 1:end + 1 + int(size)]
+        offset = end + 2 + int(size)
+    for name, sha in names.items(): (into / name).write_bytes(blobs[sha])
+    return True
+
+
+def prerun(root, commit, config):
+    """The lines eng unittest would refuse each of config's eng unittest lanes with on commit's tree before running
+    anything (parallel.refusals), once each, each suite's directory named under root, as a gate in a checkout of
+    root's repository would print them: a gate they refuse runs nothing, in seconds, and gives no failed test to blame
+    (vocaro-engineering#290)."""
+    lines = []
+    for start, patterns in unittest_lanes(config).values():
+        if Path(start).is_absolute(): continue
+        with tempfile.TemporaryDirectory(prefix="eng-prerun-") as folder:
+            copy = Path(folder).resolve()
+            if not suite_tree(root, commit, start, patterns, copy / start): continue
+            for line in parallel.refusals(copy / start, patterns):
+                line = line.replace(str(copy), str(root))
+                if line not in lines: lines.append(line)
+    return lines
+
+
+def refused_alone(root, tip, config):
+    """The lines of prerun that tip's tree gives and origin/main's does not: what the entry itself brings, which a
+    gate of any batch holding it would refuse."""
+    lines = prerun(root, tip, config)
+    if not lines: return []
+    before = prerun(root, MAIN, config)
+    return [line for line in lines if line not in before]
+
+
+def checked_before_running(root, tip, config):
+    """Refuse tip, queuing nothing, when eng unittest would refuse a gate holding it before running anything: a
+    module that does not import host_isolation, or does not parse. These checks take seconds, where the gate they
+    refuse costs a round, and a bisect blind, since it names no failed test (vocaro-engineering#290)."""
+    own = refused_alone(root, tip, config)
+    if own:
+        raise Refused(f"{tip[:12]} is not queued: eng unittest would refuse every gate holding it before running "
+                      "anything:\n  " + "\n  ".join(own) + "\nFix that and land it again (guides/maintenance.md, The "
+                      "merge queue, Checked before it is queued)")
 
 
 def failed_tests(log):
@@ -1014,8 +1115,9 @@ def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False
     config = config_at(root, MAIN)
     if config.get("integration", "direct-main") != "direct-main":
         raise ValueError(f"{config.get('name')} integrates by pull request, which the queue does not push to")
+    gating = config
     try: lanes_of(config)
-    except ValueError: lanes_of(config_at(root, tip))
+    except ValueError: lanes_of(gating := config_at(root, tip))
     if git(root, "merge-base", "--is-ancestor", tip, MAIN).returncode == 0:
         print(f"origin/main already holds {tip[:12]}: nothing to queue")
         return None
@@ -1052,7 +1154,9 @@ def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False
     # A branch added again replaces what it added before; main names nobody's work in particular.
     replaced = [entry for entry in waiting
                 if branch and branch not in ("main", "HEAD") and entry.get("branch") == branch]
-    # What a round would find, before anything is queued or replaced: a refused entry leaves the queue as it was.
+    # What a round would find, before anything is queued or replaced: a refused entry leaves the queue as it was. First
+    # eng unittest's own checks before a run, which a gate holding it would fail in seconds and bisect blind (#290).
+    checked_before_running(root, tip, gating)
     check(root, queue, {"id": "new", "tip": tip, "commits": commits},
           [] if front else round_order([entry for entry in waiting if entry not in replaced]), front)
     for entry in replaced:
@@ -1247,6 +1351,145 @@ def status(root, as_json=False, recent=5):
               "on main covers")
     for entry in waiting + done: print(describe(entry))
     return 0
+
+
+def refused_modules(line):
+    """The test modules a refusal of eng unittest's names (parallel.refusals), by file name, whatever checkout it
+    was printed in."""
+    said = line.removeprefix("eng unittest: ")
+    for ending in (" must import ", " does not parse "):
+        if ending in said: return set(said.split(ending, 1)[0].split(", "))
+    return set()
+
+
+def patch_of(root, entry):
+    """The stable patch ID of the change entry's commits make together, which a rebase keeps, or None when they cannot
+    be read."""
+    commits = entry.get("commits") or []
+    if not commits or not entry.get("tip"): return None
+    diff = git(root, "diff", "--no-color", f"{commits[0]}^", entry["tip"])
+    if diff.returncode or not diff.stdout: return None
+    done = subprocess.run(["git", "-C", str(root), "patch-id", "--stable"], input=diff.stdout, capture_output=True,
+                          text=True, env=environment(), timeout=GIT_TIMEOUT)
+    return done.stdout.split()[0] if done.returncode == 0 and done.stdout.split() else None
+
+
+def gate_logs(queue, lanes, working):
+    """The logs of the newest DOCTOR_LOGS gates of lanes, eng unittest lanes, newest first, back to the last that gave
+    a verdict, OK or FAILED: [(name, the refusal it printed or None, its eng unittest verdict or None)]. A gate that
+    still runs is no gate without a verdict, so its log is left out."""
+    running = {gate.get("log") for gate in (queue.round_state() or {}).get("gates", {}).values()} if working else set()
+    logs = []
+    for lane in lanes:
+        for path in queue.logs.glob(f"*-{lane}.log"):
+            if str(path) in running: continue
+            with contextlib.suppress(OSError): logs.append((path.stat().st_mtime, path.name, path))
+    found = []
+    for _, name, path in sorted(logs)[-DOCTOR_LOGS:][::-1]:
+        said = path.read_text(errors="replace")
+        summaries = UNITTEST_SUMMARY.findall(said)
+        if summaries and "UNMEASURED: " not in summaries[-1]: break
+        refused = REFUSAL.findall(said)
+        found.append((name, refused[-1] if refused else None, summaries[-1] if summaries else None))
+    return found
+
+
+def doctor(root, as_json=False):
+    """`eng queue doctor`: read the queue's entries, its hold, its worker and its newest gate logs for the signs of a
+    queue that is stuck rather than testing, and say for each what it means and what would heal it
+    (vocaro-engineering#290): a hold; entries waiting with no worker (#287); gates that eng unittest refused before
+    running anything, which give no failed test to blame and so bisect blind (#280), with the entry that brings the
+    refusal; gates in a row with no verdict (#253, #268, #282); a waiting entry that eng unittest would refuse; and an
+    entry that came back unchanged after the same change failed or was removed. It changes nothing, neither entries
+    nor the hold: sending an entry back on its word, without a failed test a rerun confirmed, is a change
+    to the gate's policy that waits for the owner. 0 when it finds the queue healthy, 1 when it finds anything."""
+    queue = Queue(root)
+    entries = queue.all()
+    waiting = [entry for entry in entries if entry["state"] in WAITING]
+    working, held = queue.working(), queue.held()
+    findings = []
+
+    def found(signal, diagnosis, remedy):
+        findings.append({"signal": signal, "diagnosis": diagnosis, "remedy": remedy})
+
+    if held:
+        found("held", f"the queue is held {held}", "deal with the cause the hold names, then run `eng queue resume`, "
+              "unless the hold says it is for the owner")
+    elif waiting and not working:
+        found("no worker", f"{entries_word(len(waiting))} wait and no worker runs, so nothing gates them "
+              "(vocaro-engineering#287)", "`eng queue resume` starts one")
+    try: suites = unittest_lanes(config := config_at(root, MAIN))
+    except ValueError as error:
+        suites = {}
+        found("configuration", f"origin/main's queue lanes cannot be read: {error}", "fix engineering.json on main")
+    # Each waiting entry whose tree alone eng unittest refuses, as eng land now refuses before queuing: one queued
+    # before that check, or by a toolkit without it.
+    refusing = {}
+    for entry in waiting if suites else []:
+        try: own = refused_alone(root, entry["tip"], config)
+        except (OSError, RuntimeError, ValueError, subprocess.SubprocessError): own = []
+        if own: refusing[entry["id"]] = own
+    gates = gate_logs(queue, suites, working)
+    refused = [gate for gate in gates if gate[1]]
+    if refused:
+        line = refused[0][1]
+        same = [name for name, said, _ in gates if said and refused_modules(said) == refused_modules(line)]
+        culprits = [identifier for identifier, own in refusing.items()
+                    if any(refused_modules(said) & refused_modules(line) for said in own)]
+        diagnosis = (f"{len(same)} gate{'' if len(same) == 1 else 's'} since the last verdict ran nothing, as eng "
+                     f"unittest refused {'it' if len(same) == 1 else 'them'} before running anything: {line} (logs: "
+                     f"{', '.join(same)}). A refusal is no test failure, so no rerun can confirm one, and a bisect "
+                     "through it is blind (vocaro-engineering#280)")
+        if len(culprits) == 1:
+            remedy = (f"{culprits[0]} brings it, as its tree alone is refused so: take it out with `eng queue remove "
+                      f"{culprits[0]}` and fix it in its session. The worker does not send it back by itself, which "
+                      "waits for the owner's decision (vocaro-engineering#290)")
+        elif culprits:
+            remedy = (f"{', '.join(culprits)} each bring a module it names, so none is the one cause: fix each, or "
+                      "let the bisect find them")
+        else:
+            remedy = ("no waiting entry's tree alone is refused so: the cause is on origin/main, in how entries "
+                      "combine, or gone with an entry that left; read the newest log")
+        found("refused gates", diagnosis, remedy)
+    blank = [name for name, said, _ in gates if not said]
+    if len(blank) >= DOCTOR_NO_VERDICTS:
+        found("no verdict", f"{len(blank)} gates since the last verdict gave none, each leaving tests unmeasured or "
+              f"printing no eng unittest summary: {', '.join(blank)} (vocaro-engineering#253, #268, #282)",
+              f"the worker runs it again up to queue.noVerdictRuns times and then holds; read {blank[0]} for the "
+              "cause: a lane that reached its limit, or a second Mac out of reach")
+    for identifier, own in refusing.items():
+        found("refused before running", f"eng unittest refuses {identifier}'s tree before running anything: "
+              + "; ".join(own) + ". Every gate holding it runs nothing",
+              f"take it out with `eng queue remove {identifier}`, fix it and land it again, which now checks this")
+    # An entry that came back as it was, after the same change from the same branch failed or was taken out.
+    gone = [entry for entry in entries if entry["state"] in (FAILED, REMOVED)]
+    patches = {}
+    for entry in waiting:
+        for other in gone:
+            if other["submitted"] >= entry["submitted"]: continue
+            if not ((entry.get("branch") and entry.get("branch") == other.get("branch"))
+                    or entry.get("subject") == other.get("subject")): continue
+            for each in (entry, other):
+                if each["id"] not in patches: patches[each["id"]] = patch_of(root, each)
+            if patches[entry["id"]] and patches[entry["id"]] == patches[other["id"]]:
+                found("came back", f"{entry['id']} holds the very change {other['id']} held, which "
+                      f"{'failed' if other['state'] == FAILED else 'was taken out'}"
+                      + (f": {other['why']}" if other.get("why") else ""),
+                      "unless that cause was outside the change, it comes back the same way: take it out with "
+                      f"`eng queue remove {entry['id']}` and fix it first")
+                break
+    if as_json:
+        print(json.dumps({"healthy": not findings, "waiting": len(waiting), "worker": working, "findings": findings},
+                         indent=2))
+        return 1 if findings else 0
+    if not findings:
+        print(f"eng queue doctor: healthy: {entries_word(len(waiting))} waiting, worker "
+              f"{'running' if working else 'not needed'}, and no gate since the last verdict ran nothing")
+        return 0
+    print(f"eng queue doctor: {len(findings)} finding{'' if len(findings) == 1 else 's'}, and it changed nothing:")
+    for finding in findings:
+        print(f"{finding['signal']}: {finding['diagnosis']}\n  next: {finding['remedy']}")
+    return 1
 
 
 def wait(root, identifier, limit=WAIT_LIMIT):
@@ -3093,7 +3336,11 @@ def add_arguments(parser):
     state = operations.add_parser("status", help="say what is waiting, what is running, what came back and, when the "
                                   "queue is held, why and for whom")
     state.add_argument("--json", action="store_true")
-    following = operations.add_parser("wait", help="follow an entry to its result: 0 landed, 1 came back, 75 "
+    doctoring = operations.add_parser("doctor", help="read the queue for the signs that it is stuck rather than testing, "
+                                      "such as gates that ran nothing, and say what each means and what heals it; it "
+                                      "changes nothing: 0 healthy, 1 with findings")
+    doctoring.add_argument("--json", action="store_true")
+    following =operations.add_parser("wait", help="follow an entry to its result: 0 landed, 1 came back, 75 "
                                       "held or still waiting at the limit")
     following.add_argument("id")
     following.add_argument("--limit", type=float, default=WAIT_LIMIT, metavar="SECONDS")
@@ -3112,6 +3359,7 @@ def main(root, args):
             return 1
         return 0
     if args.operation == "status": return status(root, args.json)
+    if args.operation == "doctor": return doctor(root, args.json)
     if args.operation == "wait": return wait(root, args.id, args.limit)
     if args.operation == "remove": return remove(Queue(root), args.id)
     if args.operation == "resume": return resume(root)
