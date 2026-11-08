@@ -1113,9 +1113,13 @@ configured, and on such an answer exits, holding nothing, with its entries back 
 that finds the queue waiting with no worker runs `eng queue resume`.
 
 A worker independent of every session needs a responsible process that holds a Local Network grant and outlives the
-sessions. A launchd agent running Python is not one, as above. A signed app bundle with a grant of its own, or this
-Mac's sshd as a `ProxyJump` hop (loopback is exempt, and sshd is a system daemon), might be one; neither was tried,
-and each needs a decision of the owner's: a signing identity and a grant for the first, and Remote Login on this Mac for the second.
+sessions. A launchd agent running Python is not one, as above. The owner decided on 2026-11-07 to keep detection only
+for now: a session that lands work keeps `eng land --wait` or `eng queue wait` running, and the wait starts a new
+worker within a poll of the old one's exit. Worker exits are to be measured first in each queue's `worker.log`. If
+they cost real time, the preferred fix is a small launcher app signed with the owner's identity, with a grant of its
+own. This Mac's sshd as a `ProxyJump` hop is not preferred: it needs Remote Login on this Mac, and it covers ssh
+alone (vocaro-engineering#282, #299). A worker whose session ends during a gate still runs that gate's lanes on this
+Mac until the round ends (vocaro-engineering#300).
 
 ### The second Mac's own toolkit checkout
 
