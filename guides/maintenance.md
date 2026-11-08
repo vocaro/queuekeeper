@@ -793,7 +793,13 @@ worker's account of its round: whether it bisects, with how many suspects and th
 half; each running gate's lane, the Mac it runs on and how long it has run; what a gate waits for,
 by the newest wait `eng run` printed in its log, such as admission behind another project's
 whole-host gate or a second Mac that cannot be reached; a gate stacked on the batch; and a wait for
-the host to settle after a run with no verdict. `--json` has the same under `round`. On 2026-11-07,
+the host to settle after a run with no verdict. A gate whose wait names a dead or uncertain guard
+entry that admission has not recovered, and has lasted 15 minutes (`STUCK_SECONDS`), is shown as
+`stuck:`, with `python3 scripts/eng admissions recover` to list the entries, and the worker's log
+says so once; on 2026-11-07 BreezEPUB's gate waited 86 minutes behind three dead entries while
+status said only "waiting" (vocaro-engineering#315; guides/shared-host.md, Lock reclamation). The
+queue's own doctor acting on it is vocaro-engineering#290. `--json` has the same under `round`,
+each gate's `waitingSince` and any `stuck` among them. On 2026-11-07,
 with 3 entries testing and 6 queued, that took a dozen commands: a bisect of a spelling failure,
 its older half waiting more than 25 minutes for this Mac behind StudyWright's and BreezEPUB's
 whole-host gates, and the second Mac answering "No route to host". For more, the answers live in

@@ -5172,6 +5172,63 @@ class RoundAccount(Fixture):
         watch.finish()
         self.assertEqual(queue.round_state()["gates"], {})
 
+    DEAD = ("admission on this Mac: a whole-host lane needs every guaranteed slot (HEAVY_SLOTS=3) free, and 3 are busy; "
+            "the guard entry of BreezEPUB ways-in, PID 8645, is dead and requires inspection (it has no process record), "
+            "and is counted as slot 1; `python3 scripts/eng admissions recover` lists it")
+
+    def test_a_gate_held_up_by_dead_entries_past_the_threshold_is_stuck(self):
+        # BreezEPUB's gate waited 86 min behind three dead entries while status said only "waiting" (#315).
+        at = time.time()
+        late, early = at - mq.STUCK_SECONDS - 60, at - mq.STUCK_SECONDS + 60
+        said = mq.stuck({"waiting": self.DEAD, "waitingSince": late}, at)
+        self.assertEqual(said, "stuck: the gate has waited 16m00s for admission held up by dead or uncertain guard "
+                               "entries that admission has not recovered; `python3 scripts/eng admissions recover` lists "
+                               "them (guides/shared-host.md, Lock reclamation)")
+        self.assertIsNotNone(mq.stuck({"waiting": self.DEAD.replace("is dead", "is uncertain"), "waitingSince": late}, at))
+        # Negative controls: before the threshold; a wait that names no dead entry; a gate with no wait recorded.
+        self.assertIsNone(mq.stuck({"waiting": self.DEAD, "waitingSince": early}, at))
+        self.assertIsNone(mq.stuck({"waiting": "admission on this Mac: " + self.WHOLE_HOST, "waitingSince": late}, at))
+        self.assertIsNone(mq.stuck({"waiting": self.DEAD}, at))
+        self.assertIsNone(mq.stuck({"waiting": None, "waitingSince": late}, at))
+        queue = mq.Queue(self.repo)
+        queue.note(lambda state: state.update(round="r", entries=["e1", "e2"], gates={
+            "batch": {"lane": "gate", "began": late, "entries": ["e1"], "mac": None, "waiting": self.DEAD,
+                      "waitingSince": late, "log": "/l/b.log"},
+            "stacked": {"lane": "gate", "began": late, "entries": ["e2"], "mac": None, "waiting": self.DEAD,
+                        "waitingSince": early, "log": "/l/s.log"}}))
+        said = self.shown()
+        self.assertEqual(said.count("    stuck: the gate has waited 16m"), 1, said)
+        self.assertLess(said.index("batch (e1)"), said.index("stuck:"))
+        self.assertLess(said.index("stuck:"), said.index("stacked gate (e2)"))
+        shown = self.shown(as_json=True)["round"]["gates"]
+        self.assertTrue(shown["batch"]["stuck"].startswith("stuck: the gate has waited 16m"))
+        self.assertNotIn("stuck", shown["stacked"])
+
+    def test_the_worker_log_says_once_that_a_gate_is_stuck(self):
+        queue = mq.Queue(self.repo)
+        worker = mq.Worker(queue)
+        worker.gating = ["e1"]
+        log = queue.logs / "round-gate.log"
+        log.write_text("heavy: waiting (0s): " + self.DEAD.removeprefix("admission on this Mac: ") + "\n")
+        with patch.object(mq.Worker, "head", return_value="a" * 40):
+            watch = mq.GateWatch(worker, "gate", time.time(), log)
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            watch.look()
+            began = queue.round_state()["gates"]["batch"]["waitingSince"]
+            self.assertEqual(out.getvalue(), "")
+            later = began + mq.STUCK_SECONDS + 1
+            with patch.object(mq.time, "time", return_value=later):
+                watch.look()
+                watch.look()
+            self.assertEqual(queue.round_state()["gates"]["batch"]["waitingSince"], began)
+            self.assertEqual(out.getvalue().count("gate: stuck: the gate has waited 15m01s"), 1, out.getvalue())
+            # Once admitted, the wait and its start clear.
+            with log.open("a") as more: more.write("heavy: slot 0,1,2 after 901s: fixture gate\n")
+            watch.look()
+        gate = queue.round_state()["gates"]["batch"]
+        self.assertEqual((gate["waiting"], gate["waitingSince"]), (None, None))
+        watch.finish()
+
     def test_status_shows_the_round_and_why_its_gates_wait(self):
         queue = mq.Queue(self.repo)
         began = time.time() - 27 * 60

@@ -209,6 +209,11 @@ OFFER_WAIT = re.compile(r"^eng: \S+ (waits for .+)$")
 DECLINED = re.compile(r"^eng: trying \S+ on this Mac: (.+)$")
 ADMITTED = re.compile(r"^heavy: slot ")
 SENT = re.compile(r"^remote: sending .* to (\S+)$")
+# A gate whose wait names a dead or uncertain guard entry that admission has not recovered (resources.Admission's
+# stranded refusal) is stuck, not waiting, once it has waited this long: on 2026-11-07 BreezEPUB's gate waited 86 min
+# behind three dead entries while status said only "waiting" (#315).
+STUCK_SECONDS = 15 * 60
+DEAD_ENTRY = re.compile(r"is (?:dead|uncertain) and requires inspection")
 WAIT_LIMIT = 6 * 3600
 KEPT_LOGS = 200
 GIT_TIMEOUT = 600
@@ -853,6 +858,18 @@ def waited_for(lines, waiting=None, where=None):
 HERE_MAC = "this Mac"
 
 
+def stuck(gate, at=None):
+    """What `eng queue status` and the worker log say of a gate held up by dead guard entries, or None: its wait,
+    since waitingSince, names a dead or uncertain entry and has lasted STUCK_SECONDS (#315)."""
+    since, waiting = gate.get("waitingSince"), gate.get("waiting") or ""
+    if not isinstance(since, (int, float)) or not DEAD_ENTRY.search(waiting) or \
+            (at or time.time()) - since < STUCK_SECONDS:
+        return None
+    return (f"stuck: the gate has waited {ago(since, at)} for admission held up by dead or uncertain guard entries that "
+            "admission has not recovered; `python3 scripts/eng admissions recover` lists them (guides/shared-host.md, "
+            "Lock reclamation)")
+
+
 class GateWatch:
     """The record of a running gate lane in the round's account (Queue.note): where it runs, by its dispatch's
     record (remote.dispatched) or by its log, a send to the second Mac or this Mac's admission, and what it waits
@@ -861,6 +878,8 @@ class GateWatch:
         self.queue, self.checkout, self.role = worker.queue, worker.checkout, worker.role
         self.lane, self.began, self.log = lane, began, log
         self.offset, self.waiting, self.where, self.partial = 0, None, None, ""
+        # When the current wait began, and whether the worker log has said it is stuck (stuck).
+        self.since, self.said_stuck, self.say = None, False, worker.say
         self.stopped = threading.Event()
         self.thread = threading.Thread(target=self.every, name="gate watch", daemon=True)
         self.queue.note(lambda state: state.setdefault("gates", {}).__setitem__(self.role, {
@@ -881,7 +900,11 @@ class GateWatch:
         except Exception: host = None  # noqa: BLE001
         host = host or (self.where if self.where != HERE_MAC else None)
         mac = f"the second Mac ({host})" if host else HERE_MAC if self.where else None
-        self.queue.gate_note(self.role, mac=mac, waiting=self.waiting)
+        self.since = (self.since or time.time()) if self.waiting else None
+        held_up = stuck({"waiting": self.waiting, "waitingSince": self.since})
+        if held_up and not self.said_stuck: self.say(f"{self.lane}: {held_up}")
+        self.said_stuck = bool(held_up)
+        self.queue.gate_note(self.role, mac=mac, waiting=self.waiting, waitingSince=self.since)
 
     def every(self):
         while not self.stopped.wait(WATCH_POLL):
@@ -1317,6 +1340,7 @@ def round_lines(state, at=None):
         line = (f"  {what} ({', '.join(gate.get('entries', [])) or 'no entry'}): {gate.get('lane')} lane"
                 f" on {gate.get('mac') or 'no Mac yet'}, running {ago(gate.get('began', 0), at)}")
         if gate.get("waiting"): line += f"\n    waiting: {gate['waiting']}"
+        if stuck(gate, at): line += f"\n    {stuck(gate, at)}"
         if gate.get("log"): line += f"\n    log: {gate['log']}"
         lines.append(line)
     if state.get("waiting"):
@@ -1339,6 +1363,7 @@ def status(root, as_json=False, recent=5):
     current = queue.round_state() if working else None
     for gate in (current or {}).get("gates", {}).values():
         if isinstance(gate.get("began"), (int, float)): gate["runningSeconds"] = round(time.time() - gate["began"])
+        if stuck(gate): gate["stuck"] = stuck(gate)
     if as_json:
         print(json.dumps({"worker": working, "held": why, "round": current, "waiting": waiting, "recent": done,
                           "ungated": [entry["id"] for entry in ungated]}, indent=2))

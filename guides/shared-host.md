@@ -280,7 +280,12 @@ log line names them ([admission log](#admission-log)). Admission checks the entr
 HEAVY_RECOVER_SECONDS (60). `python3 scripts/eng admissions recover` lists those entries.
 This repository's `.claude/settings.json` allows agents to run it, with or without an owner, so
 that one can clear such an entry once its processes end; the command refuses any entry that is
-not provably finished (owner's decision, 2026-11-02).
+not provably finished (owner's decision, 2026-11-02). Other projects' settings do not carry the
+rule, and need not: every project's heavy work is admitted by this toolkit, whose admission
+recovers each provably finished entry itself, an owner killed before its first command among them,
+at its next attempt and every HEAVY_RECOVER_SECONDS after, so no session has to run the command to
+free one (vocaro-engineering#315). What recovery leaves needs a person's look, and `eng queue
+status` says when a gate is stuck behind it ([the merge queue](maintenance.md#the-merge-queue)).
 
 The rule: a disappeared owner's children may still be running, and they keep what its entry
 held, its slots and the model if it held it, and nothing more. The rest of the host stays open
@@ -2943,20 +2948,38 @@ and logs a `recovered` line ([admission log](#admission-log)), only when all of 
   never touched, uncertain or not, named by PID or by identity: the owner removes it, or leaves it,
   when it ends. A `ps` that cannot say leaves the owner taken as running.
 - It has a process record that reads whole and names the process of each command it has not
-  settled.
+  settled, or that names no command of an owner that supervises every command it starts.
 - The census a run ends with ([process supervision](#process-supervision)), run against that
   record, finds nothing. It checks recorded processes by PID and start, and live processes in
   groups or sessions an unsettled command used. It skips an ID that is now a live process's PID
   and skips a process for a group or session if its birth follows the recorded close for every
   unsettled command that used that ID. Without a close time for any such command, the space is
   still checked without a birth cutoff.
+- For a record that names no command, the owner ended before its first: `eng admit`, `eng run`
+  and the resource CLI start every command through `processes.supervise`, which records it before
+  starting it in a session of its own, so whatever the owner started before then is in the
+  owner's process group, or in its session where the group leads it. The census finds nothing
+  there that started no earlier than the owner, the owner's recorded ancestors and the group's or
+  session's leader aside. It errs toward keeping the entry: a sibling the same shell started in
+  that group after the owner, such as another lane started beside it, keeps it until it ends. A
+  helper that left both group and session before the first command is not seen; none of the
+  toolkit's does. On 2026-11-07 three lanes killed between admission and their first recorded
+  command left entries with no record, and BreezEPUB's gate waited 86 minutes behind them until a
+  session removed them by hand
+  ([vocaro-engineering#315](https://github.com/vocaro/vocaro-engineering/issues/315)).
 
 Otherwise it changes nothing, exits 1 and says why: each process still running, by PID with why it
 counts and a `ps` listing, or what to check by hand. Stop or wait for what still runs, then run it
 again. It leaves alone, too, a guard that is unreadable or not in admission's format.
 
 The process record is `<guard>.IDENTITY.jsonl`, beside the guard, named by the identity that keys
-the entry. The toolkit's supervision in the admitting process (`eng admit`, `eng run`, the
+the entry. Admission writes its first line under the coordination lock just before it adds the
+entry, so that no entry is published without a record, even one whose owner is killed before its
+first command: `admission`, the identity; `owner`, as `[PID, start]`; the owner's process `group`
+and `session`; the `ancestors` it was started under, as `[PID, start]`; and `supervised`, whether
+the owner starts every command through `processes.supervise`, as `eng admit`, `eng run` and the
+resource CLI do (`Admission(supervised=True)`). A toolkit older than 2026-11-08 cannot read that
+line, and so leaves such an entry for a check by hand. The toolkit's supervision in the admitting process (`eng admit`, `eng run`, the
 resource CLI, and `processes.supervise` inside an `Admission` the same process holds) appends JSON
 lines to it, each naming one command by a key of its own: `argv` before the command starts; `root`,
 its PID, once started; at each sample that sees something new, the `processes` first seen, as
@@ -2979,8 +3002,9 @@ process its samples see, with the start `ps -o lstart=` reads, and each group an
 Recovery then checks its entry as it checks supervision's.
 
 An entry without a process record is left for a check by hand: one an older toolkit wrote, one whose
-owner ended before it began a recorded command, one whose record could not be written, and one whose
-caller runs its own commands without recording them, as an older StudyWright push keeper does.
+record could not be written, and one whose caller runs its own commands without recording them, as
+an older StudyWright push keeper does; a record that holds only its admission line, unsupervised,
+counts as none, since such a caller's commands may be running unrecorded.
 Inspect its recorded owner, that owner's command processes and any reserved tree; stop or wait for
 all of the transaction's children; then remove the entry by hand. A push keeper's `owner.json`, in
 its checkout's transaction lock, lists each command the keeper ran with its PID, process group,

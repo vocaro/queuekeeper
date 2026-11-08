@@ -515,8 +515,10 @@ def admitted_here(stack, name, label, timeout, offered=None, once=False, exclusi
                 return None
             seconds = max(seconds - (time.monotonic() - began), 0)
         try:
+            # eng admit and eng run start every command they admit through processes.supervise (#315).
             return stack.enter_context(resources.Admission(label, exclusive=exclusive, timeout=seconds, model=model,
-                                                           whole_host=whole_host, place=place, placement=placement))
+                                                           whole_host=whole_host, place=place, placement=placement,
+                                                           supervised=True))
         except TimeoutError as error:
             # Admission published nothing but the place, which the finally below leaves.
             refused.append(error)

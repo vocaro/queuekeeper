@@ -49,7 +49,9 @@ process, the toolkit's or a caller's own, saw of each command, its processes wit
 the process groups and sessions they used, appended at each sample that sees something new. Once
 the owner has ended, `eng admissions recover` runs the end-of-run census against that record and
 removes the entry only when nothing of an unsettled command still runs (#61). An entry without a
-record is left for a check by hand. Admission runs the same recovery itself on each dead or uncertain
+record is left for a check by hand. Admission writes the record's first line as it adds the entry, so that an
+owner killed before its first command leaves a record too, and recovery then checks the owner's process group for
+what it started (#315). Admission runs the same recovery itself on each dead or uncertain
 entry it meets, so that an entry a task stop's SIGKILL stranded, whose commands have all ended, no
 longer holds every session's heavy work until a person removes it. An entry recovery leaves counts as
 the slots it held, every slot for exclusive work, so that only work beyond them waits (#89).
@@ -635,8 +637,14 @@ class Place:
 
 
 class Admission:
-    def __init__(self, label, exclusive=False, timeout=5400, model=False, whole_host=False, place=None, placement=None):
+    def __init__(self, label, exclusive=False, timeout=5400, model=False, whole_host=False, place=None, placement=None,
+                 supervised=False):
         self.label, self.exclusive, self.timeout = label, exclusive, timeout
+        # Whether this process starts every command of the admission through processes.supervise, as eng admit, eng run
+        # and the resource CLI do, so that supervision records each before it starts it: then an entry whose record
+        # names no command ended before its first, and recovery checks its owner's process group instead (#315). A
+        # caller that runs its own commands, which may record none, leaves it False.
+        self.supervised = supervised
         # Why the work is asking this Mac, for its admitted and withdrawn lines, or None: whether eng offered it to
         # the second Mac first and why it is here (offered, because), or the Mac that sent it (dispatchedFrom).
         # `eng admissions usage` counts it.
@@ -1029,11 +1037,19 @@ class Admission:
             if born is None:
                 self._release()
                 raise RuntimeError("Cannot establish the admission owner's process identity")
+            # The process record first, in the same step under the coordination lock, so that an owner killed before its
+            # first command still leaves a record that recovery can census: never an entry without one (#315).
+            self._open_record(born)
             state["owners"][self.identity] = {"pid": os.getpid(), "start": born, "label": self.label,
                                                 "exclusive": self.exclusive, "model": self.model,
                                                 "admitted": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                                                 **({"wholeHost": True} if self.whole_host else {})}
-            publish_guard(self.guard, state)
+            try:
+                publish_guard(self.guard, state)
+            except BaseException:
+                with contextlib.suppress(OSError): self.process_record.unlink(missing_ok=True)
+                self._release()
+                raise
             if self.queued:
                 # The next queued request waits for these slots, and every other behind it.
                 self._record([waiter for waiter in waiters if waiter["identity"] != self.queued_as])
@@ -1092,6 +1108,32 @@ class Admission:
         if self.counted:
             print(f"heavy: admitted beside a stranded entry: {self._stranded_text()}", file=sys.stderr, flush=True)
         return self
+
+    def _open_record(self, born):
+        """Begin the process record with its admission line, before the guard entry is published: the owner, its
+        process group and session, the ancestors it was started under, and whether this process supervises every
+        command it starts (supervised). Recovery of an entry whose record names no command checks the owner's group,
+        and its session where the group leads it, for anything started since the owner, its ancestors aside (census).
+        A line that cannot be written leaves no record, as observe does, and recovery is then by hand.
+
+        It reads ps itself, not processes.snapshot, which supervision's samples share."""
+        try:
+            listing = subprocess.run(["ps", "-axo", "pid=,ppid=,lstart="], capture_output=True, text=True, check=True)
+            listed = {int(parts[0]): (int(parts[1]), " ".join(parts[2:])) for parts in
+                      (line.split() for line in listing.stdout.splitlines()) if len(parts) > 2}
+            ancestors, parent = [], os.getppid()
+            while parent > 1 and parent in listed and len(ancestors) < 64:
+                ancestors.append([parent, listed[parent][1]])
+                parent = listed[parent][0]
+            line = {"admission": self.identity, "owner": [os.getpid(), born], "group": os.getpgid(0),
+                    "session": os.getsid(0), "ancestors": ancestors, "supervised": self.supervised}
+        except Exception as error:
+            self.unrecorded = True
+            with contextlib.suppress(Exception):
+                print(f"heavy: the process record was not written, so recovering this entry needs a check by hand: "
+                      f"{error}", file=sys.stderr, flush=True)
+            return
+        self.observe(line)
 
     def observe(self, line):
         """Append a line to this admission's process record: what supervision in this process saw of a
@@ -1575,11 +1617,64 @@ def ended(owner):
     return listed.returncode == 0 and bool(start) and start != " ".join(owner["start"].split())
 
 
+class Unrecorded(ValueError):
+    """A process record that names no command of a caller that runs its own: it vouches for nothing."""
+
+
+def opening(line):
+    """A process record's admission line (Admission._open_record), checked; a ValueError when it is not one."""
+    owner, ancestors = line.get("owner"), line.get("ancestors")
+    if not (isinstance(owner, list) and len(owner) == 2 and type(owner[0]) is int and isinstance(owner[1], str)
+            and type(line.get("group")) is int and type(line.get("session")) is int
+            and isinstance(line.get("supervised"), bool) and isinstance(ancestors, list)
+            and all(isinstance(item, list) and len(item) == 2 and type(item[0]) is int and isinstance(item[1], str)
+                    for item in ancestors)):
+        raise ValueError("an unexpected admission line")
+    return line
+
+
+def owner_survivors(admission):
+    """What may still run of an owner that ended before its first recorded command, as {PID: why}, with how many
+    process groups and sessions were checked: each live process in the owner's process group, or in its session
+    where the group leads the session, that started no earlier than the owner, other than the owner's recorded
+    ancestors, a group's or session's leader, which the owner did not start, and this process and its children,
+    such as the ps that lists them. Its own supervision would have recorded a command before starting it in a
+    session of its own (processes.supervise), so what the owner started before its first is in its group, or its
+    session, unless it left both. The owner's own PID is not checked here: recovery has found it ended or reused.
+
+    It errs toward keeping the entry: work started after the owner by a sibling in the same group, such as another
+    lane its shell started beside it, keeps it too until that work ends (#315)."""
+    from vocaro_engineering.processes import birth_time, session, snapshot
+    pid, start = admission["owner"]
+    group, sid = admission["group"], admission["session"]
+    spaces = {group} | ({sid} if sid == group else set())
+    born = birth_time(start)
+    ancestors = {(ancestor, " ".join(began.split())) for ancestor, began in admission["ancestors"]}
+    current, left = snapshot(), {}
+    for other, (parent, other_group, began) in current.items():
+        if other in spaces or other == pid or other == os.getpid() or parent == os.getpid() \
+                or (other, " ".join(began.split())) in ancestors:
+            continue
+        birth = birth_time(began)
+        if born is not None and birth is not None and birth < born:
+            continue
+        if other_group in spaces:
+            left[other] = f"in its owner's process group {other_group}, started since its owner"
+        elif sid in spaces and session(other) == sid:
+            left[other] = f"in its owner's session {sid}, started since its owner"
+    # Its group, and its session when the group leads it, are checked: two, though one ID names both.
+    return left, 2 if sid == group else 1
+
+
 def census(path):
     """What still runs of the commands an admission's process record leaves unsettled, as {PID: why}, with
     how many commands, recorded processes and process groups or sessions were checked. A ValueError says
     why the record cannot vouch for every command: a line that cannot be read, or a command whose
-    process it never named.
+    process it never named; Unrecorded, that it names no command of a caller that runs its own.
+
+    A record whose admission line (Admission._open_record) is followed by no command is of an owner that ended
+    before its first: its owner's group is checked instead (owner_survivors), and the census reports no command
+    and no recorded process beside the groups and sessions checked (#315).
 
     It is the census a run ends with (processes.survivors): each recorded process has ended, by PID and
     start, and no live process is in a group or session one was seen using, but for an ID that is now a
@@ -1587,11 +1682,14 @@ def census(path):
     A command the record settled was confirmed ended by its own supervision.
     """
     from vocaro_engineering.processes import snapshot, survivors
-    commands = {}
+    commands, admission = {}, None
     with path.open("rb") as stream:
         for number, text in enumerate(stream, 1):
             try:
                 line = json.loads(text)
+                if isinstance(line, dict) and "admission" in line and "command" not in line:
+                    admission = opening(line)
+                    continue
                 if not isinstance(line["command"], str) or not isinstance(line.get("argv", []), list):
                     raise TypeError("an unexpected value")
                 command = commands.setdefault(line["command"], {"argv": [], "root": None, "processes": set(),
@@ -1615,6 +1713,11 @@ def census(path):
             command["processes"] |= processes
             command["spaces"] |= spaces
             command["settled"] = command["settled"] or "settled" in line
+    if not commands and admission is not None:
+        if not admission["supervised"]:
+            raise Unrecorded("its caller runs its own commands without recording them")
+        left, spaces = owner_survivors(admission)
+        return left, 0, 0, spaces
     unsettled = [command for command in commands.values() if not command["settled"]]
     for command in unsettled:
         if command["root"] is None:
@@ -1716,13 +1819,16 @@ def reclaim(guard, state, identity, automatic=False):
         return False, (f"{name} still runs, so its entry stays: its owner removes the entry, or leaves it for recovery, "
                        "when it ends."), "its owner still runs"
     path = record_path(guard, identity) if re.fullmatch(r"[0-9a-f]{32}", identity) else None
+    unrecorded = (f"{name} has no process record, so its entry stays: an older toolkit admitted it, its record could "
+                  "not be written, or its caller runs its own commands without recording them, as an older push keeper "
+                  "does; a push keeper's owner.json, in its checkout's transaction lock, lists each command it ran. To "
+                  f"recover it, {BY_HAND}."), "it has no process record"
     if path is None or not path.is_file():
-        return False, (f"{name} has no process record, so its entry stays: an older toolkit admitted it, it ended before "
-            "it began a recorded command, its record could not be written, or its caller runs its own commands "
-            "without recording them, as an older push keeper does; a push keeper's owner.json, in its checkout's "
-            f"transaction lock, lists each command it ran. To recover it, {BY_HAND}."), "it has no process record"
+        return (False, *unrecorded)
     try:
         left, commands, processes, spaces = census(path)
+    except Unrecorded:
+        return (False, *unrecorded)
     except ValueError as error:
         return False, (f"{name}'s process record cannot vouch for every command, so its entry stays: {error}. To "
                        f"recover it, {BY_HAND}."), "its process record cannot vouch for every command"
@@ -1743,6 +1849,8 @@ def reclaim(guard, state, identity, automatic=False):
                 **({"automatic": True} if automatic else {})})
     return True, (f"Recovered {name}: " + (f"nothing of its {commands} unsettled command(s) still runs, among {processes} "
         f"recorded processes and {spaces} process groups and sessions" if commands else
+        "it ended before its first command, and nothing started since it still runs in its process group"
+        + (" or session" if spaces > 1 else "") if spaces else
         "its process record shows every command it ran confirmed ended")
         + f". Its entry is removed{', and the guard with it' if not owners else ''}."), None
 
@@ -1778,7 +1886,7 @@ def main(argv=None):
     if not command: parser.error("a command is required")
     from vocaro_engineering.processes import forwarding_signals, supervise
     with forwarding_signals(), Admission(" ".join(command), args.exclusive, args.timeout, args.model,
-                                         args.whole_host) as admission:
+                                         args.whole_host, supervised=True) as admission:
         environment = dict(os.environ)
         return supervise(command, cwd=Path.cwd(), env=environment, on_stop=admission.interrupted)
 
