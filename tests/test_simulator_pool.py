@@ -1495,6 +1495,32 @@ class PoolTests(unittest.TestCase):
                 self.assertEqual(device.udid, free)
         self.assertEqual(devices.Record(self.path).entry("Project Duo 1")["erasedBecause"], simulator_pool.ERASE_ASKED)
 
+    def test_a_take_asked_to_erase_creates_its_new_member_rather_than_cloning_the_template(self):
+        warm = Warm()
+        pool = self.make("me", warm=warm)
+        # A first take warms the template and clones member 1 from it; it stays held.
+        first = pool.take(DUO, RUNTIME, purpose="Tests")
+        template = "Project iPhone Duo template (iOS-27-1)"
+        self.assertEqual(first.cloned, template)
+        before = len(self.simctl.calls)
+        # No member is free, so an erasing take creates member 2, with simctl create, not a clone (#316).
+        lease = pool.take(DUO, RUNTIME, purpose="Pristine data", erase=True)
+        self.assertEqual((lease.key, lease.created, lease.cloned), ("Project iPhone Duo 2", True, None))
+        self.assertEqual(self.simctl.created("clone"), ["Project iPhone Duo 1"])
+        self.assertEqual(self.simctl.created("create"), [template, "Project iPhone Duo 2"])
+        source = devices.Record(self.path).entry(template)["device"]
+        self.assertEqual([call for call in self.simctl.calls[before:] if source in call], [])
+        entry = devices.Record(self.path).entry("Project iPhone Duo 2")
+        self.assertEqual(entry["erasedBecause"], simulator_pool.ERASE_ASKED)
+        self.assertNotIn("clonedFrom", entry)
+        self.assertIn(f"Project iPhone Duo 2 is created, not cloned: {simulator_pool.ERASE_ASKED}", self.log)
+        self.assertEqual(len(warm.calls), 1)
+        # Without erase, the next new member is cloned as before.
+        third = pool.take(DUO, RUNTIME, purpose="Tests")
+        self.assertEqual((third.key, third.cloned), ("Project iPhone Duo 3", template))
+        for held in (first, lease, third):
+            self.assertTrue(pool.release(held, outcome="done"))
+
     def test_a_template_whose_voices_did_not_settle_is_cloned_from_but_never_copied_until_refreshed(self):
         warm = Warm(settled=False)
         pool = self.make("me", warm=warm)

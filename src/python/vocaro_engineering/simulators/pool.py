@@ -821,10 +821,13 @@ class Pool:
                                                         erasedBecause=why)["revision"]
                 self.log(f"TOOK {member.name} ({member.udid}), erased" + (f": {why}" if why else ""))
             return lease
-        return self.create(device_type, runtime, purpose=purpose, label=label, preservation=preservation or PRESERVATION)
+        return self.create(device_type, runtime, purpose=purpose, label=label, preservation=preservation or PRESERVATION,
+                           erase=erase)
 
-    def create(self, device_type, runtime, *, purpose, label=None, preservation=PRESERVATION):
-        """The next member of the kind, reserved under the lowest free number; its first boot is the caller's."""
+    def create(self, device_type, runtime, *, purpose, label=None, preservation=PRESERVATION, erase=False):
+        """The next member of the kind, reserved under the lowest free number; its first boot is the caller's.
+        erase makes it with `simctl create`, never as a clone of the kind's template, as a take with erase asks
+        of a member it reuses (#316)."""
         device_type, runtime = qualified(DEVICE_TYPE, device_type), qualified(RUNTIME, runtime)
         label = label or self.kind_label(device_type, runtime)
         names = {entry.get("name") for entries in self.listing().get("devices", {}).values() for entry in entries}
@@ -841,7 +844,7 @@ class Pool:
             break
         try:
             return self._create(key, revision, device_type, runtime, purpose=purpose, label=label,
-                                preservation=preservation)
+                                preservation=preservation, erase=erase)
         except BaseException as error:
             # A stop or failure after the reservation and before a UDID was recorded: release the
             # name unless a device of that name now exists, which keeps it for recovery.
@@ -855,13 +858,19 @@ class Pool:
                                     restoration="Nothing was created")
             raise
 
-    def _create(self, key, revision, device_type, runtime, *, purpose, label, preservation):
+    def _create(self, key, revision, device_type, runtime, *, purpose, label, preservation, erase=False):
         # Another session may have created the name between the listing and the reservation.
         if any(entry.get("name") == key for entries in self.listing().get("devices", {}).values() for entry in entries):
             self.record.release(key, owner=self.owner, revision=revision, outcome="Not created: the name appeared",
                                 restoration="Nothing was created")
-            return self.create(device_type, runtime, purpose=purpose, label=label, preservation=preservation)
-        source, why = self.template(device_type, runtime, label, purpose)
+            return self.create(device_type, runtime, purpose=purpose, label=label, preservation=preservation,
+                               erase=erase)
+        if erase:
+            # A pristine device, as an erase leaves a member it reuses: no look at the template.
+            source, why = None, None
+            self.log(f"{key} is created, not cloned: {ERASE_ASKED}")
+        else:
+            source, why = self.template(device_type, runtime, label, purpose)
         if source is None and why:
             self.log(f"{why}, so the new member is created instead")
         if source is not None:
@@ -890,6 +899,7 @@ class Pool:
                                    f"{created.stderr.strip()}")
             udid = found[0]
         changes = {"device": udid, "createdAt": self.clock().isoformat()}
+        if erase: changes["erasedBecause"] = ERASE_ASKED
         if source is not None:
             # simctl clone copies the template's links and LaunchServices store as they are (#216).
             target = data_path(self.entries().get(udid) or {}, udid)
