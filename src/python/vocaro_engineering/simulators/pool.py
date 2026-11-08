@@ -41,7 +41,7 @@ import sys
 import time
 import uuid
 
-from .. import devices as device_record, evidence
+from .. import devices as device_record, evidence, offload_host
 from ..resources import process_start
 from . import lifecycle, template as warmed
 
@@ -69,6 +69,8 @@ HOLD = timedelta(hours=8)
 # lasted 2 to 6 min and the longest pool lease of any kind 42 min, so a session that needs longer extends it, and a
 # member a crashed session leaves is released by reap an hour after its take, not eight (vocaro-engineering#179).
 TAKE_HOLD = timedelta(hours=1)
+# What `release` records of a member it releases by UDID, and `release --mine` of each, unless --outcome says.
+RELEASED, CLOSEOUT = "Released", "Released at the session's closeout"
 # Seconds a take or a creation waits for the kind's template while another session holds it, as for its
 # own copy or clone of a few seconds, polling every TEMPLATE_POLL, before it erases or creates instead.
 TEMPLATE_WAIT, TEMPLATE_POLL = 60, 2
@@ -398,12 +400,13 @@ class Lease:
 
 class Pool:
     def __init__(self, name, *, owner, record=None, run=None, log=None, clock=None, warm=True, sleep=time.sleep,
-                 alone=False, hold=HOLD):
+                 alone=False, hold=HOLD, hold_log=None):
         """hold is how long each reservation is expected to last, TAKE_HOLD for `take`. warm warms a new template, by default template.warm; None keeps no templates: it creates new members
         instead of cloning them and erases taken ones instead of resetting them. sleep waits for a held template.
         alone says that this process holds what it reserves only while it runs, as a run does that releases its
         members when it ends, so that reap may release one whose holder has gone before its expected release
-        (devices.ALONE); never for `eng simulator-pool take`, whose session holds a member once it has ended."""
+        (devices.ALONE); never for `eng simulator-pool take`, whose session holds a member once it has ended.
+        hold_log is the directory of the log of take holds (offload_host.HOLD_LOG), by default the reap log's."""
         if not name:
             raise ValueError("a pool needs its name")
         self.name, self.owner, self.run = name, owner, run or simctl
@@ -414,6 +417,14 @@ class Pool:
         self.sleep = sleep
         self.hold = hold
         self.alone = alone
+        self.hold_log = hold_log
+
+    def log_hold(self, event, key, entry, *, after, ended=None, **more):
+        """Log one event of a member's take hold, entry its record entry before the event (offload_host.hold_line);
+        a log that cannot be written is warned about and changes nothing else."""
+        return offload_host.log_hold({**offload_host.hold_line(event, key, entry, self.clock(), after=after,
+                                                               ended=ended, **more), "pool": self.name},
+                                     self.hold_log)
 
     def listing(self):
         result = self.run("list", "devices", "-j", timeout=120)
@@ -710,15 +721,18 @@ class Pool:
         member = self.check_held(udid)
         lease = self.held(member.udid)
         until = self._release_by(hold)
+        before = self.record.entry(lease.key) or {}
         self.record.update(lease.key, owner=self.owner, revision=lease.revision, expectedReleaseBy=until)
+        self.log_hold("extend", lease.key, before, after=until)
         return until
 
-    def _reserve(self, key, purpose, device=None, revision=None, **details):
+    def _reserve(self, key, purpose, device=None, revision=None, taken=False, **details):
         """Reserve a key at the revision read, by default its current one; the new revision. The
         entry names this process as its holder, by its PID and start, so that a census of leftover
         processes counts the booted member as a live run's while this process is one of that run's.
         The holder only helps that census, so a start that `ps` cannot give (a project's tests may run
-        the pool with no `ps` on PATH) leaves it out rather than failing the reservation."""
+        the pool with no `ps` on PATH) leaves it out rather than failing the reservation. taken marks a
+        member's reservation by a take or creation that a session, not a run, holds (offload_host.TAKEN)."""
         if not self.owner:
             raise ValueError(f"name the owner whose reservation takes {key}")
         if revision is None:
@@ -731,6 +745,7 @@ class Pool:
         if start is not None:
             details[device_record.HOLDER] = {"pid": os.getpid(), "start": start}
             if self.alone: details[device_record.ALONE] = True
+        if taken and not self.alone: details[offload_host.TAKEN] = self.name
         entry = self.record.reserve(key, owner=self.owner, revision=revision, device=device, purpose=purpose,
                                     release_by=self._release_by(), details=details)
         return entry["revision"]
@@ -755,7 +770,7 @@ class Pool:
             details = {"preservation": preservation or (KEPT_STATE if keep_state else PRESERVATION)}
             if keep_state: details["keptState"] = True
             try:
-                revision = self._reserve(member.name, purpose, member.udid, **details)
+                revision = self._reserve(member.name, purpose, member.udid, taken=True, **details)
             except device_record.Refused:
                 continue  # Another session reserved it first, perhaps under another key.
             lease = Lease(member.name, member.udid, revision, kept=keep_state)
@@ -810,7 +825,7 @@ class Pool:
             current = self.record.entry(key)
             if key in names or (current is not None and device_record.condition(current) != "released"): continue
             try:
-                revision = self._reserve(key, purpose, preservation=preservation, created=True)
+                revision = self._reserve(key, purpose, taken=True, preservation=preservation, created=True)
             except device_record.Refused:
                 continue
             break
@@ -922,12 +937,12 @@ class Pool:
                 return Lease(key, udid.upper(), entry["revision"], bool(entry.get("created")))
         raise device_record.Refused(f"{self.owner} holds no reservation of {udid}")
 
-    def release_mine(self, outcome="Released at the session's closeout"):
+    def release_mine(self, outcome=CLOSEOUT):
         """Shut down and release every member this owner holds from a take: (released, kept), each a list
         of (key, udid, why). A take's holder is the `take` command, which has ended once the session has the
         UDID; a reservation whose holder still runs is a run's own, in progress, and stays with it. One that
         is orphaned or uncertain stays for its recovery, and one whose shutdown is not confirmed is kept, as
-        release keeps it (vocaro-engineering#179)."""
+        release keeps it (vocaro-engineering#179). Each release is logged (offload_host.HOLD_LOG)."""
         listing = self.listing()
         udids = {member.udid for member in self.members(listing)}
         released, kept = [], []
@@ -953,6 +968,7 @@ class Pool:
             lease = Lease(key, udid, entry["revision"], bool(entry.get("created")))
             if self.release(lease, outcome=outcome):
                 released.append((key, udid, "shut down and released"))
+                self.log_hold("release", key, entry, after=None, ended=outcome, form="mine")
             else:
                 kept.append((key, udid, "its shutdown or release was not confirmed; kept for recovery"))
         return released, kept
@@ -1212,7 +1228,8 @@ def main(argv, project=None):
     release.add_argument("udid", nargs="?")
     release.add_argument("--mine", action="store_true", help="every member the owner holds whose take has ended, "
                          "not a running lane's own; exit 1 if any is kept")
-    release.add_argument("--outcome", default="Released")
+    release.add_argument("--outcome", help=f"what the record says of the release (default: {RELEASED!r}; with "
+                         f"--mine, {CLOSEOUT!r})")
     prune = action("prune", help="delete members unused for 14 days, never the lowest of a kind, and "
                                 "templates whose runtime is no longer installed")
     prune.add_argument("udids", nargs="*", metavar="UDID", help="only these members or templates")
@@ -1299,19 +1316,24 @@ def main(argv, project=None):
                       (", or its app accessibility could not be switched on (APP ACCESSIBILITY, above)"
                        if args.app_accessibility and status == 1 else ""), file=sys.stderr)
                 return status if status != 124 else evidence.UNMEASURED
+            entry = pool.record.entry(lease.key) or {}
+            pool.log_hold("take", lease.key, entry, after=entry.get("expectedReleaseBy"), expectedReleaseBefore=None)
             print(lease.udid)
         elif args.action == "extend":
             print(pool.extend(args.udid, timedelta(minutes=args.hold)))
         elif args.action == "check":
             print((pool.check_held if args.held else pool.check)(args.udid).udid)
         elif args.action == "release" and args.mine:
-            released, kept = pool.release_mine(**({"outcome": args.outcome} if args.outcome != "Released" else {}))
+            released, kept = pool.release_mine(CLOSEOUT if args.outcome is None else args.outcome)
             for key, udid, why in released: print(f"RELEASED {key} ({udid}): {why}")
             for key, udid, why in kept: print(f"KEPT {key} ({udid}): {why}")
             if not released and not kept: print(f"{owner} holds no {name} pool member")
             return 1 if kept else 0
         elif args.action == "release":
-            return 0 if pool.release(pool.held(args.udid), outcome=args.outcome) else 1
+            lease = pool.held(args.udid)
+            entry, outcome = pool.record.entry(lease.key) or {}, RELEASED if args.outcome is None else args.outcome
+            if not pool.release(lease, outcome=outcome): return 1
+            pool.log_hold("release", lease.key, entry, after=None, ended=outcome, form="udid")
         elif args.action == "prune":
             wanted = {str(uuid.UUID(udid)).upper() for udid in args.udids} or None
             pruned = pool.prune(udids=wanted)

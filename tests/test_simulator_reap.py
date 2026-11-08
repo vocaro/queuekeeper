@@ -193,6 +193,29 @@ class ReapTests(unittest.TestCase):
         devices.Record(self.record).reserve(NAME, owner="next", revision=8, purpose="tests", release_by=future,
                                             device=UDID)
 
+    def test_a_reaped_take_is_logged_in_the_hold_log_and_a_runs_own_is_not(self):
+        holds = self.slots / offload_host.HOLD_LOG
+        self.reserve(**self.held_entry(takenFromPool="Pagepour", reservedAt="2025-12-31T23:00:00+00:00"))
+        self.reap()
+        self.assertReleased()
+        [line] = [json.loads(line) for line in holds.read_text().splitlines()]
+        self.assertEqual({key: line[key] for key in ("event", "pool", "key", "udid", "owner", "reservedAt",
+                                                     "expectedReleaseBefore", "expectedReleaseAfter")},
+                         {"event": "reap", "pool": "Pagepour", "key": NAME, "udid": UDID, "owner": "session",
+                          "reservedAt": "2025-12-31T23:00:00+00:00", "expectedReleaseBefore": self.DUE,
+                          "expectedReleaseAfter": None})
+        self.assertEqual(line["ended"], "Released by reap: its release passed")
+        self.assertGreater(line["heldSeconds"], 3600)
+        # Negative control: an entry no take made, such as a run's own, is no session's hold to log.
+        holds.unlink()
+        self.log.unlink()
+        self.stops.clear()
+        self.states.pop(UDID)
+        self.reserve(**self.held_entry())
+        self.reap()
+        self.assertReleased()
+        self.assertFalse(holds.exists())
+
     def test_one_already_shut_down_is_released_without_a_stop(self):
         self.table.clear()
         self.process(5000, 1, "/usr/bin/other")
@@ -576,15 +599,19 @@ class ReapTests(unittest.TestCase):
                                            alone=alone)
                 key = f"Pagepour Duo {2 if alone else 3}"
                 with patch.object(simulator_pool.Pool, "_release_by", staticmethod(lambda: future)):
-                    pool._reserve(key, "tests")
+                    pool._reserve(key, "tests", taken=True)
                 entry = devices.Record(self.record).entry(key)
                 self.assertIn(devices.HOLDER, entry)
                 self.assertEqual(entry.get(devices.ALONE), True if alone else None)
+                # Only a session's take is marked as one, for the hold log.
+                self.assertEqual(entry.get(offload_host.TAKEN), None if alone else "Pagepour")
         made = []
 
         class Recording:
             def __init__(self, *arguments, **options): made.append(options.get("alone"))
             take = lambda self, *arguments, **options: unittest.mock.Mock(udid=UDID)
+            record = unittest.mock.Mock(entry=lambda key: {})
+            log_hold = lambda self, *arguments, **options: None
 
         with patch.object(simulator_pool, "Pool", Recording), patch.object(simulator_pool, "boot", return_value=None), \
                 redirect_stdout(StringIO()):

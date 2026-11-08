@@ -157,6 +157,14 @@ REAP_AFTER = 2 * 60 * 60
 REAP_SECONDS, REAP_STOP_SECONDS, REAP_CHECK_SECONDS, REAP_LOCK_SECONDS = 60, 20, 20, 5
 # The durable log of its stops, beside the admission log, whose audit reads only admissions.
 REAP_LOG = "simulator-reaps.jsonl"
+# The log of how long sessions hold the members `eng simulator-pool take` hands them, beside the reap log: a
+# line for each take, extend, release and reap release of one, so that TAKE_HOLD (simulators/pool.py) is sized
+# from measurement (vocaro-engineering#179). A line that would take it past HOLD_LOG_LIMIT bytes first makes it
+# the previous generation, as the admission log does, so the two stay within twice it.
+HOLD_LOG, PREVIOUS_HOLD_LOG, HOLD_LOG_LIMIT = "simulator-holds.jsonl", "simulator-holds.1.jsonl", 4 << 20
+# Set on the reservation `eng simulator-pool take` makes, never a run's own (ALONE), naming the pool, so that
+# reap logs its release in HOLD_LOG.
+TAKEN = "takenFromPool"
 # A simulator's own launchd_sim, as ps prints it.
 LAUNCHD_SIM = re.compile(r"(?:\S*/)?launchd_sim\s")
 # What follows a pool's name in a member's: LABEL N, as simulators/pool.py names one; and in its kind's
@@ -1851,6 +1859,12 @@ def release_dead(found, entries, table, pools, listed, dry_run, stopping=None):
         for item in released: log_release("releasing", item)
         replace_record(record)
     for item in released: log_release("released", item)
+    at = datetime.fromisoformat(moment)
+    for item in released:
+        entry = entries[item["key"]]
+        if entry.get(TAKEN) and entry.get(ALONE) is not True:
+            log_hold(hold_line("reap", item["key"], entry, at, after=None,
+                               ended=f"Released by reap: {item['qualified']}"))
     return released, left
 
 
@@ -1976,6 +1990,41 @@ def log_release(event, item):
     descriptor = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NONBLOCK, 0o644)
     try: os.write(descriptor, (json.dumps(line) + "\n").encode())
     finally: os.close(descriptor)
+
+
+def hold_line(event, key, entry, at, *, after, ended=None, **more):
+    """A HOLD_LOG line for one reservation of a member taken with `take`: entry is its record entry before this
+    event, at when the event happened (a datetime), after its expected release once the event is done (None
+    once it has ended) and ended how it ended (None while it is held)."""
+    start = entry.get("reservedAt")
+    try: held = round(at.timestamp() - datetime.fromisoformat(str(start).replace("Z", "+00:00")).timestamp())
+    except (ValueError, OverflowError, OSError): held = None
+    return {"time": at.isoformat(timespec="seconds"), "event": event, "pool": entry.get(TAKEN), "key": key,
+            "udid": str(entry.get("device") or "").upper() or None, "owner": entry.get("ownerChatID"),
+            "reservedAt": start, "heldSeconds": held, "expectedReleaseBefore": entry.get("expectedReleaseBy"),
+            "expectedReleaseAfter": after, "ended": ended, **more}
+
+
+def log_hold(line, directory=None):
+    """Append a line to HOLD_LOG; True once written. It never fails its command: a log that cannot be written
+    is warned about on stderr and the command goes on."""
+    try:
+        path = (directory or admission_directory()) / HOLD_LOG
+        data = (json.dumps(line) + "\n").encode()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with contextlib.suppress(FileNotFoundError):
+            size = path.stat().st_size
+            if size and size + len(data) > HOLD_LOG_LIMIT:
+                path.replace(path.with_name(PREVIOUS_HOLD_LOG))
+        descriptor = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NONBLOCK, 0o644)
+        try: os.write(descriptor, data)
+        finally: os.close(descriptor)
+        return True
+    except Exception as error:
+        with contextlib.suppress(Exception):
+            print(f"eng simulator-pool: the hold log {HOLD_LOG} was not written ({error}); nothing else changed",
+                  file=sys.stderr, flush=True)
+        return False
 
 
 def stop_simulator(item, reader, budget, begin, report):

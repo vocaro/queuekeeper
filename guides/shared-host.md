@@ -1952,7 +1952,9 @@ release passed`, or `early: nothing accounts for its owner`) and `recovery.verif
 starts, the release that had passed or, for an early one, what the owner's census checked, and the
 `Shutdown` it saw; it logs a `releasing` line, with the same `qualified`,
 before it writes the record, then `released`, in `simulator-reaps.jsonl`, so a log that cannot be written
-releases nothing. Each release is printed (`released KEY (UDID), held for owner …`); `--dry-run` says
+releases nothing. A released reservation that `eng simulator-pool take` made also gets a `reap` line in
+`simulator-holds.jsonl` (simulator-testing.md, Reserved simulator pool), which, unlike these, never holds
+the release up. Each release is printed (`released KEY (UDID), held for owner …`); `--dry-run` says
 `would release` and changes nothing.
 
 An entry whose processes are gone and whose release has passed, but which reap could not prove dead by the

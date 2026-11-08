@@ -445,6 +445,117 @@ class PoolTests(unittest.TestCase):
         self.assertEqual((status, output), (0, f"RELEASED Project Duo 1 ({udid}): shut down and released\n"))
         self.assertEqual(devices.Record(self.path).entry("Project Duo 1")["run"], "Closeout of issue 179")
 
+    def pool_command(self, *arguments):
+        out, err = StringIO(), StringIO()
+        with mock.patch.object(simulator_pool, "simctl", self.simctl), redirect_stdout(out), redirect_stderr(err):
+            try:
+                status = simulator_pool.main(["--pool", "Project", "--owner", "me", *arguments])
+            except SystemExit as exit:
+                status = exit.code
+        return status, out.getvalue(), err.getvalue()
+
+    def slots(self):
+        """A directory for the hold log, as HEAVY_SLOT_DIR names the reap log's."""
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        patcher = mock.patch.dict(os.environ, {"HEAVY_SLOT_DIR": directory.name})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return Path(directory.name)
+
+    def test_the_hold_log_has_a_line_for_each_take_extend_and_release(self):
+        log = self.slots() / offload_host.HOLD_LOG
+        udid = self.simctl.add("Project Duo 1")
+        theirs = self.simctl.add("Project Duo 2")
+        self.hold("Project Duo 2", theirs)
+        def lines(): return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+        def due(): return devices.Record(self.path).entry("Project Duo 1")["expectedReleaseBy"]
+        self.assertEqual(self.pool_command("take", "--device", "iPhone-Duo", "--runtime", "iOS-27-1")[1].strip(), udid)
+        entry = devices.Record(self.path).entry("Project Duo 1")
+        self.assertEqual(entry[offload_host.TAKEN], "Project")
+        taken = due()
+        self.assertEqual(self.pool_command("extend", udid, "--hold", "180")[0], 0)
+        extended = due()
+        self.assertEqual(self.pool_command("release", udid)[0], 0)
+        self.assertEqual(devices.Record(self.path).entry("Project Duo 1")["run"], "Released")
+        take, extend, release = lines()
+        fields = {"time", "event", "pool", "key", "udid", "owner", "reservedAt", "heldSeconds",
+                  "expectedReleaseBefore", "expectedReleaseAfter", "ended"}
+        for line in (take, extend, release):
+            self.assertLessEqual(fields, line.keys(), line)
+            self.assertEqual((line["pool"], line["key"], line["udid"], line["owner"], line["reservedAt"]),
+                             ("Project", "Project Duo 1", udid, "me", entry["reservedAt"]))
+            self.assertGreaterEqual(line["heldSeconds"], 0)
+        self.assertEqual([line["event"] for line in (take, extend, release)], ["take", "extend", "release"])
+        self.assertEqual((take["expectedReleaseBefore"], take["expectedReleaseAfter"], take["ended"]),
+                         (None, taken, None))
+        self.assertEqual((extend["expectedReleaseBefore"], extend["expectedReleaseAfter"], extend["ended"]),
+                         (taken, extended, None))
+        self.assertEqual((release["expectedReleaseBefore"], release["expectedReleaseAfter"], release["ended"],
+                          release["form"]), (extended, None, "Released", "udid"))
+        # release --mine, with the default outcome and with an explicit one equal to the single form's default.
+        for outcome, said in (((), "Released at the session's closeout"), (("--outcome", "Released"), "Released")):
+            self.pool_command("take", "--device", "iPhone-Duo", "--runtime", "iOS-27-1")
+            self.edit_entry("Project Duo 1", holderProcess=None)
+            self.assertEqual(self.pool_command("release", "--mine", *outcome)[0], 0)
+            self.assertEqual(devices.Record(self.path).entry("Project Duo 1")["run"], said)
+            self.assertEqual([(line["event"], line["ended"], line.get("form")) for line in lines()[-2:]],
+                             [("take", None, None), ("release", said, "mine")])
+        # Negative controls: nothing is logged of an extend or release refused, a release whose shutdown is not
+        # confirmed, a take whose boot fails, or a run's own take.
+        count = len(lines())
+        self.assertEqual(self.pool_command("extend", theirs)[0], 1)
+        self.assertEqual(self.pool_command("release", theirs)[0], 1)
+        self.pool_command("take", "--device", "iPhone-Duo", "--runtime", "iOS-27-1")
+        self.simctl.fail["shutdown"] = lambda rest: (1, "", "busy")
+        self.assertEqual(self.pool_command("release", udid)[0], 1)
+        del self.simctl.fail["shutdown"]
+        self.assertEqual(len(lines()), count + 1)
+        self.assertEqual(self.pool_command("release", udid)[0], 0)
+        count = len(lines())
+        self.simctl.fail["bootstatus"] = lambda rest: (124, "", "timed out")
+        self.assertEqual(self.pool_command("take", "--device", "iPhone-Duo", "--runtime", "iOS-27-1")[0],
+                         evidence.UNMEASURED)
+        del self.simctl.fail["bootstatus"]
+        run = simulator_pool.Pool("Project", owner="me", record=devices.Record(self.path), run=self.simctl,
+                                  log=self.log.append, warm=None, alone=True)
+        lease = run.take(DUO, RUNTIME, purpose="A run")
+        self.assertNotIn(offload_host.TAKEN, devices.Record(self.path).entry(lease.key))
+        self.assertTrue(run.release(lease, outcome="done"))
+        self.assertEqual(len(lines()), count)
+
+    def test_a_hold_log_that_cannot_be_written_fails_no_command(self):
+        slots = self.slots()
+        (slots / offload_host.HOLD_LOG).mkdir()
+        udid = self.simctl.add("Project Duo 1")
+        status, output, error = self.pool_command("take", "--device", "iPhone-Duo", "--runtime", "iOS-27-1")
+        self.assertEqual((status, output.strip()), (0, udid))
+        self.assertIn(f"the hold log {offload_host.HOLD_LOG} was not written", error)
+        status, _, error = self.pool_command("extend", udid)
+        self.assertEqual(status, 0)
+        self.assertIn("was not written", error)
+        status, _, error = self.pool_command("release", udid)
+        self.assertEqual(status, 0)
+        self.assertIn("was not written", error)
+        self.assertEqual(devices.Record(self.path).entry("Project Duo 1")["state"], "released")
+        # A directory that cannot be made is the same.
+        file = slots / "a file"
+        file.write_text("")
+        error = StringIO()
+        with redirect_stderr(error):
+            self.assertFalse(offload_host.log_hold({"event": "take"}, file / "below"))
+        self.assertIn("was not written", error.getvalue())
+
+    def test_the_hold_log_keeps_one_previous_generation(self):
+        slots = self.slots()
+        with mock.patch.object(offload_host, "HOLD_LOG_LIMIT", 40):
+            for number in range(3):
+                self.assertTrue(offload_host.log_hold({"event": "take", "number": number}))
+        current = [json.loads(line)["number"] for line in (slots / offload_host.HOLD_LOG).read_text().splitlines()]
+        previous = [json.loads(line)["number"]
+                    for line in (slots / offload_host.PREVIOUS_HOLD_LOG).read_text().splitlines()]
+        self.assertEqual((previous, current), ([1], [2]))
+
     def test_a_member_block_releases_its_device_however_the_block_ends(self):
         udid = self.simctl.add("Project Duo 1")
         with mock.patch.object(simulator_pool, "simctl", self.simctl):
