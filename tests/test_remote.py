@@ -2329,7 +2329,10 @@ class RemoteTests(unittest.TestCase):
         found = host_isolation.RESPONSIBLE_FOR(os.getpid())
         self.assertIsNotNone(found)
         held, path = found
-        os.kill(held, 0)
+        # Alive, though it may be another user's, such as sshd's on the second Mac, which a signal may not reach
+        # (vocaro-engineering#296).
+        try: os.kill(held, 0)
+        except PermissionError: pass
         self.assertTrue(Path(path).is_file(), path)
         child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True)
         try: self.assertEqual(host_isolation.RESPONSIBLE_FOR(child.pid)[0], held if held != os.getpid() else child.pid)
