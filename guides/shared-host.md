@@ -695,7 +695,27 @@ after COMMIT was sent` with the changed paths, rather than run a tree other than
 ([vocaro-engineering#79](https://github.com/vocaro/vocaro-engineering/issues/79)). It holds a
 toolkit snapshot it sent to the same rule: `the toolkit's working tree changed after COMMIT was
 sent`. Restore the tree or run the lane again. Its receipt's `sent` names the commit, and `project` the tree as it stood
-once admitted. `eng admit` does the same for its command.
+once admitted.
+
+`eng admit` instead runs its command from what it sent, so that a wait here is not lost to an edit
+the session made meanwhile: on 2026-11-07 a command the second Mac kept declining waited here
+behind a gate and then refused over an unrelated documentation edit
+([vocaro-engineering#276](https://github.com/vocaro/vocaro-engineering/issues/276)). While the tree is
+still the one sent, the command runs in this checkout, as before. Once it is not, eng says so, with
+the changed paths, and lays out what was sent as the second Mac lays it out: a detached worktree of
+the project at the commit sent, in a new temporary directory under the main checkout's name, with
+the toolkit beside it, where a project's relative paths to the toolkit find it (the toolkit's
+checkout itself, by a symbolic link, while its tree is still the one sent, and otherwise a worktree
+of it at that commit), and `VOCARO_ENGINEERING_ROOT` naming it. The project's `provision` lane runs
+there first, its log in `.build/engineering/admit/provision.log`, and then the command, in the
+worktree's directory that matches the current one. What it changed in files Git does not ignore
+comes back as from the second Mac (below): applied here only while the tree here is still the one
+sent, so usually kept as a patch, exit 73. Both worktrees and the directory are removed when the
+command ends, however it ends, with the build products and other ignored files the command left
+there; a build there starts cold, and what a tool writes outside the worktree, such as Xcode's
+default DerivedData, stays. The receipt's `project` is the commit sent and its `sentTree` says
+where it ran and what had changed. Nothing but that patch touches the session's tree. A lane still
+refuses, as above: its results, kept results and logs are the checkout's.
 
 Each of this Mac's waits that ends unadmitted leaves its queue and is logged as withdrawn, as each
 declined offer is on the second Mac ([admission log](#admission-log)); an exclusive lane rejoins

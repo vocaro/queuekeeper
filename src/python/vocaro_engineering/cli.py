@@ -614,6 +614,57 @@ def admitted_tree(root, name, offered, receipt):
     return None
 
 
+def from_sent(stack, root, sent, moved, receipt):
+    """(checkout, toolkit) of the worktrees from which `eng admit` runs its command on this Mac, entered in stack,
+    after recording them in receipt; or 2 after saying why not. A command this Mac takes after sending the second
+    Mac a commit runs from that commit once the tree here is no longer that commit's (remote.moved_trees), in a
+    temporary worktree at it, as the second Mac runs it, rather than from the changed tree or not at all: the
+    session may go on editing meanwhile, and the result is that of what was sent (vocaro-engineering#276, whose
+    command waited behind a gate here and then refused over an unrelated documentation edit). The worktrees go
+    when the command ends, however it ends (remote.sent_tree)."""
+    why = "; ".join(f"the {what} changed after {commit[:12]} was sent to the second Mac:\n{changes}"
+                    for _checkout, commit, what, changes in moved)
+    try:
+        checkout, toolkit = stack.enter_context(remote.sent_tree(
+            root, sent, any(what.startswith("toolkit") for _checkout, _commit, what, _changes in moved)))
+    except (OSError, RuntimeError) as error:
+        print(f"eng: the command not run on this Mac: {why}\neng: and no worktree of what was sent could be made "
+              f"here: {error}", file=sys.stderr, flush=True)
+        return 2
+    print(f"eng: the command runs on this Mac from what was sent, {sent['commit'][:12]}, in a temporary worktree, "
+          f"{checkout}, since {why}\neng: the session's tree stays as it is, and the worktree goes when the command "
+          "ends", file=sys.stderr, flush=True)
+    receipt["project"] = source_identity(checkout)
+    receipt["sent"] = sent["commit"]
+    receipt["sentTree"] = {"checkout": str(checkout), "toolkit": str(toolkit),
+                           "moved": [{"tree": what, "commit": commit, "changes": changes}
+                                     for _checkout, commit, what, changes in moved]}
+    return checkout, toolkit
+
+
+def matching_directory(root):
+    """The current directory relative to the checkout root's top level, which the command runs in: "." outside it."""
+    top = Path(remote.git(root, "rev-parse", "--show-toplevel")).resolve()
+    try:
+        return Path.cwd().resolve().relative_to(top)
+    except ValueError:
+        return Path(".")
+
+
+def provision_sent(root, config, checkout, toolkit, variables, limit, on_stop=None):
+    """0 once the project's provision lane, if it has one, has run in the worktree of what was sent, as it runs in
+    the second Mac's checkout before the command; otherwise its status, after saying where its log is."""
+    if "provision" not in config.get("lanes", {}): return 0
+    log = Path(root) / ".build/engineering/admit/provision.log"
+    status = processes.run([sys.executable, str(toolkit / "bin/eng"), "--project", str(checkout), "run", "--here",
+                            "provision"], cwd=checkout, log_path=log, timeout=limit, env=variables,
+                            on_stop=on_stop)
+    if status:
+        print(f"eng: the command not run: the provision lane exited {status} in the worktree of what was sent; its "
+              f"log is {log}", file=sys.stderr, flush=True)
+    return status
+
+
 def guarded_alerts(stack, purpose, receipt, apps=()):
     """Foreground work's crash_alerts.Run, with crash-report dialogs off and the screen's crash-report alerts
     cleared until the stack closes; or UNMEASURED, with nothing run, when an alert eng cannot clear is over the
@@ -719,8 +770,14 @@ def admit(root, args, config=None, *, device_window=None):
         admission = admitted_here(stack, "the command", " ".join(command), args.timeout, offered, args.if_free,
                                   args.exclusive, args.model, placement=admission_placement(offered, reason))
         if isinstance(admission, int): return admission
-        stopped = admitted_tree(root, "the command", offered, receipt)
-        if stopped is not None: return stopped
+        sent = offered.sent if offered is not None else {}
+        # Once the tree here is no longer what was sent, the command runs from what was sent (#276).
+        moved = remote.moved_trees(root, offered)
+        tree = from_sent(stack, root, sent, moved, receipt) if moved else None
+        if isinstance(tree, int): return tree
+        if tree is None:
+            receipt["project"] = source_identity(root)
+            if sent.get("commit"): receipt["sent"] = sent["commit"]
         receipt["queueSeconds"] = round(time.monotonic() - asked, 3)
         if device_window is not None: devices.report_window(device_window, receipt["queueSeconds"])
         if offered is not None:
@@ -737,13 +794,26 @@ def admit(root, args, config=None, *, device_window=None):
                 blocked = cleared_notifications(receipt) if second else None
                 if blocked is not None: return blocked
                 github_artifacts.configured(root, config)
+                directory, variables = Path.cwd(), None
+                if tree is not None:
+                    # In the worktree's directory that matches the current one, as on the second Mac, after its
+                    # provision lane, with the toolkit beside it (remote.sent_tree).
+                    checkout, toolkit = tree
+                    directory = checkout / matching_directory(root)
+                    variables = {**os.environ, "VOCARO_ENGINEERING_ROOT": str(toolkit)}
+                    provisioned = provision_sent(root, config, checkout, toolkit, variables, args.time_limit,
+                                                 admission.interrupted)
+                    if provisioned: return provisioned
                 # A foreground command restores what it changed on the Mac before SIGKILL, VoiceOver first.
-                with app_registrations.around_run([command], Path.cwd()):
-                    status = processes.supervise(command, cwd=Path.cwd(), on_stop=admission.interrupted,
+                with app_registrations.around_run([command], directory):
+                    status = processes.supervise(command, cwd=directory, env=variables, on_stop=admission.interrupted,
                                                  timeout=args.time_limit,
                                                  kill_after=processes.FOREGROUND_KILL_AFTER if args.foreground
                                                  else processes.KILL_AFTER)
-                    return alerts.judged(status) if alerts is not None else status
+                    status = alerts.judged(status) if alerts is not None else status
+                # What it changed in the worktree's files that Git does not ignore, applied here as from the second Mac.
+                if tree is not None: status = remote.brought_back_here(root, sent["commit"], tree[0], status)
+                return status
         try:
             return record(root / ".build/engineering/admit", receipt, work)
         except processes.TimedOut as error:

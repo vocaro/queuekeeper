@@ -673,26 +673,84 @@ def toolkit_identity(kit, commit):
             "toolkitSnapshot": kit_snapshot(kit)}
 
 
-def changed_since(root, offered):
-    """Why work this Mac admitted after offering it to the second Mac would not run what it sent, or
-    None: a run here reads the checkout's working tree as it is when the run starts, and that tree is
-    no longer the commit sent (vocaro-engineering#79). Work for which nothing was sent runs the tree
-    as it is."""
+def moved_trees(root, offered):
+    """The trees that work this Mac admitted after offering it to the second Mac would read in place of what it
+    sent, as [(checkout, commit sent, what, the changes)]: a run here reads the checkout's working tree as it is
+    when the run starts, and that tree is no longer the commit sent (vocaro-engineering#79). Empty for work for
+    which nothing was sent, which runs the tree as it is."""
     sent = offered.sent if offered is not None else {}
-    if sent.get("commit") is None: return None
+    if sent.get("commit") is None: return []
     # The toolkit's tree too, which goes as a snapshot of its own when its checkout has changes. When
     # origin/main went in place of the checkout's HEAD (followed), a run here reads the checkout, as any run
     # here does, so the tree it must still hold is that HEAD's.
     kit = sent.get("kit") or {}
     kept = kit.get("checkoutHead") or kit.get("commit")
+    moved = []
     for checkout, commit, what in [(root, sent["commit"], "working tree"),
                                    *([(TOOLKIT_ROOT, kept, "toolkit's working tree")] if kit else [])]:
         now, _head = snapshot(checkout)
         if git(checkout, "rev-parse", f"{now}^{{tree}}") == git(checkout, "rev-parse", f"{commit}^{{tree}}"): continue
-        changes = git(checkout, "diff", "--name-status", "--no-renames", commit, now)
-        return (f"the {what} changed after {commit[:12]} was sent to the second Mac, and a run here would read "
-                f"the changed tree, not what was sent:\n{changes}")
-    return None
+        moved.append((checkout, commit, what, git(checkout, "diff", "--name-status", "--no-renames", commit, now)))
+    return moved
+
+
+def changed_since(root, offered):
+    """Why work this Mac admitted after offering it to the second Mac would not run what it sent, or None
+    (moved_trees). A lane then does not run here; `eng admit` runs its command from what it sent (sent_tree)."""
+    moved = moved_trees(root, offered)
+    if not moved: return None
+    _checkout, commit, what, changes = moved[0]
+    return (f"the {what} changed after {commit[:12]} was sent to the second Mac, and a run here would read "
+            f"the changed tree, not what was sent:\n{changes}")
+
+
+# The prefix of the temporary directory in which `eng admit` runs a command from what it sent (sent_tree).
+SENT_TREE_PREFIX = "eng-sent-"
+
+
+def add_worktree(repository, path, commit):
+    """A detached worktree of repository at commit, made at path: (repository, path, its private Git directory)."""
+    git(repository, "worktree", "add", "--detach", "--quiet", str(path), commit)
+    return repository, path, Path(git(path, "rev-parse", "--absolute-git-dir"))
+
+
+def remove_worktree(repository, path, private):
+    """Remove a worktree add_worktree made, and its entry in the repository, whatever it holds."""
+    removed = subprocess.run(["git", "-C", str(repository), "worktree", "remove", "--force", "--force", str(path)],
+                             env=environment(), capture_output=True, timeout=120)
+    if removed.returncode == 0 and not path.exists(): return
+    shutil.rmtree(path, ignore_errors=True)
+    shutil.rmtree(private, ignore_errors=True)
+
+
+@contextlib.contextmanager
+def sent_tree(root, sent, toolkit_moved=False):
+    """The trees `eng admit` sent to the second Mac, laid out here as the second Mac lays them out, for this Mac
+    to run the command from once the tree here is no longer what was sent (moved_trees; vocaro-engineering#276):
+    (checkout, toolkit). The checkout is a detached worktree of the project at the commit sent, in a temporary
+    directory under the main checkout's name, with the toolkit beside it, where a project's relative paths to
+    the toolkit find it: the toolkit's checkout itself, by a symbolic link, while its tree is still what was
+    sent, and otherwise a worktree of it at that commit too (toolkit_moved). The toolkit's own project is its own
+    toolkit. Both worktrees and the directory are removed when the block ends, however it ends, and files the
+    command left there that Git ignores, its build products among them, go with them."""
+    base = Path(tempfile.mkdtemp(prefix=SENT_TREE_PREFIX)).resolve()
+    made = []
+    try:
+        top = Path(git(root, "rev-parse", "--show-toplevel"))
+        checkout = base / checkout_name(root)
+        made.append(add_worktree(top, checkout, sent["commit"]))
+        toolkit = checkout
+        kit = sent.get("kit")
+        if kit:
+            toolkit = base / checkout_name(TOOLKIT_ROOT)
+            if toolkit_moved:
+                made.append(add_worktree(TOOLKIT_ROOT, toolkit, kit.get("checkoutHead") or kit["commit"]))
+            else:
+                toolkit.symlink_to(Path(TOOLKIT_ROOT).resolve(), target_is_directory=True)
+        yield checkout, toolkit
+    finally:
+        for repository, path, private in reversed(made): remove_worktree(repository, path, private)
+        shutil.rmtree(base, ignore_errors=True)
 
 
 def common_directory(root):
@@ -1298,9 +1356,16 @@ def brought_back(root, sent, status):
         print(f"eng: the command changed {named} on the second Mac, and the patch did not come back; the second "
               f"Mac's copy is {ran.get('checkout')}/.build/engineering/admit/{CHANGES}", file=sys.stderr, flush=True)
         return UNAPPLIED
+    return apply_changes(root, sent["commit"], patch, named, "on the second Mac", Path(ran["results"]).name, status)
+
+
+def apply_changes(root, sent_commit, patch, named, where, name, status):
+    """status once the patch of what a command changed in a checkout of sent_commit, where says which, is applied
+    to the checkout here, or UNAPPLIED once it is kept as UNAPPLIED_DIRECTORY/NAME.patch, after saying why: the tree
+    here is no longer sent_commit's, or git apply refused it (brought_back)."""
     top = git(root, "rev-parse", "--show-toplevel")
     # The project's tree alone, as changed_since reads it: the toolkit's is not what the patch applies to.
-    sent_commit, (now, _head) = sent["commit"], snapshot(root)
+    now, _head = snapshot(root)
     why = None
     if git(root, "rev-parse", f"{now}^{{tree}}") != git(root, "rev-parse", f"{sent_commit}^{{tree}}"):
         moved = git(root, "diff", "--name-status", "--no-renames", sent_commit, now)
@@ -1309,16 +1374,34 @@ def brought_back(root, sent, status):
         done = subprocess.run(["git", "apply", "--binary", "--whitespace=nowarn", str(patch)], cwd=top,
                               env=environment(), capture_output=True, text=True)
         if done.returncode == 0:
-            print(f"eng: applied here what the command changed on the second Mac: {named}", file=sys.stderr, flush=True)
+            print(f"eng: applied here what the command changed {where}: {named}", file=sys.stderr, flush=True)
             return status
         why = f"git apply refused it: {last_line(done.stderr) or f'exit {done.returncode}'}"
-    kept = Path(top) / UNAPPLIED_DIRECTORY / f"{Path(ran['results']).name}.patch"
+    kept = Path(top) / UNAPPLIED_DIRECTORY / f"{name}.patch"
     kept.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(patch, kept)
-    print(f"eng: what the command changed on the second Mac ({named}) was not applied here: {why}\n"
+    print(f"eng: what the command changed {where} ({named}) was not applied here: {why}\n"
           f"eng: the patch is {kept}; apply it with `git apply --binary {kept}` once the tree allows, or run the "
           f"command again (exit {UNAPPLIED}; guides/shared-host.md, Which Mac runs a lane)", file=sys.stderr, flush=True)
     return UNAPPLIED
+
+
+def brought_back_here(root, sent_commit, checkout, status):
+    """`eng admit`'s status once what its command changed in the worktree of what it sent (sent_tree) is applied to
+    the checkout here, as brought_back applies what it changed on the second Mac, or UNAPPLIED. The patch is
+    gathered as the second Mac gathers it (offload_host.gather_changes)."""
+    name = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + f"-{os.getpid()}-here"
+    with tempfile.TemporaryDirectory(prefix="eng-changes-") as directory:
+        patch = Path(directory) / CHANGES
+        try:
+            files = offload_host.gather_changes(checkout, patch)
+        except (OSError, RuntimeError) as error:
+            print(f"eng: what the command changed in the worktree of what was sent could not be gathered, and goes "
+                  f"with the worktree: {error}", file=sys.stderr, flush=True)
+            return UNAPPLIED
+        if not files: return status
+        named = ", ".join(files[:5]) + (f" and {len(files) - 5} more" if len(files) > 5 else "")
+        return apply_changes(root, sent_commit, patch, named, "in the worktree of what was sent", name, status)
 
 
 def returned_path(path, returns):

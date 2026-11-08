@@ -3257,6 +3257,160 @@ exec {shlex.quote(real)} "$@"
         self.assertEqual(len(kept), 1, error)
         self.assertIn(f"eng: the patch is {kept[0]}", error)
 
+    def admits_after_waiting(self, words, release, directory=None):
+        """`eng admit -- WORDS` from directory, the checkout's pkg by default, in a process of its own: call release
+        once it waits for whichever Mac admits it first, and return its status and output once it has ended."""
+        log = Path(self.temp.name) / "admit.log"
+        with log.open("w") as output:
+            admitting = subprocess.Popen([sys.executable, str(self.toolkit / "bin/eng"), "--project", str(self.project),
+                                          "admit", "--", *words], cwd=directory or self.project / "pkg",
+                                         stdout=output, stderr=subprocess.STDOUT,
+                                         env={key: value for key, value in os.environ.items()
+                                              if key != "VOCARO_ENGINEERING_ROOT"})
+        try:
+            # A bound for a busy host, not a measure: the phrase ends the wait.
+            deadline, phrase = time.monotonic() + stretched(120), "the command waits for whichever Mac admits it first"
+            while phrase not in log.read_text() and admitting.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.1)
+            self.assertIn(phrase, log.read_text())
+            self.assertIsNone(admitting.poll(), log.read_text())
+            release()
+            admitting.wait(timeout=stretched(300))
+        finally:
+            if admitting.poll() is None:
+                admitting.kill()
+                admitting.wait()
+        return admitting.returncode, log.read_text()
+
+    def reader(self):
+        """A command that writes to PROBE_FILE, as JSON, the directory it runs in, what it reads of the tree there and
+        the toolkit eng gives it; with the argument edit, it also edits pkg/README.md, and it exits with its first
+        argument."""
+        self.ran = Path(self.temp.name) / "read.json"
+        os.environ["PROBE_FILE"] = str(self.ran)
+        script = ("import json, os, sys; here = os.path.join(os.getcwd(), os.pardir); "
+                  "read = lambda name: open(os.path.join(here, name)).read() if os.path.exists(os.path.join(here, name)) "
+                  "else None; root = os.environ.get('VOCARO_ENGINEERING_ROOT'); "
+                  "json.dump({'directory': os.getcwd(), 'new': read('new.txt'), 'edited': read('edited.txt'), "
+                  "'provisioned': os.path.exists(os.path.join(here, '.build', 'provisioned')), 'toolkit': root, "
+                  "'real': root and os.path.realpath(root), "
+                  "'settings': open(os.path.join(root, 'engineering.json')).read() if root else None}, "
+                  "open(os.environ['PROBE_FILE'], 'w'))\n"
+                  "if 'edit' in sys.argv[2:]: open('README.md', 'a').write('formatted\\n')\n"
+                  "sys.exit(int(sys.argv[1]))")
+        return [sys.executable, "-c", script]
+
+    def read(self):
+        return json.loads(self.ran.read_text())
+
+    def worktrees(self, checkout):
+        return [line for line in git(checkout, "worktree", "list", "--porcelain").splitlines()
+                if line.startswith("worktree ")]
+
+    def test_a_command_this_mac_takes_after_the_tree_changed_runs_from_what_was_sent(self):
+        # vocaro-engineering#276: a command sent to a declining second Mac waited here behind a gate, then refused over
+        # a documentation edit the session made meanwhile, with nothing run.
+        self.work_in_progress()
+        reader, receipt_file = self.reader(), self.project / ".build/engineering/admit/source.json"
+        with self.subTest("unchanged"), contextlib.ExitStack() as here, contextlib.ExitStack() as there:
+            # The control: a tree still the one sent runs in place, in the session's checkout.
+            here.enter_context(self.busy_here())
+            there.enter_context(self.busy_second_mac())
+            status, output = self.admits_after_waiting([*reader, "0"], here.close)
+            self.assertEqual(status, 0, output)
+            self.assertIn("remote: sending ", output)
+            self.assertEqual(Path(self.read()["directory"]), (self.project / "pkg").resolve())
+            self.assertIsNone(self.read()["toolkit"])
+            receipt = json.loads(receipt_file.read_text())
+            self.assertNotIn("sentTree", receipt)
+            self.assertEqual(receipt["project"], config.source_identity(self.project))
+        with self.subTest("changed"), contextlib.ExitStack() as here, contextlib.ExitStack() as there:
+            here.enter_context(self.busy_here())
+            there.enter_context(self.busy_second_mac())
+            def change():
+                (self.project / "new.txt").unlink()
+                (self.project / "edited.txt").write_text("edited again\n")
+                here.close()
+            status, output = self.admits_after_waiting([*reader, "0"], change)
+            self.assertEqual(status, 0, output)
+            self.assertNotIn("not run on this Mac", output)
+            self.assertIn("eng: the command runs on this Mac from what was sent, ", output)
+            self.assertIn("D\tnew.txt", output)
+            read = self.read()
+            # It read the tree sent, provisioned as the second Mac provisions it, in its directory that matches pkg.
+            ran = Path(read["directory"])
+            self.assertEqual((ran.name, ran.parent.name), ("pkg", "example"))
+            self.assertTrue(ran.parent.parent.name.startswith(remote.SENT_TREE_PREFIX), ran)
+            self.assertEqual((read["new"], read["edited"], read["provisioned"]), ("new\n", "edited\n", True))
+            # The toolkit beside it is the toolkit's checkout, whose tree is still the one sent.
+            self.assertEqual(Path(read["toolkit"]), ran.parent.parent / "vocaro-engineering")
+            self.assertEqual(Path(read["real"]), self.toolkit.resolve())
+            # The session's edits stay, and the worktree and its directory are gone.
+            self.assertFalse((self.project / "new.txt").exists())
+            self.assertEqual((self.project / "edited.txt").read_text(), "edited again\n")
+            self.assertFalse(ran.parent.parent.exists())
+            self.assertEqual(self.worktrees(self.project), [f"worktree {self.project.resolve()}"])
+            receipt = json.loads(receipt_file.read_text())
+            sent = re.search(r"remote: sending (\w+), a snapshot of the working tree", output).group(1)
+            self.assertTrue(receipt["sent"].startswith(sent), receipt)
+            # The tree the run read: the commit sent, with no changes of its own.
+            self.assertEqual(receipt["project"]["revision"], receipt["sent"])
+            self.assertEqual(receipt["sentTree"]["moved"][0]["tree"], "working tree")
+            self.assertEqual(receipt["exitStatus"], 0)
+        (self.project / "new.txt").write_text("new\n")
+        (self.project / "edited.txt").write_text("edited\n")
+        with self.subTest("changed, and the command fails and edits"), contextlib.ExitStack() as here, \
+                contextlib.ExitStack() as there:
+            here.enter_context(self.busy_here())
+            there.enter_context(self.busy_second_mac())
+            def change():
+                (self.project / "notes.txt").write_text("a session edited this meanwhile\n")
+                here.close()
+            status, output = self.admits_after_waiting([*reader, "4", "edit"], change)
+            # What it changed is not applied over the session's edit, as from the second Mac, and the patch is kept.
+            self.assertEqual(status, remote.UNAPPLIED, output)
+            self.assertIn("eng: what the command changed in the worktree of what was sent (pkg/README.md) was not "
+                          "applied here: the working tree here changed after", output)
+            kept = sorted((self.project.resolve() / remote.UNAPPLIED_DIRECTORY).glob("*.patch"))
+            self.assertEqual(len(kept), 1, output)
+            self.assertIn(b"formatted", kept[0].read_bytes())
+            self.assertEqual((self.project / "pkg/README.md").read_text(), "a package\n")
+            self.assertFalse(Path(self.read()["directory"]).parent.parent.exists())
+            self.assertEqual(self.worktrees(self.project), [f"worktree {self.project.resolve()}"])
+            self.assertEqual(json.loads(receipt_file.read_text())["exitStatus"], remote.UNAPPLIED)
+        (self.project / "notes.txt").unlink()
+        with self.subTest("changed, and the command fails"), contextlib.ExitStack() as here, \
+                contextlib.ExitStack() as there:
+            here.enter_context(self.busy_here())
+            there.enter_context(self.busy_second_mac())
+            def change():
+                (self.project / "notes.txt").write_text("a session edited this meanwhile\n")
+                here.close()
+            status, output = self.admits_after_waiting([*reader, "4"], change)
+            self.assertEqual(status, 4, output)
+            self.assertFalse(Path(self.read()["directory"]).parent.parent.exists())
+            self.assertEqual(self.worktrees(self.project), [f"worktree {self.project.resolve()}"])
+        (self.project / "notes.txt").unlink()
+        # The toolkit's tree is held to what was sent the same way: a worktree of it at the commit sent goes beside.
+        settings = self.toolkit / "engineering.json"
+        sent_settings = settings.read_text()
+        with self.subTest("toolkit changed"), contextlib.ExitStack() as here, contextlib.ExitStack() as there:
+            here.enter_context(self.busy_here())
+            there.enter_context(self.busy_second_mac())
+            def change():
+                settings.write_text(sent_settings + "\n")
+                here.close()
+            status, output = self.admits_after_waiting([*reader, "0"], change)
+            self.assertEqual(status, 0, output)
+            self.assertIn("the toolkit's working tree changed after ", output)
+            read = self.read()
+            self.assertEqual(read["real"], str(Path(read["toolkit"])))
+            self.assertEqual(read["settings"], sent_settings)
+            self.assertEqual(settings.read_text(), sent_settings + "\n")
+            self.assertFalse(Path(read["directory"]).parent.parent.exists())
+            self.assertEqual(self.worktrees(self.toolkit), [f"worktree {self.toolkit.resolve()}"])
+            self.assertEqual(self.worktrees(self.project), [f"worktree {self.project.resolve()}"])
+
     def test_the_toolkit_runs_itself_without_a_second_checkout(self):
         settings = json.loads((self.toolkit / "engineering.json").read_text())
         # Heavy, so the second Mac's policy refresh fetches the toolkit's origin from its own checkout.
