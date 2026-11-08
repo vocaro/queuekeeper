@@ -30,9 +30,12 @@ lane says so with `"model": true` beside
 `"resource": "heavy"`. Add `--exclusive` only for work that needs the host to itself: a
 whole-machine or wall-clock measurement, a model run that is timed or compared with a baseline
 among them ([long-running measurements](#long-running-measurements)). Only the timed part of a
-run is exclusive: build, install and set up first under `eng admit`, beside other sessions'
-work, then admit the timed run alone with `--exclusive`, as a separate command, such as
-`xcodebuild build-for-testing` and then `test-without-building`. Setup, recovery and a functional
+run is exclusive: build, install and set up first under `eng admit --here`, beside other sessions'
+work, then admit the timed run alone with `eng admit --here --exclusive`, as a separate command, such
+as `xcodebuild build-for-testing` and then `test-without-building`. Both take `--here`: each
+`eng admit` chooses its Mac on its own, the second Mac first, so without it the build and the
+timed run of what it built can land on different Macs (a `self` lane's parts stay together
+without it). Setup, recovery and a functional
 run whose seconds are not meant as figures are heavy work. An exclusive request inside heavy
 admission is refused, so a lane whose run needs both is `self`, and its script admits each part,
 as BreezEPUB's `book-opening` and PDFReflowLib's `memory-platform-calibration` do; a lane group can
