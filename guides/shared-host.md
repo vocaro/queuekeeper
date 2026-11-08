@@ -149,11 +149,18 @@ its own there), which every process on that host reads. Its keys are `slots`, `s
 85% busy; `busyLimit` is a percentage, and a share of the cores means nothing for it. The former
 `loadLimit` is now an unknown key. A file admission cannot read, with an unknown key or a value of
 the wrong kind, refuses every request on that host with an error naming the file: its owner
-fixes it rather than eng guessing the limits. Since 2026-11-07 the owner has the second Mac
-loaded as much as possible and this Mac a little less: the second Mac's file is
-`{"slotsMax": 7, "busyLimit": 90}` (10 cores; four guaranteed slots kept whole-host gates off it,
-since such a gate needs every one free) and this Mac's
-`{"slotsMax": 7, "busyLimit": 70}` (18 cores). The measurement #49 describes may still revise them.
+fixes it rather than eng guessing the limits. Since 2026-11-07 the owner wants the second Mac
+loaded as much as possible and this Mac a little less, so the second Mac's file sets the higher
+`slotsMax` and `busyLimit`; the measurement #49 describes may still revise them. The files live
+on each Mac, outside the repository, so this guide does not copy their values:
+`eng admissions usage` shows both Macs' limits as they stand, and `eng admissions limits` one
+Mac's with where each comes from.
+
+To load a Mac more, raise its `slotsMax` and `busyLimit`, not its `slots`. A whole-host lane needs
+every guaranteed slot of a Mac free before it starts there, so each guaranteed slot added makes
+that Mac a worse place for gates: on 2026-11-07 four guaranteed slots on the second Mac sent
+gates to this Mac instead, and the second Mac went back to three. Raise `slots` only when fewer
+gates on that Mac is acceptable.
 
 So a key a toolkit adds to the file is a breaking change for every copy older than it: such a copy
 refuses all its heavy work on that host as misconfigured. Write a new key to a host's file only once
