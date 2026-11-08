@@ -194,12 +194,14 @@ GH_ENV = {"GH_PROMPT_DISABLED": "1", "GH_NO_UPDATE_NOTIFIER": "1"}
 # (Queue.note, GateWatch). Each running gate's log is read for that this often.
 ROUND_FILE = "round.json"
 WATCH_POLL = 10
-# What eng run prints while a lane waits (resources.Admission, remote.Offer, remote.overflow), and once this Mac
-# admits it: GateWatch reads the newest of them in the gate's log.
+# What eng run prints while a lane waits (resources.Admission, remote.Offer, remote.overflow), once this Mac admits
+# it, and as it sends the lane to the second Mac (remote.dispatch): GateWatch reads the newest of them in the gate's
+# log. A dispatch's own folder is named only once its run ends, so until then the log alone says where it runs.
 ADMISSION_WAIT = re.compile(r"^heavy: waiting \(\d+s\): (.+)$")
 OFFER_WAIT = re.compile(r"^eng: \S+ (waits for .+)$")
 DECLINED = re.compile(r"^eng: trying \S+ on this Mac: (.+)$")
 ADMITTED = re.compile(r"^heavy: slot ")
+SENT = re.compile(r"^remote: sending .* to (\S+)$")
 WAIT_LIMIT = 6 * 3600
 KEPT_LOGS = 200
 GIT_TIMEOUT = 600
@@ -729,28 +731,35 @@ class BusySampler:
                 "busyLimit": self.readings[-1][1], "busyOn": self.readings[-1][2], "busyReadings": len(shares)}
 
 
-def waited_for(lines, waiting=None, here=False):
-    """(what the lane waits for, or None, and whether this Mac admitted it) after lines of its gate log, from
-    waiting and here as the lines before them left them: the newest wait eng run reported, cleared by an admission
-    on this Mac that follows it."""
+def waited_for(lines, waiting=None, where=None):
+    """(what the lane waits for, or None, and where it runs: HERE_MAC, the second Mac's name, or None while it waits)
+    after lines of its gate log, from waiting and where as the lines before them left them: the newest wait eng run
+    reported, cleared by an admission on this Mac or a send to the second Mac that follows it."""
     for line in lines:
         line = line.strip()
         found = ADMISSION_WAIT.match(line)
+        sent = SENT.match(line)
         if found: waiting = f"admission on this Mac: {found.group(1)}"
-        elif OFFER_WAIT.match(line): waiting = OFFER_WAIT.match(line).group(1)
-        elif DECLINED.match(line): waiting = f"this Mac's admission, as the second Mac declined it: {DECLINED.match(line).group(1)}"
-        elif ADMITTED.match(line): waiting, here = None, True
-    return waiting, here
+        elif OFFER_WAIT.match(line): waiting, where = OFFER_WAIT.match(line).group(1), None
+        elif DECLINED.match(line):
+            waiting, where = f"this Mac's admission, as the second Mac declined it: {DECLINED.match(line).group(1)}", None
+        elif ADMITTED.match(line): waiting, where = None, HERE_MAC
+        elif sent: waiting, where = None, sent.group(1)
+    return waiting, where
+
+
+# What waited_for says of a lane this Mac admitted.
+HERE_MAC = "this Mac"
 
 
 class GateWatch:
     """The record of a running gate lane in the round's account (Queue.note): where it runs, by its dispatch's
-    record (remote.dispatched) or this Mac's admission in its log, and what it waits for, by its log (waited_for),
-    read every WATCH_POLL seconds. Nothing it reads or fails to read may end the gate."""
+    record (remote.dispatched) or by its log, a send to the second Mac or this Mac's admission, and what it waits
+    for, by its log (waited_for), read every WATCH_POLL seconds. Nothing it reads or fails to read may end the gate."""
     def __init__(self, worker, lane, began, log):
         self.queue, self.checkout, self.role = worker.queue, worker.checkout, worker.role
         self.lane, self.began, self.log = lane, began, log
-        self.offset, self.waiting, self.here, self.partial = 0, None, False, ""
+        self.offset, self.waiting, self.where, self.partial = 0, None, None, ""
         self.stopped = threading.Event()
         self.thread = threading.Thread(target=self.every, name="gate watch", daemon=True)
         self.queue.note(lambda state: state.setdefault("gates", {}).__setitem__(self.role, {
@@ -765,11 +774,12 @@ class GateWatch:
             self.offset += len(said)
             lines = (self.partial + said.decode(errors="replace")).split("\n")
             self.partial = lines.pop()
-            self.waiting, self.here = waited_for(lines, self.waiting, self.here)
+            self.waiting, self.where = waited_for(lines, self.waiting, self.where)
         except OSError: pass
         try: host = remote.dispatched(self.checkout, self.lane, self.began)
         except Exception: host = None  # noqa: BLE001
-        mac = f"the second Mac ({host})" if host else "this Mac" if self.here else None
+        host = host or (self.where if self.where != HERE_MAC else None)
+        mac = f"the second Mac ({host})" if host else HERE_MAC if self.where else None
         self.queue.gate_note(self.role, mac=mac, waiting=self.waiting)
 
     def every(self):

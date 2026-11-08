@@ -4862,18 +4862,51 @@ class RoundAccount(Fixture):
     def test_what_a_gate_log_says_it_waits_for(self):
         self.assertEqual(mq.waited_for([self.WHOLE_HOST]),
                          ("admission on this Mac: it waits behind a whole-host lane holding the host: StudyWright gate",
-                          False))
+                          None))
         waiting, here = mq.waited_for(["eng: provision ok", self.UNREACHABLE])
         self.assertIn("waits for this Mac, and asks the second Mac again", waiting)
         self.assertIn("No route to host", waiting)
-        self.assertFalse(here)
+        self.assertIsNone(here)
         self.assertEqual(mq.waited_for(["eng: trying gate on this Mac: build-host is at capacity"]),
-                         ("this Mac's admission, as the second Mac declined it: build-host is at capacity", False))
+                         ("this Mac's admission, as the second Mac declined it: build-host is at capacity", None))
         # An admission after the wait clears it, and says the lane runs on this Mac.
-        self.assertEqual(mq.waited_for([self.WHOLE_HOST, "heavy: slot 2 after 1500s: fixture gate"]), (None, True))
+        self.assertEqual(mq.waited_for([self.WHOLE_HOST, "heavy: slot 2 after 1500s: fixture gate"]), (None, "this Mac"))
         # Negative control: a lane's own output says nothing of a wait.
         self.assertEqual(mq.waited_for(["bad: []", "heavy: the admission log was not written: x", "waiting for Godot"]),
-                         (None, False))
+                         (None, None))
+        # A send to the second Mac clears the wait and names it; a decline after it takes the lane back.
+        sent = "remote: sending 0123456789ab, a snapshot of the working tree on ba9876543210, to build-host"
+        self.assertEqual(mq.waited_for([self.UNREACHABLE, sent]), (None, "build-host"))
+        self.assertEqual(mq.waited_for([sent, "eng: trying gate on this Mac: busy"])[1], None)
+        self.assertEqual(mq.waited_for(["remote: offering 0123456789ab to build-host again"]), (None, None))
+
+    def test_the_lines_read_are_those_eng_run_prints(self):
+        """Each line waited_for reads, from the code that prints it, so that a rewording there fails here rather
+        than leaving `eng queue status` silent."""
+        sources = {name: (ROOT / f"src/python/vocaro_engineering/{name}.py").read_text()
+                   for name in ("resources", "remote")}
+        printed = [("resources", 'f"heavy: waiting ({waited}s): {self.waiting}"',
+                    dict(waited=0, self=type("A", (), {"waiting": "it waits behind a whole-host lane"})),
+                    ("admission on this Mac: it waits behind a whole-host lane", None)),
+                   ("resources", 'f"heavy: slot {\',\'.join(str(slot) for slot, _fd in self.descriptors)}"',
+                    dict(self=type("A", (), {"descriptors": [(1, 0)]})), (None, "this Mac")),
+                   ("remote", 'f"remote: sending {at} to {host}"', dict(at="0123456789ab", host="build-host"),
+                    (None, "build-host")),
+                   # Its problem follows in a second f-string, which the line's end stands for here.
+                   ("remote", 'f"eng: {self.name} waits for this Mac, and asks the second Mac again at the next offer: "',
+                    dict(self=type("A", (), {"name": "gate"})),
+                    ("waits for this Mac, and asks the second Mac again at the next offer:", None)),
+                   ("remote", 'f"eng: {self.name} waits for this Mac alone: {said}"',
+                    dict(self=type("A", (), {"name": "gate"}), said="no reading"),
+                    ("waits for this Mac alone: no reading", None)),
+                   ("remote", "f\"eng: {f'trying {self.name} on this Mac' if fallback else f'{self.name} not run'}: {said}\"",
+                    dict(self=type("A", (), {"name": "gate"}), fallback=True, said="busy"),
+                    ("this Mac's admission, as the second Mac declined it: busy", None))]
+        for source, template, values, expected in printed:
+            with self.subTest(template=template):
+                self.assertIn(template, sources[source])
+                line = eval(template, {}, values)  # noqa: S307 - the template is the module's own f-string
+                self.assertEqual(mq.waited_for([line]), expected)
 
     def test_a_gate_record_follows_its_log(self):
         queue = mq.Queue(self.repo)
@@ -4893,6 +4926,10 @@ class RoundAccount(Fixture):
         self.assertEqual((gate["mac"], gate["waiting"]), ("this Mac", None))
         # A lane that a dispatch sent to the second Mac runs there.
         with patch.object(mq.remote, "dispatched", return_value="build-host"): watch.look()
+        self.assertEqual(queue.round_state()["gates"]["batch"]["mac"], "the second Mac (build-host)")
+        # While its run goes on, its dispatch's folder has no name yet (remote.file_results): its log says where.
+        with log.open("a") as more: more.write("remote: sending 0123456789ab to build-host\n")
+        with patch.object(mq.remote, "dispatched", return_value=None): watch.look()
         self.assertEqual(queue.round_state()["gates"]["batch"]["mac"], "the second Mac (build-host)")
         watch.finish()
         self.assertEqual(queue.round_state()["gates"], {})
