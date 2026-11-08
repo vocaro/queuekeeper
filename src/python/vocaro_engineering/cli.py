@@ -1042,6 +1042,8 @@ def main(argv=None):
             warnings += stale_copies(root)
             warnings += toolkit_copy.doctor_warnings(TOOLKIT_ROOT)
             warnings += agent_entry(root, config)
+            from .waiting import doctor_warnings as fixed_wait_warnings  # #284
+            warnings += fixed_wait_warnings(root)
             warnings += skills.warnings(named_checkout(TOOLKIT_ROOT))
             # A difference between the two Macs is an error; a second Mac that cannot be reached is unchecked.
             hosts = fix_hosts(root, remote.compare_hosts())

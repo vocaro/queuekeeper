@@ -1347,7 +1347,7 @@ class SecondMacReading(unittest.TestCase):
             self.assertIn("error", offload_host.pressure())
         # Answered as a request, not taken for a plan to run.
         done = subprocess.run([sys.executable, str(ROOT / "src/python/vocaro_engineering/offload_host.py"),
-                               json.dumps({"pressure": True})], capture_output=True, text=True, timeout=60)
+                               json.dumps({"pressure": True})], capture_output=True, text=True, timeout=stretched(60))
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual(set(json.loads(done.stdout.splitlines()[-1])), {"load", "cpuBusy", "busyLimit", "memory"})
 
