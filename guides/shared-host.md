@@ -547,7 +547,14 @@ HH:MM:SS)`. The second Mac declines such a lane before it takes a checkout while
 unlocked, and this Mac does not admit it while its own is not, so when neither Mac reads unlocked
 the lane waits, offered to the second Mac again as any waiting lane is, instead of running
 unmeasured and using up the merge queue's no-verdict runs. A lane that does not declare it is placed
-as before, whatever either screen reads. Pagepour's gate and Mac suites declare it: its Mac lanes,
+as before, whatever either screen reads. `"display": true` is no substitute: it wakes the display and
+keeps it on, behind a lock too, but unlocks nothing, so a `"display": true` lane whose tests report a
+locked screen as unmeasured also says `"unlockedScreen": true`, and so does each group that runs it.
+Without it, on 2026-11-07, the merge queue sent EPUBLib's gate to a locked Mac three times in a row,
+each run unmeasured, until the queue held
+([vocaro-engineering#293](https://github.com/vocaro/vocaro-engineering/issues/293)). `eng doctor`
+warns of a `"display": true` lane that leaves `unlockedScreen` out; one whose tests measure behind a
+lock says `"unlockedScreen": false`. Pagepour's gate and Mac suites declare it: its Mac lanes,
 `mac-tests` and `mac-purchases`, read their tree through the accessibility API until their tests
 move to the in-process NSAccessibility methods
 ([Pagepour#123](https://github.com/vocaro/Pagepour/issues/123)).

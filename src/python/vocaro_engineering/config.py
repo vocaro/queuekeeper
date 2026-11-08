@@ -166,6 +166,27 @@ def self_lane_warnings(root, config):
     return warnings
 
 
+def display_lane_warnings(config):
+    """eng doctor's warning for each "display": true lane that does not say "unlockedScreen": "display" wakes the
+    display and keeps it on, behind a lock too, but unlocks nothing, so eng may place the lane on a Mac whose screen
+    is locked, where a test that reports a lock as unmeasured gives no verdict, and the merge queue sends its gate
+    there again until it holds (vocaro-engineering#293). A lane whose tests measure behind a lock says
+    "unlockedScreen": false, which settles the question; only a lane that leaves it out is warned of."""
+    lanes = config.get("lanes", {})
+    warnings = []
+    for name, lane in sorted(lanes.items()):
+        if not isinstance(lane, dict) or not lane.get("display") or "unlockedScreen" in lane: continue
+        groups = sorted(group for group, other in lanes.items() if isinstance(other, dict)
+                        and name in (other.get("parallel") or []) and not other.get("unlockedScreen"))
+        also = f", and so does each group that runs it, {', '.join(groups)}," if groups else ""
+        warnings.append(f"{name} says \"display\": true, which wakes the display but does not unlock the screen, and "
+                        "does not say \"unlockedScreen\", so eng may place it on a Mac whose screen is locked, where a "
+                        "test that reports a lock as unmeasured gives no verdict: if its tests need an unlocked "
+                        f"screen, it needs \"unlockedScreen\": true{also} and if they measure behind a lock, say "
+                        "\"unlockedScreen\": false (guides/shared-host.md, Which Mac runs a lane)")
+    return warnings
+
+
 def unadmitted(lane):
     """Whether eng runs the lane, or group, without admission of its own: a self lane, whose script admits each of
     its parts."""
