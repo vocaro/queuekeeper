@@ -121,6 +121,12 @@ os.environ[device_notifications.WATCH] = "off"
 
 FIX_HOSTS = cli.fix_hosts
 
+# Nor does any reach check a test makes in this process ask macOS which process is responsible for it
+# (remote.responsible_for): run by a queue worker whose session ended, every test of an unreachable second Mac would
+# read that its own process has lost Local Network access (vocaro-engineering#282). A test of it calls RESPONSIBLE_FOR.
+RESPONSIBLE_FOR = remote.responsible_for
+remote.responsible_for = lambda pid: None
+
 # Nor does any eng a test runs, in this process or a child, start the evidence offload's background retry,
 # which would offer this Mac's real evidence archives to the real second Mac (vocaro-engineering#157). A test
 # of retry_soon clears it.

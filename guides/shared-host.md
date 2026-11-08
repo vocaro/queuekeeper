@@ -1073,6 +1073,39 @@ timeout ran out at 22:18:38, two minutes of awake time after the connection bega
 `Connection to ADDRESS port 22 timed out`, and eng said to wake the build host, which had stayed
 awake and on its network.
 
+### Local Network access
+
+macOS's Local Network privacy decides whether a process may connect to the second Mac by the process macOS holds
+responsible for it, not by the process itself. The Claude app starts each session's `claude` through its `disclaimer`
+helper, which makes that `claude` responsible for everything the session starts, a process detached with
+`start_new_session` too, such as the queue worker `Queue.start` starts. While that `claude` runs, its grant covers them.
+Once it exits, as when its session is archived, macOS holds each such process responsible for itself, a Python, and
+from then on every connection it makes on the local network fails at once with `EHOSTUNREACH`, `No route to host`,
+while every other session's processes still reach the second Mac (vocaro-engineering#282).
+
+On 2026-11-07 a probe that connected to the second Mac's port 22 every 30 s, started detached from a throwaway
+`claude -p` run through the app's `disclaimer` helper, connected at 16:37:48; that `claude` exited at 16:37:52, and
+from 16:38:18 on every connection failed with `No route to host`. The same probe started from a live session kept
+connecting. At 16:38:18 the system log had `UserEventAgent` say `Got local network blocked notification` for the
+exited `claude`'s PID, then `Failed to get the signing identifier ... No such process`. `nehelper` still said `Local
+network allowed by preference` for `com.anthropic.claude-code`, and the connections stayed blocked. Run as a launchd
+agent (`launchctl submit`), the same probe was blocked from its first try, under Homebrew's Python and under
+`/usr/bin/python3` alike, though `nehelper` said the owner's preference allowed Homebrew's Python
+(`org.python.python`, which has no team ID).
+
+eng tells this from a second Mac that is away: when a connection to the second Mac fails, the reach check asks macOS
+which process is responsible for its own (`responsibility_get_pid_responsible_for_pid`), and when that is a Python, the
+process itself or a worker above it, it raises `NoLocalNetwork`, saying that this process has lost Local Network
+access, and searches for no renamed second Mac. A queue worker asks before each round, while a second Mac is
+configured, and on such an answer exits, holding nothing, with its entries back in the queue. The next `eng land`,
+`eng queue wait` or `eng queue resume` from a live session starts a worker that reaches the second Mac. A session
+that finds the queue waiting with no worker runs `eng queue resume`.
+
+A worker independent of every session needs a responsible process that holds a Local Network grant and outlives the
+sessions. A launchd agent running Python is not one, as above. A signed app bundle with a grant of its own, or this
+Mac's sshd as a `ProxyJump` hop (loopback is exempt, and sshd is a system daemon), might be one; neither was tried,
+and each needs a decision of the owner's: a signing identity and a grant for the first, and Remote Login on this Mac for the second.
+
 ### The second Mac's own toolkit checkout
 
 The second Mac has a toolkit checkout of its own at `~/Development/vocaro-engineering`. No dispatched

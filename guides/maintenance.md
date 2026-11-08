@@ -321,6 +321,13 @@ cannot be moved holds the queue for a session; neither blames a commit. Anything
 reads the shared checkout: a session's own `eng`. So a project commit that needs a new toolkit option lands after the toolkit's commit, and runs
 by hand only once that checkout has it.
 
+**A worker whose session ended exits.** macOS denies a worker the local network once the Claude session that
+started it ends, so it could no longer reach the second Mac. Before each round, while a second Mac is configured, the
+worker checks for this and, if so, exits, holding nothing, with its entries back in the queue. Its log then says
+`exits, holding nothing, since this worker cannot reach the second Mac`. The next `eng land`, `eng queue wait` or `eng
+queue resume` starts a worker from a live session (guides/shared-host.md, Local Network access;
+vocaro-engineering#282).
+
 **The shared checkout follows each toolkit landing.** After each push, the toolkit's own worker
 fast-forwards its main checkout, `~/Development/vocaro-engineering`, to `origin/main`, without hooks,
 but only when that checkout is on `main`, clean (no changed or untracked path), holds no commit of its

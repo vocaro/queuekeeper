@@ -43,6 +43,7 @@ import base64
 import binascii
 import calendar
 import contextlib
+import ctypes
 import fcntl
 import hashlib
 import json
@@ -254,6 +255,12 @@ class Unreachable(Unavailable):
         self.problem, self.fix = problem, fix
 
 
+class NoLocalNetwork(Unreachable):
+    """This process cannot reach the second Mac though the second Mac may be up: macOS's Local Network privacy
+    denies it, since the process macOS holds responsible for it is a Python of eng's own, not an app that holds the
+    owner's grant (local_network_lost). Another process on this Mac may reach the second Mac all the while."""
+
+
 def ssh_failure(host, said, *context, sent=False):
     """What ssh's own failure, its exit of 255, makes of the second Mac before any work started there. said
     is what ssh wrote, whose last line names the failure, and unreachable() describes it from said and
@@ -292,6 +299,9 @@ def reachable(host, found=None):
         check(host, found)
     except (Unreachable, Misconfigured) as stop:
         if isinstance(stop, Misconfigured) and not OTHER_KEY.search(stop.problem): raise
+        # A process that macOS denies the local network reaches nothing there, so no rename is searched for.
+        lost = local_network_lost() if isinstance(stop, Unreachable) else None
+        if lost: raise NoLocalNetwork(f"{stop.problem}; {lost}", LOST_FIX) from None
         RENAMED.pop(host, None)
         if rediscover(host) is None:
             if not searched(host): raise
@@ -320,6 +330,54 @@ def check(host, found=None):
                             f"{last_line(checked.stderr) or 'no output'}",
                             f"repair the login shell there, which every run uses, until `ssh {host} true` succeeds "
                             "(guides/shared-host.md, Setting up the second Mac)")
+
+
+# What a process that macOS's Local Network privacy denies says ssh does: it connects nowhere on this Mac's network,
+# and its connections fail at once with EHOSTUNREACH, "No route to host" (vocaro-engineering#282).
+LOST_FIX = ("start the process again from a live Claude session, or from Terminal, whose app holds the owner's Local "
+            "Network grant: a queue worker exits for that, and the next `eng land` or `eng queue wait` starts another "
+            "(guides/shared-host.md, Local Network access)")
+# The executable names of a Python, as proc_pidpath gives them: Homebrew's Python.app runs .../MacOS/Python, and
+# python3 and python3.14 run themselves.
+PYTHON = re.compile(r"^[Pp]ython(\d+(\.\d+)*)?$")
+
+
+def responsible_for(pid):
+    """The PID that macOS holds responsible for pid, by whose app its privacy grants, Local Network access among
+    them, are judged, and that app's executable, as (PID, path); None where macOS does not say.
+
+    The Claude app starts each session's claude through its disclaimer helper, which makes that claude responsible for
+    everything it starts, a detached process too (start_new_session). Once that claude exits, macOS holds the process
+    responsible for itself, a Python, which no grant covers: its every connection on the local network then fails with
+    EHOSTUNREACH, while the session's own processes still connect (vocaro-engineering#282, 2026-11-07). A launchd agent
+    that runs a Python is held responsible for itself too, and is denied the same way."""
+    try:
+        system = ctypes.CDLL(None)
+        find, path_of = system.responsibility_get_pid_responsible_for_pid, system.proc_pidpath
+    except (OSError, AttributeError):
+        return None
+    find.argtypes, find.restype = [ctypes.c_int], ctypes.c_int
+    path_of.argtypes, path_of.restype = [ctypes.c_int, ctypes.c_char_p, ctypes.c_uint32], ctypes.c_int
+    held = find(pid)
+    if held <= 0: return None
+    buffer = ctypes.create_string_buffer(4096)
+    size = path_of(held, buffer, len(buffer))
+    return held, buffer.raw[:size].decode(errors="replace") if size > 0 else ""
+
+
+def local_network_lost(pid=None):
+    """Why this process, or pid, probably has no Local Network access, for a connection to the second Mac that
+    failed; None while an app other than a Python is responsible for it, or macOS does not say (responsible_for)."""
+    pid = pid or os.getpid()
+    found = responsible_for(pid)
+    if found is None: return None
+    held, path = found
+    if not PYTHON.match(Path(path).name): return None
+    whose = "itself" if held == pid else f"PID {held}, {path},"
+    return (f"macOS holds {whose} responsible for this process (PID {pid}), a Python with no app of its own, so its "
+            "Local Network privacy denies it the local network, as it does once the Claude session that started a "
+            "detached process ends: other processes on this Mac may reach the second Mac all the while, which need "
+            "not be away or asleep (vocaro-engineering#282)")
 
 
 def moved(host):

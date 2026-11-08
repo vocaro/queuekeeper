@@ -2284,6 +2284,59 @@ class RemoteTests(unittest.TestCase):
         self.assertIsInstance(remote.ssh_failure("fake", "ssh: connect to host fake port 22: No route to host",
                                                  sent=True), remote.Unreachable)
 
+    def test_a_process_denied_the_local_network_says_so_not_that_the_second_mac_is_away(self):
+        """vocaro-engineering#282: a worker whose session ended got No route to host from a second Mac that others
+        reached; its check says its own process lost Local Network access, and searches for no rename."""
+        refused = {"hostname": "fake.local", "port": 22, "addressFamily": "any",
+                   "addresses": [{"address": "10.0.0.89", "seconds": 0.001, "outcome": "No route to host"}]}
+        lost = "macOS holds itself responsible for this process (PID 7), a Python with no app of its own"
+        for said, kind in ((lost, remote.NoLocalNetwork), (None, remote.Unreachable)):
+            with self.subTest(lost=said), patch.object(remote, "connection", return_value=refused), \
+                    patch.object(remote, "local_network_lost", return_value=said), \
+                    patch.object(remote, "rediscover", return_value=None) as searched:
+                with self.assertRaises(remote.Unreachable) as raised:
+                    remote.reachable("fake")
+                self.assertIs(type(raised.exception), kind)
+                self.assertIn("10.0.0.89: No route to host", raised.exception.problem)
+                self.assertEqual(lost in raised.exception.problem, said is not None)
+                self.assertEqual(searched.called, said is None)
+        # A refused login is a configuration problem whatever the process's access.
+        with patch.object(remote, "connection", return_value={**refused, "addresses": [
+                    {"address": "10.0.0.89", "seconds": 0.001, "outcome": "connected"}]}), \
+                patch.object(remote, "ssh", return_value=subprocess.CompletedProcess([], 255, "", "x: Permission denied (publickey).\n")), \
+                patch.object(remote, "local_network_lost", return_value=lost) as asked:
+            with self.assertRaises(remote.Misconfigured): remote.reachable("fake")
+            asked.assert_not_called()
+
+    def test_local_network_loss_is_read_from_the_process_macos_holds_responsible(self):
+        python = "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python"
+        claude = "/Users/someone/Library/Application Support/Claude/claude-code/2.1.317/x/claude.app/Contents/MacOS/claude"
+        cases = [((41, python), "macOS holds itself responsible for this process (PID 41)"),
+                 ((40, "/opt/homebrew/bin/python3.14"), "macOS holds PID 40, /opt/homebrew/bin/python3.14, responsible"),
+                 ((40, "/usr/bin/python3"), "macOS holds PID 40, /usr/bin/python3, responsible"),
+                 ((40, claude), None), ((40, "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal"), None),
+                 ((40, "/usr/local/bin/pythonista-helper"), None), ((40, ""), None), (None, None)]
+        for found, said in cases:
+            with self.subTest(found=found), patch.object(remote, "responsible_for", return_value=found):
+                lost = remote.local_network_lost(41)
+                if said is None: self.assertIsNone(lost)
+                else: self.assertIn(said, lost)
+
+    @unittest.skipUnless(sys.platform == "darwin", "macOS's responsibility")
+    def test_macos_names_a_live_process_and_its_executable_as_responsible(self):
+        """Against the real call: this process's responsible process is alive and has an executable, and a child
+        started detached, as Queue.start starts a worker, has the same one while this process's app runs."""
+        found = host_isolation.RESPONSIBLE_FOR(os.getpid())
+        self.assertIsNotNone(found)
+        held, path = found
+        os.kill(held, 0)
+        self.assertTrue(Path(path).is_file(), path)
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True)
+        try: self.assertEqual(host_isolation.RESPONSIBLE_FOR(child.pid)[0], held if held != os.getpid() else child.pid)
+        finally:
+            child.kill()
+            child.wait()
+
     def misconfigurations(self):
         """Each configuration problem of the second Mac's that stops a lane, as a function that
         brings it about in an ExitStack, with what eng says of it."""

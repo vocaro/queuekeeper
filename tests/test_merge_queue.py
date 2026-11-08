@@ -3322,6 +3322,39 @@ class Unreachable(Fixture):
             self.assertEqual((len(fetches), slept), (1, []))
 
 
+class LostLocalNetwork(Fixture):
+    """A worker whose process macOS denies the local network, as once the session that started it ends, exits before a
+    round, holding nothing, rather than gate everything on this Mac (vocaro-engineering#282)."""
+    LOST = "macOS holds itself responsible for this process (PID 1), a Python with no app of its own"
+
+    def test_a_worker_that_lost_the_local_network_exits_holding_nothing_before_a_gate(self):
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        with patch.object(mq.remote, "configured", return_value="fake-mac"), \
+                patch.object(mq.remote, "local_network_lost", return_value=self.LOST), \
+                contextlib.redirect_stdout(io.StringIO()) as said:
+            self.assertEqual(self.work(), 0)
+        self.assertEqual(self.state(identifier)["state"], "queued")
+        self.assertIsNone(mq.Queue(self.repo).held())
+        self.assertEqual(self.gates(), 0)
+        self.assertIn("exits, holding nothing, since this worker cannot reach the second Mac: " + self.LOST,
+                      said.getvalue())
+        self.assertFalse(mq.Queue(self.repo).working())
+        # The next worker, a live session's, lands it.
+        with patch.object(mq.remote, "configured", return_value="fake-mac"), \
+                patch.object(mq.remote, "local_network_lost", return_value=None), patch("builtins.print"):
+            self.assertEqual(self.work(), 0)
+        self.assertEqual(self.state(identifier)["state"], "landed")
+
+    def test_a_worker_with_no_second_mac_never_asks(self):
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        with patch.object(mq.remote, "local_network_lost", return_value=self.LOST) as asked, patch("builtins.print"):
+            self.assertEqual(self.work(), 0)
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        asked.assert_not_called()
+
+
 class LandedCommits(Fixture):
     """Each entry records and prints its own commit on main, not the batch's tip (vocaro-engineering#184)."""
 

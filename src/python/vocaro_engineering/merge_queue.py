@@ -262,6 +262,11 @@ class Hold(ValueError):
         self.kind = kind
 
 
+class NoLocalNetwork(Exception):
+    """The worker's process has lost Local Network access (remote.local_network_lost): it exits, holding nothing, so
+    that a live session starts the next worker (run)."""
+
+
 class Refused(ValueError):
     """An entry eng land queued nothing of, since the round's integration of it does not apply (check). eng land and
     `eng queue add` exit 1 for it, as `eng land --wait` does for an entry that came back."""
@@ -2355,12 +2360,22 @@ class Worker:
     def drain(self):
         try:
             while not self.queue.held():
+                self.connected()
                 more = self.round()
                 self.arrived()
                 if not more: return
                 self.rounds += 1
         finally:
             self.drop_stacked("the worker stops")
+
+    def connected(self):
+        """Raise NoLocalNetwork, before a round, when a second Mac is configured and macOS denies this process the
+        local network, as it does once the Claude session that started the worker ends: every gate would then go to
+        this Mac, the second Mac seeming away to this process alone, as from 13:48 to 16:28 on 2026-11-07
+        (vocaro-engineering#282). A worker started by the next live session reaches it."""
+        if remote.configured() is None: return
+        lost = remote.local_network_lost()
+        if lost: raise NoLocalNetwork(lost)
 
 
 # What Beside.weigh records of a newer half that failed with several entries, which bisect once the older half has.
@@ -2690,6 +2705,13 @@ def run(root):
                 with processes.forwarding_signals():
                     worker.drain()
                     worker.catch_up()
+            except NoLocalNetwork as lost:
+                # Holding nothing: the next `eng land`, `eng queue wait` or `eng queue resume` starts a worker of its
+                # session's, and a hold would wait for a session to resume it instead.
+                queue.mark([entry for entry in queue.all() if entry["state"] == TESTING], QUEUED)
+                worker.say(f"exits, holding nothing, since this worker cannot reach the second Mac: {lost}; the next "
+                           "`eng land`, `eng queue wait` or `eng queue resume` from a live session starts another")
+                return 0
             except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
                 queue.mark([entry for entry in queue.all() if entry["state"] == TESTING], QUEUED)
                 if worker.rounds: tries = 0  # a round that went through since the last try starts the count again
