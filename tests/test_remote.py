@@ -3087,12 +3087,12 @@ exec {shlex.quote(real)} "$@"
         self.assertNotIn("build products", error)
         # The second Mac busy, plain eng admit runs here, and the receipt says why.
         shutil.rmtree(self.project / ".build/engineering/admit")
-        with patch.dict(os.environ, {"FAKE_BUSY_LIMIT": "0"}):
+        with self.busy_second_mac():
             status, output, error = self.admit_in(self.project, "--", *probe)
         self.assertEqual(status, 0, output + error)
         self.assertEqual(self.ran_in(), self.project.resolve())
         receipt = json.loads((self.project / ".build/engineering/admit/source.json").read_text())
-        self.assertTrue(receipt["hereBecause"].startswith("the second Mac is busy"), receipt)
+        self.assertTrue(receipt["hereBecause"].startswith("exclusive work holds the second Mac: "), receipt)
         self.assertNotIn("build products", error)
         # --here and --verify contradict each other.
         with self.assertRaises(SystemExit), contextlib.redirect_stderr(StringIO()):
