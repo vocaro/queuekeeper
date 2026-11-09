@@ -970,20 +970,48 @@ class RemoteTests(unittest.TestCase):
         # The dispatch stops the run there once the reservation leaves no more than its reserve.
         entry = devices.Record(self.record_here).entry("iPhone")
         remaining = (devices.moment(entry["expectedReleaseBy"]) - datetime.now(timezone.utc)).total_seconds()
+        # The sleeper says in a file, as well as on its output, that it has started.
+        marker = self.project.parent / "sleeping"
         sleeper = ["--device", "iPhone", "--device-owner", "session-a", "--", sys.executable, "-c",
-                   "import time; print('sleeping', flush=True); time.sleep(120)"]
+                   "import pathlib, sys, time; pathlib.Path(sys.argv[1]).touch(); print('sleeping', flush=True); "
+                   "time.sleep(120)", str(marker)]
+        # The bound is what the reservation leaves when the run begins, less its reserve: the reserve is taken
+        # then, so no wait under load uses the bound up before it starts. The bound may pass while the dispatch
+        # still sends, provisions or starts the command, a run that is no pass either (the next test); here the
+        # dispatch sees it pass only once the command runs, so that what it stops is the command (#317).
+        begin, expired = remote.Lease.begin, remote.Lease.expired
+        def beginning(lease, run):
+            lease.keep = (lease.deadline - datetime.now(timezone.utc)).total_seconds() - 6
+            return begin(lease, run)
         with patch.object(devices, "MINIMUM", 1), \
-                patch.object(devices, "TERMINATION", remaining - devices.RESTORATION - 6):
+                patch.object(devices, "TERMINATION", remaining - devices.RESTORATION - 6), \
+                patch.object(remote.Lease, "begin", beginning), \
+                patch.object(remote.Lease, "expired", lambda lease: marker.exists() and expired(lease)):
             started = time.monotonic()
-            status, _output, error = self.eng("remote", "admit", *sleeper)
+            status, output, error = self.eng("remote", "admit", *sleeper)
         # The run's few seconds are the behavior under test; only this ceiling on its stop stretches by load.
         self.assertLess(time.monotonic() - started, stretched(60), error)
+        self.assertIn("sleeping", output)
         self.assertNotEqual(status, 0)
         self.assertIn("bound, which its device reservations set; asking fake to stop it", error)
         entry = devices.Record(self.record_here).entry("iPhone")
         self.assertEqual(devices.condition(entry), "held")
-        self.assertRegex(entry["run"]["outcome"], r"^stopped at its [1-6]s bound, then exit ")
+        self.assertRegex(entry["run"]["outcome"], r"^stopped at its [1-5]s bound, then exit [1-9]")
         self.assertGreater(entry["revision"], held["revision"])
+
+    def test_a_dispatch_stopped_before_its_work_began_is_no_pass(self):
+        # A bound that passed once the provision lane had passed and before the work began left the lane's 0 as
+        # the run's status under load (#317); such a run is 1, as one stopped before any command is.
+        for result, status in [({"stage": "provision", "exitStatus": 0, "stopped": True}, 1),
+                               ({"exitStatus": None, "stopped": True}, 1),
+                               ({"stage": "provision", "exitStatus": -15, "stopped": True}, 143),
+                               ({"stage": "work", "exitStatus": -15, "stopped": True}, 143),
+                               ({"stage": "work", "exitStatus": 3, "stopped": False}, 3),
+                               # The work's own pass stands, with a stop that came as it ended too.
+                               ({"stage": "work", "exitStatus": 0, "stopped": True}, 0),
+                               ({"stage": "work", "exitStatus": 0, "stopped": False}, 0)]:
+            with self.subTest(result):
+                self.assertEqual(remote.exit_status(result), status)
 
     def test_a_bounded_run_on_the_second_mac_takes_its_reservation_from_the_lease(self):
         self.hold()

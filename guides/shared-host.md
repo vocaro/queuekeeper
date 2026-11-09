@@ -1072,7 +1072,8 @@ unless set (Git 2.54.0).
 
 Output comes back as it is written. The lane's log, the command's output and a receipt land in
 `.build/engineering/remote/LANE/` (`remote/admit/` for a command), and the exit status is the
-second Mac's. A lane group's lanes' logs and receipts follow once the run there ends, a stopped
+second Mac's: the work's, and 1 for a run stopped before the work began, even after the provision
+lane passed (vocaro-engineering#317). A lane group's lanes' logs and receipts follow once the run there ends, a stopped
 run's included, into `lanes/` there, and the receipt's `returned` lists those that came. Before
 the run, the second Mac removes those its checkout holds from an earlier run, so none comes back
 as this run's. The receipt names the second Mac's model, macOS and Xcode beside this Mac's. The

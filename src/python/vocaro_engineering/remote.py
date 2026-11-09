@@ -1857,7 +1857,15 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
                             f"give {host} what provisioning needs, which that log names, such as a tool "
                             "`eng remote setup` installs or the git-credentials token for private dependencies "
                             "(guides/shared-host.md, Setting up the second Mac)")
-    if status is None: return 1
+    return exit_status(result)
+
+
+def exit_status(result):
+    """The status a dispatch returns for offload_host.py's result: the work's. A stop that came before the work
+    began, once the provision lane had passed, leaves only that lane's 0, which says nothing of the work: such
+    a run, like one stopped before any command, is 1 (vocaro-engineering#317)."""
+    status = result.get("exitStatus")
+    if status is None or (status == 0 and result.get("stopped") and result.get("stage") != "work"): return 1
     # A command a signal ended has a negative status; a shell reports it as 128 plus the signal.
     return 128 - status if status < 0 else status
 
