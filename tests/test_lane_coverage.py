@@ -338,7 +338,8 @@ class ThisRepository(unittest.TestCase):
         modules = [path.relative_to(root).as_posix() for path in (root / "tests").glob("test_*.py")]
         result = lane_coverage.report(root, config.load(root), tracked=modules)
         self.assertEqual((result["result"], result["withLane"]), (EVERY_TEST_HAS_A_LANE, len(modules)))
-        self.assertEqual(result["unreadLanes"], {})
+        # Over the whole tree: a lane filtered to Swift classes, storekit-tests, reads as unread among Python tests alone.
+        self.assertEqual(lane_coverage.report(root, config.load(root))["unreadLanes"], {})
 
 
 if __name__ == "__main__":
