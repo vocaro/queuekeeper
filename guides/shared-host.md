@@ -1180,14 +1180,15 @@ record holds that (see [Physical devices](#physical-devices-and-the-second-mac))
 dispatcher had not yet heard it start, which it counts as never run.
 
 The second Mac cannot tell a dispatcher that died from a Mac asleep or a dropped connection, so
-the dispatching Mac decides. Each dispatch records its journal, host, PID and process start time
-under `dispatchers/` in this Mac's durable state (`remote.dispatch_records`) and removes the
-record when it ends. The next `eng remote` dispatch or queue worker start finds the records whose
-process is proven gone, with no process at that PID or one that started at another time, as after
-a reboot, and sends `stop` for that journal alone through `reattach`: the run leaves admission
-and frees its checkout the usual way, with its journal kept a week. A dispatcher still alive, as on a
-sleeping Mac, is left alone, and a record the second Mac could not be asked about stays, and is
-tried again later, with nothing said to be stopped.
+the dispatching Mac decides. A dispatch that may keep a journal tries to record its journal
+identifier, host, PID and process start time under `dispatchers/` in this Mac's durable state
+(`remote.dispatch_records`). It keeps the record if it cannot collect a known journal's result or
+learn that the journal is gone. The next `eng remote` dispatch or queue worker start looks for a
+dispatcher proven gone, with no process at that PID or one that started at another time, as after
+a reboot. It sends `stop` for that journal alone through `reattach`. A run still active leaves
+admission and frees its checkout when it handles the stop, with its journal kept a week. A
+dispatcher still alive, as on a sleeping Mac, is left alone. If the second Mac cannot answer for
+the record, it stays for another attempt and eng reports that it could not request the stop.
 
 For a run whose connection's end is a stop (one with a device reservation, or one before its
 dispatcher heard it start), a Mac that crashes or loses power closes nothing, and the second
