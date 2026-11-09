@@ -4316,10 +4316,14 @@ class Changelogs(Fixture):
         self.assertEqual(states, ["landed", "conflict"])
 
     def test_the_same_shape_in_another_file_comes_back(self):
+        # The ordinary conflict is decided by Git. Run the fixture gate on the survivor without an implicit spelling lane.
+        config = json.loads((self.repo / "engineering.json").read_text())
+        self.publish({**config, "queue": {**config["queue"], "spelling": False}}, "Turn the toolkit's spelling off")
         self.commit("NOTES.md", "notes", self.START)
         run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
         states = self.outcome(self.top("- a"), self.top("- b"), name="NOTES.md")
         self.assertEqual(states, ["landed", "conflict"])
+        self.assertEqual(self.gates(), 1)
 
     def test_a_changelog_conflict_beside_another_files_comes_back_whole(self):
         self.commit("same", "same", "start")
