@@ -14,7 +14,7 @@ from unittest.mock import patch
 import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
-from vocaro_engineering import cli, devices, disk, landing
+from vocaro_engineering import cli, devices, disk, evidence_offload, landing
 import host_isolation
 
 LATER = time.time() + 10 * 86400  # every fixture looks idle from here
@@ -821,6 +821,103 @@ class DeletionTests(Fixture):
         self.assertEqual(calls, [["xcrun", "simctl", "delete", disposable["udid"]]])
 
 
+class WorktreeArchiveTests(Fixture):
+    def setUp(self):
+        super().setUp()
+        commit(self.main, ".gitignore", ".build/\n")
+        self.publish()
+        self.ledger = self.root / "disk-reclaimed.jsonl"
+        self.path = self.worktree("evidence", branch="evidence")
+        self.receipt = self.path / ".build/issue-992/receipt.json"
+        self.receipt.parent.mkdir(parents=True)
+        self.receipt.write_text('{"passed": true}\n')
+        (self.path / ".build/debug").mkdir()
+        (self.path / ".build/debug/product").write_text("rebuildable")
+        self.mac = self.host(offload_host="second", temp_roots=[])
+
+    def listing(self, host=None, archive=True):
+        return {item.path: item for item in disk.inventory(host or self.mac, disk.Sizes(measure=False),
+                                                          ["worktree"], archive_worktrees=archive)}
+
+    def fresh(self, host, item):
+        return self.listing(host).get(item.path)
+
+    def test_opt_in_keeps_worktrees_that_fail_ordinary_ownership_or_landing_checks(self):
+        self.assertEqual(self.listing(archive=False)[str(self.path)].status, disk.KEPT)
+        self.assertEqual(self.listing(self.host())[str(self.path)].status, disk.KEPT)
+        outside = self.worktree("outside", parent=self.development)
+        detached = self.worktree("detached")
+        commit(detached, "unlanded", "only here\n")
+        locked = self.worktree("locked")
+        git(self.main, "worktree", "lock", str(locked))
+        for path in (outside, detached, locked):
+            (path / ".build").mkdir()
+            (path / ".build/results.log").write_text("evidence")
+        items = self.listing()
+        self.assertEqual(items[str(self.path)].status, disk.ARCHIVE)
+        self.assertTrue(all(items[str(path)].status == disk.KEPT for path in (outside, detached, locked)))
+        busy = self.host([disk.Process(42, cwd=str(self.path))], offload_host="second")
+        self.assertIn("in use", self.listing(busy)[str(self.path)].reason)
+
+    def test_opt_in_also_preserves_lane_results_when_they_are_the_only_evidence(self):
+        self.receipt.unlink()
+        results = self.path / ".build/engineering"
+        results.mkdir()
+        (results / "receipt.json").write_text("{}")
+        self.assertEqual(self.listing(archive=False)[str(self.path)].status, disk.CANDIDATE)
+        self.assertEqual(self.listing()[str(self.path)].status, disk.ARCHIVE)
+
+    def test_removal_follows_verification_and_the_branch_remains(self):
+        item = self.listing()[str(self.path)]
+
+        def verify(stage, **options):
+            self.assertTrue(self.path.exists())
+            self.assertEqual(options["host"], "second")
+            self.assertFalse(options["defer"])
+            archive = Path(stage)
+            self.assertEqual((archive / "files/.build/issue-992/receipt.json").read_bytes(),
+                             self.receipt.read_bytes())
+            self.assertFalse((archive / "files/.build/debug").exists())
+            self.assertEqual(json.loads((archive / "worktree.json").read_text())["head"],
+                             git(self.path, "rev-parse", "HEAD"))
+            return 0
+
+        with patch.object(evidence_offload, "offload", side_effect=verify) as offload:
+            disk.delete([item], lambda category: [item], self.ledger, out=lambda _: None)
+            offload.assert_not_called()
+            self.assertTrue(disk.archive_worktrees([item], self.mac, self.ledger, out=lambda _: None, fresh=self.fresh))
+        self.assertFalse(self.path.exists())
+        self.assertTrue(git(self.main, "rev-parse", "refs/heads/evidence"))
+        record = json.loads(self.ledger.read_text())
+        self.assertTrue(record["archiveVerified"])
+        self.assertEqual(record["outcome"], "removed")
+
+    def test_failed_verification_or_changed_evidence_keeps_the_worktree(self):
+        item = self.listing()[str(self.path)]
+        with patch.object(evidence_offload, "offload", return_value=1):
+            self.assertFalse(disk.archive_worktrees([item], self.mac, self.ledger, out=lambda _: None, fresh=self.fresh))
+        self.assertTrue(self.receipt.exists())
+
+        def verified_old_copy(stage, **options):
+            self.receipt.write_text('{"passed": false}\n')
+            return 0
+
+        with patch.object(evidence_offload, "offload", side_effect=verified_old_copy):
+            self.assertFalse(disk.archive_worktrees([item], self.mac, self.ledger, out=lambda _: None, fresh=self.fresh))
+        self.assertTrue(self.receipt.exists())
+        self.assertIn("ignored files changed", self.ledger.read_text())
+
+    def test_external_links_refuse_the_archive_before_transfer(self):
+        item = self.listing()[str(self.path)]
+        (self.receipt.parent / "external").symlink_to(self.main)
+        self.assertEqual(self.listing()[str(self.path)].status, disk.KEPT)
+        with patch.object(evidence_offload, "offload") as offload:
+            self.assertFalse(disk.archive_worktrees([item], self.mac, self.ledger, out=lambda _: None, fresh=self.fresh))
+        offload.assert_not_called()
+        self.assertTrue(self.receipt.exists())
+        self.assertIn("link that leaves the worktree", self.ledger.read_text())
+
+
 class EvidenceArchiveTests(Fixture):
     def test_durable_evidence_is_listed_for_offload_and_never_a_candidate(self):
         measurements = self.development / "project-measurements"
@@ -1012,6 +1109,23 @@ class KeptResultsTests(Fixture):
 
 
 class CommandTests(Fixture):
+    def test_archive_worktrees_dry_run_does_not_transfer_or_print_a_bypass_command(self):
+        commit(self.main, ".gitignore", ".build/\n")
+        self.publish()
+        path = self.worktree("archive")
+        (path / ".build").mkdir()
+        (path / ".build/probe.log").write_text("evidence")
+        output = StringIO()
+        host = self.host(temp_roots=[], offload_host="second")
+        with patch.object(disk.Host, "current", return_value=host), patch.object(disk.Sizes, "prime"), \
+                patch.object(disk, "archive_worktrees") as archive, contextlib.redirect_stdout(output), \
+                contextlib.redirect_stderr(StringIO()):
+            self.assertEqual(cli.main(["--project", str(self.root), "disk", "--dry-run", "--archive-worktrees"]), 0)
+        archive.assert_not_called()
+        self.assertIn(f"{path} (verify archive before removal)", output.getvalue())
+        self.assertNotIn(f"worktree remove {path}", output.getvalue())
+        self.assertTrue(path.exists())
+
     def test_eng_disk_reports_and_changes_nothing(self):
         landed = self.worktree("landed")
         host = self.host(temp_roots=[])

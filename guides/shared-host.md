@@ -1907,6 +1907,21 @@ item's command. Sizes are allocated sizes from `du`; APFS clones share blocks, s
 can free less than its size. Run the inventory again after removing worktrees: DerivedData whose
 workspace went with them becomes a candidate.
 
+Use `eng disk --dry-run --archive-worktrees` to see which additional worktrees can go after
+archiving. `eng disk --delete --archive-worktrees` also stages the ignored evidence, lane results
+and unclassified files from those worktrees and verifies them on the second Mac before removing the
+checkout. This applies to clean, landed, idle worktrees under a project's `.claude/worktrees`.
+Persistent checkouts, Codex worktrees, and detached commits that main cannot reach stay under
+their existing rules. Recognizable Xcode build output can be rebuilt, while logs, result bundles
+and unidentified output are preserved.
+
+The archive goes under `~/Development/session-evidence/<project>/disk-<worktree>-<digest>`
+on the second Mac, with the original relative paths under `files/` and the worktree's commit and
+file hashes in `worktree.json`. The command stages one archive locally at a time. A failed or
+unavailable transfer, an external link, or a change to the checkout during the transfer keeps the
+worktree. After verification, the command checks ownership and the file inventory again and uses
+`git worktree remove` without force. The cleanup ledger records the archive and removal outcome.
+
 On 2026-10-21 the 1.8 TiB data volume had 21 GiB free. Of about 1.74 TiB used, a measurement
 archive held 314 GiB, linked worktrees 150 GiB (nearly all in use or unlanded), `/private/tmp`
 116 GiB (76 GiB of it agent session scratch, mostly Xcode derived data built in scratchpads),

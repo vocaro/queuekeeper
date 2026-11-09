@@ -14,14 +14,18 @@ their sessions leave in the temporary directories. It reads nothing else, and cl
   archive's command moves it to the second Mac, and eng's offload retry runs it by itself once the
   archive is quiet and unused (evidence_offload).
 - kept: it is in use, owned, of unclear ownership, or holds work or evidence.
+- archive: with `--archive-worktrees`, a landed, idle Claude worktree that can go only after a
+  verified copy of its ignored evidence and unknown files reaches the second Mac.
 
 `--dry-run` lists what `--delete` would remove. Without --delete nothing is changed.
 guides/shared-host.md § Reclaiming disk space has the rules.
 """
 import argparse
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 import datetime
+import fcntl
 import glob
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -32,14 +36,15 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 from . import app_builds as kept_apps, devices as device_record, failure_records as failures, ignored, landing
 from .config import TOOLKIT_ROOT
 from .simulators import pool as simulator_pool
 
-CANDIDATE, OWNER, KEPT = "candidate", "owner", "kept"
-STATUS_ORDER = {CANDIDATE: 0, OWNER: 1, KEPT: 2}
+CANDIDATE, ARCHIVE, OWNER, KEPT = "candidate", "archive", "owner", "kept"
+STATUS_ORDER = {CANDIDATE: 0, ARCHIVE: 1, OWNER: 2, KEPT: 3}
 CATEGORIES = {"worktree": "Linked worktrees", "simulator": "Simulators", "runtime": "Simulator runtimes",
               "derived-data": "Xcode DerivedData", "scratch": "Scratch builds outside checkouts",
               "swiftpm-cache": "SwiftPM shared cache", "results": "Result directories",
@@ -461,7 +466,7 @@ def session_root(host, main, path):
     return None
 
 
-def worktree(host, usage, sizes, main, entry, base, name):
+def worktree(host, usage, sizes, main, entry, base, name, archive_worktrees=False):
     path = entry["worktree"]
     def item(status, reason, command=None, idle=None):
         return Item("worktree", path, status, reason, sizes.of(path) if os.path.isdir(path) else 0, command, idle)
@@ -481,9 +486,14 @@ def worktree(host, usage, sizes, main, entry, base, name):
     if status.returncode: return item(KEPT, "git status failed: " + status.stderr.strip()[:200])
     changed = status.stdout.splitlines()
     if changed: return item(KEPT, f"dirty: {len(changed)} modified or untracked paths")
-    try: evidence, results = ignored.held(path)
+    try: evidence, results, blockers = ignored.held(path)
     except (ignored.Refusal, OSError) as error: return item(KEPT, f"could not list its ignored files: {error}")
-    if evidence: return item(KEPT, "ignored files that may be evidence: " + ", ".join(evidence[:3]))
+    session_dir = session_root(host, main, path)
+    archive = archive_worktrees and host.offload_host and session_dir == Path(main) / ".claude/worktrees"
+    if archive and blockers:
+        return item(KEPT, "worktree archive blocked: " + "; ".join(blockers[:3]))
+    if evidence and not archive:
+        return item(KEPT, "ignored files that may be evidence: " + ", ".join(evidence[:3]))
     if not entry.get("HEAD") or not base: return item(KEPT, "no HEAD or no origin/main to compare it with")
     done, why, how = landed(host.run, main, entry["HEAD"], base, name)
     if not done:
@@ -503,8 +513,11 @@ def worktree(host, usage, sizes, main, entry, base, name):
     # ignored files with the worktree, and without --force refuses one that gained a change since.
     command = ["git", "-C", str(main), "worktree", "remove", path]
     reason = f"clean, unlocked, no process or live session; {why}; idle {age(idle)}"
+    if archive and (evidence or results):
+        return item(ARCHIVE, reason + f"; verify an archive on {host.offload_host} before removal; "
+                    + ", ".join((evidence + results)[:3]), command, idle)
     if results: reason += f"; its lane results ({', '.join(results[:3])}) go with it, the work being landed"
-    if session_root(host, main, path) is None:
+    if session_dir is None:
         return item(OWNER, reason + "; outside the session worktree directories, so a persistent or shared checkout",
                     command, idle)
     return item(CANDIDATE, reason, command, idle)
@@ -566,7 +579,7 @@ def encoded(path):
     return re.sub(r"[^A-Za-z0-9-]", "-", str(path))
 
 
-def worktrees(host, usage, sizes):
+def worktrees(host, usage, sizes, archive_worktrees=False):
     mains = main_checkouts(host)
     items, registered = [], set()
     for main in mains:
@@ -578,7 +591,7 @@ def worktrees(host, usage, sizes):
         base, name = landing_base(host.run, main)
         for entry in entries:
             registered.add(canonical(os.path.realpath(entry["worktree"])))
-            items.append(worktree(host, usage, sizes, main, entry, base, name))
+            items.append(worktree(host, usage, sizes, main, entry, base, name, archive_worktrees))
     return items + unregistered(host, usage, sizes, mains, registered)
 
 
@@ -1126,11 +1139,11 @@ def temp_items(host, usage, sizes):
     return items
 
 
-def inventory(host, sizes, categories=None):
+def inventory(host, sizes, categories=None, archive_worktrees=False):
     usage = Usage(host.processes)
     wanted = set(categories or CATEGORIES)
     items = []
-    if "worktree" in wanted: items += worktrees(host, usage, sizes)
+    if "worktree" in wanted: items += worktrees(host, usage, sizes, archive_worktrees)
     if "simulator" in wanted: items += simulators(host, usage, sizes)
     if "runtime" in wanted: items += runtimes(host)
     if "derived-data" in wanted: items += derived_data(host, usage, sizes)
@@ -1164,7 +1177,7 @@ def report(items, volume, unreadable, min_size, out=print):
                 continue
             out(f"  {item.status:9} {human(item.size):>10}  {item.path}")
             out(f"            {item.reason}")
-            if item.command: out(f"            $ {shlex.join(item.command)}")
+            if item.command and item.status != ARCHIVE: out(f"            $ {shlex.join(item.command)}")
         for status, (count, size) in hidden.items():
             out(f"  {status:9} {human(size):>10}  and {count} smaller items")
         out("")
@@ -1175,23 +1188,25 @@ def report(items, volume, unreadable, min_size, out=print):
             roots[str(Path(*parts[:5]))] = roots.get(str(Path(*parts[:5])), 0) + 1
         top = sorted(roots.items(), key=lambda pair: -pair[1])[:8]
         out("Unreadable during measurement: " + "; ".join(f"{root} ({count})" for root, count in top))
-    for status, label in ((CANDIDATE, "Candidates"), (OWNER, "Owner decisions"), (KEPT, "Kept")):
+    for status, label in ((CANDIDATE, "Candidates"), (ARCHIVE, "Archive before removal"),
+                          (OWNER, "Owner decisions"), (KEPT, "Kept")):
         chosen = [item for item in items if item.status == status]
+        if status == ARCHIVE and not chosen: continue
         out(f"{label}: {len(chosen)} items, {human(sum(item.size for item in chosen))}.")
 
 
 def plan(items, out=print):
     """What --delete would remove, category by category: every candidate and its command."""
-    chosen = [item for item in items if item.status == CANDIDATE]
-    out("Dry run: nothing was removed. `eng disk --delete` would offer to remove these, asking once for each "
-        "category and checking each item again first.\n")
+    chosen = [item for item in items if item.status in (CANDIDATE, ARCHIVE)]
+    out("Dry run: nothing was removed. Each item is checked again before removal.\n")
     for category, title in CATEGORIES.items():
         group = sorted((item for item in chosen if item.category == category), key=lambda item: -item.size)
         if not group: continue
         out(f"{title}: {len(group)} items, {human(sum(item.size for item in group))}")
         for item in group:
-            out(f"  {human(item.size):>10}  {item.path}")
-            out(f"            $ {shlex.join(item.command)}")
+            action = " (verify archive before removal)" if item.status == ARCHIVE else ""
+            out(f"  {human(item.size):>10}  {item.path}{action}")
+            if item.status != ARCHIVE: out(f"            $ {shlex.join(item.command)}")
         out("")
     out(f"In all: {len(chosen)} items, {human(sum(item.size for item in chosen))}.")
 
@@ -1209,6 +1224,19 @@ def outside_checkouts(path):
     return not any((ancestor / ".git").exists() for ancestor in [path, *path.parents])
 
 
+def record_removal(ledger, entry, out):
+    out(f"{entry['outcome']}: {entry['path']}")
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    with open(ledger, "a") as handle: handle.write(json.dumps(entry) + "\n")
+
+
+def removal_entry(item, answered):
+    entry = {"time": datetime.datetime.now(datetime.timezone.utc).isoformat(), "category": item.category,
+             "path": item.path, "size": item.size, "reason": item.reason, "command": item.command}
+    if answered: entry["approval"] = answered
+    return entry
+
+
 def delete(items, fresh, ledger, out=print, run=subprocess.run, approval=None):
     """Remove the candidates category by category, each checked again first, without asking: a
     candidate is what the rules prove nobody owns (the owner's decision, 2026-11-05). approval, the
@@ -1223,9 +1251,7 @@ def delete(items, fresh, ledger, out=print, run=subprocess.run, approval=None):
         current = {item.path: item for item in fresh(category)}
         for item in group:
             now = current.get(item.path)
-            entry = {"time": datetime.datetime.now(datetime.timezone.utc).isoformat(), "category": category,
-                     "path": item.path, "size": item.size, "reason": item.reason, "command": item.command}
-            if answered: entry["approval"] = answered
+            entry = removal_entry(item, answered)
             if now is None or now.status != CANDIDATE or now.command != item.command:
                 entry["outcome"] = "skipped: " + (now.reason if now else "no longer present")
             elif item.command[0] == "rm" and not outside_checkouts(item.command[-1]):
@@ -1234,11 +1260,98 @@ def delete(items, fresh, ledger, out=print, run=subprocess.run, approval=None):
                 result = run(item.command, capture_output=True, text=True, timeout=3600, env=git_environment())
                 entry["outcome"] = "removed" if result.returncode == 0 else f"failed ({result.returncode}): {result.stderr.strip()[:300]}"
                 removed += result.returncode == 0
-            out(f"{entry['outcome']}: {item.path}")
-            ledger.parent.mkdir(parents=True, exist_ok=True)
-            with open(ledger, "a") as handle: handle.write(json.dumps(entry) + "\n")
+            record_removal(ledger, entry, out)
     out(f"Removed {removed} items; the record of every decision is in {ledger}.")
     return removed
+
+
+def fresh_archive_item(host, item):
+    """Read just this registration again, with current process and desktop-session ownership."""
+    current = replace(host, now=time.time(), processes=census(host.run), sessions=desktop_sessions(host.home))
+    main = Path(item.command[2])
+    listing = git(host.run, main, "worktree", "list", "--porcelain")
+    if listing.returncode: return None
+    entry = next((entry for entry in parse_worktrees(listing.stdout)[1:] if entry["worktree"] == item.path), None)
+    if entry is None: return None
+    base, name = landing_base(host.run, main)
+    return worktree(current, Usage(current.processes), Sizes(host.run, False), main, entry, base, name,
+                    archive_worktrees=True)
+
+
+def archive_snapshot(path):
+    entries, blockers = ignored.inventory(path)
+    if blockers: raise ignored.Refusal("; ".join(blockers[:3]))
+    return {entry["path"]: entry for entry in entries}
+
+
+def archive_slug(name):
+    return re.sub(r"[^A-Za-z0-9._-]", "-", name)[:80].strip(".") or "worktree"
+
+
+def archive_one(item, host, ledger, entry, fresh, out):
+    from . import evidence_offload  # it imports disk
+
+    current = fresh(host, item)
+    if current is None or current.status != ARCHIVE or current.command != item.command:
+        return "skipped: " + (current.reason if current else "could no longer verify its registration")
+    path = Path(item.path)
+    if path.resolve() != path: raise ignored.Refusal("the worktree path is behind a link")
+    identity = ignored.identity(path)
+    snapshot = archive_snapshot(path)
+    files = {name: file for name, file in snapshot.items()
+             if file["type"] != "dir" and file["kind"] not in ignored.DISPOSABLE}
+    if not files: return "skipped: no ignored evidence remains"
+    metadata = json.dumps({**identity, "files": {name: file["sha256"] for name, file in files.items()}},
+                          sort_keys=True, indent=2) + "\n"
+    digest = hashlib.sha256(metadata.encode()).hexdigest()[:20]
+    project = archive_slug(Path(item.command[2]).name)
+    target = f"Development/session-evidence/{project}/disk-{archive_slug(path.name)}-{digest}"
+    entry["archive"] = f"{host.offload_host}:~/{target}"
+    with tempfile.TemporaryDirectory(prefix="disk-worktree-", dir=ledger.parent) as staged:
+        payload = Path(staged) / "files"
+        payload.mkdir()
+        for name, file in files.items():
+            parent = (path / name).parent
+            if parent.resolve() != parent: raise ignored.Refusal(f"{name}: a folder above it is now a link")
+            why = ignored.copy(path, payload, file)
+            if why: raise ignored.Refusal(why)
+        (Path(staged) / "worktree.json").write_text(metadata)
+        status = evidence_offload.offload(staged, host=host.offload_host, home=host.home, to=target, keep=True,
+                                          run=host.run, out=out, defer=False)
+        if status != 0: return f"failed: offload returned {status}; worktree kept"
+        entry["archiveVerified"] = True
+        current = fresh(host, item)
+        if current is None or current.status != ARCHIVE or current.command != item.command:
+            return "skipped after archiving: " + (current.reason if current else "registration changed")
+        if archive_snapshot(path) != snapshot or ignored.identity(path) != identity:
+            return "skipped after archiving: the worktree or its ignored files changed"
+        result = git(host.run, item.command[2], *item.command[3:], timeout=3600)
+        return "removed" if result.returncode == 0 else f"failed ({result.returncode}): {result.stderr.strip()[:300]}"
+
+
+def archive_worktrees(items, host, ledger, out=print, approval=None, fresh=fresh_archive_item):
+    """Archive only the opt-in candidates, with one transfer/removal pass at a time."""
+    candidates = [item for item in items if item.status == ARCHIVE]
+    if not candidates: return True
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    answered = None if approval is None else "--yes" + (f": {approval}" if approval else "")
+    with open(ledger.with_name("disk-worktree-archive.lock"), "a") as lock:
+        try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            out("Another disk worktree archive pass is running.")
+            return False
+        with open(ledger, "a"): pass  # prove the record is writable before any removal
+        removed = 0
+        for item in candidates:
+            entry = removal_entry(item, answered)
+            try:
+                entry["outcome"] = archive_one(item, host, ledger, entry, fresh, out)
+            except (ignored.Refusal, OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+                entry["outcome"] = f"failed: {error}"
+            record_removal(ledger, entry, out)
+            removed += entry["outcome"] == "removed"
+        out(f"Archived and removed {removed} of {len(candidates)} worktrees; decisions are in {ledger}.")
+        return removed == len(candidates)
 
 
 def add_arguments(parser):
@@ -1246,6 +1359,9 @@ def add_arguments(parser):
     action.add_argument("--dry-run", action="store_true", help="list only what --delete would remove, and remove nothing")
     action.add_argument("--delete", action="store_true", help="remove every candidate, checking each again first, "
                         "without asking; owner items are only listed, with their commands")
+    parser.add_argument("--archive-worktrees", action="store_true",
+                        help="include idle landed Claude worktrees that need a verified archive on the second Mac "
+                             "before removal; requires --delete to transfer or remove anything")
     parser.add_argument("--yes", nargs="?", const="", metavar="WHO",
                         help="with --delete, name in each ledger entry who asked for this run (such as 'owner, "
                         "2026-11-05 chat'); --delete asks nobody since 2026-11-05, so this only records the ask")
@@ -1273,23 +1389,29 @@ def execute(args, run=subprocess.run, out=print):
         if measure:
             print("Measuring the items listed.", file=sys.stderr)
             prime_items(host, sizes)
-        return host, sizes, inventory(host, sizes, categories)
+        return host, sizes, inventory(host, sizes, categories, archive_worktrees=args.archive_worktrees)
     host, sizes, items = collect()
     try:
         usage = shutil.disk_usage(DATA_VOLUME)
         volume = (usage.total, usage.used, usage.free)
     except OSError:
         volume = None
-    if args.dry_run: items = [item for item in items if item.status == CANDIDATE]
+    if args.dry_run: items = [item for item in items if item.status in (CANDIDATE, ARCHIVE)]
     if args.json:
         out(json.dumps({"volume": volume, "items": [asdict(item) for item in items]}, indent=2))
     elif args.dry_run:
         plan(items, out)
     else:
         report(items, volume, sizes.unreadable, args.min_size_mb * 1024 * 1024, out)
+    if args.archive_worktrees and not host.offload_host:
+        print("eng disk: no second Mac is configured; worktrees requiring an archive are kept", file=sys.stderr)
     if args.delete:
-        delete(items, lambda category: collect([category], measure=False)[2], ledger_path(host.home), out=out, run=run,
+        ledger = ledger_path(host.home)
+        delete(items, lambda category: collect([category], measure=False)[2], ledger, out=out, run=run,
                approval=args.yes)
+        if args.archive_worktrees:
+            if not host.offload_host or not archive_worktrees(items, host, ledger, out=out, approval=args.yes):
+                return 1
     return 0
 
 
