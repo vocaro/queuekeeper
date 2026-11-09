@@ -607,6 +607,9 @@ def admitted_here(stack, name, label, timeout, offered=None, once=False, exclusi
             print(f"eng: {name} not run on {this_mac()}: {refused[-1]}", file=sys.stderr)
             return BUSY
         return admission
+    except resources.AdmissionRecordError as error:
+        print(f"eng: {name} not run on {this_mac()}: {error}", file=sys.stderr)
+        return BUSY
     finally:
         # Admitted, admission took the place out of the queue; otherwise the work no longer waits here.
         if place is not None: place.leave()

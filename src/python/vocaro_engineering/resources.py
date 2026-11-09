@@ -642,6 +642,10 @@ class Place:
                 record_queue(directory / QUEUE, [waiter for waiter in waiters if waiter["identity"] != self.identity])
 
 
+class AdmissionRecordError(RuntimeError):
+    """An admission could not record its opening, before any command started."""
+
+
 class Admission:
     def __init__(self, label, exclusive=False, timeout=5400, model=False, whole_host=False, place=None, placement=None,
                  supervised=False):
@@ -1091,17 +1095,22 @@ class Admission:
             if born is None:
                 self._release()
                 raise RuntimeError("Cannot establish the admission owner's process identity")
-            # The process record first, in the same step under the coordination lock, so that an owner killed before its
-            # first command still leaves a record that recovery can census: never an entry without one (#315).
-            self._open_record(born)
-            state["owners"][self.identity] = {"pid": os.getpid(), "start": born, "label": self.label,
-                                                "exclusive": self.exclusive, "model": self.model,
-                                                "admitted": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                                                **({"wholeHost": True} if self.whole_host else {})}
             try:
+                # Publish a complete opening record before the guard. A write failure must leave no admission,
+                # just as a kill before this publication must leave no reservation to recover (#315, #336).
+                self._open_record(born)
+                state["owners"][self.identity] = {"pid": os.getpid(), "start": born, "label": self.label,
+                                                   "exclusive": self.exclusive, "model": self.model,
+                                                   "admitted": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                                                   **({"wholeHost": True} if self.whole_host else {})}
                 publish_guard(self.guard, state)
             except BaseException:
-                with contextlib.suppress(OSError): self.process_record.unlink(missing_ok=True)
+                # An interrupt can follow the guard's atomic rename. Keep the opening record if the guard
+                # refers to it or cannot be read, so recovery can still prove that no command started.
+                with contextlib.suppress(OSError):
+                    published = self._recorded()
+                    if not self.guard.exists() or (published is not None and self.identity not in published["owners"]):
+                        self.process_record.unlink(missing_ok=True)
                 self._release()
                 raise
             if self.queued:
@@ -1171,26 +1180,23 @@ class Admission:
         process group and session, the ancestors it was started under, and whether this process supervises every
         command it starts (supervised). Recovery of an entry whose record names no command checks the owner's group,
         and its session where the group leads it, for anything started since the owner, its ancestors aside (census).
-        A line that cannot be written leaves no record, as observe does, and recovery is then by hand.
-
-        It reads ps itself, not processes.snapshot, which supervision's samples share."""
+        If it cannot be written, admission fails before publishing the guard. It reads ps itself,
+        not processes.snapshot, which supervision's samples share."""
         try:
             listing = subprocess.run(["ps", "-axo", "pid=,ppid=,lstart="], capture_output=True, text=True, check=True)
             listed = {int(parts[0]): (int(parts[1]), " ".join(parts[2:])) for parts in
                       (line.split() for line in listing.stdout.splitlines()) if len(parts) > 2}
+            if os.getpid() not in listed:
+                raise ValueError("ps did not list the admission owner")
             ancestors, parent = [], os.getppid()
             while parent > 1 and parent in listed and len(ancestors) < 64:
                 ancestors.append([parent, listed[parent][1]])
                 parent = listed[parent][0]
             line = {"admission": self.identity, "owner": [os.getpid(), born], "group": os.getpgid(0),
                     "session": os.getsid(0), "ancestors": ancestors, "supervised": self.supervised}
-        except Exception as error:
-            self.unrecorded = True
-            with contextlib.suppress(Exception):
-                print(f"heavy: the process record was not written, so recovering this entry needs a check by hand: "
-                      f"{error}", file=sys.stderr, flush=True)
-            return
-        self.observe(line)
+            publish_guard(self.process_record, line)
+        except (OSError, subprocess.SubprocessError, ValueError) as error:
+            raise AdmissionRecordError(f"Cannot write the admission's opening process record; nothing ran: {error}") from error
 
     def observe(self, line):
         """Append a line to this admission's process record: what supervision in this process saw of a
@@ -1783,6 +1789,8 @@ def census(path):
             command["processes"] |= processes
             command["spaces"] |= spaces
             command["settled"] = command["settled"] or "settled" in line
+    if not commands and admission is None:
+        raise ValueError("its process record is empty")
     if not commands and admission is not None:
         if not admission["supervised"]:
             raise Unrecorded("its caller runs its own commands without recording them")
@@ -2093,10 +2101,14 @@ def main(argv=None):
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
     if not command: parser.error("a command is required")
     from vocaro_engineering.processes import forwarding_signals, supervise
-    with forwarding_signals(), Admission(" ".join(command), args.exclusive, args.timeout, args.model,
-                                         args.whole_host, supervised=True) as admission:
-        environment = dict(os.environ)
-        return supervise(command, cwd=Path.cwd(), env=environment, on_stop=admission.interrupted)
+    try:
+        with forwarding_signals(), Admission(" ".join(command), args.exclusive, args.timeout, args.model,
+                                             args.whole_host, supervised=True) as admission:
+            environment = dict(os.environ)
+            return supervise(command, cwd=Path.cwd(), env=environment, on_stop=admission.interrupted)
+    except AdmissionRecordError as error:
+        print(f"heavy: {error}", file=sys.stderr)
+        return BUSY
 
 
 def json_descriptors():

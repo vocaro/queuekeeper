@@ -1853,6 +1853,35 @@ def pool_of(name, pools, runtime=""):
     return None, None
 
 
+def template_marker(device):
+    """The per-device provenance file, outside the data directory a clone or copy inherits."""
+    udid, data = device.get("udid"), device.get("dataPath")
+    if not isinstance(udid, str) or not DEVICE.fullmatch(udid) or not isinstance(data, str): return None
+    path = Path(data)
+    if not path.is_absolute() or path.name != "data" or path.parent.name.upper() != udid.upper(): return None
+    return path.parent / ".vocaro-pool-template.json"
+
+
+def template_provenance(device):
+    """An exact name, runtime and UUID match to a pool template recorded before its first boot."""
+    marker = template_marker(device)
+    if marker is None or marker.is_symlink() or not marker.is_file(): return None
+    try: origin = json.loads(marker.read_text())
+    except (OSError, ValueError): return None
+    if not isinstance(origin, dict) or type(origin.get("version")) is not int or origin["version"] != 1: return None
+    pool, holder = origin.get("pool"), origin.get("holder")
+    name, runtime, udid = (device.get(key) for key in ("name", "runtime", "udid"))
+    if any(origin.get(key) != value for key, value in (("name", name), ("runtime", runtime), ("udid", udid.upper()))):
+        return None
+    if not isinstance(pool, str) or not pool or not isinstance(name, str) or not isinstance(runtime, str) or \
+            pool_of(name, [pool], runtime) != (pool, "template"):
+        return None
+    if not isinstance(holder, dict) or type(holder.get("pid")) is not int or holder["pid"] <= 0 or \
+            not isinstance(holder.get("start"), str) or started(holder["start"]) is None:
+        return None
+    return origin
+
+
 def device_entries():
     """The device record's entries by key. A record that cannot be read as a whole raises, because
     any entry in it may hold the simulator; none yet holds nothing."""
@@ -2014,7 +2043,7 @@ def replace_record(record):
     finally: os.close(directory)
 
 
-def release_hold(item, entries, table, simulators, pools, stopping=()):
+def release_hold(item, entries, table, simulators, pools, stopping=(), *, discover_templates=False):
     """Why release_dead must leave one entry recoverable found, or None when this Mac proves it dead: a pool
     simulator's reservation, of the device simctl here lists under that name and shows Shutdown, whose run
     went to no other Mac, and which no other entry of the device still holds, with this reap's own process
@@ -2032,7 +2061,9 @@ def release_hold(item, entries, table, simulators, pools, stopping=()):
     if device is None: return f"simctl here does not list {udid}"
     if device.get("name") != key: return f"simctl lists {udid} as {device.get('name')!r}, not {key!r}"
     if pool_of(key, pools, device.get("runtime") or "")[0] is None:
-        return "it is neither a member nor a warmed template of the pools " + ", ".join(sorted(pools))
+        origin = template_provenance(device) if discover_templates else None
+        if not origin or identities([origin["holder"]]) != identities([entry.get(HOLDER)]):
+            return "it is neither a member nor a warmed template of the pools " + ", ".join(sorted(pools))
     if device.get("state") != "Shutdown" and udid not in stopping:
         return f"simctl shows it {device.get('state') or 'in no state'}, not Shutdown"
     for other, held in entries.items():
@@ -2084,7 +2115,7 @@ def live_admissions(table):
     return live_runs(table, guard_owners(), unended())
 
 
-def release_dead(found, entries, table, pools, listed, dry_run, stopping=None):
+def release_dead(found, entries, table, pools, listed, dry_run, stopping=None, *, discover_templates=False):
     """Release each entry of found that release_hold proves dead, as `devices recover --by reap` would, and
     log it; the rest come back with why each stays (owner's decision, 2026-11-04, vocaro-engineering#156).
     entries is the record as read before table's ps listing, so that a process gone from that listing was
@@ -2101,7 +2132,8 @@ def release_dead(found, entries, table, pools, listed, dry_run, stopping=None):
         return [], [{**item, "hold": why} for item in found]
     released, left, ready = [], [], []
     for item in found:
-        hold = release_hold(item, entries, table, simulators, pools, stopping if dry_run else ())
+        hold = release_hold(item, entries, table, simulators, pools, stopping if dry_run else (),
+                            discover_templates=discover_templates)
         if hold: left.append({**item, "hold": hold})
         else: ready.append(item)
     if any(item.get("early") for item in ready):
@@ -2198,7 +2230,7 @@ def stale_hold(key, entry, table, udid, launchd, seen):
                   "and then releases its entry")
 
 
-def observe(root, pools, listed):
+def observe(root, pools, listed, *, discover_templates=False):
     """One look at the simulators the census lists as left over: for each launchd_sim by UDID, its
     PID, start, age, name and reason, and hold, why it must keep running, or None. Nothing here
     lists simctl's devices unless the census finds a simulator. Anything unread raises."""
@@ -2235,9 +2267,15 @@ def observe(root, pools, listed):
         naming = [other for other, process in table.items() if process["uid"] == uid and other not in own
                   and pid not in lineage(table, other) and udid in process["args"].upper()]
         pool, what = pool_of(name, pools, device.get("runtime") or "")
+        origin = template_provenance(device) if what == "template" or (discover_templates and pool is None) else None
+        creator = origin["holder"] if origin else None
+        if origin and pool is None:
+            pool, what = origin["pool"], "template"
         if sum(other["simulator"] == udid for other in rows) > 1: hold = "more than one launchd_sim runs for it"
         elif device.get("state") != "Booted": hold = f"simctl shows it {device.get('state') or 'unlisted'}, not Booted"
         elif pool is None: hold = "it is neither a member of a simulator pool nor a pool's warmed template"
+        elif creator and table.get(creator["pid"], {}).get("start") == " ".join(creator["start"].split()):
+            hold = f"its template creator PID {creator['pid']} still runs"
         elif naming: hold = f"PID {naming[0]} names its UDID"
         elif any(item[0] for item in holds): hold = next(item[0] for item in holds if item[0])
         elif seconds is None: hold = "its launchd_sim's start cannot be read"
@@ -2332,11 +2370,12 @@ def log_hold(line, directory=None):
         return False
 
 
-def stop_simulator(item, reader, budget, begin, report):
+def stop_simulator(item, reader, budget, begin, report, *, discover_templates=False):
     """Check item once more under the device record's lock, and if it is still the same stale simulator,
     log it and start its one shutdown; then report how that ended. Nothing retries it."""
     with record_lock():
-        again = observe(report["root"], report["pools"], reader(min(budget(), REAP_CHECK_SECONDS))).get(item["udid"])
+        again = observe(report["root"], report["pools"], reader(min(budget(), REAP_CHECK_SECONDS)),
+                        discover_templates=discover_templates).get(item["udid"])
         if again is None or again["hold"] or (again["pid"], again["start"]) != (item["pid"], item["start"]):
             why = "the census no longer lists it" if again is None else again["hold"] or "another launchd_sim runs for it"
             report["skipped"].append({**item, "hold": f"it changed before the second check passed: {why}"})
@@ -2383,13 +2422,13 @@ def reap(root, pools, dry_run=False, scan=True, listed=None, begin=None, clock=t
             if found and report["problem"]:
                 why = "this reap met a problem, so it releases nothing"
                 report["recoverable"] = [{**item, "hold": why} for item in found]
-            elif found and not report["pools"]:
+            elif found and not report["pools"] and not scan:
                 report["recoverable"] = [{**item, "hold": "no simulator pool was named or found"} for item in found]
             elif found:
                 report["recoverable"] = found
                 stopping = {item["udid"]: item["pid"] for item in report["stopped"] + report["eligible"]}
                 report["released"], report["recoverable"] = release_dead(found, entries, table, report["pools"],
-                                                                         look, dry_run, stopping)
+                                                                         look, dry_run, stopping, discover_templates=scan)
     except Exception as error:
         report["problem"] = report["problem"] or (str(error) if isinstance(error, ReapProblem)
                                                   else f"{type(error).__name__}: {error}")
@@ -2419,8 +2458,8 @@ def stop_stale(root, pools, dry_run=False, scan=True, listed=None, begin=None, c
             return lambda command: listing(command, max(1, end - clock()))
 
         if scan: report["pools"] = sorted({*pools, *known_pools(root)})
-        if not report["pools"]: return report
-        found = observe(root, report["pools"], reader(min(budget(), 60)))
+        if not report["pools"] and not scan: return report
+        found = observe(root, report["pools"], reader(min(budget(), 60)), discover_templates=scan)
         report["kept"] = [item for item in found.values() if item["hold"]]
         stale = [item for item in found.values() if not item["hold"]]
         if dry_run:
@@ -2430,7 +2469,7 @@ def stop_stale(root, pools, dry_run=False, scan=True, listed=None, begin=None, c
             if deadline - clock() < REAP_STOP_SECONDS:
                 report["skipped"].append({**item, "hold": f"this reap's {REAP_SECONDS}s were used up"})
                 continue
-            stop_simulator(item, reader, budget, begin or start_shutdown, report)
+            stop_simulator(item, reader, budget, begin or start_shutdown, report, discover_templates=scan)
     except Exception as error:
         report["problem"] = f"{type(error).__name__}: {error}" if not isinstance(error, ReapProblem) else str(error)
     return report

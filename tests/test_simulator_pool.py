@@ -1261,6 +1261,12 @@ class PoolTests(unittest.TestCase):
         killed = {}
 
         def killed_while_warming(udid, runtime, *, simctl, **limits):
+            # Provenance is outside the copied data and exists before the first boot.
+            marker = self.simctl.data(udid).parent / ".vocaro-pool-template.json"
+            origin = offload_host.template_provenance({**self.simctl.devices[udid], "udid": udid})
+            self.assertEqual(json.loads(marker.read_text()), origin)
+            self.assertEqual((origin["pool"], origin["name"], origin["holder"]["pid"]),
+                             ("Project", template, os.getpid()))
             simctl("boot", udid)
             # What the record holds when the warming process dies with no chance to release anything.
             killed.update(udid=udid, record=self.path.read_text())

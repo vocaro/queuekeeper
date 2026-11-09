@@ -2017,7 +2017,11 @@ it inherits, nor a `self` lane, whose `eng admit` commands reap each as it is ad
    ([warmed templates](simulator-testing.md#warmed-templates)). Asked on 2026-11-04 "May the pool's reap
    shut down a warmed template a killed warm-up left booted?", the owner answered "Yes, reap them"
    ([vocaro-engineering#153](https://github.com/vocaro/vocaro-engineering/issues/153)). The stop is
-   logged and printed as a warmed template's, not a member's.
+   logged and printed as a warmed template's, not a member's. Before booting a newly created template,
+   the toolkit records its pool, name, runtime, UDID and creator's process identity beside the simulator's
+   data directory. Unscoped reap can recognize that exact template after its checkout or isolated test
+   record is gone. It keeps a template while its recorded creator still runs, comparing PID and start.
+   A template-shaped name alone supplies no ownership evidence for an unknown pool (#336).
 2. The search above lists its `launchd_sim` as left over, and no process of the account outside that
    simulator's own names its UDID.
 3. The device record holds no live reservation of it, by its name or its UDID. A reservation whose
@@ -3040,6 +3044,10 @@ one entry, named by its owner's PID or by its identity:
 python3 scripts/eng admissions recover
 python3 scripts/eng admissions recover 56766
 ```
+
+Admission publishes a complete opening process record before it publishes the guard. If it cannot
+write the opening record, the request gives up its slots before any work starts (#336). An empty or
+missing record from an earlier or interrupted run cannot prove that no command ran.
 
 It removes that entry alone, and the guard with its last entry, deletes the entry's process record
 and logs a `recovered` line ([admission log](#admission-log)), only when all of these hold:

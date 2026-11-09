@@ -642,8 +642,16 @@ class Pool:
                     return None, f"simctl create {key} failed with status {created.returncode}: {created.stderr.strip()}"
                 udid = stored[0]
             lease.udid = udid
-            lease.revision = self.record.update(key, owner=self.owner, revision=lease.revision, device=udid,
-                                                createdAt=self.clock().isoformat())["revision"]
+            entry = self.record.update(key, owner=self.owner, revision=lease.revision, device=udid,
+                                       createdAt=self.clock().isoformat())
+            lease.revision = entry["revision"]
+            if created.returncode == 0 and entry.get(device_record.HOLDER):
+                device = self.entries().get(udid) or {}
+                marker = offload_host.template_marker(device)
+                if marker is not None:
+                    with marker.open("x") as stream:
+                        json.dump({"version": 1, "pool": self.name, "udid": udid, "name": key, "runtime": runtime,
+                                   "holder": entry[device_record.HOLDER]}, stream)
             self.log(f"WARMING the template {key} ({udid}): boot, VoiceOver until it speaks, then the system's voices "
                      "twice with a reboot between")
             try:

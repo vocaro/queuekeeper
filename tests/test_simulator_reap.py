@@ -104,7 +104,8 @@ class ReapTests(unittest.TestCase):
             groups = {}
             for udid, name in self.names.items():
                 groups.setdefault(self.runtimes.get(udid, "iOS"), []).append(
-                    {"udid": udid, "name": name, "state": self.states.get(udid, "Booted")})
+                    {"udid": udid, "name": name, "state": self.states.get(udid, "Booted"),
+                     "dataPath": str(self.home / offload_host.DEVICES / udid / "data")})
             return json.dumps({"devices": groups})
         self.fail(f"an unexpected command: {command}")
 
@@ -716,9 +717,57 @@ class ReapTests(unittest.TestCase):
                 self.reserve(key, device=device, **live)
                 self.assertKept(self.reap(), f"is live: PID {HOLDER}")
 
-    def test_no_pool_named_or_found_lists_nothing_and_asks_nothing_of_simctl(self):
+    def mark_unlisted_template(self, **changes):
+        name = "Lost Duo template (iOS-27-2)"
+        self.names[UDID], self.runtimes[UDID] = name, RUNTIME
+        path = self.home / offload_host.DEVICES / UDID
+        path.mkdir(parents=True, exist_ok=True)
+        marker = path / ".vocaro-pool-template.json"
+        marker.write_text(json.dumps({"version": 1, "pool": "Lost", "udid": UDID, "name": name,
+                                      "runtime": RUNTIME, "holder": {"pid": HOLDER, "start": ago(4 * 3600)}, **changes}))
+        return name
+
+    def test_dispatch_reaps_a_recorded_template_of_an_unlisted_pool_and_keeps_a_lookalike(self):
+        name = self.mark_unlisted_template()
+        self.simulator(OTHER, pid=LAUNCHD + 2)
+        self.names[OTHER], self.runtimes[OTHER] = name, RUNTIME
+        # This is the remote preflight request; the fake substitutes only the host observations and shutdown.
+        reap, leftovers = offload_host.reap, offload_host.leftovers
+        with patch.object(offload_host, "reap", side_effect=lambda root, **request:
+                reap(root, listed=self.listed, begin=self.begin, **request)), \
+                patch.object(offload_host, "leftovers", side_effect=lambda root, listed=self.listed, written=None:
+                             leftovers(root, listed, written or (lambda pid: None))):
+            result = offload_host.answer({"leftovers": remote.ROOT, "reap": {"pools": []}})
+        self.assertStopped(result["reap"])
+        self.assertEqual([item["udid"] for item in result["reap"]["kept"]], [OTHER])
+
+    def test_unlisted_template_provenance_preserves_live_reserved_and_mismatched_devices(self):
+        self.process(HOLDER, 1, "python3 warm-template")
+        name = self.mark_unlisted_template(holder={"pid": HOLDER, "start": self.table[HOLDER][2]})
+        self.assertKept(self.reap(scan=True), "template creator PID .* still runs")
+        # An unrelated process has reused the creator's PID. The device reservation is still live.
+        self.mark_unlisted_template(holder={"pid": HOLDER, "start": ago(4 * 3600)})
+        self.reserve(name, holderProcess={"pid": HOLDER, "start": self.table[HOLDER][2]})
+        self.assertKept(self.reap(scan=True), "is live: PID")
+        self.record.unlink()
+        self.mark_unlisted_template(udid=OTHER)
+        self.assertKept(self.reap(scan=True), "neither a member")
+        self.mark_unlisted_template()
+        self.assertKept(self.reap(scan=False), "neither a member")
+        self.assertStopped(self.reap(scan=True))
+
+    def test_reaping_an_unlisted_template_releases_its_matching_dead_warm_up_reservation(self):
+        holder = {"pid": HOLDER, "start": "Thu Jan 1 00:00:00 2026"}
+        name = self.mark_unlisted_template(holder=holder)
+        self.reserve(name, **self.held_entry())
+        report = self.reap(scan=True)
+        self.assertStopped(report)
+        self.assertEqual([item["key"] for item in report["released"]], [name], report)
+        self.assertReleased(key=name)
+
+    def test_no_pool_in_a_scoped_reap_lists_nothing_and_asks_nothing_of_simctl(self):
         self.simctl_fails = True
-        report = offload_host.reap(remote.ROOT, [], listed=self.listed, begin=self.begin)
+        report = offload_host.reap(remote.ROOT, [], listed=self.listed, begin=self.begin, scan=False)
         self.assertEqual((report["pools"], report["kept"], report["problem"], self.looks), ([], [], None, 0))
 
     def test_a_scan_finds_the_pool_a_checkout_names(self):

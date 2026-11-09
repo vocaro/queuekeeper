@@ -280,7 +280,11 @@ class SimulatorMatrixTests(unittest.TestCase):
             host_isolation.executable(tools / name)
         self.record = self.root / "record/device-handoff.json"
         self.others = set()  # devices another session holds booted
-        self.environment = {"PATH": f"{tools}:{Path(sys.executable).parent}:/usr/bin:/bin", "FAKE_STATE": str(self.state),
+        # The stand-ins and device record are private to this fixture. Keep host_isolation's dispatch and
+        # reaping switches in the child, and give each case a fresh admission guard and slot directory (#336).
+        self.environment = {**os.environ,
+                            "PATH": f"{tools}:{Path(sys.executable).parent}:/usr/bin:/bin", "FAKE_STATE": str(self.state),
+                            "HEAVY_SLOT_DIR": str(self.root / "slots"), "SW_GATE_LOCK_FILE": str(self.root / "gate"),
                             "VOCARO_DEVICE_RECORD": str(self.record), "VOCARO_DEVICE_OWNER": "matrix-tests",
                             # Devices that should meet wait for each other this long, stretched by load.
                             "FAKE_MEET_LIMIT": str(stretched(60))}
@@ -1237,6 +1241,8 @@ class SimulatorMatrixTests(unittest.TestCase):
         self.assertIn("a lane whose command runs simulator-tests ends with \"--\"",
                       (self.root / ".build/engineering/unseparated/run.log").read_text())
         self.assertFalse((self.state / "simctl.log").exists())
+        records = (self.root / "slots/admissions.jsonl").read_text().splitlines()
+        self.assertIn("Project unseparated", {json.loads(line)["label"] for line in records})
 
     def test_a_run_without_a_pool_name_refuses_before_taking_a_device(self):
         command = [sys.executable, str(ENG), "simulator-tests", "--scheme", "Package-Tests", "--runtime", "iOS-27-0",
