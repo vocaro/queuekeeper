@@ -403,13 +403,67 @@ class Landing(Fixture):
 
     REFUSED = "is a merge, which a queue would have to put on main: rebase the branch's own commits onto origin/main"
 
-    def test_a_merge_is_refused(self):
-        """A negative control: a merge that brings in another branch's work stays refused (#217)."""
-        self.commit("a", "a"); self.commit("b", "b", start="origin/main")
-        run(self.repo, "git", "merge", "-q", "--no-edit", "a")
-        with self.assertRaisesRegex(ValueError, self.REFUSED), patch("builtins.print"):
-            mq.add(self.repo, "b")
+    def refused(self, branch):
+        """What eng land refuses branch with, having queued nothing."""
+        with self.assertRaises(ValueError) as caught, patch("builtins.print"):
+            mq.add(self.repo, branch)
         self.assertEqual(mq.Queue(self.repo).all(), [])
+        return str(caught.exception)
+
+    def test_a_merge_that_brings_in_another_branchs_commits_is_refused_naming_them(self):
+        """A merge of another branch's unlanded work stays refused (#217), and the refusal names what that merge
+        brings in, not the branch's own commit or what main holds, and says how to carry it (#262)."""
+        other = self.commit("a", "a")
+        second = self.commit("a2", "a", start="a")
+        own = self.commit("b", "b", start="origin/main")
+        run(self.repo, "git", "merge", "-q", "--no-edit", "a")
+        merge = run(self.repo, "git", "rev-parse", "HEAD")
+        said = self.refused("b")
+        self.assertEqual(said, f"{merge[:12]} is a merge that brings in 2 commits origin/main lacks: {other[:12]} Add a; "
+                               f"{second[:12]} Add a2. A queue would have to put it on main: take it off the branch and "
+                               "cherry-pick those commits onto it, or wait until their own branch lands and merge "
+                               "origin/main, and add the branch again")
+        self.assertNotIn(own[:12], said)
+
+    def test_a_long_list_of_merged_in_commits_is_bounded_and_counted(self):
+        tips = [self.commit("a0", "a")]
+        for number in range(1, mq.MERGED_IN_LISTED + 2):
+            tips.append(self.commit(f"a{number}", "a", start="a"))
+        self.commit("b", "b", start="origin/main")
+        run(self.repo, "git", "merge", "-q", "--no-edit", "a")
+        said = self.refused("b")
+        self.assertIn(f"brings in {mq.MERGED_IN_LISTED + 2} commits origin/main lacks", said)
+        self.assertIn("; and 2 more not listed here. A queue", said)
+        self.assertEqual([tip[:12] in said for tip in tips], [True] * mq.MERGED_IN_LISTED + [False, False])
+
+    def test_two_merges_name_what_each_brings_in_once(self):
+        """The second merge's branch holds the first's commit, which the refusal lists once."""
+        first = self.commit("a", "a")
+        second = self.commit("c", "c", start="a")
+        self.commit("b", "b", start="origin/main")
+        run(self.repo, "git", "merge", "-q", "--no-edit", "a")
+        one = run(self.repo, "git", "rev-parse", "HEAD")
+        run(self.repo, "git", "merge", "-q", "--no-edit", "c")
+        two = run(self.repo, "git", "rev-parse", "HEAD")
+        self.assertIn(f"{two[:12]}, {one[:12]} are merges that bring in 2 commits origin/main lacks: "
+                      f"{first[:12]} Add a; {second[:12]} Add c. A queue would have to put them on main",
+                      self.refused("b"))
+
+    def test_a_merge_of_a_branch_main_holds_under_another_sha_keeps_the_rebase_advice(self):
+        """A negative control: the queue lands a commit under another SHA, so merging the landed branch brings in no
+        patch main lacks, and is still refused. Cherry-picking would add nothing, so the refusal does not say to."""
+        start = run(self.repo, "git", "rev-parse", "origin/main")
+        self.commit("elsewhere", "main-work")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        self.commit("a", "a", start=start)
+        self.commit("elsewhere2", "landed")
+        run(self.repo, "git", "cherry-pick", "a")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        self.commit("b", "b", start="origin/main")
+        run(self.repo, "git", "merge", "-q", "--no-edit", "a")
+        said = self.refused("b")
+        self.assertRegex(said, self.REFUSED)
+        self.assertNotIn("cherry-pick", said)
 
     def synced(self, branch, name, content="x"):
         """branch with a commit adding name, refreshed by merging origin/main after main moves, as the app's
@@ -451,9 +505,9 @@ class Landing(Fixture):
         self.synced("b", "same", "branch")
         self.commit("same", "main-again", "main", start="origin/main")
         run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
-        with self.assertRaisesRegex(ValueError, self.REFUSED), patch("builtins.print"):
-            mq.add(self.repo, "b")
-        self.assertEqual(mq.Queue(self.repo).all(), [])
+        said = self.refused("b")
+        self.assertRegex(said, self.REFUSED)
+        self.assertNotIn("cherry-pick", said)
         self.assertEqual(run(self.repo, "git", "worktree", "list", "--porcelain").count("worktree "), 1)
 
     def test_a_sync_that_settled_a_conflict_is_refused(self):
@@ -467,8 +521,9 @@ class Landing(Fixture):
         (self.repo / "same").write_text("both")
         run(self.repo, "git", "commit", "-qam", "Merge origin/main")
         tip = run(self.repo, "git", "rev-parse", "HEAD")
-        with self.assertRaisesRegex(ValueError, self.REFUSED), patch("builtins.print"):
-            mq.add(self.repo, "b")
+        said = self.refused("b")
+        self.assertRegex(said, self.REFUSED)
+        self.assertNotIn("cherry-pick", said)
         self.assertIsNone(mq.landing.contained(lambda *words: mq.git(self.repo, *words), "origin/main", tip))
 
     def test_adding_a_branch_again_replaces_it(self):

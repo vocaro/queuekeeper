@@ -70,7 +70,10 @@ What gave it away was the other session's title in the app's list of linked sess
   says only that nothing is written yet; ask its session or the owner, and do not wait for an answer.
 - When two branches hold the same change, the later session merges the earlier one's pushed
   branch into its own, takes its wording where they agree and lands only what it adds. It does
-  not push to the other session's branch.
+  not push to the other session's branch. That merge waits until the earlier has landed, and is
+  then a merge of `origin/main`, since the queue can land a commit under another SHA. Until then
+  `eng land` refuses it: cherry-pick the commit you carry onto your branch, and name the commit
+  you took in your own commit message.
 - A brief names the sessions its writer knows to be working near the same code. A session that
   will file an issue for a task it hands over says so in the brief, or files the issue first and
   names it. Search the tracker again straight before filing an issue: on 2026-10-13 a started

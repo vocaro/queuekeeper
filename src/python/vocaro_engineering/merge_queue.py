@@ -1262,8 +1262,7 @@ def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False
         # A branch refreshed by merging main, as the app's sync does, lands as its own commits replayed (#217).
         replayed = linear(queue, root, tip)
         if replayed is None:
-            raise ValueError(f"{merges[0][:12]} is a merge, which a queue would have to put on main: rebase the "
-                             "branch's own commits onto origin/main and add it again")
+            raise ValueError(merge_refusal(root, merges, tip))
         if replayed == text(root, "rev-parse", MAIN):
             print(f"origin/main already holds the commits of {tip[:12]} but its merges: nothing to queue")
             return None
@@ -3608,6 +3607,32 @@ def linear(queue, root, tip):
                 return None
             git(path, "cherry-pick", "--skip", hooks=False, check=True)
         return text(path, "rev-parse", "HEAD")
+
+
+# How many commits a refused merge's message lists; the rest it only counts.
+MERGED_IN_LISTED = 10
+
+
+def merge_refusal(root, merges, tip):
+    """Why eng land queues nothing for a branch with merges, which linear could not replay. A merge that brings in
+    commits origin/main lacks is another branch's work, which rebasing the branch's own commits would drop, so the
+    refusal names those commits and the two ways to carry them (vocaro-engineering#262). Any other merge, as one
+    whose replay conflicts, has only the branch's own commits to move."""
+    read = lambda *words: git(root, *words)
+    bringing = landing.own_merges(read, MAIN, tip)
+    commits = landing.brought_in(read, MAIN, bringing) if bringing else None
+    if not commits:
+        return (f"{merges[0][:12]} is a merge, which a queue would have to put on main: rebase the branch's own "
+                "commits onto origin/main and add it again")
+    many = len(bringing) > 1
+    listed = "; ".join(f"{commit[:12]} {subject}" for commit, subject in commits[:MERGED_IN_LISTED])
+    if len(commits) > MERGED_IN_LISTED: listed += f"; and {len(commits) - MERGED_IN_LISTED} more not listed here"
+    them = "them" if many else "it"
+    return (f"{', '.join(merge[:12] for merge in bringing)} "
+            f"{'are merges that bring' if many else 'is a merge that brings'} in {len(commits)} "
+            f"commit{'' if len(commits) == 1 else 's'} origin/main lacks: {listed}. A queue would have to put {them} on "
+            f"main: take {them} off the branch and cherry-pick those commits onto it, or wait until their own branch "
+            "lands and merge origin/main, and add the branch again")
 
 
 def tried(found, base, front, elapsed):

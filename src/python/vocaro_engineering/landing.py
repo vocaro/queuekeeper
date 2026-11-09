@@ -119,6 +119,24 @@ def own_merges(git, base, tip):
     return found
 
 
+def brought_in(git, base, merges):
+    """[(commit, subject)] for what merges, newest first as own_merges lists them, bring in beside their first
+    parents: the commits, oldest first, that base has no patch of, each once, or None when git could not say. A merge
+    within what they bring in is not listed, since `git cherry` passes over merges."""
+    found = {}
+    for merge in reversed(merges):
+        parents = git("rev-list", "--parents", "-n", "1", merge)
+        if parents.returncode: return None
+        first, *others = parents.stdout.split()[1:]
+        for other in others:
+            cherry = git("cherry", "-v", base, other, first)
+            if cherry.returncode: return None
+            for line in cherry.stdout.splitlines():
+                mark, commit, *subject = line.split(" ", 2)
+                if mark == "+": found.setdefault(commit, subject[0] if subject else "")
+    return list(found.items())
+
+
 def changes(git, commit):
     """{path: (status, old mode, new mode, old blob, new blob, binary)} for what a commit that is not
     a merge changes against its parent, or None when git could not say."""
