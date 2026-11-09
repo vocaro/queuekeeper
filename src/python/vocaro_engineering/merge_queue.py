@@ -248,6 +248,11 @@ PACKAGE_STATE = ("workspace-state.json", "artifacts", "checkouts", "repositories
 UNWALKED = {".git", ".venv", "node_modules"}
 
 
+def shortened(said):
+    """said as a hold's reason quotes it: at most UNMEASURED_SHOWN characters."""
+    return said if len(said) <= UNMEASURED_SHOWN else said[:UNMEASURED_SHOWN - 3] + "..."
+
+
 def forget(checkout, names):
     """Remove the package state under checkout whose workspace-state.json names any of names, the
     checkout's old paths, so that SwiftPM and Xcode resolve its packages again, and return the folders
@@ -3098,20 +3103,45 @@ class Worker:
 
     def no_verdict_cause(self, result, log):
         """Why the gate that exited result gave no verdict, for a hold's reason: the lane's limit it reached, the
-        tests its log reports unmeasured, no admission, or a shared host's configuration."""
+        tests its log reports unmeasured, else the error its receipt records (#288), no admission, or a shared host's
+        configuration."""
         if self.timed_out: return f"unmeasured: {self.timed_out}"
         if result == evidence.UNMEASURED:
             try: said = log.read_text(errors="replace") if log else ""
             except OSError: said = ""
             found = evidence.unmeasured_tests(said)
-            if not found: return "unmeasured, with no test its log names"
-            first = found[0] if len(found[0]) <= UNMEASURED_SHOWN else found[0][:UNMEASURED_SHOWN - 3] + "..."
+            if not found:
+                error = self.receipt_error()
+                return f"unmeasured: {shortened(error)}" if error else "unmeasured, with no test its log names"
+            first = shortened(found[0])
             # The run's last reading of its screen, which eng writes for a lane whose result depends on it.
             screens = SCREEN_LINE.findall(said)
             return (f"unmeasured: {len(found)} test{'' if len(found) == 1 else 's'}, the first {first}"
                     + (f"; the last reading {screens[-1].strip()}" if screens else ""))
         if result == resources.BUSY: return "no admission: the host stayed at capacity"
         return "a shared host's configuration stopped it"
+
+    def receipt_error(self):
+        """The error this run's receipt records for the lane the last gate stopped at, on one line, or None when no
+        receipt written since the lane began can be read or says one: the dispatch's, for a run on the second Mac,
+        else the one here. A dispatch's holds the lane's own receipt from that Mac, and that Mac's error, under
+        result (remote.execute)."""
+        if not self.lane_now: return None
+        lane, began = self.lane_now[0], self.lane_now[1]
+        ran = remote.dispatch(self.checkout, lane, began)[0]
+        paths = ([ran / "source.json"] if ran is not None else []) \
+            + [self.checkout / ".build/engineering" / lane / "source.json"]
+        for path in paths:
+            try:
+                if path.stat().st_mtime < began: continue
+                receipt = json.loads(path.read_text())
+            except (OSError, ValueError):
+                continue
+            there = receipt.get("result") if isinstance(receipt, dict) else None
+            for said in (there.get("receipt") if isinstance(there, dict) else None, there, receipt):
+                error = said.get("error") if isinstance(said, dict) else None
+                if isinstance(error, str) and error.strip(): return " ".join(error.split())
+        return None
 
     def screen_locked(self, result, log):
         """(the lane, the screen reading) when the lane at which the last gate stopped with result, which gave no

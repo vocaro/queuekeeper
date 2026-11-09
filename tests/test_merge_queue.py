@@ -1480,6 +1480,107 @@ class NoVerdict(Fixture):
         worker.timed_out = "gate reached its limit: after 7200 s"
         self.assertEqual(worker.no_verdict_cause(3, log), "unmeasured: gate reached its limit: after 7200 s")
 
+    TIMED_OUT = "Owned command timed out after 2400s: python3; it and its observed descendants ended"
+    NOTHING = "unmeasured, with no test its log names"
+
+    def stopped_worker(self):
+        """A worker whose gate stopped at the lane gate a minute ago, the log that names no test, and where the
+        lane's receipt goes (#288)."""
+        checkout = Path(tempfile.mkdtemp(dir=self.base))
+        worker = mq.Worker.__new__(mq.Worker)
+        worker.checkout, worker.timed_out, worker.lane_now = checkout, None, ("gate", time.time() - 60, ())
+        log = checkout / "gate.log"
+        log.write_text("test_last (m.Passed) ... ok\n")
+        receipt = checkout / ".build/engineering/gate/source.json"
+        receipt.parent.mkdir(parents=True)
+        return worker, log, receipt
+
+    def dispatch_of(self, worker, said):
+        """The second Mac's dispatch of the worker's gate, whose receipt holds said, or which has none for None."""
+        stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+        run = worker.checkout / f".build/engineering/remote/.dispatches/gate/{stamp}-1"
+        run.mkdir(parents=True)
+        if said is not None: (run / "source.json").write_text(said)
+        return run
+
+    def test_a_no_verdict_hold_quotes_the_error_its_own_receipt_records(self):
+        """A lane that reached its own limit: the real eng run, its real receipt, and a log that just stops (#288)."""
+        config = self.config()
+        config["lanes"]["gate"] = {"command": ["python3", "-c", "import time; time.sleep(120)"], "timeout": 2}
+        config["queue"]["noVerdictRuns"] = 1
+        self.publish(config)
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        with patch("builtins.print"): self.work()
+        self.assertEqual(self.state(identifier)["state"], "queued")
+        held = mq.Queue(self.repo).held()
+        self.assertIn(f"the last with exit 3 on this Mac ({offload_host.mac_name()}), unmeasured: Owned command timed "
+                      "out after 2s: python3", held)
+        self.assertNotIn(self.NOTHING, held)
+
+    def test_the_cause_is_the_receipts_error_when_the_log_names_no_test(self):
+        worker, log, receipt = self.stopped_worker()
+        receipt.write_text(json.dumps({"outcome": "unmeasured", "error": self.TIMED_OUT}))
+        self.assertEqual(worker.no_verdict_cause(3, log), f"unmeasured: {self.TIMED_OUT}")
+        # An unreadable log says no more than one that names no test.
+        self.assertEqual(worker.no_verdict_cause(3, self.base / "missing.log"), f"unmeasured: {self.TIMED_OUT}")
+        # Shortened as a test's name is, and kept on the hold's one line.
+        receipt.write_text(json.dumps({"error": "first line\n  second " + "x" * 400}))
+        said = worker.no_verdict_cause(3, log).removeprefix("unmeasured: ")
+        self.assertEqual(len(said), mq.UNMEASURED_SHOWN)
+        self.assertTrue(said.startswith("first line second x"), said)
+        self.assertTrue(said.endswith("..."), said)
+
+    def test_the_cause_of_a_run_on_the_second_mac_is_in_the_receipt_that_came_back(self):
+        # As remote files it: the lane's own receipt under result, as offload_host read it on the second Mac.
+        worker, log, _ = self.stopped_worker()
+        run = self.dispatch_of(worker, json.dumps({"host": "build-host", "result": {
+            "exitStatus": 3, "receipt": {"outcome": "unmeasured", "error": self.TIMED_OUT}}}))
+        self.assertEqual(worker.no_verdict_cause(3, log), f"unmeasured: {self.TIMED_OUT}")
+        # What stopped the run there, where the lane wrote no receipt.
+        (run / "source.json").write_text(json.dumps({"host": "build-host", "result": {"error": "the checkout is gone"}}))
+        self.assertEqual(worker.no_verdict_cause(3, log), "unmeasured: the checkout is gone")
+
+    def test_with_no_receipt_of_this_run_that_says_why_the_cause_is_the_fixed_text(self):
+        worker, log, receipt = self.stopped_worker()
+        self.assertEqual(worker.no_verdict_cause(3, log), self.NOTHING)  # no receipt at all
+        for said in (b"{not json", b'"a string"', b"[1]", b"null", b"\xff\xfe", b'{"outcome": "unmeasured"}',
+                     b'{"error": ""}', b'{"error": "  \\n"}', b'{"error": 7}', b'{"error": null}', b'{"result": "text"}',
+                     b'{"result": {"receipt": "text"}}'):
+            with self.subTest(said=said):
+                receipt.write_bytes(said)
+                self.assertEqual(worker.no_verdict_cause(3, log), self.NOTHING)
+        # An earlier run's receipt is not this one's.
+        receipt.write_text(json.dumps({"error": self.TIMED_OUT}))
+        os.utime(receipt, (worker.lane_now[1] - 10, worker.lane_now[1] - 10))
+        self.assertEqual(worker.no_verdict_cause(3, log), self.NOTHING)
+        # A worker that has run no lane has no receipt to read.
+        lane_now, worker.lane_now = worker.lane_now, None
+        self.assertEqual(worker.no_verdict_cause(3, log), self.NOTHING)
+        # A receipt that is a directory cannot be read either.
+        worker.lane_now = lane_now
+        receipt.unlink()
+        receipt.mkdir()
+        self.assertEqual(worker.no_verdict_cause(3, log), self.NOTHING)
+
+    def test_a_run_on_the_second_mac_with_an_absent_or_malformed_receipt_gets_the_fixed_text(self):
+        for said in (None, "{not json", "[1]", json.dumps({"host": "build-host", "result": {"exitStatus": 3}})):
+            with self.subTest(said=said):
+                worker, log, _ = self.stopped_worker()
+                self.dispatch_of(worker, said)
+                self.assertEqual(worker.no_verdict_cause(3, log), self.NOTHING)
+
+    def test_tests_the_log_names_and_the_other_causes_keep_their_words(self):
+        worker, log, receipt = self.stopped_worker()
+        receipt.write_text(json.dumps({"error": self.TIMED_OUT}))
+        log.write_text("test_voices (m.Voices) ... skipped 'Unmeasured: the voices were not ready in 500 s'\n")
+        self.assertEqual(worker.no_verdict_cause(3, log), "unmeasured: 1 test, the first test_voices (m.Voices) ... "
+                                                          "skipped 'Unmeasured: the voices were not ready in 500 s'")
+        self.assertEqual(worker.no_verdict_cause(75, log), "no admission: the host stayed at capacity")
+        self.assertIn("configuration", worker.no_verdict_cause(78, log))
+        worker.timed_out = "gate reached its limit: after 7200 s"
+        self.assertEqual(worker.no_verdict_cause(3, log), "unmeasured: gate reached its limit: after 7200 s")
+
     BUSY = ("cpu", "the CPU is 95% busy, at or above HEAVY_BUSY_LIMIT=75%")
 
     def test_a_retry_waits_while_the_load_is_high_and_starts_once_it_drops(self):
