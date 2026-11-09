@@ -47,6 +47,15 @@ seconds, KIND.log, and its result bundle's summary and each class's or suite's s
 come back from the second Mac with the lane's dispatch, and are kept by commit beside its receipt, where
 the logs folder's are overwritten by the next run (vocaro-engineering#218). `eng results keep` writes the
 same two files for a script that runs xcodebuild itself (vocaro-engineering#260).
+
+With --repeat N the tests are built once and run N times, each run on a member of each device's kind taken from the
+pool afresh, by the same take, and so the same reset, as any other run: erased with --erase, a copy of the warmed
+template with --template, which leaves a run unmeasured when the pool could only erase. The options may follow the
+--, so that `eng run LANE --repeat N` reaches this through the arguments a lane appends, on either Mac; --only TEST
+then replaces the lane's own selection. Each run keeps its own outcome, test counts and one-minute load at its start
+and end, printed one line each, added up on the "Repeat series:" line and kept in series.json. Any failed run fails
+the series, and a run that did not happen is unmeasured, never passed (guides/simulator-testing.md, Repeating a test
+to show a fix works).
 """
 import argparse
 import contextlib
@@ -64,7 +73,7 @@ import time
 from types import SimpleNamespace
 import uuid
 
-from .. import evidence, processes, stale_modules
+from .. import evidence, processes, resources, stale_modules
 from ..parallel import RESULTS_VARIABLE, TAIL, combined, outcome
 from . import pool as simulator_pool, speech
 from .pool import DEVICE_TYPE, RUNTIME, qualified
@@ -111,6 +120,14 @@ def parse(argv):
     fresh.add_argument("--erase", action="store_true", help="erase each member in place of the reset from its "
                        "kind's warmed template, for tests that want pristine data (guides/simulator-testing.md, "
                        "Warmed templates)")
+    fresh.add_argument("--template", action="store_true", help="with --repeat: every run must get a copy of its "
+                       "kind's warmed template; a run the pool could only erase is left unmeasured")
+    parser.add_argument("--repeat", type=int, metavar="N", help="build once and run the tests N times, each run on a "
+                        "member taken from the pool afresh, one outcome, set of test counts and one-minute load "
+                        "each; it may also follow -- (guides/simulator-testing.md, Repeating a test to show a fix "
+                        "works). A lane's --shards is set aside: each run is one test process on each member")
+    parser.add_argument("--only", action="append", default=[], metavar="TEST", help="with --repeat: run only this "
+                        "test, in place of the run's own -only-testing and -skip-testing arguments; repeat for each")
     parser.add_argument("--app-accessibility", action="store_true", help="switch UIKit's and SwiftUI's own "
                         "accessibility on in each member's app processes once it has booted, for tests hosted in an "
                         "app that read system views; a device whose setting does not read on fails "
@@ -146,9 +163,18 @@ def parse(argv):
         parser.error(f"unrecognized arguments: {' '.join(unknown)}. Test arguments such as -only-testing go after "
                      "--, so a lane whose command runs simulator-tests ends with \"--\"")
     args.passed = argv[split + 1:]
-    for name in ("jobs", "build_jobs", "workers", "shards", "boot_timeout", "test_timeout", "test_allowance"):
+    series_options(args)
+    for name in ("jobs", "build_jobs", "workers", "shards", "boot_timeout", "test_timeout", "test_allowance", "repeat"):
         if getattr(args, name) is not None and getattr(args, name) < 1:
             parser.error(f"--{name.replace('_', '-')} needs at least 1")
+    if args.repeat is None and (args.template or args.only):
+        parser.error("--template and --only say how a series runs: give --repeat N too")
+    if args.repeat is not None and args.build_only: parser.error("--repeat runs tests, and --build-only runs none")
+    args.set_aside_shards = None
+    if args.repeat is not None and args.shards:
+        args.set_aside_shards, args.shards = args.shards, None
+    if args.only:
+        args.passed = [*[a for a in args.passed if not selecting(a)], *(f"-only-testing:{test}" for test in args.only)]
     if len(set(args.device)) != len(args.device): parser.error("name each device type once")
     if args.xcodegen is not None and not args.xcode_project:
         parser.error("--xcodegen generates an Xcode project: name it with --xcode-project")
@@ -157,6 +183,25 @@ def parse(argv):
         # A clone or a shard's member would speak unmuted; a build plays nothing.
         parser.error("--voiceover runs one test process on each member: not with --workers, --shards or --build-only")
     return args
+
+
+def series_options(args):
+    """Move a series' options, from a `--repeat` among the test arguments, onto args, and leave the rest as test
+    arguments. They come there from `eng run LANE --repeat N`, which appends them to the lane's command, after its --,
+    and which reach this on either Mac as a lane's other arguments do. Their reset replaces the lane's own."""
+    if "--repeat" not in args.passed: return
+    at = args.passed.index("--repeat")
+    parser = argparse.ArgumentParser(prog="eng simulator-tests", add_help=False, allow_abbrev=False)
+    parser.add_argument("--repeat", type=int)
+    fresh = parser.add_mutually_exclusive_group()
+    fresh.add_argument("--erase", action="store_true")
+    fresh.add_argument("--template", action="store_true")
+    parser.add_argument("--only", action="append", default=[])
+    asked, rest = parser.parse_known_args(args.passed[at:])
+    args.passed = [*args.passed[:at], *rest]
+    args.repeat, args.only = asked.repeat, [*args.only, *asked.only]
+    if asked.erase or asked.template:
+        args.erase, args.template, args.keep_state = asked.erase, asked.template, False
 
 
 def forwarded(prefixes, environment):
@@ -314,12 +359,15 @@ class Run:
         self.logs = args.logs.resolve()
         # The listing has a lock of its own: say() takes self.lock, and the listing says what it found.
         self.shards, self.listing, self.seconds, self.listing_lock = {}, None, {}, threading.Lock()
+        # Each test run's own, for a series: what finished it, its seconds, its test counts and its loads.
+        self.details, self.durations, self.tallies, self.loads = {}, {}, {}, {}
 
     def say(self, *lines):
         with self.lock: print(*lines, sep="\n", flush=True)
 
     def finish(self, kind, status, detail, log=None, seconds=None):
         self.results[kind] = status
+        self.details[kind], self.durations[kind] = detail, seconds
         timing = f" in {seconds}s" if seconds is not None else ""
         lines = [f"{outcome(status)} {kind}: {detail}{timing}" + (f"; log: {log}" if log else "")]
         if outcome(status) == "FAIL" and log is not None and log.exists():
@@ -481,8 +529,11 @@ class Run:
         # (vocaro-engineering#158). The result bundle keeps what the run reports; this folder goes.
         scratch = self.logs / f"{kind}.derived"
         shutil.rmtree(scratch, ignore_errors=True)
+        self.loads[kind] = {"start": resources.one_minute_load(), "end": None}
         try: return self.run_test(kind, device, xctestrun, log, bundle, scratch, selection)
-        finally: shutil.rmtree(scratch, ignore_errors=True)
+        finally:
+            self.loads[kind]["end"] = resources.one_minute_load()
+            shutil.rmtree(scratch, ignore_errors=True)
 
     def run_test(self, kind, device, xctestrun, log, bundle, scratch, selection=None):
         """With selection, a shard's -only-testing arguments in place of the run's own selecting ones, and
@@ -518,9 +569,11 @@ class Run:
         if recorded is not None: executed, skipped, from_bundle = recorded
         else: executed, skipped, from_bundle = evidence.executed_tests(text) or 0, evidence.skipped_tests(text), []
         counted = f"Executed {executed} tests" + (f", {skipped} skipped" if skipped else "")
+        console = evidence.unmeasured_tests(text)
+        # The bundle names each skipped XCTest test once, so the console's lines for them would repeat it.
+        if recorded is not None: console = [line for line in console if "Test skipped - Unmeasured:" not in line]
+        self.tallies[kind] = tally(status, executed, skipped, len(console) + len(from_bundle), failed_tests(record, text))
         if selection is not None:
-            console = evidence.unmeasured_tests(text)
-            if recorded is not None: console = [line for line in console if "Test skipped - Unmeasured:" not in line]
             with self.lock: self.seconds.update(suite_seconds(bundle, record))
             # Not "Executed N tests", which a lane would count beside the device's own total.
             self.say(f"SHARD {kind}: status {status}, ran {executed} tests" + (f", {skipped} skipped" if skipped else "")
@@ -533,9 +586,6 @@ class Run:
         if executed == 0:
             # A filter that selects nothing, or only tests that skip, passes xcodebuild and establishes nothing.
             return self.finish(kind, 1, f"no tests ran ({counted})", log, seconds)
-        console = evidence.unmeasured_tests(text)
-        # The bundle names each skipped XCTest test once, so the console's lines for them would repeat it.
-        if recorded is not None: console = [line for line in console if "Test skipped - Unmeasured:" not in line]
         unmeasured = [*console, *from_bundle]
         # The wrapper's "Executed N tests" is what a lane counts: the device's own totals are in its log.
         self.finish(kind, evidence.UNMEASURED if unmeasured else 0, counted, log, seconds)
@@ -698,15 +748,167 @@ def folders_held(folders, say):
 
 
 @contextlib.contextmanager
-def taken(pool, run, kind, runtime, purpose, keep_state=False, erase=False):
-    """A member of the kind for this run, shut down and released however the run ends."""
+def taken(pool, run, kind, runtime, purpose, keep_state=False, erase=False, label=None):
+    """A member of the kind for this run, shut down and released however the run ends. label names the run's result,
+    a series' run of the kind; by default the kind."""
     lease = pool.take(qualified(DEVICE_TYPE, kind), qualified(RUNTIME, runtime), purpose=purpose,
                       keep_state=keep_state, erase=erase)
     try:
         yield lease
     finally:
-        status = run.results.get(kind)
+        status = run.results.get(label or kind)
         pool.release(lease, outcome=f"eng simulator-tests: {outcome(status) if status is not None else 'stopped'}")
+
+
+# What a run's console says of its failures when no result bundle does.
+FAILURES = re.compile(r"Executed \d+ tests?, with (?:\d+ tests? skipped and )?(\d+) failures?")
+# Each run's record and the series' summary, beside its logs and, under a lane, in results/simulator-tests/.
+SERIES_RECORD = "series.json"
+SERIES_OUTCOMES = ("passed", "failed", "skipped", "unmeasured")
+
+
+def failed_tests(record, text):
+    """The tests a run failed, by its result bundle (bundle_record) or else the largest count its console prints."""
+    if record is not None:
+        try: return int(record[0]["failedTests"])
+        except (KeyError, TypeError, ValueError): pass
+    return max((int(found) for found in FAILURES.findall(text)), default=0)
+
+
+def tally(status, executed, skipped, unmeasured, failed):
+    """A run's tests by outcome, or None when a failed run's counts name no failure, as a crash's do: then they say
+    nothing. Skipped excludes the unmeasured, which are skips of their own; an unmeasured test not among the skips
+    came out of the executed count."""
+    if status != 0 and failed == 0: return None
+    among_skipped = min(unmeasured, skipped)
+    return {"passed": max(0, executed - failed - (unmeasured - among_skipped)), "failed": failed,
+            "skipped": skipped - among_skipped, "unmeasured": unmeasured}
+
+
+def run_outcome(status, tests):
+    """A run's outcome: unmeasured when it has no status, as a run that did not happen; skipped when every test it
+    ran skipped, which still fails the series; never passed without a status of 0."""
+    if status == 0: return "passed"
+    if status is None or status == evidence.UNMEASURED: return "unmeasured"
+    if tests is not None and tests["skipped"] and not (tests["passed"] or tests["failed"] or tests["unmeasured"]):
+        return "skipped"
+    return "failed"
+
+
+def reset_of(lease):
+    """How the take left a member: copied from its template, cloned from it new, erased, created new or kept."""
+    return ("kept" if lease.kept else "template" if lease.reset else "template clone" if lease.cloned
+            else "created" if lease.created else "erased")
+
+
+def load_words(loads):
+    """A run's one-minute load, start and end; unread when the host gave none, so that no number stands in for it."""
+    loads = loads or {}
+    word = lambda value: f"{value:g}" if value is not None else "unread"
+    return f"load {word(loads.get('start'))} at start, {word(loads.get('end'))} at end"
+
+
+def series_summary(args, kinds, runs):
+    """The series' totals over its runs, each run's outcome counted once and each run's tests beside it."""
+    outcomes = {name: sum(run["outcome"] == name for run in runs) for name in SERIES_OUTCOMES}
+    known = [run["tests"] for run in runs if run["tests"] is not None]
+    return {"asked": args.repeat, "devices": kinds, "runsAsked": args.repeat * len(kinds), "reset": asked_reset(args),
+            "runs": outcomes, "tests": {name: sum(tests[name] for tests in known) for name in SERIES_OUTCOMES},
+            "runsWithoutTestCounts": len(runs) - len(known)}
+
+
+def asked_reset(args):
+    return "erase" if args.erase else "template" if args.template else "keep" if args.keep_state else "the pool's own"
+
+
+def series_line(summary):
+    """The series' summary line, which eng run reads (evidence.SERIES) and a lane's log keeps."""
+    runs, tests = summary["runs"], summary["tests"]
+    uncounted = summary["runsWithoutTestCounts"]
+    return (f"Repeat series: asked {summary['asked']} repeat{'' if summary['asked'] == 1 else 's'} "
+            f"of {', '.join(summary['devices'])} ({summary['runsAsked']} runs); runs: {runs['passed']} passed, "
+            f"{runs['failed']} failed, {runs['skipped']} skipped, {runs['unmeasured']} unmeasured; tests: "
+            f"{tests['passed']} passed, {tests['failed']} failed, {tests['skipped']} skipped, {tests['unmeasured']} "
+            f"unmeasured" + (f"; {uncounted} run{'' if uncounted == 1 else 's'} gave no test counts" if uncounted else ""))
+
+
+def keep_series(run, record):
+    """Write the series' record beside its logs and, under a lane, in its results/, and say where."""
+    text = json.dumps(record, indent=1) + "\n"
+    folders = [run.logs]
+    if os.environ.get(RESULTS_VARIABLE): folders.append(Path(os.environ[RESULTS_VARIABLE]) / KEPT)
+    for folder in folders:
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            (folder / SERIES_RECORD).write_text(text)
+            run.say(f"SERIES RECORD {folder / SERIES_RECORD}")
+        except OSError as error:
+            print(f"eng simulator-tests: the series record was not kept in {folder}: {error}", file=sys.stderr, flush=True)
+
+
+def series(run, pool, args, kinds):
+    """Run the tests args.repeat times, every device of each round on a member just taken from the pool, the tests
+    built once, on the first round's destination. Each run's outcome stands apart, a run that could not take its
+    member, or that the series stopped before, counts unmeasured, and a failed build ends the series there. Returns
+    the series' status, and reports it however the series ended."""
+    purpose = f"eng simulator-tests {args.scheme}, repeat series"
+    asked = [(number, kind, f"{kind}-run{number}") for number in range(1, args.repeat + 1) for kind in kinds]
+    members, built = {}, None
+    def take_and_test(number):
+        nonlocal built
+        with contextlib.ExitStack() as stack:
+            leases = []
+            for kind in kinds:
+                label = f"{kind}-run{number}"
+                lease = stack.enter_context(taken(pool, run, kind, args.runtime, purpose, args.keep_state, args.erase, label))
+                members[label] = lease
+                leases.append((label, lease))
+            if built is None: built = builder.submit(run.build, f"platform=iOS Simulator,id={leases[0][1].udid}")
+            with ThreadPoolExecutor(max_workers=args.jobs or len(kinds)) as testers:
+                futures = []
+                for label, lease in leases:
+                    how = reset_of(lease)
+                    if args.template and how in ("erased", "created") or args.erase and how not in ("erased", "created"):
+                        run.finish(label, evidence.UNMEASURED, f"{asked_reset(args)} was asked for and the member was "
+                                   f"{how}, so no test ran")
+                    else: futures.append(testers.submit(run.device, label, lease, built))
+            errors = [future.exception() for future in futures if future.exception() is not None]
+            if errors: raise errors[0]
+    def report():
+        runs = []
+        for number, kind, label in asked:
+            lease, status = members.get(label), run.results.get(label)
+            tests = run.tallies.get(label)
+            result = {"run": number, "device": kind, "label": label, "member": lease.key if lease else None,
+                      "udid": lease.udid if lease else None, "reset": reset_of(lease) if lease else None,
+                      "outcome": run_outcome(status, tests), "status": status, "seconds": run.durations.get(label),
+                      "load": run.loads.get(label), "tests": tests,
+                      "detail": run.details.get(label) or ("this run did not happen" if status is None else None)}
+            runs.append(result)
+            counts = ", ".join(f"{tests[name]} {name}" for name in SERIES_OUTCOMES) if tests is not None else "no test counts"
+            where = f"{result['member']} ({result['udid']}), {result['reset']}" if lease else "no member"
+            run.say(f"SERIES {kind} run {number} of {args.repeat}: {result['outcome'].upper()} on {where}; {counts}; "
+                    f"{load_words(result['load'])}" + (f"; {result['seconds']}s" if result["seconds"] is not None else "")
+                    + (f"; {result['detail']}" if result["detail"] else ""))
+        summary = series_summary(args, kinds, runs)
+        keep_series(run, {**summary, "host": os.uname().nodename, "scheme": args.scheme, "testArguments": args.passed,
+                          "eachRun": runs})
+        run.say(series_line(summary))
+    try:
+        with ThreadPoolExecutor(max_workers=1) as builder:
+            for number in range(1, args.repeat + 1):
+                if built is not None and built.done() and built.exception() is None and built.result() is None:
+                    run.say(f"SERIES: the build failed, so runs {number} to {args.repeat} did not happen")
+                    break
+                try: take_and_test(number)
+                except (OSError, ValueError, RuntimeError, TimeoutError) as error:
+                    for kind in kinds:
+                        if f"{kind}-run{number}" not in run.results:
+                            run.results[f"{kind}-run{number}"] = evidence.UNMEASURED
+                            run.details[f"{kind}-run{number}"] = f"the run could not start or finish: {error}"
+    finally:
+        report()
+    return combined([run.results.get(label, evidence.UNMEASURED) for _, _, label in asked])
 
 
 def main(argv, project=None):
@@ -731,6 +933,13 @@ def main(argv, project=None):
         with processes.forwarding_signals(), contextlib.ExitStack() as stack:
             # Before any device is taken, so that a run that waits holds none.
             stack.enter_context(folders_held([args.derived_data, run.logs], run.say))
+            if args.repeat is not None:
+                if args.set_aside_shards:
+                    run.say(f"SERIES: --shards {args.set_aside_shards} set aside: each run is one test process")
+                status = series(run, pool, args, kinds)
+                print(f"Simulator tests (wall-clock {round(time.monotonic() - started)}s), series of "
+                      f"{args.repeat}: {outcome(status)}", flush=True)
+                return status
             devices = []
             for kind in kinds:
                 purpose = f"eng simulator-tests {args.scheme}" + (", build only" if args.build_only else "")

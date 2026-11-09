@@ -1546,16 +1546,17 @@ def lost(host, status, said, dispatched, slept, output, journal=None, gone=False
 
 
 def detached_seconds(config, lane, work):
-    """How long a run on the second Mac may last with nobody attending it: its own timeouts, each lane's
-    or the time limit work's `eng admit` carries, with UNATTENDED_WAIT for what comes before them. eng stops
-    each of them at its timeout there, and this bounds an eng that does not."""
+    """How long a run on the second Mac may last with nobody attending it: its own timeouts, each lane's,
+    N times the lane's for a --repeat series as eng run limits it there, or the time limit work's `eng admit`
+    carries, with UNATTENDED_WAIT for what comes before them. eng stops each of them at its timeout there, and
+    this bounds an eng that does not."""
     lanes = config.get("lanes", {})
     def own(name):
         entry = lanes.get(name, {})
         if "parallel" in entry: return sum(own(member) for member in entry["parallel"])
         return entry.get("timeout", processes.DEFAULT_LIMIT)
     head = work[:work.index("--")] if "--" in work else work
-    limit = own(lane) if lane is not None else \
+    limit = own(lane) * (evidence.repeats_asked(work) or 1) if lane is not None else \
         float(head[head.index("--time-limit") + 1]) if "--time-limit" in head else processes.DEFAULT_LIMIT
     return limit + (own("provision") if "provision" in lanes and lane != "provision" else 0) + UNATTENDED_WAIT
 

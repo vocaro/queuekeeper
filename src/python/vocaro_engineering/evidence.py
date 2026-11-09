@@ -126,6 +126,25 @@ UNMEASURED_TEST = re.compile(r"^.*:\d+: -\[[^\]\n]+\] : Test skipped - Unmeasure
                              r"|^[ \t]*SKIPPED \[\d+\] [^\n]*?: Unmeasured: .*$", re.M)
 
 
+SERIES = re.compile(r"^Repeat series: asked (\d+) repeats?\b", re.M)
+
+
+def repeats_asked(arguments):
+    """N of a `--repeat N` among a lane's arguments, the series eng run asked for; None when none was asked for, and 0
+    when N is no count, which a run reads as a series of none."""
+    arguments = list(arguments)
+    if "--repeat" not in arguments: return None
+    try: return int(arguments[arguments.index("--repeat") + 1])
+    except (IndexError, ValueError): return 0
+
+
+def series_reported(text):
+    """How many repeats a log's series says were asked for, from eng simulator-tests' summary, or None when the log
+    reports no series: a command that ignored --repeat ran it once at most, whatever its status says."""
+    found = SERIES.findall(text)
+    return int(found[-1]) if found else None
+
+
 def unmeasured_tests(text):
     """The distinct lines in which a log reports a test unmeasured, in order. A wrapper that
     repeats them in a summary adds none."""
