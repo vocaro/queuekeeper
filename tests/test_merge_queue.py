@@ -1,5 +1,7 @@
 """The merge queue against real Git repositories: a bare origin, a clone, and lanes that read the tree."""
+import atexit
 import contextlib
+import functools
 import importlib.util
 import io
 import json
@@ -70,6 +72,35 @@ def accepting_lane_key(source, key):
     return source.replace(lane_keys, f"{lane_keys}{json.dumps(key)}, ")
 
 
+# A Git that reads no account's configuration, signs as nobody's, and reaches only what is on this disk.
+GIT_ALONE = {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_ALLOW_PROTOCOL": "file",
+             "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com",
+             "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com"}
+
+
+@functools.cache
+def local_toolkit():
+    """A copy of this toolkit, once per process, whose origin is a bare repository beside it, for a Fixture's lanes to
+    run: each lane's cli.refresh_policy fetches the toolkit's origin/main, which from the real checkout needed GitHub
+    and wrote that checkout's refs (vocaro-engineering#298). Lanes only read it, so that the tests can share it, and
+    git ignores the bytecode they leave, so that it stays clean. Returns the checkout and the origin."""
+    base = Path(tempfile.mkdtemp()).resolve()
+    atexit.register(shutil.rmtree, base, ignore_errors=True)
+    checkout, origin = base / "toolkit", base / "toolkit-origin.git"
+    with patch.dict(os.environ, GIT_ALONE):
+        run(base, "git", "init", "-q", "--bare", "-b", "main", str(origin))
+        run(base, "git", "init", "-q", "-b", "main", str(checkout))
+        for part in ("src/python", "policies", "agents", "integrations", "bin", "schemas"):
+            shutil.copytree(ROOT / part, checkout / part, ignore=shutil.ignore_patterns("__pycache__"))
+        for name in ("engineering.json", ".gitignore"):
+            shutil.copy(ROOT / name, checkout / name)
+        run(checkout, "git", "add", ".")
+        run(checkout, "git", "commit", "-qm", "Toolkit")
+        run(checkout, "git", "remote", "add", "origin", str(origin))
+        run(checkout, "git", "push", "-q", "origin", "HEAD:main")
+    return checkout, origin
+
+
 def never_exec(command, env):
     """What a test's worker must never do: replace the test process (merge_queue.execute)."""
     raise AssertionError(f"the worker would exec {shlex.join(command)}")
@@ -89,10 +120,8 @@ class Fixture(unittest.TestCase):
         guard = patch.object(mq, "execute", never_exec)
         guard.start()
         self.addCleanup(guard.stop)
-        patcher = patch.dict(os.environ, {"VOCARO_OFFLOAD_HOST": "none", "GIT_CONFIG_GLOBAL": "/dev/null",
-                                          "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com",
-                                          "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com",
-                                          "VOCARO_ENGINEERING_ROOT": str(ROOT)})
+        patcher = patch.dict(os.environ, {"VOCARO_OFFLOAD_HOST": "none", **GIT_ALONE,
+                                          "VOCARO_ENGINEERING_ROOT": str(local_toolkit()[0])})
         patcher.start()
         self.addCleanup(patcher.stop)
         # A settled host unless a test says otherwise, so that no retry waits on this Mac's real load.
@@ -2716,13 +2745,9 @@ class DocsOnly(Fixture):
         # The control: a batch that ran every lane leaves a receipt of the gate at the commit it pushed.
         landed = self.state(code)["landedAs"]
         self.assertRegex(release.gate_passed(checkout, landed), rf"in this checkout|on this Mac \(.*\), in {checkout}")
-        # And keeps it by commit, where a session's own checkout reads it (vocaro-engineering#198), when the
-        # toolkit that ran it, this one, has no working changes, as a run on the second Mac counts.
-        if cli.source_identity(ROOT)["workingChangesSHA256"] == release.remote.CLEAN:
-            self.assertEqual(release.gate_passed(self.repo, landed), f"on this Mac ({offload_host.mac_name()}), in {checkout}")
-        else:
-            with self.assertRaisesRegex(release.Stop, "no pass of the whole gate lane"):
-                release.gate_passed(self.repo, landed)
+        # And keeps it by commit, where a session's own checkout reads it (vocaro-engineering#198), as the toolkit
+        # that ran it, the fixture's, has no working changes, as a run on the second Mac counts.
+        self.assertEqual(release.gate_passed(self.repo, landed), f"on this Mac ({offload_host.mac_name()}), in {checkout}")
         self.commit("doc/guide.md", "guide")
         [docs] = self.add("guide")
         self.work()
@@ -3645,6 +3670,48 @@ class Changelogs(Fixture):
         self.assertIsNone(mq.keep_both(start, start, self.top("- a").encode()))
 
 
+class LanePolicy(Fixture):
+    """A lane in the fixture reads the policy from a local origin: no GitHub, and no write to the real checkout (#298)."""
+    def traced(self, *words, **variables):
+        """What Git says it ran for words, a command in the fixture's project, with variables in its environment."""
+        trace = self.base / "command.trace"
+        environment = {key: value for key, value in {**os.environ, **variables}.items() if value is not None}
+        subprocess.run(words, cwd=self.repo, capture_output=True, stdin=subprocess.DEVNULL, timeout=stretched(60),
+                       env={**environment, "GIT_TRACE": str(trace), "GIT_TERMINAL_PROMPT": "0"})
+        return trace.read_text()
+
+    def test_a_lane_fetches_the_policy_from_the_local_origin_and_nothing_from_github(self):
+        trace = self.base / "lane.trace"
+        with patch.dict(os.environ, {"GIT_TRACE": str(trace)}):
+            self.commit("a", "a")
+            [identifier] = self.add("a")
+            status = self.work()
+        self.assertEqual((status, self.state(identifier)["state"], self.gates()), (0, "landed", 1))
+        said = trace.read_text()
+        self.assertNotIn("remote-http", said)
+        self.assertNotIn("github.com", said)
+        # The control: the trace holds the policy's fetch, and that fetch went to the origin on this disk.
+        self.assertIn("fetch origin refs/heads/main:refs/remotes/origin/main", said)
+        self.assertIn(str(local_toolkit()[1]), said)
+
+    def test_the_trace_shows_a_fetch_over_https_and_the_fixture_refuses_one(self):
+        """The negative controls, at a port on this Mac that nothing answers, so that neither needs the network: what
+        the lane's test looks for is what Git prints for HTTPS, and the fixture's own Git never gets that far."""
+        fetch = ("git", "ls-remote", "https://127.0.0.1:1/toolkit.git")
+        self.assertIn("remote-http", self.traced(*fetch, GIT_ALLOW_PROTOCOL=None))
+        (self.base / "command.trace").unlink()
+        self.assertNotIn("remote-http", self.traced(*fetch))
+
+    def test_the_lanes_toolkit_is_a_clean_copy_whose_origin_is_local(self):
+        from vocaro_engineering import release
+        kit, origin = local_toolkit()
+        self.assertEqual(os.environ["VOCARO_ENGINEERING_ROOT"], str(kit))
+        self.assertNotEqual(kit.resolve(), ROOT.resolve())
+        self.assertEqual(run(kit, "git", "remote", "get-url", "origin"), str(origin))
+        self.assertEqual(run(kit, "git", "rev-parse", "origin/main"), run(kit, "git", "rev-parse", "HEAD"))
+        self.assertEqual(cli.source_identity(kit)["workingChangesSHA256"], release.remote.CLEAN)
+
+
 class ToolkitCopy(Fixture):
     """Which toolkit a project's gate runs, with a toolkit repository of its own in the fixture."""
     def setUp(self):
@@ -4014,10 +4081,10 @@ class ToolkitCopy(Fixture):
         self.assertEqual(self.seen.read_text().split("\n"), [str(self.copy), behind, ""])
 
     def test_an_explicit_toolkit_stands(self):
-        with patch.dict(os.environ, {"VOCARO_ENGINEERING_ROOT": str(ROOT)}):
+        with patch.dict(os.environ, {"VOCARO_ENGINEERING_ROOT": str(self.kit)}):
             identifier, status = self.gate_once("a")
         self.assertEqual(status, 0)
-        self.assertEqual(self.seen.read_text().split("\n")[0], str(ROOT))
+        self.assertEqual(self.seen.read_text().split("\n")[0], str(self.kit))
         self.assertFalse(self.copy.exists())
 
 
