@@ -4612,7 +4612,9 @@ class ToolkitCopy(Fixture):
         current = self.checkout / "Packages/Reader/.build"
         (old / "Packages/Reader/.build/artifacts").mkdir(parents=True)
         (old / "Packages/Reader/.build/workspace-state.json").write_text(json.dumps({"path": str(current)}))
-        with contextlib.redirect_stdout(io.StringIO()) as said:
+        # Exercise cleanup after a confirmed move. The cases below cover a live user and an unavailable census.
+        with patch.object(mq.disk, "census", return_value=[]), \
+                contextlib.redirect_stdout(io.StringIO()) as said:
             identifier, status = self.gate_once("a")
         self.assertEqual(status, 0)
         self.assertEqual(self.state(identifier)["state"], "landed")
