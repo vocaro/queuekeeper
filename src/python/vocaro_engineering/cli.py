@@ -573,7 +573,7 @@ def admitted_here(stack, name, label, timeout, offered=None, once=False, exclusi
     BUSY when no admission came, after saying so. Work the second Mac did not take (offered), declined
     as busy or not offered while it had no spare capacity and this Mac had, goes to whichever Mac admits
     it first, this Mac asked first (remote.overflow). Other work waits in this Mac's queue for timeout
-    seconds, or with once FREE_WAIT, and only once declines. A whole-host lane takes every guaranteed slot,
+    seconds, or at most FREE_WAIT with once. A whole-host lane takes every guaranteed slot,
     and keeps one place in this Mac's queue across its waits until it no longer waits here (resources.Place). A
     lane that needs an unlocked screen (screen) is admitted only while this Mac's screen reads unlocked, and waits
     for it as for a slot (screen_wait). Its admission line says placement (admission_placement)."""
@@ -604,7 +604,7 @@ def admitted_here(stack, name, label, timeout, offered=None, once=False, exclusi
             return remote.overflow(offered, admit, timeout, once, refused)
         # A wait that runs out is BUSY, as with once: nothing ran, which the merge queue counts as no verdict.
         # Raised, TimeoutError is an OSError, which eng run reports as its own error, exit 2 (#268).
-        admission = admit(FREE_WAIT if once else timeout)
+        admission = admit(min(FREE_WAIT, timeout) if once else timeout)
         if admission is None:
             print(f"eng: {name} not run on {this_mac()}: {refused[-1]}", file=sys.stderr)
             return BUSY
