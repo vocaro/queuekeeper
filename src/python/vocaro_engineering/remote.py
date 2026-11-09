@@ -49,6 +49,7 @@ import ctypes
 import fcntl
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import queue
@@ -1664,7 +1665,7 @@ class Progress:
 
 
 def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, decline=False, lease=None,
-            serial=False, subdirectory=None, sent=None, changes=False):
+            serial=False, subdirectory=None, sent=None, changes=False, slot=None, slot_wait=None):
     """Run eng's work on the second Mac and return its exit status, with the log and receipt kept here.
 
     work is the second Mac's eng arguments: run [--serial] [--expect N] LANE [-- ARGUMENTS] or
@@ -1683,7 +1684,9 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     with it offers the same commits again, without a snapshot, the preparing connection or a push,
     since the second Mac holds them. With changes, what the command changed in the checkout's files that Git
     does not ignore comes back as a patch, CHANGES, beside the results (offload_host.gather_changes), and sent's
-    ran says where the results are and what the patch holds (brought_back).
+    ran says where the results are and what the patch holds (brought_back). With slot, only that checkout slot
+    will do, and the second Mac waits for it for slot_wait seconds (offload_host.claim); the receipt's
+    checkoutSlot says which was asked for and given, where it is, and how long the wait for it took.
 
     The receipt's preparation records what came before the second Mac's queue: the seconds of
     staging the commits, the preparing connection and the pushes here, each push's record (send),
@@ -1743,7 +1746,8 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
             "returns": {"directory": f".build/engineering/{name}", "paths": returns} if returns else None,
             "changes": f".build/engineering/{name}/{CHANGES}" if changes else None,
             "deviceRecord": local["name"], "lease": lease.plan(local["name"]) if lease is not None else None,
-            "dispatcher": local["name"], "subdirectory": subdirectory}
+            "dispatcher": local["name"], "subdirectory": subdirectory,
+            **({"checkoutSlot": slot, "checkoutWait": slot_wait} if slot is not None else {})}
 
     at = commit[:12] if commit == head else f"{commit[:12]}, a snapshot of the working tree on {head[:12]},"
     if kit_snapshot(kit):
@@ -1921,6 +1925,10 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
                "preparation": preparation,
                **({"serial": True} if serial else {}), **({"returned": returned} if members or returned else {}),
                **({"subdirectory": subdirectory} if subdirectory else {})}
+    wait = (result.get("phases") or {}).get("claim")
+    if slot is not None:
+        receipt["checkoutSlot"] = {"requested": slot, "assigned": result.get("slot"), "path": result.get("checkout"),
+                                   "waitSeconds": wait}
     own = file_results(base, name, dispatch, staging, receipt)
     if sent is not None:
         sent["ran"] = {"results": str(own), "checkout": result.get("checkout"), "changes": result.get("changes"),
@@ -1930,6 +1938,9 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     if lane is not None and not arguments and expect is None and commit == head and not serial \
             and not kit_snapshot(kit):
         keep(kept, lane, receipt, own / RESULTS)
+    if slot is not None and result.get("slot") is not None:
+        print(f"remote: checkout slot {slot}, as requested, at {result.get('checkout')}, after {wait}s waiting for it",
+              file=sys.stderr, flush=True)
     if preparation:
         print(f"remote: {preparing(preparation, result.get('phases') or {}, result.get('receipt'))}", file=sys.stderr,
               flush=True)
@@ -1979,6 +1990,31 @@ def exit_status(result):
     return 128 - status if status < 0 else status
 
 
+def checkout_request(args):
+    """The checkout slot --checkout-slot names and the seconds to wait for it, as (slot, wait), or (None, None)
+    without one. A value the second Mac's pool does not hold is a refusal here, before anything is sent."""
+    slot, wait = args.checkout_slot, args.checkout_wait
+    if slot is None:
+        if wait is not None: raise ValueError("--checkout-wait bounds the wait for a slot: add --checkout-slot")
+        return None, None
+    if not (slot.isascii() and slot.isdigit() and int(slot) < CHECKOUTS):
+        raise ValueError(f"--checkout-slot {slot} names no checkout: the second Mac keeps slots 0 to {CHECKOUTS - 1}")
+    if wait is None: wait = offload_host.CLAIM_TIMEOUT
+    if not (math.isfinite(wait) and wait >= 0):
+        raise ValueError("--checkout-wait needs a number of seconds, 0 or more")
+    return int(slot), wait
+
+
+def not_run_if_busy(name, send):
+    """send()'s status, or BUSY, after saying so, when a named slot's wait ran out: nothing ran, as with
+    cli.admitted_here, and Busy raised would be eng's own error, exit 2."""
+    try:
+        return send()
+    except Busy as busy:
+        print(f"eng: {name} not run on the second Mac: {busy}", file=sys.stderr, flush=True)
+        return BUSY
+
+
 def main(root, config, args):
     if args.operation == "passed":
         receipt = passed(root, args.lane, args.commit)
@@ -1992,6 +2028,7 @@ def main(root, config, args):
     host = args.host or named_host() or alias() or DEFAULT_HOST
     if args.operation == "setup": return setup(host, args.formulae, args.imports or [], args.check, args.runtimes)
     if args.operation == "foreground": return foreground_report(host)
+    slot, slot_wait = checkout_request(args)
     if args.operation == "run":
         lane = config.get("lanes", {}).get(args.lane)
         if lane is None: raise ValueError(f"No configured lane: {args.lane}")
@@ -2007,7 +2044,10 @@ def main(root, config, args):
         # A leased run sent again, after a notification reached it, offers the same commits (carrying).
         sent = {}
         send = lambda: execute(root, config, host, work, lane=args.lane, arguments=extra, expect=args.expect,
-                               lease=held, serial=args.serial, sent=sent)
+                               lease=held, serial=args.serial, sent=sent, slot=slot, slot_wait=slot_wait)
+        if slot is not None:
+            sending = send
+            send = lambda: not_run_if_busy(args.lane, sending)
         with processes.forwarding_signals():
             return carrying(held, root, host, work, args.lane, lambda: offering_here(
                 f"eng run --here {args.lane}", send) if lane.get("foreground") else send())
@@ -2027,7 +2067,10 @@ def main(root, config, args):
                  budget=args.time_limit)
     work = ["admit", *kind, "--", *command]
     sent = {}
-    send = lambda: execute(root, config, host, work, lease=held, sent=sent)
+    send = lambda: execute(root, config, host, work, lease=held, sent=sent, slot=slot, slot_wait=slot_wait)
+    if slot is not None:
+        sending = send
+        send = lambda: not_run_if_busy("the command", sending)
     with processes.forwarding_signals():
         return carrying(held, root, host, work, "admit", lambda: offering_here(
             "eng admit --foreground -- COMMAND", send) if args.foreground else send())

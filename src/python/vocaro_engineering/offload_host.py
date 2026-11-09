@@ -2299,8 +2299,18 @@ def nearness(files, checkout):
     return f"{files} {'file differs' if files == 1 else 'files differ'} from its last tree"
 
 
-def claim(base, count, directory, wait=True, commit=None):
-    """Lock a free checkout slot without changes, waiting while every one is in use, if wait.
+def holding(base, slot):
+    """Who holds a checkout slot's lock, as its holder wrote into it (claim), for a line that reports a busy slot;
+    nothing when it wrote nothing readable."""
+    try:
+        record = json.loads((base / f"{slot}.lock").read_text())
+        return f", held by PID {record['pid']}, started {record['start']}"
+    except (OSError, ValueError, KeyError, TypeError):
+        return ""
+
+
+def claim(base, count, directory, wait=True, commit=None, slot=None, timeout=CLAIM_TIMEOUT):
+    """Lock a free checkout slot without changes, waiting while every one is in use, if wait, for timeout seconds.
 
     Of the free slots it takes the one whose checkout last held the tree nearest commit's, so the
     run's builds redo the fewest files (nearest), and says how near it was. The lock is an flock the
@@ -2308,11 +2318,15 @@ def claim(base, count, directory, wait=True, commit=None):
     it is, for inspection, and passed over. The lock's holder writes its PID and start into it, so
     that a census of leftover processes knows a live run's processes from those a lost run left
     (leftovers).
+
+    With slot, only that slot will do (vocaro-engineering#223): another that is free does not answer the request.
+    It waits for that slot under the same lock, and changes in it are a refusal, since no other slot may stand in.
     """
     base.mkdir(parents=True, exist_ok=True)
     started, reported, named = time.monotonic(), None, set()
     record = json.dumps({"pid": os.getpid(), "start": output(["ps", "-p", str(os.getpid()), "-o", "lstart="])})
     order, distances = nearest(base, count, directory, commit)
+    if slot is not None: order = [slot]
     while not _stop.is_set():
         changed = 0
         for index in order:
@@ -2331,6 +2345,11 @@ def claim(base, count, directory, wait=True, commit=None):
                 if commit: say(f"slot {index}: {nearness(distances[index], checkout)}")
                 return index, descriptor
             os.close(descriptor)
+            if slot is not None:
+                repository = base.parents[1] / "repositories" / f"{directory}.git"
+                raise Refusal(f"checkout slot {slot} of {directory}, {checkout}, has changes a run left:\n{left}\n",
+                              f"inspect and remove them, with `git --git-dir {repository} worktree remove --force "
+                              f"{checkout}`")
             changed += 1
             if index not in named:
                 say(f"passing over {checkout}, which a run left with changes:\n{left}")
@@ -2339,13 +2358,16 @@ def claim(base, count, directory, wait=True, commit=None):
             repository = base.parents[1] / "repositories" / f"{directory}.git"
             raise Refusal(f"every checkout under {base} has changes a run left",
                           f"inspect and remove them, each with `git --git-dir {repository} worktree remove --force PATH`")
+        named = f"checkout slot {slot} of {directory}"
+        busy = f"every checkout of {directory} is in use" if slot is None else f"{named} is in use{holding(base, slot)}"
         if not wait:
-            raise Refusal(f"every checkout of {directory} is in use", busy=True)
+            raise Refusal(busy, busy=True)
         waited = int(time.monotonic() - started)
-        if waited >= CLAIM_TIMEOUT:
-            raise Refusal(f"no checkout of {directory} came free in {CLAIM_TIMEOUT}s", busy=True)
+        if time.monotonic() - started >= timeout:
+            raise Refusal(f"no checkout of {directory} came free in {timeout}s" if slot is None else
+                          f"{named} did not come free in {timeout:g}s{holding(base, slot)}", busy=True)
         if reported is None or waited - reported >= REPORT_SECONDS:
-            say(f"waiting ({waited}s): every checkout of {directory} is in use")
+            say(f"waiting ({waited}s): {busy}")
             reported = waited
         time.sleep(1)
     return None
@@ -2693,7 +2715,8 @@ def main(plan):
         base = root / "checkouts" / project["directory"]
         began = time.monotonic()
         claimed = claim(base, plan["checkouts"], project["directory"], wait=not plan.get("decline"),
-                        commit=project["commit"])
+                        commit=project["commit"], slot=plan.get("checkoutSlot"),
+                        timeout=plan.get("checkoutWait", CLAIM_TIMEOUT))
         timed("claim", began)
         if claimed is None:
             result["stopped"] = True

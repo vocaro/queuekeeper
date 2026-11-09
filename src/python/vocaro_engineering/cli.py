@@ -991,7 +991,8 @@ def main(argv=None):
         "foreground is ready")
     operations = distant.add_subparsers(dest="operation", required=True)
     remote_run = operations.add_parser("run", usage="%(prog)s [-h] [--host HOST] [--serial] [--expect N] "
-        "[--device KEY] [--device-owner SESSION] lane [-- ARGUMENTS ...]",
+        "[--device KEY] [--device-owner SESSION] [--checkout-slot N] [--checkout-wait SECONDS] "
+        "lane [-- ARGUMENTS ...]",
         help="run a configured lane on the second Mac at HEAD, or at a snapshot commit of uncommitted work")
     remote_admit = operations.add_parser("admit", help="run a heavy command on the second Mac, in its checkout's "
         "root, at HEAD or at a snapshot commit of uncommitted work")
@@ -1020,6 +1021,12 @@ def main(argv=None):
                             "stops it before the reservation ends")
         choice.add_argument("--device-owner", metavar="SESSION", help="the session holding --device (default: "
                             f"{devices.OWNER}, else the agent session)")
+        choice.add_argument("--checkout-slot", metavar="N", help="run in this one of the second Mac's checkouts of the "
+                            f"project, 0 to {remote.CHECKOUTS - 1}, waiting for it under the checkout's lock, however "
+                            "many others are free, to repeat a check in a named checkout (guides/shared-host.md, A "
+                            "named checkout slot); by default the free checkout nearest the commit")
+        choice.add_argument("--checkout-wait", type=float, metavar="SECONDS", help="with --checkout-slot, how long to "
+                            f"wait for it (default {offload_host.CLAIM_TIMEOUT}); then exit {BUSY} without running")
     remote_run.add_argument("--expect", type=int, metavar="N", help="require exactly N executed tests")
     remote_run.add_argument("--serial", action="store_true", help="run a lane group's lanes one after another, on the "
         "second Mac under its admission: the serial reference of a group that runs there, which counts for no commit")

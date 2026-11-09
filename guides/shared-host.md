@@ -1023,6 +1023,31 @@ only a process that sets its own environment can still write one. A checkout tha
 changes stays as it is for inspection and is passed over. Once it is read, remove it with
 `git --git-dir ~/Development/build-host/repositories/NAME.git worktree remove --force PATH`.
 
+#### A named checkout slot
+
+`eng remote run LANE --checkout-slot N` and `eng remote admit --checkout-slot N -- COMMAND` run in
+checkout N, 0 to 3, and no other, for a check that depends on the checkout's absolute path, warm
+products or generated project. Repeat one across slots by running it once per slot, each named:
+
+```sh
+for slot in 0 1 2 3; do python3 scripts/eng remote run LANE --checkout-slot "$slot"; done
+```
+
+The run waits for that slot under the same lock as any other, even while other checkouts are free,
+and says who holds it (`checkout slot 2 of NAME is in use, held by PID 123, started ...`). The waiter
+has no place in line: the lock goes to whichever run asks once it is free, so a run with no named
+slot can take it first. The wait is bounded, by `--checkout-wait SECONDS` or else 5400 s; one that
+runs out exits 75, `not run`, having run nothing. A number outside 0 to 3 or that is no number is
+refused before anything is sent. A named slot with changes a run left is refused with what
+removes them, since no other slot may stand in and waiting would not clear them. The receipt's
+`checkoutSlot` gives `requested`, `assigned`, `path` and `waitSeconds`. Without the option, a run
+takes the nearest free checkout as above.
+
+A checkout slot says where a run's files are. It is not a heavy-work slot, which says how much of
+the Mac the run may use and which `eng admit` waits for only after the checkout is held, and it is
+not the foreground reservation, taken at that same later point. So waiting for a named checkout
+holds neither. It does not choose the Mac either: `eng remote` always means the second Mac.
+
 A push learns what the second Mac has only from the refs its repository advertises, and a
 checkout's detached HEAD is none of them. Placing a commit deletes the ref that carried it, so a
 repository whose checkouts alone hold its commits has a push send the commit's whole history,

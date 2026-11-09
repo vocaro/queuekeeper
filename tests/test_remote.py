@@ -1263,6 +1263,198 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual(offload_host.nearness(None, base / "0" / "example"),
                          "its last tree could not be compared with the commit's")
 
+    def hold_slot(self, slot):
+        """Hold a checkout slot's lock as a run does, with its record, and return what releases it."""
+        base = self.checkout(slot).parents[1]
+        base.mkdir(parents=True, exist_ok=True)
+        lock = os.open(base / f"{slot}.lock", os.O_RDWR | os.O_CREAT, 0o644)
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        os.pwrite(lock, json.dumps({"pid": 4242, "start": "Sat Nov 7 00:00:00 2026"}).encode(), 0)
+        held = [lock]
+
+        def release():
+            if held: os.close(held.pop())
+        self.addCleanup(release)
+        return release
+
+    def slot_dispatcher(self, *arguments):
+        """A dispatcher of its own, whose output goes to a file, and that file."""
+        log = Path(tempfile.mkstemp(dir=self.temp.name, suffix=".log")[1])
+        with log.open("wb") as output:
+            process = subprocess.Popen([sys.executable, str(self.toolkit / "bin/eng"), "--project", str(self.project),
+                                        *arguments], stdout=output, stderr=subprocess.STDOUT)
+
+        def stop():
+            if process.poll() is None:
+                process.terminate()
+                process.wait(stretched(60))
+        self.addCleanup(stop)
+        return process, log
+
+    def await_condition(self, process, log, reached):
+        deadline = time.monotonic() + stretched(120)
+        while not reached() and process.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertTrue(reached(), log.read_text())
+
+    def slot_receipt(self, name="check"):
+        return json.loads((self.project / ".build/engineering/remote" / name / "source.json").read_text())
+
+    def test_a_named_free_slot_is_taken_over_a_nearer_one_and_the_receipt_says_so(self):
+        # Slot 0 holds the commit's own tree, so with no option a run takes it again.
+        status, output, error = self.eng("remote", "run", "check")
+        self.assertEqual(status, 0, output + error)
+        self.assertEqual(self.slot_receipt()["result"]["slot"], 0)
+        status, output, error = self.eng("remote", "run", "check", "--checkout-slot", "2")
+        self.assertEqual(status, 0, output + error)
+        receipt = self.slot_receipt()
+        self.assertEqual(receipt["result"]["slot"], 2)
+        named = receipt["checkoutSlot"]
+        self.assertEqual((named["requested"], named["assigned"], named["path"]), (2, 2, str(self.checkout(2))))
+        self.assertIsInstance(named["waitSeconds"], float)
+        self.assertEqual(named["waitSeconds"], receipt["result"]["phases"]["claim"])
+        self.assertIn(f"checkout slot 2, as requested, at {self.checkout(2)}", error)
+        self.assertIn("slot 2: no checkout yet", output)
+        # eng remote admit takes the option too, and runs its command there.
+        command = [sys.executable, "-c", "import os; print('in', os.getcwd())"]
+        status, output, error = self.eng("remote", "admit", "--checkout-slot", "3", "--", *command)
+        self.assertEqual(status, 0, output + error)
+        self.assertEqual(self.slot_receipt("admit")["checkoutSlot"]["assigned"], 3)
+        self.assertIn(f"in {self.checkout(3).resolve()}", output)
+        # The negative control: with no option, the nearest free slot, and a receipt with nothing of a request.
+        status, output, error = self.eng("remote", "run", "check")
+        self.assertEqual(status, 0, output + error)
+        receipt = self.slot_receipt()
+        self.assertEqual(receipt["result"]["slot"], 0)
+        self.assertNotIn("checkoutSlot", receipt)
+        self.assertNotIn("as requested", error)
+
+    def test_a_named_busy_slot_is_waited_for_with_another_free_and_taken_once_released(self):
+        release = self.hold_slot(1)
+        process, log = self.slot_dispatcher("remote", "run", "check", "--checkout-slot", "1")
+        said = "checkout slot 1 of example is in use, held by PID 4242, started Sat Nov 7 00:00:00 2026"
+        self.await_condition(process, log, lambda: said in log.read_text())
+        # Another slot is free the whole while, and is not taken: nothing is placed in any of them.
+        self.assertIsNone(process.poll(), log.read_text())
+        for slot in range(remote.CHECKOUTS):
+            self.assertFalse(self.checkout(slot).exists(), slot)
+        # Waiting holds no heavy-work slot of the second Mac's.
+        slots = Path(os.environ["FAKE_SLOTS"])
+        self.assertEqual(sorted(path.name for path in slots.glob("*")) if slots.exists() else [], [])
+        release()
+        self.assertEqual(process.wait(stretched(120)), 0, log.read_text())
+        named = self.slot_receipt()["checkoutSlot"]
+        self.assertEqual((named["requested"], named["assigned"]), (1, 1))
+        self.assertGreater(named["waitSeconds"], 0)
+        self.assertTrue((self.checkout(1) / ".build/provisioned").exists())
+        self.assertFalse(self.checkout(0).exists())
+
+    def test_a_wait_for_a_named_slot_that_runs_out_is_busy_and_runs_nothing(self):
+        self.hold_slot(1)
+        status, output, error = self.eng("remote", "run", "check", "--checkout-slot", "1", "--checkout-wait", "1")
+        self.assertEqual(status, resources.BUSY, output + error)
+        said = " ".join(error.split())
+        self.assertIn("eng: check not run on the second Mac: fake did not take it: checkout slot 1 of example did not "
+                      "come free in 1s, held by PID 4242", said)
+        self.assertFalse(self.checkout(0).exists())
+        self.assertFalse(self.checkout(1).exists())
+        # Nor does it take the foreground to wait for the checkout: the second Mac's record is never touched.
+        status, output, error = self.eng("remote", "admit", "--foreground", "--checkout-slot", "1", "--checkout-wait",
+                                         "0", "--", sys.executable, "-c", "pass")
+        self.assertEqual(status, resources.BUSY, output + error)
+        self.assertIn("eng: the command not run on the second Mac:", error)
+        self.assertFalse(self.record_there.exists())
+        # The negative control: with no option the same held slot is passed over for a free one, at once.
+        status, output, error = self.eng("remote", "run", "check")
+        self.assertEqual(status, 0, output + error)
+        self.assertEqual(self.slot_receipt()["result"]["slot"], 0)
+
+    def test_a_slot_that_does_not_exist_is_refused_before_anything_is_sent(self):
+        for value in ("4", "99", "-1", "1.5", "two", "", "٢"):
+            with self.subTest(value=value):
+                status, output, error = self.eng("remote", "run", "check", "--checkout-slot", value)
+                self.assertEqual(status, 2, output + error)
+                self.assertIn(f"--checkout-slot {value} names no checkout: the second Mac keeps slots 0 to 3", error)
+        for wait in ("-1", "nan", "inf"):
+            with self.subTest(wait=wait):
+                status, output, error = self.eng("remote", "run", "check", "--checkout-slot", "1", "--checkout-wait", wait)
+                self.assertEqual(status, 2, output + error)
+                self.assertIn("--checkout-wait needs a number of seconds", error)
+        status, output, error = self.eng("remote", "run", "check", "--checkout-wait", "5")
+        self.assertEqual(status, 2, output + error)
+        self.assertIn("add --checkout-slot", error)
+        # The range is the pool's.
+        with patch.object(remote, "CHECKOUTS", 2):
+            status, output, error = self.eng("remote", "admit", "--checkout-slot", "2", "--", "true")
+        self.assertEqual(status, 2, output + error)
+        self.assertIn("slots 0 to 1", error)
+        self.assertNotIn("remote: sending", error)
+        self.assertFalse((self.home / remote.ROOT).exists())
+        # The positive control: the top of the range is a slot.
+        status, output, error = self.eng("remote", "run", "check", "--checkout-slot", "3")
+        self.assertEqual(status, 0, output + error)
+        self.assertEqual(self.slot_receipt()["result"]["slot"], 3)
+
+    def test_a_named_slot_with_changes_is_refused_and_no_other_stands_in(self):
+        self.assertEqual(self.eng("remote", "run", "check", "--checkout-slot", "1")[0], 0)
+        left = self.checkout(1) / "left.txt"
+        left.write_text("a run left this\n")
+        status, output, error = self.eng("remote", "run", "check", "--checkout-slot", "1", "--checkout-wait", "600")
+        self.assertEqual(status, 2, output + error)
+        self.assertIn(f"checkout slot 1 of example, {self.checkout(1)}, has changes a run left:", error)
+        self.assertIn("?? left.txt", error)
+        self.assertIn(f"worktree remove --force {self.checkout(1)}", error)
+        self.assertNotIn("not run on the second Mac", error)
+        self.assertTrue(left.exists())
+        self.assertFalse(self.checkout(0).exists())
+        # The negative control: with no option a checkout with changes is passed over, and a run goes to another.
+        status, output, error = self.eng("remote", "run", "check")
+        self.assertEqual(status, 0, output + error)
+        self.assertIn(f"passing over {self.checkout(1)}", output)
+        self.assertEqual(self.slot_receipt()["result"]["slot"], 0)
+
+    def test_two_requests_for_one_slot_run_there_in_turn(self):
+        settings = self.project / "engineering.json"
+        project = json.loads(settings.read_text())
+        # Fails if the other request's run is in the checkout, and holds it until the test says so.
+        project["lanes"]["turn"] = {"resource": "self", "command": [sys.executable, "-c", (
+            "import os, pathlib, time\n"
+            "held = os.open('.build/turn.running', os.O_CREAT | os.O_EXCL)\n"
+            "go = pathlib.Path('.build/turn.go')\n"
+            f"deadline = time.monotonic() + {stretched(120)}\n"
+            "while not go.exists() and time.monotonic() < deadline: time.sleep(0.05)\n"
+            "os.close(held); os.unlink('.build/turn.running'); print('Ran 1 tests')\n")]}
+        settings.write_text(json.dumps(project))
+        commit_all(self.project)
+        running = self.checkout(1) / ".build/turn.running"
+        first, first_log = self.slot_dispatcher("remote", "run", "turn", "--checkout-slot", "1")
+        self.await_condition(first, first_log, running.exists)
+        second, second_log = self.slot_dispatcher("remote", "run", "turn", "--checkout-slot", "1")
+        self.await_condition(second, second_log, lambda: "checkout slot 1 of example is in use, held by PID"
+                             in second_log.read_text())
+        self.assertIsNone(second.poll(), second_log.read_text())
+        self.assertFalse(self.checkout(0).exists())
+        (self.checkout(1) / ".build/turn.go").touch()
+        self.assertEqual(first.wait(stretched(120)), 0, first_log.read_text())
+        self.assertEqual(second.wait(stretched(120)), 0, second_log.read_text())
+        for log in (first_log, second_log):
+            self.assertIn(f"checkout slot 1, as requested, at {self.checkout(1)}", log.read_text())
+        self.assertFalse(self.checkout(2).exists())
+
+    def test_a_stop_while_waiting_for_a_named_slot_ends_the_wait_and_runs_nothing(self):
+        self.hold_slot(1)
+        process, log = self.slot_dispatcher("remote", "run", "check", "--checkout-slot", "1")
+        self.await_condition(process, log, lambda: "checkout slot 1 of example is in use" in log.read_text())
+        process.send_signal(signal.SIGTERM)
+        self.assertEqual(process.wait(stretched(60)), -signal.SIGTERM, log.read_text())
+        self.assertIn("asking fake to stop the run", log.read_text())
+        receipt = self.slot_receipt()
+        self.assertTrue(receipt["result"]["stopped"])
+        self.assertIsNone(receipt["result"]["exitStatus"])
+        self.assertEqual((receipt["checkoutSlot"]["requested"], receipt["checkoutSlot"]["assigned"]), (1, None))
+        self.assertFalse(self.checkout(1).exists())
+        self.assertFalse(self.checkout(0).exists())
+
     @patch.object(remote, "CHECKOUTS", 2)
     def test_work_on_the_second_mac_leaves_no_bytecode_in_its_checkout(self):
         # The project's .gitignore names no __pycache__, as many projects' do not.
