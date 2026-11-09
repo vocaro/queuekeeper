@@ -4058,7 +4058,10 @@ class LaggingCheckout(Fixture):
     def test_the_worker_runs_no_lane_from_the_checkout(self):
         """The issue's open question: a gate that would fail, only in the main checkout, does not run."""
         current = json.loads((self.repo / "engineering.json").read_text())
-        self.session({**current, "lanes": {"gate": {"command": ["false"]}}})
+        # No implicit spelling subprocess on the published commit. Either stale lane would fail.
+        current["queue"]["spelling"] = False
+        failing_lanes = {lane: {"command": ["false"]} for lane in ("gate", "spelling")}
+        self.session({**current, "lanes": failing_lanes}, current)
         done = self.land_from_another_project()
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         self.assertIn("fix", self.main_files())
