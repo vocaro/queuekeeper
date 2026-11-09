@@ -77,6 +77,8 @@ import threading
 import time
 import uuid
 
+from . import lane_wait
+
 TOKEN = "VOCARO_RESOURCE_TOKEN"
 # `eng run --if-free` waits this many seconds for admission, then exits with BUSY (EX_TEMPFAIL)
 # without running: how the second Mac says it cannot take a lane now.
@@ -1134,6 +1136,7 @@ class Admission:
         try:
             while not self._attempt():
                 self._count()
+                lane_wait.waiting(lane_wait.ADMISSION, self.waiting, stranded=self.refusal == "stranded")
                 # Nothing is published yet but an exclusive or whole-host request's place in the queue,
                 # so a stop or a timeout leaves nothing to release once it withdraws.
                 if requested() is not None:
@@ -1155,6 +1158,7 @@ class Admission:
                 if self.queued: raise
             raise
         _held[self.identity] = self
+        lane_wait.running()
         print(f"heavy: slot {','.join(str(slot) for slot, _fd in self.descriptors)}"
               f"{' and the model' if self.held_model is not None else ''} after {int(time.monotonic() - started)}s: "
               f"{self.label[:LABEL_LIMIT]}", file=sys.stderr, flush=True)

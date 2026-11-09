@@ -11,7 +11,7 @@ import subprocess
 import sys
 import time
 
-from . import __version__, app_builds, app_registrations, budgets, checkpoint, crash_alerts, device_pass, devices, disk, docs, evidence, evidence_offload, failure_records, foreground, github_artifacts, keychain, lane_coverage, lane_report, merge_queue, run_results, \
+from . import __version__, app_builds, app_registrations, budgets, checkpoint, crash_alerts, device_pass, devices, disk, docs, evidence, evidence_offload, failure_records, foreground, github_artifacts, keychain, lane_coverage, lane_report, lane_wait, merge_queue, run_results, \
     notification_center, offload_host, parallel, processes, release, remote, resources, skills, spelling, stale_modules, storekit_config, toolkit_copy, xctest_shards
 from .config import TOOLKIT_ROOT, CAPABILITIES, DEFAULT_TOOLKIT, admission as admission_of, lane_to_run, load, source_identity, \
     display_lane_warnings, lane_devices, self_lane_warnings, stays, unadmitted, unlocked_screen
@@ -547,6 +547,7 @@ def screen_wait(name, seconds, said):
         found = offload_host.screen()
         if found["state"] == "unlocked": return None
         refused, key = remote.screen_refusal(found, this_mac()), (found["state"], found.get("reason"))
+        lane_wait.waiting(lane_wait.SCREEN, refused)
         if not said or said[-1] != key:
             print(f"eng: {name} waits: {refused}", file=sys.stderr, flush=True)
             said.append(key)
@@ -1361,6 +1362,7 @@ def perform(argv, report):
                           "it", file=sys.stderr, flush=True)
                 else: lane["unlockedScreen"] = True
             extra = args.passed or []
+            lane_wait.begin(root, args.lane)
             # A foreground lane takes a Mac's screen. The second Mac's is eng's to take for the run, below; this
             # Mac's, only the session holding mac-foreground within the owner's window runs it on, with --here.
             # Otherwise it goes to the second Mac and waits there for its foreground, never falling back to this
@@ -1462,6 +1464,7 @@ def perform(argv, report):
                         if device_window is not None: devices.report_window(device_window, 0)
                         scroll_bars_recorded(receipt, args.lane, inherited)
                         # Each part its script admits stays on this Mac, which holds what an earlier part built.
+                        lane_wait.running()
                         with patch_environment({SELF_LANE: args.lane}):
                             result = execute()
                     else:
@@ -1541,3 +1544,5 @@ def perform(argv, report):
         print(f"eng: {error}", file=sys.stderr)
         report.explain(error)
         return 2
+    finally:
+        lane_wait.finish()

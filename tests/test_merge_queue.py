@@ -6712,78 +6712,112 @@ class RoundAccount(Fixture):
             mq.status(self.repo, as_json=as_json)
         return json.loads(out.getvalue()) if as_json else out.getvalue()
 
-    def test_what_a_gate_log_says_it_waits_for(self):
-        self.assertEqual(mq.waited_for([self.WHOLE_HOST]),
-                         ("admission on this Mac: it waits behind a whole-host lane holding the host: StudyWright gate",
-                          None))
-        waiting, here = mq.waited_for(["eng: provision ok", self.UNREACHABLE])
-        self.assertIn("waits for this Mac, and asks the second Mac again", waiting)
-        self.assertIn("No route to host", waiting)
-        self.assertIsNone(here)
-        self.assertEqual(mq.waited_for(["eng: trying gate on this Mac: build-host is at capacity"]),
-                         ("this Mac's admission, as the second Mac declined it: build-host is at capacity", None))
-        # An admission after the wait clears it, and says the lane runs on this Mac.
-        self.assertEqual(mq.waited_for([self.WHOLE_HOST, "heavy: slot 2 after 1500s: fixture gate"]), (None, "this Mac"))
-        # Negative control: a lane's own output says nothing of a wait.
-        self.assertEqual(mq.waited_for(["bad: []", "heavy: the admission log was not written: x", "waiting for Godot"]),
-                         (None, None))
-        # A send to the second Mac clears the wait and names it; a decline after it takes the lane back.
-        sent = "remote: sending 0123456789ab, a snapshot of the working tree on ba9876543210, to build-host"
-        self.assertEqual(mq.waited_for([self.UNREACHABLE, sent]), (None, "build-host"))
-        self.assertEqual(mq.waited_for([sent, "eng: trying gate on this Mac: busy"])[1], None)
-        self.assertEqual(mq.waited_for(["remote: offering 0123456789ab to build-host again"]), (None, None))
-
-    def test_the_lines_read_are_those_eng_run_prints(self):
-        """Each line waited_for reads, from the code that prints it, so that a rewording there fails here rather
-        than leaving `eng queue status` silent."""
-        sources = {name: (ROOT / f"src/python/vocaro_engineering/{name}.py").read_text()
-                   for name in ("resources", "remote")}
-        printed = [("resources", 'f"heavy: waiting ({waited}s): {self.waiting}"',
-                    dict(waited=0, self=type("A", (), {"waiting": "it waits behind a whole-host lane"})),
-                    ("admission on this Mac: it waits behind a whole-host lane", None)),
-                   ("resources", 'f"heavy: slot {\',\'.join(str(slot) for slot, _fd in self.descriptors)}"',
-                    dict(self=type("A", (), {"descriptors": [(1, 0)]})), (None, "this Mac")),
-                   ("remote", 'f"remote: sending {at} to {host}"', dict(at="0123456789ab", host="build-host"),
-                    (None, "build-host")),
-                   # Its problem follows in a second f-string, which the line's end stands for here.
-                   ("remote", 'f"eng: {self.name} waits for this Mac, and asks the second Mac again at the next offer: "',
-                    dict(self=type("A", (), {"name": "gate"})),
-                    ("waits for this Mac, and asks the second Mac again at the next offer:", None)),
-                   ("remote", 'f"eng: {self.name} waits for this Mac alone: {said}"',
-                    dict(self=type("A", (), {"name": "gate"}), said="no reading"),
-                    ("waits for this Mac alone: no reading", None)),
-                   ("remote", "f\"eng: {f'trying {self.name} on this Mac' if fallback else f'{self.name} not run'}: {said}\"",
-                    dict(self=type("A", (), {"name": "gate"}), fallback=True, said="busy"),
-                    ("this Mac's admission, as the second Mac declined it: busy", None))]
-        for source, template, values, expected in printed:
-            with self.subTest(template=template):
-                self.assertIn(template, sources[source])
-                line = eval(template, {}, values)  # noqa: S307 - the template is the module's own f-string
-                self.assertEqual(mq.waited_for([line]), expected)
-
-    def test_a_gate_record_follows_its_log(self):
+    def watch(self, began=None):
+        """A GateWatch of a gate lane, and the path of the lane's wait record."""
         queue = mq.Queue(self.repo)
         worker = mq.Worker(queue)
         worker.gating = ["e1"]
         log = queue.logs / "round-gate.log"
-        log.write_text(self.UNREACHABLE + "\n")
+        log.write_text("")
         with patch.object(mq.Worker, "head", return_value="a" * 40):
-            watch = mq.GateWatch(worker, "gate", time.time() - 90, log)
-        watch.look()
-        gate = queue.round_state()["gates"]["batch"]
+            watch = mq.GateWatch(worker, "gate", time.time() - 90 if began is None else began, log)
+        self.addCleanup(watch.stopped.set)
+        record = mq.lane_wait.path_of(worker.checkout, "gate")
+        patcher = patch.dict(os.environ, {mq.lane_wait.VARIABLE: str(record)})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return queue, watch
+
+    def gate_after_look(self, queue, watch):
+        with patch.object(mq.remote, "dispatched", return_value=None): watch.look()
+        return queue.round_state()["gates"]["batch"]
+
+    def test_a_gate_record_follows_the_lanes_wait_record(self):
+        queue, watch = self.watch()
+        mq.lane_wait.waiting(mq.lane_wait.UNREACHABLE, "ssh: connect to host build-host port 22: No route to host")
+        gate = self.gate_after_look(queue, watch)
         self.assertEqual((gate["lane"], gate["entries"], gate["mac"]), ("gate", ["e1"], None))
-        self.assertIn("No route to host", gate["waiting"])
-        with log.open("a") as more: more.write(self.WHOLE_HOST + "\nheavy: slot 1 after 3s: fixture gate\n")
-        watch.look()
-        gate = queue.round_state()["gates"]["batch"]
-        self.assertEqual((gate["mac"], gate["waiting"]), ("this Mac", None))
+        self.assertEqual(gate["waiting"], "the second Mac cannot be reached, and is asked again at the next offer: "
+                                          "ssh: connect to host build-host port 22: No route to host")
+        self.assertIsInstance(gate["waitingSince"], float)
+        mq.lane_wait.running()
+        gate = self.gate_after_look(queue, watch)
+        self.assertEqual((gate["mac"], gate["waiting"], gate["waitingSince"]), ("this Mac", None, None))
         # A lane that a dispatch sent to the second Mac runs there.
         with patch.object(mq.remote, "dispatched", return_value="build-host"): watch.look()
         self.assertEqual(queue.round_state()["gates"]["batch"]["mac"], "the second Mac (build-host)")
-        # While its run goes on, its dispatch's folder has no name yet (remote.file_results): its log says where.
-        with log.open("a") as more: more.write("remote: sending 0123456789ab to build-host\n")
-        with patch.object(mq.remote, "dispatched", return_value=None): watch.look()
-        self.assertEqual(queue.round_state()["gates"]["batch"]["mac"], "the second Mac (build-host)")
+        # While its run goes on, its dispatch's folder has no name yet (remote.file_results): the record says where.
+        mq.lane_wait.sent("build-host")
+        self.assertEqual(self.gate_after_look(queue, watch)["mac"], "the second Mac (build-host)")
+        watch.finish()
+        self.assertEqual(queue.round_state()["gates"], {})
+
+    def test_a_wait_on_the_second_mac_is_shown_and_names_the_mac(self):
+        """The issue's first acceptance: its wait comes back as a record, and no log line says it."""
+        queue, watch = self.watch()
+        mq.lane_wait.sent("build-host")
+        mq.lane_wait.relayed(json.dumps({"kind": mq.lane_wait.ADMISSION, "reason": "all 3 guaranteed slots are busy"}),
+                             "build-host")
+        gate = self.gate_after_look(queue, watch)
+        self.assertEqual((gate["mac"], gate["waiting"]),
+                         ("the second Mac (build-host)", "admission on the second Mac (build-host): all 3 guaranteed "
+                                                         "slots are busy"))
+        said = self.shown()
+        self.assertIn("gate lane on the second Mac (build-host), running", said)
+        self.assertRegex(said, r"waiting: admission on the second Mac \(build-host\): all 3 guaranteed slots are busy, "
+                               r"for \d+s")
+        mq.lane_wait.relayed(b"null", "build-host")
+        gate = self.gate_after_look(queue, watch)
+        self.assertEqual((gate["mac"], gate["waiting"]), ("the second Mac (build-host)", None))
+        self.assertNotIn("waiting:", self.shown())
+
+    def test_status_reads_the_record_and_no_printed_line(self):
+        """The issue's second acceptance: what eng run prints may be reworded, or not printed at all."""
+        queue, watch = self.watch()
+        watch.log.write_text("\n".join((self.WHOLE_HOST, self.UNREACHABLE, "eng: trying gate on this Mac: busy",
+                                        "remote: sending 0123456789ab to build-host")) + "\n")
+        gate = self.gate_after_look(queue, watch)
+        self.assertEqual((gate["mac"], gate["waiting"]), (None, None))
+        mq.lane_wait.waiting(mq.lane_wait.ADMISSION, "it waits behind a whole-host lane holding the host: X")
+        watch.log.write_text("heavy: slot 1 after 3s: fixture gate\n")  # says it was admitted, and is not read
+        self.assertEqual(self.gate_after_look(queue, watch)["waiting"],
+                         "admission on this Mac: it waits behind a whole-host lane holding the host: X")
+
+    def test_a_lane_admitted_at_once_shows_no_wait(self):
+        """Negative control: never having waited, nothing says it did."""
+        queue, watch = self.watch()
+        mq.lane_wait.running()
+        gate = self.gate_after_look(queue, watch)
+        self.assertEqual((gate["mac"], gate["waiting"], gate["waitingSince"], gate["stranded"]),
+                         ("this Mac", None, None, False))
+        self.assertNotIn("waiting:", self.shown())
+
+    def test_a_wait_an_earlier_run_or_a_dead_process_left_is_not_shown(self):
+        """A run that has moved on shows no stale wait."""
+        queue, watch = self.watch(began=time.time() + 3600)  # a record written before this run's start
+        mq.lane_wait.waiting(mq.lane_wait.ADMISSION, "all 3 guaranteed slots are busy")
+        self.assertIsNone(self.gate_after_look(queue, watch)["waiting"])
+        queue, watch = self.watch()
+        path = Path(os.environ[mq.lane_wait.VARIABLE])
+        # Negative control: the same record, from a live process, is shown.
+        mq.lane_wait.waiting(mq.lane_wait.ADMISSION, "all 3 guaranteed slots are busy")
+        self.assertIsNotNone(self.gate_after_look(queue, watch)["waiting"])
+        dead = subprocess.Popen([sys.executable, "-c", "pass"])
+        dead.wait()
+        path.write_text(json.dumps({**json.loads(path.read_text()), "pid": dead.pid}))
+        self.assertIsNone(self.gate_after_look(queue, watch)["waiting"])
+
+    def test_a_lanes_record_is_no_verdict(self):
+        """It holds nothing of an outcome, and a run ends by its exit whatever the record last said."""
+        queue, watch = self.watch()
+        mq.lane_wait.waiting(mq.lane_wait.ADMISSION, "all 3 guaranteed slots are busy")
+        path = Path(os.environ[mq.lane_wait.VARIABLE])
+        self.assertEqual(set(json.loads(path.read_text())),
+                         {"schemaVersion", "kind", "reason", "mac", "offer", "stranded", "pid", "since", "written"})
+        gate = self.gate_after_look(queue, watch)
+        self.assertNotIn("status", gate)
+        self.assertNotIn("outcome", gate)
+        self.assertIn("gate lane on no Mac yet, running", self.shown())
         watch.finish()
         self.assertEqual(queue.round_state()["gates"], {})
 
@@ -6795,22 +6829,21 @@ class RoundAccount(Fixture):
         # BreezEPUB's gate waited 86 min behind three dead entries while status said only "waiting" (#315).
         at = time.time()
         late, early = at - mq.STUCK_SECONDS - 60, at - mq.STUCK_SECONDS + 60
-        said = mq.stuck({"waiting": self.DEAD, "waitingSince": late}, at)
+        said = mq.stuck({"waitingSince": late, "stranded": True}, at)
         self.assertEqual(said, "stuck: the gate has waited 16m00s for admission held up by dead or uncertain guard "
                                "entries that admission has not recovered; `python3 scripts/eng admissions recover` lists "
                                "them (guides/shared-host.md, Lock reclamation)")
-        self.assertIsNotNone(mq.stuck({"waiting": self.DEAD.replace("is dead", "is uncertain"), "waitingSince": late}, at))
-        # Negative controls: before the threshold; a wait that names no dead entry; a gate with no wait recorded.
-        self.assertIsNone(mq.stuck({"waiting": self.DEAD, "waitingSince": early}, at))
-        self.assertIsNone(mq.stuck({"waiting": "admission on this Mac: " + self.WHOLE_HOST, "waitingSince": late}, at))
-        self.assertIsNone(mq.stuck({"waiting": self.DEAD}, at))
-        self.assertIsNone(mq.stuck({"waiting": None, "waitingSince": late}, at))
+        # Negative controls: before the threshold; a wait on no stranded entry; a gate with no wait recorded.
+        self.assertIsNone(mq.stuck({"waitingSince": early, "stranded": True}, at))
+        self.assertIsNone(mq.stuck({"waitingSince": late, "stranded": False}, at))
+        self.assertIsNone(mq.stuck({"stranded": True}, at))
+        self.assertIsNone(mq.stuck({"waitingSince": None, "stranded": True}, at))
         queue = mq.Queue(self.repo)
         queue.note(lambda state: state.update(round="r", entries=["e1", "e2"], gates={
             "batch": {"lane": "gate", "began": late, "entries": ["e1"], "mac": None, "waiting": self.DEAD,
-                      "waitingSince": late, "log": "/l/b.log"},
+                      "waitingSince": late, "stranded": True, "log": "/l/b.log"},
             "stacked": {"lane": "gate", "began": late, "entries": ["e2"], "mac": None, "waiting": self.DEAD,
-                        "waitingSince": early, "log": "/l/s.log"}}))
+                        "waitingSince": early, "stranded": True, "log": "/l/s.log"}}))
         said = self.shown()
         self.assertEqual(said.count("    stuck: the gate has waited 16m"), 1, said)
         self.assertLess(said.index("batch (e1)"), said.index("stuck:"))
@@ -6820,13 +6853,8 @@ class RoundAccount(Fixture):
         self.assertNotIn("stuck", shown["stacked"])
 
     def test_the_worker_log_says_once_that_a_gate_is_stuck(self):
-        queue = mq.Queue(self.repo)
-        worker = mq.Worker(queue)
-        worker.gating = ["e1"]
-        log = queue.logs / "round-gate.log"
-        log.write_text("heavy: waiting (0s): " + self.DEAD.removeprefix("admission on this Mac: ") + "\n")
-        with patch.object(mq.Worker, "head", return_value="a" * 40):
-            watch = mq.GateWatch(worker, "gate", time.time(), log)
+        queue, watch = self.watch(began=time.time() - 1)
+        mq.lane_wait.waiting(mq.lane_wait.ADMISSION, self.DEAD.removeprefix("admission on this Mac: "), stranded=True)
         with contextlib.redirect_stdout(io.StringIO()) as out:
             watch.look()
             began = queue.round_state()["gates"]["batch"]["waitingSince"]
@@ -6838,7 +6866,7 @@ class RoundAccount(Fixture):
             self.assertEqual(queue.round_state()["gates"]["batch"]["waitingSince"], began)
             self.assertEqual(out.getvalue().count("gate: stuck: the gate has waited 15m01s"), 1, out.getvalue())
             # Once admitted, the wait and its start clear.
-            with log.open("a") as more: more.write("heavy: slot 0,1,2 after 901s: fixture gate\n")
+            mq.lane_wait.running()
             watch.look()
         gate = queue.round_state()["gates"]["batch"]
         self.assertEqual((gate["waiting"], gate["waitingSince"]), (None, None))
