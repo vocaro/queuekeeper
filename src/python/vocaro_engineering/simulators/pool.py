@@ -40,6 +40,7 @@ import subprocess
 import sys
 import time
 import uuid
+from xml.parsers.expat import ExpatError
 
 from .. import devices as device_record, evidence, offload_host
 from ..resources import process_start
@@ -252,6 +253,10 @@ def template_current(template, entry, builds):
     if off is None: off = "could not be confirmed off" not in str(details.get("voiceOver") or "")
     if not off:
         return False, "VoiceOver could not be confirmed off, so a clone would boot with it on"
+    # devicectl reads the running system, so it can confirm VoiceOver off while the file a copy takes still says
+    # on: the record of the template behind vocaro-engineering#263 said off, and its members booted with it on.
+    if saved_voiceover_on(data_path({"dataPath": template.data}, template.udid)):
+        return False, "its saved settings have VoiceOver on, so a clone or copy would boot with it on"
     if builds is not None and details.get("installedBuilds") != builds:
         return False, (f"the runtime moved: warmed on {details.get('runtimeBuild')} among builds "
                        f"{', '.join(details.get('installedBuilds') or []) or 'none'}, now {', '.join(builds) or 'none'}")
@@ -286,6 +291,17 @@ def data_path(entry, udid):
     return Path(entry.get("dataPath") or DEVICES / udid / "data")
 
 
+def saved_voiceover_on(data):
+    """Whether a shut-down device's data folder has VoiceOver saved on, the setting it boots with. A device that
+    never saved the setting has it off, and a file that cannot be read says nothing of it."""
+    try:
+        with open(Path(data) / ACCESSIBILITY_SETTINGS, "rb") as stream:
+            saved = plistlib.load(stream)
+    except (OSError, ValueError, ExpatError):
+        return False
+    return isinstance(saved, dict) and bool(saved.get(VOICEOVER_SETTING))
+
+
 def libc():
     found = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
     found.clonefile.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint32)
@@ -315,6 +331,9 @@ FOREIGN = re.compile(r"(?<=/CoreSimulator/Devices/)([0-9A-F]{8}-[0-9A-F]{4}-[0-9
 # so simctl get_app_container, and the system's own lookups, answered with the template's Files storage
 # until it was removed. The system rebuilds it at the next boot.
 LAUNCH_SERVICES = Path("var/db/lsd")
+# Where a data folder keeps the setting VoiceOver boots with.
+ACCESSIBILITY_SETTINGS = Path("Library/Preferences/com.apple.Accessibility.plist")
+VOICEOVER_SETTING = "VoiceOverTouchEnabled"
 
 
 def foreign(target, udid):
@@ -640,7 +659,9 @@ class Pool:
             if self.state(udid) != "Shutdown":
                 self.release(lease, outcome="Warmed, but its shutdown could not be confirmed", shutdown=False)
                 return None, f"{key} ({udid}) was warmed, but its shutdown could not be confirmed"
-            clonable, reason = template_current(Template(key, udid, label, device_type, runtime, "Shutdown"),
+            # Read once it is shut down, when the system has written what the copy will take.
+            data = (self.entries().get(udid) or {}).get("dataPath")
+            clonable, reason = template_current(Template(key, udid, label, device_type, runtime, "Shutdown", data=data),
                                                 self.record.entry(key), builds)
             if not clonable:
                 # Never cloned: the next creation replaces it.
