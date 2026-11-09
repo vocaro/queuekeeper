@@ -33,6 +33,47 @@ class SilenceCuesTests(unittest.TestCase):
         self.assertIs(self.silence(reads="1\n")[0], False)
         self.assertIs(self.silence(reads="")[0], False)
 
+    def attempts(self, unanswered):
+        """silence_cues, whose first `unanswered` spawned commands reach their limit; its result and calls."""
+        calls = []
+        def run(*command, timeout=60):
+            calls.append(command[5])
+            if len(calls) <= unanswered:
+                raise speech.NoAnswer(f"No answer in {timeout} s")
+            return "0\n" if command[5] == "read" else ""
+        return speech.silence_cues(self.UDID, run_command=run), calls
+
+    def test_a_write_with_no_answer_is_tried_again(self):
+        self.assertEqual(self.attempts(1), (True, ["write", "write", "read"]))
+
+    def test_a_read_with_no_answer_is_tried_again(self):
+        def run(*command, timeout=60):
+            calls.append(command[5])
+            if calls == ["write", "read"]:
+                raise speech.NoAnswer("No answer")
+            return "0\n" if command[5] == "read" else ""
+        calls = []
+        self.assertIs(speech.silence_cues(self.UDID, run_command=run), True)
+        self.assertEqual(calls, ["write", "read", "read"])
+
+    def test_a_command_that_never_answers_raises_within_its_tries(self):
+        calls = []
+        def run(*command, timeout=60):
+            calls.append(command[5])
+            raise speech.NoAnswer("No answer")
+        with self.assertRaises(RuntimeError):
+            speech.silence_cues(self.UDID, run_command=run)
+        self.assertEqual(calls, ["write"] * speech.CUE_ATTEMPTS)
+
+    def test_a_command_that_fails_is_not_tried_again(self):
+        calls = []
+        def run(*command, timeout=60):
+            calls.append(command[5])
+            raise RuntimeError("failed")
+        with self.assertRaises(RuntimeError):
+            speech.silence_cues(self.UDID, run_command=run)
+        self.assertEqual(calls, ["write"])
+
     def test_a_failed_write_or_read_raises(self):
         for step in ("write", "read"):
             with self.subTest(step=step), self.assertRaises(RuntimeError):

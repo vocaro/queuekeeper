@@ -44,7 +44,7 @@ from xml.parsers.expat import ExpatError
 
 from .. import devices as device_record, evidence, offload_host
 from ..resources import process_start
-from . import lifecycle, template as warmed
+from . import lifecycle, speech, template as warmed
 
 # How long a member other than its kind's lowest-numbered must be unused, and its record entry released, before
 # pruning deletes it: a grace that keeps a member for a lane between two takes. A member is no warmer than a new
@@ -1175,12 +1175,18 @@ def boot(pool, lease, timeout, *, app_accessibility=False):
     """Boot a member to bootstatus -b; None when it booted, else a status (UNMEASURED for a timeout). A
     command that fails is logged with its error text (boot_failure).
 
-    A booted member then has VoiceOver's sound cues switched off: an erase clears the setting, and
-    the mute leaves the cues audible through the Mac (guides/voiceover-simulator.md, Muted speech
-    capture). A setting that does not read off is logged, not a failed boot: a lane without VoiceOver
-    plays no cues. With app_accessibility its app processes get UIKit's and SwiftUI's own accessibility
-    (set_app_accessibility); a setting that does not read as asked fails the boot with status 1, since the
+    The member boots with VoiceOver's sound cues already off, written into its data while it is shut
+    down: an erase clears the setting, the mute leaves the cues audible through the Mac
+    (guides/voiceover-simulator.md, Muted speech capture), and a spawned write in the booted member
+    timed out on every take of a loaded host (vocaro-engineering#310). A setting that cannot be written
+    is logged, not a failed boot: a lane without VoiceOver plays no cues. With app_accessibility its app
+    processes get UIKit's and SwiftUI's own accessibility (set_app_accessibility); a setting that does not read as asked fails the boot with status 1, since the
     lane asked for it, and is logged."""
+    try:
+        speech.silence_cues_at_rest(data_path(pool.entries().get(lease.udid) or {}, lease.udid))
+    except (OSError, ValueError) as error:
+        pool.log(f"CUES {lease.key}: VoiceOver's sound cues could not be switched off, so VoiceOver would play "
+                 f"them through the Mac: {error}")
     started = pool.run("boot", lease.udid, timeout=120)
     if started.returncode != 0:
         pool.log(f"{lease.key}: {boot_failure('boot', started)}")
@@ -1189,12 +1195,6 @@ def boot(pool, lease, timeout, *, app_accessibility=False):
     if finished.returncode != 0:
         pool.log(f"{lease.key}: {boot_failure('bootstatus -b', finished)}")
         return evidence.UNMEASURED if finished.returncode == 124 else finished.returncode
-    written = pool.run("spawn", lease.udid, "defaults", "write", warmed.CUE_DOMAIN, warmed.CUE_KEY, "-bool", "false",
-                       timeout=30)
-    read = pool.run("spawn", lease.udid, "defaults", "read", warmed.CUE_DOMAIN, warmed.CUE_KEY, timeout=30)
-    if written.returncode != 0 or read.returncode != 0 or read.stdout.strip() != "0":
-        pool.log(f"CUES {lease.key}: VoiceOver's sound cues could not be switched off, so VoiceOver would play "
-                 f"them through the Mac: {(written.stderr or read.stderr or read.stdout).strip() or 'no reading'}")
     why = set_app_accessibility(pool.run, lease.udid, app_accessibility, kept=lease.kept)
     if why is not None:
         pool.log(f"APP ACCESSIBILITY {lease.key}: " + ("could not be switched on, so a hosted test reads no system "
