@@ -3857,6 +3857,8 @@ def run(root):
     while True:
         with queue.worker() as free:
             if not free: return 0
+            # A gate its worker's crash left running holds a slot and admission this worker needs.
+            remote.stop_dead_dispatches()
             # Whatever a worker that died left testing was never pushed. What it left passed is pushed first,
             # and a push that had gone through lands it then, as a push of what main already has.
             queue.mark([entry for entry in queue.all() if entry["state"] == TESTING], QUEUED)

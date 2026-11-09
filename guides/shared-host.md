@@ -1177,9 +1177,27 @@ own receipt, and that receipt's `connection` says it was collected on a later co
 asked for meanwhile reaches the run on the next connection that gets through. Two exceptions end
 the run with its connection as before: a run that carries a device reservation, since this Mac's
 record holds that (see [Physical devices](#physical-devices-and-the-second-mac)), and a run whose
-dispatcher had not yet heard it start, which it counts as never run. A dispatcher that dies
-cannot be told from a dropped connection: its run goes on too, within the bound, and its journal
-stays for a week, uncollected.
+dispatcher had not yet heard it start, which it counts as never run.
+
+The second Mac cannot tell a dispatcher that died from a Mac asleep or a dropped connection, so
+the dispatching Mac decides. Each dispatch records its journal, host, PID and process start time
+under `dispatchers/` in this Mac's durable state (`remote.dispatch_records`) and removes the
+record when it ends. The next `eng remote` dispatch or queue worker start finds the records whose
+process is proven gone, with no process at that PID or one that started at another time, as after
+a reboot, and sends `stop` for that journal alone through `reattach`: the run leaves admission
+and frees its checkout the usual way, with its journal kept a week. A dispatcher still alive, as on a
+sleeping Mac, is left alone, and a record the second Mac could not be asked about stays, and is
+tried again later, with nothing said to be stopped.
+
+For a run whose connection's end is a stop (one with a device reservation, or one before its
+dispatcher heard it start), a Mac that crashes or loses power closes nothing, and the second
+Mac's sshd would learn of it only from TCP keepalive. So the dispatcher writes a heartbeat on the
+run's standard input every 20 s, and the second Mac stops such a run after 180 s with none
+(`remote.HEARTBEAT_SECONDS` and `HEARTBEAT_SILENCE`): SIGTERM to the run's own process group,
+which leaves admission, and then the checkout's slot comes free. It sends no result and drops the
+run's output from then on, so a dispatcher that wakes reports the run unmeasured. 180 s outlasts
+ssh's own two-minute bound. A journaled run its dispatcher has heard start is never stopped by
+silence (vocaro-engineering#287, #321).
 
 A run nobody is attending still ends. `eng run` and `eng admit` on the second Mac stop their own
 work at its timeout, as ever, unmeasured. Past that, once a connection has been lost, the second
