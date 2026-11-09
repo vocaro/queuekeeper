@@ -11,7 +11,7 @@ import subprocess
 import sys
 import time
 
-from . import __version__, app_builds, app_registrations, budgets, crash_alerts, device_pass, devices, disk, docs, evidence, evidence_offload, failure_records, foreground, github_artifacts, keychain, merge_queue, \
+from . import __version__, app_builds, app_registrations, budgets, crash_alerts, device_pass, devices, disk, docs, evidence, evidence_offload, failure_records, foreground, github_artifacts, keychain, lane_coverage, merge_queue, \
     notification_center, offload_host, parallel, processes, release, remote, resources, skills, spelling, stale_modules, storekit_config, toolkit_copy, xctest_shards
 from .config import TOOLKIT_ROOT, CAPABILITIES, DEFAULT_TOOLKIT, admission as admission_of, load, source_identity, \
     display_lane_warnings, self_lane_warnings, stays, unadmitted, unlocked_screen
@@ -1173,9 +1173,11 @@ def main(argv=None):
             # A difference between the two Macs is an error; a second Mac that cannot be reached is unchecked.
             hosts = fix_hosts(root, remote.compare_hosts())
             warnings += default_simulators(config)
+            test_lanes = lane_coverage.report(root, config)  # a warning at most, and never a failure (#289)
+            warnings += lane_coverage.doctor_warnings(test_lanes)
             print(json.dumps({"project": config["name"], "toolkit": str(TOOLKIT_ROOT),
                 "source": source_identity(TOOLKIT_ROOT), "capabilities": config.get("capabilities", []),
-                "missingCommands": missing, "warnings": warnings, "offload": hosts}, indent=2))
+                "missingCommands": missing, "warnings": warnings, "testLanes": test_lanes, "offload": hosts}, indent=2))
             return int(bool(missing or hosts["errors"]))
         elif args.action == "github-artifacts": github_artifacts.prepare(root, args.package, args.cache_path)
         elif args.action == "policy": refresh_policy(root)
