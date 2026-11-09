@@ -22,7 +22,7 @@ class WaitUntilTests(unittest.TestCase):
 
     def test_progress_keeps_a_wait_going_past_its_stall_bound(self):
         """The positive control: work that keeps moving is waited for however long it takes."""
-        ticks, end = iter(range(10 ** 6)), time.monotonic() + 1.5
+        ticks, end = iter(range(10 ** 6)), time.monotonic() + 1.5  # wall-clock: the work's length, no bound
         with patch.object(waiting.os, "getloadavg", return_value=(0.0,) * 3):
             self.assertTrue(waiting.wait_until(lambda: time.monotonic() >= end, progress=lambda: next(ticks),
                                                stall=0.3, interval=0.02))
@@ -140,6 +140,77 @@ subprocess.check_output(["true"],  # wall-clock: says why on its first line
             self.assertIn("4 test line(s)", warning)
             self.assertIn("scripts/tests/test_fixture.py:2", warning)
             self.assertIn("Waits bound stalls", warning)
+            self.assertIn("`monotonic() + N` deadline", warning)
+
+    def found(self, text):
+        """The line numbers fixed_waits lists for a test file holding this text."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.project(directory, {"tests/test_shapes.py": text})
+            return [number for name, number in waiting.fixed_waits(root)]
+
+    def test_a_deadline_of_any_length_is_found_and_a_short_timeout_is_not(self):
+        self.assertEqual(self.found("""deadline = time.monotonic() + 10
+deadline = monotonic() + 0.5
+deadline = time.monotonic() + 5  # wall-clock: a grace before SIGKILL
+deadline = time.monotonic() + LIMIT
+deadline = time.monotonic() + stretched(5)
+deadline = time.monotonic() - 5
+deadline = time.time() + 5
+later = started + 5
+process.wait(timeout=5)
+process.communicate(timeout=19.9)
+"""), [1, 2])
+
+    def test_a_fixed_wait_in_a_fixtures_source_is_found_on_its_line_in_the_file(self):
+        self.assertEqual(self.found("""import time
+FAKE = r'''
+import os, time
+deadline = time.monotonic() + 10
+grace = time.monotonic() + 5  # wall-clock: a cleanup's grace
+process.communicate(timeout=30)
+process.wait(timeout=5)
+limit = time.monotonic() + stretched(5)
+'''
+CHILD: str = "import time\\ndeadline = time.monotonic() + 3\\n"
+RUNNER = '''#!/usr/bin/env python3
+import time
+end = time.monotonic() + 7
+'''
+"""), [4, 6, 10, 13])
+
+    def test_a_shebang_script_that_is_not_python_is_searched_for_a_literal_deadline(self):
+        self.assertEqual(self.found("""WRAPPER = '''#!/bin/sh
+python3 -c 'import time; end = time.monotonic() + 7'
+python3 -c 'import time; end = time.monotonic() + 8'  # wall-clock: the limit under test
+python3 -c 'import time; end = time.monotonic() + LIMIT'
+python3 -c 'import time; end = time.monotonic() + 2 * LIMIT'
+python3 -c 'import time; end = time.monotonic() + 1.5x'
+timeout=30 python3 run.py
+'''
+"""), [2])
+
+    def test_strings_that_are_not_a_fixtures_source_are_left_alone(self):
+        """The negative controls nearest a fixture: one-line data, text that does not parse and has no shebang, a
+        script that is not at module level, and a fixture with nothing fixed in it."""
+        self.assertEqual(self.found("""EXPECTED = "deadline = time.monotonic() + 30"
+CALL = "process.wait(timeout=30)"
+LOG = '''gate timed out at monotonic() + 30
+second line, and not Python at all
+'''
+class Fixtures:
+    SOURCE = '''import time
+deadline = time.monotonic() + 10
+'''
+def helper():
+    local = '''import time
+deadline = time.monotonic() + 10
+'''
+    return local
+CLEAN = '''import time
+deadline = time.monotonic() + limit
+process.wait(timeout=5)
+'''
+"""), [])
 
     def test_a_project_with_none_or_no_repository_warns_nothing(self):
         with tempfile.TemporaryDirectory() as directory:

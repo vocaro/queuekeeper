@@ -8,14 +8,17 @@ idle Mac outlived a 30 s `communicate` while it was still working (vocaro/BreezE
 import ast
 import os
 from pathlib import Path
+import re
 import subprocess
 import time
 
-# A literal bound of this many seconds or more on a wait in a test reads as one on the work, not on a cleanup.
+# A literal `timeout=` of this many seconds or more on a wait in a test reads as one on the work, not on a cleanup.
 FIXED_LEAST = 20
 # The calls that wait on a child process or an event with a `timeout=`: subprocess's and Popen's, and threading's.
 WAITS = {"communicate", "wait", "run", "check_output", "check_call", "call"}
 EXEMPT = "wall-clock:"
+# A literal `monotonic() + N` deadline in a script that does not parse; not `+ 2 * LIMIT`, whose bound is a name.
+DEADLINE = re.compile(r"monotonic\(\)\s*\+\s*(?:\d+(?:\.\d*)?|\.\d+)(?![\w.]|\s*[*/])")
 SHOWN = 5
 STALL = 15  # seconds without progress, before stretching; guides/app-testing.md, Waits bound stalls: "15 s has served"
 
@@ -92,18 +95,69 @@ def combined(*probes):
     return lambda: tuple(probe() for probe in probes)
 
 
+def literal(node, least=0):
+    return isinstance(node, ast.Constant) and type(node.value) in (int, float) and node.value >= least
+
+
+def wait_lines(tree, lines):
+    """The line numbers of this parsed source's fixed waits: a `timeout=` of FIXED_LEAST or more literal seconds on
+    a call in WAITS, or a `monotonic() + N` deadline of any literal length. A call or deadline with a
+    `# wall-clock: REASON` comment on one of its lines is left out."""
+    found = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            called = node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", None)
+            fixed = called in WAITS and any(word.arg == "timeout" and literal(word.value, FIXED_LEAST)
+                                            for word in node.keywords)
+        elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add) and isinstance(node.left, ast.Call):
+            clock = node.left.func
+            fixed = (getattr(clock, "attr", None) or getattr(clock, "id", None)) == "monotonic" and literal(node.right)
+        else:
+            continue
+        if fixed and not any(EXEMPT in line for line in lines[node.lineno - 1:node.end_lineno]):
+            found.add(node.lineno)
+    return found
+
+
+def fixture_lines(tree):
+    """The file's line numbers of the fixed waits inside its fixtures' source: a module-level string of more than
+    one line that parses as Python, however the test goes on to write it out, as FAKE and RECORDER are. A shebang
+    script that does not parse, such as a shell wrapper, is searched for a literal deadline. Text that is neither,
+    and a one-line string, is data a test compares."""
+    found = set()
+    for node in tree.body:
+        value = node.value if isinstance(node, (ast.Assign, ast.AnnAssign)) else None
+        if not (isinstance(value, ast.Constant) and isinstance(value.value, str) and "\n" in value.value.strip()):
+            continue
+        lines = value.value.splitlines()
+        try:
+            numbers = wait_lines(ast.parse(value.value), lines)
+        except (SyntaxError, ValueError):
+            numbers = () if not value.value.startswith("#!") else [
+                number for number, line in enumerate(lines, 1) if DEADLINE.search(line) and EXEMPT not in line]
+        # A string written with \n escapes shares one line of the file.
+        found.update(min(value.lineno + number - 1, value.end_lineno) for number in numbers)
+    return found
+
+
+def fixed_in(text):
+    """The line numbers of this test file's fixed waits, in its own code and in its fixtures' source. A file that does
+    not parse has none: its own tests fail on it."""
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError):
+        return set()
+    return wait_lines(tree, text.splitlines()) | fixture_lines(tree)
+
+
 def fixed_waits(root):
-    """Each tracked test file's line that bounds a wait by FIXED_LEAST or more literal wall-clock seconds, as
-    (path, line number): a literal `timeout=` on a call in WAITS, or a `monotonic() + N` deadline. A bound written
-    with `stretched(...)` or a name is not literal, and a call or deadline that says why it is fixed with a
-    `# wall-clock: REASON` comment on one of its lines is left out. A file that does not parse is skipped:
-    its own tests fail on it."""
+    """Each tracked test file's fixed wall-clock wait, as (path, line number), as fixed_in finds them. A bound written
+    with `stretched(...)` or a name is not literal. A short `timeout=` is left alone, since short cleanup timeouts are
+    common; a deadline rarely is one, and one that is says so with `# wall-clock: REASON` (#308)."""
     listed = subprocess.run(["git", "-C", str(root), "ls-files", "-z", "--", "*.py"], capture_output=True,
                             stdin=subprocess.DEVNULL)
     if listed.returncode:
         return []
-    def literal(node):
-        return isinstance(node, ast.Constant) and type(node.value) in (int, float) and node.value >= FIXED_LEAST
     found = []
     for name in sorted(filter(None, listed.stdout.decode().split("\0"))):
         path = Path(name)
@@ -112,22 +166,10 @@ def fixed_waits(root):
             continue
         try:
             text = (Path(root) / path).read_text(errors="replace")
-            tree = ast.parse(text)
-        except (OSError, SyntaxError, ValueError):
+        except OSError:
             continue
-        lines = text.splitlines()
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Call):
-                called = node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", None)
-                fixed = called in WAITS and any(word.arg == "timeout" and literal(word.value) for word in node.keywords)
-            elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add) and isinstance(node.left, ast.Call):
-                clock = node.left.func
-                fixed = (getattr(clock, "attr", None) or getattr(clock, "id", None)) == "monotonic" and literal(node.right)
-            else:
-                continue
-            if fixed and not any(EXEMPT in line for line in lines[node.lineno - 1:node.end_lineno]):
-                found.append((name, node.lineno))
-    return sorted(set(found))
+        found += [(name, number) for number in fixed_in(text)]
+    return sorted(found)
 
 
 def doctor_warnings(root):
@@ -137,8 +179,9 @@ def doctor_warnings(root):
         return []
     shown = ", ".join(f"{name}:{number}" for name, number in found[:SHOWN])
     more = f" and {len(found) - SHOWN} more" if len(found) > SHOWN else ""
-    return [f"{len(found)} test line(s) bound a wait by a fixed {FIXED_LEAST} s or more of wall-clock time, which a "
-            f"busy host can use up while the work still progresses: {shown}{more}. Wait on the state the test "
-            "checks with vocaro_engineering.waiting.wait_until and a progress probe, or stretch the bound with "
-            f"waiting.stretched; a bound that is the behavior under test says so with `# {EXEMPT} REASON` "
+    return [f"{len(found)} test line(s) bound a wait by fixed wall-clock time, a `monotonic() + N` deadline or a "
+            f"`timeout=` of {FIXED_LEAST} s or more, which a busy host can use up while the work still progresses: "
+            f"{shown}{more}. Wait on the state the test checks with vocaro_engineering.waiting.wait_until and a "
+            "progress probe, or stretch the bound with waiting.stretched; a bound that is the behavior under test, "
+            f"or a cleanup's grace period, says so with `# {EXEMPT} REASON` "
             "(guides/app-testing.md, Waits bound stalls)"]
