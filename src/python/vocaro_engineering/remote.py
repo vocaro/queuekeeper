@@ -63,7 +63,7 @@ import tempfile
 import threading
 import time
 
-from . import capture_approvals, devices, disk, offload_host, processes, resources, toolkit_copy
+from . import capture_approvals, devices, disk, evidence, offload_host, processes, resources, toolkit_copy
 from .config import TOOLKIT_ROOT, unlocked_screen
 from .resources import BUSY, FREE_WAIT
 from .simulators import pool as simulator_pool
@@ -1558,6 +1558,105 @@ def carrying(lease, root, host, work, name, send):
         return devices.UNMEASURED
 
 
+# What a lane run on the second Mac says while it runs (vocaro-engineering#320). On 2026-11-08 a working 27-minute
+# BreezEPUB run wrote nothing here, a session took it for a stalled one, and stopping it lost its iPad result. The
+# lines count for nothing: they go to this Mac's stderr, never into run.log or output.log, which stay what the second
+# Mac wrote. The bound: a heartbeat each PROGRESS_INTERVAL seconds, 41 over the longest lane timeout measured then
+# (12,300 s), and at most PROGRESS_LINES relayed lines, each cut at PROGRESS_WIDTH characters; the run.log keeps them all.
+PROGRESS_INTERVAL = 300
+PROGRESS_LINES = 200
+PROGRESS_WIDTH = 300
+# A lane's log line that says what it has reached: a project's iOS script's (BreezEPUB's test-ios.sh, as of 2026-11-09)
+# and the toolkit's own simulator pool's and eng simulator-tests's.
+PROGRESS_LINE = re.compile(r"(?:Taking: |TOOK |Testing: |Passed: |Failed: |Unmeasured: |BUILD |BUILT |TEST |SHARD "
+                           r"|PASS |FAIL |UNMEASURED )")
+# What evidence.py counts wherever a log holds it, written in lower case in the copy a progress line shows, since a
+# lane nested in another or the merge queue's gate log holds this output too: "Executed 6 tests" there is a second count.
+COUNTED_PHRASE = re.compile(r"Executed (?=\d)|Test run with (?=\d)|Test skipped - Unmeasured:")
+CONTROL_CHARACTERS = re.compile(r"[\x00-\x1f\x7f]+")
+
+
+def progress_text(data):
+    """The copy of a lane's log line (bytes) that a progress line shows: on one line, cut at PROGRESS_WIDTH, and such
+    that no reader of a log takes it for a test count or an unmeasured test, or only its first word if it still would."""
+    text = CONTROL_CHARACTERS.sub(" ", data.decode(errors="replace")).strip()[:PROGRESS_WIDTH]
+    text = COUNTED_PHRASE.sub(lambda match: match.group(0).lower(), text)
+    return text.split()[0] if evidence.counted(text) is not None or evidence.unmeasured_tests(text) else text
+
+
+def spelled_seconds(seconds):
+    """A span of seconds for a progress line: 45s, or 27m 03s."""
+    seconds = int(seconds)
+    return f"{seconds}s" if seconds < 60 else f"{seconds // 60}m {seconds % 60:02d}s"
+
+
+def clock_line(config, lane):
+    """What the first log line of a lane's run says of the limits on it: the lane's timeout and, for a lane that runs
+    eng simulator-tests, each test's allowance, which other lanes do not state, and how often the heartbeat comes."""
+    settings = config.get("lanes", {}).get(lane, {})
+    limits = f"its timeout is {settings.get('timeout', processes.DEFAULT_LIMIT):g}s"
+    words = settings.get("command")
+    if isinstance(words, list) and "simulator-tests" in words:
+        from .simulators.matrix import TEST_ALLOWANCE
+        named = words.index("--test-allowance") + 1 if "--test-allowance" in words else None
+        limits += f" and each test's allowance {words[named] if named else TEST_ALLOWANCE}s"
+    return f"{lane}'s log is arriving: {limits}; a heartbeat every {PROGRESS_INTERVAL:g}s says whether the log has grown"
+
+
+class Progress:
+    """A lane's run on the second Mac, as this Mac sees it arrive: its progress lines relayed with the time they came,
+    and a heartbeat that says only what is known, whether its log grew. An open connection is no progress, so a heartbeat
+    never says a run is working: a reader compares its numbers. Nothing here can end the run: a stderr that has closed
+    ends these lines, not the lane (a redirect's reader that left, say). A group's lanes log apart, and those logs come
+    back when it ends (group_files), so the heartbeat says it cannot tell. Nothing judges a stall yet: that needs each
+    lane's slowest measured step, which leaves part of #320 open."""
+    def __init__(self, lane, host, group, clock_said, clock=time.monotonic):
+        self.lane, self.host, self.group, self.clock_said, self.clock = lane, host, group, clock_said, clock
+        self.began = self.beaten = clock()
+        self.lines, self.lines_at_beat, self.latest = 0, 0, None
+        self.relayed, self.last, self.closed = 0, None, False
+
+    def tell(self, kind, text):
+        if self.closed: return
+        stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        try: print(f"remote: {kind} {stamp}: {text}", file=sys.stderr, flush=True)
+        except (OSError, ValueError): self.closed = True
+
+    def arrived(self, data):
+        """Note a line of the lane's log (bytes), and relay it if it is a progress line."""
+        moment = self.clock()
+        if not self.lines and not self.group: self.tell("clock", self.clock_said)
+        self.lines, self.latest = self.lines + 1, moment
+        text = progress_text(data)
+        if not PROGRESS_LINE.match(text): return
+        self.last = (text, moment)
+        if self.relayed < PROGRESS_LINES:
+            self.tell("progress", text)
+        elif self.relayed == PROGRESS_LINES:
+            self.tell("progress", f"{PROGRESS_LINES} progress lines shown; the heartbeat quotes only the latest from here, "
+                                  "and the run's log holds them all")
+        self.relayed += 1
+
+    def beat(self):
+        """Say what has arrived since the last heartbeat, when one is due. Called only when no line is arriving, so
+        that a heartbeat does not fall inside a block of the run's own output, such as the lanes' times."""
+        moment = self.clock()
+        if moment - self.beaten < PROGRESS_INTERVAL: return
+        self.beaten, grew, self.lines_at_beat = moment, self.lines - self.lines_at_beat, self.lines
+        since = spelled_seconds(moment - self.began)
+        if self.group:
+            said = "its lanes log apart and those logs come back when it ends, so this cannot say whether they advance"
+        elif self.latest is None:
+            said = "no line of its log yet, so it has not started or has written nothing"
+        elif grew:
+            said = f"its log grew by {grew} line{'' if grew == 1 else 's'}, the latest {spelled_seconds(moment - self.latest)} ago"
+        else:
+            said = f"its log has not grown for {spelled_seconds(moment - self.latest)}, so nothing shows it moving"
+        if self.last is not None:
+            said += f"; last progress line {spelled_seconds(moment - self.last[1])} ago: {self.last[0]}"
+        self.tell("heartbeat", f"{self.lane} on {self.host}, {since} in: {said}")
+
+
 def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, decline=False, lease=None,
             serial=False, subdirectory=None, sent=None, changes=False):
     """Run eng's work on the second Mac and return its exit status, with the log and receipt kept here.
@@ -1727,6 +1826,8 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     framed, stray = False, None
     # The files asked back that have arrived, in order, and the one arriving now.
     returned, receiving = [], None
+    # A lane's log comes as it grows. An `eng admit` command's output comes on stdout, live, already.
+    progress = Progress(name, host, bool(members), clock_line(config, lane)) if lane is not None else None
     with (staging / "run.log").open("wb") as log, (staging / "output.log").open("wb") as output:
         channel = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                    env=environment())
@@ -1755,12 +1856,14 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
             try:
                 line = lines.get(timeout=0.1)
             except queue.Empty:
+                if progress is not None and stopping is None: progress.beat()
                 continue
             if line is None: break
             kind, data = line[:2], line[2:]
             framed = framed or kind in (b"L ", b"R ", b"O ", b"F ", b"D ")
             if kind == b"L ":
                 log.write(data)
+                if progress is not None: progress.arrived(data)
             elif kind == b"R ":
                 result = json.loads(data)
             elif kind == b"F ":

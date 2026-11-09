@@ -21,7 +21,7 @@ import uuid
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
-from vocaro_engineering import cli, config, device_notifications, devices, evidence, offload_host, processes, release, remote, resources
+from vocaro_engineering import budgets, cli, config, device_notifications, devices, evidence, merge_queue, offload_host, processes, release, remote, resources
 from vocaro_engineering import disk as disk_module
 import host_isolation
 from host_isolation import stretched
@@ -278,6 +278,20 @@ class RemoteTests(unittest.TestCase):
                                  f"pathlib.Path('.build/slow.pid').write_text(str(os.getpid())); time.sleep({stretched(60)})"],
                      "resource": "heavy"},
             "screen": {"command": [python, "-c", "pass"], "resource": "heavy", "foreground": True},
+            # Prints what a project's iOS lane prints, then waits for the test to release it: writing a line every
+            # moment with the argument `growing`, and nothing more without it (#320).
+            "narrated": {"command": [python, "-c", "import pathlib, sys, time\n"
+                                     f"release = pathlib.Path({str(base / 'narrated-release')!r})\n"
+                                     "for line in ['Taking: a iPhone member', 'TOOK iPhone-17-Pro (ABC), erased', "
+                                     "'an ordinary line', 'Passed: iPhone-17-Pro, narrated: Executed 6 tests', "
+                                     "'Testing: iPad-Pro-11, narrated (DEF)']:\n"
+                                     "    print(line, flush=True)\n"
+                                     f"deadline = time.monotonic() + {stretched(60)}\n"
+                                     "while not release.exists() and time.monotonic() < deadline:\n"
+                                     "    if 'growing' in sys.argv[1:]: print('still at it', flush=True)\n"
+                                     "    time.sleep(0.05)\n"
+                                     "raise SystemExit(0 if release.exists() else 9)"],
+                         "resource": "heavy", "timeout": 1234},
             "transcripts": {"command": [python, "-c", "import pathlib, sys\nif 'skip' not in sys.argv[1:]:\n"
                                         "    folder = pathlib.Path('.build/engineering/transcripts/results/session-1')\n"
                                         "    folder.mkdir(parents=True, exist_ok=True)\n"
@@ -484,6 +498,130 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual(git(self.home / remote.ROOT / "repositories/example.git", "for-each-ref", "--format=%(refname)"),
                          f"{offload_host.CACHE}{self.commit}")
         self.assertEqual(self.eng("remote", "passed", "check")[0], 0)
+
+    def narrated(self, ready, *arguments):
+        """Dispatch the narrated lane with a heartbeat every moment, releasing it once ready(stderr so far) holds:
+        (status, stderr while the lane still ran, the whole stderr). A lane that is never released exits 9."""
+        error, during = StringIO(), []
+        release = Path(self.temp.name) / "narrated-release"
+        def watch():
+            deadline = time.monotonic() + stretched(55)
+            while time.monotonic() < deadline and not ready(error.getvalue()): time.sleep(0.02)
+            during.append(error.getvalue())
+            release.touch()
+        watcher = threading.Thread(target=watch, daemon=True)
+        watcher.start()
+        with patch.object(remote, "PROGRESS_INTERVAL", 0.2), contextlib.redirect_stdout(StringIO()), \
+                contextlib.redirect_stderr(error):
+            status = cli.main(["--project", str(self.project), "remote", "run", "narrated", *arguments])
+        watcher.join()
+        return status, during[0], error.getvalue()
+
+    def test_a_lanes_progress_and_a_growing_log_show_while_it_runs_on_the_second_mac(self):
+        status, during, error = self.narrated(lambda said: "Testing: iPad" in said and "its log grew by" in said,
+                                              "--", "growing")
+        self.assertEqual(status, 0, error)
+        # Each while the lane still ran, which only seeing them released, with when each came, in the lane's order.
+        stamp = r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ"
+        relayed = re.findall(rf"^remote: progress {stamp}: (.*)$", during, re.M)
+        self.assertEqual(relayed, ["Taking: a iPhone member", "TOOK iPhone-17-Pro (ABC), erased",
+                                   "Passed: iPhone-17-Pro, narrated: executed 6 tests",
+                                   "Testing: iPad-Pro-11, narrated (DEF)"], during)
+        self.assertRegex(during, rf"(?m)^remote: clock {stamp}: narrated's log is arriving: its timeout is 1234s; ")
+        self.assertRegex(during, rf"(?m)^remote: heartbeat {stamp}: narrated on fake, \S+ in: its log grew by \d+ lines?, "
+                                 r"the latest \S+ ago; last progress line \S+ ago: Testing: iPad-Pro-11, narrated \(DEF\)$")
+        # What the second Mac wrote is kept as it wrote it, and no reader of this output finds a count or a wait in it.
+        results = self.project / ".build/engineering/remote/narrated"
+        log, output = (results / "run.log").read_text(), (results / "output.log").read_text()
+        self.assertIn("Passed: iPhone-17-Pro, narrated: Executed 6 tests", log)
+        self.assertEqual(evidence.counted(log), (6, 0))
+        for kind in ("progress", "heartbeat", "clock"): self.assertNotIn(f"remote: {kind} ", log + output)
+        self.assertIsNone(evidence.counted(error), error)
+        self.assertEqual(evidence.unmeasured_tests(error), [])
+        self.assertEqual(merge_queue.waited_for(error.splitlines()), (None, "fake"))
+
+    def test_a_run_whose_log_stops_growing_claims_no_progress(self):
+        # The negative control: the lane runs on, connected, and writes nothing more.
+        status, during, error = self.narrated(lambda said: said.count("its log has not grown") >= 3)
+        self.assertEqual(status, 0, error)
+        beats = re.findall(r"^remote: heartbeat .*$", during, re.M)
+        stalled = [index for index, beat in enumerate(beats) if "its log has not grown for" in beat]
+        self.assertGreaterEqual(len(stalled), 3, during)
+        # Once it stops, every heartbeat says so, and none says the log grew, however long the connection stays open.
+        self.assertEqual(stalled, list(range(stalled[0], len(beats))), during)
+        for beat in beats[stalled[0]:]:
+            self.assertNotIn("grew", beat)
+            self.assertIn("last progress line", beat)
+            self.assertIn("Testing: iPad-Pro-11", beat)
+        # No line of the lane's after the last it wrote, and the ordinary one is not progress.
+        relayed = re.findall(r"^remote: progress \S+: (.*)$", during, re.M)
+        self.assertEqual(len(relayed), 4, during)
+        self.assertNotIn("an ordinary line", during)
+
+    def test_a_group_or_a_log_not_begun_gets_a_heartbeat_that_says_so(self):
+        now = [0.0]
+        def said(group, *lines):
+            with contextlib.redirect_stderr(StringIO()) as error:
+                progress = remote.Progress("lane", "fake", group, "its clock", clock=lambda: now[0])
+                for line in lines: progress.arrived(line)
+                now[0] += remote.PROGRESS_INTERVAL - 1
+                progress.beat()
+                self.assertEqual(error.getvalue().count("heartbeat"), 0)  # not due yet
+                now[0] += 1
+                progress.beat()
+            return error.getvalue()
+        self.assertIn("no line of its log yet", said(False))
+        group = said(True, b"Taking: not a group's own\n")
+        self.assertIn("so this cannot say whether they advance", group)
+        self.assertNotIn("clock", group)
+        self.assertNotIn("grew", group)
+
+    def test_the_clock_line_names_a_lanes_timeout_and_only_a_stated_test_allowance(self):
+        lanes = {"plain": {"command": ["sh", "scripts/test-ios.sh"], "timeout": 12300},
+                 "pool": {"command": ["python3", "scripts/eng", "simulator-tests", "--scheme", "A"], "timeout": 900},
+                 "set": {"command": ["python3", "scripts/eng", "simulator-tests", "--test-allowance", "45"]}}
+        said = lambda lane: remote.clock_line({"lanes": lanes}, lane)
+        self.assertIn("its timeout is 12300s;", said("plain"))
+        self.assertNotIn("allowance", said("plain"))
+        self.assertIn("its timeout is 900s and each test's allowance 600s;", said("pool"))
+        self.assertIn(f"its timeout is {processes.DEFAULT_LIMIT:g}s and each test's allowance 45s;", said("set"))
+
+    def test_progress_output_is_bounded_and_counts_for_no_reader_of_a_log(self):
+        with patch.object(remote, "PROGRESS_LINES", 3), contextlib.redirect_stderr(StringIO()) as error:
+            progress = remote.Progress("lane", "fake", False, "its clock")
+            for index in range(10): progress.arrived(f"Testing: {index} ".encode() + b"x" * 2000 + b"\n")
+        lines = error.getvalue().splitlines()
+        # The clock, three lines, and the one that says they stop.
+        self.assertEqual(len(lines), 5, lines)
+        self.assertIn("3 progress lines shown", lines[-1])
+        self.assertTrue(all(len(line) < remote.PROGRESS_WIDTH + 60 for line in lines), lines)
+        self.assertEqual(progress.last[0][:10], "Testing: 9")
+        for text, shown in [(b"Passed: iPad: Executed 7 tests, 2 skipped", "Passed: iPad: executed 7 tests, 2 skipped"),
+                            (b"Passed: Test run with 3 tests in 1 suite passed", "Passed: test run with 3 tests in 1 suite passed"),
+                            # The whole of a line whose form still counts is cut to its first word.
+                            (b"Failed: a ... skipped 'Unmeasured: the host'", "Failed:"),
+                            (b"Unmeasured: the screen is locked", "Unmeasured: the screen is locked"),
+                            (b"Testing: \x1b[1mbold\r", "Testing:  [1mbold")]:
+            with self.subTest(text):
+                self.assertEqual(remote.progress_text(text), shown)
+                self.assertIsNone(evidence.counted(shown))
+                self.assertEqual(evidence.unmeasured_tests(shown), [])
+        # The queue's reader of a gate's parts ignores these lines beside the lines it counts.
+        table = "== left: PASS (2 tests, 1.5s)\n"
+        for line in ["remote: heartbeat 2026-11-09T06:19:31Z: gate on fake, 5m 00s in: its log grew by 1 line, the latest 1s ago",
+                     "remote: progress 2026-11-09T06:19:31Z: Testing: iPad"]:
+            self.assertEqual(budgets.parts(f"{line}\n{table}{line}\n"), budgets.parts(table))
+
+    def test_a_closed_stderr_ends_the_progress_lines_and_not_the_run(self):
+        class Closed:
+            def write(self, text): raise BrokenPipeError
+            def flush(self): pass
+        with contextlib.redirect_stderr(Closed()):
+            progress = remote.Progress("lane", "fake", False, "its clock")
+            progress.arrived(b"Testing: iPad\n")
+            progress.arrived(b"Testing: iPhone\n")
+        self.assertTrue(progress.closed)
+        self.assertEqual(progress.lines, 2)
 
     def test_a_whole_lane_counts_only_for_its_exact_commit_and_a_failure_is_its_status(self):
         self.assertEqual(self.eng("remote", "run", "fail")[0], 3)
