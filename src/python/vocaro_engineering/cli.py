@@ -13,7 +13,7 @@ import time
 
 from . import __version__, app_builds, app_registrations, budgets, checkpoint, crash_alerts, device_pass, devices, disk, docs, evidence, evidence_offload, failure_records, foreground, github_artifacts, keychain, lane_coverage, lane_report, merge_queue, run_results, \
     notification_center, offload_host, parallel, processes, release, remote, resources, skills, spelling, stale_modules, storekit_config, toolkit_copy, xctest_shards
-from .config import TOOLKIT_ROOT, CAPABILITIES, DEFAULT_TOOLKIT, admission as admission_of, load, source_identity, \
+from .config import TOOLKIT_ROOT, CAPABILITIES, DEFAULT_TOOLKIT, admission as admission_of, lane_to_run, load, source_identity, \
     display_lane_warnings, lane_devices, self_lane_warnings, stays, unadmitted, unlocked_screen
 from .resources import BUSY, FREE_WAIT
 from .simulators import matrix, pool as simulator_pool
@@ -1350,7 +1350,7 @@ def perform(argv, report):
             if args.build_host_only:
                 raise ValueError("--build-host-only was --offload-only's name until vocaro-engineering#58, and is no "
                                  "longer read: use --offload-only (guides/shared-host.md, Earlier names)")
-            lane = config.get("lanes", {}).get(args.lane)
+            lane = lane_to_run(config, args.lane)
             if lane is None: raise ValueError(f"No configured lane: {args.lane}")
             if args.expect is not None and args.expect < 1: raise ValueError("--expect needs at least 1 test")
             if args.unlocked_screen:

@@ -16,6 +16,7 @@ import tempfile
 import threading
 import time
 import types
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -1385,7 +1386,8 @@ class NoVerdict(Fixture):
         with patch.object(mq.processes, "run", recorded): yield ran
 
     def lane_runs(self, ran):
-        return [command for command in ran if command[:3] == ["python3", "scripts/eng", "run"]]
+        """The eng run commands of ran but the spelling lane's, which comes before the lane these tests judge."""
+        return [command for command in ran if command[:3] == ["python3", "scripts/eng", "run"] and command[-1] != mq.SPELLING]
 
     def test_a_run_a_locked_screen_voided_does_not_count_and_the_next_goes_only_to_an_unlocked_mac(self):
         """vocaro-engineering#293, the owner's decision of 2026-11-08: more runs than the bound, each unmeasured behind
@@ -3087,6 +3089,11 @@ class DocsOnly(Fixture):
 
     def test_a_docs_only_landing_is_no_gate_eng_release_takes(self):
         from vocaro_engineering import release
+        # As a real project does, so that the spelling lane's own directory is no uncommitted change under the gate.
+        (self.repo / ".gitignore").write_text(".build/\n")
+        run(self.repo, "git", "add", ".gitignore")
+        run(self.repo, "git", "commit", "-qm", "Ignore .build")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
         self.commit("code", "code")
         [code] = self.add("code")
         self.work()
@@ -3126,13 +3133,81 @@ class DocsOnly(Fixture):
 
 
 class ImplicitSpelling(Fixture):
-    """The toolkit's spelling check, which the queue runs before the gate in a project with no spelling lane, unless
-    main's queue.spelling is false; a project's own spelling lane runs in its place."""
+    """The toolkit's spelling check, which the queue runs before the gate in a project with no spelling lane, through
+    eng run, as any lane, unless main's queue.spelling is false; a project's own spelling lane runs in its place."""
+    RUN = ["python3", "scripts/eng", "run", "spelling"]
 
     def rounds(self):
         said = []
         with patch.object(mq.Worker, "say", lambda _, words: said.append(words)): self.work()
         return said
+
+    @contextlib.contextmanager
+    def lanes_run(self, spelling=None):
+        """The commands the worker starts, in a list, each run as it would be, or, for the spelling lane, exiting
+        spelling when that is given."""
+        started, real = [], mq.processes.run
+        def recorded(command, **options):
+            started.append(list(command))
+            return spelling if spelling is not None and list(command) == self.RUN else real(command, **options)
+        with patch.object(mq.processes, "run", recorded): yield started
+
+    def test_the_toolkits_check_is_a_lane_eng_run_admits_and_places(self):
+        self.commit("fix", "fix", content="a labeled point\n")
+        [identifier] = self.add("fix")
+        with self.lanes_run() as started: said = self.rounds()
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual(started[:2], [self.RUN, ["python3", "scripts/eng", "run", "gate"]])
+        self.assertNotIn(mq.IMPLICIT_SPELLING, started)
+        # The round says where it ran, as it does of a lane, from the receipt eng run wrote once it was admitted.
+        self.assertTrue(any(words.startswith("spelling exited 0 on this Mac (") for words in said), said)
+
+    def test_an_ungated_landing_runs_it_as_a_lane_and_not_the_gate(self):
+        self.commit("fix", "fix", content="a labeled point\n")
+        with patch.object(mq.Queue, "start"), patch("builtins.print"):
+            mq.add(self.repo, "fix", no_gate=True, why="an emergency")
+        with self.lanes_run() as started: self.rounds()
+        self.assertIn("fix", self.main_files())
+        self.assertIn(self.RUN, started)
+        self.assertEqual(self.gates(), 0)
+
+    def test_a_docs_only_batch_runs_it_as_a_lane_before_its_own(self):
+        config = self.config()
+        config["lanes"]["docs"] = {"command": ["python3", "-c", "pass"]}
+        config["queue"]["docsOnly"] = {"paths": {"doc/": "no code lane reads it"}, "lanes": ["docs"]}
+        self.publish(config, "Declare the docs-only lanes")
+        self.commit("doc/a.md", "fix", content="a labeled point\n")
+        [identifier] = self.add("fix")
+        with self.lanes_run() as started: self.rounds()
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual(started[:2], [self.RUN, ["python3", "scripts/eng", "run", "docs"]])
+        self.assertEqual(self.gates(), 0)
+
+    def test_turned_off_the_queue_asks_eng_run_for_no_spelling_lane(self):
+        # Negative control of the test above.
+        config = self.config()
+        config["queue"]["spelling"] = False
+        self.publish(config, "Turn the toolkit's spelling off")
+        self.commit("fix", "fix")
+        [identifier] = self.add("fix")
+        with self.lanes_run() as started: self.rounds()
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertNotIn(self.RUN, started)
+
+    def test_no_admission_or_no_measurement_is_no_verdict_and_rejects_nothing(self):
+        for status in (mq.resources.BUSY, mq.evidence.UNMEASURED, mq.remote.MISCONFIGURED):
+            with self.subTest(status=status):
+                self.commit(f"fix{status}", f"fix{status}", content=BRITISH)
+                [identifier] = self.add(f"fix{status}", checked=False)
+                with self.lanes_run(spelling=status) as started, patch("builtins.print"): self.rounds()
+                self.assertEqual(self.state(identifier)["state"], "queued")
+                self.assertEqual(self.gates(), 0)
+                self.assertNotIn(f"fix{status}", self.main_files())
+                self.assertEqual(started.count(self.RUN), mq.NO_VERDICT_RUNS)
+                self.assertIn(f"the lanes gave no verdict in {mq.NO_VERDICT_RUNS} runs in a row, the last with exit "
+                              f"{status}", mq.Queue(self.repo).held())
+                mq.remove(mq.Queue(self.repo), identifier, quiet=True)
+                with patch.object(mq.Queue, "start"), patch("builtins.print"): mq.resume(self.repo)
 
     def test_a_clean_batch_passes_the_toolkits_spelling_and_then_the_gate(self):
         self.commit("fix", "fix", content="a labeled point\n")
@@ -3147,10 +3222,12 @@ class ImplicitSpelling(Fixture):
     def test_a_british_spelling_fails_before_the_gate(self):
         self.commit("fix", "fix", content=BRITISH)
         [identifier] = self.add("fix", checked=False)
-        self.rounds()
+        with self.lanes_run() as started: self.rounds()
         self.assertEqual(self.state(identifier)["state"], "failed")
         self.assertEqual(self.gates(), 0)
         self.assertNotIn("fix", self.main_files())
+        self.assertIn(self.RUN, started)
+        self.assertNotIn(mq.IMPLICIT_SPELLING, started)
 
     def test_turned_off_the_gate_alone_decides(self):
         config = json.loads((self.repo / "engineering.json").read_text())
@@ -3355,6 +3432,54 @@ class ClaimsBeforeQueued(Fixture):
             identifier, _, error = self.land("fix")
         self.assertIsNone(identifier)
         self.assertIn("commit messages could not be read", error)
+
+
+class ImplicitSpellingLane(Fixture):
+    """`eng run spelling` in a project with no spelling lane runs the toolkit's check as a lane: offered to the second
+    Mac and admitted like any other (owner's decision, 2026-11-09, vocaro-engineering#305)."""
+    OFFERED = SimpleNamespace(status=0)
+
+    def eng_run(self, *words):
+        return cli.main(["--project", str(self.repo), "run", *words])
+
+    def test_it_is_offered_to_the_second_mac_as_any_lane_is(self):
+        with patch.object(cli.remote, "first", return_value=self.OFFERED) as first:
+            self.assertEqual(self.eng_run("spelling"), 0)
+        config, lane = first.call_args.args[1:3]
+        self.assertEqual(lane, "spelling")
+        self.assertEqual(config["lanes"]["spelling"], {"command": mq.IMPLICIT_SPELLING, "timeout": mq.SPELLING_LIMIT})
+        self.assertIsNone(configuration.stays(config["lanes"], "spelling"))
+
+    def test_a_projects_own_lane_keeps_its_command(self):
+        # Negative control.
+        config = self.config()
+        config["lanes"]["spelling"] = {"command": ["python3", "lane.py"]}
+        self.publish(config, "Add a spelling lane")
+        with patch.object(cli.remote, "first", return_value=self.OFFERED) as first:
+            self.assertEqual(self.eng_run("spelling"), 0)
+        self.assertEqual(first.call_args.args[1]["lanes"]["spelling"], {"command": ["python3", "lane.py"]})
+
+    def test_it_waits_for_admission_and_no_admission_runs_nothing(self):
+        with patch.object(cli, "refresh_policy", return_value="policy"), \
+                patch.object(cli, "admitted_here", return_value=mq.resources.BUSY) as admitted, \
+                patch.object(cli.processes, "run", side_effect=AssertionError("ran with no admission")):
+            self.assertEqual(self.eng_run("--here", "spelling"), mq.resources.BUSY)
+        self.assertEqual(admitted.call_args.args[1:3], ("spelling", "fixture spelling"))
+
+    def test_queue_spelling_says_only_whether_the_queue_asks(self):
+        # A batch's engineering.json that turns it off must not leave the round's `eng run spelling` with no lane.
+        config = self.config()
+        config["queue"]["spelling"] = False
+        self.publish(config, "Turn the toolkit's spelling off")
+        with patch.object(cli.remote, "first", return_value=self.OFFERED) as first:
+            self.assertEqual(self.eng_run("spelling"), 0)
+        self.assertEqual(first.call_args.args[2], "spelling")
+
+    def test_any_other_lane_a_project_lacks_is_still_refused(self):
+        with patch.object(cli.remote, "first", side_effect=AssertionError("offered a lane that does not exist")), \
+                contextlib.redirect_stderr(io.StringIO()) as said:
+            self.assertEqual(self.eng_run("nonesuch"), 2)
+        self.assertIn("No configured lane: nonesuch", said.getvalue())
 
 
 class SpelledBeforeQueued(Fixture):
@@ -5361,7 +5486,7 @@ class Refusals(Fixture):
         named = {**declared, "lanes": ["docs", "spelling"]}
         self.assertEqual(mq.docs_lanes({"lanes": {**lanes, "spelling": {}}, "queue": {"docsOnly": named}}, ["doc/a.md"]),
                          ["docs", "spelling"])
-        # The toolkit's check runs in either checkout, so it holds no bisect half on this Mac; an unknown lane does.
+        # eng run places the toolkit's check as any lane, so it holds no bisect half on this Mac; an unknown lane does.
         self.assertIsNone(mq.offerable({"lanes": {"gate": {}}}, ["spelling", "gate"]))
         self.assertIn("no configured lane", mq.offerable({"lanes": {"gate": {}}, "queue": off}, ["spelling", "gate"]))
 

@@ -49,7 +49,7 @@ import time
 import urllib.request
 
 from . import app_builds, budgets, disk, evidence, landing, offload_host, parallel, processes, remote, resources
-from .config import TOOLKIT_ROOT, load, parse, stays, unlocked_screen
+from .config import IMPLICIT_SPELLING, SPELLING, SPELLING_LIMIT, TOOLKIT_ROOT, load, parse, stays, unlocked_screen
 
 MAIN = "refs/remotes/origin/main"
 FETCH = ["fetch", "--no-tags", "origin", f"refs/heads/main:{MAIN}"]
@@ -144,15 +144,7 @@ MOVED = "moved"
 # Seconds the toolkit at origin/main has to import what a worker runs before a worker moves to it (starts).
 STARTS_LIMIT = 120
 BEFORE_GATE = ["spelling", "provision"]
-SPELLING = "spelling"
-# The toolkit's spelling check, which the queue runs as the spelling lane of a project that has none, before the gate,
-# on an ungated landing and before a docs-only batch's lanes, unless main's queue.spelling is false: a British spelling
-# then fails in a minute, not after a full gate and a bisect (vocaro-engineering, 2026-11-07). It runs in the queue's
-# checkout, on this Mac, as a carry-over check does: a project's own spelling lane, which eng run places, comes first.
-IMPLICIT_SPELLING = ["python3", "scripts/eng", SPELLING]
-# Seconds eng land gives the spelling lane on a new entry's commit before it queues the entry unchecked, and how many
-# of a failed run's last lines its refusal quotes (spelled_before_queued, vocaro-engineering#283).
-SPELLING_LIMIT = 300
+# How many of a failed run's last lines eng land's refusal quotes (spelled_before_queued, vocaro-engineering#283).
 SPELLING_SHOWN = 40
 # eng land's emergency options, in every repository, by the entry field each sets: an entry tested next as a batch
 # of its own, and one landed alone on the spelling lane without the gate, whose written reason --why gives (owner's
@@ -536,7 +528,7 @@ def offerable(config, lanes):
     """Why one of lanes runs only on this Mac, as its configuration says (config.stays), so that a bisect's newer half
     cannot gate on the second Mac beside the older half (Beside); None when every one can go there."""
     for lane in lanes:
-        # The toolkit's spelling check runs in whichever checkout gates, on this Mac, and holds no half back.
+        # eng run places the toolkit's spelling lane as it does any lane that says no `here`, so it holds no half back.
         if lane == SPELLING and implicit_spelling(config): continue
         why = stays(config.get("lanes", {}), lane) if lane in config.get("lanes", {}) else "it is no configured lane"
         if why: return f"{lane} runs only on this Mac: {why}"
@@ -2338,9 +2330,8 @@ class Worker:
                                 "last run without a verdict")
             command = ["python3", "scripts/eng", "run", *where, *screen, lane]
             if lane == SPELLING and not self.has_lane(lane):
-                command = IMPLICIT_SPELLING
-                self.say(f"{lane}: the project has no spelling lane, so the queue runs the toolkit's: "
-                         f"{shlex.join(command)}")
+                self.say(f"{lane}: the project has no spelling lane, so eng run runs the toolkit's: "
+                         f"{shlex.join(IMPLICIT_SPELLING)}")
             watch = GateWatch(self, lane, began, log).start()
             try:
                 try:
@@ -2393,8 +2384,8 @@ class Worker:
         return 0, log
 
     def has_lane(self, lane):
-        """Whether the checkout's own engineering.json, which eng run reads, configures lane: one that does not runs
-        the toolkit's check in its place (IMPLICIT_SPELLING)."""
+        """Whether the checkout's own engineering.json, which eng run reads, configures lane: where it does not, eng run
+        runs the toolkit's spelling check as that lane (lane_to_run)."""
         try: return lane in load(self.checkout).get("lanes", {})
         except (OSError, ValueError): return False
 

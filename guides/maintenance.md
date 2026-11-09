@@ -297,11 +297,13 @@ onto `origin/main` in its own checkout, `~/Development/vocaro-queue/NAME/NAME`, 
 `eng run`: its `spelling` and `provision` lanes when it has them, and then its `gate` lane, or
 `queue.lanes` in engineering.json for a project that needs others, read from `main`, or from the
 batch until `main` has any, so that the commit naming them can land. A project with no `spelling`
-lane gets the toolkit's: the worker runs `python3 scripts/eng spelling` in its checkout, on this Mac,
-before anything else, so that a British spelling fails in about a minute instead of after a full
-gate and a bisect, in every project without each declaring the same lane. A project's own
-`spelling` lane runs in its place, and `"queue": {"spelling": false}` on `main` turns the toolkit's
-off for a project that cannot pass it yet; the round's log says when the toolkit's ran. The
+lane gets the toolkit's: `eng run spelling` runs `python3 scripts/eng spelling` as a lane like any
+other, admitted and placed as every lane is, before anything else, so that a British spelling fails in
+about a minute instead of after a full gate and a bisect, in every project without each declaring the
+same lane. A run that gets no admission or ends unmeasured is a no verdict, as any lane's is, and a
+finding rejects the batch. A project's own `spelling` lane runs in its place, and
+`"queue": {"spelling": false}` on `main` keeps the queue from running the toolkit's for a project
+that cannot pass it yet; the round's log says when the toolkit's ran. The
 lanes therefore go where every lane goes, to whichever Mac has spare capacity for them, the second Mac
 first ([which Mac runs a lane](shared-host.md#which-mac-runs-a-lane)), and the round's log says where
 each ran and why; one gate serves the whole batch. On a pass it pushes
