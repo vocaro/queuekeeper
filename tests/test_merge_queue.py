@@ -3610,6 +3610,102 @@ class ImplicitSpellingLane(Fixture):
         self.assertIn("No configured lane: nonesuch", said.getvalue())
 
 
+class SpellingStoppedByRemoval(Fixture):
+    """Withdraw an entry after its spelling command has actually acquired admission (#301)."""
+
+    def setUp(self):
+        super().setUp()
+        self.ready, self.release = self.base / "ready", self.base / "release"
+        self.stopped = self.base / "stopped"
+        self.first_done, self.next_done = self.base / "first-done", self.base / "next-done"
+        config = self.config()
+        command = [sys.executable, "-c", """
+import os, pathlib, signal, sys, time
+
+ready, release, stopped, first_done, next_done = map(pathlib.Path, sys.argv[1:])
+assert os.environ["VOCARO_RESOURCE_TOKEN"]
+
+def stop(signum, frame):
+    stopped.touch()
+    sys.exit(128 + signum)
+
+if pathlib.Path("hold-spelling").exists():
+    signal.signal(signal.SIGTERM, stop)
+    ready.touch()
+    while not release.exists():
+        time.sleep(0.02)
+    first_done.touch()
+else:
+    next_done.touch()
+""", *map(str, (self.ready, self.release, self.stopped, self.first_done, self.next_done))]
+        config["lanes"]["spelling"] = {"command": command, "timeout": int(stretched(45))}
+        self.publish(config, "Make spelling wait in a chosen batch")
+        self.guard = mq.resources.guard_path(os.environ)
+
+    def remove_during_spelling(self, testing, queued_branch=None):
+        look, removed, polls = mq.Removal.look, [], 0
+
+        def after_ready(removal):
+            nonlocal polls
+            if not self.ready.exists() or testing not in removal.ids:
+                return look(removal)
+            if not removed:
+                self.assertTrue(mq.resources.guard_owners(os.environ), "spelling has no admission")
+                self.assertEqual(self.state(testing)["state"], mq.TESTING)
+                identifier = self.add(queued_branch)[0] if queued_branch else testing
+                if queued_branch:
+                    self.assertNotIn(identifier, removal.ids)
+                    self.assertEqual(self.state(identifier)["state"], mq.QUEUED)
+                mq.remove(mq.Queue(self.repo), identifier)
+                removed.append(identifier)
+            gone = look(removal)
+            if queued_branch and not self.release.exists():
+                self.assertFalse(gone)
+                self.assertFalse(self.stopped.exists())
+                polls += 1
+                if polls == 3:
+                    self.release.touch()
+            return gone
+
+        with patch.object(mq.Removal, "look", after_ready), patch.object(mq, "REMOVAL_POLL", 0.1), \
+                patch.object(mq.Worker, "stack"), contextlib.redirect_stdout(io.StringIO()) as said:
+            self.assertEqual(self.work(), 0, said.getvalue())
+        log = said.getvalue()
+        self.assertEqual(len(removed), 1, log)
+        self.assertEqual(self.state(removed[0])["state"], mq.REMOVED, log)
+        self.assertFalse(self.guard.exists(), "spelling left an admission guard")
+        self.assertIsNone(mq.Queue(self.repo).held())
+        self.assertEqual(self.gates(), 1, log)
+        return removed[0], log
+
+    def test_removing_a_testing_entry_stops_admitted_spelling_and_the_survivor_lands(self):
+        self.commit("hold-spelling", "withdrawn")
+        self.commit("survives", "survivor")
+        withdrawn, survivor = self.add("withdrawn", "survivor")
+        _, log = self.remove_during_spelling(withdrawn)
+        self.assertTrue(self.stopped.exists(), log)
+        self.assertFalse(self.first_done.exists(), log)
+        self.assertTrue(self.next_done.exists(), log)
+        self.assertRegex(log, f"spelling: stopped[^\\n]*, as {withdrawn} left the queue")
+        self.assertIn(f"{withdrawn} left the queue, which stopped the gate: gating what is left", log)
+        self.assertNotIn("no verdict", log)
+        self.assertEqual(self.state(survivor)["state"], mq.LANDED, log)
+        self.assertNotIn("hold-spelling", self.main_files())
+        self.assertIn("survives", self.main_files())
+
+    def test_removing_an_entry_outside_the_batch_leaves_admitted_spelling_running(self):
+        self.commit("hold-spelling", "testing")
+        self.commit("later", "queued")
+        [testing] = self.add("testing")
+        removed, log = self.remove_during_spelling(testing, queued_branch="queued")
+        self.assertTrue(self.first_done.exists(), log)
+        self.assertFalse(self.stopped.exists(), log)
+        self.assertFalse(self.next_done.exists(), log)
+        self.assertIn(f"removed {removed}", log)
+        self.assertNotIn("spelling: stopped", log)
+        self.assertEqual(self.state(testing)["state"], mq.LANDED, log)
+
+
 class SpelledBeforeQueued(Fixture):
     """eng land and `eng queue add` run the spelling lane the worker would run before the gate, the project's own or
     the toolkit's, on the entry's commits replayed onto origin/main, and refuse an entry it finds a British spelling in
