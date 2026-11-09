@@ -789,7 +789,10 @@ the admission it inherits, here. `eng run` looks for the second Mac only when
 `VOCARO_OFFLOAD_HOST` names one or `~/.ssh/config` defines the alias `build-host` or
 `second-mac`, which `ssh -G` reports; `VOCARO_OFFLOAD_HOST=none` keeps every lane here. A
 lane's results come back to `.build/engineering/remote/LANE/` when it ran on the second Mac and
-stay in `.build/engineering/LANE/` when it ran here; the last lines `eng run` prints name them.
+stay in `.build/engineering/LANE/` when it ran here. Every `eng run` ends with a short summary, on
+stderr after stdout is flushed: its verdict, its passed, failed, skipped and unmeasured tests kept
+apart, or that its log counts none, each failing test with its file and line, and the path to its
+`failures.txt` or receipt (`lane_report`). The second Mac's own run leaves it to the Mac that sent it.
 A lane group's results hold each of its lanes' log and receipt as well, under `lanes/` as on the
 Mac that ran it, so here `.build/engineering/remote/GROUP/lanes/LANE.log` and `LANE.json`. They
 come back once the run there ends, whether the lane passed or failed, its timeout ended it or a
@@ -2130,7 +2133,10 @@ registrations until it ends.
   left to name to `lsregister`; an xcodebuild that a script starts and ends between two samples; and
   registrations from before this existed, in a folder no later run uses.
 
-A problem here is printed on stderr and never changes the run's result.
+A run says what its sweep and cleanup did in one line on stderr, a count of what it unregistered and of the
+folders it left registered, whose reasons are in the file it names, each folder once. A tool's report that the
+system holds no such registration (lsregister's `-10814`, pluginkit's `no plugin at`) counts as done: its journal
+goes. A problem here is printed on stderr and never changes the run's result.
 
 ## Device reservations
 

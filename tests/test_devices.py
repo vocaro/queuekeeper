@@ -768,7 +768,8 @@ class DeviceRecordTests(unittest.TestCase):
                  patch.object(cli, "refresh_policy", return_value=None), contextlib.redirect_stderr(StringIO()) as error:
                 return cli.main(["--project", str(project), "run", "--here", "ui"]), error.getvalue()
         self.assertEqual(run("session-a"), (2, f"eng: nobody holds {devices.FOREGROUND}; before foreground work, "
-                                               "agree a window with the owner and reserve it until the window ends\n"))
+                                               "agree a window with the owner and reserve it until the window ends\n"
+                                               "eng run ui: not run (exit 2); no tests ran\n"))
         self.foreground()
         for owner in ["session-b", None]:
             with self.subTest(owner=owner):

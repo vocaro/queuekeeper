@@ -11,7 +11,7 @@ import subprocess
 import sys
 import time
 
-from . import __version__, app_builds, app_registrations, budgets, checkpoint, crash_alerts, device_pass, devices, disk, docs, evidence, evidence_offload, failure_records, foreground, github_artifacts, keychain, lane_coverage, merge_queue, run_results, \
+from . import __version__, app_builds, app_registrations, budgets, checkpoint, crash_alerts, device_pass, devices, disk, docs, evidence, evidence_offload, failure_records, foreground, github_artifacts, keychain, lane_coverage, lane_report, merge_queue, run_results, \
     notification_center, offload_host, parallel, processes, release, remote, resources, skills, spelling, stale_modules, storekit_config, toolkit_copy, xctest_shards
 from .config import TOOLKIT_ROOT, CAPABILITIES, DEFAULT_TOOLKIT, admission as admission_of, load, source_identity, \
     display_lane_warnings, lane_devices, self_lane_warnings, stays, unadmitted, unlocked_screen
@@ -369,7 +369,8 @@ def refresh_policy(root, stream=None):
             raise PolicyUnavailable(f"the current policy could not be fetched, so nothing ran: {error}") from error
     commit = subprocess.check_output(["git", "-C", str(TOOLKIT_ROOT), "rev-parse", "origin/main"], text=True).strip()
     text = subprocess.check_output(["git", "-C", str(TOOLKIT_ROOT), "show", f"{commit}:policies/shared-host.md"], text=True)
-    print(f"Policy source: {commit}\n\n{text}", file=stream)
+    # Flushed now, or a redirected stdout holds it until eng exits, after all the work's output (#274).
+    print(f"Policy source: {commit}\n\n{text}", file=stream, flush=True)
     return commit
 
 
@@ -902,6 +903,18 @@ def admit(root, args, config=None, *, device_window=None):
 
 
 def main(argv=None):
+    report = lane_report.Report()
+    try:
+        status = perform(argv, report)
+    except Exception as error:
+        report.finish(None, error)
+        raise
+    report.finish(status)
+    return status
+
+
+def perform(argv, report):
+    """Run the command argv names, telling report of a lane run's progress for the summary that ends it."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project", type=Path, default=Path.cwd())
     parser.add_argument("--version", action="version", version=__version__)
@@ -1299,6 +1312,7 @@ def main(argv=None):
                 if args.query.lower() in (item["title"] + " " + item["path"]).lower():
                     print(f"{item['id']}: {item['title']} — {TOOLKIT_ROOT / item['path']}")
         elif args.action == "run":
+            report.begin(root, args.lane)
             if args.build_host_only:
                 raise ValueError("--build-host-only was --offload-only's name until vocaro-engineering#58, and is no "
                                  "longer read: use --offload-only (guides/shared-host.md, Earlier names)")
@@ -1322,7 +1336,7 @@ def main(argv=None):
                 if args.offload_only or not (args.here or lane.get("here")):
                     return remote.foreground_lane(root, config, args.lane, extra, args.expect)
                 devices.require_foreground(os.environ.get(devices.OWNER))
-            group = lane.get("parallel")
+            group = report.group = lane.get("parallel")
             if group is not None and (extra or args.expect):
                 raise ValueError(f"{args.lane} runs a group of lanes, which takes no arguments or --expect; "
                                  "pass them to one of its lanes")
@@ -1377,6 +1391,7 @@ def main(argv=None):
                 # What an earlier run left in results/ is not this run's, here as on the second Mac (remote.RESULTS).
                 # The lane finds the directory in ENG_RESULTS_DIR, and a group's lanes each find one of their own in it.
                 shutil.rmtree(directory / "results", ignore_errors=True)
+                report.ran_here(directory)
                 if resource != "self": github_artifacts.configured(root, config)
                 commands = [config["lanes"][name]["command"] for name in group] if group is not None else [lane["command"]]
                 try:
@@ -1458,6 +1473,7 @@ def main(argv=None):
                 # The lane's timeout is its backstop, so a run a busy host slowed past it is
                 # unmeasured (guides/measurement.md). Its log is incomplete and counts nothing.
                 print(f"eng: unmeasured: {error}", file=sys.stderr)
+                report.explain(error, complete=False)
                 return evidence.UNMEASURED
             # A group's lanes were each judged by their own logs.
             if "parallel" in lane:
@@ -1479,7 +1495,9 @@ def main(argv=None):
         return 0
     except (remote.Lost, PolicyUnavailable) as error:
         print(f"eng: {error}", file=sys.stderr)
+        report.explain(error)
         return evidence.UNMEASURED
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
         print(f"eng: {error}", file=sys.stderr)
+        report.explain(error)
         return 2
