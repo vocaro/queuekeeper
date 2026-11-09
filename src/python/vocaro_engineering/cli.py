@@ -538,6 +538,19 @@ def admitted_here(stack, name, label, timeout, offered=None, once=False, exclusi
         if place is not None: place.leave()
 
 
+def foreground_held(stack, name, label, timeout, **options):
+    """None once the second Mac's foreground is held for the work label names, entered in stack; or BUSY, after saying
+    so, when the wait for it ran out, as admitted_here's does (#297). Nothing ran, and the TimeoutError raised, an
+    OSError, would be eng's own error, exit 2, which the merge queue counts as a failure. Only entering is caught: a
+    release that fails once the work has run does not make the work not run."""
+    try:
+        stack.enter_context(foreground.slot(label, timeout=timeout, **options))
+    except TimeoutError as error:
+        print(f"eng: {name} not run on {this_mac()}: {error}", file=sys.stderr)
+        return BUSY
+    return None
+
+
 def fell_back(name, offered):
     """Say in one line, before the run starts, that work offered to the second Mac runs on this Mac, and why, so
     that the second Mac's lines a declined offer left above are not read as the run's (vocaro-engineering#185)."""
@@ -768,7 +781,8 @@ def admit(root, args, config=None, *, device_window=None):
     with processes.forwarding_signals(), contextlib.ExitStack() as stack:
         asked = time.monotonic()
         # The second Mac's foreground first, so that a command waiting for it holds no slot.
-        if second: stack.enter_context(foreground.slot(" ".join(command), timeout=args.timeout))
+        waited = foreground_held(stack, "the command", " ".join(command), args.timeout) if second else None
+        if waited is not None: return waited
         admission = admitted_here(stack, "the command", " ".join(command), args.timeout, offered, args.if_free,
                                   args.exclusive, args.model, placement=admission_placement(offered, reason))
         if isinstance(admission, int): return admission
@@ -1312,9 +1326,10 @@ def main(argv=None):
                         with contextlib.ExitStack() as stack:
                             asked = time.monotonic()
                             # The second Mac's foreground first, so that a run waiting for it holds no slot.
-                            if second:
-                                stack.enter_context(foreground.slot(lane_label(root, config, args.lane),
-                                    timeout=remote.OVERFLOW_TIMEOUT, expected=lane.get("timeout", foreground.EXPECTED)))
+                            waited = foreground_held(stack, args.lane, lane_label(root, config, args.lane),
+                                                     remote.OVERFLOW_TIMEOUT,
+                                                     expected=lane.get("timeout", foreground.EXPECTED)) if second else None
+                            if waited is not None: return waited
                             admission = admitted_here(stack, args.lane, lane_label(root, config, args.lane),
                                                       remote.OVERFLOW_TIMEOUT, offered, args.if_free,
                                                       resource == "exclusive", lane.get("model", False),
