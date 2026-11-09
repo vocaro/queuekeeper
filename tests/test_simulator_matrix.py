@@ -289,9 +289,35 @@ class SimulatorMatrixTests(unittest.TestCase):
                             # Devices that should meet wait for each other this long, stretched by load.
                             "FAKE_MEET_LIMIT": str(stretched(60))}
 
-    def run_matrix(self, *arguments, **environment):
+    def run_matrix(self, *arguments, wait_for_fake_boot=False, **environment):
         command = [sys.executable, str(ENG), "simulator-tests", "--scheme", "Package-Tests", "--runtime", "iOS-27-0",
                    "--device", "iPhone-17-Pro", "--device", "iPad-Air-13-inch-M4", "--pool", "Project", *arguments]
+        if wait_for_fake_boot:
+            # In the outcome test, wait for the stand-in itself. The enclosing unittest run
+            # bounds a stall. The separate boot-timeout test still exercises the real deadlines.
+            driver = textwrap.dedent("""\
+                from pathlib import Path
+                import runpy
+                import sys
+                from unittest.mock import patch
+
+                fake_xcrun = sys.argv[1]
+                sys.argv = sys.argv[2:]
+                eng = Path(sys.argv[0])
+                sys.path.insert(0, str(eng.parents[1] / "src/python"))
+                from vocaro_engineering import processes
+                supervise = processes.supervise
+
+                def wait_for_boot(command, **options):
+                    if command[:3] in (["xcrun", "simctl", "boot"], ["xcrun", "simctl", "bootstatus"]):
+                        command = [fake_xcrun, *command[1:]]
+                        options["timeout"] = None
+                    return supervise(command, **options)
+
+                with patch.object(processes, "supervise", wait_for_boot):
+                    runpy.run_path(str(eng), run_name="__main__")
+            """)
+            command[1:1] = ["-c", driver, str(self.root / "bin/xcrun")]
         finished = subprocess.run(command, cwd=self.root, capture_output=True, text=True,
                                   env={**self.environment, **environment})
         return finished.returncode, finished.stdout + finished.stderr
@@ -925,18 +951,24 @@ class SimulatorMatrixTests(unittest.TestCase):
         self.assert_every_device_returned()
 
     def test_any_device_failure_fails_the_run_and_otherwise_an_unmeasured_test_leaves_it_unmeasured(self):
-        cases = [({"FAKE_UNMEASURED": "iPhone-17-Pro"}, 3), ({"FAKE_UNMEASURED": "iPhone-17-Pro",
-                  "FAKE_TEST_FAIL": "iPad-Air-13-inch-M4"}, 1), ({"FAKE_NO_TESTS": "iPad-Air-13-inch-M4"}, 1)]
-        for environment, expected in cases:
+        cases = [
+            ({"FAKE_UNMEASURED": "iPhone-17-Pro"}, evidence.UNMEASURED,
+             "UNMEASURED iPhone-17-Pro: Executed 3 tests", "PASS iPad-Air-13-inch-M4: Executed 3 tests"),
+            ({"FAKE_UNMEASURED": "iPhone-17-Pro", "FAKE_TEST_FAIL": "iPad-Air-13-inch-M4"}, 1,
+             "UNMEASURED iPhone-17-Pro: Executed 3 tests", "FAIL iPad-Air-13-inch-M4: the tests failed with status 65"),
+            ({"FAKE_NO_TESTS": "iPad-Air-13-inch-M4"}, 1,
+             "PASS iPhone-17-Pro: Executed 3 tests", "FAIL iPad-Air-13-inch-M4: no tests ran"),
+        ]
+        for environment, expected, iphone_outcome, ipad_outcome in cases:
             with self.subTest(environment):
                 for path in self.state.glob("testing-*"): path.unlink()
                 (self.state / "simctl.log").unlink(missing_ok=True)
-                status, output = self.run_matrix(**environment)
+                status, output = self.run_matrix(wait_for_fake_boot=True, **environment)
                 self.assertEqual(status, expected, output)
+                self.assertIn(iphone_outcome, output)
+                self.assertIn(ipad_outcome, output)
+                self.assertEqual(len(evidence.unmeasured_tests(output)), int("FAKE_UNMEASURED" in environment), output)
                 self.assert_every_device_returned()
-        self.assertIn("FAIL iPad-Air-13-inch-M4: no tests ran", output)
-        status, output = self.run_matrix(FAKE_UNMEASURED="iPhone-17-Pro")
-        self.assertEqual(len(evidence.unmeasured_tests(output)), 1, output)
 
     def test_a_stop_ends_every_device_run_and_returns_every_device_to_the_pool(self):
         command = [sys.executable, str(ENG), "simulator-tests", "--scheme", "Package-Tests", "--runtime", "iOS-27-0",
