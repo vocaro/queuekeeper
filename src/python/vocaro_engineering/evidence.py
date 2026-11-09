@@ -82,13 +82,25 @@ def skipped_tests(text):
     return 0 if found is None else found[1]
 
 
+class NotRun(ValueError):
+    """A run selected exactly the tests it was expected to run, and some of them skipped or canceled themselves:
+    what they would have shown is unknown, so the run is unmeasured, neither failed nor passed."""
+
+
+def canceled_tests(text):
+    """The distinct lines in which Swift Testing reports a test skipped or canceled, each with its reason."""
+    return list(dict.fromkeys(match.group(0).strip() for match in SWIFT_TESTING_SKIP.finditer(text)))
+
+
 def require_tests(text, minimum=1, expected=None):
     observed = executed_tests(text)
     skipped = skipped_tests(text)
     # Skipped tests ran nothing, so they count toward no minimum.
     beside = f" ({skipped} skipped, which do not count)" if skipped else ""
     if expected is not None and observed != expected:
-        raise ValueError(f"Expected exactly {expected} executed tests; observed {observed or 0}{beside}")
+        message = f"Expected exactly {expected} executed tests; observed {observed or 0}{beside}"
+        # Any other total selected the wrong tests, whatever the host had.
+        raise (NotRun if observed is not None and observed + skipped == expected else ValueError)(message)
     if observed is None or observed < minimum:
         raise ValueError(f"Expected at least {minimum} executed tests; observed {observed or 0}{beside}")
     return observed

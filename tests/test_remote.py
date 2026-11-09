@@ -2017,6 +2017,31 @@ class RemoteTests(unittest.TestCase):
                       (self.project / ".build/engineering" / lane / "run.log").read_text())
         return receipt
 
+    def test_a_filtered_run_whose_tests_cancel_for_a_corpus_its_lane_does_not_set_is_unmeasured_on_the_second_mac(self):
+        # vocaro-engineering#285. The same tests on the same second Mac, as a plain lane and as a gate that exports the
+        # corpus's variable itself, as EPUBLib's check-all.sh sources what its corpus fetch printed.
+        tests = ("import os\nfor name in 'ab':\n"
+                 "    print('-> Test %s()' % name + (' passed after 0.001 seconds.' if os.environ.get('FAKE_CORPUS') else\n"
+                 "        ' was cancelled after 0.001 seconds: \"Set FAKE_CORPUS for the admitted corpus.\"'))\n"
+                 "print('Test run with 2 tests in 1 suite passed after 0.001 seconds.')\n")
+        settings = json.loads((self.project / "engineering.json").read_text())
+        settings["lanes"]["corpus"] = {"command": [sys.executable, "-c", tests], "resource": "heavy"}
+        settings["lanes"]["corpus-gate"] = {"command": ["env", "FAKE_CORPUS=pinned", sys.executable, "-c", tests],
+                                            "resource": "heavy"}
+        (self.project / "engineering.json").write_text(json.dumps(settings))
+        for lane, expect, code, outcome in [("corpus", "2", evidence.UNMEASURED, "unmeasured"),
+                                            ("corpus-gate", "2", 0, "passed"), ("corpus", "3", 2, "failed")]:
+            with self.subTest(lane=lane, expect=expect):
+                status, output, error = self.run_here("--expect", expect, lane, "--", "--filter", "Corpus")
+                self.assertEqual(status, code, output + error)
+                receipt = json.loads((self.project / ".build/engineering/remote" / lane / "source.json").read_text())
+                self.assertEqual((receipt["ranOn"], receipt["result"]["receipt"]["outcome"]), ("second Mac", outcome))
+                self.assertFalse((self.project / ".build/engineering" / lane).exists())
+                if code == evidence.UNMEASURED:
+                    cause = receipt["result"]["receipt"]["unmeasured"]
+                    self.assertEqual(cause[0], "Expected exactly 2 executed tests; observed 0 (2 skipped, which do not count)")
+                    self.assertIn("Set FAKE_CORPUS for the admitted corpus.", cause[1])
+
     def test_every_lane_is_admitted_and_offered_to_the_second_mac_first_light_ones_included(self):
         # The owner's decision, 2026-11-07 (vocaro-engineering#200): first come, first served, the second Mac first,
         # and no light exception. fail says "light" and fails with 3; an unmarked lane is heavy work too.
