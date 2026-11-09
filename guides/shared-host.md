@@ -15,8 +15,13 @@ served: a short check, such as docs or spelling, waits for a slot like any other
 decision, 2026-11-07, [vocaro-engineering#200](https://github.com/vocaro/vocaro-engineering/issues/200)).
 `light` once ran unadmitted where it started, and loads now as `heavy`, so a project may drop it
 or the whole `resource` key. Arguments after `--`,
-as in `eng run test -- --filter SUITE`, are appended to the lane's command. Run any other heavy
-command with `eng admit`:
+as in `eng run test -- --filter SUITE`, are appended to the lane's command. `--expect N` requires
+exactly N executed tests: a run that selected those N and left some skipped or canceled exits 3,
+unmeasured, and any other count fails. A session's environment does not travel to the second Mac,
+so a test that needs a variable, such as a corpus path, runs there only in a lane whose command
+sets it, as a gate's script does
+([vocaro-engineering#285](https://github.com/vocaro/vocaro-engineering/issues/285)). Run any other
+heavy command with `eng admit`:
 
 ```sh
 python3 scripts/eng admit -- \

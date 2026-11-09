@@ -401,23 +401,29 @@ def judge(lane, result, log, extra=(), expect=None):
     """A lane's status and unmeasured tests from its command's status and its log. A completed run
     that executed too few tests raises ValueError."""
     measured = result in (0, evidence.UNMEASURED)
+    not_run = []
     if measured and (lane.get("minimumTests") or expect):
         # Arguments such as a filter select part of the lane, which must still run a test.
         minimum = 1 if extra or expect else lane["minimumTests"]
         try:
             evidence.require_tests(log, minimum, expected=expect)
+        except evidence.NotRun as error:
+            # Such as a corpus test canceled for a variable this lane's command does not set on its Mac
+            # (vocaro-engineering#285). The lines give each test's reason: the cause an unmeasured run records.
+            not_run = [str(error), *evidence.canceled_tests(log)]
+            print("eng: unmeasured:", *not_run, sep="\n", file=sys.stderr)
         except ValueError as error:
             # An unmeasured part may not have run at all, so the run stays unmeasured. A test the
             # host left unmeasured ran nothing, so it can also be what leaves a run short.
             if result == 0 and not evidence.unmeasured_tests(log): raise
             print(f"eng: {error}", file=sys.stderr)
     unmeasured = evidence.unmeasured_tests(log) if measured else []
-    if unmeasured or result == evidence.UNMEASURED:
+    if unmeasured or not_run or result == evidence.UNMEASURED:
         # A skip or cancellation leaves the command's own status at 0, and unmeasured is never green.
         if unmeasured:
             print(f"eng: unmeasured: {len(unmeasured)} test(s) reported unmeasured:", *unmeasured,
                   sep="\n", file=sys.stderr)
-        return evidence.UNMEASURED, unmeasured
+        return evidence.UNMEASURED, list(dict.fromkeys([*not_run, *unmeasured]))
     return result, []
 
 
@@ -874,8 +880,8 @@ def main(argv=None):
         "it now, the second Mac first, and on this Mac while the second Mac has none or cannot be reached, unless "
         "the lane says why it stays on this Mac: eng run LANE [-- ARGUMENTS], which appends the arguments, such as "
         "a test filter, to the lane's command")
-    run.add_argument("--expect", type=int, metavar="N", help="require exactly N executed tests; without it, a "
-        "run with arguments needs at least one in place of the lane's minimumTests")
+    run.add_argument("--expect", type=int, metavar="N", help="require exactly N executed tests: N selected with "
+        "some skipped or canceled is unmeasured, exit 3, and any other count fails; without it, a run with arguments needs at least one in place of the lane's minimumTests")
     where = run.add_mutually_exclusive_group()
     where.add_argument("--here", action="store_true", help="run the lane on this Mac rather than on the second Mac: "
         "for a build whose products the session uses here, or, with the owner's decision, while the second Mac is "
