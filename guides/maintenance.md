@@ -720,12 +720,21 @@ that it holds, with every entry waiting, whatever runs the bound has left, and t
 reason it last read, such as `the CPU is 95% busy, at or above HEAVY_BUSY_LIMIT=75%`. Its log names the
 reason when the wait starts, again every ten minutes or when the reason changes, and at the end how long it waited, how many
 looks it took and the first, highest and last one-minute load. A stop request (SIGTERM, SIGINT or SIGHUP)
-ends the wait at its next look, with the entries still waiting. The test reads the Mac the lane ran
+ends the wait at its next look, with the entries still waiting. With a second Mac configured, the test
+reads the Mac the retry could use, not only the one that voided the last run: on 2026-11-07 a wait settled
+build-host for 2304 s, and the retry went to this Mac by first-come admission
+([#253](https://github.com/vocaro/vocaro-engineering/issues/253)). The Mac is chosen as the run starts, so
+each look reads both Macs' capacity for the lane as `eng run`'s offer does (`remote.retry_macs`, the
+log saying which it reads and why): the second Mac when it has spare capacity for the lane, this Mac when
+only it has, and both, each of which must settle, when neither has and the lane will go to whichever
+admits it first. A lane that stays on this Mac reads this Mac. The choice is only as good as that reading:
+the second Mac can still decline an offer its capacity allowed, as it did that day, and the retry then
+goes to this Mac unsettled. Without a second Mac to choose, the test reads the Mac the lane ran
 on, since a lane that the second Mac ran left its load there
 ([#140](https://github.com/vocaro/vocaro-engineering/issues/140)). The worker knows it from the
 lane's dispatch, which `eng run` files under `.build/engineering/remote/.dispatches/LANE/` in the
 queue's checkout: one that started during the run and reached the second Mac, rather than only
-preparing, names it. Each look then asks the second Mac over SSH, as `eng doctor` does, for its
+preparing, names it. Each look asks the second Mac over SSH, as `eng doctor` does, for its
 CPU busy share, the `HEAVY_BUSY_LIMIT` it sets there (75% by default), its one-minute load, which the log
 records, and its memory pressure, and judges them as admission does; the log and the hold name that Mac. A second
 Mac that cannot be reached, or does not answer with its reading, gives this Mac's reading for that look

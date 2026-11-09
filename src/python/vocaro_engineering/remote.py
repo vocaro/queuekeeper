@@ -3050,11 +3050,33 @@ def spare(reading, mac, whole_host=False, exclusive=False, screen=False):
     return None
 
 
+def retry_macs(host, lanes, lane, screen=False):
+    """([each Mac, the second Mac as host and this Mac as None], why them, to follow "next on") that a run of lanes'
+    lane, about to start, could use, by each Mac's capacity now as Offer.choose reads it: the merge queue's settle wait
+    before a retry reads these (vocaro-engineering#253). The Mac cannot be known for certain beforehand, since it is
+    chosen as the run starts: the second Mac when it has spare capacity for the lane, this Mac when only it has, and
+    whichever admits the lane first when neither has, so then both could take it. Even the second Mac's spare capacity
+    is only its reading, and it can still decline the offer: then this Mac takes the run. screen says the lane needs an
+    unlocked screen, for this run if not by its configuration."""
+    settings = lanes[lane]
+    needs = bool(settings.get("wholeHost")), settings.get("resource") == "exclusive", screen or unlocked_screen(lanes, lane)
+    try: there = spare(capacity_there(host), "the second Mac", *needs)
+    except Unavailable as away:
+        return [None], f"this Mac, since {host}'s capacity cannot be read: {getattr(away, 'problem', away)}"
+    if there is None: return [host], f"{host}, which has spare capacity for {lane} and is asked first"
+    reading = offload_host.capacity()
+    here = (f"this Mac's capacity cannot be read: {reading['error']}" if reading.get("error")
+            else spare(reading, HERE, *needs))
+    if here is None: return [None], f"this Mac, the one with spare capacity for {lane}: {there}"
+    return [host, None], (f"whichever Mac admits {lane} first, since neither has spare capacity for it ({there}; {here}), "
+                          "so both must settle")
+
+
 def pressure_there(host):
     """The second Mac's pressure as resources.pressure gives this Mac's, judged by resources.judged with the
     limit it sets there (offload_host.pressure), and its one-minute load, None when unavailable, which the merge
     queue logs beside it: what the merge
-    queue's settle wait reads before it runs again a lane that ran there. A second Mac that cannot be reached,
+    queue's settle wait reads before a lane's retry that could use it (retry_macs). A second Mac that cannot be reached,
     or that does not answer with its reading, raises Unavailable, and the wait reads this Mac instead."""
     answered, busy = reading_there(host)
     load = answered.get("load")
