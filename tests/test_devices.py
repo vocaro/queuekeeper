@@ -1389,6 +1389,33 @@ class NotificationTests(unittest.TestCase):
         self.assertEqual((released["state"], released["notifications"]["restore"]), ("released", "done"))
         self.assertNotIn("notifications", self.cli("status")[1].split("iPad: released")[1].split("\n")[0])
 
+    def test_the_release_does_not_ask_the_session_about_the_shortcuts_app_its_take_opened(self):
+        """vocaro-engineering#292: the session had launched nothing, and its release was refused for Shortcuts."""
+        self.first()
+        self.setup()
+        entry, _error = self.take()
+        self.assertEqual(entry["notifications"]["opened"], ["com.apple.shortcuts"])
+        code, output, error = self.cli("release", "iPad", "--owner", "session-a", "--revision", str(entry["revision"]),
+                                       "--outcome", "exit 0", "--restoration", "verified")
+        self.assertEqual(code, 0, error)
+        self.assertEqual(json.loads(output)["entry"]["state"], "released")
+
+    def test_an_app_the_session_launched_still_needs_its_word_at_release(self):
+        """Negative controls: beside the app eng opened, and the same app when the session says it launched it."""
+        self.first()
+        self.setup()
+        entry, _error = self.take()
+        for app, named in (("com.example.Host", "launched apps com.example.Host:"),
+                           ("com.apple.shortcuts", "launched apps com.apple.shortcuts, com.example.Host:")):
+            with self.subTest(app):
+                entry = self.record.update("iPad", owner="session-a", revision=entry["revision"], launched=[app])
+                code, _output, error = self.cli("release", "iPad", "--owner", "session-a", "--revision",
+                                                str(entry["revision"]), "--outcome", "o", "--restoration", "r")
+                self.assertNotEqual(code, 0)
+                self.assertIn(named, error)
+                self.assertIn("--apps-quit", error)
+                entry = self.record.entry("iPad")
+
     def test_a_failed_run_still_puts_the_notifications_back(self):
         self.first()
         self.setup()

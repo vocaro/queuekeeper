@@ -224,6 +224,51 @@ def report_window(window, queued=None):
     print(message, file=sys.stderr, flush=True)
 
 
+def held_window(keys, owner, record=None):
+    """The window of the devices keys names that owner holds here, as report_window reads one, or None when it
+    holds none of them: the earliest expected release, which is the end of the time the owner agreed, and what a
+    bounded run keeps before it (BoundedRun). The record schedules, so this reads no approval (owner's decision,
+    2026-11-06)."""
+    if not keys or not owner: return None
+    value = (record or Record()).load()
+    if value.get(DEFERRED): return None
+    found = {key: moment(value["devices"][key].get("expectedReleaseBy")) for key in keys
+             if key in value["devices"] and condition(value["devices"][key]) == "held"
+             and value["devices"][key].get("ownerChatID") == owner}
+    ends = {key: deadline for key, deadline in found.items() if deadline is not None}
+    if not ends: return None
+    return {"devices": list(ends), "until": min(ends.values()).isoformat(),
+            "cleanupSeconds": TERMINATION + RESTORATION, "budgetSeconds": None}
+
+
+class WindowWait:
+    """How long work on the devices of window may wait for admission (vocaro-engineering#292): until the last start
+    that can still finish within it, its end less the cleanup a run keeps and measured, the work's measured seconds,
+    or MINIMUM when it has none. A wait that outlasts that spends the owner's window queued."""
+
+    def __init__(self, window, measured=None):
+        self.window, self.measured, self.limited = window, measured, False
+        needs = (MINIMUM if measured is None else max(measured, MINIMUM)) + window["cleanupSeconds"]
+        self.latest = moment(window["until"]) - timedelta(seconds=needs)
+
+    def left(self):
+        """Seconds until the last start, below zero once it has passed."""
+        return (self.latest - datetime.now(timezone.utc)).total_seconds()
+
+    def seconds(self, timeout):
+        """timeout, or the shorter time left to wait."""
+        left = max(self.left(), 0)
+        if left < timeout: self.limited = True
+        return min(timeout, left)
+
+    def __str__(self):
+        run = (f"its measured {self.measured:.0f}s" if self.measured is not None
+               else f"no measured run of it, so the shortest bounded run, {MINIMUM}s")
+        return (f"the window on {' and '.join(self.window['devices'])} ends {self.window['until']}, and the last start "
+                f"that can finish within it is {self.latest.isoformat()}: {run}, and "
+                f"{self.window['cleanupSeconds']:g}s kept for cleanup")
+
+
 def condition(entry):
     """released, held, active, orphan or uncertain. Reading a condition never changes an entry."""
     if entry.get("uncertain") or entry.get("state") == "restoration-unverified":
@@ -546,12 +591,17 @@ class Record:
                 entry["ownedProcesses"] = [*current.get("ownedProcesses", []), *owned]
             if launched:
                 entry["launchedApps"] = list(dict.fromkeys([*current.get("launchedApps", []), *launched]))
+                # An app the session says it launched is the session's to account for, even one eng opened too.
+                said = entry.get("notifications") or {}
+                if set(launched) & set(said.get("opened", [])):
+                    entry["notifications"] = {**said, "opened": [app for app in said["opened"] if app not in launched]}
             return entry
         return self._change(key, revision, change)
 
     def notifications(self, key, *, owner, revision, value, launched=()):
         """Record in the caller's own entry what was done to the owner's notifications on its device: value's
-        fields join the entry's notifications. launched adds apps it opened there, as update's does."""
+        fields join the entry's notifications. launched adds apps eng opened there, as update's does, and notes them
+        as eng's, which a release does not ask the session about (vocaro-engineering#292)."""
         json.dumps(value)
 
         def change(current, _record):
@@ -559,6 +609,8 @@ class Record:
             entry = {**current, "notifications": {**current.get("notifications", {}), **value}}
             if launched:
                 entry["launchedApps"] = list(dict.fromkeys([*current.get("launchedApps", []), *launched]))
+                opened = list(dict.fromkeys([*entry["notifications"].get("opened", []), *launched]))
+                entry["notifications"] = {**entry["notifications"], "opened": opened}
             return entry
         return self._change(key, revision, change)
 
@@ -586,7 +638,7 @@ class Record:
 
         It waits for the processes the entry records as its own. Releasing mac-foreground also says
         whether the previous frontmost app was restored or the foreground was no longer the session's.
-        An entry that records launched apps says how they were quit (apps_quit).
+        An entry that records apps the session launched says how they were quit (apps_quit).
         Explicit unresolved uncertainty requires attended recover(), even when no live PID is known."""
         if not outcome or not restoration:
             raise ValueError("a release records the terminal outcome and the restoration checks")
@@ -609,8 +661,10 @@ class Record:
             if alive:
                 raise Refused(f"{key}'s own processes {', '.join(str(item['pid']) for item in alive)} are still "
                               "running; quit them first. Nothing was changed")
-            if current.get("launchedApps") and not apps_quit:
-                raise Refused(f"{key} records launched apps {', '.join(current['launchedApps'])}: quit them on the "
+            opened = (current.get("notifications") or {}).get("opened", [])
+            theirs = [app for app in current.get("launchedApps", []) if app not in opened]
+            if theirs and not apps_quit:
+                raise Refused(f"{key} records launched apps {', '.join(theirs)}: quit them on the "
                               "device and say how (--apps-quit). Nothing was changed")
             if (current.get("notifications") or {}).get("restore") == "pending":
                 raise Refused(f"{key}'s run silenced the owner's notifications, which are not yet put back: "

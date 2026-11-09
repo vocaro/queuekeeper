@@ -69,6 +69,7 @@ import os
 from pathlib import Path
 import pwd
 import re
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -83,6 +84,8 @@ FREE_WAIT, BUSY = 5, 75
 # The admission log and its previous generation. A line that would take the log past LOG_LIMIT
 # bytes first makes the log the previous generation, so the two together stay within twice it.
 LOG, PREVIOUS_LOG, LOG_LIMIT = "admissions.jsonl", "admissions.1.jsonl", 8 << 20
+# The latest ended runs of a label whose median is its measured time (measured_seconds).
+MEASURED_RUNS = 5
 # The characters of a label that logs, queues and messages keep; the guard records it whole.
 LABEL_LIMIT = 160
 # The path that names the guard's namespace, unless SW_GATE_LOCK_FILE names another.
@@ -1263,6 +1266,16 @@ def read_log(paths=None):
                 if entry is None: unreadable += 1
                 else: entries.append(entry)
     return entries, unreadable
+
+
+def measured_seconds(label, paths=None):
+    """The median seconds label's latest MEASURED_RUNS admissions held the host, from the admission log, or None when
+    it records no run of label that ended on its own: a stopped or timed-out one measures nothing. The log has no
+    verdict, so a run that failed early counts, and the median keeps one from moving it far."""
+    entries, _unreadable = read_log(paths)
+    held = [entry["held"] for entry in entries
+            if entry["event"] == "ended" and entry["outcome"] == "released" and entry["label"] == label[:LABEL_LIMIT]]
+    return statistics.median(held[-MEASURED_RUNS:]) if held else None
 
 
 def duration(seconds):
