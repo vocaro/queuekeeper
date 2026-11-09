@@ -303,6 +303,14 @@ def app(declared):
 # The lanes the merge queue runs before its gate where a project has them: merge_queue.BEFORE_GATE, kept
 # here too because merge_queue reads this module.
 LANDING_FIRST = ["spelling", "provision"]
+SPELLING = "spelling"
+# The toolkit's spelling check, the spelling lane of a project that has none: the queue runs it before the gate, on an
+# ungated landing and before a docs-only batch's lanes, unless main's queue.spelling is false, so that a British spelling
+# fails in a minute, not after a full gate and a bisect (vocaro-engineering, 2026-11-07). eng run admits and places it
+# as any lane (lane_to_run).
+IMPLICIT_SPELLING = ["python3", "scripts/eng", SPELLING]
+# Seconds the spelling check may run, as that lane and before eng land queues an entry (vocaro-engineering#283).
+SPELLING_LIMIT = 300
 
 
 def landing_lanes(lanes, queue):
@@ -476,6 +484,17 @@ def unlocked_screen(lanes, name):
     """Whether the lane name needs an unlocked console screen on the Mac it runs on: a lane, or a group, that says
     "unlockedScreen": true. A group that runs such a lane says so itself, as validation requires."""
     return bool(lanes.get(name, {}).get("unlockedScreen"))
+
+
+def lane_to_run(config, name):
+    """The lane eng run runs as name, or None when there is no such lane: the one config has, or, for spelling in a
+    project with no spelling lane, the toolkit's check, added to config's lanes so that the run treats it as any other,
+    which is how the merge queue's gate runs it (owner's decision, 2026-11-09, vocaro-engineering#305). queue.spelling
+    says only whether the queue asks for it, and main's says that, so a batch's own setting cannot leave a lane unknown."""
+    lanes = config.setdefault("lanes", {})
+    if name == SPELLING and name not in lanes:
+        lanes[name] = {"command": list(IMPLICIT_SPELLING), "timeout": SPELLING_LIMIT}
+    return lanes.get(name)
 
 
 def stays(lanes, name):
