@@ -2,6 +2,8 @@
 from datetime import datetime, timezone
 import json
 import os
+from pathlib import Path
+import plistlib
 import re
 import signal
 import subprocess
@@ -18,6 +20,16 @@ SIMULATOR_VIEWS = {"DeviceHub": "Device Hub", "Simulator": "Simulator.app"}
 # simulator's system-sound server, which ignores the volume the mute sets, so a muted simulator still
 # plays them through the Mac (guides/voiceover-simulator.md, Muted speech capture).
 CUE_DOMAIN, CUE_KEY = "com.apple.VoiceOverTouch", "VoiceOverUseSoundEffects"
+# Where a simulator keeps that domain, under its data folder.
+CUE_PREFERENCES = Path("Library/Preferences") / f"{CUE_DOMAIN}.plist"
+# Tries of each spawned command in silence_cues, 30 s each: a host that gave no answer in 30 s on one take
+# answered in 4 to 5 s on another at a higher load (vocaro-engineering#310), so a limit taken from the load
+# would not help. How often a second try answers is unmeasured.
+CUE_ATTEMPTS = 3
+
+
+class NoAnswer(RuntimeError):
+    """A command reached its limit, which says nothing of what it would have answered."""
 
 def now():
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
@@ -28,7 +40,7 @@ def run(*command, timeout=60):
     try:
         result = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
-        raise RuntimeError(f"No answer in {timeout} s: {' '.join(command)}") from None
+        raise NoAnswer(f"No answer in {timeout} s: {' '.join(command)}") from None
     if result.returncode:
         raise RuntimeError(f"{' '.join(command)}: {(result.stderr or result.stdout).strip()}")
     return result.stdout
@@ -48,10 +60,40 @@ def silence_cues(udid, run_command=None):
 
     VoiceOver reads the switch when it starts, so call this before VoiceOver is switched on. The
     setting is in the simulator's data container: a member cloned from a template that has it keeps
-    it. A command that fails raises RuntimeError, as run does."""
+    it. A command that gives no answer is tried again, up to CUE_ATTEMPTS times; one that fails, or never
+    answers, raises RuntimeError, as run does. A member the pool boots has the setting before its boot
+    (silence_cues_at_rest), which needs no answer from the simulator."""
     run = run_command or globals()["run"]
-    run("xcrun", "simctl", "spawn", udid, "defaults", "write", CUE_DOMAIN, CUE_KEY, "-bool", "false", timeout=30)
-    return run("xcrun", "simctl", "spawn", udid, "defaults", "read", CUE_DOMAIN, CUE_KEY, timeout=30).strip() == "0"
+    def answered(*arguments):
+        for attempt in range(1, CUE_ATTEMPTS + 1):
+            try:
+                return run("xcrun", "simctl", "spawn", udid, "defaults", *arguments, timeout=30)
+            except NoAnswer:
+                if attempt == CUE_ATTEMPTS: raise
+    answered("write", CUE_DOMAIN, CUE_KEY, "-bool", "false")
+    return answered("read", CUE_DOMAIN, CUE_KEY).strip() == "0"
+
+
+def silence_cues_at_rest(data):
+    """Switch VoiceOver's sound cues off in the data folder of a shut-down simulator, for it to read when it
+    boots. Unlike silence_cues it waits on no simulator, so a loaded host cannot time it out
+    (vocaro-engineering#310). The domain's other settings stay, and a file that already holds it off is not
+    touched: a reset or a clone shares its blocks with its template. OSError or ValueError when it cannot
+    be written or the file is not a dictionary property list."""
+    path = Path(data) / CUE_PREFERENCES
+    try:
+        settings = plistlib.loads(path.read_bytes())
+    except FileNotFoundError:
+        settings = {}
+    if not isinstance(settings, dict):
+        raise ValueError(f"{path} is not a dictionary")
+    if settings.get(CUE_KEY) is False:
+        return
+    settings[CUE_KEY] = False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    written = path.with_name(f"{path.name}.{os.getpid()}")
+    written.write_bytes(plistlib.dumps(settings, fmt=plistlib.FMT_BINARY))
+    os.replace(written, path)
 
 
 # Readings of volume 0 in a row, one a second, before VoiceOver may speak on a member: 20 of 24 kept or

@@ -42,6 +42,17 @@ class Simctl:
     def origin(self, udid):
         return (self.data(udid) / "origin").read_text()
 
+    def cue_preferences(self, udid):
+        return self.data(udid) / "Library/Preferences/com.apple.VoiceOverTouch.plist"
+
+    def cues_at_rest(self, udid):
+        """What VoiceOver's sound-cue switch holds in the device's data folder, or None with no key or usable file."""
+        path = self.cue_preferences(udid)
+        try:
+            return plistlib.loads(path.read_bytes()).get("VoiceOverUseSoundEffects")
+        except (OSError, plistlib.InvalidFileException):
+            return None
+
     def add(self, name, device_type=DUO, runtime=RUNTIME, state="Shutdown", days=0, available=True, origin="fresh"):
         udid = str(uuid.uuid4()).upper()
         self.data(udid).mkdir(parents=True)
@@ -86,12 +97,9 @@ class Simctl:
             shutil.rmtree(self.data(rest[0]))
             self.data(rest[0]).mkdir()
             (self.data(rest[0]) / "origin").write_text("erased")
-        elif action == "boot": self.devices[rest[0]]["state"] = "Booted"
-        elif action == "spawn" and rest[1:2] == ("defaults",) and rest[3:5] == ("com.apple.VoiceOverTouch",
-                                                                                  "VoiceOverUseSoundEffects"):
-            # VoiceOver's sound-cue switch, which reads 1 until it is written.
-            if rest[2] == "write": self.devices[rest[0]]["cues"] = rest[-1]
-            else: output = {"false": "0", "true": "1"}[self.devices[rest[0]].get("cues", "true")] + "\n"
+        elif action == "boot":
+            self.devices[rest[0]]["state"] = "Booted"
+            self.devices[rest[0]]["cuesAtBoot"] = self.cues_at_rest(rest[0])
         elif action == "spawn" and rest[1:2] == ("defaults",):
             # Any other setting lives in the data folder, as the simulator's preferences do: an erase clears it,
             # a reset copies the template's, and a member that keeps its state keeps it. Unset, it reads as
@@ -805,45 +813,73 @@ class PoolTests(unittest.TestCase):
         self.assertEqual(command("prune", udid.strip())[0], 1)
 
 
-    def test_a_booted_member_has_voiceovers_sound_cues_switched_off(self):
+    def cue_spawns(self, udid):
+        return [call for call in self.simctl.named(udid) if call[0] == "spawn" and "VoiceOverUseSoundEffects" in call]
+
+    def test_a_member_boots_with_voiceovers_sound_cues_already_off_in_its_data(self):
         udid = self.simctl.add("Project Duo 1")
         lease = self.pool.take(DUO, RUNTIME, purpose="VoiceOver")
         self.assertIsNone(simulator_pool.boot(self.pool, lease, 600))
-        calls = self.simctl.named(udid)
-        status = calls.index(("bootstatus", udid, "-b"))
-        write = calls.index(("spawn", udid, "defaults", "write", "com.apple.VoiceOverTouch",
-                             "VoiceOverUseSoundEffects", "-bool", "false"))
-        read = calls.index(("spawn", udid, "defaults", "read", "com.apple.VoiceOverTouch", "VoiceOverUseSoundEffects"))
-        # After the erase, which clears the setting, and once the boot has finished.
-        self.assertLess(calls.index(("erase", udid)), status)
-        self.assertTrue(status < write < read, calls)
+        # In the shut-down member's data, where the boot finds it: an erase clears the setting.
+        self.assertIn(("erase", udid), self.simctl.named(udid))
+        self.assertIs(self.simctl.devices[udid]["cuesAtBoot"], False)
+        self.assertEqual(self.cue_spawns(udid), [])
         self.assertFalse([line for line in self.log if line.startswith("CUES")])
         self.assertTrue(self.pool.release(lease, outcome="done"))
 
-    def test_sound_cues_that_will_not_read_off_are_logged_and_the_boot_still_counts(self):
-        # Negative controls: a write that fails, and one that leaves the switch reading on.
-        for failure in ({"spawn": lambda rest: (1, "", "spawn failed")},
-                        {"spawn": lambda rest: (0, "1\n" if rest[2] == "read" else "", "")}):
-            with self.subTest(failure=failure):
+    def test_a_simulator_too_loaded_to_answer_spawn_still_has_its_sound_cues_off(self):
+        # vocaro-engineering#310: at a load average of 38 to 47, the spawned write and read timed out on every take.
+        udid = self.simctl.add("Project Duo 1")
+        self.simctl.fail["spawn"] = lambda rest: (124, "", "timed out after 30 s")
+        lease = self.pool.take(DUO, RUNTIME, purpose="VoiceOver")
+        self.assertIsNone(simulator_pool.boot(self.pool, lease, 600))
+        self.assertIs(self.simctl.devices[udid]["cuesAtBoot"], False)
+        self.assertEqual(self.cue_spawns(udid), [])
+        self.assertFalse([line for line in self.log if line.startswith("CUES")], self.log)
+        self.assertTrue(self.pool.release(lease, outcome="done"))
+
+    def test_a_kept_members_other_voiceover_settings_stay_and_a_setting_already_off_is_not_rewritten(self):
+        udid = self.simctl.add("Project Duo 1")
+        path = self.simctl.cue_preferences(udid)
+        path.parent.mkdir(parents=True)
+        path.write_bytes(plistlib.dumps({"VoiceOverUseSoundEffects": True, "SomeoneElsesSetting": 7}))
+        lease = self.pool.take(DUO, RUNTIME, purpose="VoiceOver", keep_state=True)
+        self.assertIsNone(simulator_pool.boot(self.pool, lease, 600))
+        self.assertEqual(plistlib.loads(path.read_bytes()), {"VoiceOverUseSoundEffects": False, "SomeoneElsesSetting": 7})
+        self.assertTrue(self.pool.release(lease, outcome="done"))
+        # A reset or clone already holds it, in blocks shared with its template: nothing writes them again.
+        written = path.stat()
+        lease = self.pool.take(DUO, RUNTIME, purpose="VoiceOver", keep_state=True)
+        self.assertIsNone(simulator_pool.boot(self.pool, lease, 600))
+        self.assertEqual((path.stat().st_ino, path.stat().st_mtime_ns), (written.st_ino, written.st_mtime_ns))
+        self.assertTrue(self.pool.release(lease, outcome="done"))
+
+    def test_sound_cues_that_cannot_be_written_are_logged_and_a_take_without_voiceover_still_boots(self):
+        # Negative controls: no folder can be made for the file, and a file that is not a property list. The
+        # pool does not know whether the holder will run VoiceOver, so the take goes on and says so.
+        def no_folder(path):
+            path.parent.parent.mkdir(parents=True, exist_ok=True)
+            path.parent.write_text("a file, where the folder would be")
+
+        def not_a_list(path):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("junk")
+
+        for damage in (no_folder, not_a_list):
+            with self.subTest(damage.__name__):
                 self.simctl, self.log = Simctl(), []
                 self.warm = Warm()
                 self.pool = self.make("me")
                 udid = self.simctl.add("Project Duo 1")
-                self.simctl.fail.update(failure)
-                lease = self.pool.take(DUO, RUNTIME, purpose="VoiceOver")
+                lease = self.pool.take(DUO, RUNTIME, purpose="no VoiceOver", keep_state=True)
+                damage(self.simctl.cue_preferences(udid))
                 self.assertIsNone(simulator_pool.boot(self.pool, lease, 600))
+                self.assertEqual(self.simctl.devices[udid]["state"], "Booted")
                 cues = [line for line in self.log if line.startswith("CUES")]
                 self.assertEqual(len(cues), 1, self.log)
                 self.assertIn("Project Duo 1: VoiceOver's sound cues could not be switched off", cues[0])
+                self.assertEqual(self.cue_spawns(udid), [])
                 self.assertTrue(self.pool.release(lease, outcome="done"))
-
-    def test_a_boot_that_does_not_finish_never_writes_the_cue_setting(self):
-        udid = self.simctl.add("Project Duo 1")
-        self.simctl.fail["bootstatus"] = lambda rest: (124, "", "timed out")
-        lease = self.pool.take(DUO, RUNTIME, purpose="VoiceOver")
-        self.assertEqual(simulator_pool.boot(self.pool, lease, 600), simulator_pool.evidence.UNMEASURED)
-        self.assertFalse([call for call in self.simctl.named(udid) if call[0] == "spawn"])
-        self.assertTrue(self.pool.release(lease, outcome="done"))
 
     def failed_take(self, action, status, stderr):
         """A take whose simctl action fails: its exit status and what it wrote to stderr, one line each."""
