@@ -835,6 +835,91 @@ class PoolTests(unittest.TestCase):
         self.assertFalse([call for call in self.simctl.named(udid) if call[0] == "spawn"])
         self.assertTrue(self.pool.release(lease, outcome="done"))
 
+    def failed_take(self, action, status, stderr):
+        """A take whose simctl action fails: its exit status and what it wrote to stderr, one line each."""
+        self.simctl.add("Project Duo 1")
+        self.simctl.fail[action] = lambda rest: (status, "", stderr)
+        code, output, error = self.pool_command("take", "--device", "iPhone-Duo", "--runtime", "iOS-27-1")
+        self.assertEqual(output, "")
+        self.assertEqual(devices.Record(self.path).entry("Project Duo 1")["state"], "released")
+        return code, error.splitlines()
+
+    def boot_failure_line(self, lines):
+        said = [line for line in lines if "BOOT FAILED" in line]
+        self.assertEqual(len(said), 1, lines)
+        return said[0]
+
+    def test_a_failed_simctl_boot_is_named_with_its_error_text_and_keeps_its_status(self):
+        text = "An error was encountered (domain=NSPOSIXErrorDomain, code=60):\nlaunchd failed to respond.\n"
+        code, lines = self.failed_take("boot", 60, text)
+        self.assertEqual(code, 60)
+        self.assertEqual(self.boot_failure_line(lines),
+                         "Project Duo 1: BOOT FAILED: `simctl boot` exited 60: An error was encountered "
+                         "(domain=NSPOSIXErrorDomain, code=60): launchd failed to respond.")
+        self.assertIn("eng simulator-pool: Project Duo 1 did not finish booting (status 60)", lines)
+        self.assertFalse([call for call in self.simctl.calls if call[0] == "bootstatus"])
+        self.assertEqual(devices.Record(self.path).entry("Project Duo 1")["run"],
+                         "The boot ended with status 60 before Simulator tests")
+
+    def test_a_failed_bootstatus_is_named_with_its_error_text_and_keeps_its_status(self):
+        code, lines = self.failed_take("bootstatus", 60, "Unable to boot (domain=com.apple.SimError, code=60)")
+        self.assertEqual(code, 60)
+        self.assertEqual(self.boot_failure_line(lines),
+                         "Project Duo 1: BOOT FAILED: `simctl bootstatus -b` exited 60: "
+                         "Unable to boot (domain=com.apple.SimError, code=60)")
+        self.assertIn("eng simulator-pool: Project Duo 1 did not finish booting (status 60)", lines)
+
+    def test_a_bootstatus_past_its_limit_is_named_and_stays_unmeasured(self):
+        code, lines = self.failed_take("bootstatus", 124, "timed out after 600 s")
+        self.assertEqual(code, evidence.UNMEASURED)
+        self.assertEqual(self.boot_failure_line(lines),
+                         "Project Duo 1: BOOT FAILED: `simctl bootstatus -b` exited 124: timed out after 600 s")
+
+    def test_a_long_boot_error_is_bounded_and_keeps_its_start_and_end(self):
+        for action, command in (("boot", "simctl boot"), ("bootstatus", "simctl bootstatus -b")):
+            with self.subTest(action=action):
+                self.simctl, self.log = Simctl(), []
+                text = "DOMAIN-FIRST " + "x" * 50000 + " UNDERLYING-LAST"
+                code, lines = self.failed_take(action, 60, text)
+                line = self.boot_failure_line(lines)
+                self.assertEqual(code, 60)
+                self.assertIn(command, line)
+                self.assertIn("DOMAIN-FIRST", line)
+                self.assertTrue(line.endswith("UNDERLYING-LAST"), line[-40:])
+                cut = len(text) - simulator_pool.BOOT_ERROR_SHOWN
+                self.assertIn(f"[cut: {cut} characters]", line)
+                self.assertLess(len(line), simulator_pool.BOOT_ERROR_SHOWN + 100)
+
+    def test_a_boot_error_at_the_limit_is_not_cut(self):
+        text = "x" * simulator_pool.BOOT_ERROR_SHOWN
+        line = self.boot_failure_line(self.failed_take("boot", 60, text)[1])
+        self.assertTrue(line.endswith(": " + text))
+        self.assertNotIn("[cut:", line)
+
+    def test_an_empty_boot_error_says_there_was_none(self):
+        for stderr in ("", " \n\t"):
+            with self.subTest(stderr=stderr):
+                self.simctl, self.log = Simctl(), []
+                code, lines = self.failed_take("bootstatus", 60, stderr)
+                self.assertEqual(code, 60)
+                self.assertEqual(self.boot_failure_line(lines),
+                                 "Project Duo 1: BOOT FAILED: `simctl bootstatus -b` exited 60: no error text")
+
+    def test_a_boot_that_succeeds_logs_nothing(self):
+        self.simctl.add("Project Duo 1")
+        lease = self.pool.take(DUO, RUNTIME, purpose="VoiceOver")
+        before = list(self.log)
+        self.assertIsNone(simulator_pool.boot(self.pool, lease, 600))
+        self.assertEqual(self.log, before)
+        self.assertTrue(self.pool.release(lease, outcome="done"))
+
+    def test_a_take_that_boots_writes_no_boot_failure(self):
+        udid = self.simctl.add("Project Duo 1")
+        code, output, error = self.pool_command("take", "--device", "iPhone-Duo", "--runtime", "iOS-27-1")
+        self.assertEqual((code, output.strip()), (0, udid))
+        self.assertNotIn("BOOT FAILED", error)
+        self.assertNotIn("did not finish booting", error)
+
     APP_ACCESSIBILITY = ("com.apple.Accessibility", "ApplicationAccessibilityEnabled")
 
     def app_accessibility_calls(self, udid):

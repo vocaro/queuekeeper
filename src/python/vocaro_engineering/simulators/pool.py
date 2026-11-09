@@ -84,6 +84,8 @@ DEVICES = Path.home() / "Library/Developer/CoreSimulator/Devices"
 CLONE_NOFOLLOW = 0x0001
 # What a take records when the caller asked for an erase in place of the reset.
 ERASE_ASKED = "asked for with --erase"
+# How much of simctl's error text a failed boot logs: more than the few lines an error of its takes.
+BOOT_ERROR_SHOWN = 2000
 # The simulator's setting that has the system load UIKit's and SwiftUI's own accessibility into every app
 # process with no assistive technology running, so that an in-process test hosted in an app reads their
 # views (AccessibilitySnapshot.readsSystemViews). Apple documents no such key: verified on the iOS 27.2
@@ -1137,8 +1139,20 @@ def set_app_accessibility(run, udid, enabled, *, kept):
     return f"{domain} {key} reads {value!r} after it was " + ("written true" if enabled else "deleted")
 
 
+def boot_failure(command, result):
+    """Which simctl command ended a boot, its status and its error text, on one line. Of a text over
+    BOOT_ERROR_SHOWN characters the start and the end are kept, as simctl states the error first and any
+    underlying error last."""
+    text = " ".join((result.stderr or "").split())
+    if len(text) > BOOT_ERROR_SHOWN:
+        half = BOOT_ERROR_SHOWN // 2
+        text = f"{text[:half]} [cut: {len(text) - 2 * half} characters] {text[-half:]}"
+    return f"BOOT FAILED: `simctl {command}` exited {result.returncode}: {text or 'no error text'}"
+
+
 def boot(pool, lease, timeout, *, app_accessibility=False):
-    """Boot a member to bootstatus -b; None when it booted, else a status (UNMEASURED for a timeout).
+    """Boot a member to bootstatus -b; None when it booted, else a status (UNMEASURED for a timeout). A
+    command that fails is logged with its error text (boot_failure).
 
     A booted member then has VoiceOver's sound cues switched off: an erase clears the setting, and
     the mute leaves the cues audible through the Mac (guides/voiceover-simulator.md, Muted speech
@@ -1148,9 +1162,11 @@ def boot(pool, lease, timeout, *, app_accessibility=False):
     lane asked for it, and is logged."""
     started = pool.run("boot", lease.udid, timeout=120)
     if started.returncode != 0:
+        pool.log(f"{lease.key}: {boot_failure('boot', started)}")
         return started.returncode
     finished = pool.run("bootstatus", lease.udid, "-b", timeout=timeout)
     if finished.returncode != 0:
+        pool.log(f"{lease.key}: {boot_failure('bootstatus -b', finished)}")
         return evidence.UNMEASURED if finished.returncode == 124 else finished.returncode
     written = pool.run("spawn", lease.udid, "defaults", "write", warmed.CUE_DOMAIN, warmed.CUE_KEY, "-bool", "false",
                        timeout=30)
