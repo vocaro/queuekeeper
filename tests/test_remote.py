@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor
 import contextlib
 from datetime import datetime, timedelta, timezone
 import fcntl
@@ -7016,7 +7017,7 @@ class RenamedSecondMacTests(unittest.TestCase):
 
 
 class SharedOriginTests(unittest.TestCase):
-    """The second Mac keeps the toolkit's shared origin when a plan names a path (vocaro-engineering#78)."""
+    """Placement preserves a usable shared origin across checkout slots (vocaro-engineering#78, #345)."""
 
     def test_a_local_url_is_told_from_a_network_one(self):
         for url in ["/Users/someone/Development/vocaro-engineering", "../vocaro-engineering", "vocaro-engineering",
@@ -7048,6 +7049,62 @@ class SharedOriginTests(unittest.TestCase):
             offload_host.place(repository, base / "0/vocaro-engineering", commit, "refs/heads/main", fork)
             self.assertEqual(git(repository, "config", "--get", "remote.origin.url"), fork)
             self.assertEqual(git(base / "0/vocaro-engineering", "rev-parse", "HEAD"), commit)
+
+
+    def test_concurrent_placements_set_the_same_shared_origin_once(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            source, repository = base / "source", base / "vocaro-engineering.git"
+            subprocess.run(["git", "init", "-q", "-b", "main", str(source)], check=True)
+            (source / "README.md").write_text("kit\n")
+            commit = commit_all(source)
+            subprocess.run(["git", "clone", "-q", "--bare", str(source), str(repository)], check=True)
+            git(repository, "config", "--remove-section", "remote.origin")
+            checkouts = [base / str(index) / "vocaro-engineering" for index in range(2)]
+            refs = [f"refs/dispatch/{index}" for index in range(2)]
+            for ref in refs:
+                git(repository, "update-ref", ref, commit)
+
+            writing, second_reached = threading.Event(), threading.Event()
+            config_lock = repository / "config.lock"
+            real_git, real_flock = offload_host.git, fcntl.flock
+            writes = []
+
+            def run_git(*arguments, cwd=None):
+                if arguments[2:4] != ("config", "remote.origin.url"):
+                    return real_git(*arguments, cwd=cwd)
+                writes.append(arguments[-1])
+                if writing.is_set():
+                    # Without the placement lock, the second writer meets Git's live config lock.
+                    try:
+                        return real_git(*arguments, cwd=cwd)
+                    finally:
+                        second_reached.set()
+                config_lock.touch(exist_ok=False)
+                writing.set()
+                try:
+                    self.assertTrue(second_reached.wait(stretched(30)))
+                finally:
+                    config_lock.unlink()
+                return real_git(*arguments, cwd=cwd)
+
+            def flock(descriptor, operation):
+                if writing.is_set():
+                    second_reached.set()
+                return real_flock(descriptor, operation)
+
+            with patch.object(offload_host, "git", run_git), patch.object(fcntl, "flock", flock), \
+                    ThreadPoolExecutor(max_workers=2) as workers:
+                first = workers.submit(offload_host.place, repository, checkouts[0], commit, refs[0], remote.UPSTREAM)
+                self.assertTrue(writing.wait(stretched(30)))
+                second = workers.submit(offload_host.place, repository, checkouts[1], commit, refs[1], remote.UPSTREAM)
+                first.result(timeout=stretched(60))
+                second.result(timeout=stretched(60))
+
+            self.assertEqual(writes, [remote.UPSTREAM])
+            self.assertEqual(git(repository, "config", "--get", "remote.origin.url"), remote.UPSTREAM)
+            for checkout in checkouts:
+                self.assertEqual(git(checkout, "rev-parse", "HEAD"), commit)
 
 
 def toolkit_clone(base, home):

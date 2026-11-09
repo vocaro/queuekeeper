@@ -2736,8 +2736,13 @@ def place(repository, checkout, commit, ref, origin=None):
                       "can fetch the policy",
                       "set the sending checkout's origin to https://github.com/vocaro/vocaro-engineering.git and "
                       "send the work again (guides/adoption.md, Locating the toolkit from a worktree)")
-    if origin and output(["git", "--git-dir", str(repository), "config", "--get", "remote.origin.url"]) != origin:
-        git("--git-dir", str(repository), "config", "remote.origin.url", origin)
+    if origin:
+        # Different checkout slots can place the toolkit at once. Hold the shared lock only for its config.
+        with (repository / "eng-origin.lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            command = ["--git-dir", str(repository), "config"]
+            if output(["git", *command, "--get", "remote.origin.url"]) != origin:
+                git(*command, "remote.origin.url", origin)
     if checkout.exists():
         git("checkout", "--detach", "--quiet", commit, cwd=checkout)
     else:
