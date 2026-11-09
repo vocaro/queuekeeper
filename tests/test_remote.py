@@ -23,6 +23,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 from vocaro_engineering import budgets, cli, config, device_notifications, devices, evidence, merge_queue, offload_host, processes, release, remote, resources
 from vocaro_engineering import disk as disk_module
+from vocaro_engineering import waiting
 import host_isolation
 from host_isolation import stretched
 
@@ -1591,29 +1592,54 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual(slot("imports"), 1)
 
     def test_a_stop_ends_the_second_mac_run_and_releases_its_checkout_and_admission(self):
-        command = [sys.executable, str(self.toolkit / "bin/eng"), "--project", str(self.project), "remote", "run", "slow"]
-        dispatcher = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        marker = self.checkout(0) / ".build/slow.pid"
-        deadline = time.monotonic() + stretched(60)
-        while not marker.exists() and dispatcher.poll() is None and time.monotonic() < deadline:
-            time.sleep(0.1)
-        self.assertTrue(marker.exists(), dispatcher.stdout.read().decode() if dispatcher.poll() is not None else "")
-        time.sleep(stretched(0.2))
-        lane = int(marker.read_text())
-        dispatcher.send_signal(signal.SIGTERM)
-        output = dispatcher.communicate(timeout=stretched(60))[0].decode()
-        self.assertEqual(dispatcher.returncode, -signal.SIGTERM, output)
-        self.assertIn("asking fake to stop the run", output)
-        with self.assertRaises(ProcessLookupError):
-            os.kill(lane, 0)
-        receipt = json.loads((self.project / ".build/engineering/remote/slow/source.json").read_text())
-        self.assertTrue(receipt["result"]["stopped"])
-        lock = os.open(self.home / remote.ROOT / "checkouts/example/0.lock", os.O_RDWR)
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        finally:
-            os.close(lock)
-        self.assertFalse(Path(os.environ["FAKE_GATE"] + ".warm-push-guard").exists())
+        command = [sys.executable, str(self.toolkit / "bin/eng"), "--project", str(self.project), "remote", "run",
+                   "resident"]
+        marker = self.checkout(0) / ".build/resident.pid"
+        root = self.home / remote.ROOT
+        results = self.project / ".build/engineering/remote"
+        guard = Path(os.environ["FAKE_GATE"] + ".warm-push-guard")
+        # The send, checkout and provisioning can all be working long before the lane has a PID.
+        progress = waiting.files(root / "repositories", self.checkout(0), results)
+        with tempfile.TemporaryFile() as log:
+            dispatcher = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT)
+            lane = None
+            try:
+                def ready():
+                    return marker.exists() and marker.read_text().strip().isdigit()
+
+                waiting.wait_until(lambda: ready() or dispatcher.poll() is not None, progress, stall=60)
+                if not ready():
+                    log.seek(0)
+                    self.fail(f"resident lane did not start: {log.read().decode()}")
+                lane = int(marker.read_text())
+                os.kill(lane, 0)
+                self.assertTrue(guard.exists(), "the run took no admission")
+                dispatcher.send_signal(signal.SIGTERM)
+                dispatcher.wait(timeout=stretched(60))
+                log.seek(0)
+                output = log.read().decode()
+                self.assertEqual(dispatcher.returncode, -signal.SIGTERM, output)
+                self.assertIn("asking fake to stop the run", output)
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(lane, 0)
+                lane = None
+                receipt = json.loads((results / "resident/source.json").read_text())
+                self.assertTrue(receipt["result"]["stopped"])
+                lock = os.open(root / "checkouts/example/0.lock", os.O_RDWR)
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                finally:
+                    os.close(lock)
+                self.assertFalse(guard.exists())
+            finally:
+                if dispatcher.poll() is None:
+                    dispatcher.terminate()
+                    try:
+                        dispatcher.wait(timeout=stretched(60))
+                    except subprocess.TimeoutExpired:
+                        dispatcher.kill()
+                        dispatcher.wait(timeout=stretched(60))
+                self.reap(lane)
 
     def test_a_run_that_lost_its_dispatcher_is_listed_before_the_next_is_sent_and_left_running(self):
         # Keep this fake host's census independent of the time to list every process on this Mac.
