@@ -26,6 +26,7 @@ is set to off, so no run a test makes does.
 VOCARO_EVIDENCE_RETRY is set to off, so no eng a test runs offloads this Mac's evidence archives.
 """
 import atexit
+import json
 import os
 from pathlib import Path
 import shutil
@@ -102,6 +103,12 @@ device_notifications.run = lambda command: (None, "tests never reach a device")
 # Nor does any run a test makes, in this process or a child, relay a device's log: its watch starts no relay and
 # says so. A test of the watch sets its own relay.
 os.environ[device_notifications.WATCH] = "off"
+# Nor does any host identity or lane receipt a test makes read this Mac's scroll-bar setting and HID devices, a second
+# of ioreg each time (#229): it reads the setting unset and no pointing device. A test of the reading sets its own.
+(ROOT / "scroll-bars.json").write_text(json.dumps({
+    "defaults": [1, "", "Error: Could not find key 'AppleShowScrollBars' in domain 'kCFPreferencesAnyApplication'.\n"],
+    "ioreg": [0, "", ""]}))
+os.environ[offload_host.SCROLL_BARS_RECORDING] = str(ROOT / "scroll-bars.json")
 
 
 FIX_HOSTS = cli.fix_hosts

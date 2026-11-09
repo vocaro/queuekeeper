@@ -81,7 +81,8 @@ cd "$FAKE_HOME" || exit 255
 HOME="$FAKE_HOME" SHELL="$FAKE_SHELL" HEAVY_SLOT_DIR="$FAKE_SLOTS" SW_GATE_LOCK_FILE="$FAKE_GATE" \
     TMPDIR="${FAKE_TMPDIR:-$TMPDIR}" VOCARO_DEVICE_RECORD="${FAKE_DEVICE_RECORD:-$FAKE_HOME/device-handoff.json}" \
     exec env -u VOCARO_SCREEN_IOREG ${FAKE_BUSY_LIMIT:+"HEAVY_BUSY_LIMIT=$FAKE_BUSY_LIMIT"} \
-    ${FAKE_SCREEN_IOREG:+"VOCARO_SCREEN_IOREG=$FAKE_SCREEN_IOREG"} /bin/sh -c "$*"
+    ${FAKE_SCREEN_IOREG:+"VOCARO_SCREEN_IOREG=$FAKE_SCREEN_IOREG"} \
+    ${FAKE_SCROLL_BARS:+"VOCARO_SCROLL_BARS_RECORDING=$FAKE_SCROLL_BARS"} /bin/sh -c "$*"
 """
 # A login shell that reads no profile, so the test's PATH reaches the second Mac.
 FAKE_SHELL = """#!/bin/sh
@@ -1789,6 +1790,50 @@ class RemoteTests(unittest.TestCase):
         """eng run, with this Mac's policy refresh, which would fetch GitHub, left out."""
         with patch.object(cli, "refresh_policy", return_value="policy"):
             return self.eng("run", *arguments)
+
+    def scroll_bars_recording(self, name, setting, *devices):
+        """A recording of defaults and ioreg (offload_host.SCROLL_BARS_RECORDING) for one Mac, its path."""
+        path = self.project.parent / f"scroll-bars-{name}.json"
+        listed = [{"Product": device, "PrimaryUsagePage": 1, "PrimaryUsage": 2} for device in devices]
+        path.write_text(json.dumps({"defaults": [0, f"{setting}\n", ""],
+                                    "ioreg": [0, plistlib.dumps(listed).decode(), ""]}))
+        return str(path)
+
+    def test_a_lanes_record_says_which_scroll_bar_kind_the_mac_that_ran_it_gives(self):
+        """vocaro-engineering#229: a dispatched lane's record and log carry the second Mac's reading, with this Mac's
+        beside it as the sender's, and a lane run here carries this Mac's, each said once in the log."""
+        here, there = self.scroll_bars_recording("here", "Automatic"), self.scroll_bars_recording("there", "Automatic", "USB Mouse")
+        with patch.dict(os.environ, {offload_host.SCROLL_BARS_RECORDING: here, "FAKE_SCROLL_BARS": there}):
+            status, output, error = self.run_here("check")
+        self.assertEqual(status, 0, output + error)
+        receipt = json.loads((self.project / ".build/engineering/remote/check/source.json").read_text())
+        self.assertEqual((receipt["result"]["host"]["scrollBars"]["kind"], receipt["result"]["host"]["scrollBars"]["pointingDevices"]),
+                         ("legacy", ["USB Mouse"]))
+        self.assertEqual(receipt["local"]["scrollBars"]["kind"], "overlay")
+        self.assertEqual(receipt["result"]["receipt"]["scrollBars"]["kind"], "legacy")
+        # check has a provision lane, which runs first on the second Mac and says nothing of its own.
+        self.assertRegex(output + error, r"eng: scroll bars: legacy \(AppleShowScrollBars Automatic, pointing devices: USB Mouse\) "
+                                         r"on the second Mac \(\S+\) at ")
+        self.assertEqual((output + error).count("eng: scroll bars: "), 1, output + error)
+        # Run here, the record and the line are this Mac's.
+        with patch.dict(os.environ, {offload_host.SCROLL_BARS_RECORDING: here, "FAKE_SCROLL_BARS": there}):
+            status, output, error = self.run_here("--here", "gate")
+        self.assertEqual(status, 0, output + error)
+        receipt = self.ran_here()
+        self.assertEqual((receipt["ranOn"], receipt["scrollBars"]["kind"]), ("this Mac", "overlay"))
+        self.assertRegex(error, r"eng: scroll bars: overlay \(AppleShowScrollBars Automatic, no pointing device but a built-in "
+                                r"one\) on this Mac \(\S+\) at ")
+        self.assertEqual(error.count("eng: scroll bars: "), 1, error)
+
+    def test_a_reading_that_cannot_be_taken_says_so_in_the_record_and_the_log(self):
+        """vocaro-engineering#229: the lane still runs, and nothing unread is recorded as a value."""
+        missing = str(self.project.parent / "no-scroll-bars-recording.json")
+        with patch.dict(os.environ, {offload_host.SCROLL_BARS_RECORDING: missing}):
+            status, output, error = self.run_here("--here", "gate")
+        self.assertEqual(status, 0, output + error)
+        read = self.ran_here()["scrollBars"]
+        self.assertEqual((read["kind"], read["setting"], read["pointingDevices"]), ("unknown", None, None))
+        self.assertIn("eng: scroll bars: unknown (AppleShowScrollBars could not be read: the recording", error)
 
     def test_a_heavy_lane_runs_on_the_second_mac_first(self):
         status, output, error = self.eng("run", "gate")

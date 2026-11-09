@@ -302,13 +302,116 @@ def screen_declined(plan, read=None):
         raise Refusal(f"its screen is {found['state']}, and the lane needs it unlocked ({screen_line(found)})", busy=True)
 
 
+SCROLL_BARS_KEY = "AppleShowScrollBars"
+# A JSON file to read in place of the two commands, for tests: {"defaults": [exit status, standard output, standard
+# error], "ioreg": [the same]}. The readings are parsed as the commands' own output is.
+SCROLL_BARS_RECORDING = "VOCARO_SCROLL_BARS_RECORDING"
+SCROLL_BARS_COMMANDS = {"defaults": ["defaults", "read", "-g", SCROLL_BARS_KEY],
+                        "ioreg": ["ioreg", "-a", "-r", "-c", "IOHIDDevice", "-d", "1"]}
+# What `defaults read` says of a key no one set: the first on macOS 27.2, the second on earlier macOS.
+SCROLL_BARS_UNSET = re.compile(r"Could not find key|does not exist")
+SCROLL_BARS_FIXED = {"Always": "legacy", "WhenScrolling": "overlay"}
+# The HID Generic Desktop page's Pointer and Mouse usages.
+POINTING_PAGE, POINTING_USAGES = 1, (1, 2)
+
+
+def scroll_bars_read(tool):
+    """(exit status, standard output as bytes, standard error) of tool's read-only command, or None for the status
+    with why it could not run in the third place."""
+    recording = os.environ.get(SCROLL_BARS_RECORDING)
+    if recording:
+        try:
+            status, standard, said = json.loads(Path(recording).read_text())[tool]
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            return None, b"", f"the recording {SCROLL_BARS_RECORDING} names cannot be read: {error}"
+        return status, standard.encode(), said
+    try:
+        ran = subprocess.run(SCROLL_BARS_COMMANDS[tool], capture_output=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as error:
+        return None, b"", f"{tool} could not run: {error}"
+    return ran.returncode, ran.stdout, ran.stderr.decode(errors="replace")
+
+
+def scroll_bars_failed(tool, status, said):
+    """Why tool's reading failed, in the words of its last line."""
+    if status is None: return said
+    lines = said.strip().splitlines()
+    return f"{tool} exited {status}" + (f": {lines[-1]}" if lines else "")
+
+
+def pointing_devices(listed):
+    """The names, sorted and each once, of the pointing devices in `ioreg -a -r -c IOHIDDevice -d 1`'s output other
+    than built-in ones, by each device's usages and its Built-In property; a device that does not say it is built in
+    counts. No output is no HID device. ValueError when the output is not the expected list."""
+    if not listed.strip(): return []
+    try:
+        entries = plistlib.loads(listed)
+    except Exception as error:  # plistlib raises several kinds for a damaged property list.
+        raise ValueError(f"ioreg's output is not a property list: {error}") from error
+    if not isinstance(entries, list): raise ValueError("ioreg's output is not a list of devices")
+    names = set()
+    for entry in entries:
+        if not isinstance(entry, dict) or entry.get("Built-In"): continue
+        pairs = entry.get("DeviceUsagePairs")
+        usages = [(pair.get("DeviceUsagePage"), pair.get("DeviceUsage")) for pair in pairs if isinstance(pair, dict)] \
+            if isinstance(pairs, list) else []
+        usages.append((entry.get("PrimaryUsagePage"), entry.get("PrimaryUsage")))
+        if any(page == POINTING_PAGE and usage in POINTING_USAGES for page, usage in usages):
+            names.add(str(entry.get("Product") or "unnamed"))
+    return sorted(names)
+
+
+def scroll_bars(mac=None, at=None):
+    """Which scroll-bar kind this Mac gives its processes now, read and never changed (vocaro-engineering#229): kind
+    is `legacy`, `overlay` or `unknown`. setting is the global AppleShowScrollBars, or `unset`, and pointingDevices
+    the names of the pointing devices attached other than the built-in trackpad: under the automatic setting, which
+    an unset key is, any of them means legacy. Always and WhenScrolling settle the kind by themselves. A value that
+    could not be read is None, never `unset` or an empty list, with why in reasons; a kind that depended on it, or a
+    setting with no known kind, is unknown. It says what the host gives: a process that pins its own kind differs."""
+    reading = {"mac": mac or mac_name(), "at": at or time.strftime("%H:%M:%S")}
+    reasons = []
+    setting, devices = None, None
+    status, found, said = scroll_bars_read("defaults")
+    if status == 0:
+        setting = found.decode(errors="replace").strip()
+        if setting not in ("Automatic", *SCROLL_BARS_FIXED):
+            reasons.append(f"{SCROLL_BARS_KEY} is {setting!r}, which gives no known kind")
+    elif status == 1 and SCROLL_BARS_UNSET.search(said):
+        setting = "unset"
+    else:
+        reasons.append(f"{SCROLL_BARS_KEY} could not be read: {scroll_bars_failed('defaults', status, said)}")
+    status, found, said = scroll_bars_read("ioreg")
+    if status == 0:
+        try:
+            devices = pointing_devices(found)
+        except ValueError as error:
+            reasons.append(f"the pointing devices could not be read: {error}")
+    else:
+        reasons.append(f"the pointing devices could not be read: {scroll_bars_failed('ioreg', status, said)}")
+    kind = SCROLL_BARS_FIXED.get(setting, "unknown")
+    if setting in ("Automatic", "unset") and devices is not None: kind = "legacy" if devices else "overlay"
+    return {**reading, "kind": kind, "setting": setting, "pointingDevices": devices, **({"reasons": reasons} if reasons else {})}
+
+
+def scroll_bars_line(reading, where=None):
+    """One line saying what scroll_bars read: `scroll bars: legacy (AppleShowScrollBars unset, pointing devices: NAME)
+    on MAC at HH:MM:SS`, with why for anything unread. where names the Mac in place of its own name."""
+    setting, devices = reading.get("setting"), reading.get("pointingDevices")
+    detail = [*([f"{SCROLL_BARS_KEY} {setting}"] if setting is not None else []),
+              *([] if devices is None else [f"pointing devices: {', '.join(devices)}" if devices
+                                            else "no pointing device but a built-in one"]),
+              *reading.get("reasons", [])]
+    return f"scroll bars: {reading['kind']} ({', '.join(detail)}) on {where or reading.get('mac')} at {reading.get('at')}"
+
+
 def identity(developer_dir):
-    """The Mac a result was measured on, its macOS and the Xcode at developer_dir."""
+    """The Mac a result was measured on, its macOS, the Xcode at developer_dir and the scroll-bar kind it gives."""
     number = lambda name: int(output(["sysctl", "-n", name]) or 0) or None
     return {"name": mac_name(),
             "model": output(["sysctl", "-n", "hw.model"]), "cpus": number("hw.ncpu"),
             "memoryBytes": number("hw.memsize"), "macOS": output(["sw_vers", "-productVersion"]),
-            "build": output(["sw_vers", "-buildVersion"]), "developerDir": developer_dir, "xcode": xcode(developer_dir)}
+            "build": output(["sw_vers", "-buildVersion"]), "developerDir": developer_dir, "xcode": xcode(developer_dir),
+            "scrollBars": scroll_bars()}
 
 
 def record_path():

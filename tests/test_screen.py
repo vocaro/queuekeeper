@@ -7,6 +7,7 @@ from io import StringIO
 import json
 import os
 from pathlib import Path
+import plistlib
 import sys
 import tempfile
 import unittest
@@ -87,6 +88,118 @@ class ScreenReadingTests(unittest.TestCase):
         # Reading this Mac's own IORegistry changes nothing; its state is whatever the owner left.
         with patch.dict(os.environ, {offload_host.SCREEN_RECORDING: ""}):
             self.assertIn(offload_host.screen()["state"], ("unlocked", "locked", "unknown"))
+
+
+UNSET = "Error: Could not find key 'AppleShowScrollBars' in domain 'kCFPreferencesAnyApplication'.\n"
+BUILT_IN = {"Product": "Apple Internal Keyboard / Trackpad", "Built-In": True, "PrimaryUsagePage": 1, "PrimaryUsage": 2,
+            "DeviceUsagePairs": [{"DeviceUsagePage": 1, "DeviceUsage": 2}, {"DeviceUsagePage": 1, "DeviceUsage": 1}]}
+KEYBOARD = {"Product": "Magic Keyboard", "PrimaryUsagePage": 1, "PrimaryUsage": 6,
+            "DeviceUsagePairs": [{"DeviceUsagePage": 1, "DeviceUsage": 6}]}
+MOUSE = {"Product": "USB Mouse", "Built-In": False, "PrimaryUsagePage": 1, "PrimaryUsage": 2}
+COMBO = {"Product": "Receiver", "PrimaryUsagePage": 1, "PrimaryUsage": 6,
+         "DeviceUsagePairs": [{"DeviceUsagePage": 1, "DeviceUsage": 6}, {"DeviceUsagePage": 1, "DeviceUsage": 2}]}
+
+
+class ScrollBarTests(unittest.TestCase):
+    """offload_host.scroll_bars, with a stand-in for defaults and ioreg: no test reads or changes a real preference."""
+
+    def read(self, setting=(0, "Automatic\n", ""), devices=(BUILT_IN, KEYBOARD), ioreg=None):
+        self.commands = []
+
+        def ran(command, **options):
+            self.commands.append(command)
+            status, standard, said = setting if command[0] == "defaults" else ioreg or (0, plistlib.dumps(list(devices)).decode(), "")
+            return Namespace(returncode=status, stdout=standard.encode(), stderr=said.encode())
+        with patch.dict(os.environ, {offload_host.SCROLL_BARS_RECORDING: ""}), \
+                patch.object(offload_host.subprocess, "run", side_effect=ran):
+            return offload_host.scroll_bars(mac="m", at="03:18:00")
+
+    def test_automatic_or_unset_is_legacy_with_a_mouse_and_overlay_without(self):
+        for setting, name in (((0, "Automatic\n", ""), "Automatic"), ((1, "", UNSET), "unset"),
+                              ((1, "", "The domain/default pair of (kCFPreferencesAnyApplication, "
+                                       "AppleShowScrollBars) does not exist\n"), "unset")):
+            with self.subTest(name=name, said=setting[2]):
+                docked = self.read(setting, (BUILT_IN, KEYBOARD, MOUSE))
+                self.assertEqual((docked["kind"], docked["setting"], docked["pointingDevices"]), ("legacy", name, ["USB Mouse"]))
+                self.assertNotIn("reasons", docked)
+                alone = self.read(setting)
+                self.assertEqual((alone["kind"], alone["setting"], alone["pointingDevices"]), ("overlay", name, []))
+        self.assertEqual(offload_host.scroll_bars_line(self.read(devices=(BUILT_IN, MOUSE))),
+                         "scroll bars: legacy (AppleShowScrollBars Automatic, pointing devices: USB Mouse) on m at 03:18:00")
+        self.assertEqual(offload_host.scroll_bars_line(self.read(), "this Mac (m)"),
+                         "scroll bars: overlay (AppleShowScrollBars Automatic, no pointing device but a built-in one) on "
+                         "this Mac (m) at 03:18:00")
+
+    def test_a_fixed_setting_gives_its_kind_whatever_is_attached(self):
+        self.assertEqual(self.read((0, "Always\n", ""))["kind"], "legacy")
+        self.assertEqual(self.read((0, "WhenScrolling\n", ""), (BUILT_IN, MOUSE))["kind"], "overlay")
+        # A mouse's reading failing leaves the kind Always settles, and says what was not read.
+        unread = self.read((0, "Always\n", ""), ioreg=(1, "", "ioreg: failed\n"))
+        self.assertEqual((unread["kind"], unread["pointingDevices"]), ("legacy", None))
+        self.assertEqual(unread["reasons"], ["the pointing devices could not be read: ioreg exited 1: ioreg: failed"])
+
+    def test_a_device_counts_by_its_usages_and_only_a_built_in_one_does_not(self):
+        self.assertEqual(self.read(devices=(COMBO,))["pointingDevices"], ["Receiver"])
+        # The negative control: a keyboard, and the built-in trackpad, are no such device.
+        self.assertEqual(self.read(devices=(KEYBOARD, BUILT_IN))["pointingDevices"], [])
+        self.assertEqual(self.read(devices=(MOUSE, MOUSE))["pointingDevices"], ["USB Mouse"])
+        # ioreg's output with nothing to list, on a Mac with no HID device, is no pointing device.
+        self.assertEqual(self.read(ioreg=(0, "", ""))["pointingDevices"], [])
+
+    def test_a_reading_that_cannot_be_taken_says_so_and_is_never_a_value(self):
+        for failed, why in (((2, "", "defaults: broken\n"), "defaults exited 2: defaults: broken"),
+                            ((1, "", "something else went wrong\n"), "defaults exited 1: something else went wrong")):
+            with self.subTest(why=why):
+                found = self.read(failed, (BUILT_IN, MOUSE))
+                self.assertEqual((found["kind"], found["setting"], found["pointingDevices"]), ("unknown", None, ["USB Mouse"]))
+                self.assertEqual(found["reasons"], [f"AppleShowScrollBars could not be read: {why}"])
+        damaged = self.read(ioreg=(0, "not a property list", ""))
+        self.assertEqual((damaged["kind"], damaged["setting"], damaged["pointingDevices"]), ("unknown", "Automatic", None))
+        self.assertIn("ioreg's output is not a property list", damaged["reasons"][0])
+        self.assertEqual(self.read(ioreg=(1, "", "no\n"))["pointingDevices"], None)
+        unsure = self.read((0, "Sometimes\n", ""))
+        self.assertEqual((unsure["kind"], unsure["setting"]), ("unknown", "Sometimes"))
+        self.assertEqual(unsure["reasons"], ["AppleShowScrollBars is 'Sometimes', which gives no known kind"])
+        with patch.dict(os.environ, {offload_host.SCROLL_BARS_RECORDING: ""}), \
+                patch.object(offload_host.subprocess, "run", side_effect=OSError("no such tool")):
+            found = offload_host.scroll_bars(mac="m", at="03:18:00")
+        self.assertEqual((found["kind"], found["setting"], found["pointingDevices"]), ("unknown", None, None))
+        self.assertEqual(offload_host.scroll_bars_line(found),
+                         "scroll bars: unknown (AppleShowScrollBars could not be read: defaults could not run: no such tool, the "
+                         "pointing devices could not be read: ioreg could not run: no such tool) on m at 03:18:00")
+
+    def test_it_only_reads_and_launches_no_probe(self):
+        # The issue leaves the optional probe process out: the reading is these two read-only commands and no more.
+        self.read((0, "Automatic\n", ""), (BUILT_IN, MOUSE))
+        self.assertEqual(self.commands, [["defaults", "read", "-g", "AppleShowScrollBars"],
+                                         ["ioreg", "-a", "-r", "-c", "IOHIDDevice", "-d", "1"]])
+
+    def test_a_lane_says_it_once_and_nested_work_records_it_silently(self):
+        recording = {"mac": "m", "at": "03:18:00", "kind": "legacy", "setting": "unset", "pointingDevices": ["USB Mouse"]}
+        said = lambda receipt, lane, inherited: cli.scroll_bars_recorded(receipt, lane, inherited)
+        with patch.object(offload_host, "scroll_bars", return_value=recording), patch.dict(os.environ), \
+                patch.object(offload_host, "mac_name", return_value="m"), patch("sys.stderr", new_callable=StringIO) as error:
+            for name in (cli.SELF_LANE, remote.DISPATCHER): os.environ.pop(name, None)
+            receipt = {}
+            said(receipt, "gate", False)
+            self.assertEqual(receipt["scrollBars"], recording)
+            self.assertEqual(error.getvalue(), "eng: scroll bars: legacy (AppleShowScrollBars unset, pointing devices: USB "
+                                               "Mouse) on this Mac (m) at 03:18:00\n")
+            # The negative controls: work nested in an admission or a self lane, and a dispatch's provision lane.
+            error.truncate(0), error.seek(0)
+            receipt = {}
+            said(receipt, "gate", True)
+            self.assertEqual((receipt["scrollBars"], error.getvalue()), (recording, ""))
+            with patch.dict(os.environ, {cli.SELF_LANE: "own"}): said({}, "part", False)
+            with patch.dict(os.environ, {remote.DISPATCHER: "sender"}): said({}, "provision", False)
+            self.assertEqual(error.getvalue(), "")
+            # A provision lane run by itself on this Mac is a lane like any other.
+            said({}, "provision", False)
+            self.assertIn("scroll bars: legacy", error.getvalue())
+
+    def test_the_host_identity_carries_the_reading(self):
+        with patch.object(offload_host, "scroll_bars", return_value={"kind": "overlay"}):
+            self.assertEqual(offload_host.identity(None)["scrollBars"], {"kind": "overlay"})
 
 
 class PlacementTests(unittest.TestCase):

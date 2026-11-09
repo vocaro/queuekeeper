@@ -493,6 +493,16 @@ def screen_reading(stream=None):
     return found
 
 
+def scroll_bars_recorded(receipt, lane, inherited):
+    """Record in a lane's receipt which scroll-bar kind this Mac gives as it starts, and say so in one line naming the
+    Mac (offload_host.scroll_bars, vocaro-engineering#229). A lane's log says it once for its Mac: work nested in
+    an admission or a self lane says nothing of its own, nor does the provision lane a dispatch runs before its work,
+    though each still records the reading."""
+    found = receipt["scrollBars"] = offload_host.scroll_bars()
+    if inherited or os.environ.get(SELF_LANE) or (lane == "provision" and os.environ.get(remote.DISPATCHER)): return
+    print(f"eng: {offload_host.scroll_bars_line(found, this_mac())}", file=sys.stderr, flush=True)
+
+
 def screen_wait(name, seconds, said):
     """None once this Mac's screen reads unlocked, within seconds, for a lane that needs it unlocked; otherwise why
     not, after the wait. Each new reading that refuses is said once (said keeps the last); the lane waits instead
@@ -1384,6 +1394,7 @@ def main(argv=None):
                 with processes.forwarding_signals():
                     if resource == "self":
                         if device_window is not None: devices.report_window(device_window, 0)
+                        scroll_bars_recorded(receipt, args.lane, inherited)
                         # Each part its script admits stays on this Mac, which holds what an earlier part built.
                         with patch_environment({SELF_LANE: args.lane}):
                             result = execute()
@@ -1423,6 +1434,7 @@ def main(argv=None):
                                 fell_back(args.lane, offered)
                             reap_here(root, inherited)
                             if reads_screen: receipt["screen"] = screen_reading()
+                            scroll_bars_recorded(receipt, args.lane, inherited)
                             alerts = guarded_alerts(stack, args.lane, receipt, lane.get("apps", ())) \
                                 if lane.get("foreground") else None
                             if isinstance(alerts, int): return alerts
