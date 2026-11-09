@@ -12,6 +12,7 @@ import unittest
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 import host_isolation  # noqa: F401 (keeps the tests off the real hosts)
+from host_isolation import stretched
 from vocaro_engineering import cli, evidence, failure_records, lane_report, merge_queue
 
 SOURCE = Path(__file__).resolve().parents[1] / "src/python"
@@ -300,7 +301,7 @@ class Policy(unittest.TestCase):
             print("THE WORK", file=sys.stderr, flush=True)
             """)
         done = subprocess.run([sys.executable, "-c", script], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                              timeout=60)
+                              timeout=stretched(60))
         self.assertEqual(done.returncode, 0, done.stdout)
         self.assertLess(done.stdout.index("THE POLICY"), done.stdout.index("THE WORK"), done.stdout)
 
