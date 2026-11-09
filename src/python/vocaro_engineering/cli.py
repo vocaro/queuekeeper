@@ -12,7 +12,7 @@ import sys
 import time
 
 from . import __version__, app_builds, app_registrations, budgets, crash_alerts, device_pass, devices, disk, docs, evidence, evidence_offload, failure_records, foreground, github_artifacts, keychain, merge_queue, \
-    notification_center, offload_host, parallel, processes, release, remote, resources, skills, spelling, storekit_config, toolkit_copy, xctest_shards
+    notification_center, offload_host, parallel, processes, release, remote, resources, skills, spelling, stale_modules, storekit_config, toolkit_copy, xctest_shards
 from .config import TOOLKIT_ROOT, CAPABILITIES, DEFAULT_TOOLKIT, admission as admission_of, load, source_identity, \
     display_lane_warnings, self_lane_warnings, stays, unlocked_screen
 from .resources import BUSY, FREE_WAIT
@@ -1277,7 +1277,7 @@ def main(argv=None):
                 def execute(on_stop=None):
                     return record(directory, receipt, lambda: prepared(lambda: processes.run(command, cwd=root,
                                   log_path=directory / "run.log", timeout=lane.get("timeout", processes.DEFAULT_LIMIT),
-                                  on_stop=on_stop, env=parallel.results_environment(directory / "results"),
+                                  on_stop=on_stop, env=stale_modules.environment(parallel.results_environment(directory / "results"), root),
                                   kill_after=processes.FOREGROUND_KILL_AFTER if lane.get("foreground")
                                   else processes.KILL_AFTER)))
             else:

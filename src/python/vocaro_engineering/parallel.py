@@ -20,7 +20,7 @@ import threading
 import time
 import unittest
 
-from . import evidence, processes
+from . import evidence, processes, stale_modules
 
 # Lines of a failed lane's log printed under its result.
 TAIL = 40
@@ -116,7 +116,8 @@ def lanes(root, members, directory, jobs, judge, receipt, on_stop=None, results_
             status = processes.run(lane["command"], cwd=root, log_path=log,
                                    timeout=lane.get("timeout", processes.DEFAULT_LIMIT),
                                    on_stop=on_stop,
-                                   env=results_environment(results_directory / name) if results_directory is not None else None)
+                                   env=stale_modules.environment(results_environment(results_directory / name)
+                                       if results_directory is not None else os.environ, root))
             status = judge(lane, status, log.read_text(errors="replace"))
         except processes.TimedOut as error:
             # A lane's timeout is its backstop, so a run a busy host slowed past it is unmeasured.
