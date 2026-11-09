@@ -13,7 +13,7 @@ import unittest
 from unittest import mock
 import uuid
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
-from vocaro_engineering import devices, evidence
+from vocaro_engineering import devices, evidence, stale_modules
 import host_isolation
 from host_isolation import stretched
 
@@ -437,6 +437,19 @@ class SimulatorMatrixTests(unittest.TestCase):
         self.assertEqual(len(self.build_calls()), 2, output)
         self.assertIn("the same error again, so it is not rebuilt again", output)
         self.assert_every_device_returned()
+
+    def test_a_stale_module_the_lane_wrapper_already_rebuilt_is_not_rebuilt_again(self):
+        # Under eng run, xcodebuild's wrapper has rebuilt once and says so in the build's output (#267).
+        modules, _ = self.planted_modules()
+        (self.root / "bin/xcodebuild").write_text((self.root / "bin/xcodebuild").read_text().replace(
+            "print(\"error: file 'include/resvg.h'",
+            f"print({stale_modules.NOTICE + ': the rerun of xcodebuild ended with status 65'!r}); "
+            "print(\"error: file 'include/resvg.h'"))
+        status, output = self.run_matrix(FAKE_STALE_BUILDS="99")
+        self.assertEqual(status, 1, output)
+        self.assertEqual(len(self.build_calls()), 1, output)
+        self.assertTrue(modules.exists())
+        self.assertNotIn("STALE MODULES: the build failed", output)
 
     def test_another_build_failure_does_not_rebuild_or_touch_the_modules(self):
         modules, _ = self.planted_modules()
