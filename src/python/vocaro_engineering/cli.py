@@ -1395,7 +1395,7 @@ def perform(argv, report):
             # Lane arguments, so that eng simulator-tests finds them on whichever Mac runs the lane.
             extra = [*series, *(args.passed or [])]
             # A series' lane runs N times inside its one admission, within N times its limit (guides/simulator-testing.md).
-            limit = lane.get("timeout", processes.DEFAULT_LIMIT) * (evidence.repeats_asked(extra) or 1)
+            limit = parallel.lane_timeout(lane, extra)
             lane_wait.begin(root, args.lane)
             # A foreground lane takes a Mac's screen. The second Mac's is eng's to take for the run, below; this
             # Mac's, only the session holding mac-foreground within the owner's window runs it on, with --here.

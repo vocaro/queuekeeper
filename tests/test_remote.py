@@ -676,14 +676,52 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual(seconds("--", "--repeat", "3"), 300 + remote.UNATTENDED_WAIT)
 
     def test_the_clock_line_names_a_lanes_timeout_and_only_a_stated_test_allowance(self):
-        lanes = {"plain": {"command": ["sh", "scripts/test-ios.sh"], "timeout": 12300},
-                 "pool": {"command": ["python3", "scripts/eng", "simulator-tests", "--scheme", "A"], "timeout": 900},
-                 "set": {"command": ["python3", "scripts/eng", "simulator-tests", "--test-allowance", "45"]}}
-        said = lambda lane: remote.clock_line({"lanes": lanes}, lane)
+        command = ["python3", "scripts/eng", "simulator-tests", "--scheme", "A",
+                   "--runtime", "iOS-27-2", "--device", "iPhone-17-Pro"]
+        lanes = {"plain": {"command": ["sh", "scripts/test-ios.sh", "simulator-tests"], "timeout": 12300},
+                 "pool": {"command": command, "timeout": 900},
+                 "set": {"command": [*command, "--test-allowance", "45"]},
+                 "forwarded": {"command": [*command, "--"]},
+                 "malformed": {"command": {"launcher": "eng"}}}
+        said = lambda lane, *arguments: remote.clock_line({"lanes": lanes}, lane, arguments)
         self.assertIn("its timeout is 12300s;", said("plain"))
         self.assertNotIn("allowance", said("plain"))
-        self.assertIn("its timeout is 900s and each test's allowance 600s;", said("pool"))
-        self.assertIn(f"its timeout is {processes.DEFAULT_LIMIT:g}s and each test's allowance 45s;", said("set"))
+        self.assertNotIn("allowance", said("malformed"))
+        self.assertIn("its timeout is 900s and the default test allowance is set to 600s;", said("pool"))
+        self.assertIn(f"its timeout is {processes.DEFAULT_LIMIT:g}s and the default test allowance is set to 45s;", said("set"))
+        self.assertIn("its timeout is 2700s and the default test allowance is set to 30s;",
+                      said("pool", "--repeat", "3", "--test-allowance=30"))
+        self.assertIn(f"its timeout is {processes.DEFAULT_LIMIT:g}s and the default test allowance is set to 30s;",
+                      said("set", "--test-allowance", "30"))
+        self.assertIn("the default test allowance is set to 600s;",
+                      said("forwarded", "--test-allowance", "30"))
+        self.assertNotIn("allowance", said("pool", "--build-only"))
+        self.assertNotIn("allowance", said("forwarded", "-test-timeouts-enabled", "NO"))
+        self.assertNotIn("allowance", said("forwarded", "-default-test-execution-time-allowance", "30"))
+        with contextlib.redirect_stdout(StringIO()) as output, contextlib.redirect_stderr(StringIO()) as error:
+            self.assertIn("its timeout is 900s;", said("pool", "--test-allowance"))
+            self.assertIn(f"its timeout is {processes.DEFAULT_LIMIT:g}s;", said("forwarded", "--repeat", "invalid"))
+        self.assertEqual(output.getvalue() + error.getvalue(), "")
+
+    def test_the_remote_clock_reports_the_scaled_limit_and_appended_simulator_allowance(self):
+        launcher = self.project / "scripts/eng"
+        launcher.parent.mkdir()
+        launcher.write_text("print('TEST simulated')\nprint('Repeat series: asked 3 repeats')\n")
+        settings = self.project / "engineering.json"
+        config = json.loads(settings.read_text())
+        config["lanes"]["pool"] = {"command": [sys.executable, "scripts/eng", "simulator-tests", "--scheme", "A",
+                                              "--runtime", "iOS-27-2", "--device", "iPhone-17-Pro"],
+                                   "timeout": 900}
+        settings.write_text(json.dumps(config))
+        commit_all(self.project)
+        receipt = self.project / ".build/engineering/remote/pool/source.json"
+        for command in (("remote", "run", "pool", "--", "--repeat", "3", "--test-allowance", "45"),
+                        ("run", "--repeat", "3", "pool", "--", "--test-allowance=45")):
+            with self.subTest(command=command):
+                status, output, error = self.eng(*command)
+                self.assertEqual(status, 0, output + error)
+                self.assertIn("its timeout is 2700s and the default test allowance is set to 45s;", error)
+                self.assertEqual(json.loads(receipt.read_text())["result"]["receipt"]["timeout"], 2700)
 
     def test_progress_output_is_bounded_and_counts_for_no_reader_of_a_log(self):
         with patch.object(remote, "PROGRESS_LINES", 3), contextlib.redirect_stderr(StringIO()) as error:
