@@ -1467,6 +1467,145 @@ class NoVerdict(Fixture):
         log.write_text("no reading\n")
         self.assertIsNone(mq.Worker.screen_locked(worker, 3, log))
 
+    FAR_LOCKED = {"state": "locked", "user": "t", "CGSSessionScreenIsLocked": True, "IOConsoleLocked": False,
+                  "mac": "Far-Mac", "at": "01:58:02"}
+    FAR_READING = ("screen: locked (console user t, CGSSessionScreenIsLocked yes, IOConsoleLocked no) on the second "
+                   "Mac (Far-Mac) at 01:58:02")
+
+    def dispatch_receipt(self, screen_after=None, **result):
+        """What remote.execute writes to a dispatch's source.json: the lane's own receipt, which holds screenAfter, sits
+        under result, as offload_host returns it from the second Mac; nothing at the top level says the screen."""
+        lane = {"outcome": "unmeasured", **({} if screen_after is None else {"screenAfter": screen_after})}
+        return {"ranOn": "second Mac", "mac": "Far-Mac", "host": "far-mac", "lane": "gate",
+                "result": {"exitStatus": 3, "outcome": "unmeasured", "receipt": lane, **result}}
+
+    def second_mac_run(self):
+        """(a worker whose last gate began a minute ago, the source.json of that gate's dispatch, the log) laid out where
+        the real remote.dispatch finds them."""
+        began = time.time() - 60
+        ran = (self.base / ".build/engineering/remote" / mq.remote.DISPATCHES / "gate"
+               / time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()))
+        ran.mkdir(parents=True)
+        worker = type("Runner", (), {"checkout": self.base, "lane_now": ("gate", began, ())})()
+        return worker, ran / "source.json", self.base / "gate.log"
+
+    def test_a_second_macs_reading_under_its_dispatchs_result_decides_over_the_log(self):
+        """The lane's receipt from the second Mac is under the dispatch's result, so the last reading is there."""
+        worker, receipt, log = self.second_mac_run()
+        receipt.write_text(json.dumps(self.dispatch_receipt(self.FAR_LOCKED)))
+        for said in ("no reading\n", f"{self.UNLOCKED}\n"):
+            with self.subTest(log=said):
+                log.write_text(said)
+                self.assertEqual(mq.Worker.screen_locked(worker, 3, log), ("gate", self.FAR_READING))
+        log.write_text(f"{self.LOCKED}\n")
+        for state in ("unlocked", "unknown"):
+            with self.subTest(state=state):
+                receipt.write_text(json.dumps(self.dispatch_receipt({**self.FAR_LOCKED, "state": state})))
+                self.assertIsNone(mq.Worker.screen_locked(worker, 3, log))
+        # No admission and a host's configuration ran nothing, whatever the receipt reads.
+        receipt.write_text(json.dumps(self.dispatch_receipt(self.FAR_LOCKED)))
+        self.assertIsNone(mq.Worker.screen_locked(worker, 75, log))
+        self.assertIsNone(mq.Worker.screen_locked(worker, 78, log))
+
+    def test_a_dispatch_receipt_without_a_usable_reading_leaves_the_local_receipt_and_the_log(self):
+        """A malformed or stale dispatch receipt says nothing: the local receipt, else the log's last line, decides.
+        A screenAfter at a dispatch's top level is not where one is written, and is not read."""
+        worker, receipt, log = self.second_mac_run()
+        base = self.dispatch_receipt()
+        malformed = [{**base, "result": value} for value in (None, "text", 7, [])] \
+            + [{**base, "result": {"exitStatus": 3, "receipt": value}} for value in (None, "text", 7, [])] \
+            + [{**base, "result": {"exitStatus": 3}}, {"host": "far-mac"}, base] \
+            + [self.dispatch_receipt(value) for value in ("locked", 7, [], {}, {"state": ""})] \
+            + [{**base, "screenAfter": self.FAR_LOCKED}]
+        local = self.base / ".build/engineering/gate/source.json"
+        local.parent.mkdir(parents=True)
+        for shape in malformed:
+            with self.subTest(shape=shape):
+                receipt.write_text(json.dumps(shape))
+                local.unlink(missing_ok=True)
+                log.write_text(f"{self.LOCKED}\n")
+                self.assertEqual(mq.Worker.screen_locked(worker, 3, log), ("gate", self.LOCKED[5:]))
+                log.write_text(f"{self.UNLOCKED}\n")
+                self.assertIsNone(mq.Worker.screen_locked(worker, 3, log))
+                local.write_text(json.dumps({"screenAfter": {**self.FAR_LOCKED, "mac": "Fixture-Mac"}}))
+                self.assertEqual(mq.Worker.screen_locked(worker, 3, log), ("gate", self.LOCKED[5:]))
+        # A dispatch receipt from before the run is not the run's.
+        local.unlink(missing_ok=True)
+        log.write_text(f"{self.UNLOCKED}\n")
+        receipt.write_text(json.dumps(self.dispatch_receipt(self.FAR_LOCKED)))
+        os.utime(receipt, (worker.lane_now[1] - 10, worker.lane_now[1] - 10))
+        self.assertIsNone(mq.Worker.screen_locked(worker, 3, log))
+
+    def test_a_local_receipt_is_read_at_its_top_level_only(self):
+        """A run on this Mac has no dispatch; its receipt holds screenAfter at the top level, and a result in it is
+        not a dispatch's."""
+        receipt = self.base / ".build/engineering/gate/source.json"
+        receipt.parent.mkdir(parents=True)
+        log = self.base / "gate.log"
+        log.write_text(f"{self.UNLOCKED}\n")
+        worker = type("Runner", (), {"checkout": self.base, "lane_now": ("gate", time.time() - 60, ())})()
+        here = {**self.FAR_LOCKED, "mac": "Fixture-Mac"}
+        nested = {"result": {"receipt": {"screenAfter": here}}}
+        receipt.write_text(json.dumps(nested))
+        self.assertIsNone(mq.Worker.screen_locked(worker, 3, log))
+        receipt.write_text(json.dumps({**nested, "screenAfter": here}))
+        self.assertEqual(mq.Worker.screen_locked(worker, 3, log), ("gate", self.LOCKED[5:]))
+        receipt.write_text(json.dumps({**nested, "screenAfter": {**here, "state": "unlocked"}}))
+        self.assertIsNone(mq.Worker.screen_locked(worker, 3, log))
+
+    @contextlib.contextmanager
+    def gated_on_second_mac(self, reading):
+        """Every gate reports a dispatch to the second Mac whose receipt, written once the lane has run, reads reading,
+        and whose run.log holds what the lane printed, while this Mac's own screen reads unlocked for eng run
+        --unlocked-screen."""
+        screens = Path(__file__).resolve().parent / "fixtures/ScreenState"
+        recording = self.base / "screen.plist"
+        shutil.copy(screens / "this-mac-unlocked.plist", recording)
+        ran = self.base / "dispatches/far"
+        ran.mkdir(parents=True)
+        def dispatch(root, name, since):
+            with contextlib.suppress(FileNotFoundError):
+                (Path(root) / ".build/engineering" / name / "run.log").rename(ran / "run.log")
+            (ran / "source.json").write_text(json.dumps(self.dispatch_receipt(reading)))
+            return ran, "far-mac"
+        with patch.dict(os.environ, {offload_host.SCREEN_RECORDING: str(recording)}), \
+                patch.object(mq.remote, "dispatch", side_effect=dispatch):
+            yield
+
+    def test_a_second_mac_run_its_receipt_reads_locked_does_not_count_and_the_next_needs_an_unlocked_mac(self):
+        """With no `screen:` line in the log, only the reading under the dispatch's result can say the screen was
+        locked: more runs than the bound hold nothing, and each after the first goes to eng run --unlocked-screen."""
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        with self.gated_on_second_mac(self.FAR_LOCKED), self.no_verdict_for(mq.NO_VERDICT_RUNS + 1), \
+                self.commands() as ran, contextlib.redirect_stdout(io.StringIO()) as said:
+            self.assertEqual(self.work(), 0)
+        self.assertEqual(self.gates(), mq.NO_VERDICT_RUNS + 2)
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertIsNone(mq.Queue(self.repo).held())
+        self.assertIn(f"gate ran behind a locked screen, the last reading {self.FAR_READING}, which "
+                      "queue.noVerdictRuns does not count", said.getvalue())
+        self.assertNotIn("of at most", said.getvalue())
+        runs = self.lane_runs(ran)
+        self.assertEqual(runs[0], ["python3", "scripts/eng", "run", "gate"])
+        self.assertEqual(runs[1:], [["python3", "scripts/eng", "run", "--unlocked-screen", "gate"]] * (len(runs) - 1))
+
+    def test_a_second_mac_run_its_receipt_reads_unlocked_counts_though_its_log_says_locked(self):
+        """The negative control: the receipt's last reading wins over a log line saying locked, so the run counts."""
+        Path(f"{self.status}.screen").write_text(f"{self.LOCKED}\n")
+        self.status.write_text("3")
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        with self.gated_on_second_mac({**self.FAR_LOCKED, "state": "unlocked"}), self.commands() as ran, \
+                contextlib.redirect_stdout(io.StringIO()) as said:
+            self.assertEqual(self.work(), 0)
+        self.assertEqual(self.gates(), mq.NO_VERDICT_RUNS)
+        self.assertEqual(self.state(identifier)["state"], "queued")
+        self.assertIn("the most queue.noVerdictRuns allows (3)", mq.Queue(self.repo).held())
+        self.assertNotIn("locked screen", said.getvalue())
+        self.assertTrue(all("--unlocked-screen" not in command for command in self.lane_runs(ran)))
+        self.status.unlink()
+
     def test_a_worker_that_takes_over_keeps_the_lanes_that_need_an_unlocked_screen(self):
         queue = mq.Queue(self.repo)
         self.assertNotIn("unlocked", mq.Worker(queue).progress())

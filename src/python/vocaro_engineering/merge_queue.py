@@ -3214,16 +3214,18 @@ class Worker:
         """(the lane, the screen reading) when the lane at which the last gate stopped with result, which gave no
         verdict, ran behind a locked screen; otherwise None. The last reading decides: the receipt's screenAfter,
         which eng writes when a lane that depends on the screen ends unmeasured, else the log's last `screen:`
-        line. No admission and a host's configuration ran nothing, and count as before (#185, #293)."""
+        line. A dispatch's receipt holds the lane's own, and so that reading, under result. No admission and a
+        host's configuration ran nothing, and count as before (#185, #293)."""
         if result in UNRUN or not self.lane_now: return None
         lane, began = self.lane_now[0], self.lane_now[1]
         ran = remote.dispatch(self.checkout, lane, began)[0]
-        receipts = ([(ran / "source.json", "the second Mac")] if ran is not None else []) \
-            + [(self.checkout / ".build/engineering" / lane / "source.json", HERE_MAC)]
-        for receipt, mac in receipts:
+        receipts = ([(ran / "source.json", "the second Mac", ("result", "receipt"))] if ran is not None else []) \
+            + [(self.checkout / ".build/engineering" / lane / "source.json", HERE_MAC, ())]
+        for receipt, mac, within in receipts:
             try:
                 if receipt.stat().st_mtime < began: continue
-                after = json.loads(receipt.read_text()).get("screenAfter")
+                after = json.loads(receipt.read_text())
+                for key in (*within, "screenAfter"): after = after.get(key)
             except (OSError, ValueError, AttributeError):
                 continue
             if isinstance(after, dict) and after.get("state"):
