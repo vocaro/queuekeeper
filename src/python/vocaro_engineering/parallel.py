@@ -47,6 +47,11 @@ def outcome(status):
     return "PASS" if status == 0 else "UNMEASURED" if status == evidence.UNMEASURED else "FAIL"
 
 
+def lane_timeout(lane, arguments=()):
+    """The direct lane's command limit, scaled by the requested number of repeats."""
+    return lane.get("timeout", processes.DEFAULT_LIMIT) * (evidence.repeats_asked(arguments) or 1)
+
+
 def combined(statuses):
     """1 when any status failed, else UNMEASURED when any was unmeasured, else 0."""
     if any(status not in (0, evidence.UNMEASURED) for status in statuses): return 1

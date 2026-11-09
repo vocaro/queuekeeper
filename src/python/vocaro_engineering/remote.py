@@ -65,7 +65,7 @@ import threading
 import time
 import uuid
 
-from . import capture_approvals, devices, disk, evidence, lane_wait, offload_host, processes, resources, run_results, toolkit_copy
+from . import capture_approvals, devices, disk, evidence, lane_wait, offload_host, parallel, processes, resources, run_results, toolkit_copy
 from .config import TOOLKIT_ROOT, unlocked_screen
 from .resources import BUSY, FREE_WAIT
 from .simulators import pool as simulator_pool
@@ -1796,16 +1796,19 @@ def spelled_seconds(seconds):
     return f"{seconds}s" if seconds < 60 else f"{seconds // 60}m {seconds % 60:02d}s"
 
 
-def clock_line(config, lane):
-    """What the first log line of a lane's run says of the limits on it: the lane's timeout and, for a lane that runs
-    eng simulator-tests, each test's allowance, which other lanes do not state, and how often the heartbeat comes."""
+def clock_line(config, lane, arguments=()):
+    """The direct lane's timeout, the simulator default test allowance when known, and the heartbeat cadence."""
     settings = config.get("lanes", {}).get(lane, {})
-    limits = f"its timeout is {settings.get('timeout', processes.DEFAULT_LIMIT):g}s"
+    limits = f"its timeout is {parallel.lane_timeout(settings, arguments):g}s"
     words = settings.get("command")
-    if isinstance(words, list) and "simulator-tests" in words:
-        from .simulators.matrix import TEST_ALLOWANCE
-        named = words.index("--test-allowance") + 1 if "--test-allowance" in words else None
-        limits += f" and each test's allowance {words[named] if named else TEST_ALLOWANCE}s"
+    if not isinstance(words, list): words = []
+    if words and re.fullmatch(r"python(?:3(?:\.\d+)?)?", Path(words[0]).name):
+        words = words[1:]
+    if len(words) >= 2 and Path(words[0]).name == "eng" and words[1] == "simulator-tests":
+        from .simulators.matrix import default_test_allowance
+        allowance = default_test_allowance([*words[2:], *arguments])
+        if allowance is not None:
+            limits += f" and the default test allowance is set to {allowance}s"
     return f"{lane}'s log is arriving: {limits}; a heartbeat every {PROGRESS_INTERVAL:g}s says whether the log has grown"
 
 
@@ -2041,7 +2044,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     stopping = None
     record = remember_dispatch(journal, host) if detached is not None else None
     # A lane's log comes as it grows. An `eng admit` command's output comes on stdout, live, already.
-    progress = Progress(name, host, bool(members), clock_line(config, lane)) if lane is not None else None
+    progress = Progress(name, host, bool(members), clock_line(config, lane, arguments)) if lane is not None else None
     lane_wait.sent(host)
     with (staging / "run.log").open("wb") as log, (staging / "output.log").open("wb") as output:
         frames = Frames(staging, log, output, returns, host, progress)

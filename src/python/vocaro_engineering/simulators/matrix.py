@@ -90,9 +90,32 @@ STALE_MODULE = stale_modules.STALE_MODULE
 EXPLICIT_MODULES = "Build/Intermediates.noindex/SwiftExplicitPrecompiledModules"
 
 
-def parse(argv):
+class _ClockArguments(argparse.ArgumentParser):
+    """Read a lane's clock without printing or exiting on arguments its own process will handle."""
+    def __init__(self, *args, **options):
+        options["add_help"] = False
+        super().__init__(*args, **options)
+
+    def error(self, message):
+        raise ValueError(message)
+
+
+def default_test_allowance(argv):
+    """The XCTest default the simulator runner supplies, when the command owns that setting."""
+    try:
+        args = parse(argv, parser_factory=_ClockArguments)
+    except ValueError:
+        return None
+    if args.build_only or any(word.split("=", 1)[0] in {
+            "-test-timeouts-enabled", "-default-test-execution-time-allowance", "-maximum-test-execution-time-allowance"
+    } for word in args.passed):
+        return None
+    return args.test_allowance
+
+
+def parse(argv, *, parser_factory=argparse.ArgumentParser):
     split = argv.index("--") if "--" in argv else len(argv)
-    parser = argparse.ArgumentParser(prog="eng simulator-tests", description=__doc__.split("\n\n")[0])
+    parser = parser_factory(prog="eng simulator-tests", description=__doc__.split("\n\n")[0])
     parser.add_argument("-C", "--directory", type=Path, help="run in this directory, as for a package's scheme, "
                         "which xcodebuild finds in its working directory; other paths are relative to it")
     parser.add_argument("--scheme", required=True)
@@ -163,7 +186,7 @@ def parse(argv):
         parser.error(f"unrecognized arguments: {' '.join(unknown)}. Test arguments such as -only-testing go after "
                      "--, so a lane whose command runs simulator-tests ends with \"--\"")
     args.passed = argv[split + 1:]
-    series_options(args)
+    series_options(args, parser_factory)
     for name in ("jobs", "build_jobs", "workers", "shards", "boot_timeout", "test_timeout", "test_allowance", "repeat"):
         if getattr(args, name) is not None and getattr(args, name) < 1:
             parser.error(f"--{name.replace('_', '-')} needs at least 1")
@@ -185,13 +208,13 @@ def parse(argv):
     return args
 
 
-def series_options(args):
+def series_options(args, parser_factory):
     """Move a series' options, from a `--repeat` among the test arguments, onto args, and leave the rest as test
     arguments. They come there from `eng run LANE --repeat N`, which appends them to the lane's command, after its --,
     and which reach this on either Mac as a lane's other arguments do. Their reset replaces the lane's own."""
     if "--repeat" not in args.passed: return
     at = args.passed.index("--repeat")
-    parser = argparse.ArgumentParser(prog="eng simulator-tests", add_help=False, allow_abbrev=False)
+    parser = parser_factory(prog="eng simulator-tests", add_help=False, allow_abbrev=False)
     parser.add_argument("--repeat", type=int)
     fresh = parser.add_mutually_exclusive_group()
     fresh.add_argument("--erase", action="store_true")
