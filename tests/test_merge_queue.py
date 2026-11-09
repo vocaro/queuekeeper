@@ -15,6 +15,7 @@ import sys
 import tempfile
 import threading
 import time
+import types
 import unittest
 from unittest.mock import patch
 
@@ -6262,6 +6263,129 @@ class RoundAccount(Fixture):
         self.assertIn("the host to settle before the lanes run again, since busy: the fixture's load",
                       states[0]["waiting"])
         self.assertIsNone(worker.queue.round_state()["waiting"])
+
+
+class GateResultsNamed(Fixture):
+    """A passing gate says where its per-test results are, in its log and `eng land --wait`'s output, and copies
+    none of them there (#266): a session once searched the queue's checkout to confirm its new tests had run."""
+    SUITE = "suites/ios-tests/simulator-tests"
+    DETAIL = "test_new_case passed on the iPhone"
+
+    @contextlib.contextmanager
+    def second_mac(self, *results):
+        """The gate ran on fake-mac, by a dispatch's folder as eng run files it once the lane has ended, read by the
+        real remote.dispatch, with the files results names sent back under its results/."""
+        real = mq.remote.dispatch
+        def dispatch(root, name, since):
+            ran = Path(root) / ".build/engineering/remote" / mq.remote.DISPATCHES / name \
+                / (time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + "-1")
+            ran.mkdir(parents=True, exist_ok=True)
+            (ran / "source.json").write_text(json.dumps({"host": "fake-mac"}))
+            (ran / "run.log").write_text("what the lane printed there\n")
+            for result in results:
+                (ran / "results" / result).parent.mkdir(parents=True, exist_ok=True)
+                (ran / "results" / result).write_text(self.DETAIL + "\n")
+            return real(root, name, since)
+        # While the lane runs there is no dispatch: only the read after it ends finds one, as for a real run.
+        with patch.object(mq.remote, "dispatch", side_effect=dispatch), \
+                patch.object(mq.remote, "dispatched", return_value=None):
+            yield
+
+    def landed(self, context=None):
+        """(the landed entry, its gate log's text, what `eng land --wait` prints for it, what the worker said)."""
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        with context or contextlib.nullcontext(), contextlib.redirect_stdout(io.StringIO()) as worker:
+            self.assertEqual(self.work(), 0)
+        entry = self.state(identifier)
+        self.assertEqual(entry["state"], "landed")
+        self.assertEqual(self.gates(), 1)
+        logs = sorted(mq.Queue(self.repo).logs.glob("*-gate.log"))
+        self.assertEqual(len(logs), 1)
+        with contextlib.redirect_stdout(io.StringIO()) as waited:
+            self.assertEqual(mq.wait(self.repo, identifier, 1), 0)
+        return entry, logs[0].read_text(), waited.getvalue(), worker.getvalue()
+
+    def assert_waited_ends(self, waited, entry):
+        """`eng land --wait` ends with the line naming the results, the gate's log, and the landed commit, last."""
+        self.assertEqual(waited.splitlines()[-3:], [entry["gate"]["results"], f"gate log: {entry['gate']['log']}",
+                                                    f"landed: {entry['landedAs']}"])
+
+    def test_a_passing_second_mac_gate_names_its_results_and_says_they_are_on_this_mac(self):
+        entry, log, waited, worker = self.landed(self.second_mac(f"{self.SUITE}/iPhone.log", f"{self.SUITE}/iPad.log",
+                                                                 "suites/mac-tests/unit.log"))
+        line = entry["gate"]["results"]
+        self.assertIn("gate per-test results: 3 files", line)
+        self.assertIn(f"{self.SUITE}: 2", line)
+        self.assertIn("suites/mac-tests: 1", line)
+        self.assertIn("on this Mac, sent back by the second Mac (fake-mac)", line)
+        # The named folder is the dispatch's own, and it holds the per-simulator logs.
+        folder = Path(line.split(") in ", 1)[1].split(",", 1)[0])
+        self.assertEqual(folder.parent.parent.name, "gate")
+        self.assertTrue((folder / self.SUITE / "iPhone.log").is_file())
+        self.assertIn(f"{line}\n", log)
+        self.assertIn(line, worker)
+        self.assertNotIn(self.DETAIL, log)  # named, not copied
+        self.assertIn("what the lane printed there", log)  # the dispatch's run.log, which the worker does copy
+        self.assert_waited_ends(waited, entry)
+        self.assertTrue(Path(entry["gate"]["log"]).is_file())
+        self.assertNotIn(self.DETAIL, waited)
+
+    def test_a_passing_second_mac_gate_with_no_results_says_it_kept_none(self):
+        # The negative control: no files came back, so the line claims none, and the entry still lands.
+        entry, log, waited, _ = self.landed(self.second_mac())
+        line = entry["gate"]["results"]
+        self.assertIn("gate per-test results: none: the second Mac (fake-mac) sent none back to ", line)
+        self.assertNotIn("sent back by", line)
+        self.assertIn(f"{line}\n", log)
+        self.assert_waited_ends(waited, entry)
+
+    def test_a_gate_run_here_that_wrote_results_names_them_as_a_dispatched_one_does(self):
+        # The same gap: nothing named them here either, and the next run here replaces them.
+        config = self.config()
+        config["lanes"]["gate"]["command"] = [
+            "sh", "-c", f'mkdir -p "$ENG_RESULTS_DIR/{self.SUITE}" && echo "{self.DETAIL}" > '
+                        f'"$ENG_RESULTS_DIR/{self.SUITE}/mac.log" && printf x >> "{self.counter}"']
+        self.publish(config)
+        entry, log, waited, _ = self.landed()
+        line = entry["gate"]["results"]
+        self.assertIn(f"gate per-test results: 1 file ({self.SUITE}: 1) in ", line)
+        self.assertIn(".build/engineering/gate/results, on this Mac; its next run here replaces them", line)
+        self.assertNotIn("second Mac", line)
+        self.assertTrue((Path(line.split(") in ", 1)[1].split(",", 1)[0]) / self.SUITE / "mac.log").is_file())
+        self.assertIn(f"{line}\n", log)
+        self.assertNotIn(self.DETAIL, log)
+        self.assert_waited_ends(waited, entry)
+
+    def test_a_gate_run_here_that_wrote_no_results_prints_what_it_did(self):
+        entry, log, waited, worker = self.landed()
+        self.assertGreater(entry["gate"]["seconds"], 0)
+        self.assertNotIn("results", entry["gate"])
+        for said in (log, waited, worker): self.assertNotIn("per-test results", said)
+        self.assertEqual(waited, f"{mq.describe(entry)}\nlanded: {entry['landedAs']}\n")
+
+    def test_results_an_earlier_run_left_here_are_not_named(self):
+        # A lane that ended here without writing its results leaves the last run's folder: not this gate's.
+        root = self.base / "checkout"
+        results = root / ".build/engineering/gate/results"
+        (results / "suites").mkdir(parents=True)
+        (results / "suites/old.log").write_text("old\n")
+        old = time.time() - 60
+        os.utime(results, (old, old))
+        runner = types.SimpleNamespace(checkout=root, ran_on=None)
+        self.assertIsNone(mq.Worker.results_named(runner, "gate", None, old + 30))
+        self.assertIn("1 file (suites: 1)", mq.Worker.results_named(runner, "gate", None, old - 30))
+
+    def test_a_results_folder_with_many_folders_names_only_the_fullest(self):
+        results = self.base / "results"
+        for number in range(mq.RESULT_FOLDERS_NAMED + 3):
+            (results / f"suite-{number:02d}").mkdir(parents=True)
+            for index in range(number + 1): (results / f"suite-{number:02d}" / f"{index}.log").write_text("x")
+        said = mq.result_files(results)
+        self.assertIn("66 files (suite-10: 11, ", said)
+        self.assertIn(", and 3 more folders)", said)
+        self.assertNotIn("suite-00", said)
+        self.assertEqual(mq.result_files(self.base / "absent"), "")
 
 
 # What the module says before a test's patches: each half's placement option, and which lanes may go to the second Mac.

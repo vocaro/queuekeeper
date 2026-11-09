@@ -31,6 +31,7 @@ each waiting commit, so a branch that moves or goes takes nothing with it:
     ../vocaro-queue/NAME/TOOLKIT         its copy of the toolkit, which ../TOOLKIT names from the checkout
 """
 import ast
+import collections
 import contextlib
 import fcntl
 import fnmatch
@@ -208,6 +209,8 @@ GH_ENV = {"GH_PROMPT_DISABLED": "1", "GH_NO_UPDATE_NOTIFIER": "1"}
 # (Queue.note, GateWatch). Each running gate's log is read for that this often.
 ROUND_FILE = "round.json"
 WATCH_POLL = 10
+# The most of a lane's results folders that the line naming them lists (result_files): a gate's suites write a few.
+RESULT_FOLDERS_NAMED = 8
 # What eng run prints while a lane waits (resources.Admission, remote.Offer, remote.overflow), once this Mac admits
 # it, and as it sends the lane to the second Mac (remote.dispatch): GateWatch reads the newest of them in the gate's
 # log. A dispatch's own folder is named only once its run ends, so until then the log alone says where it runs.
@@ -1644,6 +1647,19 @@ def diagnose(root):
     return findings, waiting, working
 
 
+def result_files(folder):
+    """How many files a lane's results folder holds and in which of its folders, in words, the fullest first and at
+    most RESULT_FOLDERS_NAMED of them; empty when it holds none or cannot be read."""
+    try: found = collections.Counter(str(path.parent.relative_to(folder)) for path in folder.rglob("*") if path.is_file())
+    except OSError: return ""
+    if not found: return ""
+    named = found.most_common(RESULT_FOLDERS_NAMED)
+    rest = len(found) - len(named)
+    total = sum(found.values())
+    return (f"{total} file{'' if total == 1 else 's'} ({', '.join(f'{name}: {count}' for name, count in named)}"
+            + (f", and {rest} more folder{'' if rest == 1 else 's'}" if rest else "") + ")")
+
+
 def wait(root, identifier, limit=WAIT_LIMIT):
     """Exit 0 once the entry lands, 1 when it comes back to its author, 75 while the queue is held or
     the limit passes with the entry still waiting. A worker a reboot ended starts again here."""
@@ -1655,7 +1671,11 @@ def wait(root, identifier, limit=WAIT_LIMIT):
         if entry["state"] not in WAITING:
             print(describe(entry))
             # In full, for the pin a dependent project moves to.
-            if entry["state"] == LANDED: print(f"landed: {entry['landedAs']}")
+            if entry["state"] == LANDED:
+                gate = entry.get("gate")
+                # Where the gate's per-test results are (Worker.results_named), from a gate that named them.
+                if isinstance(gate, dict) and gate.get("results"): print(f"{gate['results']}\ngate log: {gate['log']}")
+                print(f"landed: {entry['landedAs']}")
             return 0 if entry["state"] == LANDED else 1
         why = queue.held()
         if why:
@@ -2297,6 +2317,11 @@ class Worker:
                     self.measured = {"seconds": round(ended - started, 1),
                                      "parts": budgets.parts(log.read_text(errors="replace"))[:budgets.KEPT_PARTS], **busy}
                 if self.measured: self.say(f"{lane} took {budgets.minutes(self.measured['seconds'])}; {budgets.busy_words(busy)}")
+                said = self.results_named(lane, ran, began)
+                if said:
+                    with contextlib.suppress(OSError), log.open("a") as kept: kept.write(said + "\n")
+                    self.say(said)
+                    if self.measured: self.measured.update(results=said, log=str(log))
         return 0, log
 
     def has_lane(self, lane):
@@ -2332,6 +2357,26 @@ class Worker:
             return ""
         if not isinstance(said, dict) or said.get("ranOn") != "this Mac": return ""
         return f" on this Mac ({said.get('mac') or 'unnamed'})"
+
+    def results_named(self, lane, ran, began):
+        """The line that says where a passing lane's per-test results are, for its log and `eng land --wait`, naming
+        them and copying none (vocaro-engineering#266); ran is the lane's dispatch, or None when it ran here. Results
+        the second Mac wrote came back with its dispatch, so they are on this Mac; a dispatch that sent none back is
+        said to have, and a lane run here that wrote none says nothing, as before."""
+        if ran is not None:
+            folder = ran / remote.RESULTS
+            kept = result_files(folder)
+            if not kept:
+                return f"{lane} per-test results: none: the second Mac ({self.ran_on}) sent none back to {folder}, on this Mac"
+            return (f"{lane} per-test results: {kept} in {folder}, on this Mac, sent back by the second Mac ({self.ran_on}); "
+                    f"eng keeps the newest {remote.DISPATCHES_KEPT} dispatches of a lane")
+        folder = self.checkout / ".build/engineering" / lane / "results"
+        try:
+            if folder.stat().st_mtime < int(began): return None  # an earlier run's
+        except OSError:
+            return None
+        kept = result_files(folder)
+        return f"{lane} per-test results: {kept} in {folder}, on this Mac; its next run here replaces them" if kept else None
 
     def changed(self, old, new):
         return text(self.checkout, "diff", "--name-only", old, new).split("\n")
