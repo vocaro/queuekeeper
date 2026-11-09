@@ -666,6 +666,14 @@ class RemoteTests(unittest.TestCase):
         self.assertNotIn("clock", group)
         self.assertNotIn("grew", group)
 
+    def test_a_series_may_run_unattended_for_its_scaled_limit(self):
+        # eng run limits a --repeat series to N times its lane's timeout, on either Mac, so a dropped connection must
+        # not end it sooner. The control: a run with no series keeps the lane's own bound.
+        config = {"lanes": {"tests": {"command": ["x"], "timeout": 100}}}
+        seconds = lambda *arguments: remote.detached_seconds(config, "tests", ["run", "tests", *arguments])
+        self.assertEqual(seconds(), 100 + remote.UNATTENDED_WAIT)
+        self.assertEqual(seconds("--", "--repeat", "3"), 300 + remote.UNATTENDED_WAIT)
+
     def test_the_clock_line_names_a_lanes_timeout_and_only_a_stated_test_allowance(self):
         lanes = {"plain": {"command": ["sh", "scripts/test-ios.sh"], "timeout": 12300},
                  "pool": {"command": ["python3", "scripts/eng", "simulator-tests", "--scheme", "A"], "timeout": 900},

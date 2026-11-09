@@ -437,6 +437,14 @@ def judge(lane, result, log, extra=(), expect=None):
     that executed too few tests raises ValueError."""
     measured = result in (0, evidence.UNMEASURED)
     not_run = []
+    repeats = evidence.repeats_asked(extra)
+    # --expect counts one run's tests, and a series' log adds up all of its runs.
+    expect = expect * repeats if repeats and expect else expect
+    if repeats is not None and measured and evidence.series_reported(log) != repeats:
+        # The command ignored --repeat, or stopped before its series ended: however it ended, the series did not happen.
+        cause = f"--repeat {repeats} was asked for, and the lane's log reports no series of {repeats} runs"
+        print(f"eng: unmeasured: {cause}", file=sys.stderr)
+        return evidence.UNMEASURED, [cause]
     if measured and (lane.get("minimumTests") or expect):
         # Arguments such as a filter select part of the lane, which must still run a test.
         minimum = 1 if extra or expect else lane["minimumTests"]
@@ -966,7 +974,8 @@ def perform(argv, report):
                            "user's standard SwiftPM cache")
     policy = commands.add_parser("policy")
     policy.add_argument("operation", choices=["refresh"])
-    run = commands.add_parser("run", usage="%(prog)s [-h] [--expect N] lane [-- ARGUMENTS ...]",
+    run = commands.add_parser("run", usage="%(prog)s [-h] [--expect N] [--repeat N [--erase|--template] [--only TEST]] "
+        "lane [-- ARGUMENTS ...]",
         help="run a configured lane, admitting a heavy or exclusive one, on whichever Mac has spare capacity for "
         "it now, the second Mac first, and on this Mac while the second Mac has none or cannot be reached, unless "
         "the lane says why it stays on this Mac: eng run LANE [-- ARGUMENTS], which appends the arguments, such as "
@@ -990,6 +999,16 @@ def perform(argv, report):
     run.add_argument("--unlocked-screen", action="store_true", help="place the lane only on a Mac whose screen reads "
         "unlocked, and wait for one, as \"unlockedScreen\": true does: the merge queue's next run of a lane whose "
         "run a locked screen left without a verdict (guides/maintenance.md, A run with no verdict)")
+    run.add_argument("--repeat", type=int, metavar="N", help="run a lane of eng simulator-tests N times, on one build, "
+        "each run on a member taken from the pool afresh, and report each run's outcome, test counts and one-minute "
+        "load (guides/simulator-testing.md, Repeating a test to show a fix works). Its receipt is not a pass of the "
+        "whole lane")
+    reset = run.add_mutually_exclusive_group()
+    reset.add_argument("--erase", action="store_true", help="with --repeat: erase the member before each run")
+    reset.add_argument("--template", action="store_true", help="with --repeat: copy the member's kind's warmed "
+        "template before each run; a run the pool could only erase is unmeasured")
+    run.add_argument("--only", action="append", default=[], metavar="TEST", help="with --repeat: run only this test, "
+        "in place of the lane's own selection; repeat for each")
     run.add_argument("lane")
     # Listed for help only: main passes everything after these to their own parsers.
     commands.add_parser("simulator-tests", help="build a scheme's tests once and run them on several members of the "
@@ -1361,7 +1380,17 @@ def perform(argv, report):
                     print(f"eng: {args.lane} runs where it starts, as a self lane, so --unlocked-screen does not place "
                           "it", file=sys.stderr, flush=True)
                 else: lane["unlockedScreen"] = True
-            extra = args.passed or []
+            if args.repeat is not None and args.repeat < 1:
+                raise ValueError("--repeat needs at least 1 run: a series of none shows nothing")
+            if args.repeat is None and (args.erase or args.template or args.only):
+                raise ValueError("--erase, --template and --only say how a series runs: give --repeat N too")
+            series = [] if args.repeat is None else ["--repeat", str(args.repeat), *(["--erase"] if args.erase else []),
+                                                     *(["--template"] if args.template else []),
+                                                     *[word for test in args.only for word in ("--only", test)]]
+            # Lane arguments, so that eng simulator-tests finds them on whichever Mac runs the lane.
+            extra = [*series, *(args.passed or [])]
+            # A series' lane runs N times inside its one admission, within N times its limit (guides/simulator-testing.md).
+            limit = lane.get("timeout", processes.DEFAULT_LIMIT) * (evidence.repeats_asked(extra) or 1)
             lane_wait.begin(root, args.lane)
             # A foreground lane takes a Mac's screen. The second Mac's is eng's to take for the run, below; this
             # Mac's, only the session holding mac-foreground within the owner's window runs it on, with --here.
@@ -1438,12 +1467,12 @@ def perform(argv, report):
                     parallel.hand_up(directory / "results", args.lane)
             if group is None:
                 command = awake(lane, extra)
-                receipt.update(command=command, arguments=extra, timeout=lane.get("timeout", processes.DEFAULT_LIMIT))
+                receipt.update(command=command, arguments=extra, timeout=limit)
                 def execute(on_stop=None):
                     def work():
                         env = stale_modules.environment(parallel.results_environment(directory / "results"), root)
                         kill_after = processes.FOREGROUND_KILL_AFTER if lane.get("foreground") else processes.KILL_AFTER
-                        failed, left = compile_first(lane, root, directory, receipt, lane.get("timeout", processes.DEFAULT_LIMIT),
+                        failed, left = compile_first(lane, root, directory, receipt, limit,
                                                      env, on_stop, kill_after)
                         if failed is not None: return failed
                         return processes.run(command, cwd=root, log_path=directory / "run.log", timeout=left,

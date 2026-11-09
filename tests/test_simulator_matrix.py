@@ -210,6 +210,14 @@ XCODEBUILD = textwrap.dedent("""\
         if time.monotonic() > deadline: sys.exit(f"{kind} never met the other devices")
         time.sleep(0.05)
     if kind in os.environ.get("FAKE_NO_TESTS", ""): sys.exit(0)
+    # FAKE_FAIL_RUN and FAKE_UNMEASURED_RUN name one test run of a kind, KIND:N, the Nth to reach here.
+    # Counted only when asked for: a series runs one test of a kind at a time, and shards of a kind do not.
+    run_number = 0
+    if os.environ.get("FAKE_FAIL_RUN") or os.environ.get("FAKE_UNMEASURED_RUN"):
+        runs_file = state / f"runs-{kind}"
+        run_number = int(runs_file.read_text()) + 1 if runs_file.exists() else 1
+        runs_file.write_text(str(run_number))
+    at_run = lambda name: f"{kind}:{run_number}" in os.environ.get(name, "").split(",")
     if os.environ.get("FAKE_VOICEOVER"):
         # A speech probe's phrase; on a kind in FAKE_VOICEOVER_LEFT_ON it leaves VoiceOver on, and on one in
         # FAKE_UNMUTED the simulator's volume comes back while it runs.
@@ -221,7 +229,7 @@ XCODEBUILD = textwrap.dedent("""\
         record.write_text(json.dumps(value))
         if kind in os.environ.get("FAKE_UNMUTED", ""): time.sleep(3)
     skipped = os.environ.get("FAKE_SKIPPED", "0") if kind in os.environ.get("FAKE_SKIPPED_ON", "") else "0"
-    unmeasured = kind in os.environ.get("FAKE_UNMEASURED", "")
+    unmeasured = kind in os.environ.get("FAKE_UNMEASURED", "") or at_run("FAKE_UNMEASURED_RUN")
     if os.environ.get("FAKE_BUNDLE"):
         # The bundle's own record: three tests, testA skipped, unmeasured when asked.
         skip = {"name": "Test skipped - Unmeasured: the host was busy" if unmeasured else "Test skipped - planted",
@@ -248,8 +256,9 @@ XCODEBUILD = textwrap.dedent("""\
         print("/p/T.swift:5: -[P.T testA] : Test skipped - Unmeasured: the host was busy")
     print("Test Suite 'All tests' passed at 2026-10-24 01:00:00.000.")
     ran = len(selected) if every else 3
-    print(f"\\t Executed {ran} tests, with {skipped} tests skipped and 0 failures (0 unexpected) in 0.1 (0.1) seconds")
-    sys.exit(65 if kind in os.environ.get("FAKE_TEST_FAIL", "") else 0)
+    failures = 1 if at_run("FAKE_FAIL_RUN") else 0
+    print(f"\\t Executed {ran} tests, with {skipped} tests skipped and {failures} failures (0 unexpected) in 0.1 (0.1) seconds")
+    sys.exit(65 if kind in os.environ.get("FAKE_TEST_FAIL", "") or failures else 0)
 """)
 
 
@@ -285,6 +294,182 @@ class SimulatorMatrixTests(unittest.TestCase):
 
     def calls(self):
         return [json.loads(line) for line in (self.state / "xcodebuild.log").read_text().splitlines()]
+
+    def run_series(self, *arguments, **environment):
+        """A run of one device, the iPhone, so that its runs come in a known order."""
+        command = [sys.executable, str(ENG), "simulator-tests", "--scheme", "Package-Tests", "--runtime", "iOS-27-0",
+                   "--device", "iPhone-17-Pro", "--pool", "Project", *arguments]
+        finished = subprocess.run(command, cwd=self.root, capture_output=True, text=True,
+                                  env={**self.environment, **environment})
+        return finished.returncode, finished.stdout + finished.stderr
+
+    def series_record(self):
+        return json.loads((self.root / ".build/simulator-tests/logs/series.json").read_text())
+
+    def ran_tests(self):
+        return [call for call in self.calls() if call[0] == "test-without-building"]
+
+    def simctl_lines(self, verb):
+        return [line for line in (self.state / "simctl.log").read_text().splitlines() if line.startswith(f"{verb} ")]
+
+    def test_a_series_runs_every_repeat_on_a_freshly_erased_member_of_one_build(self):
+        iphone = self.add("Project iPhone 17 Pro 1")
+        status, output = self.run_series("--repeat", "3", "--erase")
+        self.assertEqual(status, 0, output)
+        self.assertEqual(len([call for call in self.calls() if call[0] == "build-for-testing"]), 1)
+        self.assertEqual(len(self.ran_tests()), 3)
+        self.assertEqual(self.simctl_lines("erase"), [f"erase {iphone}"] * 3)
+        self.assertEqual(len(self.simctl_lines("shutdown")), 3, "each run's member goes back before the next take")
+        self.assertEqual(self.entries()["Project iPhone 17 Pro 1"]["state"], "released")
+        record = self.series_record()
+        self.assertEqual([run["outcome"] for run in record["eachRun"]], ["passed"] * 3)
+        self.assertEqual([run["reset"] for run in record["eachRun"]], ["erased"] * 3)
+        self.assertEqual(record["runs"], {"passed": 3, "failed": 0, "skipped": 0, "unmeasured": 0})
+        self.assertEqual(record["tests"], {"passed": 9, "failed": 0, "skipped": 0, "unmeasured": 0})
+        for run in record["eachRun"]:
+            self.assertIsInstance(run["load"]["start"], float)
+            self.assertIsInstance(run["load"]["end"], float)
+        self.assertIn("Repeat series: asked 3 repeats of iPhone-17-Pro (3 runs); runs: 3 passed, 0 failed, 0 skipped, "
+                      "0 unmeasured; tests: 9 passed, 0 failed, 0 skipped, 0 unmeasured", output)
+        self.assertIn("SERIES iPhone-17-Pro run 2 of 3: PASSED on Project iPhone 17 Pro 1", output)
+        self.assertEqual(evidence.series_reported(output), 3)
+
+    def test_each_of_a_series_runs_keeps_its_own_log_and_load_words(self):
+        status, output = self.run_series("--repeat", "2")
+        self.assertEqual(status, 0, output)
+        self.assertTrue((self.root / ".build/simulator-tests/logs/iPhone-17-Pro-run1.log").exists())
+        self.assertTrue((self.root / ".build/simulator-tests/logs/iPhone-17-Pro-run2.log").exists())
+        self.assertRegex(output, r"run 1 of 2: PASSED .* load [\d.]+ at start, [\d.]+ at end")
+
+    def test_one_failing_run_among_a_series_fails_it_and_keeps_the_others_apart(self):
+        self.add("Project iPhone 17 Pro 1")
+        status, output = self.run_series("--repeat", "3", "--erase", FAKE_FAIL_RUN="iPhone-17-Pro:2")
+        self.assertEqual(status, 1, output)
+        record = self.series_record()
+        self.assertEqual([run["outcome"] for run in record["eachRun"]], ["passed", "failed", "passed"])
+        self.assertEqual(record["eachRun"][1]["tests"], {"passed": 2, "failed": 1, "skipped": 0, "unmeasured": 0})
+        self.assertEqual(record["runs"], {"passed": 2, "failed": 1, "skipped": 0, "unmeasured": 0})
+        self.assertIn("runs: 2 passed, 1 failed, 0 skipped, 0 unmeasured", output)
+        self.assertEqual(len(self.ran_tests()), 3, "a failure does not stop the series")
+
+    def test_an_unmeasured_run_leaves_a_series_unmeasured_and_never_passes_it(self):
+        self.add("Project iPhone 17 Pro 1")
+        status, output = self.run_series("--repeat", "3", "--erase", FAKE_UNMEASURED_RUN="iPhone-17-Pro:2")
+        self.assertEqual(status, evidence.UNMEASURED, output)
+        record = self.series_record()
+        self.assertEqual([run["outcome"] for run in record["eachRun"]], ["passed", "unmeasured", "passed"])
+        self.assertEqual(record["runs"]["unmeasured"], 1)
+        self.assertEqual(record["tests"]["unmeasured"], 1)
+        self.assertEqual(record["tests"]["failed"], 0)
+
+    def test_a_failed_build_ends_a_series_with_the_rest_unmeasured_not_passed(self):
+        status, output = self.run_series("--repeat", "3", FAKE_BUILD_FAIL="1")
+        self.assertEqual(status, 1, output)
+        record = self.series_record()
+        self.assertEqual([run["outcome"] for run in record["eachRun"]], ["failed", "unmeasured", "unmeasured"])
+        self.assertEqual(record["eachRun"][2]["detail"], "this run did not happen")
+        self.assertIsNone(record["eachRun"][1]["member"])
+        self.assertIsNone(record["eachRun"][1]["load"])
+        self.assertIn("load unread at start", output)
+
+    def test_a_series_of_no_runs_is_refused_before_anything_is_built(self):
+        for count in ("0", "-1"):
+            with self.subTest(count):
+                status, output = self.run_series("--repeat", count)
+                self.assertEqual(status, 2, output)
+                self.assertIn("--repeat needs at least 1", output)
+                self.assertFalse((self.state / "xcodebuild.log").exists())
+
+    def test_a_filter_that_selects_no_test_fails_each_of_a_series_runs(self):
+        status, output = self.run_series("--repeat", "2", "--only", "T/none", FAKE_TESTS='["T/a", "T/b"]')
+        self.assertEqual(status, 1, output)
+        record = self.series_record()
+        self.assertEqual([run["outcome"] for run in record["eachRun"]], ["failed", "failed"])
+        self.assertIn("no tests ran", record["eachRun"][0]["detail"])
+        self.assertEqual(record["tests"]["passed"], 0)
+
+    def test_a_series_whose_tests_all_skip_reports_skipped_and_does_not_pass(self):
+        status, output = self.run_series("--repeat", "2", FAKE_SKIPPED="3", FAKE_SKIPPED_ON="iPhone-17-Pro")
+        self.assertEqual(status, 1, output)
+        record = self.series_record()
+        self.assertEqual([run["outcome"] for run in record["eachRun"]], ["skipped", "skipped"])
+        self.assertEqual(record["runs"], {"passed": 0, "failed": 0, "skipped": 2, "unmeasured": 0})
+
+    def test_a_series_that_asks_for_a_template_copy_and_gets_an_erase_runs_no_test(self):
+        status, output = self.run_series("--repeat", "1", "--template")
+        self.assertEqual(status, evidence.UNMEASURED, output)
+        record = self.series_record()
+        self.assertEqual(record["eachRun"][0]["outcome"], "unmeasured")
+        self.assertIn("was asked for and the member was", record["eachRun"][0]["detail"])
+        self.assertEqual(self.ran_tests(), [])
+
+    def test_series_options_after_the_separator_are_the_lanes_and_its_only_replaces_the_selection(self):
+        self.add("Project iPhone 17 Pro 1")
+        status, output = self.run_series("--keep-state", "--", "-only-testing:T/lanes", "--repeat", "2", "--erase",
+                                         "--only", "T/mine", "-test-iterations", "1")
+        self.assertEqual(status, 0, output)
+        record = self.series_record()
+        self.assertEqual([run["reset"] for run in record["eachRun"]], ["erased", "erased"])
+        for call in self.ran_tests():
+            self.assertNotIn("--repeat", call)
+            self.assertNotIn("--erase", call)
+            self.assertIn("-only-testing:T/mine", call)
+            self.assertNotIn("-only-testing:T/lanes", call)
+            self.assertIn("-test-iterations", call)
+
+    def test_a_series_sets_a_lanes_shards_aside_and_says_so(self):
+        status, output = self.run_series("--shards", "2", "--repeat", "1")
+        self.assertEqual(status, 0, output)
+        self.assertIn("--shards 2 set aside", output)
+        self.assertNotIn("LISTED", output)
+
+    def test_no_repeat_asked_for_runs_once_and_reports_no_series(self):
+        status, output = self.run_series()
+        self.assertEqual(status, 0, output)
+        self.assertEqual(len(self.ran_tests()), 1)
+        self.assertNotIn("Repeat series", output)
+        self.assertNotIn("SERIES", output)
+        self.assertFalse((self.root / ".build/simulator-tests/logs/series.json").exists())
+        self.assertIsNone(evidence.series_reported(output))
+
+    def test_a_run_that_could_not_take_a_member_is_unmeasured_and_the_series_goes_on(self):
+        from vocaro_engineering.simulators.pool import Lease
+        leases = [Lease("Project iPhone 1", "U1", 1), RuntimeError("no member could be taken"), Lease("Project iPhone 1", "U1", 2)]
+        taken = []
+        class Pool:
+            def take(self, *_, **__):
+                next_lease = leases.pop(0)
+                if isinstance(next_lease, Exception): raise next_lease
+                taken.append(next_lease)
+                return next_lease
+            def release(self, *_, **__): pass
+        args = matrix.parse(["--scheme", "S", "--runtime", "iOS-27-0", "--device", "iPhone-17-Pro",
+                             "--logs", str(self.root / "logs"), "--repeat", "3", "--erase"])
+        run = matrix.Run(args)
+        run.say = lambda *lines: None
+        run.logs.mkdir(parents=True)
+        run.build = lambda destination: Path("built.xctestrun")
+        run.device = lambda kind, device, built: run.finish(kind, 0, "Executed 1 tests")
+        with mock.patch.object(matrix, "taken", wraps=matrix.taken) as taking:
+            status = matrix.series(run, Pool(), args, ["iPhone-17-Pro"])
+        self.assertEqual(status, evidence.UNMEASURED)
+        self.assertEqual(taking.call_count, 3, "the failed take does not stop the series")
+        self.assertEqual(len(taken), 2)
+        record = json.loads((run.logs / "series.json").read_text())
+        self.assertEqual([each["outcome"] for each in record["eachRun"]], ["passed", "unmeasured", "passed"])
+        self.assertIn("no member could be taken", record["eachRun"][1]["detail"])
+        self.assertEqual(record["runs"]["unmeasured"], 1)
+
+    def test_a_run_with_no_test_counts_stays_apart_from_the_counts_of_a_series(self):
+        self.assertIsNone(matrix.tally(65, 3, 0, 0, 0), "a crash's counts say nothing")
+        self.assertEqual(matrix.tally(65, 3, 0, 0, 1), {"passed": 2, "failed": 1, "skipped": 0, "unmeasured": 0})
+        # An unmeasured skip is counted once, as unmeasured, whether or not the skip count held it.
+        self.assertEqual(matrix.tally(0, 2, 1, 1, 0), {"passed": 2, "failed": 0, "skipped": 0, "unmeasured": 1})
+        self.assertEqual(matrix.tally(0, 3, 0, 1, 0), {"passed": 2, "failed": 0, "skipped": 0, "unmeasured": 1})
+        self.assertEqual(matrix.run_outcome(None, None), "unmeasured")
+        self.assertEqual(matrix.run_outcome(1, None), "failed")
+        self.assertEqual(matrix.load_words(None), "load unread at start, unread at end")
+        self.assertEqual(matrix.load_words({"start": 12.5, "end": None}), "load 12.5 at start, unread at end")
 
     def devices(self):
         """Each simulator by name: its UDID and the rest of its file."""
