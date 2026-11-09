@@ -4258,6 +4258,25 @@ DOCTOR_SSH = FAKE_SSH.replace('HOME="$FAKE_HOME"', 'FAKE_MAC=there HOME="$FAKE_H
 RELEASE = "Xcode 27.1\nBuild version 27A9275"
 BETA = "Xcode 27.2\nBuild version 27B5028f"
 RUNTIMES = [("iOS 27.1", "24B5070a"), ("macOS 27.1", "26B5091g")]
+# offload_host.py itself, which SecondMacDoctorTests replaces as the text that ssh sends the fake second Mac.
+OFFLOAD_HOST = Path(offload_host.__file__)
+
+
+def stretched_host(path, stretch=stretched):
+    """Write offload_host.py to path, and return path's name, with stretch applied to the limits that only catch a
+    hang in what the fake second Mac runs of it for `eng doctor`: its commands' 60 s, ps and lsof among them, and the
+    toolkit update's deadline and fetch. The real file's are the second Mac's own, for work on a Mac the gate does not
+    load; the fake does that work here, and it gets the text, so nothing patched in this process reaches it. A limit
+    no longer found fails the test here, rather than leaving it fixed unnoticed."""
+    source = OFFLOAD_HOST.read_text()
+    update, fetch = offload_host.UPDATE_SECONDS, offload_host.UPDATE_FETCH_SECONDS
+    for fixed, longer in [("timeout=60", f"timeout={stretch(60)}"),
+                          (f"UPDATE_SECONDS, UPDATE_FETCH_SECONDS = {update}, {fetch}",
+                           f"UPDATE_SECONDS, UPDATE_FETCH_SECONDS = {stretch(update)}, {stretch(fetch)}")]:
+        source, count = re.subn(re.escape(fixed) + r"\b", lambda _match: longer, source)
+        if not count: raise AssertionError(f"offload_host.py no longer holds {fixed}")
+    path.write_text(source)
+    return str(path)
 
 
 class SecondMacDoctorTests(unittest.TestCase):
@@ -4304,11 +4323,19 @@ class SecondMacDoctorTests(unittest.TestCase):
                         "addresses": [{"address": "192.0.2.7", "seconds": 0.004, "outcome": "connected"}]}
         self.connection = patch.object(remote, "connection", side_effect=lambda host: self.reached)
         self.connection.start()
-        # The census answers through the fake ssh on this Mac, in the gate beside other lanes; its fixed 60 s ran
-        # out there on 2026-11-07 (#251), so the bound stretches with load as the tests' other bounds do.
-        census = patch.object(remote, "CENSUS_TIMEOUT", round(stretched(remote.CENSUS_TIMEOUT)))
-        census.start()
-        self.addCleanup(census.stop)
+        # The second Mac's work runs on this Mac here, in the gate beside other lanes, where fixed limits ran out on
+        # 2026-11-07 (#251, #265), so they stretch with load as the tests' other bounds do. Every limit doctor sets in
+        # this process is a subprocess.run's timeout, among them a literal 60 and ask's default, which no patch of
+        # SURVEY_TIMEOUT reaches; REACH_TIMEOUT is none, since connection is faked and the fake ssh skips ConnectTimeout.
+        real_run = subprocess.run
+
+        def run(*arguments, timeout=None, **options):
+            return real_run(*arguments, timeout=None if timeout is None else stretched(timeout), **options)
+
+        for stretching in [patch.object(subprocess, "run", run),
+                           patch.object(offload_host, "__file__", stretched_host(base / "offload_host.py"))]:
+            stretching.start()
+            self.addCleanup(stretching.stop)
 
     def tearDown(self):
         self.connection.stop()
@@ -4510,6 +4537,33 @@ class SecondMacDoctorTests(unittest.TestCase):
             status, found = self.doctor()
             self.assertEqual((status, found["errors"], found["unchecked"]),
                              (0, [], ["how ssh connects to fake, which it reaches through jump"]), found)
+
+    def test_the_limits_doctor_runs_under_here_stretch_with_load_and_still_end(self):
+        # A ps that outlasted the fake second Mac's limit gave the failures of #265: no census, so no leftovers.
+        temp = Path(self.temp.name)
+        ps = temp / "bin/ps"
+        ps.write_text('#!/bin/sh\nsleep 1\nexec /bin/ps "$@"\n')
+        host_isolation.executable(ps)
+        loaded = patch.object(os, "getloadavg", return_value=(1000.0 * (os.cpu_count() or 1),) * 3)
+        idle = patch.object(os, "getloadavg", return_value=(0.0,) * 3)
+        self.assertEqual(Path(offload_host.__file__).parent, temp)
+        with loaded:
+            sent = Path(stretched_host(temp / "loaded.py")).read_text()
+            self.assertEqual(subprocess.run(["sleep", "1"], timeout=0.2).returncode, 0)
+        self.assertIn("def listing(command, timeout=60000.0):", sent)
+        self.assertIn("UPDATE_SECONDS, UPDATE_FETCH_SECONDS = 40000.0, 25000.0", sent)
+        self.assertNotRegex(sent, r"timeout=60\b")
+        # The stretch is finite and only load makes it: an idle host keeps each limit as it is, and it still ends.
+        with idle:
+            self.assertEqual(Path(stretched_host(temp / "idle.py")).read_text(), OFFLOAD_HOST.read_text())
+            with self.assertRaises(subprocess.TimeoutExpired):
+                subprocess.run(["sleep", "1"], timeout=0.2)
+        # What the fake runs is that text: a limit shorter than ps loses the census, and a stretched one keeps it.
+        with patch.object(offload_host, "__file__", stretched_host(temp / "short.py", lambda _seconds: 0.2)):
+            self.assertEqual(remote.leftover_census("fake"), (None, "ps listed no processes"))
+        census, missing = remote.leftover_census("fake")
+        self.assertIsNone(missing)
+        self.assertIsInstance(census["leftovers"], list)
 
 
 # `ssh -G` for ConnectionTests: the settings FAKE_SETTINGS names, one per line.
