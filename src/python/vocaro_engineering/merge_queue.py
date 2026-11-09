@@ -204,6 +204,8 @@ GH_TIMEOUT = 60
 # Seconds between readings of the CPU busy share of the Mac a gate lane runs on, which the gate's record keeps
 # beside its wall time, so that the budget's median can leave out runs made on a loaded host (vocaro-engineering#235).
 BUSY_SAMPLE = 60
+# How many failed tests, and changed files, a rejection names (Worker.touched_words).
+REJECTION_SHOWN = 5
 GH_ENV = {"GH_PROMPT_DISABLED": "1", "GH_NO_UPDATE_NOTIFIER": "1"}
 # The worker's account of the round it runs, in eng-queue, which `eng queue status` shows so that nobody has to read
 # worker.log to learn why entries wait: the bisect's halves, each gate's lane, Mac and start, and what each waits for
@@ -940,6 +942,56 @@ class BusySampler:
         shares = [reading[0] for reading in self.readings]
         return {"cpuBusy": round(sum(shares) / len(shares), 1), "cpuBusyHighest": max(shares),
                 "busyLimit": self.readings[-1][1], "busyOn": self.readings[-1][2], "busyReadings": len(shares)}
+
+
+def load_of(host):
+    """(the one-minute load, the CPU busy share in percent, the busy limit it is judged by) of host, the second Mac, or
+    with host None of this Mac, each None when it cannot be read. A second Mac that cannot be reached raises
+    remote.Unavailable: its load is never this Mac's."""
+    if host:
+        answered, busy = remote.reading_there(host)
+        load = answered.get("load")
+        return (load if isinstance(load, (int, float)) else None), busy, float(answered["busyLimit"])
+    found = busy_of(None)
+    return (resources.one_minute_load(), *(found[:2] if found else (None, None)))
+
+
+def load_words(lane, host, readings):
+    """What readings, load_of's or None where one failed, say of the load on the Mac lane ran on, for a rejection
+    (vocaro-engineering#273), and plainly that it could not be read when none says."""
+    where = f"the second Mac ({host})" if host else "this Mac"
+    def over(found):
+        return (f"{found} reading{'' if found == 1 else 's'}" if found == len(readings)
+                else f"{found} of {len(readings)} readings")
+    loads = [reading[0] for reading in readings if reading and reading[0] is not None]
+    shares = [reading[1:] for reading in readings if reading and reading[1] is not None and reading[2] is not None]
+    load = f"was highest {max(loads):g}, last {loads[-1]:g} over {over(len(loads))}" if loads else "could not be read"
+    busy = (f"was at most {max(share for share, _ in shares):g}% busy, against its busy limit of {shares[-1][1]:g}%"
+            if shares else "busy share could not be read")
+    return f"During {lane} on {where}, the one-minute load {load}, and the CPU {busy}"
+
+
+class LoadSampler(BusySampler):
+    """The load of the Mac any lane runs on, read every BUSY_SAMPLE seconds while it runs, and once at the end of one
+    that failed, so that a rejection can say it (vocaro-engineering#273). Each reading names the Mac it read, this Mac
+    until the lane's dispatch names the second Mac, and finish keeps only the readings of the Mac the lane ran on. A
+    measurement only: it decides nothing, and nothing a reading raises reaches the gate."""
+    def look(self, host):
+        try: reading = load_of(host)
+        except Exception: reading = None  # noqa: BLE001
+        self.readings.append((host, reading))
+
+    def read(self):
+        try: host = remote.dispatched(self.checkout, self.lane, self.began)
+        except Exception: return  # noqa: BLE001
+        self.look(host)
+
+    def finish(self, host):
+        """load_words for the lane, which ran on host, the second Mac, or with host None on this Mac."""
+        self.stopped.set()
+        self.thread.join(timeout=GH_TIMEOUT)
+        self.look(host)
+        return load_words(self.lane, host, [reading for read_on, reading in self.readings if read_on == host])
 
 
 def waited_for(lines, waiting=None, where=None):
@@ -1818,6 +1870,7 @@ class Worker:
         self.measured = None  # the passing gate run of the last round, which its landed entries record
         self.alone = False  # whether this round's batch is one entry an option of eng land put on its own (choose)
         self.failed_lane = None  # the lane whose failure the last gate returned, or None (gate)
+        self.failed_load = None  # load_words for that lane, or None (gate)
         self.confirmed = None  # the failed tests the last rerun confirmed, which blame reads (rerun)
         self.refused = None  # (lane, line, config) of the last gate eng unittest refused before running, for blame (rerun)
         self.unblamed = None  # {"key", "line"} of that refusal when blame found no one entry that brings it (blame)
@@ -2251,7 +2304,7 @@ class Worker:
         those entries (Removal, vocaro-engineering#247). lane_now is (the lane running, when it began, where), by which
         a gate stacked on this one goes to the other Mac (Worker.other_mac)."""
         log, self.ran_on, self.measured, self.timed_out, self.ran_where = None, None, None, None, ""
-        self.failed_lane, self.withdrawn = None, []
+        self.failed_lane, self.failed_load, self.withdrawn = None, None, []
         removal = Removal(self.queue, self.gating, cancel)
         for identifier in self.gating: self.queue.record({"id": identifier}, stopsWhenRemoved=REMOVAL_POLL)
         for lane in lanes:
@@ -2269,6 +2322,7 @@ class Worker:
             started = time.monotonic()  # for the gate's measured duration
             self.lane_now = (lane, began, tuple(where))
             sampler = BusySampler(self.checkout, lane, began).start() if lane == budgets.GATE else None
+            loads = LoadSampler(self.checkout, lane, began).start()
             # A lane a locked screen left without a verdict goes only to a Mac whose screen reads unlocked (#293).
             screen = ["--unlocked-screen"] if lane in self.unlocked else []
             if screen: self.say(f"{lane}: only on a Mac whose screen reads unlocked, since a locked screen left its "
@@ -2285,6 +2339,7 @@ class Worker:
                                             env={**self.environment, remote.QUEUE_GATE: "1"}, cancel=removal)
                 finally: watch.finish()
             except processes.TimedOut as error:
+                loads.stopped.set()
                 if sampler: sampler.stopped.set()
                 self.unlocked.discard(lane)
                 self.ran_on = remote.dispatched(self.checkout, lane, began)
@@ -2297,8 +2352,10 @@ class Worker:
                 self.say(f"{lane}: unmeasured: {error}")
                 return evidence.UNMEASURED, log
             except BaseException:
+                loads.stopped.set()
                 if sampler: sampler.stopped.set()
                 raise
+            loads.stopped.set()
             ended = time.monotonic()
             # It ran, unless no Mac admitted it or a host's configuration stopped it: it is placed as before next.
             if status_ not in UNRUN: self.unlocked.discard(lane)
@@ -2312,6 +2369,7 @@ class Worker:
             self.say(f"{lane} exited {status_}{self.placed(lane, began)}")
             if status_:
                 self.failed_lane = lane
+                if status_ not in NO_VERDICT: self.failed_load = loads.finish(self.ran_on)
                 return status_, log
             if lane == budgets.GATE:
                 with contextlib.suppress(OSError):
@@ -2766,10 +2824,48 @@ class Worker:
                  + (f" and gating the other {rest} at once instead of bisecting" if rest else ""))
         return entry, why
 
-    def send_back(self, applied, log, entry, why):
+    def touched_words(self, entry, log, config):
+        """Whether entry's commits change a file of the tests the failed lane's log, log, names: a test's module or a
+        file it imports, as a flake's reach is judged (imported_files); and plainly that it could not be determined
+        when the tests, their modules or the commits cannot be read."""
+        tests, why = failed_tests(Path(log).read_text(errors="replace"))
+        unknown = "so whether this entry changes their files is unknown"
+        if tests is None: return f"Which tests failed could not be determined ({why}), {unknown}"
+        more = len(tests) - REJECTION_SHOWN
+        named = ", ".join(tests[:REJECTION_SHOWN]) + (f" and {more} more" if more > 0 else "")
+        command = rerun_command(config.get("lanes", {}).get(self.failed_lane, {}).get("command"))
+        if command is None: return f"{named} failed, but {self.failed_lane} is no eng unittest suite to find them in, {unknown}"
+        if not entry.get("commits"): return f"{named} failed, but this entry records no commits, {unknown}"
+        changed, top = self.changed_by(entry), self.suite_top(command)
+        modules, reached, lost = {}, set(), []
+        for test in tests:
+            # A module is parsed once, however many of its tests failed.
+            place = test.rsplit(".", 1)[0]
+            if place not in modules: modules[place] = imported_files(self.checkout, top, test)
+            if modules[place] is None: lost.append(test)
+            else: reached |= changed & set(modules[place])
+        words = (f"This entry changes {', '.join(sorted(reached)[:REJECTION_SHOWN])}, a file of the failed tests {named}"
+                 if reached else None)
+        if lost:
+            missing = f"The module of {', '.join(lost[:REJECTION_SHOWN])} cannot be found, {unknown}"
+            return f"{words}. {missing}" if words else f"{named} failed. {missing}"
+        return words or f"This entry changes no file of the failed tests {named}: neither their modules nor what those import"
+
+    def rejection_facts(self, entry, log, config):
+        """The sentences a rejection of entry adds after its reason, so that its author can tell a change that broke
+        the lane from a load-sensitive test (vocaro-engineering#273): the load during the failed lane, and whether
+        entry changes a file of the failed tests. Only information: what it cannot read it says so, and nothing it
+        raises reaches the rejection."""
+        load = self.failed_load or "The load during the failed lane could not be determined"
+        try: touched = self.touched_words(entry, log, config)
+        except Exception as error:  # noqa: BLE001
+            touched = f"Whether this entry changes a file of the failed tests could not be determined: {error}"
+        return f" {load}. {touched}"
+
+    def send_back(self, applied, log, entry, why, facts=""):
         """Settle entry, the one of applied that blame found, as failed, and queue the rest to gate again at once."""
         self.queue.settle(entry, FAILED, why=f"the queue's lanes fail on this commit on top of origin/main: {why}. Fix "
-                                            "it and add it again", log=str(log))
+                                            f"it and add it again.{facts}", log=str(log))
         self.queue.mark([other for other in applied if other["id"] != entry["id"]], QUEUED)
 
     def suite_top(self, command):
@@ -2791,10 +2887,11 @@ class Worker:
             check=True)
         return self.head()
 
-    def failed(self, applied, log):
-        """Bisect: the oldest half next. A lone entry that fails is the one to send back."""
+    def failed(self, applied, log, facts=""):
+        """Bisect: the oldest half next. A lone entry that fails is the one to send back, saying facts
+        (rejection_facts)."""
         if len(applied) == 1:
-            why = "the queue's lanes fail on this commit on top of origin/main: fix it and add it again"
+            why = f"the queue's lanes fail on this commit on top of origin/main: fix it and add it again.{facts}"
             self.say(f"{applied[0]['id']}: {why}")
             self.queue.settle(applied[0], FAILED, why=why, log=str(log))
             # An entry on its own was no suspect of a bisect, which goes on where it was.
@@ -2953,14 +3050,14 @@ class Worker:
             if not flakes:
                 blamed = runner.blame(applied)
                 if blamed:
-                    self.send_back(applied, log, *blamed)
+                    self.send_back(applied, log, *blamed, runner.rejection_facts(blamed[0], log, config))
                     if not self.alone: self.limit, self.suspects = None, 0
                     self.blamed = True
                     return FAILED
                 if runner.unblamed and runner.unblamed["key"] in before:
                     return self.refused_again(applied, runner.unblamed["line"], before[runner.unblamed["key"]], log)
                 if runner.unblamed: self.refusals[runner.unblamed["key"]] = "the gate before it"
-                self.failed(applied, log)
+                self.failed(applied, log, runner.rejection_facts(applied[0], log, config) if len(applied) == 1 else "")
                 return FAILED
         # An entry removed during the gate was part of what passed, so what is left has not been tested.
         current = [queue.read(entry["id"]) for entry in applied]
@@ -3418,10 +3515,10 @@ class Beside(Worker):
                     self.outcome = QUEUED
                     return
                 if blamed:
-                    self.send_back(self.newer, log, *blamed)
+                    self.send_back(self.newer, log, *blamed, self.rejection_facts(blamed[0], log, config))
                     self.outcome = FAILED
                 elif len(self.newer) == 1:
-                    self.failed(self.newer, log)
+                    self.failed(self.newer, log, self.rejection_facts(self.newer[0], log, config))
                     self.outcome = FAILED
                 else:
                     self.say(f"{len(self.newer)} commits fail together here too: they bisect once the older half has")
@@ -3458,9 +3555,9 @@ class Beside(Worker):
         if other: self.worker.refused_again(self.newer, line, other, log)
         return bool(other)
 
-    def failed(self, applied, log):
+    def failed(self, applied, log, facts=""):
         """The one newer entry that failed comes back, as a lone entry that fails does (Worker.failed)."""
-        why = "the queue's lanes fail on this commit on top of origin/main: fix it and add it again"
+        why = f"the queue's lanes fail on this commit on top of origin/main: fix it and add it again.{facts}"
         self.say(f"{applied[0]['id']}: {why}")
         self.queue.settle(applied[0], FAILED, why=why, log=str(log))
 

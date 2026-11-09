@@ -139,6 +139,10 @@ class Fixture(unittest.TestCase):
         reading = patch.object(mq, "busy_of", return_value=(25.0, 75.0, "this Mac"))
         self.busy_of = reading.start()
         self.addCleanup(reading.stop)
+        # A failing lane's load, read from no real Mac unless a test says otherwise (mq.load_of, #273).
+        load = patch.object(mq, "load_of", return_value=(3.0, 25.0, 75.0))
+        self.load_of = load.start()
+        self.addCleanup(load.stop)
         # eng land runs no spelling lane before it queues unless a test says so (SpelledBeforeQueued, #283).
         unspelled = patch.object(mq, "spelled_before_queued")
         unspelled.start()
@@ -5424,6 +5428,93 @@ class Words(unittest.TestCase):
 """
 
 
+class RejectionFacts(Fixture):
+    """What a rejection adds about the failing lane's load and tests, and what it leaves alone (#273)."""
+    def test_a_rejection_of_a_lane_that_names_no_tests_says_it_cannot_tell(self):
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        self.status.write_text("1")
+        with contextlib.redirect_stdout(io.StringIO()): self.assertEqual(self.work(), 0)
+        entry = self.state(identifier)
+        self.assertEqual(entry["state"], "failed")
+        self.assertIn("the one-minute load was highest 3", entry["why"])
+        self.assertIn("Which tests failed could not be determined (its log has no eng unittest summary), so whether this "
+                      "entry changes their files is unknown", entry["why"])
+        self.assertNotIn("changes no file", entry["why"])
+        self.assertIn("could not be determined", mq.describe(entry))
+
+    def test_a_gate_that_passes_reads_no_end_of_lane_load_and_names_none(self):
+        # The negative control: at a passing lane's end nothing is read, and the entry has no reason at all.
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        with contextlib.redirect_stdout(io.StringIO()): self.assertEqual(self.work(), 0)
+        self.load_of.assert_not_called()
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertNotIn("why", self.state(identifier))
+
+    def test_a_lane_with_no_verdict_reads_no_load_and_rejects_nothing(self):
+        # Load is reported on a rejection only: a run left unmeasured stays as it was, and is queued again.
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        self.status.write_text(str(mq.evidence.UNMEASURED))
+        with contextlib.redirect_stdout(io.StringIO()): self.work()
+        self.load_of.assert_not_called()
+        entry = self.state(identifier)
+        self.assertNotEqual(entry["state"], "failed")
+        self.assertNotIn("During gate", entry.get("why", ""))
+
+
+class LoadReadings(unittest.TestCase):
+    """load_of, load_words and LoadSampler alone (#273)."""
+    def test_load_of_reads_the_second_mac_there_and_this_mac_here(self):
+        there = {"load": 12.5, "busyLimit": 75.0}
+        with patch.object(mq.remote, "reading_there", return_value=(there, 40.0)) as asked:
+            self.assertEqual(mq.load_of("fake-mac"), (12.5, 40.0, 75.0))
+        asked.assert_called_once_with("fake-mac")
+        with patch.object(mq.remote, "reading_there", return_value=({"busyLimit": 75.0, "load": "x"}, None)):
+            self.assertEqual(mq.load_of("fake-mac"), (None, None, 75.0))
+        with patch.object(mq.remote, "reading_there", side_effect=mq.remote.Unavailable("gone")), \
+                self.assertRaises(mq.remote.Unavailable):
+            mq.load_of("fake-mac")
+        with patch.object(mq, "busy_of", return_value=(50.0, 70.0, "this Mac")), \
+                patch.object(mq.resources, "one_minute_load", return_value=9.5):
+            self.assertEqual(mq.load_of(None), (9.5, 50.0, 70.0))
+        with patch.object(mq, "busy_of", return_value=None), patch.object(mq.resources, "one_minute_load", return_value=None):
+            self.assertEqual(mq.load_of(None), (None, None, None))
+
+    def test_load_words_keep_a_failed_reading_apart_from_a_low_one(self):
+        cases = [([(70.0, 90.0, 75.0), (40.0, 99.0, 75.0)], "the one-minute load was highest 70, last 40 over 2 readings, "
+                  "and the CPU was at most 99% busy, against its busy limit of 75%"),
+                 ([(5.0, 10.0, 75.0), None, (None, None, 75.0)], "the one-minute load was highest 5, last 5 over 1 of 3 "
+                  "readings, and the CPU was at most 10% busy, against its busy limit of 75%"),
+                 ([], "the one-minute load could not be read, and the CPU busy share could not be read"),
+                 ([None], "the one-minute load could not be read, and the CPU busy share could not be read")]
+        for readings, expected in cases:
+            with self.subTest(readings=readings):
+                self.assertEqual(mq.load_words("gate", None, readings), f"During gate on this Mac, {expected}")
+        self.assertIn("on the second Mac (fake-mac)", mq.load_words("gate", "fake-mac", []))
+
+    def test_the_sampler_keeps_only_the_readings_of_the_mac_the_lane_ran_on(self):
+        # Before the dispatch names the second Mac, a reading is this Mac's: not the lane's.
+        readings = {None: (70.0, 99.0, 75.0), "fake-mac": (12.0, 40.0, 75.0)}
+        with patch.object(mq, "load_of", side_effect=readings.get), \
+                patch.object(mq.remote, "dispatched", side_effect=[None, "fake-mac"]):
+            sampler = mq.LoadSampler("/nowhere", "gate", 0).start()
+            sampler.read()
+            sampler.read()
+            said = sampler.finish("fake-mac")
+        self.assertIn("on the second Mac (fake-mac), the one-minute load was highest 12, last 12 over 2 readings", said)
+        self.assertNotIn("70", said)
+
+    def test_a_reading_that_raises_reaches_no_gate(self):
+        with patch.object(mq, "load_of", side_effect=ValueError("no")), \
+                patch.object(mq.remote, "dispatched", side_effect=OSError("no")):
+            sampler = mq.LoadSampler("/nowhere", "gate", 0).start()
+            sampler.read()
+            self.assertEqual(sampler.finish(None), "During gate on this Mac, the one-minute load could not be read, and "
+                                                   "the CPU busy share could not be read")
+
+
 class FlakyReruns(Fixture):
     """A failed eng unittest gate's failed tests rerun alone before a bisect, and a batch whose failed tests all pass
     alone and that reaches none of their files lands, with the flake recorded (owner's decision of 2026-11-07, #231)."""
@@ -5653,6 +5744,97 @@ class FlakyReruns(Fixture):
         self.assertEqual(log.count("so the failure is real"), 1)
         self.assertNotIn("blaming", log)
         self.assertEqual(self.state(identifier)["state"], "failed")
+
+    LOADED = (70.0, 99.0, 75.0)
+
+    def rejected(self, *commits):
+        """The why of the one entry added, a lone real failure of TEST, committed as commits say."""
+        self.plan.write_text("FF")
+        for number, (path, *content) in enumerate(commits):
+            self.commit(path, f"branch-{number}", *content)
+        [identifier] = self.add(*[f"branch-{number}" for number in range(len(commits))])
+        with contextlib.redirect_stdout(io.StringIO()): self.assertEqual(self.work(), 0)
+        entry = self.state(identifier)
+        self.assertEqual(entry["state"], "failed")
+        # The gate and the one rerun that confirmed it, as without the rejection's added words.
+        self.assertEqual(self.runs_of_the_test(), 2)
+        return entry["why"]
+
+    def test_a_rejection_on_a_loaded_host_in_a_file_the_entry_does_not_touch_says_so(self):
+        self.load_of.return_value = self.LOADED
+        why = self.rejected(("docs/a.md", "The word\n"))
+        self.assertIn("the queue's lanes fail on this commit on top of origin/main: fix it and add it again. During gate "
+                      "on this Mac, the one-minute load was highest 70, last 70 over 1 reading, and the CPU was at most "
+                      "99% busy, against its busy limit of 75%.", why)
+        self.assertIn(f"This entry changes no file of the failed tests {self.TEST}: neither their modules nor what those "
+                      "import", why)
+
+    def test_a_rejection_that_changes_the_failing_tests_file_names_it(self):
+        changed = (self.repo / "tests/test_flaky.py").read_text() + "# changed\n"
+        why = self.rejected(("tests/test_flaky.py", changed))
+        self.assertIn(f"This entry changes tests/test_flaky.py, a file of the failed tests {self.TEST}", why)
+        self.assertNotIn("changes no file", why)
+
+    def test_a_rejection_that_changes_a_file_the_failing_test_imports_names_it(self):
+        why = self.rejected(("src/python/fixturelib/helper.py", "from . import deeper\nVALUE = 1  # changed\n"))
+        self.assertIn(f"This entry changes src/python/fixturelib/helper.py, a file of the failed tests {self.TEST}", why)
+        self.assertNotIn("changes no file", why)
+
+    def test_a_rejection_says_plainly_that_the_load_could_not_be_read(self):
+        for name, setting in (("raises", {"side_effect": mq.remote.Unavailable("gone")}),
+                              ("empty", {"return_value": (None, None, None), "side_effect": None})):
+            with self.subTest(name):
+                self.runs.unlink(missing_ok=True)
+                self.load_of.configure_mock(**setting)
+                why = self.rejected(("docs/a.md", f"The word {name}\n"))
+                self.assertIn("During gate on this Mac, the one-minute load could not be read, and the CPU busy share "
+                              "could not be read.", why)
+                self.assertNotIn("highest", why)
+
+    def test_a_rejection_of_a_gate_the_second_mac_ran_says_that_macs_load_and_never_this_macs(self):
+        readable = lambda host: (12.0, 40.0, 75.0) if host == "fake-mac" else self.LOADED
+        self.load_of.side_effect = readable
+        with self.second_mac(): why = self.rejected(("docs/a.md", "The word\n"))
+        self.assertIn("During gate on the second Mac (fake-mac), the one-minute load was highest 12, last 12 over 1 "
+                      "reading, and the CPU was at most 40% busy, against its busy limit of 75%.", why)
+        self.assertNotIn("highest 70", why)
+
+    def test_a_rejection_from_a_second_mac_that_cannot_be_read_does_not_say_this_macs_load(self):
+        def reading(host):
+            if host == "fake-mac": raise mq.remote.Unavailable("gone")
+            return self.LOADED
+        self.load_of.side_effect = reading
+        with self.second_mac(): why = self.rejected(("docs/a.md", "The word\n"))
+        self.assertIn("During gate on the second Mac (fake-mac), the one-minute load could not be read", why)
+        self.assertNotIn("highest", why)
+        self.assertNotIn("this Mac", why)
+
+    def test_a_rejection_says_plainly_when_the_tests_module_cannot_be_found(self):
+        with patch.object(mq, "imported_files", return_value=None):
+            why = self.rejected(("docs/a.md", "The word\n"))
+        self.assertIn(f"{self.TEST} failed. The module of {self.TEST} cannot be found, so whether this entry changes their "
+                      "files is unknown", why)
+        self.assertNotIn("changes no file", why)
+
+    def test_a_rejection_whose_commits_cannot_be_read_says_so_and_is_still_a_rejection(self):
+        with patch.object(mq.Worker, "changed_by", side_effect=RuntimeError("git log failed")):
+            why = self.rejected(("docs/a.md", "The word\n"))
+        self.assertIn("Whether this entry changes a file of the failed tests could not be determined: git log failed", why)
+        self.assertNotIn("changes no file", why)
+
+    def test_the_entry_blame_sends_back_says_the_load_and_its_own_files_and_the_rest_land(self):
+        self.load_of.return_value = self.LOADED
+        self.plan.write_text("FF")
+        self.commit("b", "b")
+        self.commit("src/python/fixturelib/helper.py", "a", "from . import deeper\nVALUE = 1  # changed\n")
+        ids = self.add("b", "a")
+        with contextlib.redirect_stdout(io.StringIO()): self.assertEqual(self.work(), 0)
+        entries = [self.state(identifier) for identifier in ids]
+        self.assertEqual([entry["state"] for entry in entries], ["landed", "failed"])
+        self.assertIn("Fix it and add it again. During gate on this Mac, the one-minute load was highest 70", entries[1]["why"])
+        self.assertIn(f"This entry changes src/python/fixturelib/helper.py, a file of the failed tests {self.TEST}",
+                      entries[1]["why"])
+        self.assertNotIn("why", entries[0])
 
     def test_a_flake_in_a_batch_that_changes_a_file_its_module_imports_bisects_and_is_still_recorded(self):
         self.plan.write_text("F")
@@ -5891,6 +6073,16 @@ class BothHalves(Fixture):
         self.assertEqual(self.rounds(log), 3, log)
         subjects = run(self.repo, "git", "log", "--format=%s", "origin/main").splitlines()
         self.assertLess(subjects.index("Add a"), subjects.index("Add d"))  # a, newest first, landed after c and d
+
+    def test_the_newer_halfs_rejection_says_the_load_and_that_its_tests_are_unknown(self):
+        """The rejection Beside settles itself, from the half that ran beside the older one, adds what a lone one does."""
+        for name in ("a", "bad", "c", "d"): self.commit(name, name)
+        ids = self.add("a", "bad", "c", "d")
+        self.worked()
+        why = self.state(ids[1])["why"]
+        self.assertIn("fix it and add it again. During gate on this Mac, the one-minute load was highest 3", why)
+        self.assertIn("Which tests failed could not be determined (its log has no eng unittest summary), so whether this "
+                      "entry changes their files is unknown", why)
 
     def test_two_that_pass_alone_land_the_older_and_the_newer_gates_again(self):
         """Each passes alone, and together they fail: the older lands, and the newer, whose result was of the main
