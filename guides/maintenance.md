@@ -644,7 +644,20 @@ that reached its limit, whose last screen reading shows a lock, from its receipt
 else its log's last `screen:` line. The worker logs that reading, and runs that lane next as
 `eng run --unlocked-screen LANE`, which places it as `"unlockedScreen": true` does: only on a Mac
 whose screen reads unlocked, waiting while neither does. A run that waits out the overflow that way
-exits 75, which counts, as does any run that gives no verdict without a lock. The hold's reason says how many
+exits 75, which counts, as does any run that gives no verdict without a lock.
+
+The uncounted runs have a cap of their own, so that a lane whose screen locks during every run does not
+retry without end (the owner's decision, 2026-11-09, the same issue). `LOCKED_SCREEN_RUNS`, 5, a number that
+is his judgment and not a measurement, is how many runs in a row may read unlocked at their start, by
+their placement or their log's first `screen:` line, and locked by their end before the queue holds. A run
+that began behind the lock is not counted, since the next run goes only to an unlocked Mac. A run with a
+verdict or a no-verdict run of another cause starts this count again, and so does `eng queue resume`. A run
+that waited for an unlocked Mac and exited 75 ran nothing, so it counts toward `queue.noVerdictRuns` as above
+but neither adds to this count nor ends it. The hold is for a session: its reason names the lane and the last
+screen reading, with the Mac that reading is from, and a session can read why the screen locks during the
+runs, such as a lane that holds no assertion locking by idle, and change the lane.
+
+The `queue.noVerdictRuns` hold's reason says how many
 runs gave no verdict, on which Mac the last ran (`on this Mac (NAME)` or `on the second Mac (HOST)`, when
 its receipt or dispatch says), and why it gave none: the lane that reached its limit, the number of tests
 its log reports unmeasured with the first of them and the last screen reading eng logged
@@ -683,7 +696,7 @@ hook.
 `for the owner, since nobody else can fix it` is for a cause only he can fix: a shared host's
 configuration (exit 78 past the bound), a push the remote refused, a key or token a remote refused. `for
 a session, not the owner` is every other: a host that stayed busy or tests left unmeasured past the
-bound, the pre-push hook's refusal or its no verdict, a path where the worker's checkout goes, a `main`
+bound, a screen that locked during `LOCKED_SCREEN_RUNS` runs in a row, the pre-push hook's refusal or its no verdict, a path where the worker's checkout goes, a `main`
 whose `engineering.json` the toolkit at `origin/main` refuses (the reason names the toolkit commit that
 judged it), a remote out of reach past the tries below, and anything unexpected. The reason ends with
 who runs `eng queue resume`: the session that has dealt with the cause, or any session that finds it

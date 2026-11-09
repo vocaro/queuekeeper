@@ -12,7 +12,7 @@ rest at once instead of bisecting (Worker.blame). Only a lane's
 verdict blames a commit: a run the host left unmeasured runs again, each time once the host has settled,
 until queue.noVerdictRuns runs in a row (3 by default) have given none, and then holds the queue for the
 owner (a run a locked screen voided is not counted, and its lane runs next only on a Mac whose screen reads
-unlocked, vocaro-engineering#293), with every commit still waiting (guides/maintenance.md, The merge queue). A batch whose lanes
+unlocked, until LOCKED_SCREEN_RUNS such runs in a row hold the queue for a session, vocaro-engineering#293), with every commit still waiting (guides/maintenance.md, The merge queue). A batch whose lanes
 passed is recorded as passed before its push, so a hold the push meets keeps that verdict, and
 `eng queue resume` pushes the commit that passed instead of gating it again. Each round the worker moves to
 the toolkit at origin/main, starting itself again from its copy, so that it judges main with the toolkit the
@@ -49,7 +49,7 @@ import time
 import urllib.request
 
 from . import app_builds, budgets, disk, evidence, landing, offload_host, parallel, processes, remote, resources
-from .config import TOOLKIT_ROOT, load, parse, stays
+from .config import TOOLKIT_ROOT, load, parse, stays, unlocked_screen
 
 MAIN = "refs/remotes/origin/main"
 FETCH = ["fetch", "--no-tags", "origin", f"refs/heads/main:{MAIN}"]
@@ -79,6 +79,10 @@ LANE_LIMIT = 3 * processes.DEFAULT_LIMIT
 # and with one retry each pair held the queue until a person resumed it. A third run costs at most one gate and
 # one settle wait more, and still holds the queue for a cause that does not clear.
 NO_VERDICT_RUNS = 3
+# How many runs in a row may end behind a screen that locked during them before the queue holds: the runs
+# queue.noVerdictRuns does not count, which would otherwise retry without end a lane whose screen locks during every
+# run. The number is the owner's judgment, accepted on 2026-11-09, not a measurement (vocaro-engineering#293).
+LOCKED_SCREEN_RUNS = 5
 # Seconds each retry waits for the host to settle, by admission's load and memory test (resources.pressure), and
 # between its looks. A retry started at once met the load that voided the run it repeats, and each such run cost
 # mpm's queue a gate of about an hour (#124); a wait no longer than that run, past which the queue holds as
@@ -1855,12 +1859,15 @@ class Worker:
         self.limit = None  # how many of the oldest entries the next round takes, while bisecting
         self.suspects = 0  # how many of the oldest entries hold a commit that fails
         self.no_verdicts = 0  # the runs in a row that gave no verdict, held at no_verdict_runs
+        self.locked_screens = 0  # the runs in a row a screen locked during, held at LOCKED_SCREEN_RUNS (older)
         if progress:  # what the worker this one replaces had reached (progress)
             self.limit, self.suspects = progress.get("limit"), progress.get("suspects", 0)
             self.no_verdicts = progress.get("no_verdicts", 0)
+            self.locked_screens = progress.get("locked_screens", 0)
         # The lanes whose next run goes only to a Mac whose screen reads unlocked, since a locked screen left their
         # last run without a verdict (screen_locked, vocaro-engineering#293).
         self.unlocked = set(progress.get("unlocked", ())) if progress else set()
+        self.sent_unlocked = False  # whether the gate's last lane went as eng run --unlocked-screen (gate)
         self.code = running()  # the commit this worker's code came from, which toolkit compares with the copy's
         self.rounds = 0  # the rounds this worker has finished, which run reads to count its tries
         self.deferred = None  # why follow last left the shared checkout behind for a run from it, or None
@@ -1893,6 +1900,7 @@ class Worker:
         from: its bisect and its count of runs with no verdict. Every entry's state is on disk already."""
         progress = {"limit": self.limit, "suspects": self.suspects, "no_verdicts": self.no_verdicts}
         if self.unlocked: progress["unlocked"] = sorted(self.unlocked)
+        if self.locked_screens: progress["locked_screens"] = self.locked_screens
         return progress
 
     def look(self, host, said):
@@ -2325,6 +2333,7 @@ class Worker:
             loads = LoadSampler(self.checkout, lane, began).start()
             # A lane a locked screen left without a verdict goes only to a Mac whose screen reads unlocked (#293).
             screen = ["--unlocked-screen"] if lane in self.unlocked else []
+            self.sent_unlocked = bool(screen)
             if screen: self.say(f"{lane}: only on a Mac whose screen reads unlocked, since a locked screen left its "
                                 "last run without a verdict")
             command = ["python3", "scripts/eng", "run", *where, *screen, lane]
@@ -3023,10 +3032,19 @@ class Worker:
                 self.unlocked.add(lane)
                 self.say(f"no verdict (exit {result}){runner.ran_where}: {lane} ran behind a locked screen, the last "
                          f"reading {reading}, which queue.noVerdictRuns does not count; its next run goes only to a "
-                         "Mac whose screen reads unlocked")
+                         "Mac whose screen reads unlocked" + self.count_locked(runner, config, lane, log))
+                if self.locked_screens >= LOCKED_SCREEN_RUNS:
+                    queue.hold(worded(SESSION, f"{lane} ended behind a screen that locked during the run in "
+                                               f"{self.locked_screens} runs in a row, the last reading {reading}, the "
+                                               f"most LOCKED_SCREEN_RUNS allows ({LOCKED_SCREEN_RUNS}); see {log}"))
+                    return NO_VERDICT_OUTCOME
                 busy = self.settle("the lanes run", runner.ran_on)
                 if busy: queue.hold(worded(SESSION, f"{lane} ran behind a locked screen, and {busy}; see {log}"))
                 return NO_VERDICT_OUTCOME
+            # A run that waited for an unlocked Mac and exited 75 ran nothing, so it says nothing of the row of locks;
+            # any other cause ends the row.
+            if not (result == resources.BUSY and runner.lane_now and runner.needs_unlocked(runner.lane_now[0], config)):
+                self.locked_screens = 0
             self.no_verdicts += 1
             runs = no_verdict_runs(config)
             gave = (f"the lanes gave no verdict in {self.no_verdicts} run{'' if self.no_verdicts == 1 else 's'} in a "
@@ -3043,7 +3061,7 @@ class Worker:
             busy = self.settle("the lanes run", runner.ran_on)
             if busy: queue.hold(worded(kind, f"{gave}, and {busy}; see {log}"))
             return NO_VERDICT_OUTCOME
-        self.no_verdicts = 0
+        self.no_verdicts = self.locked_screens = 0
         if result:
             # A failure that a rerun alone does not repeat lands, when the batch cannot reach the test (#231).
             if not reran: flakes = runner.rerun(config, applied, base, head, log, round_name)
@@ -3073,6 +3091,16 @@ class Worker:
             return LANDED
         queue.mark(applied, QUEUED)
         return QUEUED
+
+    def count_locked(self, runner, config, lane, log):
+        """Count toward LOCKED_SCREEN_RUNS the run of lane that log holds, which ended behind a locked screen, when
+        the screen read unlocked at its start, as the owner decided on 2026-11-09 (vocaro-engineering#293): one that
+        began behind the lock says nothing of a screen that locks during runs. Returns what the worker's log says."""
+        if not runner.began_unlocked(lane, log, config):
+            return "; it did not read unlocked at its start, so LOCKED_SCREEN_RUNS does not count it either"
+        self.locked_screens += 1
+        return (f"; {self.locked_screens} such run{'' if self.locked_screens == 1 else 's'} in a row, and "
+                f"{LOCKED_SCREEN_RUNS} hold the queue")
 
     def refused_again(self, applied, line, other, log):
         """Hold the queue for a session, applied queued again, when eng unittest refused this gate before running
@@ -3332,6 +3360,20 @@ class Worker:
         except OSError: said = ""
         screens = SCREEN_LINE.findall(said)
         return (lane, screens[-1].strip()) if screens and screens[-1].startswith("screen: locked") else None
+
+    def needs_unlocked(self, lane, config):
+        """Whether the gate's last run of lane went only to a Mac whose screen reads unlocked: as the worker asked, or
+        as main's configuration declares it."""
+        return self.sent_unlocked or unlocked_screen(config.get("lanes", {}), lane)
+
+    def began_unlocked(self, lane, log, config):
+        """Whether the gate's last run of lane read an unlocked screen at its start: by its placement, or by the first
+        `screen:` line in its log, for a lane eng reads the screen for without placing it there (a display lane)."""
+        if self.needs_unlocked(lane, config): return True
+        try: said = log.read_text(errors="replace") if log else ""
+        except OSError: said = ""
+        screens = SCREEN_LINE.findall(said)
+        return bool(screens) and screens[0].startswith("screen: unlocked")
 
     def settings(self, base, head):
         """The project's lanes and settings as they stand on main at base, so that no branch chooses its own gate,

@@ -1618,6 +1618,142 @@ class NoVerdict(Fixture):
         self.assertEqual(worker.progress()["unlocked"], ["gate"])
         self.assertIs(mq.Beside(worker).unlocked, worker.unlocked)
 
+    @contextlib.contextmanager
+    def gates_that(self, steps, then=None):
+        """Each gate in turn does what steps says, and every gate past them passes: "locked", unmeasured with a screen
+        that reads unlocked at the start and locks during the run; "began locked", which reads locked from the first;
+        "unmeasured", with a screen unlocked throughout; "waited", exit 75, as a run that waits out the overflow for
+        an unlocked Mac does; and "passed", a verdict. then, if given, is called once the gate at its step has run."""
+        screens = Path(__file__).resolve().parent / "fixtures/ScreenState"
+        recording, during = self.base / "screen.plist", self.base / "during.plist"
+        screen = Path(f"{self.status}.screen")
+        locked, unlocked = screens / "this-mac-locked-idle.plist", screens / "this-mac-unlocked.plist"
+        status = {"locked": "3", "began locked": "3", "unmeasured": "3", "waited": "75"}
+        said = {"locked": f"{self.UNLOCKED}\n{self.LOCKED}\n", "began locked": f"{self.LOCKED}\n"}
+        real, gated = mq.Worker.gate, []
+        def gate(worker, *arguments, **options):
+            step = steps[len(gated)] if len(gated) < len(steps) else "passed"
+            gated.append(step)
+            shutil.copy(unlocked, recording)
+            shutil.copy(locked if step in said else unlocked, during)
+            screen.write_text(said.get(step, f"{self.UNLOCKED}\n"))
+            if step in status: self.status.write_text(status[step])
+            else: self.status.unlink(missing_ok=True)
+            result = real(worker, *arguments, **options)
+            if then and len(gated) - 1 == then[0]: then[1]()
+            return result
+        with patch.dict(os.environ, {offload_host.SCREEN_RECORDING: str(recording),
+                                     "FIXTURE_LOCK_DURING_RUN": str(during)}), patch.object(mq.Worker, "gate", gate):
+            yield gated
+
+    def test_the_fifth_locked_run_in_a_row_holds_the_queue_for_a_session_and_the_fourth_does_not(self):
+        """vocaro-engineering#293, the owner's decision of 2026-11-09: the cap on the runs queue.noVerdictRuns does
+        not count. The hold is a session's, and names the lane, the screen reading and the Mac."""
+        self.assertEqual(mq.LOCKED_SCREEN_RUNS, 5)
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        with self.gates_that(["locked"] * mq.LOCKED_SCREEN_RUNS), contextlib.redirect_stdout(io.StringIO()) as said:
+            self.assertEqual(self.work(), 0)
+        self.assertEqual(self.gates(), 5)
+        self.assertEqual(self.state(identifier)["state"], "queued")
+        self.assertNotIn("a", self.main_files())
+        held = mq.Queue(self.repo).held()
+        self.assertTrue(held.startswith("for a session, not the owner: gate ended behind a screen that locked during "
+                                        "the run in 5 runs in a row, the last reading screen: locked ("), held)
+        self.assertRegex(held, r"the last reading screen: locked \(console user trevorharmon, CGSSessionScreenIsLocked "
+                         r"yes, IOConsoleLocked no\) on this Mac \(\S+\) at \S+, the most LOCKED_SCREEN_RUNS allows "
+                         r"\(5\); see ")
+        self.assertIn("runs `eng queue resume` itself", held)
+        self.assertIn("4 such runs in a row, and 5 hold the queue", said.getvalue())
+        self.assertNotIn("the most queue.noVerdictRuns allows", held)
+
+    def test_four_locked_runs_in_a_row_hold_nothing(self):
+        """The negative control of the fifth: the run after the fourth passes, and the entry lands."""
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        with self.gates_that(["locked"] * (mq.LOCKED_SCREEN_RUNS - 1)), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(self.work(), 0)
+        self.assertEqual(self.gates(), 5)
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertIsNone(mq.Queue(self.repo).held())
+
+    def test_a_run_that_began_behind_the_lock_is_not_counted_toward_the_cap(self):
+        """The owner's condition: unlocked at its start and locked by its end. The first run, not placed and locked
+        from its first reading, is not one of the five; the five placed after it are."""
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        with self.gates_that(["began locked"] + ["locked"] * mq.LOCKED_SCREEN_RUNS), \
+                contextlib.redirect_stdout(io.StringIO()) as said:
+            self.assertEqual(self.work(), 0)
+        self.assertEqual(self.gates(), 6)
+        self.assertEqual(self.state(identifier)["state"], "queued")
+        self.assertIn("LOCKED_SCREEN_RUNS does not count it either", said.getvalue())
+        self.assertIn("in 5 runs in a row", mq.Queue(self.repo).held())
+
+    def test_a_verdict_between_locked_runs_starts_the_cap_again(self):
+        """A pass is a verdict: four locked runs on each side of it, eight in all, hold nothing. The second entry
+        arrives once the first's passing gate has run, so that one worker goes on, with its count, to gate it."""
+        self.commit("a", "a"); self.commit("b", "b")
+        [first] = self.add("a")
+        arrived = []
+        steps = ["locked"] * 4 + ["passed"] + ["locked"] * 4
+        with self.gates_that(steps, (4, lambda: arrived.extend(self.add("b")))) as gated, \
+                contextlib.redirect_stdout(io.StringIO()) as said:
+            self.assertEqual(self.work(), 0)
+        self.assertIsNone(mq.Queue(self.repo).held())
+        self.assertEqual(gated, steps + ["passed"])
+        self.assertEqual(said.getvalue().count("4 such runs in a row"), 2)
+        self.assertNotIn("5 such runs", said.getvalue())
+        self.assertEqual([self.state(identifier)["state"] for identifier in (first, *arrived)], ["landed", "landed"])
+
+    def test_a_no_verdict_of_another_cause_starts_the_cap_again_and_still_counts_as_before(self):
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        steps = ["locked"] * 4 + ["unmeasured"] + ["locked"] * 4
+        with self.gates_that(steps), contextlib.redirect_stdout(io.StringIO()) as said:
+            self.assertEqual(self.work(), 0)
+        self.assertEqual(self.gates(), len(steps) + 1)
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertIsNone(mq.Queue(self.repo).held())
+        self.assertIn("no verdict (exit 3), run 1 of at most 3", said.getvalue())
+        self.assertEqual(said.getvalue().count("4 such runs in a row"), 2)
+        self.assertNotIn("5 such runs", said.getvalue())
+
+    def test_a_run_that_waited_for_an_unlocked_mac_neither_adds_to_the_cap_nor_ends_it(self):
+        """Exit 75 from a lane sent only to an unlocked Mac ran nothing: the row goes on across it, so three locked
+        runs, the wait and two more hold at the fifth locked run, the sixth gate. It counts toward noVerdictRuns."""
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        with self.gates_that(["locked"] * 3 + ["waited"] + ["locked"] * 2), \
+                contextlib.redirect_stdout(io.StringIO()) as said:
+            self.assertEqual(self.work(), 0)
+        self.assertEqual(self.gates(), 6)
+        self.assertEqual(self.state(identifier)["state"], "queued")
+        self.assertIn("in 5 runs in a row", mq.Queue(self.repo).held())
+        self.assertIn("no verdict (exit 75), run 1 of at most 3", said.getvalue())
+
+    def test_whether_a_run_began_unlocked_is_read_from_its_placement_or_its_first_reading(self):
+        worker, log = mq.Worker(mq.Queue(self.repo)), self.base / "gate.log"
+        declared = {"lanes": {"gate": {"unlockedScreen": True}}}
+        log.write_text(f"{self.UNLOCKED}\n{self.LOCKED}\n")
+        self.assertTrue(worker.began_unlocked("gate", log, {}))
+        log.write_text(f"{self.LOCKED}\n{self.UNLOCKED}\n")
+        self.assertFalse(worker.began_unlocked("gate", log, {}))
+        log.write_text("no reading\n")
+        self.assertFalse(worker.began_unlocked("gate", log, {}))
+        self.assertFalse(worker.began_unlocked("gate", self.base / "no-such.log", {}))
+        self.assertFalse(worker.began_unlocked("gate", None, {}))
+        self.assertTrue(worker.began_unlocked("gate", log, declared))
+        worker.sent_unlocked = True
+        self.assertTrue(worker.began_unlocked("gate", log, {}))
+
+    def test_a_worker_that_takes_over_keeps_its_count_of_locked_runs(self):
+        queue = mq.Queue(self.repo)
+        self.assertNotIn("locked_screens", mq.Worker(queue).progress())
+        worker = mq.Worker(queue, {"limit": None, "suspects": 0, "no_verdicts": 0, "locked_screens": 3})
+        self.assertEqual(worker.locked_screens, 3)
+        self.assertEqual(worker.progress()["locked_screens"], 3)
+
     def test_a_failure_is_not_read_as_no_verdict(self):
         self.status.write_text("1")
         self.commit("a", "a")
