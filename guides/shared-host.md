@@ -1166,11 +1166,29 @@ the second Mac's admission: the group's serial reference
 `serial` and, like a snapshot's, stays in `.build/engineering/remote/GROUP/`: it is no pass of the
 group's, whose lanes run side by side.
 
-A stop carries over. The second Mac's standard input is the dispatcher's lifeline: its end, from
-a stop signal, the dispatcher's death or a dropped connection, stops the run there as a stop
-signal stops a local one, and the run leaves the second Mac's admission. A run that returns no
-result, such as one the network cut off, is unmeasured, never passed or failed. Foreground lanes
-run only on this Mac, and the policy says what else stays here.
+A stop carries over: `eng remote` tells the second Mac to stop, the run stops as a stop signal
+stops a local one, and it leaves the second Mac's admission. A connection's end is no stop
+([vocaro-engineering#321](https://github.com/vocaro/vocaro-engineering/issues/321)). When the
+dispatching Mac sleeps, or the connection otherwise drops, a run that has started goes on, and
+`eng remote` reconnects, again after each failure, once it is awake, and collects the run's log,
+result and returned files from a journal the second Mac keeps under `dispatches/` in its
+remote root, as if the connection had stayed up: the run passed, failed or was unmeasured by its
+own receipt, and that receipt's `connection` says it was collected on a later connection. A stop
+asked for meanwhile reaches the run on the next connection that gets through. Two exceptions end
+the run with its connection as before: a run that carries a device reservation, since this Mac's
+record holds that (see [Physical devices](#physical-devices-and-the-second-mac)), and a run whose
+dispatcher had not yet heard it start, which it counts as never run. A dispatcher that dies
+cannot be told from a dropped connection: its run goes on too, within the bound, and its journal
+stays for a week, uncollected.
+
+A run nobody is attending still ends. `eng run` and `eng admit` on the second Mac stop their own
+work at its timeout, as ever, unmeasured. Past that, once a connection has been lost, the second
+Mac itself stops whatever is left after the lane's timeouts, or `--time-limit`, plus 95 minutes
+for a checkout and admission, SIGKILL following five minutes later; the result says `detached`,
+and `overran` when that bound stopped it. A run that returns no result on any connection, within
+that bound of this Mac's waking time, is unmeasured, never passed or failed, and the message names
+what the second Mac kept. Foreground lanes run only on this Mac, and the policy says what else
+stays here.
 
 ssh closes a connection that has heard nothing from the second Mac for about two minutes
 (`ServerAliveInterval` 30 s, four times), so a shorter silence leaves the run going. When a run

@@ -63,6 +63,7 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 
 from . import capture_approvals, devices, disk, evidence, lane_wait, offload_host, processes, resources, run_results, toolkit_copy
 from .config import TOOLKIT_ROOT, unlocked_screen
@@ -136,6 +137,12 @@ UNITS = {"bytes": 1, "KiB": 1 << 10, "MiB": 1 << 20, "GiB": 1 << 30}
 NEGOTIATION_FAILED = "push negotiation failed"
 # Seconds a stopped run has to end on the second Mac before the connection is closed.
 STOP_WAIT = 120
+# Seconds a run the dispatcher lost contact with may wait on the second Mac beyond its own timeouts: for a checkout
+# (offload_host.CLAIM_TIMEOUT) or for its admission, whose wait `eng run` and `eng admit` bound by default at this.
+UNATTENDED_WAIT = 5400 + 300
+# Seconds between tries at a connection to collect a run from, and how long past that run's own bound a
+# dispatcher keeps trying, in this Mac's waking time (time.monotonic stops for sleep on macOS).
+REATTACH_PAUSE, REATTACH_GRACE = 15, 300
 # The toolkit's repository, which its origin names for the second Mac's policy refresh.
 UPSTREAM = "https://github.com/vocaro/vocaro-engineering.git"
 # What a Git hook exports for its own repository must not reach another.
@@ -223,7 +230,8 @@ RUNTIME = re.compile(r"^(.*) \(([^()]+)\)$")
 
 
 class Lost(RuntimeError):
-    """The second Mac took the work and the connection ended with no result: unmeasured, not failed."""
+    """The second Mac took the work, the connection ended, and no result came back on any connection after it:
+    unmeasured, not failed."""
 
 
 class Unavailable(RuntimeError):
@@ -1440,18 +1448,129 @@ def asleep():
     return None
 
 
-def lost(host, status, said, dispatched, slept, output):
+def lost(host, status, said, dispatched, slept, output, journal=None, gone=False):
     """What `eng remote` says of a run that returned no result: ssh's own last line, said, when it exits
     255 for a failure of its own; when the run was dispatched and lost, in UTC; and how long this Mac
-    slept in between, of which slept is asleep()'s reading at the dispatch."""
+    slept in between, of which slept is asleep()'s reading at the dispatch. journal is where the second Mac
+    keeps a run that outlives its connection, and gone says that its process there ended with no result."""
     now, sleeping = time.time(), asleep()
     moment = lambda seconds: time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(seconds))
     cause = f"ssh exited {status}" + (f": {said}" if status == 255 and said else "")
     sleep = sleeping - slept if None not in (slept, sleeping) else 0
     return (f"No result from {host} ({cause}); dispatched at {moment(dispatched)} and lost at {moment(now)}"
             + (f", and this Mac slept for {sleep:.0f} s of that" if sleep >= SLEEP_NOTED else "")
-            + f". The run is unmeasured, and {host} stops it once its end of the connection closes. "
-            f"Its output is in {output}")
+            + (f". The run is unmeasured, and {host} stops it once its end of the connection closes. "
+               if journal is None else
+               f". The run is unmeasured: it ended on {host} and left no result in {journal}. " if gone else
+               f". The run is unmeasured: no later connection collected it. {host} goes on with it until its bound "
+               f"at most, and keeps what it said in {journal}. ")
+            + f"Its output is in {output}")
+
+
+def detached_seconds(config, lane, work):
+    """How long a run on the second Mac may last with nobody attending it: its own timeouts, each lane's
+    or the time limit work's `eng admit` carries, with UNATTENDED_WAIT for what comes before them. eng stops
+    each of them at its timeout there, and this bounds an eng that does not."""
+    lanes = config.get("lanes", {})
+    def own(name):
+        entry = lanes.get(name, {})
+        if "parallel" in entry: return sum(own(member) for member in entry["parallel"])
+        return entry.get("timeout", processes.DEFAULT_LIMIT)
+    head = work[:work.index("--")] if "--" in work else work
+    limit = own(lane) if lane is not None else \
+        float(head[head.index("--time-limit") + 1]) if "--time-limit" in head else processes.DEFAULT_LIMIT
+    return limit + (own("provision") if "provision" in lanes and lane != "provision" else 0) + UNATTENDED_WAIT
+
+
+def tell(channel, word):
+    """Say a word to offload_host.py on the second Mac (offload_host.watch), if the connection still takes it."""
+    try:
+        channel.stdin.write(word + b"\n")
+        channel.stdin.flush()
+    except (OSError, ValueError):
+        pass
+
+
+class Frames:
+    """What one dispatch has heard from the second Mac, in order, across every connection that carried it: the
+    lane's log and the output, kept in log and output, and what came back in staging, the files in returned.
+
+    A later connection sends the run's journal from its start (offload_host.reattach), so rewind has the log and
+    the output skip what they already hold, by the bytes of each, and the files come again whole."""
+
+    KINDS = (b"L ", b"R ", b"O ", b"F ", b"D ", b"J ", b"E ", b"W ")
+
+    def __init__(self, staging, log, output, returns, host=None, progress=None):
+        self.staging, self.log, self.output, self.returns = staging, log, output, returns
+        # The Mac whose `W` frames these are, and the lane's Progress, which each sees a frame once.
+        self.host, self.progress = host, progress
+        self.result, self.stray, self.receiving = None, None, None
+        self.framed, self.journaled, self.gone, self.again = False, False, False, False
+        # Whether offload_host.py started there, and the last line of anything else, such as the shell's.
+        self.returned = []  # The files asked back that have arrived, in order.
+        self.held, self.skip = {"log": 0, "output": 0, "wait": 0}, {"log": 0, "output": 0, "wait": 0}
+
+    def once(self, which, data):
+        """The part of data, the next bytes of the log or the output, not heard before a reconnection."""
+        skipped = min(self.skip[which], len(data))
+        self.skip[which] -= skipped
+        self.held[which] += len(data) - skipped
+        return data[skipped:]
+
+    def rewind(self):
+        """Forget what a replay of the journal brings again."""
+        self.skip = dict(self.held)
+        self.close()
+        for path in self.returned: (self.staging / path).unlink(missing_ok=True)
+        self.returned.clear()
+        self.again = True
+
+    def close(self):
+        if self.receiving is not None: self.receiving.close()
+        self.receiving = None
+
+    def take(self, line):
+        """Take one line from the connection, and return its kind."""
+        kind, data = line[:2], line[2:]
+        if kind in self.KINDS and not line.endswith(b"\n"): return None  # The connection cut it short.
+        self.framed = self.framed or kind in self.KINDS
+        if kind == b"L ":
+            fresh = self.once("log", data)
+            self.log.write(fresh)
+            if fresh and self.progress is not None: self.progress.arrived(fresh)
+        elif kind == b"R ":
+            self.result = json.loads(data)
+        elif kind == b"W ":
+            fresh = self.once("wait", data)
+            if fresh: lane_wait.relayed(fresh, self.host)
+        elif kind == b"J ":
+            self.journaled = True
+        elif kind == b"E ":
+            self.gone = True
+        elif kind == b"F ":
+            self.close()
+            try: path = json.loads(data)["path"]
+            except (ValueError, TypeError, KeyError): path = None
+            # Only a file the plan asked back, by its exact path, and each once.
+            if returned_path(path, self.returns) and path not in self.returned:
+                (self.staging / path).parent.mkdir(parents=True, exist_ok=True)
+                self.receiving = (self.staging / path).open("wb")
+                self.returned.append(path)
+        elif kind == b"D ":
+            if self.receiving is not None:
+                try:
+                    self.receiving.write(base64.b64decode(data))
+                except binascii.Error:
+                    self.close()
+                    damaged = self.returned.pop()
+                    (self.staging / damaged).unlink()
+                    print(f"remote: {damaged} came back damaged and was not kept", file=sys.stderr, flush=True)
+        elif kind == b"O " or not self.again:
+            if kind != b"O ": self.stray = last_line(line.decode(errors="replace")) or self.stray
+            data = self.once("output", data if kind == b"O " else line)
+            self.output.write(data)
+            write(sys.stdout, data)
+        return kind
 
 
 class Lease(devices.BoundedRun):
@@ -1463,7 +1582,8 @@ class Lease(devices.BoundedRun):
     or a dropped connection, ends the run there: a run whose dispatcher vanished is an orphan here.
     The connection's ssh is recorded as the entry's own process, which release and recovery wait
     for. Once the bound passes, the dispatch stops the run there as a stop does. It records the
-    run's outcome when it ends; releasing the device stays the session's.
+    run's outcome when it ends; releasing the device stays the session's. So such a run keeps no journal
+    there (offload_host.Journal): unlike any other, it does not go on after a dropped connection.
 
     Its command is the dispatch, so that devices.watched_run watches each leased device's log from
     this Mac while the dispatch lasts and sends it once more when a banner was presented (#192): the
@@ -1749,6 +1869,11 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
             "deviceRecord": local["name"], "lease": lease.plan(local["name"]) if lease is not None else None,
             "dispatcher": local["name"], "subdirectory": subdirectory,
             **({"checkoutSlot": slot, "checkoutWait": slot_wait} if slot is not None else {})}
+    # A run that uses this Mac's device reservations ends with its connection (Lease). Any other outlives it, within
+    # its own bound, for a later connection to collect (Frames, offload_host.Journal; vocaro-engineering#321).
+    detached = detached_seconds(config, lane, work) if lease is None else None
+    journal = f"{dispatch}-{uuid.uuid4().hex[:8]}"
+    if detached is not None: plan["detach"] = {"id": journal, "seconds": detached}
 
     at = commit[:12] if commit == head else f"{commit[:12]}, a snapshot of the working tree on {head[:12]},"
     if kit_snapshot(kit):
@@ -1832,23 +1957,16 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     started, slept = time.time(), asleep()
     source = Path(offload_host.__file__).read_text()
     command = [*SSH, *moved(host), host, login(shlex.join(["python3", "-c", source, json.dumps(plan)]))]
-    lines, result, stopping = queue.Queue(), None, None
-    # Whether offload_host.py started there, and the last line of anything else, such as the shell's.
-    framed, stray = False, None
-    # The files asked back that have arrived, in order, and the one arriving now.
-    returned, receiving = [], None
+    stopping = None
     # A lane's log comes as it grows. An `eng admit` command's output comes on stdout, live, already.
     progress = Progress(name, host, bool(members), clock_line(config, lane)) if lane is not None else None
     lane_wait.sent(host)
     with (staging / "run.log").open("wb") as log, (staging / "output.log").open("wb") as output:
-        channel = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                   env=environment())
-        if lease is not None: lease.connected(channel.pid)
-        def relay():
-            for line in iter(channel.stdout.readline, b""): lines.put(line)
-            lines.put(None)
-        threading.Thread(target=relay, daemon=True).start()
-        while True:
+        frames = Frames(staging, log, output, returns, host, progress)
+
+        def stop_wanted():
+            """Note a stop that has been asked for, once, and whether one has."""
+            nonlocal stopping
             bounded = lease is not None and lease.expired()
             if (processes.requested() is not None or bounded) and stopping is None:
                 stopping = time.monotonic()
@@ -1858,60 +1976,71 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
                           f"reservations set; asking {host} to stop it", file=sys.stderr, flush=True)
                 else:
                     print(f"remote: stop requested; asking {host} to stop the run", file=sys.stderr, flush=True)
-                # The end of the second Mac's standard input is its stop.
-                try: channel.stdin.close()
-                except OSError: pass
-            if stopping is not None and time.monotonic() - stopping > STOP_WAIT and channel.poll() is None:
-                print(f"remote: {host} did not finish stopping in {STOP_WAIT}s; closing the connection",
-                      file=sys.stderr, flush=True)
-                channel.terminate()
-            try:
-                line = lines.get(timeout=0.1)
-            except queue.Empty:
-                if progress is not None and stopping is None: progress.beat()
-                continue
-            if line is None: break
-            kind, data = line[:2], line[2:]
-            framed = framed or kind in (b"L ", b"R ", b"O ", b"F ", b"D ", b"W ")
-            if kind == b"L ":
-                log.write(data)
-                if progress is not None: progress.arrived(data)
-            elif kind == b"R ":
-                result = json.loads(data)
-            elif kind == b"W ":
-                lane_wait.relayed(data, host)
-            elif kind == b"F ":
-                if receiving is not None: receiving.close()
-                receiving = None
-                try: path = json.loads(data)["path"]
-                except (ValueError, TypeError, KeyError): path = None
-                # Only a file the plan asked back, by its exact path, and each once.
-                if returned_path(path, returns) and path not in returned:
-                    (staging / path).parent.mkdir(parents=True, exist_ok=True)
-                    receiving = (staging / path).open("wb")
-                    returned.append(path)
-            elif kind == b"D ":
-                if receiving is not None:
-                    try:
-                        receiving.write(base64.b64decode(data))
-                    except binascii.Error:
-                        receiving.close()
-                        receiving = None
-                        damaged = returned.pop()
-                        (staging / damaged).unlink()
-                        print(f"remote: {damaged} came back damaged and was not kept", file=sys.stderr, flush=True)
-            else:
-                data = data if kind == b"O " else line
-                if kind != b"O ": stray = last_line(line.decode(errors="replace")) or stray
-                output.write(data)
-                write(sys.stdout, data)
-        channel.wait()
-        if receiving is not None: receiving.close()
+            return stopping is not None
+
+        def carry(channel):
+            """Take what channel brings, until its end, saying a stop to the second Mac when one comes."""
+            lines, told = queue.Queue(), False
+            def relay():
+                for line in iter(channel.stdout.readline, b""): lines.put(line)
+                lines.put(None)
+            threading.Thread(target=relay, daemon=True).start()
+            while True:
+                if stop_wanted() and not told:
+                    told = True
+                    tell(channel, b"stop")
+                if stopping is not None and time.monotonic() - stopping > STOP_WAIT and channel.poll() is None:
+                    print(f"remote: {host} did not finish stopping in {STOP_WAIT}s; closing the connection",
+                          file=sys.stderr, flush=True)
+                    channel.terminate()
+                try:
+                    line = lines.get(timeout=0.1)
+                except queue.Empty:
+                    if progress is not None and stopping is None: progress.beat()
+                    continue
+                if line is None: break
+                kind = frames.take(line)
+                if kind == b"J ": tell(channel, b"attached")
+                elif kind == b"R ": tell(channel, b"received")
+            channel.wait()
+
+        def collect():
+            """Reconnect, as often as it takes, until a connection brings the run's result or says it has gone. This
+            Mac's waking time counts, so that a sleep of any length leaves the tries it allows. A stop has its usual
+            wait, within which a connection says it to the second Mac."""
+            print(f"remote: the connection to {host} ended; the run goes on there, and this dispatch reconnects to "
+                  "collect it", file=sys.stderr, flush=True)
+            limit, tries = time.monotonic() + detached + REATTACH_GRACE, 0
+            while frames.result is None and not frames.gone:
+                if stop_wanted(): limit = min(limit, stopping + STOP_WAIT)
+                if time.monotonic() >= limit: break
+                if tries:
+                    moment = time.monotonic()
+                    while time.monotonic() - moment < REATTACH_PAUSE and not stop_wanted():
+                        if progress is not None and stopping is None: progress.beat()
+                        time.sleep(0.2)
+                tries += 1
+                frames.rewind()
+                carry(subprocess.Popen(
+                    [*SSH, *moved(host), host, login(shlex.join(["python3", "-c", source, json.dumps(
+                        {"reattach": {"root": ROOT, "id": journal}})]))],
+                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=environment()))
+            return tries
+
+        channel = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                   env=environment())
+        if lease is not None: lease.connected(channel.pid)
+        carry(channel)
+        ended, said = channel.returncode, frames.stray
+        lost_at, reconnections = time.time(), None
+        if frames.result is None and frames.journaled: reconnections = collect()
+        frames.close()
+    result, framed, returned = frames.result, frames.framed, frames.returned
     if result is None and not framed and stopping is None:
         # offload_host.py never said it started, so nothing ran there unless its first words were lost.
         shutil.rmtree(staging, ignore_errors=True)
-        if channel.returncode == 255: raise ssh_failure(host, stray, slept, sent=True)
-        raise no_toolkit(host, channel.returncode, stray)
+        if ended == 255: raise ssh_failure(host, said, slept, sent=True)
+        raise no_toolkit(host, ended, said)
     if result is not None and result.get("refused"):
         shutil.rmtree(staging, ignore_errors=True)
         if result.get("busy"): raise Busy(f"{host} did not take it: {result['refused']}")
@@ -1919,7 +2048,8 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
                             result.get("fix") or f"repair on {host} what that names")
     if result is None:
         own = file_results(base, name, dispatch, staging)
-        raise Lost(lost(host, channel.returncode, stray, started, slept, own / "output.log"))
+        kept = f"~/{ROOT}/{offload_host.JOURNALS}/{journal}" if frames.journaled else None
+        raise Lost(lost(host, ended, said, started, slept, own / "output.log", journal=kept, gone=frames.gone))
     # commit is what ran there: HEAD, or a snapshot of the working tree on it. ranOn and mac say where, as
     # a run on this Mac's receipt does, so that the share of each Mac's work can be counted.
     receipt = {"ranOn": "second Mac", "mac": (result.get("host") or {}).get("name"), "host": host,
@@ -1927,6 +2057,8 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
                **toolkit_identity(kit, commit), "lane": lane, "arguments": list(arguments),
                "expect": expect, "work": work, "local": local, "result": result, "dispatched": started,
                "preparation": preparation,
+               **({"connection": {"lostAt": lost_at, "reconnections": reconnections, "ssh": ended}}
+                  if reconnections is not None else {}),
                **({"serial": True} if serial else {}), **({"returned": returned} if members or returned else {}),
                **({"subdirectory": subdirectory} if subdirectory else {})}
     wait = (result.get("phases") or {}).get("claim")

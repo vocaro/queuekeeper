@@ -119,10 +119,26 @@ NAP = ("import os, pathlib, sys, time; name = sys.argv[1]; print(name, 'started'
 # Stands in for ssh in front of FAKE_SSH, whose path FAKE_SSH_REAL names: the connection that carries
 # a run (its command holds the plan's work) is lost once the file FAKE_DROP names exists. ssh then
 # says why, as it does when the second Mac stops answering, and exits 255; the end of the second
-# Mac's standard input is its end of the connection closing.
+# Mac's standard input is its end of the connection closing. A connection that collects a run adds a
+# line to the file FAKE_CONNECTIONS names, and is refused with FAKE_NO_RECONNECT, as a second Mac no
+# longer reachable refuses it; first, FAKE_KILL_RUNNER names a checkout's slot lock, whose holder,
+# offload_host.py, is killed, as a restart of the second Mac would end it.
 DROPPING_SSH = """#!/bin/sh
 case "$*" in
     *'"work": ['*) exec "$FAKE_PYTHON" "$FAKE_DROPPER" "$@" ;;
+    *'{"reattach": {"root"'*)
+        [ -n "$FAKE_CONNECTIONS" ] && echo reattach >> "$FAKE_CONNECTIONS"
+        if [ -n "$FAKE_KILL_RUNNER" ] && [ ! -e "$FAKE_KILL_RUNNER.killed" ]; then
+            "$FAKE_PYTHON" -c "import json, os, sys, time; pid = json.load(open(sys.argv[1]))['pid']; os.kill(pid, 9)
+while True:
+    try: os.kill(pid, 0); time.sleep(0.05)
+    except ProcessLookupError: break" "$FAKE_KILL_RUNNER"
+            : > "$FAKE_KILL_RUNNER.killed"
+        fi
+        if [ -n "$FAKE_NO_RECONNECT" ]; then
+            echo "ssh: connect to host fake port 22: Connection refused" >&2
+            exit 255
+        fi ;;
 esac
 exec "$FAKE_SSH_REAL" "$@"
 """
@@ -133,25 +149,45 @@ while arguments[0].startswith("-"):
 host, command = arguments[0], " ".join(arguments[1:])
 environment = {**os.environ, "HOME": os.environ["FAKE_HOME"], "SHELL": os.environ["FAKE_SHELL"],
                "HEAVY_SLOT_DIR": os.environ["FAKE_SLOTS"], "SW_GATE_LOCK_FILE": os.environ["FAKE_GATE"],
-               "TMPDIR": os.environ["FAKE_TMPDIR"]}
+               "TMPDIR": os.environ["FAKE_TMPDIR"],
+               "VOCARO_DEVICE_RECORD": os.environ.get("FAKE_DEVICE_RECORD") or os.environ["FAKE_HOME"] + "/device-handoff.json"}
 child = subprocess.Popen(["/bin/sh", "-c", command], cwd=os.environ["FAKE_HOME"], env=environment,
                          stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
 def forward():
     for line in iter(child.stdout.readline, b""):
         sys.stdout.buffer.write(line)
         sys.stdout.buffer.flush()
+def send():
+    try:
+        for line in iter(sys.stdin.buffer.readline, b""):
+            child.stdin.write(line)
+            child.stdin.flush()
+    except (OSError, ValueError):
+        pass
 relay = threading.Thread(target=forward, daemon=True)
 relay.start()
+threading.Thread(target=send, daemon=True).start()
 while child.poll() is None and not os.path.exists(os.environ["FAKE_DROP"]):
     time.sleep(0.05)
 if child.poll() is None:
     sys.stderr.write(f"Timeout, server {host} not responding.\\n")
     sys.stderr.flush()
     child.stdin.close()
+    open(os.environ["FAKE_DROP"] + ".dropped", "w").close()
     os._exit(255)
 relay.join()
 sys.exit(child.returncode)
 """
+# A lane that says it has started, puts its PID in .build/outlast.pid, and goes on only once its connection has
+# been lost (DROPPER): what it says after that, its exit status and the file it writes then are the second Mac's
+# alone, until a later connection collects them. Its first argument is its exit status.
+OUTLAST = ("import os, pathlib, sys, time; print('before the drop', flush=True); "
+           "mark = pathlib.Path('.build/outlast.pid'); mark.parent.mkdir(exist_ok=True); "
+           "part = pathlib.Path('.build/outlast.part'); part.write_text(str(os.getpid())); part.rename(mark); "
+           "dropped = pathlib.Path('.build/outlast.pid.dropped')\n"
+           "while not dropped.exists(): time.sleep(0.05)\n"
+           "pathlib.Path(os.environ['ENG_RESULTS_DIR'], 'note.txt').write_text('after'); "
+           "print('after the drop'); print('Ran 2 tests'); raise SystemExit(int(sys.argv[1]))")
 # Stands in for ssh in front of FAKE_SSH, whose path FAKE_SSH_REAL names: a push's connection to
 # receive-pack goes through RELAY, which FAKE_RELAY names. With FAKE_DROP_PROTOCOL, the second Mac
 # never sees GIT_PROTOCOL, as a stock macOS sshd, which accepts only LANG and LC_*, never passes it.
@@ -319,6 +355,13 @@ class RemoteTests(unittest.TestCase):
             "linger": {"command": [python, "-c", "import os, pathlib, time; "
                                    "pathlib.Path('.build/linger.pid').write_text(str(os.getpid())); time.sleep(3600)"],
                        "resource": "self"},
+            "outlast": {"command": [python, "-c", OUTLAST, "0"], "resource": "self", "minimumTests": 2},
+            "outlast-failing": {"command": [python, "-c", OUTLAST, "5"], "resource": "self", "minimumTests": 2},
+            # Hangs past its own timeout once its connection is lost, as a wedged test does.
+            "outlast-overdue": {"command": [python, "-c", "import os, pathlib, time; "
+                                            "part = pathlib.Path('.build/outlast.part'); part.parent.mkdir(exist_ok=True); "
+                                            "part.write_text(str(os.getpid())); part.rename('.build/outlast.pid'); "
+                                            "time.sleep(600)"], "resource": "self", "timeout": 3},
             "gate": {"command": [python, "-c", "import os; print('Ran 2 tests in', os.getcwd())"],
                      "resource": "heavy", "minimumTests": 2},
             # A gate that runs the project's suites side by side: a Mac's work, every guaranteed slot of it.
@@ -1602,43 +1645,278 @@ class RemoteTests(unittest.TestCase):
             if dispatcher.poll() is None: dispatcher.kill()
             dispatcher.communicate()
 
-    def test_a_lost_connection_says_what_ssh_said_when_it_was_lost_and_that_this_mac_slept(self):
-        # As on 2026-10-26, when the dispatching Mac slept for five minutes with a run under way there.
-        marker = self.checkout(0) / ".build/linger.pid"
+    def dropping(self, marker, **more):
+        """The environment of a dispatch whose connection is lost once the file marker exists (DROPPER)."""
         real, ssh = self.tools / "fake-ssh", self.tools / "ssh"
-        ssh.rename(real)
-        ssh.write_text(DROPPING_SSH)
-        host_isolation.executable(ssh)
-        (self.tools / "drop.py").write_text(DROPPER)
-        variables = {"FAKE_SSH_REAL": str(real), "FAKE_DROPPER": str(self.tools / "drop.py"),
-                     "FAKE_PYTHON": sys.executable, "FAKE_DROP": str(marker)}
+        if not real.exists():
+            ssh.rename(real)
+            ssh.write_text(DROPPING_SSH)
+            host_isolation.executable(ssh)
+            (self.tools / "drop.py").write_text(DROPPER)
+        return patch.dict(os.environ, {"FAKE_SSH_REAL": str(real), "FAKE_DROPPER": str(self.tools / "drop.py"),
+                                       "FAKE_PYTHON": sys.executable, "FAKE_DROP": str(marker), **more})
+
+    def journals(self):
+        """What the second Mac keeps of runs that are not yet collected."""
+        directory = self.home / remote.ROOT / offload_host.JOURNALS
+        return sorted(path.name for path in directory.iterdir()) if directory.exists() else []
+
+    def all_ended(self, *pids):
+        for pid in pids:
+            deadline = time.monotonic() + stretched(60)
+            while time.monotonic() < deadline:
+                try: os.kill(pid, 0)
+                except ProcessLookupError: break
+                time.sleep(0.1)
+            with self.assertRaises(ProcessLookupError):
+                os.kill(pid, 0)
+
+    def runner(self):
+        """The PID of offload_host.py, which claimed the checkout and ends once the run there has left its admission."""
+        return json.loads((self.home / remote.ROOT / "checkouts/example/0.lock").read_text())["pid"]
+
+    @staticmethod
+    def reap(*pids):
+        for pid in pids:
+            if pid is not None:
+                with contextlib.suppress(ProcessLookupError): os.kill(pid, signal.SIGKILL)
+
+    def outlasting(self, lane):
+        """Run lane, whose connection is lost once it has started, and return its status, output and error, and how
+        many connections collected it."""
+        marker = self.checkout(0) / ".build/outlast.pid"
+        connections = Path(self.temp.name) / "connections"
+        with self.dropping(marker, FAKE_CONNECTIONS=str(connections)):
+            status, output, error = self.eng("remote", "run", lane)
+        return status, output, error, len(connections.read_text().splitlines()) if connections.exists() else 0
+
+    def test_a_lane_that_passes_after_its_connection_is_lost_is_collected_as_passed(self):
+        status, output, error, connections = self.outlasting("outlast")
+        self.assertEqual(status, 0, output + error)
+        self.assertGreaterEqual(connections, 1)
+        self.assertIn("remote: the connection to fake ended; the run goes on there", error)
+        results = self.project / ".build/engineering/remote/outlast"
+        log = (results / "run.log").read_text()
+        # Each line once: what came before the connection was lost is not repeated when the journal is replayed.
+        for line in ("before the drop", "after the drop", "Ran 2 tests"):
+            self.assertEqual(log.count(line), 1, log)
+        placed = f"example at {self.commit[:12]}"
+        self.assertEqual((results / "output.log").read_text().count(placed), 1)
+        self.assertEqual(output.count(placed), 1, output)
+        receipt = json.loads((results / "source.json").read_text())
+        self.assertEqual((receipt["result"]["exitStatus"], receipt["result"]["stopped"]), (0, False))
+        self.assertEqual(receipt["result"]["receipt"]["project"]["revision"], self.commit)
+        self.assertEqual((receipt["connection"]["ssh"], receipt["connection"]["reconnections"]), (255, connections))
+        self.assertIs(receipt["result"]["detached"]["overran"], False)
+        # What the lane wrote only after the connection was lost came back, whole.
+        self.assertEqual((results / "results/note.txt").read_text(), "after")
+        self.assertEqual(self.eng("remote", "passed", "outlast")[0], 0)
+        # Collected, so nothing stays on the second Mac.
+        self.assertEqual(self.journals(), [])
+
+    def test_a_lane_that_fails_after_its_connection_is_lost_is_collected_as_failed(self):
+        status, output, error, _ = self.outlasting("outlast-failing")
+        self.assertEqual(status, 5, output + error)
+        results = self.project / ".build/engineering/remote/outlast-failing"
+        self.assertEqual(json.loads((results / "source.json").read_text())["result"]["exitStatus"], 5)
+        self.assertIn("after the drop", (results / "run.log").read_text())
+        self.assertEqual(self.eng("remote", "passed", "outlast-failing")[0], 1)
+
+    def test_a_connection_that_stays_up_collects_nothing_and_leaves_no_journal(self):
+        # The negative control: no connection is lost, so none is made to collect the run.
+        connections = Path(self.temp.name) / "connections"
+        with self.dropping(self.home / "never", FAKE_CONNECTIONS=str(connections)):
+            status, output, error = self.eng("remote", "run", "check")
+        self.assertEqual(status, 0, output + error)
+        self.assertFalse(connections.exists())
+        self.assertNotIn("the connection to fake ended", error)
+        receipt = json.loads((self.project / ".build/engineering/remote/check/source.json").read_text())
+        self.assertNotIn("connection", receipt)
+        self.assertNotIn("detached", receipt["result"])
+        self.assertEqual(self.journals(), [])
+
+    def test_a_lane_past_its_own_timeout_after_its_connection_is_lost_is_stopped_and_collected_unmeasured(self):
+        lane = None
+        try:
+            status, output, error, _ = self.outlasting("outlast-overdue")
+            lane = int((self.checkout(0) / ".build/outlast.pid").read_text())
+            self.assertEqual(status, evidence.UNMEASURED, output + error)
+            self.all_ended(lane)
+            self.assertEqual(self.eng("remote", "passed", "outlast-overdue")[0], 1)
+        finally:
+            self.reap(lane)
+
+    def test_a_hung_lane_is_stopped_at_its_bound_with_nobody_attending_and_is_no_pass(self):
+        marker, lane = self.checkout(0) / ".build/linger.pid", None
+        try:
+            with self.dropping(marker), patch.object(remote, "detached_seconds", return_value=1):
+                status, output, error = self.eng("remote", "run", "linger")
+            lane = int(marker.read_text())
+            self.assertNotEqual(status, 0, output + error)
+            receipt = json.loads((self.project / ".build/engineering/remote/linger/source.json").read_text())
+            self.assertTrue(receipt["result"]["stopped"])
+            self.assertIs(receipt["result"]["detached"]["overran"], True)
+            self.assertEqual(receipt["result"]["detached"]["limit"], 1)
+            self.assertIn("the run outlasted the 1 s it may run with nobody attending", output)
+            self.all_ended(lane)
+            self.assertEqual(self.eng("remote", "passed", "linger")[0], 1)
+        finally:
+            self.reap(lane)
+
+    def test_a_stop_after_the_connection_is_lost_reaches_the_run_over_the_next_connection(self):
+        marker = self.checkout(0) / ".build/slow.pid"
+        connections = Path(self.temp.name) / "connections"
+        with self.dropping(marker, FAKE_CONNECTIONS=str(connections)):
+            dispatcher = subprocess.Popen([sys.executable, str(self.toolkit / "bin/eng"), "--project", str(self.project),
+                                           "remote", "run", "slow"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        lane = None
+        try:
+            deadline = time.monotonic() + stretched(60)
+            while not connections.exists() and dispatcher.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertTrue(connections.exists(), dispatcher.stdout.read().decode() if dispatcher.poll() is not None else "")
+            lane = int(marker.read_text())
+            dispatcher.send_signal(signal.SIGTERM)
+            output = dispatcher.communicate(timeout=stretched(60))[0].decode()
+            self.assertEqual(dispatcher.returncode, -signal.SIGTERM, output)
+            self.all_ended(lane)
+            receipt = json.loads((self.project / ".build/engineering/remote/slow/source.json").read_text())
+            self.assertTrue(receipt["result"]["stopped"])
+        finally:
+            self.reap(lane)
+            if dispatcher.poll() is None: dispatcher.kill()
+            dispatcher.communicate()
+
+    def test_a_run_no_later_connection_reaches_is_unmeasured_says_where_it_is_and_stops_at_its_bound(self):
+        # As on 2026-10-26, when the dispatching Mac slept for five minutes with a run under way there, had
+        # the second Mac then stayed out of reach.
+        marker = self.checkout(0) / ".build/linger.pid"
         lane = None
         try:
             # Read before the connection that prepares the second Mac, at the dispatch, and once it is lost.
-            with patch.dict(os.environ, variables), \
-                    patch.object(remote, "asleep", side_effect=[1000.0, 1000.0, 1300.0]):
+            with self.dropping(marker, FAKE_NO_RECONNECT="1"), \
+                    patch.object(remote, "asleep", side_effect=[1000.0, 1000.0, 1300.0]), \
+                    patch.object(remote, "detached_seconds", return_value=1), \
+                    patch.object(remote, "REATTACH_PAUSE", 0.1), patch.object(remote, "REATTACH_GRACE", 1):
                 status, output, error = self.eng("remote", "run", "linger")
             lane = int(marker.read_text())
             self.assertEqual(status, evidence.UNMEASURED, output + error)
             self.assertRegex(error, r"eng: No result from fake \(ssh exited 255: Timeout, server fake not responding\.\); "
                                     r"dispatched at \d{4}-\d\d-\d\d \d\d:\d\d:\d\d UTC and lost at \d{4}-\d\d-\d\d "
-                                    r"\d\d:\d\d:\d\d UTC, and this Mac slept for 300 s of that\. The run is unmeasured, "
-                                    r"and fake stops it once its end of the connection closes\.")
+                                    r"\d\d:\d\d:\d\d UTC, and this Mac slept for 300 s of that\. The run is unmeasured: no "
+                                    r"later connection collected it\. fake goes on with it until its bound at most, and "
+                                    rf"keeps what it said in ~/{re.escape(remote.ROOT)}/{offload_host.JOURNALS}/")
             results = self.project / ".build/engineering/remote/linger"
             self.assertIn("Timeout, server fake not responding.", (results / "output.log").read_text())
             self.assertFalse((results / "source.json").exists())
             self.assertEqual(self.eng("remote", "passed", "linger")[0], 1)
-            # Its end of the connection closed, so the second Mac stopped the run.
-            deadline = time.monotonic() + stretched(60)
-            while time.monotonic() < deadline:
-                try: os.kill(lane, 0)
-                except ProcessLookupError: break
-                time.sleep(0.1)
-            with self.assertRaises(ProcessLookupError):
-                os.kill(lane, 0)
+            # Nobody attends it, so the second Mac stopped the run at its bound.
+            self.all_ended(lane, self.runner())
         finally:
-            if lane is not None:
-                with contextlib.suppress(ProcessLookupError): os.kill(lane, signal.SIGKILL)
+            self.reap(lane)
+
+    def test_a_run_whose_process_there_ended_with_no_result_is_unmeasured(self):
+        marker = self.checkout(0) / ".build/linger.pid"
+        lane = None
+        try:
+            with self.dropping(marker, FAKE_KILL_RUNNER=str(self.home / remote.ROOT / "checkouts/example/0.lock")):
+                status, output, error = self.eng("remote", "run", "linger")
+            lane = int(marker.read_text())
+            self.assertEqual(status, evidence.UNMEASURED, output + error)
+            self.assertIn("The run is unmeasured: it ended on fake and left no result in ", error)
+            self.assertFalse((self.project / ".build/engineering/remote/linger/source.json").exists())
+            self.assertEqual(self.eng("remote", "passed", "linger")[0], 1)
+        finally:
+            # The eng that ran the lane outlived the process killed above, and writes in the checkout until it ends.
+            parent = subprocess.run(["ps", "-o", "ppid=", "-p", str(lane)], capture_output=True, text=True).stdout.strip() \
+                if lane is not None else ""
+            self.reap(int(parent) if parent else None, lane)
+            if parent: self.all_ended(int(parent))
+
+    def test_a_run_that_carries_a_device_reservation_stops_with_its_connection(self):
+        # This Mac's record holds the reservation and its run's process: a run going on there would use a
+        # device this Mac's record has as an orphan.
+        self.hold()
+        marker = self.checkout(0) / ".build/leased.pid"
+        command = ("import os, pathlib, time; pathlib.Path('.build').mkdir(exist_ok=True); "
+                   "part = pathlib.Path('.build/leased.part'); part.write_text(str(os.getpid())); "
+                   "part.rename('.build/leased.pid'); time.sleep(600)")
+        lane = None
+        connections = Path(self.temp.name) / "connections"
+        try:
+            with self.dropping(marker, FAKE_CONNECTIONS=str(connections)):
+                status, output, error = self.eng("remote", "admit", "--device", "iPhone", "--device-owner", "session-a",
+                                                 "--", sys.executable, "-c", command)
+            lane = int(marker.read_text())
+            self.assertEqual(status, evidence.UNMEASURED, output + error)
+            self.assertIn("The run is unmeasured, and fake stops it once its end of the connection closes.", error)
+            self.assertFalse(connections.exists())
+            self.all_ended(lane, self.runner())
+            self.assertEqual(self.journals(), [])
+        finally:
+            self.reap(lane)
+
+    def test_what_a_connection_s_end_means_turns_on_the_journal_and_the_dispatcher_having_heard_the_run(self):
+        def reset():
+            offload_host._stop.clear()
+            offload_host._attached.clear()
+            offload_host._received.clear()
+            offload_host._detached_at = None
+        self.addCleanup(reset)
+        journal = object()
+        for held, attached, received, stopped, detached in [(None, True, False, True, False),
+                                                            (journal, False, False, True, False),
+                                                            (journal, True, False, False, True),
+                                                            (journal, True, True, False, False)]:
+            with self.subTest(held=held, attached=attached, received=received), \
+                    patch.object(offload_host, "_journal", held):
+                reset()
+                if attached: offload_host._attached.set()
+                if received: offload_host._received.set()
+                offload_host.connection_ended()
+                self.assertEqual(offload_host._stop.is_set(), stopped)
+                self.assertEqual(offload_host._detached_at is not None, detached)
+
+    def test_a_connection_that_takes_no_bytes_does_not_hold_up_the_run(self):
+        blocked, written = threading.Event(), threading.Event()
+        def hang(_data):
+            written.set()
+            blocked.wait(stretched(60))
+        with patch.object(offload_host, "write_all", hang):
+            journal = offload_host.Journal(Path(self.temp.name) / "journal", 60)
+            self.addCleanup(blocked.set)
+            with patch.object(offload_host, "_journal", journal):
+                frames = 2000
+                for number in range(frames): offload_host.emit(b"O", b"%d" % number)
+            self.assertEqual(len(journal.path.read_bytes().splitlines()), frames)
+            # Sent to a connection that has taken nothing back.
+            self.assertTrue(written.wait(stretched(30)))
+            self.assertTrue(journal.pumping.is_alive())
+            journal.closed.set()
+            journal.more.set()
+            blocked.set()
+            journal.pumping.join(stretched(30))
+
+    def test_a_lane_that_ignores_the_stop_at_its_bound_is_killed(self):
+        self.addCleanup(offload_host._stop.clear)
+        self.addCleanup(offload_host._overran.clear)
+        directory = Path(self.temp.name)
+        ready = directory / "ignoring"
+        child = ("import pathlib, signal, sys, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+                 f"pathlib.Path({str(ready)!r}).touch(); time.sleep(600)")
+        def stop():
+            deadline = time.monotonic() + stretched(60)
+            while not ready.exists() and time.monotonic() < deadline: time.sleep(0.02)
+            offload_host._overran.set()
+            offload_host._stop.set()
+        thread = threading.Thread(target=stop)
+        thread.start()
+        lock = os.open(directory / "slot.lock", os.O_CREAT | os.O_RDWR)
+        self.addCleanup(os.close, lock)
+        with patch.object(offload_host, "emit"), patch.object(offload_host, "OVERRUN_KILL_SECONDS", 0.2):
+            status = offload_host.step([sys.executable, "-c", child], directory, dict(os.environ), lock, None)
+        thread.join()
+        self.assertEqual(status, -signal.SIGKILL)
 
     def test_a_lost_run_names_sleep_only_when_this_mac_slept_and_ssh_only_for_its_own_failure(self):
         output = Path("/build/output.log")
@@ -2760,34 +3038,20 @@ class RemoteTests(unittest.TestCase):
 
     def test_a_run_whose_connection_is_lost_after_it_was_sent_is_unmeasured_and_never_runs_here(self):
         marker = self.checkout(0) / ".build/slow.pid"
-        real, ssh = self.tools / "fake-ssh", self.tools / "ssh"
-        ssh.rename(real)
-        ssh.write_text(DROPPING_SSH)
-        host_isolation.executable(ssh)
-        (self.tools / "drop.py").write_text(DROPPER)
-        variables = {"FAKE_SSH_REAL": str(real), "FAKE_DROPPER": str(self.tools / "drop.py"),
-                     "FAKE_PYTHON": sys.executable, "FAKE_DROP": str(marker)}
         lane = runner = None
         try:
-            with patch.dict(os.environ, variables):
+            with self.dropping(marker, FAKE_NO_RECONNECT="1"), patch.object(remote, "detached_seconds", return_value=1), \
+                    patch.object(remote, "REATTACH_PAUSE", 0.1), patch.object(remote, "REATTACH_GRACE", 1):
                 status, output, error = self.run_here("slow")
             lane = int(marker.read_text())
-            # offload_host.py, which claimed the checkout and ends once the run there has left its admission.
-            runner = json.loads((self.home / remote.ROOT / "checkouts/example/0.lock").read_text())["pid"]
+            runner = self.runner()
             self.assertEqual(status, evidence.UNMEASURED, output + error)
             self.assertIn("eng: No result from fake (ssh exited 255: Timeout, server fake not responding.)", error)
             self.assertIn("The run is unmeasured", error)
             self.assertNotIn("running slow on this Mac", error)
             self.assertFalse((self.project / ".build/engineering/slow").exists())
-            # Its end of the connection closed, so the second Mac stopped the run.
-            for pid in (lane, runner):
-                deadline = time.monotonic() + stretched(60)
-                while time.monotonic() < deadline:
-                    try: os.kill(pid, 0)
-                    except ProcessLookupError: break
-                    time.sleep(0.1)
-                with self.assertRaises(ProcessLookupError):
-                    os.kill(pid, 0)
+            # Nobody attends it, so the second Mac stopped the run at its bound.
+            self.all_ended(lane, runner)
         finally:
             for pid in (lane, runner):
                 if pid is not None:

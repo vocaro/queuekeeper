@@ -7,9 +7,13 @@ own heavy-work admission, with its device record deferring physical devices to t
 and the run given the reservations it carries. Standard output carries framed lines: `O` for
 output, `L` for the lane's log as it grows, then, once the work has ended, an `F` naming each file the plan asks back,
 such as a lane group's lanes' logs and receipts, followed by `D` lines of its bytes in base64, and
-a closing `R` with the result as JSON. Standard input is the
-dispatcher's lifeline: its end, which a stop, the dispatcher's death or a dropped connection
-sends, stops the run as a stop signal stops a local one. Given `{"toolchain": DEVELOPER_DIR}`
+a closing `R` with the result as JSON. Standard input carries the dispatcher's words, a line each: `stop` stops
+the run as a stop signal stops a local one, `attached` says the dispatcher heard the run start, and `received`
+that it has the result. A plan with `detach` keeps every frame in a journal here, which an opening `J` announces
+(Journal), and once the dispatcher has said `attached`, the end of standard input is a lost connection, not a stop:
+the run goes on, for at most `detach`'s seconds more, and `{"reattach": ...}`, on a later connection, sends the
+journal from its start and follows it. Without a journal, or before `attached`, that end stops the run, whether a
+stop, the dispatcher's death or a dropped connection sent it (vocaro-engineering#321). Given `{"toolchain": DEVELOPER_DIR}`
 instead of a plan, it prints the Mac's Xcodes, simulator runtimes and device record for
 `eng doctor`; given `{"images": ...}`, `{"receive": ...}` or `{"deleteRuntime": ...}`, it lists the Mac's
 runtime images, adds one read from standard input or deletes one that no simulator but Xcode's
@@ -188,8 +192,24 @@ UPDATE_SECONDS, UPDATE_FETCH_SECONDS = 40, 25
 UPDATE_LISTING_SECONDS = 10
 UPDATE_LOCK = "toolkit-update.lock"
 
+# The journals of dispatches a connection's end does not stop, under eng remote's root, each in a directory named
+# for its dispatch; the frames in one, and the file a later connection's stop leaves there for the run.
+JOURNALS, FRAMES, STOP_FILE = "dispatches", "frames", "stop"
+# Seconds an uncollected journal stays: past any run's bound, for a dispatcher that never came back.
+JOURNAL_KEPT = 7 * 24 * 60 * 60
+# Seconds the end of a run waits on a connection that takes no bytes, and then for the dispatcher's `received`.
+# The journal holds what they did not carry, for a later connection, so neither wait need cover a slow Mac.
+JOURNAL_STALL_SECONDS, RECEIVED_SECONDS = 30, 10
+# Seconds a run stopped at its unattended bound has between SIGTERM and SIGKILL: eng's own stop of a foreground
+# run takes up to about 190 s of LINGER and FOREGROUND_KILL_AFTER (processes.py), and nobody is left to close it.
+OVERRUN_KILL_SECONDS = 300
+
 _output = threading.Lock()
 _stop = threading.Event()
+# The dispatcher's `attached` and `received`, and that the run outlasted its unattended bound.
+_attached, _received, _overran = threading.Event(), threading.Event(), threading.Event()
+# The run's Journal, when its plan keeps one, and when its connection ended, by time.monotonic.
+_journal, _detached_at = None, None
 
 
 class Refusal(RuntimeError):
@@ -202,14 +222,157 @@ class Refusal(RuntimeError):
 
 
 def emit(kind, data):
-    """Write one framed line. A closed connection is a stop: nobody is left to read the result."""
+    """Write one framed line: to the run's journal when it keeps one, which never waits on the network, and otherwise
+    to standard output, where a closed connection is a stop, since nobody is left to read the result. A journal
+    that cannot be written is one too."""
     if not data.endswith(b"\n"): data += b"\n"
     with _output:
         try:
-            sys.stdout.buffer.write(kind + b" " + data)
-            sys.stdout.buffer.flush()
+            if _journal is not None:
+                _journal.write(kind + b" " + data)
+            else:
+                sys.stdout.buffer.write(kind + b" " + data)
+                sys.stdout.buffer.flush()
         except OSError:
             _stop.set()
+
+
+def connection_ended():
+    """The connection to the dispatcher ended. Once the dispatcher has heard the run start and while the run keeps a
+    journal, the run goes on, and later connections can collect it. Otherwise this is a stop: a dispatcher that
+    never heard the run start takes it for one that never ran. Called from a signal handler, so it writes no frame."""
+    global _detached_at
+    if _received.is_set(): return
+    if _journal is None or not _attached.is_set(): _stop.set()
+    elif _detached_at is None: _detached_at = time.monotonic()
+
+
+def write_all(data):
+    """Write data to standard output's descriptor, not sys.stdout: a write blocked on a connection that has gone
+    must not hold the buffered writer's lock while Python exits (see words)."""
+    while data:
+        data = data[os.write(1, data):]
+
+
+class Journal:
+    """Every frame of a run, kept on this Mac, so that a run outlives its connection and a later one can collect it.
+
+    The run writes frames here alone, so its output never waits on the network: a connection whose far end has
+    gone to sleep takes bytes until its buffers fill and then blocks, which would stop the lane at its next print
+    (vocaro-engineering#321). A thread sends the journal on to standard output. An exclusive flock on it, held
+    while this process lives and released however it ends, tells a later connection that the run is over."""
+
+    def __init__(self, directory, limit):
+        directory.mkdir(parents=True, exist_ok=True)
+        self.directory, self.limit, self.path = directory, limit, directory / FRAMES
+        self.stream = self.path.open("ab", buffering=0)
+        fcntl.flock(self.stream, fcntl.LOCK_EX)
+        self.more, self.closed, self.drained = threading.Event(), threading.Event(), threading.Event()
+        self.progress = time.monotonic()
+        self.pumping = threading.Thread(target=self.pump, daemon=True)
+        self.pumping.start()
+        threading.Thread(target=self.warden, daemon=True).start()
+
+    def write(self, frame):
+        self.stream.write(frame)
+        self.more.set()
+
+    def pump(self):
+        with self.path.open("rb", buffering=0) as stream:
+            while True:
+                closed = self.closed.is_set()
+                chunk = stream.read(1 << 16)
+                if chunk:
+                    try: write_all(chunk)
+                    except OSError:
+                        connection_ended()
+                        return
+                    self.progress = time.monotonic()
+                elif closed:
+                    self.drained.set()
+                    return
+                else:
+                    self.more.wait(0.2)
+                    self.more.clear()
+
+    def warden(self):
+        """A stop that a later connection left, and the bound on a run nobody is attending. eng run and eng admit
+        each stop their own work at its timeout; this is for an eng that does not."""
+        announced = False
+        while not self.closed.wait(0.5):
+            if (self.directory / STOP_FILE).exists(): _stop.set()
+            if _detached_at is None: continue
+            if not announced:
+                announced = True
+                say(f"the connection to the dispatching Mac ended; the run goes on, for at most {self.limit:g} s more")
+            if not _overran.is_set() and time.monotonic() - _detached_at > self.limit:
+                _overran.set()
+                _stop.set()
+                say(f"the run outlasted the {self.limit:g} s it may run with nobody attending; stopping it")
+
+    def finish(self):
+        """After the last frame: wait for it to reach the connection, while bytes are moving, and for the dispatcher
+        to say it has them, and then remove the journal. A journal not known to be delivered stays to be collected."""
+        self.closed.set()
+        self.more.set()
+        self.progress = time.monotonic()
+        while self.pumping.is_alive() and time.monotonic() - self.progress < JOURNAL_STALL_SECONDS:
+            time.sleep(0.05)
+        if self.drained.is_set(): _received.wait(RECEIVED_SECONDS)
+        if _received.is_set(): shutil.rmtree(self.directory, ignore_errors=True)
+
+
+def prune_journals(base):
+    """Remove journals no dispatcher came back for."""
+    for directory in base.glob("*"):
+        try:
+            if time.time() - (directory / FRAMES).stat().st_mtime > JOURNAL_KEPT:
+                shutil.rmtree(directory, ignore_errors=True)
+        except OSError:
+            pass
+
+
+def reattach(request):
+    """Send a dispatch's journal from its start, then what the run adds to it until its process has ended, and close
+    with an `E` frame, for a dispatcher whose connection ended. Standard input carries its words as a run's does:
+    `stop` leaves the stop file the run's warden looks for, and `received` has the journal removed once it is whole.
+    The end of standard input changes nothing: the run goes on. A journal that is not here gives only the `E`."""
+    directory = Path.home() / request["root"] / JOURNALS / request["id"]
+    received = threading.Event()
+
+    def listen():
+        for word in words():
+            if word == b"received": received.set()
+            elif word == b"stop":
+                try: (directory / STOP_FILE).touch()
+                except OSError: pass
+
+    threading.Thread(target=listen, daemon=True).start()
+    try:
+        stream = (directory / FRAMES).open("rb", buffering=0)
+    except OSError:
+        try: write_all(b"E {}\n")
+        except OSError: pass
+        return
+    try:
+        with stream:
+            while True:
+                # Read after the check: what the run wrote before it ended is then all there.
+                try:
+                    fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    fcntl.flock(stream, fcntl.LOCK_UN)
+                    ended = True
+                except OSError:
+                    ended = False
+                chunk = stream.read(1 << 16)
+                if chunk: write_all(chunk)
+                elif ended: break
+                else: time.sleep(0.2)
+        write_all(b"E {}\n")
+    except OSError:
+        return
+    received.wait(RECEIVED_SECONDS)
+    if received.is_set(): shutil.rmtree(directory, ignore_errors=True)
 
 
 def say(text):
@@ -2801,35 +2964,67 @@ def step(command, directory, environment, lock, log, wait=None, work=False):
     if log is not None: threads.append(threading.Thread(target=follow, args=(log, done), daemon=True))
     if wait is not None: threads.append(threading.Thread(target=relay_wait, args=(wait, done, work), daemon=True))
     for thread in threads: thread.start()
-    forwarded = False
+    forwarded, killed = None, False
     while child.poll() is None:
-        if _stop.is_set() and not forwarded:
+        if _stop.is_set() and forwarded is None:
             say("stop requested; sending SIGTERM to the run, which stops its command and leaves admission")
             try: os.killpg(child.pid, signal.SIGTERM)
             except ProcessLookupError: pass
-            forwarded = True
+            forwarded = time.monotonic()
+        # An attended stop has its dispatcher's wait after it; one that bounds a run nobody attends has only this.
+        if _overran.is_set() and forwarded is not None and not killed \
+                and time.monotonic() - forwarded > OVERRUN_KILL_SECONDS:
+            say(f"the run did not stop in {OVERRUN_KILL_SECONDS} s; sending SIGKILL")
+            try: os.killpg(child.pid, signal.SIGKILL)
+            except ProcessLookupError: pass
+            killed = True
         time.sleep(0.1)
     done.set()
     for thread in threads: thread.join(DRAIN_SECONDS)
     return child.returncode
 
 
-def watch():
-    """The end of standard input is the dispatcher's stop.
+def words():
+    """Each line of standard input as it comes, until its end.
 
     It reads the descriptor, not sys.stdin: Python 3.9 aborts at exit when a daemon thread is
     blocked holding the buffered reader's lock (observed on macOS 27.2, October 2026)."""
+    pending = b""
     try:
-        while os.read(0, 65536): pass
+        while True:
+            data = os.read(0, 65536)
+            if not data: return
+            *lines, pending = (pending + data).split(b"\n")
+            yield from lines
     except OSError:
-        pass
-    _stop.set()
+        return
+
+
+def watch():
+    """The dispatcher's words, and the end of its connection (connection_ended)."""
+    for word in words():
+        if word == b"stop": _stop.set()
+        elif word == b"attached": _attached.set()
+        elif word == b"received": _received.set()
+    connection_ended()
 
 
 def main(plan):
-    for number in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+    global _journal
+    for number in (signal.SIGTERM, signal.SIGINT):
         signal.signal(number, lambda *_: _stop.set())
+    # sshd's hangup when the connection goes, which is no stop of a run that keeps a journal.
+    signal.signal(signal.SIGHUP, lambda *_: connection_ended())
     threading.Thread(target=watch, daemon=True).start()
+    detach = plan.get("detach")
+    if detach:
+        journals = Path.home() / plan["root"] / JOURNALS
+        try:
+            prune_journals(journals)
+            _journal = Journal(journals / detach["id"], detach["seconds"])
+            emit(b"J", json.dumps({"id": detach["id"]}).encode())
+        except OSError as error:
+            say(f"keeps no journal, so a lost connection stops this run: {error}")
     # The seconds each stage here took: the wait for a free checkout, placing the commits in it, and each
     # eng command, whose own receipt tells its queue's wait from its run.
     phases = {}
@@ -2933,17 +3128,22 @@ def main(plan):
         result["error" if begun else "refused"] = str(error)
     finally:
         result["finished"] = time.time()
+        if _detached_at is not None:
+            result["detached"] = {"seconds": round(time.monotonic() - _detached_at, 3), "limit": detach["seconds"],
+                                  "overran": _overran.is_set()}
         # However the work ended, a stop or a failure included, what it wrote that the plan asks back.
         if back is not None and begun:
             try: send_back(*back)
             except OSError as error: say(f"could not send back what the run wrote in {back[0]}: {error}")
         emit(b"R", json.dumps(result).encode())
+        if _journal is not None: _journal.finish()
     return result
 
 
 if __name__ == "__main__":
     request = json.loads(sys.argv[1])
     if "keepUnlocked" in request: sys.exit(keep_unlocked(request["keepUnlocked"]))
+    if "reattach" in request: sys.exit(reattach(request["reattach"]))
     if {"toolchain", "images", "deleteRuntime", "receive", "leftovers", "device", "keychain", "foreground",
             "pressure", "capacity", "admissionLog", "screen", "toolkitCheckout"} & request.keys():
         print(json.dumps(answer(request)))
