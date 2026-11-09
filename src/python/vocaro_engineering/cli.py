@@ -390,11 +390,45 @@ def record(directory, receipt, work):
     return result
 
 
+def compile_failed(receipt):
+    """Whether the run's "compileFirst" step ended with a failed build."""
+    return receipt.get("compile", {}).get("outcome") == "failed"
+
+
+def compile_first(lane, root, directory, receipt, limit, env, on_stop, kill_after):
+    """A lane's "compileFirst" command, run inside the lane's one admission and environment, so that its xcodebuild or
+    swift has the stale-module rebuild the lane's own has (stale_modules.py). Returns (status, seconds left): the
+    status of a failed build with None, its output staying in run.log, or None with what remains of limit for the
+    lane's command, which shares the lane's one timeout. The step's output moves to compile.log once it has passed, so
+    that run.log holds only the tests eng reads. A build that fails never reads as unmeasured, whatever status it
+    exited with; one that reaches the limit raises TimedOut, which is. A lane without the step has its whole limit."""
+    compiled = directory / "compile.log"
+    compiled.unlink(missing_ok=True)
+    command = lane.get("compileFirst")
+    if command is None: return None, limit
+    log = directory / "run.log"
+    step = receipt["compile"] = {"command": command}
+    began = time.monotonic()
+    status = processes.run(command, cwd=root, log_path=log, timeout=limit, on_stop=on_stop, env=env, kill_after=kill_after)
+    seconds = time.monotonic() - began
+    step.update(exitStatus=status, seconds=round(seconds, 3))
+    if status == 0:
+        os.replace(log, compiled)
+        step.update(outcome="passed", log=compiled.name)
+        return None, max(limit - seconds, 1)
+    step.update(outcome="failed", log=log.name)
+    with log.open("a") as file:
+        print(f"eng: the build failed: compileFirst exited {status}, and no test ran", file=file)
+    print(f"eng: the build failed: compileFirst exited {status}, and no test ran; its log is {log}", file=sys.stderr, flush=True)
+    return (1 if status == evidence.UNMEASURED else status), None
+
+
 def conclude(directory, receipt, status, **fields):
     """Record a completed run's verdict, the status eng run returns, beside its command's exit
     status: passed only for 0, so a zero exit that ran too few tests is failed."""
-    receipt.update(outcome="passed" if status == 0 else "unmeasured" if status == evidence.UNMEASURED else "failed",
-                   **fields)
+    outcome = "passed" if status == 0 else "unmeasured" if status == evidence.UNMEASURED else \
+        "build-failed" if compile_failed(receipt) else "failed"
+    receipt.update(outcome=outcome, **fields)
     (directory / "source.json").write_text(json.dumps(receipt, indent=2) + "\n")
 
 
@@ -1393,7 +1427,8 @@ def perform(argv, report):
                 shutil.rmtree(directory / "results", ignore_errors=True)
                 report.ran_here(directory)
                 if resource != "self": github_artifacts.configured(root, config)
-                commands = [config["lanes"][name]["command"] for name in group] if group is not None else [lane["command"]]
+                commands = [config["lanes"][name]["command"] for name in group] if group is not None else \
+                    [lane["command"], *([lane["compileFirst"]] if "compileFirst" in lane else [])]
                 try:
                     with app_registrations.around_run(commands, root): return work()
                 finally:
@@ -1403,11 +1438,15 @@ def perform(argv, report):
                 command = awake(lane, extra)
                 receipt.update(command=command, arguments=extra, timeout=lane.get("timeout", processes.DEFAULT_LIMIT))
                 def execute(on_stop=None):
-                    return record(directory, receipt, lambda: prepared(lambda: processes.run(command, cwd=root,
-                                  log_path=directory / "run.log", timeout=lane.get("timeout", processes.DEFAULT_LIMIT),
-                                  on_stop=on_stop, env=stale_modules.environment(parallel.results_environment(directory / "results"), root),
-                                  kill_after=processes.FOREGROUND_KILL_AFTER if lane.get("foreground")
-                                  else processes.KILL_AFTER)))
+                    def work():
+                        env = stale_modules.environment(parallel.results_environment(directory / "results"), root)
+                        kill_after = processes.FOREGROUND_KILL_AFTER if lane.get("foreground") else processes.KILL_AFTER
+                        failed, left = compile_first(lane, root, directory, receipt, lane.get("timeout", processes.DEFAULT_LIMIT),
+                                                     env, on_stop, kill_after)
+                        if failed is not None: return failed
+                        return processes.run(command, cwd=root, log_path=directory / "run.log", timeout=left,
+                                             on_stop=on_stop, env=env, kill_after=kill_after)
+                    return record(directory, receipt, lambda: prepared(work))
             else:
                 jobs = 1 if args.serial else lane.get("jobs", len(group))
                 receipt.update(parallel=group, jobs=jobs)
@@ -1468,7 +1507,8 @@ def perform(argv, report):
                             blocked = cleared_notifications(receipt) if second else None
                             if blocked is not None: return blocked
                             result = execute(admission.interrupted)
-                            if alerts is not None: result = alerts.judged(result)
+                            # A failed build ran no test an alert could have disturbed.
+                            if alerts is not None and not compile_failed(receipt): result = alerts.judged(result)
             except processes.TimedOut as error:
                 # The lane's timeout is its backstop, so a run a busy host slowed past it is
                 # unmeasured (guides/measurement.md). Its log is incomplete and counts nothing.

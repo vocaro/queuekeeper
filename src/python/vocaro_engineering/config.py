@@ -22,7 +22,7 @@ def load(root):
 # The keys a lane and a lane group take, which parse checks and schemas/engineering.schema.json lists (a test
 # compares them, vocaro-engineering#248).
 LANE_KEYS = frozenset({"command", "resource", "minimumTests", "timeout", "foreground", "here", "model", "display",
-                       "budgetMinutes", "wholeHost", "apps", "unlockedScreen", "devices"})
+                       "budgetMinutes", "wholeHost", "apps", "unlockedScreen", "devices", "compileFirst"})
 GROUP_KEYS = frozenset({"parallel", "jobs", "resource", "here", "model", "budgetMinutes", "wholeHost", "unlockedScreen"})
 
 
@@ -117,6 +117,7 @@ def parse(source):
         model(name, lane)
         whole_host(name, lane)
         screen(name, lane)
+        compile_first(name, lane)
         if lane.get("display") and unadmitted(lane):
             raise ValueError(f"{name}.display needs an admitted lane: only an admitted test run holds the display's "
                              "assertions, and a self lane is not admitted")
@@ -157,6 +158,19 @@ def test_lanes(declared):
                                             or any(not isinstance(p, str) or not p.strip() for p in paths)
                                             for k, paths in selects.items()):
         raise ValueError("testLanes.selects maps each lane to a list of the paths its tests are under")
+
+
+def compile_first(name, lane):
+    """A lane's "compileFirst", the argv that compiles its test target before its command, in its one admission and
+    on the derived data the command uses, so that a compile error stops the run before its tests take a simulator
+    (guides/app-testing.md, Compile before the tests). A self lane has no admission of its own to run it in."""
+    if "compileFirst" not in lane: return
+    command = lane["compileFirst"]
+    if not isinstance(command, list) or not command or any(not isinstance(x, str) or not x for x in command):
+        raise ValueError(f"{name}.compileFirst needs an argv list, never shell source")
+    if unadmitted(lane):
+        raise ValueError(f"{name}.compileFirst needs an admitted lane: it runs inside the lane's one admission, and a "
+                         "self lane is not admitted")
 
 
 # What a lane takes of its Mac. Every lane is admitted, first come, first served, and offered to the second Mac
