@@ -14,7 +14,7 @@ import time
 from . import __version__, app_builds, app_registrations, budgets, crash_alerts, device_pass, devices, disk, docs, evidence, evidence_offload, failure_records, foreground, github_artifacts, keychain, lane_coverage, merge_queue, \
     notification_center, offload_host, parallel, processes, release, remote, resources, skills, spelling, stale_modules, storekit_config, toolkit_copy, xctest_shards
 from .config import TOOLKIT_ROOT, CAPABILITIES, DEFAULT_TOOLKIT, admission as admission_of, load, source_identity, \
-    display_lane_warnings, self_lane_warnings, stays, unadmitted, unlocked_screen
+    display_lane_warnings, lane_devices, self_lane_warnings, stays, unadmitted, unlocked_screen
 from .resources import BUSY, FREE_WAIT
 from .simulators import matrix, pool as simulator_pool
 
@@ -571,6 +571,33 @@ def foreground_held(stack, name, label, timeout, **options):
     return None
 
 
+def window_wait(name, window, label):
+    """How long work on the devices of window may wait for admission, a devices.WindowWait, or None for work with no
+    window. It is said at the start, since it decides when the work stops waiting (vocaro-engineering#292). label is
+    the admission's, whose runs in the admission log measure the work; None for work no earlier run measures."""
+    if window is None: return None
+    waiting = devices.WindowWait(window, resources.measured_seconds(label) if label is not None else None)
+    if waiting.left() > 0: print(f"eng: {name} waits for admission at most until {waiting.latest.isoformat()}: {waiting}",
+                                 file=sys.stderr, flush=True)
+    return waiting
+
+
+def window_closed(name, waiting):
+    """BUSY, after saying so, once the last start that can finish within the device window has passed for work whose
+    measured time says it cannot finish, or None: such work does not start, and nothing ran. Work no run has measured
+    waits for nothing then, and if admitted at once meets the bound its reservation sets, which refuses or stops it."""
+    if waiting is None or waiting.measured is None or waiting.left() > 0: return None
+    print(f"eng: {name} not run on {this_mac()}: {waiting}. No device result was recorded", file=sys.stderr, flush=True)
+    return BUSY
+
+
+def not_admitted(name, waiting, status):
+    """status, the end of a wait for admission, after saying that the device window is what cut it short."""
+    if waiting is not None and waiting.limited and status == BUSY:
+        print(f"eng: {name} stopped waiting: {waiting}. No device result was recorded", file=sys.stderr, flush=True)
+    return status
+
+
 def fell_back(name, offered):
     """Say in one line, before the run starts, that work offered to the second Mac runs on this Mac, and why, so
     that the second Mac's lines a declined offer left above are not read as the run's (vocaro-engineering#185)."""
@@ -800,12 +827,18 @@ def admit(root, args, config=None, *, device_window=None):
                "foreground": args.foreground, "timeLimit": args.time_limit, **placement(reason)}
     with processes.forwarding_signals(), contextlib.ExitStack() as stack:
         asked = time.monotonic()
+        waiting = window_wait("the command", device_window, " ".join(command))
+        allowed = waiting.seconds if waiting is not None else lambda seconds: seconds
+        closed = window_closed("the command", waiting)
+        if closed is not None: return closed
         # The second Mac's foreground first, so that a command waiting for it holds no slot.
-        waited = foreground_held(stack, "the command", " ".join(command), args.timeout) if second else None
-        if waited is not None: return waited
-        admission = admitted_here(stack, "the command", " ".join(command), args.timeout, offered, args.if_free,
+        waited = foreground_held(stack, "the command", " ".join(command), allowed(args.timeout)) if second else None
+        if waited is not None: return not_admitted("the command", waiting, waited)
+        closed = window_closed("the command", waiting)
+        if closed is not None: return closed
+        admission = admitted_here(stack, "the command", " ".join(command), allowed(args.timeout), offered, args.if_free,
                                   args.exclusive, args.model, placement=admission_placement(offered, reason))
-        if isinstance(admission, int): return admission
+        if isinstance(admission, int): return not_admitted("the command", waiting, admission)
         sent = offered.sent if offered is not None else {}
         # Once the tree here is no longer what was sent, the command runs from what was sent (#276).
         moved = remote.moved_trees(root, offered)
@@ -1357,18 +1390,29 @@ def main(argv=None):
                     else:
                         with contextlib.ExitStack() as stack:
                             asked = time.monotonic()
+                            # The window the session holds the lane's devices for, here or leased by the Mac that
+                            # sent it. Arguments such as a filter make a run no earlier one measures.
+                            device_window = device_window if device_window is not None else devices.held_window(
+                                lane_devices(lane), devices.default_owner())
+                            waiting = window_wait(args.lane, device_window,
+                                                  None if extra else lane_label(root, config, args.lane))
+                            allowed = waiting.seconds if waiting is not None else lambda seconds: seconds
+                            closed = window_closed(args.lane, waiting)
+                            if closed is not None: return closed
                             # The second Mac's foreground first, so that a run waiting for it holds no slot.
                             waited = foreground_held(stack, args.lane, lane_label(root, config, args.lane),
-                                                     remote.OVERFLOW_TIMEOUT,
+                                                     allowed(remote.OVERFLOW_TIMEOUT),
                                                      expected=lane.get("timeout", foreground.EXPECTED)) if second else None
-                            if waited is not None: return waited
+                            if waited is not None: return not_admitted(args.lane, waiting, waited)
+                            closed = window_closed(args.lane, waiting)
+                            if closed is not None: return closed
                             admission = admitted_here(stack, args.lane, lane_label(root, config, args.lane),
-                                                      remote.OVERFLOW_TIMEOUT, offered, args.if_free,
+                                                      allowed(remote.OVERFLOW_TIMEOUT), offered, args.if_free,
                                                       resource == "exclusive", lane.get("model", False),
                                                       lane.get("wholeHost", False),
                                                       needs and not os.environ.get(resources.TOKEN),
                                                       admission_placement(offered, reason))
-                            if isinstance(admission, int): return admission
+                            if isinstance(admission, int): return not_admitted(args.lane, waiting, admission)
                             stopped = admitted_tree(root, args.lane, offered, receipt)
                             if stopped is not None: return stopped
                             # The wait in the queue, apart from what came before it (remote.execute).

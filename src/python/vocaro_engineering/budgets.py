@@ -152,7 +152,7 @@ def misplaced_passes(config):
     lanes = config.get("lanes", {})
     found = []
     for name, lane in lanes.items():
-        if "command" not in lane or not passes_devices(lane["command"]): continue
+        if "command" not in lane or not (passes_devices(lane["command"]) or lane.get("devices")): continue
         if lane.get("resource") != "self" and not lane.get("here"): found.append(name)
     return found
 

@@ -2252,7 +2252,8 @@ banner while its command runs, and runs a command that one reached once more
 Record each app the session launches on the device with `devices update KEY --launched BUNDLE`.
 Releasing an entry that records any requires `--apps-quit "…"`, saying how they were quit (for
 example `devicectl device process terminate`), so the next holder does not find them running. The
-next entry starts without them; its `previousLease` keeps them. An app running on a device a
+Shortcuts app that `devices take` opens for the silencing shortcut is eng's own and needs no such
+word. The next entry starts without them; its `previousLease` keeps them. An app running on a device a
 session holds is not another session's work, since the record shows nobody else holds the device:
 a leftover the holder may quit, but never uninstall or clear beyond the agreed cleanup.
 

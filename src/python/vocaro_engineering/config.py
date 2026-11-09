@@ -22,8 +22,33 @@ def load(root):
 # The keys a lane and a lane group take, which parse checks and schemas/engineering.schema.json lists (a test
 # compares them, vocaro-engineering#248).
 LANE_KEYS = frozenset({"command", "resource", "minimumTests", "timeout", "foreground", "here", "model", "display",
-                       "budgetMinutes", "wholeHost", "apps", "unlockedScreen"})
+                       "budgetMinutes", "wholeHost", "apps", "unlockedScreen", "devices"})
 GROUP_KEYS = frozenset({"parallel", "jobs", "resource", "here", "model", "budgetMinutes", "wholeHost", "unlockedScreen"})
+
+
+def device_keys(name, lane):
+    """A lane's "devices", the entries of the device record its run uses, which a device pass's own --device options
+    say without it. Only an admitted lane waits for admission, which they bound (lane_devices)."""
+    if "devices" not in lane: return
+    keys = lane["devices"]
+    if not isinstance(keys, list) or not keys or any(not isinstance(key, str) or not key for key in keys):
+        raise ValueError(f"{name}.devices must be a non-empty list of device entries, such as \"iPhone\"")
+    if unadmitted(lane):
+        raise ValueError(f"{name}.devices needs an admitted lane: it bounds the wait for admission, and a self lane "
+                         "is not admitted")
+
+
+def lane_devices(lane):
+    """The device-record entries a lane's run uses (vocaro-engineering#292): its "devices", for a project's script
+    that calls device_pass.run, or each --device of an `eng device-pass` command, up to that command's own --, which
+    the words of the command it runs follow. Any other lane uses none."""
+    if lane.get("devices"): return list(lane["devices"])
+    command = lane.get("command") or []
+    if "device-pass" not in command: return []
+    words = command[command.index("device-pass") + 1:]
+    if "--" in words: words = words[:words.index("--")]
+    return [word.split("=", 1)[1] if word.startswith("--device=") else words[index + 1]
+            for index, word in enumerate(words) if word.startswith("--device=") or word == "--device"]
 
 
 def parse(source):
@@ -80,6 +105,7 @@ def parse(source):
         if not isinstance(lane, dict) or set(lane) - LANE_KEYS:
             raise ValueError(f"Invalid lane {name}")
         apps(name, lane)
+        device_keys(name, lane)
         for key in ["foreground", "model", "display", "wholeHost", "unlockedScreen"]:
             if key in lane and type(lane[key]) is not bool:
                 raise ValueError(f"{name}.{key} must be true or false")
