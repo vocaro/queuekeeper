@@ -5025,7 +5025,8 @@ class SharedCheckout(Fixture):
         self.assertIn(f"left {self.repo} behind after 0.5s of tries: {mq.IN_USE}", said)
 
     def test_a_landing_that_arrives_during_the_tries_ends_them(self):
-        def started(): self.runner = self.held(["sleep", "300"], self.repo / "scripts")
+        # Keep the checkout in use until the test releases it, independent of the host census.
+        holders = [mq.disk.Process(pid=42, command="eng", cwd=str(self.repo / "scripts"))]
         tries = []
         def arrived(seconds):
             tries.append(seconds)
@@ -5033,12 +5034,16 @@ class SharedCheckout(Fixture):
                 self.commit("later", "later")
                 self.add("later")
                 run(self.repo, "git", "checkout", "-q", "main")
-            if len(tries) == 3: self.runner.kill()
-        with patch.object(mq, "FOLLOW_LIMIT", 3600), patch.object(mq, "pause", arrived):
-            before, after, main, said = self.land(started)
+                return
+            self.assertEqual(self.gates(), 2, "the queued entry should gate before the worker retries")
+            if len(tries) == 3:
+                holders.clear()
+        with patch.object(mq.disk, "census", return_value=holders), \
+                patch.object(mq, "FOLLOW_LIMIT", 3600), patch.object(mq, "pause", arrived):
+            _, after, main, said = self.land()
         # The arrival ended the first tries, the second round landed it, and the tries after it caught up.
         self.assertIn("later", self.main_files())
-        self.assertEqual(len(tries), 3)
+        self.assertEqual(tries, [mq.FOLLOW_POLL] * 3)
         self.assertEqual(after, main)
         self.assertEqual(said.count(f"left {self.repo} as it is: {mq.IN_USE}"), 2)
 
