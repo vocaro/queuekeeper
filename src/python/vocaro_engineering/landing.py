@@ -44,6 +44,16 @@ ISSUES_CACHE = "CLOSEOUT_ISSUES_CACHE"
 # in any tense, before an issue here (#N), in another repository (owner/name#N) or its URL.
 CLAIM = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\s+"
                    r"(?:https://github\.com/([\w.-]+/[\w.-]+)/issues/|([\w.-]+/[\w.-]+)?#)(\d+)\b", re.I)
+# A claim GitHub acts on although its sentence denies it (vocaro-engineering#286): one of these within NEGATED_WITHIN
+# words before the keyword, in the same clause. "not only fixes #N" asserts the fix, so it is no negation.
+NEGATION = re.compile(r"\b(?:(?:can)?not\b(?!\s+(?:only|just|merely|simply)\b)|never\b|without\b|no\s+longer\b)"
+                      r"|(?<=[a-z])n['\u2019]t\b", re.I)
+NEGATED_WITHIN = 3
+# Where a clause ends: its punctuation, a conjunction that starts another, a blank line, a list item, or a line that
+# opens with a capital, as a new sentence or trailer does where a wrapped line would go on in lower case. "or" joins
+# what one negation governs ("not fix or close #N"), and "yet" stays inside it ("not yet fix #N").
+CLAUSE_END = re.compile(r"[,;:()\u2013\u2014]|[.!?](?=\s|$)|\s-\s|\n\s*(?:\n|[*+]\s|(?=[A-Z]))"
+                        r"|(?i:\b(?:and|but|so|while|because|since|although|though)\b)")
 
 
 def contained(git, base, tip):
@@ -287,15 +297,47 @@ def citations(git, tip, bases, branch=None, issues=False, cache=None):
 def claimed(git, *revisions):
     """{(repository, number): [commit]} for the closing claims in those commits' messages, with
     repository "" for this one, or None when the messages could not be read."""
-    log = git("log", "--format=%H%x00%B%x01", *revisions)
-    if log.returncode: return None
+    read = messages(git, *revisions)
+    if read is None: return None
     found = {}
-    for entry in log.stdout.split("\x01"):
-        commit, _, message = entry.strip("\n").partition("\x00")
+    for commit, message in read:
         for match in CLAIM.finditer(message):
             key = ((match.group(1) or match.group(2) or "").lower(), int(match.group(3)))
             found.setdefault(key, []).append(commit)
     return found
+
+
+def messages(git, *revisions):
+    """[(commit, message)] for those commits, or None when their messages could not be read."""
+    log = git("log", "--format=%H%x00%B%x01", *revisions)
+    if log.returncode: return None
+    entries = (entry.strip("\n").partition("\x00") for entry in log.stdout.split("\x01"))
+    return [(commit, message) for commit, _, message in entries if commit]
+
+
+def negated(message):
+    """[(line number, that line, issue)] for each closing claim in a commit message that its own clause denies, as
+    "This does not fix #43." does: GitHub closes the issue all the same. The clause is read from the text alone, so a
+    comma inside a negated clause ends it early, and such a claim passes."""
+    found = []
+    for match in CLAIM.finditer(message):
+        start = match.start()
+        # One character past the claim's start, for a line that opens with the keyword's capital.
+        ends = list(CLAUSE_END.finditer(message, 0, start + 1))
+        clause = message[ends[-1].end() if ends else 0:start]
+        denials = list(NEGATION.finditer(clause))
+        if denials and len(clause[denials[-1].end():].split()) <= NEGATED_WITHIN:
+            line = message.count("\n", 0, start)
+            issue = f"{match.group(1) or match.group(2) or ''}#{match.group(3)}"
+            found.append((line + 1, message.split("\n")[line], issue))
+    return found
+
+
+def negated_claims(git, *revisions):
+    """[(commit, line number, line, issue)] for the negated closing claims in those commits' messages (negated), or
+    None when the messages could not be read."""
+    read = messages(git, *revisions)
+    return None if read is None else [(commit, *claim) for commit, message in read for claim in negated(message)]
 
 
 def issue_state(repository, number):

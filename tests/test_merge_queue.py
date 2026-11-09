@@ -18,7 +18,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src/python"))
-from vocaro_engineering import cli, config as configuration, merge_queue as mq, offload_host
+from vocaro_engineering import cli, config as configuration, landing, merge_queue as mq, offload_host
 # What eng land runs before it queues, which Fixture leaves out but SpelledBeforeQueued puts back.
 SPELLED_BEFORE_QUEUED = mq.spelled_before_queued
 import host_isolation
@@ -2823,6 +2823,158 @@ class ImplicitSpelling(Fixture):
                 with self.assertRaisesRegex(ValueError, "queue.spelling can only be false"): self.config()
         schema = json.loads((ROOT / "schemas/engineering.schema.json").read_text())
         self.assertEqual(schema["properties"]["queue"]["properties"]["spelling"]["const"], False)
+
+
+class NegatedClaims(unittest.TestCase):
+    """What landing.negated reads as a closing claim its own clause denies (vocaro-engineering#286)."""
+    def test_each_form_of_negation_is_refused(self):
+        for message in ("This does not fix #43.", "This doesn't fix #43.", "This doesn’t fix #43.",
+                        "This cannot close #43.", "This will never resolve #43.", "This no longer fixes #43.",
+                        "Landed without the fix #43.", "NOT fixed #43."):
+            with self.subTest(message):
+                self.assertEqual(landing.negated(message), [(1, message, "#43")])
+
+    def test_a_few_words_may_stand_between_and_more_may_not(self):
+        for message in ("It does not yet fix #43.", "It does not by itself fix #43.", "It does not on its own fix #43."):
+            with self.subTest(message):
+                self.assertEqual(len(landing.negated(message)), 1)
+        self.assertEqual(landing.negated("It does not on any of its paths fix #43."), [])
+
+    def test_a_plain_claim_passes(self):
+        for message in ("Closes #43.", "Fixes #43", "resolved: #43", "Add a thing\n\nCloses #43.\nCloses #44."):
+            with self.subTest(message):
+                self.assertEqual(landing.negated(message), [])
+
+    def test_other_repositories_and_urls_are_named_in_full(self):
+        for message, issue in (("This does not fix vocaro/BreezEPUB#43.", "vocaro/BreezEPUB#43"),
+                               ("This does not close https://github.com/vocaro/BreezEPUB/issues/43.",
+                                "vocaro/BreezEPUB#43")):
+            with self.subTest(message):
+                self.assertEqual(landing.negated(message), [(1, message, issue)])
+        self.assertEqual(landing.negated("Closes vocaro/BreezEPUB#43."), [])
+        self.assertEqual(landing.negated("Fixes https://github.com/vocaro/BreezEPUB/issues/43"), [])
+
+    def test_what_is_no_claim_passes(self):
+        for message in ("Refs #43.", "This does not change #43.", "This leaves #43 open.", "Does not touch fixes in #43.",
+                        "Finished without fixing #43.", "Not ready: see #43.", "Refs vocaro/BreezEPUB#43, not fixed."):
+            with self.subTest(message):
+                self.assertEqual(landing.negated(message), [])
+
+    def test_a_negation_in_an_earlier_clause_passes(self):
+        for message in ("The lane did not start, and fixes #43.", "The lane did not start and fixes #43.",
+                        "Do not retry; closes #43.", "Do not retry: closes #43.", "Do not retry. Closes #43.",
+                        "Do not retry — closes #43.", "Do not retry - closes #43.",
+                        "Stop if it cannot run because that fixes #43.", "This is not slow but fixes #43.",
+                        "The run (that did not start) fixes #43."):
+            with self.subTest(message):
+                self.assertEqual(landing.negated(message), [])
+
+    def test_a_claim_on_its_own_line_passes_after_a_line_that_negates(self):
+        for message in ("Do not count a run\n\nCloses #43.", "It does not change the parser\nCloses #43.",
+                        "Notes:\n- does not retry\n- fixes #43"):
+            with self.subTest(message):
+                self.assertEqual(landing.negated(message), [])
+
+    def test_a_negation_wrapped_onto_the_line_before_is_refused(self):
+        self.assertEqual(landing.negated("Add a thing\n\nThis does not\nfix #43, and adds more."),
+                         [(4, "fix #43, and adds more.", "#43")])
+
+    def test_not_only_asserts_the_claim(self):
+        for message in ("This not only fixes #43 but adds a test.", "It does not just fix #43."):
+            with self.subTest(message):
+                self.assertEqual(landing.negated(message), [])
+
+    def test_each_claim_is_judged_alone(self):
+        self.assertEqual([claim[2] for claim in landing.negated("Fixes #1 and does not close #2.")], ["#2"])
+        self.assertEqual([claim[2] for claim in landing.negated("Does not fix #1 or close #2.")], ["#1", "#2"])
+        self.assertEqual(landing.negated("Closes #1, not #2."), [])
+
+    def test_a_version_number_ends_no_clause(self):
+        self.assertEqual(len(landing.negated("This does not in v1.2 fix #43.")), 1)
+
+
+class ClaimsBeforeQueued(Fixture):
+    """eng land and `eng queue add` refuse a commit message that denies a closing claim before anything is queued
+    (vocaro-engineering#286)."""
+    def worded(self, branch, *messages):
+        """A branch of one commit for each message, on origin/main."""
+        for index, message in enumerate(messages):
+            self.commit(f"{branch}-{index}", branch, start="origin/main" if index == 0 else branch)
+            run(self.repo, "git", "commit", "-q", "--amend", "-m", message)
+        return run(self.repo, "git", "rev-parse", branch)
+
+    def land(self, branch, **options):
+        """(the new entry's ID or None, what eng land said, the error it refused with or None), no worker started."""
+        said, error, identifier = io.StringIO(), None, None
+        with patch.object(mq.Queue, "start"), contextlib.redirect_stdout(said), contextlib.redirect_stderr(said):
+            try: identifier = mq.add(self.repo, branch, **options)
+            except mq.Refused as refused: error = str(refused)
+        return identifier, said.getvalue(), error
+
+    def test_a_negated_claim_is_refused_naming_the_commit_and_line_and_nothing_is_queued(self):
+        tip = self.worded("fix", "Add a thing\n\nSome context.\nThis does not fix #43.")
+        with patch.object(mq, "check") as trial, patch.object(mq, "checked_before_running") as unittest_checks:
+            identifier, _, error = self.land("fix")
+        self.assertIsNone(identifier)
+        self.assertEqual(mq.Queue(self.repo).all(), [])
+        self.assertEqual(run(self.repo, "git", "for-each-ref", "refs/eng-queue"), "")
+        trial.assert_not_called()
+        unittest_checks.assert_not_called()
+        self.assertIn(f"{tip[:12]} is not queued", error)
+        self.assertIn(f"{tip[:12]} line 4 closes #43: This does not fix #43.", error)
+        self.assertIn('"Refs #43"', error)
+        self.assertIn('"leaves #43 open"', error)
+        self.assertIn("Checked before it is queued", error)
+
+    def test_a_plain_claim_is_queued(self):
+        # The positive control.
+        self.worded("fix", "Add a thing\n\nThe lane did not start, and this is the repair.\n\nCloses #43.")
+        identifier, _, error = self.land("fix")
+        self.assertIsNone(error)
+        self.assertEqual(self.state(identifier)["state"], "queued")
+
+    def test_any_commit_of_the_branch_is_read_and_each_finding_named(self):
+        self.worded("two", "Add a thing, without fix vocaro/BreezEPUB#7.", "Add another\n\nCloses #8.",
+                    "Add a third that won't close #9.")
+        _, _, error = self.land("two")
+        self.assertIn("line 1 closes vocaro/BreezEPUB#7:", error)
+        self.assertIn("line 1 closes #9:", error)
+        self.assertNotIn("closes #8", error)
+
+    def test_a_message_main_already_holds_is_not_read(self):
+        self.worded("old", "This does not fix #43.")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        self.worded("fix", "Add a thing")
+        identifier, _, error = self.land("fix")
+        self.assertIsNone(error)
+        self.assertEqual(self.state(identifier)["state"], "queued")
+
+    def test_the_emergency_options_do_not_skip_it(self):
+        self.worded("fix", "This does not fix #43.")
+        for options in ({"front": True}, {"no_gate": True, "why": "urgent"}):
+            with self.subTest(options):
+                identifier, _, error = self.land("fix", **options)
+                self.assertIsNone(identifier)
+                self.assertIn("is not queued", error)
+        self.assertEqual(mq.Queue(self.repo).all(), [])
+
+    def test_a_branch_refreshed_by_a_merge_is_read_too(self):
+        old = run(self.repo, "git", "rev-parse", "origin/main")
+        self.commit("other", "other")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        self.commit("mine", "fix", start=old)
+        run(self.repo, "git", "commit", "-q", "--amend", "-m", "This does not fix #43.")
+        run(self.repo, "git", "merge", "-q", "--no-edit", "origin/main")
+        identifier, _, error = self.land("fix")
+        self.assertIsNone(identifier)
+        self.assertIn("closes #43: This does not fix #43.", error)
+
+    def test_messages_it_cannot_read_are_refused(self):
+        self.worded("fix", "Add a thing")
+        with patch.object(mq.landing, "negated_claims", return_value=None):
+            identifier, _, error = self.land("fix")
+        self.assertIsNone(identifier)
+        self.assertIn("commit messages could not be read", error)
 
 
 class SpelledBeforeQueued(Fixture):

@@ -675,6 +675,22 @@ def checked_before_running(root, tip, config):
                       "merge queue, Checked before it is queued)")
 
 
+def claims_before_queued(root, base, tip):
+    """Refuse tip, queuing nothing, when a message of its commits after base denies a closing claim, as "This does not
+    fix #43." does: GitHub closes the issue when the commit reaches main (landing.negated, vocaro-engineering#286)."""
+    found = landing.negated_claims(lambda *words: git(root, *words), f"{base}..{tip}")
+    if found is None: raise Refused(f"{tip[:12]} is not queued: its commit messages could not be read")
+    if not found: return
+    issue = found[0][3]
+    raise Refused(f"{tip[:12]} is not queued: GitHub closes an issue a commit message names after a closing keyword, "
+                  "even in a negated phrase:\n  "
+                  + "\n  ".join(f"{commit[:12]} line {number} closes {named}: {line.strip()}"
+                                for commit, number, line, named in found)
+                  + f'\nFor an issue that stays open, write "Refs {issue}" or "leaves {issue} open"; to close it, write '
+                    f'"Closes {issue}." on its own line. Reword the commit and land it again (guides/maintenance.md, '
+                    "The merge queue, Checked before it is queued)")
+
+
 def spelling_run(queue, root, commit):
     """(exit status, the lines it printed, the command) of the spelling lane on commit, in a scratch worktree outside
     every checkout, as the worker picks it (Worker.gate): the project's own spelling lane when commit's engineering.json
@@ -1272,6 +1288,8 @@ def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False
     # A branch added again replaces what it added before; main names nobody's work in particular.
     replaced = [entry for entry in waiting
                 if branch and branch not in ("main", "HEAD") and entry.get("branch") == branch]
+    # A negated closing claim closes its issue on landing, whatever a gate finds (#286): refused before anything else.
+    claims_before_queued(root, base, tip)
     # What a round would find, before anything is queued or replaced: a refused entry leaves the queue as it was. First
     # eng unittest's own checks before a run, which a gate holding it would fail in seconds and bisect blind (#290).
     checked_before_running(root, tip, gating)

@@ -177,7 +177,8 @@ by a branch that would fix it, and not by a merge that records such a branch as 
 - GitHub ties a closing keyword to the one issue number straight after it, and reads a closing
   verb before a number as a keyword whatever comes before the verb. "Fixes #A and #B" closes
   only #A, and "does not close #N" closes #N. Give each issue its own `Closes #N.` line, and
-  write "leaves #N open" for one that stays open.
+  write `Refs #N` or "leaves #N open" for one that stays open. `eng land` refuses a commit message
+  whose closing claim is negated; a hand push has no such check.
 - An issue left open after its change lands, until something is seen in real use, says what
   closes it and how to check: the observation, and the command or path that shows it. Nothing
   else brings anyone back to look, so a session that later claims, comments on or closes out
@@ -434,7 +435,19 @@ worktree Git cannot add, queues the entry, says so, and leaves any conflict to t
 tree of 10,000 files, where each cherry-pick adds about 0.3 s. Whole `eng land` runs, fetch included,
 took 1.5 to 2.7 s and 3 to 9 s.
 
-**Checked before it is queued.** First, `eng land` and `eng queue add` run `eng unittest`'s own checks
+**Checked before it is queued.** Before any other check, `eng land` and `eng queue add` read the
+messages of the entry's commits and refuse one that denies a closing claim, with nothing queued and
+exit 1, naming the commit and line and what to write instead. On 2026-11-07 "This does not fix #43."
+closed vocaro/BreezEPUB#43 when it reached main, two hours before the real fix
+([#286](https://github.com/vocaro/vocaro-engineering/issues/286)). A claim is one `landing.CLAIM`
+matches, and it is negated by `not`, `cannot`, `n't`, `never`, `no longer` or `without` up to three
+words before the keyword in the same clause. A clause ends at punctuation, at `and`, `but`, `so`,
+`while`, `because`, `since` or `though`, at a blank line or list item, and at a line that opens with
+a capital, so "did not start, and fixes #N", a `Refs #N` and "not only fixes #N" all pass. The check
+reads text alone: a comma inside the negated clause ("does not, in fact, fix #N") ends the clause and
+passes it. `--no-gate` and `--front` do not skip it.
+
+Next, `eng land` and `eng queue add` run `eng unittest`'s own checks
 before a run, the ones whose refusal ends `nothing ran`, on the entry's tree, for each queue lane on
 `origin/main` whose command is `eng unittest`, with that lane's `-s` and `-p`. In a suite that keeps
 its tests off the real hosts in `host_isolation.py`, a test module that does not import
