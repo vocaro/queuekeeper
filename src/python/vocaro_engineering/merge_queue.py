@@ -1476,6 +1476,12 @@ def refused_modules(line):
     return set()
 
 
+def refusal_key(line):
+    """A refusal of eng unittest's without the directories its paths name, so that the same refusal printed in two
+    checkouts, as a bisect's two halves print it, is one (Worker.older)."""
+    return re.sub(r"\S*/", "", line)
+
+
 def patch_of(root, entry):
     """The stable patch ID of the change entry's commits make together, which a rebase keeps, or None when they cannot
     be read."""
@@ -1509,14 +1515,32 @@ def gate_logs(queue, lanes, working):
 
 
 def doctor(root, as_json=False):
-    """`eng queue doctor`: read the queue's entries, its hold, its worker and its newest gate logs for the signs of a
-    queue that is stuck rather than testing, and say for each what it means and what would heal it
-    (vocaro-engineering#290): a hold; entries waiting with no worker (#287); gates that eng unittest refused before
-    running anything, which give no failed test to blame and so bisect blind (#280), with the entry that brings the
+    """`eng queue doctor`: print diagnose's findings, or that the queue is healthy. 0 when it finds the queue healthy,
+    1 when it finds anything."""
+    findings, waiting, working = diagnose(root)
+    if as_json:
+        print(json.dumps({"healthy": not findings, "waiting": len(waiting), "worker": working, "findings": findings},
+                         indent=2))
+        return 1 if findings else 0
+    if not findings:
+        print(f"eng queue doctor: healthy: {entries_word(len(waiting))} waiting, worker "
+              f"{'running' if working else 'not needed'}, and no gate since the last verdict ran nothing")
+        return 0
+    print(f"eng queue doctor: {len(findings)} finding{'' if len(findings) == 1 else 's'}, and it changed nothing:")
+    for finding in findings:
+        print(f"{finding['signal']}: {finding['diagnosis']}\n  next: {finding['remedy']}")
+    return 1
+
+
+def diagnose(root):
+    """(findings, the waiting entries, whether a worker runs): read the queue's entries, its hold, its worker and its
+    newest gate logs for the signs of a queue that is stuck rather than testing, and say for each what it means and
+    what would heal it (vocaro-engineering#290): a hold; entries waiting with no worker (#287); gates that eng unittest
+    refused before running anything, which give no failed test to rerun (#280), with the entry that brings the
     refusal; gates in a row with no verdict (#253, #268, #282); a waiting entry that eng unittest would refuse; and an
     entry that came back unchanged after the same change failed or was removed. It changes nothing, neither entries
-    nor the hold: sending an entry back on its word, without a failed test a rerun confirmed, is a change
-    to the gate's policy that waits for the owner. 0 when it finds the queue healthy, 1 when it finds anything."""
+    nor the hold. The worker acts on a refusal itself (Worker.blame_refusal, Worker.refused_again) and puts this
+    diagnosis in the hold it makes when it cannot blame one entry."""
     queue = Queue(root)
     entries = queue.all()
     waiting = [entry for entry in entries if entry["state"] in WAITING]
@@ -1555,9 +1579,9 @@ def doctor(root, as_json=False):
                      f"{', '.join(same)}). A refusal is no test failure, so no rerun can confirm one, and a bisect "
                      "through it is blind (vocaro-engineering#280)")
         if len(culprits) == 1:
-            remedy = (f"{culprits[0]} brings it, as its tree alone is refused so: take it out with `eng queue remove "
-                      f"{culprits[0]}` and fix it in its session. The worker does not send it back by itself, which "
-                      "waits for the owner's decision (vocaro-engineering#290)")
+            remedy = (f"{culprits[0]} brings it, as its tree alone is refused so: the worker sends it back by itself "
+                      "from the next gate that holds it (vocaro-engineering#290), or take it out now with `eng queue "
+                      f"remove {culprits[0]}`, and fix it in its session")
         elif culprits:
             remedy = (f"{', '.join(culprits)} each bring a module it names, so none is the one cause: fix each, or "
                       "let the bisect find them")
@@ -1592,18 +1616,7 @@ def doctor(root, as_json=False):
                       "unless that cause was outside the change, it comes back the same way: take it out with "
                       f"`eng queue remove {entry['id']}` and fix it first")
                 break
-    if as_json:
-        print(json.dumps({"healthy": not findings, "waiting": len(waiting), "worker": working, "findings": findings},
-                         indent=2))
-        return 1 if findings else 0
-    if not findings:
-        print(f"eng queue doctor: healthy: {entries_word(len(waiting))} waiting, worker "
-              f"{'running' if working else 'not needed'}, and no gate since the last verdict ran nothing")
-        return 0
-    print(f"eng queue doctor: {len(findings)} finding{'' if len(findings) == 1 else 's'}, and it changed nothing:")
-    for finding in findings:
-        print(f"{finding['signal']}: {finding['diagnosis']}\n  next: {finding['remedy']}")
-    return 1
+    return findings, waiting, working
 
 
 def wait(root, identifier, limit=WAIT_LIMIT):
@@ -1757,6 +1770,11 @@ class Worker:
         self.alone = False  # whether this round's batch is one entry an option of eng land put on its own (choose)
         self.failed_lane = None  # the lane whose failure the last gate returned, or None (gate)
         self.confirmed = None  # the failed tests the last rerun confirmed, which blame reads (rerun)
+        self.refused = None  # (lane, line, config) of the last gate eng unittest refused before running, for blame (rerun)
+        self.unblamed = None  # {"key", "line"} of that refusal when blame found no one entry that brings it (blame)
+        # {refusal_key: which gate} of the refusals that blamed no entry in the gates just before this one, the
+        # previous gate's or a bisect's newer half beside it, which the same refusal again holds (older, Beside.weigh).
+        self.refusals = {}
         self.blamed = False  # whether the last failed batch older settled sent back one entry by blame
         self.lane_now = None  # (lane, began, where) of the lane the gate runs or ran last (gate)
         self.stacked = None  # a Stack whose batch below landed, which the next round adopts as its own (after_stack)
@@ -2483,7 +2501,7 @@ class Worker:
         recorded in the entries and on the tracker (hardening), and the batch lands only when none of its commits
         changes a file the test's module is or imports (imported_files); otherwise it bisects. In a batch of several
         entries, a rerun that fails goes on to rerun the other failed tests, so that blame can weigh them all."""
-        self.confirmed = None
+        self.confirmed = self.refused = None
         lane = self.failed_lane
         command = rerun_command(config.get("lanes", {}).get(lane, {}).get("command")) if lane else None
         if command is None: return None
@@ -2492,6 +2510,13 @@ class Worker:
             self.say(f"{lane}'s log cannot be read, so no failed test is rerun: {error}")
             return None
         tests, why = failed_tests(said)
+        refusals = REFUSAL.findall(said)
+        if tests is None and refusals and not UNITTEST_SUMMARY.findall(said):
+            # A refusal is no test failure, and the same tree gives it again: blame reads it, with no rerun (#290).
+            self.refused = (lane, refusals[-1], config)
+            self.say(f"{lane} ran nothing, as eng unittest refused it before running anything, which no rerun would "
+                     f"change: {refusals[-1]}")
+            return None
         if tests is None:
             self.say(f"{lane} failed with no failed test to rerun alone ({why}): bisecting")
             return None
@@ -2569,12 +2594,13 @@ class Worker:
         the rest gate again at once, sparing the bisect's gates; or None to bisect. A test reaches an entry whose
         commits change a path its failing rerun's output names, as `eng spelling`'s `PATH:LINE:` lines do, or a file
         its module is or imports (imported_files). Any doubt bisects: no confirmed failure, a module the worker cannot
-        find, a test that reaches no entry or several, or tests that reach different entries."""
+        find, a test that reaches no entry or several, or tests that reach different entries. A gate eng unittest
+        refused before running anything is blamed by its refusal instead (blame_refusal)."""
         confirmed, self.confirmed = self.confirmed, None
+        refused, self.refused, self.unblamed = self.refused, None, None
+        if refused: return self.blame_refusal(applied, *refused)
         if not confirmed or len(applied) < 2: return None
-        changes = {entry["id"]: {path for path in text(self.checkout, "log", "--no-walk", "--format=", "--name-only",
-                                                       "--no-renames", *entry["commits"]).splitlines() if path}
-                   for entry in applied}
+        changes = {entry["id"]: self.changed_by(entry) for entry in applied}
         prefix = f"{self.checkout.resolve()}/"
         found, whys = set(), []
         for test, path in confirmed["tests"].items():
@@ -2609,6 +2635,52 @@ class Worker:
         why = "; ".join(whys)
         self.say(f"blaming {identifier} ({entry.get('subject') or entry['tip'][:12]}): {why}; sending it back and "
                  f"gating the other {len(applied) - 1} at once instead of bisecting")
+        return entry, why
+
+    def changed_by(self, entry):
+        """The paths entry's commits change, each by its name before and after a move."""
+        return {path for path in text(self.checkout, "log", "--no-walk", "--format=", "--name-only", "--no-renames",
+                                      *entry["commits"]).splitlines() if path}
+
+    def blame_refusal(self, applied, lane, line, config):
+        """(the one entry of applied that brings line, eng unittest's refusal of lane's gate before it ran anything,
+        why), to send back while the rest gate again at once; or None, with unblamed set, to bisect (owner's decision
+        of 2026-11-08, vocaro-engineering#290). A refusal is no test failure: the same tree gives it again, so no rerun
+        confirms it. An entry brings it when its tree alone gives a refusal naming one of its modules (refused_alone),
+        or its commits change one of them in the suite's directory (#280). Any doubt bisects: a refusal that names
+        no module, no entry or several that bring it, or a tree eng unittest's checks cannot read."""
+        modules = refused_modules(line)
+        suite = suite_of(config.get("lanes", {}).get(lane, {}).get("command"))
+        folder = os.path.normpath(suite[0]) if suite else None
+        reached, doubt = {}, None
+        for entry in applied if modules else []:
+            try: own = refused_alone(self.queue.main_checkout, entry["tip"], config)
+            except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:
+                doubt = f"eng unittest's checks cannot read {entry['id']}'s tree: {error}"
+                break
+            alone = any(refused_modules(said) & modules for said in own)
+            named = sorted(path for path in self.changed_by(entry)
+                           if Path(path).name in modules and os.path.normpath(os.path.dirname(path)) == folder)
+            reasons = (["its tree alone is refused so"] if alone else []) + ([f"it changes {', '.join(named)}"]
+                                                                              if named else [])
+            if reasons: reached[entry["id"]] = " and ".join(reasons)
+        if doubt or len(reached) != 1:
+            self.unblamed = {"key": refusal_key(line), "line": line}
+            if doubt: because = doubt
+            elif not modules: because = "the refusal names no test module"
+            else:
+                because = (f"{'no entry' if not reached else f'{len(reached)} entries'} of the batch's {len(applied)} "
+                           + ("bring it" if len(reached) > 1 else "brings it")
+                           + (f" ({'; '.join(f'{key}: {why}' for key, why in reached.items())})" if reached else ""))
+            self.say(f"eng unittest refused {lane} before running anything, and {because}, so no commit is blamed")
+            return None
+        [(identifier, reason)] = reached.items()
+        entry = next(entry for entry in applied if entry["id"] == identifier)
+        why = (f"eng unittest refused {lane} before running anything, which no rerun would change, and only "
+               f"{identifier} brings the refusal, as {reason}: {line}")
+        rest = len(applied) - 1
+        self.say(f"blaming {identifier} ({entry.get('subject') or entry['tip'][:12]}): {why}; sending it back"
+                 + (f" and gating the other {rest} at once instead of bisecting" if rest else ""))
         return entry, why
 
     def send_back(self, applied, log, entry, why):
@@ -2751,6 +2823,8 @@ class Worker:
         queue = self.queue
         runner = runner or self
         self.blamed = False
+        # Only a refusal that blames no entry is remembered, for the next gate; any other outcome ends the row.
+        before, self.refusals = self.refusals, {}
         if result == WITHDRAWN:
             self.say(f"{', '.join(runner.withdrawn)} left the queue, which stopped the gate: gating what is left")
             queue.mark(applied, QUEUED)
@@ -2784,6 +2858,9 @@ class Worker:
                     if not self.alone: self.limit, self.suspects = None, 0
                     self.blamed = True
                     return FAILED
+                if runner.unblamed and runner.unblamed["key"] in before:
+                    return self.refused_again(applied, runner.unblamed["line"], before[runner.unblamed["key"]], log)
+                if runner.unblamed: self.refusals[runner.unblamed["key"]] = "the gate before it"
                 self.failed(applied, log)
                 return FAILED
         # An entry removed during the gate was part of what passed, so what is left has not been tested.
@@ -2799,6 +2876,26 @@ class Worker:
             self.passed(len(applied))
             return LANDED
         queue.mark(applied, QUEUED)
+        return QUEUED
+
+    def refused_again(self, applied, line, other, log):
+        """Hold the queue for a session, applied queued again, when eng unittest refused this gate before running
+        anything as it refused other, the gate before it or a bisect's half beside it, and no one entry brings the
+        refusal: a bisect would only send back, one by one, entries the refusal does not name, while the cause, on
+        origin/main or in how entries combine, stays (owner's decision of 2026-11-08, vocaro-engineering#290). The
+        hold's reason, which `eng queue status` and the worker log show, carries `eng queue doctor`'s diagnosis."""
+        self.queue.mark(applied, QUEUED)
+        if not self.alone: self.limit, self.suspects = None, 0
+        try:
+            findings = diagnose(self.queue.main_checkout)[0]
+            diagnosis = "; ".join(f"{finding['signal']}: {finding['diagnosis']}; next: {finding['remedy']}"
+                                  for finding in findings) or "healthy"
+        except Exception as error:  # the diagnosis explains the hold, and never stops it
+            diagnosis = f"it could not run: {error}"
+        self.queue.hold(worded(SESSION, f"eng unittest refused this gate and {other} before running anything, the "
+                                        f"same way, and no one entry of the batch brings the refusal, so a bisect "
+                                        f"would only send back entries it does not name: {line}; see {log}; eng queue "
+                                        f"doctor: {diagnosis}"))
         return QUEUED
 
     def adopted(self):
@@ -3098,6 +3195,7 @@ class Beside(Worker):
         self.result = None  # (status, log) of its lanes (both)
         self.ran_where, self.round_name = "", None  # where its lanes ran (gate), and its round's name (both)
         self.outcome = None  # LANDED, FAILED, BISECT, PASSED (passed, gating again) or QUEUED (weigh)
+        self.prior = dict(worker.refusals)  # the refusals the gate before this round gave and blamed no entry for
 
     def say(self, words):
         self.worker.say(f"{self.label}: {words}")
@@ -3161,6 +3259,9 @@ class Beside(Worker):
             flakes = self.rerun(config, self.newer, base, self.tip, log, self.round_name)
             if not flakes:
                 blamed = self.blame(self.newer)
+                if self.unblamed and self.repeats(log):
+                    self.outcome = QUEUED
+                    return
                 if blamed:
                     self.send_back(self.newer, log, *blamed)
                     self.outcome = FAILED
@@ -3187,6 +3288,20 @@ class Beside(Worker):
         else:
             self.queue.mark(self.newer, QUEUED)
             self.outcome = PASSED
+
+    def repeats(self, log):
+        """Whether the refusal no newer entry brings (unblamed) is the one the gate before this round gave, or the
+        older half's beside it, whose refusal the worker has read (Worker.rerun) when it failed too: then the worker
+        holds (Worker.refused_again) and sends back no newer entry, not even a lone one, whose tree the refusal does
+        not name. Either way it records the refusal, on which the older half's gate, or the next gate, holds when it
+        gives the same (Worker.older)."""
+        key, line = self.unblamed["key"], self.unblamed["line"]
+        older = self.worker.refused
+        other = self.prior.get(key) or ("the bisect's older half beside it"
+                                        if older and refusal_key(older[1]) == key else None)
+        self.worker.refusals[key] = "the bisect's newer half beside it"
+        if other: self.worker.refused_again(self.newer, line, other, log)
+        return bool(other)
 
     def failed(self, applied, log):
         """The one newer entry that failed comes back, as a lone entry that fails does (Worker.failed)."""

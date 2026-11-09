@@ -574,8 +574,27 @@ module the worker cannot find, a failed test that passed alone beside the real f
 that ended with no verdict. On 2026-11-07 a 6-entry batch bisected for about 2 hours over one spelling
 test whose output named a file only one commit changed.
 
+**A gate `eng unittest` refused sends back the one entry that brings the refusal.** When the failed
+lane is `eng unittest`, its log has no summary, and it printed a refusal ending `nothing ran`, nothing
+was tested, and the same tree would be refused again, so the worker reruns nothing (owner's decision,
+2026-11-08, [#290](https://github.com/vocaro/vocaro-engineering/issues/290)). It looks instead for the
+entries that bring the refusal: an entry whose tree alone gives a refusal naming one of the modules the
+line names (the check `eng land` runs, above), or whose commits change one of those modules in the
+lane's `-s` directory ([#280](https://github.com/vocaro/vocaro-engineering/issues/280)). When exactly
+one entry does, the worker sends it back with the refusal line as its reason, says in its log which
+entry it blamed and the line, and gates the rest at once, as for a real failure above. When none or
+several do, or the line names no module, it bisects as before. When the same refusal, compared without
+the checkout's directories, comes again in the next gate, or in both halves of a bisect, and no one
+entry brings it, the cause is not an entry, as with a module that reached `origin/main` past the queue:
+a bisect would only send back, one at a time, entries the refusal does not name. The worker then holds
+the queue for a session, the entries queued again, a half of one entry among them, and the hold's reason, which `eng queue status` and
+the worker's log show, quotes the line and `eng queue doctor`'s diagnosis (below). A session fixes the
+cause and runs `eng queue resume`. On 2026-11-07 one entry missing the `host_isolation` import cost
+bisects of 11 and then 6 entries, with every round's log naming it.
+
 The worker bisects at once, as before, when the failing lane is not `eng unittest` (a project's own
-lane or a lane group), when its log names no test it can rerun (no `eng unittest` summary, tests also
+lane or a lane group), when its log names no test it can rerun (no `eng unittest` summary and no
+refusal, tests also
 left unmeasured, a process with no failed test named or that ran other than it was given, or a module
 that did not load), when more than `RERUN_MOST` (5) tests failed, and when this Mac does not settle
 within `SETTLE_LIMIT`. On 2026-11-06 a load flake ([#230](https://github.com/vocaro/vocaro-engineering/issues/230))
@@ -863,11 +882,12 @@ is left out. Its signals:
   ([#287](https://github.com/vocaro/vocaro-engineering/issues/287)); **held**: the hold's reason.
 
 It exits 0 and says `healthy` when it finds none of these, and 1 otherwise; `--json` gives the same.
-It changes nothing: no entry, no hold, no worker. The worker does not run it yet, and does not send an
-entry back on its word: an entry sent back without a failed test that a rerun confirmed is a change
-to the gate's policy, which waits for the owner's decision (#280, #290). Until then a session that
-reads a finding acts on it itself, as its `next:` line says, such as `eng queue remove ID` for the one
-entry that brings a refusal.
+It changes nothing: no entry, no hold, no worker. The worker acts on a refused gate itself: it sends
+back the one entry that brings the refusal, and runs the doctor for the reason of the hold it makes
+when the same refusal comes again with no entry to blame (A gate `eng unittest` refused, above; owner's
+decision, 2026-11-08, #290). For the other findings a session acts itself, as each `next:` line says.
+Restarting a worker that died (#287) and moving a no-verdict run to the other Mac are not the doctor's
+yet.
 
 ## Working through a backlog
 
