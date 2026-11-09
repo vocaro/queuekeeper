@@ -64,7 +64,7 @@ import tempfile
 import threading
 import time
 
-from . import capture_approvals, devices, disk, evidence, offload_host, processes, resources, run_results, toolkit_copy
+from . import capture_approvals, devices, disk, evidence, lane_wait, offload_host, processes, resources, run_results, toolkit_copy
 from .config import TOOLKIT_ROOT, unlocked_screen
 from .resources import BUSY, FREE_WAIT
 from .simulators import pool as simulator_pool
@@ -1742,6 +1742,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
             "provision": "provision" in config.get("lanes", {}) and lane != "provision",
             "developerDir": developer, "xcode": local["xcode"],
             "log": f".build/engineering/{lane}/run.log" if lane is not None else None,
+            "wait": lane_wait.relative(lane) if lane is not None else None,
             "receipt": f".build/engineering/{name}/source.json",
             "returns": {"directory": f".build/engineering/{name}", "paths": returns} if returns else None,
             "changes": f".build/engineering/{name}/{CHANGES}" if changes else None,
@@ -1838,6 +1839,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     returned, receiving = [], None
     # A lane's log comes as it grows. An `eng admit` command's output comes on stdout, live, already.
     progress = Progress(name, host, bool(members), clock_line(config, lane)) if lane is not None else None
+    lane_wait.sent(host)
     with (staging / "run.log").open("wb") as log, (staging / "output.log").open("wb") as output:
         channel = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                    env=environment())
@@ -1870,12 +1872,14 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
                 continue
             if line is None: break
             kind, data = line[:2], line[2:]
-            framed = framed or kind in (b"L ", b"R ", b"O ", b"F ", b"D ")
+            framed = framed or kind in (b"L ", b"R ", b"O ", b"F ", b"D ", b"W ")
             if kind == b"L ":
                 log.write(data)
                 if progress is not None: progress.arrived(data)
             elif kind == b"R ":
                 result = json.loads(data)
+            elif kind == b"W ":
+                lane_wait.relayed(data, host)
             elif kind == b"F ":
                 if receiving is not None: receiving.close()
                 receiving = None
@@ -2851,6 +2855,7 @@ class Offer:
         except Unavailable as reason:
             said = str(reason)
             print(f"eng: {self.name} waits for this Mac alone: {said}", file=sys.stderr, flush=True)
+            lane_wait.waiting(lane_wait.ALONE, said)
             self.busy, self.status = None, said
         return None
 
@@ -2885,6 +2890,8 @@ def overflow(offered, admit, timeout=OVERFLOW_TIMEOUT, once=False, refused=()):
     while True:
         # Once the second Mac can no longer take it, this Mac's queue alone, for the rest of the time.
         bound = window if offered.busy is not None else deadline - time.monotonic()
+        if offered.away is not None: lane_wait.waiting(lane_wait.UNREACHABLE, offered.away)
+        elif offered.busy is not None: lane_wait.waiting(lane_wait.OVERFLOW, offered.busy)
         admission = admit(max(min(bound, deadline - time.monotonic()), 0))
         if admission is not None: return admission
         if once or time.monotonic() >= deadline:

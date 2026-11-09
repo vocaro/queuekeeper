@@ -58,6 +58,8 @@ from urllib.parse import unquote, urlparse
 REPORT_SECONDS, CLAIM_TIMEOUT = 300, 5400
 # Seconds the output of a finished command may take to drain: a descendant can hold the pipe.
 DRAIN_SECONDS = 5
+# Seconds between readings of a lane's wait record (relay_wait); admission rewords it at most once a poll.
+WAIT_POLL = 0.5
 # Bytes of a runtime image read or written at once.
 CHUNK = 8 << 20
 # Bytes of a file sent back in one D line, before base64.
@@ -2733,6 +2735,38 @@ def follow(path, done):
     if pending: emit(b"L", pending)
 
 
+def wait_state(path):
+    """What the lane's wait record at path says, to send back, or None for no record or a wait whose process is gone.
+    The record's fields are lane_wait's."""
+    try: record = json.loads(path.read_text())
+    except (OSError, ValueError): return None
+    if not isinstance(record, dict): return None
+    if record.get("kind"):
+        try: os.kill(record.get("pid"), 0)
+        except (OSError, OverflowError, TypeError): return None
+    return {"kind": record.get("kind"), "reason": record.get("reason"), "stranded": record.get("stranded", False)}
+
+
+def relay_wait(path, done, work):
+    """Send the lane's wait record back as it changes, as `W` frames, and that a wait whose process is gone is over
+    (lane_wait.relayed). work is whether this step is the lane's own: that the provision lane before it was admitted
+    says nothing of the lane, so it does not clear a wait that goes on across offers. Nor does the step's own end: a
+    run that declined leaves its wait, whose process is gone by then, and the dispatcher's next state replaces it."""
+    last = None
+    while True:
+        finished = done.is_set()
+        state = wait_state(path)
+        if state != last and not (finished and state is None):
+            if state is None:
+                if last is not None and last.get("kind"): emit(b"W", b"null")
+                last = None
+            elif state.get("kind") or work:
+                emit(b"W", json.dumps(state).encode())
+                last = state
+        if finished: break
+        time.sleep(WAIT_POLL)
+
+
 def send_back(directory, paths):
     """Send each of these files under directory that exists, whole: an `F` line naming it, then `D`
     lines of its bytes in base64, so that a file's every byte arrives and each line stays one frame.
@@ -2755,8 +2789,9 @@ def send_back(directory, paths):
                 emit(b"D", base64.b64encode(chunk))
 
 
-def step(command, directory, environment, lock, log):
-    """Run one eng command in directory; a stop sends it SIGTERM, which it carries out as a supervised stop."""
+def step(command, directory, environment, lock, log, wait=None, work=False):
+    """Run one eng command in directory; a stop sends it SIGTERM, which it carries out as a supervised stop. wait is
+    the path of the lane's wait record, sent back as it changes (relay_wait)."""
     if log is not None: log.unlink(missing_ok=True)
     child = subprocess.Popen(command, cwd=directory, env=environment, stdin=subprocess.DEVNULL,
                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True,
@@ -2764,6 +2799,7 @@ def step(command, directory, environment, lock, log):
     done = threading.Event()
     threads = [threading.Thread(target=relay, args=(child.stdout,), daemon=True)]
     if log is not None: threads.append(threading.Thread(target=follow, args=(log, done), daemon=True))
+    if wait is not None: threads.append(threading.Thread(target=relay_wait, args=(wait, done, work), daemon=True))
     for thread in threads: thread.start()
     forwarded = False
     while child.poll() is None:
@@ -2852,6 +2888,11 @@ def main(plan):
         # `eng admit --verify` runs its command in the checkout's directory that matches the sender's.
         steps.append(("work", [*eng, *plan["work"]], checkout / plan["log"] if plan.get("log") else None,
                       checkout / plan["subdirectory"] if plan.get("subdirectory") else checkout))
+        # The lane's wait record (lane_wait): what an earlier run left in it is not this run's.
+        wait = checkout / plan["wait"] if plan.get("wait") else None
+        if wait is not None:
+            wait.unlink(missing_ok=True)
+            environment["VOCARO_LANE_WAIT"] = str(wait)
         returns = plan.get("returns")
         if returns:
             back = checkout / returns["directory"], returns["paths"]
@@ -2865,7 +2906,8 @@ def main(plan):
             work_environment = environment
             if stage == "work" and "cleanupSeconds" in (plan.get("lease") or {}):
                 work_environment = {**environment, "VOCARO_DEVICE_WINDOW": environment["VOCARO_DEVICE_LEASE"]}
-            result.update(stage=stage, exitStatus=step(command, directory, work_environment, lock, log))
+            result.update(stage=stage, exitStatus=step(command, directory, work_environment, lock, log, wait,
+                                                       stage == "work"))
             timed(stage, began)
             if result["exitStatus"] != 0: break
         result["stopped"] = _stop.is_set()

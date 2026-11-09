@@ -48,7 +48,8 @@ import threading
 import time
 import urllib.request
 
-from . import app_builds, budgets, disk, evidence, landing, offload_host, parallel, processes, remote, resources
+from . import app_builds, budgets, disk, evidence, landing, lane_wait, offload_host, parallel, processes, remote, \
+    resources
 from .config import IMPLICIT_SPELLING, SPELLING, SPELLING_LIMIT, TOOLKIT_ROOT, load, parse, stays, unlocked_screen
 
 MAIN = "refs/remotes/origin/main"
@@ -205,24 +206,15 @@ REJECTION_SHOWN = 5
 GH_ENV = {"GH_PROMPT_DISABLED": "1", "GH_NO_UPDATE_NOTIFIER": "1"}
 # The worker's account of the round it runs, in eng-queue, which `eng queue status` shows so that nobody has to read
 # worker.log to learn why entries wait: the bisect's halves, each gate's lane, Mac and start, and what each waits for
-# (Queue.note, GateWatch). Each running gate's log is read for that this often.
+# (Queue.note, GateWatch). Each running gate's wait record (lane_wait) is read for that this often.
 ROUND_FILE = "round.json"
 WATCH_POLL = 10
 # The most of a lane's results folders that the line naming them lists (result_files): a gate's suites write a few.
 RESULT_FOLDERS_NAMED = 8
-# What eng run prints while a lane waits (resources.Admission, remote.Offer, remote.overflow), once this Mac admits
-# it, and as it sends the lane to the second Mac (remote.dispatch): GateWatch reads the newest of them in the gate's
-# log. A dispatch's own folder is named only once its run ends, so until then the log alone says where it runs.
-ADMISSION_WAIT = re.compile(r"^heavy: waiting \(\d+s\): (.+)$")
-OFFER_WAIT = re.compile(r"^eng: \S+ (waits for .+)$")
-DECLINED = re.compile(r"^eng: trying \S+ on this Mac: (.+)$")
-ADMITTED = re.compile(r"^heavy: slot ")
-SENT = re.compile(r"^remote: sending .* to (\S+)$")
-# A gate whose wait names a dead or uncertain guard entry that admission has not recovered (resources.Admission's
-# stranded refusal) is stuck, not waiting, once it has waited this long: on 2026-11-07 BreezEPUB's gate waited 86 min
-# behind three dead entries while status said only "waiting" (#315).
+# A gate whose wait is on a dead or uncertain guard entry that admission has not recovered (resources.Admission's
+# stranded refusal, which its wait record says) is stuck, not waiting, once it has waited this long: on 2026-11-07
+# BreezEPUB's gate waited 86 min behind three dead entries while status said only "waiting" (#315).
 STUCK_SECONDS = 15 * 60
-DEAD_ENTRY = re.compile(r"is (?:dead|uncertain) and requires inspection")
 WAIT_LIMIT = 6 * 3600
 KEPT_LOGS = 200
 GIT_TIMEOUT = 600
@@ -990,33 +982,14 @@ class LoadSampler(BusySampler):
         return load_words(self.lane, host, [reading for read_on, reading in self.readings if read_on == host])
 
 
-def waited_for(lines, waiting=None, where=None):
-    """(what the lane waits for, or None, and where it runs: HERE_MAC, the second Mac's name, or None while it waits)
-    after lines of its gate log, from waiting and where as the lines before them left them: the newest wait eng run
-    reported, cleared by an admission on this Mac or a send to the second Mac that follows it."""
-    for line in lines:
-        line = line.strip()
-        found = ADMISSION_WAIT.match(line)
-        sent = SENT.match(line)
-        if found: waiting = f"admission on this Mac: {found.group(1)}"
-        elif OFFER_WAIT.match(line): waiting, where = OFFER_WAIT.match(line).group(1), None
-        elif DECLINED.match(line):
-            waiting, where = f"this Mac's admission, as the second Mac declined it: {DECLINED.match(line).group(1)}", None
-        elif ADMITTED.match(line): waiting, where = None, HERE_MAC
-        elif sent: waiting, where = None, sent.group(1)
-    return waiting, where
-
-
-# What waited_for says of a lane this Mac admitted.
-HERE_MAC = "this Mac"
+HERE_MAC = lane_wait.HERE
 
 
 def stuck(gate, at=None):
     """What `eng queue status` and the worker log say of a gate held up by dead guard entries, or None: its wait,
     since waitingSince, names a dead or uncertain entry and has lasted STUCK_SECONDS (#315)."""
-    since, waiting = gate.get("waitingSince"), gate.get("waiting") or ""
-    if not isinstance(since, (int, float)) or not DEAD_ENTRY.search(waiting) or \
-            (at or time.time()) - since < STUCK_SECONDS:
+    since = gate.get("waitingSince")
+    if not isinstance(since, (int, float)) or not gate.get("stranded") or (at or time.time()) - since < STUCK_SECONDS:
         return None
     return (f"stuck: the gate has waited {ago(since, at)} for admission held up by dead or uncertain guard entries that "
             "admission has not recovered; `python3 scripts/eng admissions recover` lists them (guides/shared-host.md, "
@@ -1024,15 +997,15 @@ def stuck(gate, at=None):
 
 
 class GateWatch:
-    """The record of a running gate lane in the round's account (Queue.note): where it runs, by its dispatch's
-    record (remote.dispatched) or by its log, a send to the second Mac or this Mac's admission, and what it waits
-    for, by its log (waited_for), read every WATCH_POLL seconds. Nothing it reads or fails to read may end the gate."""
+    """The record of a running gate lane in the round's account (Queue.note): where it runs and what it waits for,
+    by the lane's wait record (lane_wait) and its dispatch's record (remote.dispatched), read every WATCH_POLL
+    seconds. It says only that: the record is no verdict, which the lane's exit and receipt alone give. Nothing it
+    reads or fails to read may end the gate."""
     def __init__(self, worker, lane, began, log):
         self.queue, self.checkout, self.role = worker.queue, worker.checkout, worker.role
         self.lane, self.began, self.log = lane, began, log
-        self.offset, self.waiting, self.where, self.partial = 0, None, None, ""
-        # When the current wait began, and whether the worker log has said it is stuck (stuck).
-        self.since, self.said_stuck, self.say = None, False, worker.say
+        # Whether the worker log has said it is stuck (stuck).
+        self.said_stuck, self.say = False, worker.say
         self.stopped = threading.Event()
         self.thread = threading.Thread(target=self.every, name="gate watch", daemon=True)
         self.queue.note(lambda state: state.setdefault("gates", {}).__setitem__(self.role, {
@@ -1040,24 +1013,18 @@ class GateWatch:
             "mac": None, "waiting": None}))
 
     def look(self):
-        try:
-            with open(self.log, "rb") as log:
-                log.seek(self.offset)
-                said = log.read()
-            self.offset += len(said)
-            lines = (self.partial + said.decode(errors="replace")).split("\n")
-            self.partial = lines.pop()
-            self.waiting, self.where = waited_for(lines, self.waiting, self.where)
-        except OSError: pass
+        record = lane_wait.current(lane_wait.path_of(self.checkout, self.lane), self.began)
+        waiting = lane_wait.words(record)
+        # A lane still waiting for this Mac has no Mac yet: the second Mac may still take it.
+        where = record.get("mac") if record and not (waiting and record.get("mac") == HERE_MAC) else None
         try: host = remote.dispatched(self.checkout, self.lane, self.began)
         except Exception: host = None  # noqa: BLE001
-        host = host or (self.where if self.where != HERE_MAC else None)
-        mac = f"the second Mac ({host})" if host else HERE_MAC if self.where else None
-        self.since = (self.since or time.time()) if self.waiting else None
-        held_up = stuck({"waiting": self.waiting, "waitingSince": self.since})
+        mac = lane_wait.second_mac(host) if host else where
+        since, stranded = record.get("since") if waiting else None, bool(waiting and record.get("stranded"))
+        held_up = stuck({"waitingSince": since, "stranded": stranded})
         if held_up and not self.said_stuck: self.say(f"{self.lane}: {held_up}")
         self.said_stuck = bool(held_up)
-        self.queue.gate_note(self.role, mac=mac, waiting=self.waiting, waitingSince=self.since)
+        self.queue.gate_note(self.role, mac=mac, waiting=waiting, waitingSince=since, stranded=stranded)
 
     def every(self):
         while not self.stopped.wait(WATCH_POLL):
@@ -1505,7 +1472,9 @@ def round_lines(state, at=None):
         what = "stacked gate" if role == "stacked" else role
         line = (f"  {what} ({', '.join(gate.get('entries', [])) or 'no entry'}): {gate.get('lane')} lane"
                 f" on {gate.get('mac') or 'no Mac yet'}, running {ago(gate.get('began', 0), at)}")
-        if gate.get("waiting"): line += f"\n    waiting: {gate['waiting']}"
+        if gate.get("waiting"):
+            line += f"\n    waiting: {gate['waiting']}"
+            if gate.get("waitingSince"): line += f", for {ago(gate['waitingSince'], at)}"
         if stuck(gate, at): line += f"\n    {stuck(gate, at)}"
         if gate.get("log"): line += f"\n    log: {gate['log']}"
         lines.append(line)
@@ -2317,6 +2286,7 @@ class Worker:
             # earlier round left in the lane's own file is not this one's.
             lane_log = self.checkout / ".build/engineering" / lane / "run.log"
             with contextlib.suppress(OSError): lane_log.unlink()
+            lane_wait.remove(lane_wait.path_of(self.checkout, lane))
             self.say(f"{lane} on {self.head()[:12]}")
             began = time.time()  # wall clock, to match the dispatch records' start times
             started = time.monotonic()  # for the gate's measured duration

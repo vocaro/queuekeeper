@@ -921,11 +921,15 @@ from `origin/main` in its own checkout, and `eng run` there reads each lane from
 
 **A deep queue.** `eng queue status` says why entries wait, from `eng-queue/round.json`, the
 worker's account of its round: whether it bisects, with how many suspects and the size of each
-half; each running gate's lane, the Mac it runs on and how long it has run; what a gate waits for,
-by the newest wait `eng run` printed in its log, such as admission behind another project's
-whole-host gate or a second Mac that cannot be reached; a gate stacked on the batch; and a wait for
-the host to settle after a run with no verdict. A gate whose wait names a dead or uncertain guard
-entry that admission has not recovered, and has lasted 15 minutes (`STUCK_SECONDS`), is shown as
+half; each running gate's lane, the Mac it runs on and how long it has run; what a gate waits for
+and for how long, from the record `eng run` keeps in `.build/engineering/.waits/LANE.json` on either
+Mac (a run on the second Mac sends it back as it changes, and it is cleared on admission), such as
+admission on either Mac behind another project's whole-host gate, an unlocked screen, the second
+Mac's foreground or a second Mac that cannot be reached; a gate stacked on the batch; and a wait for
+the host to settle after a run with no verdict. The record says only what a lane waits for, never
+how it ended: a wait whose process is gone or that an earlier run left is ignored, and a lane's
+verdict stays its receipt's. A gate held up by a dead or uncertain guard
+entry that admission has not recovered, for 15 minutes (`STUCK_SECONDS`), is shown as
 `stuck:`, with `python3 scripts/eng admissions recover` to list the entries, and the worker's log
 says so once; on 2026-11-07 BreezEPUB's gate waited 86 minutes behind three dead entries while
 status said only "waiting" (vocaro-engineering#315; guides/shared-host.md, Lock reclamation). The

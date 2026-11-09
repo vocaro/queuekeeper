@@ -20,7 +20,7 @@ import subprocess
 import sys
 import time
 
-from . import devices, offload_host
+from . import devices, lane_wait, offload_host
 from .voiceover import state as voiceover_state
 
 # Seconds between looks at the second Mac's mac-foreground entry while another run holds it.
@@ -99,6 +99,8 @@ def slot(purpose, *, timeout, expected=EXPECTED, record=None, poll=POLL, ready=N
                                   f"`python3 -m vocaro_engineering.devices recover {devices.FOREGROUND} --by SESSION "
                                   f"--revision {entry.get('revision')} --verified WHAT` ({GUIDE})")
         holder = entry.get("ownerChatID")
+        lane_wait.waiting(lane_wait.FOREGROUND, f"held by {holder} for {entry.get('purpose')}, expected release "
+                          f"{entry.get('expectedReleaseBy')}")
         if holder != announced:
             said(f"eng: waiting for the second Mac's foreground, held by {holder} for {entry.get('purpose')}, "
                  f"expected release {entry.get('expectedReleaseBy')}")

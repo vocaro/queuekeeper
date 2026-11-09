@@ -21,7 +21,7 @@ import uuid
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
-from vocaro_engineering import budgets, cli, config, device_notifications, devices, evidence, merge_queue, offload_host, processes, release, remote, resources
+from vocaro_engineering import budgets, cli, config, device_notifications, devices, evidence, offload_host, processes, release, remote, resources
 from vocaro_engineering import disk as disk_module
 import host_isolation
 from host_isolation import stretched
@@ -545,7 +545,6 @@ class RemoteTests(unittest.TestCase):
         for kind in ("progress", "heartbeat", "clock"): self.assertNotIn(f"remote: {kind} ", log + output)
         self.assertIsNone(evidence.counted(error), error)
         self.assertEqual(evidence.unmeasured_tests(error), [])
-        self.assertEqual(merge_queue.waited_for(error.splitlines()), (None, "fake"))
 
     def test_a_run_whose_log_stops_growing_claims_no_progress(self):
         # The negative control: the lane runs on, connected, and writes nothing more.
@@ -2335,6 +2334,39 @@ class RemoteTests(unittest.TestCase):
         receipt = json.loads((self.project / ".build/engineering/own/source.json").read_text())
         self.assertEqual((receipt["ranOn"], receipt["policy"]), ("this Mac", None))
         self.assertNotIn("queueSeconds", receipt)
+
+    def test_a_wait_for_admission_on_the_second_mac_comes_back_to_the_lanes_record_here(self):
+        """vocaro-engineering#309: neither Mac has spare capacity, so the lane is offered to the second Mac, whose
+        admission keeps it waiting behind exclusive work for FREE_WAIT before it declines; meanwhile this Mac's record
+        says so and names the Mac. The record is gone once the lane has run."""
+        record = remote.lane_wait.path_of(self.project, "gate")
+        log = Path(self.temp.name) / "dispatch.log"
+        there = lambda state: state and state.get("kind") == "admission" and state.get("mac") != "this Mac"
+        with self.busy_here(), self.busy_second_mac(), log.open("w") as output:
+            dispatcher = subprocess.Popen([sys.executable, str(self.toolkit / "bin/eng"), "--project", str(self.project),
+                                           "run", "gate"], stdout=output, stderr=subprocess.STDOUT)
+            try:
+                deadline, found = time.monotonic() + stretched(120), None
+                while time.monotonic() < deadline and dispatcher.poll() is None:
+                    found = remote.lane_wait.current(record)
+                    if there(found): break
+                    time.sleep(0.02)
+                self.assertTrue(there(found), f"exit {dispatcher.poll()}, found {found}: {log.read_text()}")
+                said = remote.lane_wait.words(found)
+                self.assertIn("admission on the second Mac (fake): ", said)
+                self.assertIn("exclusive", said)
+                self.assertEqual(found["mac"], "the second Mac (fake)")
+            except BaseException:
+                dispatcher.terminate()
+                dispatcher.wait(timeout=stretched(60))
+                raise
+        self.assertEqual(dispatcher.wait(timeout=stretched(120)), 0, log.read_text())
+        self.assertFalse(record.exists(), log.read_text())
+        # Negative control: free, it waited for nothing.
+        status, output, error = self.eng("run", "check")
+        self.assertEqual(status, 0, output + error)
+        self.assertFalse(remote.lane_wait.path_of(self.project, "check").exists())
+        self.assertNotIn(remote.lane_wait.VARIABLE, os.environ)
 
     def test_a_busy_second_mac_sends_the_lane_to_this_mac_when_this_mac_admits_it(self):
         # Exclusive work holds the second Mac, which its capacity reading shows before anything is offered: the
