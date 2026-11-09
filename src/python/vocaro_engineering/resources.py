@@ -1476,6 +1476,13 @@ NOT_OFFERED = [("eng admit runs here without --verify", "eng admit without --ver
                ("--here", "eng run --here"), ("--serial", "eng run --serial"),
                ("the lane says: ", "a lane that stays on this Mac"), ("its lane ", "a lane that stays on this Mac"),
                ("nested in the admission it inherits", "nested in an admission it inherits")]
+# Older admissions marked local path exclusions as offered. Recognize the exact diagnostics written by
+# remote.first_command and remote.local_paths, retaining the original reason for each admission.
+LEGACY_LOCAL_PATH_REASONS = (
+    ("it names /", ", a path outside the checkout, which the second Mac does not have"),
+    ("it names ~", ", under this Mac's home, which the second Mac's checkout does not hold"),
+    ("it names this checkout's path ", ", which the second Mac's checkout is not"),
+)
 # A lane run's label, a project's name and its lane (cli.lane_label): two words with neither a path nor an option.
 LANE_LABEL = re.compile(r"[A-Za-z0-9_.-]+ [A-Za-z0-9_.-]+")
 # The labels usage names under each kind of unrecorded admission, those that held the longest.
@@ -1528,7 +1535,9 @@ def placed(entry):
         return "unrecorded", "a lane" if LANE_LABEL.fullmatch(entry["label"]) else "a command"
     if placement.get("dispatchedFrom"): return "sent", f"sent by {placement['dispatchedFrom']}"
     because = str(placement.get("because") or "no reason given")
-    if placement.get("offered"): return "declined", re.sub(r"\d+(?:\.\d+)?", "N", because)
+    if placement.get("offered") and not any(
+            because.startswith(prefix) and because.endswith(suffix) for prefix, suffix in LEGACY_LOCAL_PATH_REASONS):
+        return "declined", re.sub(r"\d+(?:\.\d+)?", "N", because)
     return "never", next((name for prefix, name in NOT_OFFERED if because.startswith(prefix)), because)
 
 

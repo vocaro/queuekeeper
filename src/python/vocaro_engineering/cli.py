@@ -513,7 +513,9 @@ def admission_placement(offered, reason):
     to the second Mac first (offered) and why it runs here (because), or the Mac that sent it (remote.DISPATCHER)."""
     sender = os.environ.get(remote.DISPATCHER)
     if sender: return {"dispatchedFrom": sender}
-    return {"offered": offered is not None, "because": reason}
+    # With no second Mac configured, Offer.make gives that reason before checking local eligibility.
+    declined = offered is not None and (offered.host is None or offered.refused is None)
+    return {"offered": declined, "because": reason}
 
 
 def this_mac():

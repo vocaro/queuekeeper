@@ -2925,6 +2925,10 @@ class RemoteTests(unittest.TestCase):
         self.assertIn(f"eng: trying gate on this Mac: {busy}", error)
         self.assertIn("remote: sending", error)
         self.assertEqual(self.ran_here()["hereBecause"], busy)
+        entries, _unreadable = resources.read_log()
+        admitted = [entry for entry in entries if entry["event"] == "admitted"]
+        self.assertEqual(admitted[-1]["placement"], {"offered": True, "because": busy})
+        self.assertEqual(resources.placed(admitted[-1]), ("declined", busy))
         # The negative control: free, the second Mac takes it.
         shutil.rmtree(self.project / ".build/engineering/gate")
         self.assertEqual(self.run_here("gate")[0], 0)
@@ -4190,7 +4194,16 @@ exec {shlex.quote(real)} "$@"
         self.assertEqual((status, self.ran_in()), (0, self.project.resolve()), output + error)
         self.assertIn(f"eng: running the command on this Mac: it names /tmp/x, {outside}", error)
         receipt = json.loads((self.project / ".build/engineering/admit/source.json").read_text())
-        self.assertTrue(receipt["hereBecause"].startswith("it names /tmp/x"), receipt)
+        reason = f"it names /tmp/x, {outside}"
+        self.assertEqual(receipt["hereBecause"], reason)
+        entries, _unreadable = resources.read_log()
+        admitted = [entry for entry in entries if entry["event"] == "admitted"]
+        self.assertEqual([entry["placement"] for entry in admitted], [{"offered": False, "because": reason}])
+        status, output, error = self.eng("admissions", "usage")
+        self.assertEqual(status, 0, output + error)
+        self.assertIn("  never offered to the second Mac: 1, held ", output)
+        self.assertIn(f"    {reason}: 1, held ", output)
+        self.assertNotIn("  offered to the second Mac and declined:", output)
         status, output, error = self.admit_in(self.project, "--", *probe, "/usr/bin/true", "pkg/README.md")
         self.assertEqual((status, self.ran_in()), (0, self.checkout(0).resolve()), output + error)
 
