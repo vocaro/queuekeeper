@@ -49,7 +49,8 @@ process, the toolkit's or a caller's own, saw of each command, its processes wit
 the process groups and sessions they used, appended at each sample that sees something new. Once
 the owner has ended, `eng admissions recover` runs the end-of-run census against that record and
 removes the entry only when nothing of an unsettled command still runs (#61). An entry without a
-record is left for a check by hand. Admission writes the record's first line as it adds the entry, so that an
+record is left for a check by hand, and `eng admissions remove`, which no allow rule matches, removes it once nothing
+its owner may have started is found running. Admission writes the record's first line as it adds the entry, so that an
 owner killed before its first command leaves a record too, and recovery then checks the owner's process group for
 what it started (#315). Admission runs the same recovery itself on each dead or uncertain
 entry it meets, so that an entry a task stop's SIGKILL stranded, whose commands have all ended, no
@@ -1591,8 +1592,11 @@ def usage_main(argv=None, out=print):
 
 
 # What recovery tells a person to do about an entry it leaves.
-BY_HAND = ("check by hand that nothing its owner started still runs, then remove its entry from the guard "
-           "(guides/shared-host.md, Lock reclamation)")
+BY_HAND = ("check by hand that nothing its owner started still runs, then remove its entry with `python3 scripts/eng "
+           "admissions remove OWNER --why TEXT` (guides/shared-host.md, Lock reclamation)")
+# Why recovery leaves an entry it cannot prove finished, as reclaim says it: the entries `eng admissions remove` may
+# remove once a person has checked them, unlike one whose owner or a process it names still runs.
+UNRECORDED, UNVOUCHED = "it has no process record", "its process record cannot vouch for every command"
 
 
 def entry_age(owner):
@@ -1754,29 +1758,20 @@ def recover(owner=None, out=print):
     recording them, is left for a check by hand, as is a guard that is unreadable or not in admission's format,
     as admission refuses it: one whose owners are not all entries in admission's format among them (#72).
     """
-    guard = guard_path(os.environ)
-    directory = slot_directory()
-    directory.mkdir(parents=True, exist_ok=True)
-
     def shown(entry):
         """An entry's label on one line: an eng admit label is its command line, which can span several."""
         return " ".join(entry["label"].split())[:LABEL_LIMIT]
 
-    def recorded(identity):
-        """The entry's process record, or None: an identity that is not admission's names none."""
-        path = record_path(guard, identity) if re.fullmatch(r"[0-9a-f]{32}", identity) else None
-        return path if path is not None and path.is_file() else None
-
-    with (directory / "coordination.lock").open("a+") as bridge:
-        fcntl.flock(bridge, fcntl.LOCK_EX)
-        try: state = json.loads(guard.read_text())
-        except FileNotFoundError: state = {"vocaroEngineering": 1, "owners": {}}
-        except (OSError, ValueError): state = None
-        owners = entries(state)
-        if owners is None:
-            out(f"{guard} is unreadable or not in admission's format. Recovery leaves it alone; inspect it by hand "
-                "(guides/shared-host.md, Lock reclamation).")
+    with locked_guard(out) as opened:
+        if opened is None:
             return 1
+        guard, state, owners = opened
+
+        def recorded(identity):
+            """The entry's process record, or None: an identity that is not admission's names none."""
+            path = record_path(guard, identity) if re.fullmatch(r"[0-9a-f]{32}", identity) else None
+            return path if path is not None and path.is_file() else None
+
         if owner is None:
             # The entries that refuse admission, as admission reads them.
             stranded = [(identity, entry) for identity, entry in owners.items()
@@ -1793,16 +1788,45 @@ def recover(owner=None, out=print):
                     f"{'a' if recorded(identity) else 'no'} process record")
             out("Recover one with `python3 scripts/eng admissions recover OWNER`, OWNER its PID or identity.")
             return 0
-        named = [identity for identity, entry in owners.items()
-                 if identity == owner or str(entry["pid"]) == owner]
-        if len(named) != 1:
-            out(f"No entry of {guard} has the PID or identity {owner}; nothing was changed." if not named else
-                f"PID {owner} owns {len(named)} entries of {guard}; name one by its identity: {', '.join(named)}. "
-                "Nothing was changed.")
+        identity = named(guard, owners, owner, out)
+        if identity is None:
             return 1
-        removed, message, _why = reclaim(guard, state, named[0])
+        removed, message, _why = reclaim(guard, state, identity)
         out(message)
         return 0 if removed else 1
+
+
+@contextlib.contextmanager
+def locked_guard(out):
+    """The guard, its state and its entries, read under the coordination lock, which is held until the block ends;
+    or None, said with out, when the guard is unreadable or not in admission's format, which recovery and removal
+    leave alone (#72)."""
+    guard = guard_path(os.environ)
+    directory = slot_directory()
+    directory.mkdir(parents=True, exist_ok=True)
+    with (directory / "coordination.lock").open("a+") as bridge:
+        fcntl.flock(bridge, fcntl.LOCK_EX)
+        try: state = json.loads(guard.read_text())
+        except FileNotFoundError: state = {"vocaroEngineering": 1, "owners": {}}
+        except (OSError, ValueError): state = None
+        owners = entries(state)
+        if owners is None:
+            out(f"{guard} is unreadable or not in admission's format. Recovery leaves it alone; inspect it by hand "
+                "(guides/shared-host.md, Lock reclamation).")
+            yield None
+        else:
+            yield guard, state, owners
+
+
+def named(guard, owners, owner, out):
+    """The identity of the one entry whose owner's PID or identity is owner, or None, said with out."""
+    found = [identity for identity, entry in owners.items() if identity == owner or str(entry["pid"]) == owner]
+    if len(found) == 1:
+        return found[0]
+    out(f"No entry of {guard} has the PID or identity {owner}; nothing was changed." if not found else
+        f"PID {owner} owns {len(found)} entries of {guard}; name one by its identity: {', '.join(found)}. "
+        "Nothing was changed.")
+    return None
 
 
 def reclaim(guard, state, identity, automatic=False):
@@ -1822,7 +1846,7 @@ def reclaim(guard, state, identity, automatic=False):
     unrecorded = (f"{name} has no process record, so its entry stays: an older toolkit admitted it, its record could "
                   "not be written, or its caller runs its own commands without recording them, as an older push keeper "
                   "does; a push keeper's owner.json, in its checkout's transaction lock, lists each command it ran. To "
-                  f"recover it, {BY_HAND}."), "it has no process record"
+                  f"recover it, {BY_HAND}."), UNRECORDED
     if path is None or not path.is_file():
         return (False, *unrecorded)
     try:
@@ -1831,7 +1855,7 @@ def reclaim(guard, state, identity, automatic=False):
         return (False, *unrecorded)
     except ValueError as error:
         return False, (f"{name}'s process record cannot vouch for every command, so its entry stays: {error}. To "
-                       f"recover it, {BY_HAND}."), "its process record cannot vouch for every command"
+                       f"recover it, {BY_HAND}."), UNVOUCHED
     if left:
         listing = subprocess.run(["ps", "-o", "pid,ppid,pgid,lstart,args", "-p", ",".join(map(str, sorted(left)))],
                                  capture_output=True, text=True).stdout.rstrip()
@@ -1853,6 +1877,124 @@ def reclaim(guard, state, identity, automatic=False):
         + (" or session" if spaces > 1 else "") if spaces else
         "its process record shows every command it ran confirmed ended")
         + f". Its entry is removed{', and the guard with it' if not owners else ''}."), None
+
+
+def remaining(path, entry):
+    """What may still run of an entry's owner whose process record is missing or cannot vouch for every command, as
+    {PID: why}: what of the record can be read is checked, and nothing more. Each recorded process still running as
+    itself; each live process in a process group or session a recorded command used, as the run's census finds it,
+    with no birth cutoff; and what the owner started before its first command (owner_survivors), in its recorded
+    group or session, or, without an admission line, in a group or session the owner led. Without a record, an
+    owner that led neither, as one a shell started in the shell's own group, leaves nothing here to check: that is
+    the check by hand `eng admissions remove` asks for (#315)."""
+    from vocaro_engineering.processes import snapshot, survivors
+    admission, processes, spaces = None, set(), set()
+    if path is not None and path.is_file():
+        with path.open("rb") as stream:
+            for text in stream:
+                try: line = json.loads(text)
+                except ValueError: continue
+                if not isinstance(line, dict):
+                    continue
+                if "admission" in line and "command" not in line:
+                    with contextlib.suppress(ValueError): admission = opening(line)
+                    continue
+                listed = line.get("processes")
+                for item in listed if isinstance(listed, list) else []:
+                    if isinstance(item, list) and len(item) == 2 and type(item[0]) is int and isinstance(item[1], str):
+                        processes.add((item[0], " ".join(item[1].split())))
+                used = line.get("spaces")
+                spaces |= {space for space in (used if isinstance(used, list) else []) if type(space) is int}
+                if type(line.get("root")) is int:
+                    spaces.add(line["root"])
+    if admission is None:
+        admission = {"owner": [entry["pid"], entry["start"]], "group": entry["pid"], "session": entry["pid"],
+                     "ancestors": []}
+    left, _checked = owner_survivors(admission)
+    current = snapshot()
+    for pid, start in processes:
+        if pid in current and " ".join(current[pid][2].split()) == start:
+            left[pid] = "a recorded process, still running"
+    for pid, group, sid in survivors(spaces):
+        left.setdefault(pid, f"group {group}, session {sid}")
+    return left
+
+
+def remove(owner, why, out=print):
+    """Remove by hand the guard entry whose owner's PID or identity is named, once a person has checked that nothing
+    its owner started still runs, and recovery cannot prove it: its process record is missing or cannot vouch for
+    every command. Recovery runs first, so an entry it can prove finished is recovered, and one whose owner or a
+    process it names still runs stays. Then the census of what of the record can be read (remaining) runs, and the
+    entry stays while it names anything. Otherwise the entry is removed, and the guard with its last one, its record
+    deleted, and a `recovered` line logged, as recovery logs one, marked `byHand`, with why recovery left it
+    (`unproven`) and the person's reason (`why`). Returns 0 when it removed or recovered the entry, and 1 otherwise.
+
+    It is a command of its own, not an option of `eng admissions recover`, so that this repository's allow rule for
+    recovery, which removes only provably finished entries, does not match it: an agent's auto mode asks before it
+    removes an entry nothing proves finished (owner's decision, 2026-11-08, #315)."""
+    if not why.strip():
+        out("Say with --why what you checked that shows nothing its owner started still runs. Nothing was changed.")
+        return 1
+    with locked_guard(out) as opened:
+        if opened is None:
+            return 1
+        guard, state, owners = opened
+        identity = named(guard, owners, owner, out)
+        if identity is None:
+            return 1
+        removed, message, unproven = reclaim(guard, state, identity)
+        if removed:
+            out(message)
+            return 0
+        if unproven not in (UNRECORDED, UNVOUCHED):
+            out(f"{message}\nNothing was removed.")
+            return 1
+        entry = owners[identity]
+        name = f"{' '.join(entry['label'].split())[:LABEL_LIMIT]} (PID {entry['pid']})"
+        path = record_path(guard, identity) if re.fullmatch(r"[0-9a-f]{32}", identity) else None
+        left = remaining(path, entry)
+        if left:
+            listing = subprocess.run(["ps", "-o", "pid,ppid,pgid,lstart,args", "-p", ",".join(map(str, sorted(left)))],
+                                     capture_output=True, text=True).stdout.rstrip()
+            out(f"{len(left)} process(es) its owner may have started still run, so the entry of {name} stays: "
+                + "; ".join(f"PID {pid} ({reason})" for pid, reason in sorted(left.items()))
+                + (f"\n{listing}" if listing else "") + "\nStop or wait for them, then run it again. Nothing was removed.")
+            return 1
+        del owners[identity]
+        if owners: publish_guard(guard, state)
+        else: guard.unlink(missing_ok=True)
+        if path is not None:
+            with contextlib.suppress(OSError): path.unlink(missing_ok=True)
+        append_log({"event": "recovered", "identity": identity, "pid": entry["pid"],
+                    "kind": "exclusive" if entry.get("exclusive") else "model" if entry.get("model") else "heavy",
+                    "label": entry["label"][:LABEL_LIMIT], "uncertain": bool(entry.get("uncertain")),
+                    "commands": 0, "processes": 0, "spaces": 0, "byHand": True, "unproven": unproven,
+                    "why": why.strip()[:LABEL_LIMIT]})
+        out(f"Removed {name} by hand: {unproven}, and nothing its owner may have started was found running. Its entry "
+            f"is removed{', and the guard with it' if not owners else ''}, and the admission log records why.")
+        return 0
+
+
+def remove_main(argv=None):
+    """eng admissions remove OWNER --why TEXT: remove by hand an entry recovery cannot prove finished."""
+    parser = argparse.ArgumentParser(prog="eng admissions remove", description="Remove by hand a guard entry that "
+        "recovery cannot prove finished, its process record missing or unable to vouch for every command, once you "
+        "have checked that nothing its owner started still runs. Recovery runs first: an entry it can prove finished "
+        "is recovered, and one whose owner or a process it names still runs stays. Then it checks what of the process "
+        "record can be read, and the owner's process group or session, and leaves the entry while anything there "
+        "runs. The admission log records the removal and why. It exits 1 when it removes nothing. Unlike `eng "
+        "admissions recover`, it is deliberately outside this repository's allow rule for recovery "
+        "(guides/shared-host.md, Lock reclamation).")
+    parser.add_argument("owner", metavar="OWNER", help="the PID or identity of the entry's owner, as `eng admissions "
+                        "recover` lists it")
+    parser.add_argument("--why", required=True, metavar="TEXT", help="what you checked that shows nothing its owner "
+                        "started still runs; the admission log keeps it")
+    args = parser.parse_args(argv)
+    try:
+        return remove(args.owner, args.why)
+    except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+        print(f"eng: {error}", file=sys.stderr)
+        return 2
 
 
 def recover_main(argv=None):

@@ -929,12 +929,13 @@ def main(argv=None):
     admission.add_argument("command", nargs=argparse.REMAINDER, help="the command and its arguments, after --; "
         "it runs in the current directory")
     logged = commands.add_parser("admissions", usage="%(prog)s [-h] [--since WHEN] [--until WHEN] [log ...]\n"
-        "       %(prog)s recover [OWNER]\n       %(prog)s limits\n"
+        "       %(prog)s recover [OWNER]\n       %(prog)s remove OWNER --why TEXT\n       %(prog)s limits\n"
         "       %(prog)s usage [--since WHEN] [--until WHEN] [--there LOG ...]", help="summarize this host's heavy-work admission "
         "log: for each kind and label, the requests admitted and withdrawn, how long they waited and held, and how "
         "admissions ended; eng admissions recover lists the guard's dead or uncertain entries, and eng admissions "
         "recover OWNER removes that owner's once a census against its process record finds nothing it ran still "
-        "running; eng admissions limits prints the admission limits in force and where each comes from; eng "
+        "running; eng admissions remove OWNER --why TEXT removes by hand one recovery cannot prove finished once "
+        "nothing its owner may have started is found running; eng admissions limits prints the admission limits in force and where each comes from; eng "
         "admissions usage shows both Macs' capacity now, the share of the last 3 hours each spent at each count of "
         "heavy jobs, and why this Mac's work ran here, never offered to the second Mac or declined by it",
         description="Summarize the admission log, or, with recover, list the guard's dead or uncertain entries and "
@@ -1079,6 +1080,7 @@ def main(argv=None):
     if argv[first:first + 1] == ["storekit"]: return storekit_config.main(argv[first + 1:], project)
     # Recovery, like the admission log, covers the whole host and reads no project.
     if argv[first:first + 2] == ["admissions", "recover"]: return resources.recover_main(argv[first + 2:])
+    if argv[first:first + 2] == ["admissions", "remove"]: return resources.remove_main(argv[first + 2:])
     if argv[first:first + 2] == ["admissions", "limits"]: return resources.limits_main(argv[first + 2:])
     if argv[first:first + 2] == ["admissions", "usage"]: return resources.usage_main(argv[first + 2:])
     split = argv.index("--") if "--" in argv else len(argv)

@@ -286,6 +286,8 @@ recovers each provably finished entry itself, an owner killed before its first c
 at its next attempt and every HEAVY_RECOVER_SECONDS after, so no session has to run the command to
 free one (vocaro-engineering#315). What recovery leaves needs a person's look, and `eng queue
 status` says when a gate is stuck behind it ([the merge queue](maintenance.md#the-merge-queue)).
+An entry it leaves because nothing proves it finished is removed by hand with `eng admissions
+remove`, which no allow rule matches ([lock reclamation](#lock-reclamation)).
 
 The rule: a disappeared owner's children may still be running, and they keep what its entry
 held, its slots and the model if it held it, and nothing more. The rest of the host stays open
@@ -414,11 +416,14 @@ A line holds:
   observed descendant end; or `uncertain` when the guard entry was kept for inspection
   ([lock reclamation](#lock-reclamation)). On a `withdrawn` line: `timed-out`, which includes
   `eng run --if-free` declining; `stopped`; or `failed`.
-- On a `recovered` line, which `eng admissions recover`, or admission itself, writes when it
-  removes an entry: `pid` is the entry's owner; `uncertain`, whether the entry was marked so;
-  `commands`, `processes` and `spaces`, how many unsettled commands, recorded processes and
-  process groups or sessions its census checked; and `automatic`, true when admission recovered
-  it, absent when a person did.
+- On a `recovered` line, which `eng admissions recover`, `eng admissions remove` or admission
+  itself writes when it removes an entry: `pid` is the entry's owner; `uncertain`, whether the
+  entry was marked so; `commands`, `processes` and `spaces`, how many unsettled commands, recorded
+  processes and process groups or sessions its census checked, all 0 for a removal by hand;
+  `automatic`, true when admission recovered it, absent when a person did; and, for a removal by
+  hand ([lock reclamation](#lock-reclamation)), `byHand` true, `unproven`, why recovery left the
+  entry (`it has no process record` or `its process record cannot vouch for every command`), and
+  `why`, the person's reason as `--why` gave it.
 
 An `admitted` line with no `ended` line is still held, or SIGKILL ended its admitting process,
 which leaves its guard entry for recovery as well, and a `recovered` line follows once it is
@@ -2971,6 +2976,31 @@ and logs a `recovered` line ([admission log](#admission-log)), only when all of 
 Otherwise it changes nothing, exits 1 and says why: each process still running, by PID with why it
 counts and a `ps` listing, or what to check by hand. Stop or wait for what still runs, then run it
 again. It leaves alone, too, a guard that is unreadable or not in admission's format.
+
+An entry recovery leaves because nothing proves it finished, one with no process record or one
+whose record cannot vouch for every command, is removed by hand, once you have checked that
+nothing its owner started still runs:
+
+```sh
+python3 scripts/eng admissions remove 56766 --why "ps shows nothing of BreezEPUB ways-in"
+```
+
+It runs recovery first: an entry recovery can prove finished is recovered as above, and one whose
+owner, or a process its census names, still runs stays. Then it checks what of the process record
+can be read: each recorded process by PID and start, each live process in a group or session a
+recorded command used, and anything started since the owner in the owner's process group, or in
+its session where the group leads it, as the admission line records them, or, without one, in a
+group or session the owner led. While any of these runs, it names each by PID with a `ps` listing,
+removes nothing and exits 1. An owner without a record that led no group or session, as one a
+shell started in the shell's group, leaves nothing to check there, which is why the check by hand
+comes first. Otherwise it removes the entry, and the guard with its last one, deletes its record,
+and logs a `recovered` line marked `byHand`, with why recovery left the entry and the `--why`
+given ([admission log](#admission-log)). It is deliberately a command of its own, outside this
+repository's allow rule for `eng admissions recover`, whose basis is that recovery removes only
+provably finished entries: a session's auto mode asks before it removes one that is not (owner's
+decision, 2026-11-08,
+[vocaro-engineering#315](https://github.com/vocaro/vocaro-engineering/issues/315)). Until then
+such an entry was removed by editing the guard.
 
 The process record is `<guard>.IDENTITY.jsonl`, beside the guard, named by the identity that keys
 the entry. Admission writes its first line under the coordination lock just before it adds the
