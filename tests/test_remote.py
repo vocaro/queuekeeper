@@ -302,6 +302,12 @@ class RemoteTests(unittest.TestCase):
             "noted": {"command": [python, "-c", "import os, pathlib; folder = pathlib.Path(os.environ['ENG_RESULTS_DIR']); "
                                   "print('results in', folder); (folder / 'note.txt').write_text('noted'); "
                                   "print('Ran 1 tests')"], "resource": "heavy", "minimumTests": 1},
+            # Leaves a record as `eng results keep` writes one, by a lane that runs xcodebuild itself (#260).
+            "kept-tests": {"command": [python, "-c", "import json, os, pathlib; "
+                                       "folder = pathlib.Path(os.environ['ENG_RESULTS_DIR']) / 'simulator-tests'; folder.mkdir(); "
+                                       "(folder / 'iPhone.json').write_text(json.dumps({'run': 'iPhone', 'keptBy': 'eng results keep', "
+                                       "'status': 0, 'bundleUnread': None, 'tests': [{'test': 'T/a()', 'outcome': 'passed', 'seconds': 0.5}]}))"],
+                           "resource": "heavy"},
             "notes": {"parallel": ["noted", "left"], "resource": "heavy"},
             # Runs noted inside itself, as a gate's script runs its suites with `eng run --here suites` (#218).
             # A shell, as the gate's script is, keeps the admission's descriptor open for the nested run.
@@ -1984,6 +1990,10 @@ class RemoteTests(unittest.TestCase):
         there = (self.checkout(0) / ".build/engineering").resolve()
         self.assertIn(f"results in {there}/notes/results/noted\n", self.lane_files("notes", "noted")[0])
         # A lane alone there writes in its own results/, which comes back as the lane's.
+        status, output, error = self.eng("run", "kept-tests")
+        self.assertEqual(status, 0, output + error)
+        self.assertEqual((output + error).count("iPhone: passed 0.500s T/a()\n"), 1, output + error)
+        self.assertTrue((self.project / ".build/engineering/remote/kept-tests/results/simulator-tests/iPhone.json").exists())
         status, output, error = self.eng("run", "noted")
         self.assertEqual(status, 0, output + error)
         self.assertEqual((self.project / ".build/engineering/remote/noted/results/note.txt").read_text(), "noted")

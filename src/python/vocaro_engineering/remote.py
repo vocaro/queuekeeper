@@ -64,7 +64,7 @@ import tempfile
 import threading
 import time
 
-from . import capture_approvals, devices, disk, evidence, offload_host, processes, resources, toolkit_copy
+from . import capture_approvals, devices, disk, evidence, offload_host, processes, resources, run_results, toolkit_copy
 from .config import TOOLKIT_ROOT, unlocked_screen
 from .resources import BUSY, FREE_WAIT
 from .simulators import pool as simulator_pool
@@ -1958,6 +1958,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
         wrote = sorted({Path(path).parts[1] for path in files if len(Path(path).parts) > 2} & set(group))
         print(f"remote: {len(files)} file{'s' if len(files) != 1 else ''} the run wrote in its {RESULTS} came back in "
               f"{results / RESULTS}" + (f", from {', '.join(wrote)}" if wrote else ""), file=sys.stderr, flush=True)
+        run_results.report(results / RESULTS)
     if members and result.get("stage") == "work":
         members = config["lanes"][lane]["parallel"]
         came = [member for member in members if f"lanes/{member}.log" in returned]

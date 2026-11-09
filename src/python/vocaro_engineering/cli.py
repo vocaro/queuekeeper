@@ -11,7 +11,7 @@ import subprocess
 import sys
 import time
 
-from . import __version__, app_builds, app_registrations, budgets, crash_alerts, device_pass, devices, disk, docs, evidence, evidence_offload, failure_records, foreground, github_artifacts, keychain, lane_coverage, merge_queue, \
+from . import __version__, app_builds, app_registrations, budgets, crash_alerts, device_pass, devices, disk, docs, evidence, evidence_offload, failure_records, foreground, github_artifacts, keychain, lane_coverage, merge_queue, run_results, \
     notification_center, offload_host, parallel, processes, release, remote, resources, skills, spelling, stale_modules, storekit_config, toolkit_copy, xctest_shards
 from .config import TOOLKIT_ROOT, CAPABILITIES, DEFAULT_TOOLKIT, admission as admission_of, load, source_identity, \
     display_lane_warnings, lane_devices, self_lane_warnings, stays, unadmitted, unlocked_screen
@@ -962,6 +962,8 @@ def main(argv=None):
     commands.add_parser("failures", help="keep a failed test run's log, result bundle and failure messages in a "
         "record under .build/failures/ that no later run replaces, with a copy in the lane's results/, and list or "
         "prune the records by their rule: eng failures keep|list|prune; -h for the rest")
+    commands.add_parser("results", help="keep a test run's per-test outcomes and seconds in the lane's results/ and "
+        "print them, for a script that runs xcodebuild itself: eng results keep; -h for the rest")
     commands.add_parser("unittest", help="run a unittest suite's modules in processes of their own, side by side: "
         "eng unittest [-s START] [-p PATTERN] [-j JOBS] [-k PATTERN] [-v] [NAME ...]; eng unittest -h for the rest")
     commands.add_parser("xctest", help="build a Swift package's tests once and run its XCTest classes in xctest "
@@ -1164,6 +1166,7 @@ def main(argv=None):
     if argv[first:first + 1] == ["simulator-pool"]: return simulator_pool.main(argv[first + 1:], project)
     if argv[first:first + 1] == ["device-pass"]: return device_pass.main(argv[first + 1:], project)
     if argv[first:first + 1] == ["failures"]: return failure_records.main(argv[first + 1:], project)
+    if argv[first:first + 1] == ["results"]: return run_results.main(argv[first + 1:])
     if argv[first:first + 1] == ["storekit"]: return storekit_config.main(argv[first + 1:], project)
     # Recovery, like the admission log, covers the whole host and reads no project.
     if argv[first:first + 2] == ["admissions", "recover"]: return resources.recover_main(argv[first + 2:])
@@ -1361,6 +1364,8 @@ def main(argv=None):
                 # The verdict in this checkout, and kept by commit for every worktree (vocaro-engineering#198).
                 conclude(directory, receipt, status, **fields)
                 remote.keep_here(root, args.lane, receipt, status, whole, results=directory / "results")
+                # A lane's output goes to its log; the Mac that sent a dispatch prints these once they are back.
+                if not os.environ.get(remote.DISPATCHER): run_results.report(directory / "results")
             def prepared(work):
                 # What an earlier run left in results/ is not this run's, here as on the second Mac (remote.RESULTS).
                 # The lane finds the directory in ENG_RESULTS_DIR, and a group's lanes each find one of their own in it.
