@@ -244,8 +244,8 @@ def commit_warnings(root, config, main="refs/remotes/origin/main"):
         else "and none since adoption passed every release lane"
     missing = (f"; {partial[0][:12]}, a newer commit, has not passed {', '.join(partial[1])}") if partial else ""
     return [f"origin/main holds {count} commits {since} ({', '.join(lanes)}), over release.maxCommits, {limit}"
-            f"{missing}. Run a checkpoint: each lane in release.lanes on main's tip, with no version, changelog "
-            f"edit or tag ({CHECKPOINTS})"]
+            f"{missing}. Run a checkpoint, `eng checkpoint`: each lane in release.lanes on main's tip, one after "
+            f"another, with no version, changelog edit or tag ({CHECKPOINTS})"]
 
 
 def landing_warnings(root, config, entries):

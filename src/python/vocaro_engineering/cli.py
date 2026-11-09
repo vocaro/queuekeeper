@@ -11,7 +11,7 @@ import subprocess
 import sys
 import time
 
-from . import __version__, app_builds, app_registrations, budgets, crash_alerts, device_pass, devices, disk, docs, evidence, evidence_offload, failure_records, foreground, github_artifacts, keychain, lane_coverage, merge_queue, run_results, \
+from . import __version__, app_builds, app_registrations, budgets, checkpoint, crash_alerts, device_pass, devices, disk, docs, evidence, evidence_offload, failure_records, foreground, github_artifacts, keychain, lane_coverage, merge_queue, run_results, \
     notification_center, offload_host, parallel, processes, release, remote, resources, skills, spelling, stale_modules, storekit_config, toolkit_copy, xctest_shards
 from .config import TOOLKIT_ROOT, CAPABILITIES, DEFAULT_TOOLKIT, admission as admission_of, load, source_identity, \
     display_lane_warnings, lane_devices, self_lane_warnings, stays, unadmitted, unlocked_screen
@@ -1110,6 +1110,12 @@ def main(argv=None):
                              "that Git does not ignore, which eng spelling must pass")
     publication.add_argument("--waive", action="append", metavar="LANE=ISSUE", help="the owner's waiver of a release "
                              "lane's failure, filed in ISSUE, which the tag's message records; only the owner passes it")
+    checkpointing = commands.add_parser("checkpoint", help="run each lane in engineering.json's release.lanes one "
+        "after another on main's tip, a device pass first, each through eng run's admission and placement, and say "
+        "which passed, failed, were unmeasured or did not run; exit 0 only when every one passed (guides/releasing.md, "
+        "Checkpoints)")
+    checkpointing.add_argument("--leave-out", action="append", metavar="LANE=WHY", help="leave a release lane out of "
+        "this run, reported as not run with the reason, such as a device lane the owner has not agreed to")
     evid = commands.add_parser("evidence", help="verify an evidence receipt, or move a durable evidence folder "
                                "to the second Mac, deleting it here once every file verified there (guides/evidence.md)")
     evid.add_argument("operation", choices=["verify", "offload"])
@@ -1271,6 +1277,7 @@ def main(argv=None):
         elif args.action == "admit": return admit(root, args, config, device_window=device_window)
         elif args.action == "remote": return remote.main(root, config, args)
         elif args.action == "release": return release.main(root, config, args)
+        elif args.action == "checkpoint": return checkpoint.main(root, config, args)
         elif args.action == "source":
             from .support import source_path
             print(source_path(args.name))
