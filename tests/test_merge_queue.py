@@ -6759,8 +6759,33 @@ class RemovedWhileTesting(Fixture):
     def test_removing_a_testing_entry_stops_its_gate_and_the_rest_lands(self):
         self.commit("slow", "a", self.SLOW); self.commit("b", "b")
         a, b = self.add("a", "b")
-        log, took = self.worked(self.during(lambda: self.remove(a)))
-        self.assertLess(took, float(self.SLOW) / 2, log)
+        run = mq.processes.run
+        stop_times = []
+
+        def observe_stop(command, *, cancel=None, **options):
+            if not isinstance(cancel, mq.Removal) or a not in cancel.ids:
+                return run(command, cancel=cancel, **options)
+            is_set, removed = cancel.is_set, None
+
+            def remove_once_running():
+                nonlocal removed
+                # The fixture writes the counter after the lane has started, before it sleeps.
+                if removed is None and self.counter.exists():
+                    self.remove(a)
+                    removed = time.monotonic()
+                return is_set()
+
+            with patch.object(cancel, "is_set", remove_once_running):
+                try:
+                    return run(command, cancel=cancel, **options)
+                except mq.processes.Canceled:
+                    self.assertIsNotNone(removed)
+                    stop_times.append(time.monotonic() - removed)
+                    raise
+
+        log, _ = self.worked(patch.object(mq.processes, "run", observe_stop))
+        self.assertEqual(len(stop_times), 1, log)
+        self.assertLess(stop_times[0], float(self.SLOW) / 2, log)
         self.assertEqual((self.state(a)["state"], self.state(b)["state"]), ("removed", "landed"), log)
         self.assertRegex(log, f"gate: stopped[^\\n]*, as {a} left the queue")
         self.assertIn(f"{a} left the queue, which stopped the gate: gating what is left", log)
