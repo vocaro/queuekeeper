@@ -32,7 +32,8 @@ def parse(source):
     if not isinstance(value, dict) or value.get("schemaVersion") != 1:
         raise ValueError("engineering.json requires schemaVersion 1")
     allowed = {"schemaVersion", "name", "toolkit", "capabilities", "lanes", "exceptions",
-               "integration", "repository", "spelling", "simulatorPool", "githubArtifacts", "queue", "release", "app"}
+               "integration", "repository", "spelling", "simulatorPool", "githubArtifacts", "queue", "release", "app",
+               "testLanes"}
     hosted = [key for key in ("hostedRepositories", "voiceover") if key in value]
     if hosted:
         raise ValueError(f"engineering.json gives {' and '.join(hosted)}, which configured GitHub's hosted Mac runner "
@@ -109,10 +110,27 @@ def parse(source):
         if not isinstance(entries, dict) or any(not isinstance(k, str) or not k.strip() or not isinstance(r, str)
                                                 or not r.strip() for k, r in entries.items()):
             raise ValueError(f"spelling.{key} maps each entry to the reason it is kept")
+    test_lanes(value.get("testLanes", {}))
     exceptions = value.get("exceptions", [])
     if not isinstance(exceptions, list) or any(not isinstance(x, dict) or not all(isinstance(x.get(k), str) and x[k] for k in ["rule", "reason"]) for x in exceptions):
         raise ValueError("Exceptions require a rule and a reason")
     return value
+
+
+def test_lanes(declared):
+    """What eng doctor's lane coverage (lane_coverage.py, #289) cannot work out for itself: skip, the test paths kept as
+    records, each with its reason, and selects, for a lane whose command it cannot read, the paths the lane's tests
+    are under, none for a lane that runs no test."""
+    if not isinstance(declared, dict) or set(declared) - {"skip", "selects"}:
+        raise ValueError("testLanes supports only skip and selects")
+    skip, selects = declared.get("skip", {}), declared.get("selects", {})
+    if not isinstance(skip, dict) or any(not isinstance(k, str) or not k.strip() or not isinstance(r, str) or not r.strip()
+                                         for k, r in skip.items()):
+        raise ValueError("testLanes.skip maps each path to the reason it is kept")
+    if not isinstance(selects, dict) or any(not isinstance(k, str) or not k.strip() or not isinstance(paths, list)
+                                            or any(not isinstance(p, str) or not p.strip() for p in paths)
+                                            for k, paths in selects.items()):
+        raise ValueError("testLanes.selects maps each lane to a list of the paths its tests are under")
 
 
 # What a lane takes of its Mac. Every lane is admitted, first come, first served, and offered to the second Mac
