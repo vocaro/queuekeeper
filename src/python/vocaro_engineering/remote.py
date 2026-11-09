@@ -2818,7 +2818,7 @@ OVERFLOW_WAIT, OVERFLOW_WAIT_MAX = 15, 120
 OVERFLOW_TIMEOUT = 5400
 
 
-def overflow(offered, admit, timeout=OVERFLOW_TIMEOUT, once=False):
+def overflow(offered, admit, timeout=OVERFLOW_TIMEOUT, once=False, refused=()):
     """This Mac's admission of work the second Mac declined as busy, the work's status when the second Mac
     took it after all or its configuration stopped it, or BUSY when neither Mac admitted it in timeout
     seconds, after saying so.
@@ -2835,7 +2835,8 @@ def overflow(offered, admit, timeout=OVERFLOW_TIMEOUT, once=False):
     as withdrawn, as a declined offer is there, and leaves its queue; an exclusive request rejoins the
     queue behind those that came meanwhile, and a whole-host one keeps its place across the waits
     (resources.Place), holding later heavy work back while it waits here and for HEAVY_PLACE_SECONDS
-    after (vocaro-engineering#174). With once, as for --if-free, each Mac is asked once."""
+    after (vocaro-engineering#174). With once, as for --if-free, each Mac is asked once. refused holds why each of
+    this Mac's waits ended unadmitted, the last of which the give-up line says (vocaro-engineering#270)."""
     deadline, window, said = time.monotonic() + timeout, FREE_WAIT, None
     while True:
         # Once the second Mac can no longer take it, this Mac's queue alone, for the rest of the time.
@@ -2845,7 +2846,8 @@ def overflow(offered, admit, timeout=OVERFLOW_TIMEOUT, once=False):
         if once or time.monotonic() >= deadline:
             print(f"eng: {offered.name} not run: neither Mac admitted it {'now' if once else f'in {timeout:g}s'}"
                   + (f"; the second Mac cannot be reached: {offered.away}" if offered.away
-                     else f"; {offered.busy}" if offered.busy else ""), file=sys.stderr, flush=True)
+                     else f"; {offered.busy}" if offered.busy else "")
+                  + (f"; this Mac's last wait: {refused[-1]}" if refused else ""), file=sys.stderr, flush=True)
             return BUSY
         if offered.busy is not None and offered.away is None and offered.busy != said:
             print(f"eng: {offered.name} waits for whichever Mac admits it first, the second Mac asked again every "

@@ -539,7 +539,7 @@ def admitted_here(stack, name, label, timeout, offered=None, once=False, exclusi
             return None
     try:
         if offered is not None and offered.busy is not None:
-            return remote.overflow(offered, admit, timeout, once)
+            return remote.overflow(offered, admit, timeout, once, refused)
         # A wait that runs out is BUSY, as with once: nothing ran, which the merge queue counts as no verdict.
         # Raised, TimeoutError is an OSError, which eng run reports as its own error, exit 2 (#268).
         admission = admit(FREE_WAIT if once else timeout)

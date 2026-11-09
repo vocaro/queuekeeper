@@ -2332,6 +2332,9 @@ class RemoteTests(unittest.TestCase):
             self.assertEqual(status, resources.BUSY, output + error)
             self.assertIn("eng: gate not run: neither Mac admitted it in 8s; the second Mac is busy: fake did not take "
                           "it", error)
+            # What held this Mac's slots too, not the second Mac's reason alone (#270).
+            self.assertRegex(error, r"not run: neither Mac admitted it in 8s; .*; this Mac's last wait: Resource queue busy"
+                                    r".*; waited \d+s( on \S+)?; nothing ran\n")
             self.assertIn("waits for whichever Mac admits it first", error)
             self.assertGreaterEqual(waited, 8)
             status, output, error = self.run_here("--if-free", "gate")
@@ -6428,6 +6431,19 @@ class OfferAgainTests(unittest.TestCase):
             self.assertEqual(remote.overflow(offered, lambda seconds: None, once=True), remote.BUSY)
         self.assertIn("neither Mac admitted it now; the second Mac cannot be reached: fake cannot be reached: it is asleep",
                       error.getvalue())
+
+    def test_neither_mac_admitting_gives_this_macs_last_reason_after_the_second_macs(self):
+        said = "Resource queue busy on Mac-A: it waits behind a whole-host lane holding the host: gate; waited 5s; nothing ran"
+        for refused, expected in [([TimeoutError("older"), TimeoutError(said)], f"; this Mac's last wait: {said}\n"),
+                                  # The negative control: a caller with no reason recorded adds no clause.
+                                  ([], "fake cannot be reached: it is asleep\n")]:
+            offered = self.offer()
+            offered.away = "fake cannot be reached: it is asleep"
+            with self.subTest(refused=len(refused)), patch("sys.stderr", new_callable=StringIO) as error:
+                self.assertEqual(remote.overflow(offered, lambda seconds: None, once=True, refused=refused), remote.BUSY)
+                self.assertIn("the second Mac cannot be reached", error.getvalue())
+                self.assertTrue(error.getvalue().endswith(expected), error.getvalue())
+                self.assertNotIn("older", error.getvalue())
 
 
 class EarlierNameTests(unittest.TestCase):

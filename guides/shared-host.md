@@ -260,7 +260,14 @@ In both rows `…` names `python3 scripts/eng admissions recover`.
 
 Each kind is the one the [admission log](#admission-log) records for the refusal. After its
 timeout (5,400 s by default) admission fails without reclaiming any lock, naming the same reason,
-and an exclusive or whole-host request leaves the queue, unless it keeps its place across waits. A script that runs several jobs at once leaves at least one of the guaranteed
+the Mac, the time it waited and that nothing ran, and an exclusive or whole-host request leaves the
+queue, unless it keeps its place across waits. Behind work known to be running it says
+`Resource queue busy on MAC: REASON; held by LABEL (slot0, slot1); waited Ns; nothing ran`, which
+is an ordinary wait. It says `Resource queue busy or an orphan requires inspection (REASON); no lock was reclaimed; …; waited Ns on MAC; nothing ran` only for what no
+running admission vouches for: a `guard` or `stranded` reason, or a slot or the model that is busy
+while its file names no running admission. When neither Mac admits the work, `eng run` and
+`eng admit` give the second Mac's reason and this Mac's last wait
+([vocaro-engineering#270](https://github.com/vocaro/vocaro-engineering/issues/270)). A script that runs several jobs at once leaves at least one of the guaranteed
 HEAVY_SLOTS for other sessions.
 
 Admission recovers each dead or uncertain entry it meets, as `eng admissions recover OWNER`

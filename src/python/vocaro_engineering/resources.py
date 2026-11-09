@@ -951,6 +951,54 @@ class Admission:
             self._refused_beside_stranded()
         return False
 
+    def _holding(self):
+        """What holds what the latest refused attempt wanted, read now: {label of a running admission: its locks}, and
+        the locks that are busy though their files name no running admission, such as a caller of the old slot API or
+        a process that outlived its entry. Probed and let go at once, under the coordination lock (_extra_slot)."""
+        recorded = self._recorded()
+        running_now = {identity: owner for identity, owner in (recorded["owners"] if recorded else {}).items()
+                       if identity not in self.stranded and not owner.get("uncertain") and running(owner)}
+        held, unverified = {}, []
+        with (self.directory / "coordination.lock").open("a+") as bridge:
+            fcntl.flock(bridge, fcntl.LOCK_EX)
+            for lock in ["model"] if self.refusal == "model" else [f"slot{slot}" for slot in range(self.maximum)]:
+                try:
+                    fd = os.open(self.directory / lock, os.O_RDWR)
+                except FileNotFoundError:
+                    continue
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    written = os.pread(fd, 4096, 0).decode(errors="replace").split(" ", 2)
+                    owner = running_now.get(written[1]) if len(written) > 1 else None
+                    if owner is None: unverified.append(lock)
+                    else: held.setdefault(str(owner.get("label") or "an unnamed owner")[:LABEL_LIMIT], []).append(lock)
+                finally:
+                    os.close(fd)
+        return held, unverified
+
+    def _gave_up(self, waited):
+        """What a request that stops waiting says stopped it: which Mac, what held it, the time waited and that nothing
+        ran (#270). Work known to be running only made it wait, so this says the queue was busy and names that work. The
+        orphan wording stays for what no running admission vouches for: a guard admission cannot read, a stranded entry
+        counted as the slots it held, or a slot or the model busy with no running admission named in its file."""
+        from . import offload_host
+        mac, held, unverified = offload_host.mac_name(), {}, []
+        if self.refusal not in ("guard", "stranded", "exclusive", "wholeHost"):
+            try:
+                held, unverified = self._holding()
+            except OSError as error:
+                # A request that stops waiting fails as it would have: `eng run --if-free` tells a busy host by it.
+                unverified = [f"the locks, unread: {error}"]
+        if self.refusal in ("guard", "stranded") or unverified:
+            busy = f"; busy with no running admission named: {', '.join(unverified)}" if unverified else ""
+            return (f"Resource queue busy or an orphan requires inspection ({self.waiting}); no lock was reclaimed{busy}; "
+                    f"waited {waited}s on {mac}; nothing ran")
+        # The model's holder is in the waiting message already.
+        named = ("; held by " + ", ".join(f"{label} ({', '.join(locks)})" for label, locks in held.items())
+                 if held and self.refusal != "model" else "")
+        return f"Resource queue busy on {mac}: {self.waiting}{named}; waited {waited}s; nothing ran"
+
     def _attempt(self):
         self.directory.mkdir(parents=True, exist_ok=True)
         with (self.directory / "coordination.lock").open("a+") as bridge:
@@ -1087,12 +1135,13 @@ class Admission:
                 # so a stop or a timeout leaves nothing to release once it withdraws.
                 if requested() is not None:
                     raise Interrupted(requested(), "while waiting for admission")
-                waited = int(time.monotonic() - started)
+                elapsed = time.monotonic() - started
+                waited = int(elapsed)
                 if reported is None or waited - reported >= 300:
                     print(f"heavy: waiting ({waited}s): {self.waiting}", file=sys.stderr, flush=True)
                     reported = waited
-                if time.monotonic() - started >= self.timeout:
-                    raise TimeoutError(f"Resource queue busy or an orphan requires inspection ({self.waiting}); no lock was reclaimed")
+                if elapsed >= self.timeout:
+                    raise TimeoutError(self._gave_up(waited))
                 time.sleep(self.poll)
         except BaseException as error:
             try:
