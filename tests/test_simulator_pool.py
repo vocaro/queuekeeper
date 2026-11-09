@@ -145,14 +145,22 @@ LOGS = "/Users/someone/Library/Logs/CoreSimulator"
 DEVICES = "/Users/someone/Library/Developer/CoreSimulator/Devices"
 
 
+def save_voiceover(data, enabled):
+    """Save VoiceOver's setting in a data folder as the system does, in a binary property list."""
+    path = data / simulator_pool.ACCESSIBILITY_SETTINGS
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(plistlib.dumps({simulator_pool.VOICEOVER_SETTING: int(enabled), "AccessibilityEnabled": enabled},
+                                    fmt=plistlib.FMT_BINARY))
+
+
 class Warm:
     """A stand-in for template.warm: it boots the template through the pool's simctl, marks its data as warmed
     and says what it heard. off and warmed say whether VoiceOver was confirmed off and spoke, settled whether
     the system's voices answered both uses; limits records each call's limits."""
 
-    def __init__(self, build="24B8117", failure=None, off=True, warmed=True, settled=True):
+    def __init__(self, build="24B8117", failure=None, off=True, warmed=True, settled=True, saved=None):
         self.calls, self.limits, self.build, self.failure, self.off, self.warmed = [], [], build, failure, off, warmed
-        self.settled = settled
+        self.settled, self.saved = settled, saved
 
     def __call__(self, udid, runtime, *, simctl, boot_timeout=600, voiceover_limit=600, voices_limit=900):
         self.calls.append((udid, runtime))
@@ -164,6 +172,8 @@ class Warm:
         # And what the system leaves in it naming the template's own folders: absolute links into its logs and
         # data, and LaunchServices' store of its container paths (vocaro-engineering#216).
         plant(Path(simctl.devices[udid]["dataPath"]), udid)
+        # What the template saved of VoiceOver, whatever devicectl confirmed: saved says which, None nothing.
+        if self.saved is not None: save_voiceover(Path(simctl.devices[udid]["dataPath"]), self.saved)
         said = "spoke 50.0 s after it was switched on" if self.warmed else f"silent for {voiceover_limit} s, so it is not warmed"
         voices = {"limit": voices_limit, "settled": True, "firstUse": {"seconds": 57.0, "count": 180},
                   "rebootSeconds": 6.0, "secondUse": {"seconds": 24.0, "count": 180},
@@ -1225,6 +1235,50 @@ class PoolTests(unittest.TestCase):
         details["voiceOver"] = "spoke 50.0 s after it was switched on"
         self.path.write_text(json.dumps(value))
         self.assertEqual([current for _, current, _ in pool.templates()], [True])
+
+    def test_a_template_saved_with_voiceover_on_is_never_copied_whatever_its_record_says(self):
+        # Warmed with VoiceOver confirmed off, yet saved on (vocaro-engineering#263): neither cloned nor copied.
+        warm = Warm(saved=True)
+        pool = self.make("me", warm=warm)
+        free = self.simctl.add("Project Duo 1")
+        template = "Project Duo template (iOS-27-1)"
+        reason = "its saved settings have VoiceOver on, so a clone or copy would boot with it on"
+        lease = pool.take(DUO, RUNTIME, purpose="Tests")
+        self.assertEqual((lease.udid, lease.reset), (free, None))
+        self.assertEqual(self.simctl.created("clone"), [])
+        self.assertNotEqual(self.simctl.origin(free).split()[0], "warmed")
+        entry = devices.Record(self.path).entry(template)
+        self.assertEqual((entry["state"], entry["template"]["voiceOverOff"]), ("released", True))
+        self.assertIn(f"Warmed, not cloned: {reason}", entry["run"])
+        self.assertEqual([(current, why) for _, current, why in pool.templates()], [(False, reason)])
+        self.assertTrue(pool.release(lease, outcome="done"))
+        # The next take replaces it, and a template saved with VoiceOver off is copied.
+        warm.saved = False
+        old = entry["device"]
+        again = pool.take(DUO, RUNTIME, purpose="Tests")
+        self.assertEqual(self.simctl.deleted(), [old])
+        self.assertTrue(any(f"REPLACED the template {template} ({old}): {reason}" in line for line in self.log), self.log)
+        self.assertEqual((again.udid, again.reset), (free, template))
+        self.assertTrue(pool.release(again, outcome="done"))
+        # A template that was current when warmed, such as one from before this check, is replaced too.
+        source, = [udid for udid, device in self.simctl.devices.items() if device["name"] == template]
+        save_voiceover(self.simctl.data(source), True)
+        self.assertEqual([(current, why) for _, current, why in pool.templates()], [(False, reason)])
+
+    def test_saved_voiceover_reads_only_a_setting_that_is_on(self):
+        with tempfile.TemporaryDirectory() as folder:
+            data = Path(folder)
+            self.assertFalse(simulator_pool.saved_voiceover_on(data))
+            save_voiceover(data, False)
+            self.assertFalse(simulator_pool.saved_voiceover_on(data))
+            save_voiceover(data, True)
+            self.assertTrue(simulator_pool.saved_voiceover_on(data))
+            path = data / simulator_pool.ACCESSIBILITY_SETTINGS
+            path.write_bytes(plistlib.dumps({"AccessibilityEnabled": True}))
+            self.assertFalse(simulator_pool.saved_voiceover_on(data))
+            for broken in (b"not a property list", b"<?xml version='1.0'?><plist><dict>", plistlib.dumps(["a"])):
+                path.write_bytes(broken)
+                self.assertFalse(simulator_pool.saved_voiceover_on(data), broken)
 
     def test_a_stop_before_the_template_has_a_udid_releases_its_name(self):
         template = "Project iPhone Duo template (iOS-27-1)"
