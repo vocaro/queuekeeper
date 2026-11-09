@@ -332,10 +332,11 @@ by hand only once that checkout has it.
 
 **A worker whose session ended exits.** macOS denies a worker the local network once the Claude session that
 started it ends, so it could no longer reach the second Mac. Before each round, while a second Mac is configured, the
-worker checks for this and, if so, exits, holding nothing, with its entries back in the queue. Its log then says
-`exits, holding nothing, since this worker cannot reach the second Mac`. The next `eng land`, `eng queue wait` or `eng
-queue resume` starts a worker from a live session (guides/shared-host.md, Local Network access;
-vocaro-engineering#282).
+worker checks for this and, if so, exits, holding nothing, with its entries back in the queue. A gate that finds it
+during a round, by the exit 69 of a lane's `eng run`, which then ran nothing on this Mac, does the same. Its log then
+says `exits, holding nothing, since this worker cannot reach the second Mac`. The next `eng land`, `eng queue wait` or
+`eng queue resume` starts a worker from a live session (guides/shared-host.md, Local Network access;
+vocaro-engineering#282, #300).
 
 **The shared checkout follows each toolkit landing.** After each push, the toolkit's own worker
 fast-forwards its main checkout, `~/Development/vocaro-engineering`, to `origin/main`, without hooks,
@@ -627,8 +628,9 @@ branch of your own once `eng land` says `landed`. In a rebase already under way,
 --skip` drops a landed commit. On 2026-11-05 one EPUBLib session's rebases stopped on
 `CHANGELOG.md` three times this way.
 
-**A run with no verdict blames nobody.** Exit 3 (unmeasured), 75 (no admission) and 78 (a
-misconfigured host) say nothing about the commits. The worker runs the lanes again, and holds the
+**A run with no verdict blames nobody.** Exit 3 (unmeasured), 69 (a worker that lost Local Network
+access, on which it exits instead of counting the run), 75 (no admission) and 78 (a misconfigured host) say nothing
+about the commits. The worker runs the lanes again, and holds the
 queue, with every entry waiting, once three runs in a row have given no verdict, as it also does for a
 push refused for any reason but a race. On 2026-11-04, 8 of 12 of EPUBLib's gates on the second Mac
 gave none, as the simulators' voices were not ready in time
@@ -722,7 +724,7 @@ long wait held an SSH connection open until GitHub dropped it. After a gate pass
 the project's hook itself with `git hook run`, as Git would call it for pushing to `main`, with its
 log in `eng-queue/logs`, and then pushes with `--no-verify`. A connection that dropped or a race that
 leaves the commit unchanged pushes again without running the hook again; a carried-over commit is a
-new commit and runs it again. A hook's exit 3, 75 or 78 is no verdict, as a lane's is: it is tried
+new commit and runs it again. A hook's exit 3, 69, 75 or 78 is no verdict, as a lane's is: it is tried
 once more, once the host has settled, and then holds. Git passes the hook's status through, so a hook that waits for admission
 should exit with the status it got rather than 1. Any other refusal holds at once, for a session, since the gate
 passed and the hook disagrees, which is for a session to read; it blames no commit.

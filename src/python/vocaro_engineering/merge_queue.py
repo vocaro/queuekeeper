@@ -59,11 +59,12 @@ QUEUED, TESTING, PASSED, LANDED, FAILED, CONFLICT, REMOVED = \
 WAITING = {QUEUED, TESTING, PASSED}
 # What Worker.older returns for a batch whose lanes gave no verdict, which is no entry's state.
 NO_VERDICT_OUTCOME = "no verdict"
-# What a lane exits with when it says nothing about the commits: unmeasured, no admission, and a
-# shared host's configuration, which stops for the owner.
-NO_VERDICT = {evidence.UNMEASURED, resources.BUSY, remote.MISCONFIGURED}
-# Of those, the exits of a lane that did not run: no Mac admitted it, or a shared host's configuration stopped it.
-UNRUN = {resources.BUSY, remote.MISCONFIGURED}
+# What a lane exits with when it says nothing about the commits: unmeasured, no admission, a
+# shared host's configuration, which stops for the owner, and a worker that lost Local Network access (Worker.older).
+NO_VERDICT = {evidence.UNMEASURED, resources.BUSY, remote.MISCONFIGURED, remote.LOST_ACCESS}
+# Of those, the exits of a lane that did not run: no Mac admitted it, a shared host's configuration stopped it, or this
+# worker can no longer reach the second Mac.
+UNRUN = {resources.BUSY, remote.MISCONFIGURED, remote.LOST_ACCESS}
 # Whom a hold is for, in its reason's first words (worded): the owner only for a cause nobody else can fix, a
 # misconfigured shared host, a refused push or credentials; a session for every other, and the session that deals
 # with the cause, or finds it gone, clears it with `eng queue resume` itself, never asking the owner (owner's
@@ -2280,8 +2281,8 @@ class Worker:
             watch = GateWatch(self, lane, began, log).start()
             try:
                 try:
-                    status_ = processes.run(command, cwd=self.checkout, log_path=log,
-                                            timeout=LANE_LIMIT, env=self.environment, cancel=removal)
+                    status_ = processes.run(command, cwd=self.checkout, log_path=log, timeout=LANE_LIMIT,
+                                            env={**self.environment, remote.QUEUE_GATE: "1"}, cancel=removal)
                 finally: watch.finish()
             except processes.TimedOut as error:
                 if sampler: sampler.stopped.set()
@@ -2913,6 +2914,10 @@ class Worker:
             return QUEUED
         if result in NO_VERDICT:
             queue.mark(applied, QUEUED)
+            # This worker exits, as before a round, so the run counts toward no bound (vocaro-engineering#300). The
+            # worker's own answer decides, so that a lane that merely exits with this status cannot end worker after
+            # worker.
+            if result == remote.LOST_ACCESS: self.connected()
             locked = runner.screen_locked(result, log)
             if locked:
                 # The owner's decision of 2026-11-08 (vocaro-engineering#293): a run a locked screen voided does not

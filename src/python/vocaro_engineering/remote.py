@@ -142,6 +142,12 @@ GIT_LOCATION = {"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECT
                 "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_PREFIX"}
 # `eng run`'s status when the second Mac's configuration stopped a lane: sysexits' EX_CONFIG.
 MISCONFIGURED = 78
+# `eng run`'s status when a queue worker's gate found its process without Local Network access and ran nothing, here
+# or there: sysexits' EX_UNAVAILABLE. No verdict, on which the worker exits, holding nothing (vocaro-engineering#300).
+LOST_ACCESS = 69
+# Set by a queue worker on the `eng run` of a gate's lane, the one `eng run` that stops for LOST_ACCESS. That `eng run`
+# takes it out of its environment, so that no lane it runs here, nor what that lane starts, stops for it.
+QUEUE_GATE = "VOCARO_QUEUE_GATE"
 # Seconds the check before a dispatch gives each address of the second Mac's name to answer on its ssh
 # port, and then `ssh true` to finish there, login shell included: an offline second Mac costs a few
 # seconds, where ssh's ConnectTimeout would take ten for each address.
@@ -2423,7 +2429,7 @@ def bring_runtimes(host, developer, check):
     return 1
 
 
-def first(root, config, lane, arguments, expect, fallback=True):
+def first(root, config, lane, arguments, expect, fallback=True, queue_gate=False):
     """Offer a lane to the second Mac to start now, once (Offer.make), and return the Offer.
 
     With fallback, the offer first reads both Macs' capacity for the lane (Offer.choose): a whole-host
@@ -2432,7 +2438,8 @@ def first(root, config, lane, arguments, expect, fallback=True):
     there) and one of the project's checkouts there is free. A tree with uncommitted changes goes as a
     snapshot commit (execute), and so does the toolkit's. The second Mac cannot run a lane whose
     arguments name a physical device of this Mac's record, nor any lane when Git cannot name the
-    commits to send.
+    commits to send. With queue_gate, for a queue worker's own `eng run` of a gate's lane, a process that lost Local
+    Network access ends with LOST_ACCESS rather than the work running on this Mac (Offer.lost_access).
     """
     work = ["run", "--here", "--if-free", *(["--expect", str(expect)] if expect else []), lane,
             *(["--", *arguments] if arguments else [])]
@@ -2444,7 +2451,7 @@ def first(root, config, lane, arguments, expect, fallback=True):
     offered = Offer(lane, f"`eng run --here {lane}`", lambda host, sent: execute(
         root, config, host, work, lane=lane, arguments=arguments, expect=expect, decline=True, sent=sent), refused,
         whole_host=bool(settings.get("wholeHost")), exclusive=settings.get("resource") == "exclusive",
-        screen=unlocked_screen(config.get("lanes", {}), lane))
+        screen=unlocked_screen(config.get("lanes", {}), lane), queue_gate=queue_gate)
     offered.make(fallback)
     return offered
 
@@ -2576,9 +2583,10 @@ class Offer:
     receipt gives it, while it has not: declined as busy, or not offered while it has no spare capacity
     and this Mac has (Loaded); and None once it ran there or can no longer take it."""
 
-    def __init__(self, name, instead, send, refused=None, whole_host=False, exclusive=False, screen=False):
+    def __init__(self, name, instead, send, refused=None, whole_host=False, exclusive=False, screen=False,
+                 queue_gate=False):
         self.name, self.instead, self.send, self.refused = name, instead, send, refused
-        self.whole_host, self.exclusive, self.screen = whole_host, exclusive, screen
+        self.whole_host, self.exclusive, self.screen, self.queue_gate = whole_host, exclusive, screen, queue_gate
         self.sent, self.host, self.status, self.busy, self.away = {}, None, None, None, None
         # Whether each offer first reads both Macs' capacity (choose): an offer this Mac may take does, and
         # --offload-only's, which never runs the work here, does not. Set by make.
@@ -2645,11 +2653,24 @@ class Offer:
                   file=sys.stderr, flush=True)
             self.status = said if fallback else BUSY
         except Unavailable as reason:
+            if self.lost_access(reason): return self.status
             said = reason.problem if isinstance(reason, Unreachable) else str(reason)
             print(f"eng: {f'running {self.name} on this Mac' if fallback else f'{self.name} not run'}: {said}",
                   file=sys.stderr, flush=True)
             self.status = said if fallback else BUSY
         return self.status
+
+    def lost_access(self, reason):
+        """Whether reason, why the second Mac did not take the work, ends a queue worker's gate: this process has lost
+        Local Network access, as it does once the session that started the worker ends, so the second Mac need not be
+        away, and every lane of the gate would run on this Mac (vocaro-engineering#300). Status is then LOST_ACCESS,
+        and nothing runs here. Any other `eng run` keeps its fallback, and so does a second Mac that is only away."""
+        if not self.queue_gate or not isinstance(reason, NoLocalNetwork): return False
+        print(f"eng: {self.name} not run, here or there: {reason.problem}\neng: a queue worker's gate gives no verdict "
+              f"for this, and the worker exits for a live session to start another (exit {LOST_ACCESS})",
+              file=sys.stderr, flush=True)
+        self.busy, self.status = None, LOST_ACCESS
+        return True
 
     def stopped(self, stop):
         print(f"eng: {self.name} not run: {stop.problem}\neng: to fix it, {stop.fix}\neng: a misconfigured shared host "
@@ -2663,7 +2684,8 @@ class Offer:
         MISCONFIGURED when the second Mac's configuration stopped it, or None while the second Mac is
         still busy or cannot be reached, and from then on when it can no longer take the work. A second
         Mac that cannot be reached is asked again at the next offer, since one that went offline during a
-        long wait may come back before it ends; away says why it could not be reached, while it cannot."""
+        long wait may come back before it ends; away says why it could not be reached, while it cannot. LOST_ACCESS
+        when a queue worker's gate lost Local Network access meanwhile (lost_access)."""
         if self.busy is None: return None
         try:
             self.status = self.attempt()
@@ -2674,6 +2696,7 @@ class Offer:
         except Busy as busy:
             self.busy, self.away = self.declined(busy), None
         except Unreachable as away:
+            if self.lost_access(away): return self.status
             if away.problem != self.away:
                 print(f"eng: {self.name} waits for this Mac, and asks the second Mac again at the next offer: "
                       f"{away.problem}", file=sys.stderr, flush=True)

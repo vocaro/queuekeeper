@@ -1193,8 +1193,13 @@ for now: a session that lands work keeps `eng land --wait` or `eng queue wait` r
 worker within a poll of the old one's exit. Worker exits are to be measured first in each queue's `worker.log`. If
 they cost real time, the preferred fix is a small launcher app signed with the owner's identity, with a grant of its
 own. This Mac's sshd as a `ProxyJump` hop is not preferred: it needs Remote Login on this Mac, and it covers ssh
-alone (vocaro-engineering#282, #299). A worker whose session ends during a gate still runs that gate's lanes on this
-Mac until the round ends (vocaro-engineering#300).
+alone (vocaro-engineering#282, #299).
+
+A worker whose session ends during a gate exits too. The `eng run` of each of the gate's lanes offers the lane to the
+second Mac first, and when that offer gets `NoLocalNetwork` it runs nothing on this Mac and exits 69 (`EX_UNAVAILABLE`).
+The worker reads that as no verdict and exits as it does before a round, without counting the run toward
+`queue.noVerdictRuns`. Only the `eng run` a queue worker starts for a gate's lane does this: a session's own `eng run`
+keeps its fallback, as does a second Mac that is only away (vocaro-engineering#300).
 
 ### The second Mac's own toolkit checkout
 

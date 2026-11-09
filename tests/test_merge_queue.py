@@ -1316,6 +1316,20 @@ class NoVerdict(Fixture):
             return result
         with patch.object(mq.Worker, "gate", gate): yield
 
+    def test_a_lane_that_merely_exits_as_a_lost_local_network_does_counts_and_ends_no_worker(self):
+        """The negative control of vocaro-engineering#300: only the worker's own answer ends it, or a lane exiting 69
+        would end worker after worker with nothing to bound them. The lane exits so under a real eng run."""
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        with self.no_verdict_for(1, str(mq.remote.LOST_ACCESS)), \
+                patch.object(mq.remote, "local_network_lost", return_value=None), \
+                contextlib.redirect_stdout(io.StringIO()) as said:
+            self.assertEqual(self.work(), 0)
+        self.assertEqual(self.gates(), 2)
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertIn(f"no verdict (exit {mq.remote.LOST_ACCESS}), run 1 of at most {mq.NO_VERDICT_RUNS}", said.getvalue())
+        self.assertNotIn("exits, holding nothing", said.getvalue())
+
     def test_unmeasured_holds_after_the_bound_and_blames_nobody(self):
         self.status.write_text("3")
         self.commit("a", "a")
@@ -4635,6 +4649,42 @@ class LostLocalNetwork(Fixture):
         self.assertEqual(self.gates(), 0)
         self.assertIn("exits, holding nothing, since this worker cannot reach the second Mac: " + self.LOST,
                       said.getvalue())
+        self.assertFalse(mq.Queue(self.repo).working())
+        # The next worker, a live session's, lands it.
+        with patch.object(mq.remote, "configured", return_value="fake-mac"), \
+                patch.object(mq.remote, "local_network_lost", return_value=None), patch("builtins.print"):
+            self.assertEqual(self.work(), 0)
+        self.assertEqual(self.state(identifier)["state"], "landed")
+
+    @contextlib.contextmanager
+    def losing_access_at_the_gate(self, status):
+        """Access is there at the round's check and gone once the gate's lane ran: the lane's eng run, whose
+        environment is kept, exits status without running anything, as a real one that found NoLocalNetwork does
+        (cli's run; test_remote's RemoteTests). Yields the environments of those runs."""
+        real, ran = mq.processes.run, []
+        def lane(command, *arguments, **options):
+            if command[:3] != ["python3", "scripts/eng", "run"]: return real(command, *arguments, **options)
+            ran.append(options["env"])
+            return status
+        with patch.object(mq.remote, "configured", return_value="fake-mac"), \
+                patch.object(mq.remote, "local_network_lost", side_effect=lambda: self.LOST if ran else None), \
+                patch.object(mq.processes, "run", lane):
+            yield ran
+
+    def test_a_gate_whose_lane_lost_the_local_network_exits_holding_nothing_and_counts_no_run(self):
+        """vocaro-engineering#300: as before a round (#282), not a no-verdict run toward queue.noVerdictRuns."""
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        with self.losing_access_at_the_gate(mq.remote.LOST_ACCESS) as ran, \
+                contextlib.redirect_stdout(io.StringIO()) as said:
+            self.assertEqual(self.work(), 0)
+        self.assertEqual(len(ran), 1)
+        self.assertEqual(ran[0][mq.remote.QUEUE_GATE], "1")
+        self.assertEqual(self.state(identifier)["state"], "queued")
+        self.assertIsNone(mq.Queue(self.repo).held())
+        self.assertEqual(self.gates(), 0)
+        self.assertIn("exits, holding nothing, since this worker cannot reach the second Mac: " + self.LOST, said.getvalue())
+        self.assertNotIn("of at most", said.getvalue())
         self.assertFalse(mq.Queue(self.repo).working())
         # The next worker, a live session's, lands it.
         with patch.object(mq.remote, "configured", return_value="fake-mac"), \

@@ -2252,6 +2252,44 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual(self.run_here("gate")[0], 0)
         self.assertTrue((self.home / remote.ROOT / "checkouts").exists())
 
+    LOST = remote.NoLocalNetwork("fake cannot be reached: 10.0.0.89: No route to host; macOS holds itself responsible "
+                                 "for this process (PID 7), a Python with no app of its own", remote.LOST_FIX)
+    AWAY = remote.Unreachable("fake cannot be reached: 10.0.0.89: No route to host", "wake it")
+
+    def test_a_queue_gate_that_lost_the_local_network_runs_nothing_on_either_mac(self):
+        """vocaro-engineering#300: the lane of a gate whose worker lost access since its last round."""
+        with patch.dict(os.environ, {remote.QUEUE_GATE: "1"}), patch.object(remote, "reachable", side_effect=self.LOST):
+            status, output, error = self.run_here("gate")
+            self.assertNotIn(remote.QUEUE_GATE, os.environ)
+        self.assertEqual(status, remote.LOST_ACCESS, output + error)
+        self.assertIn("eng: gate not run, here or there: " + self.LOST.problem, error)
+        self.assertNotIn("running gate on this Mac", error)
+        for place in (".build/engineering/gate", ".build/engineering/remote/gate"):
+            self.assertFalse((self.project / place).exists(), place)
+        self.assertFalse((self.home / remote.ROOT / "checkouts").exists())
+
+    def test_a_lost_local_network_or_an_away_second_mac_otherwise_keeps_the_fallback(self):
+        """The negative controls of vocaro-engineering#300: a queue gate whose second Mac is only away, and a session's
+        own eng run, which has its session's access and so is not stopped by what its reach check says."""
+        local = self.project / ".build/engineering/gate"
+        for name, environment, reason in (("away in a gate", {remote.QUEUE_GATE: "1"}, self.AWAY),
+                                          ("lost, in no gate", {}, self.LOST), ("away, in no gate", {}, self.AWAY)):
+            with self.subTest(name), patch.dict(os.environ, environment), \
+                    patch.object(remote, "reachable", side_effect=reason):
+                shutil.rmtree(local, ignore_errors=True)
+                status, output, error = self.run_here("gate")
+                self.assertEqual(status, 0, output + error)
+                self.assertIn("eng: running gate on this Mac: " + reason.problem, error)
+                self.assertIn(f"Ran 2 tests in {self.project.resolve()}", (local / "run.log").read_text())
+                self.assertEqual(json.loads((local / "source.json").read_text())["hereBecause"], reason.problem)
+
+    def test_a_lane_that_stays_here_in_a_queue_gate_does_not_pass_the_gate_on(self):
+        """What a lane run here starts is no queue worker's own eng run, and keeps its fallback (vocaro-engineering#300)."""
+        with patch.dict(os.environ, {remote.QUEUE_GATE: "1"}):
+            status, output, error = self.run_here("own")
+            self.assertEqual(status, 0, output + error)
+            self.assertNotIn(remote.QUEUE_GATE, os.environ)
+
     def test_a_second_mac_that_goes_offline_after_the_check_runs_the_lane_here_while_nothing_was_sent(self):
         # ssh fails at the connection that prepares the second Mac, before anything is sent.
         with patch.object(remote, "reachable"), patch.dict(os.environ, {"FAKE_UNREACHABLE": "1"}):
@@ -6215,6 +6253,25 @@ class OfferAgainTests(unittest.TestCase):
             self.assertEqual(offered.again(), 0)
         self.assertEqual(error.getvalue().count("asks the second Mac again at the next offer"), 1, error.getvalue())
         self.assertEqual((offered.busy, offered.away), (None, None))
+
+    def test_a_queue_gate_that_loses_the_local_network_while_it_waits_stops_there(self):
+        """vocaro-engineering#300: a worker whose session ends while its lane waits for either Mac."""
+        lost = remote.NoLocalNetwork("fake cannot be reached: macOS holds itself responsible", remote.LOST_FIX)
+        offered = self.offer()
+        offered.queue_gate = True
+        with patch.object(remote, "reachable", side_effect=lost), patch("sys.stderr", new_callable=StringIO) as error:
+            self.assertEqual(remote.overflow(offered, lambda seconds: None, timeout=60), remote.LOST_ACCESS)
+        self.assertEqual((offered.busy, offered.status), (None, remote.LOST_ACCESS))
+        self.assertIn("eng: gate not run, here or there: fake cannot be reached", error.getvalue())
+        # The negative controls: the wait goes on for a session's own eng run, and for a second Mac that is only away.
+        away = remote.Unreachable("fake cannot be reached: it is asleep", "wake it")
+        for reason, gate in ((lost, False), (away, True)):
+            offered = self.offer()
+            offered.queue_gate = gate
+            with self.subTest(reason=type(reason).__name__, gate=gate), patch.object(remote, "reachable", side_effect=reason), \
+                    patch("sys.stderr", new_callable=StringIO):
+                self.assertIsNone(offered.again())
+                self.assertEqual((offered.busy, offered.away), ("every checkout is in use", reason.problem))
 
     def test_a_second_mac_that_can_no_longer_take_the_work_is_not_asked_again(self):
         # The negative control: what is no unreachable second Mac still ends the offers.
