@@ -11,7 +11,8 @@ all point at one entry, by a path their output names or a file they import, send
 rest at once instead of bisecting (Worker.blame). Only a lane's
 verdict blames a commit: a run the host left unmeasured runs again, each time once the host has settled,
 until queue.noVerdictRuns runs in a row (3 by default) have given none, and then holds the queue for the
-owner, with every commit still waiting (guides/maintenance.md, The merge queue). A batch whose lanes
+owner (a run a locked screen voided is not counted, and its lane runs next only on a Mac whose screen reads
+unlocked, vocaro-engineering#293), with every commit still waiting (guides/maintenance.md, The merge queue). A batch whose lanes
 passed is recorded as passed before its push, so a hold the push meets keeps that verdict, and
 `eng queue resume` pushes the commit that passed instead of gating it again. Each round the worker moves to
 the toolkit at origin/main, starting itself again from its copy, so that it judges main with the toolkit the
@@ -60,6 +61,8 @@ NO_VERDICT_OUTCOME = "no verdict"
 # What a lane exits with when it says nothing about the commits: unmeasured, no admission, and a
 # shared host's configuration, which stops for the owner.
 NO_VERDICT = {evidence.UNMEASURED, resources.BUSY, remote.MISCONFIGURED}
+# Of those, the exits of a lane that did not run: no Mac admitted it, or a shared host's configuration stopped it.
+UNRUN = {resources.BUSY, remote.MISCONFIGURED}
 # Whom a hold is for, in its reason's first words (worded): the owner only for a cause nobody else can fix, a
 # misconfigured shared host, a refused push or credentials; a session for every other, and the session that deals
 # with the cause, or finds it gone, clears it with `eng queue resume` itself, never asking the owner (owner's
@@ -1760,6 +1763,9 @@ class Worker:
         if progress:  # what the worker this one replaces had reached (progress)
             self.limit, self.suspects = progress.get("limit"), progress.get("suspects", 0)
             self.no_verdicts = progress.get("no_verdicts", 0)
+        # The lanes whose next run goes only to a Mac whose screen reads unlocked, since a locked screen left their
+        # last run without a verdict (screen_locked, vocaro-engineering#293).
+        self.unlocked = set(progress.get("unlocked", ())) if progress else set()
         self.code = running()  # the commit this worker's code came from, which toolkit compares with the copy's
         self.rounds = 0  # the rounds this worker has finished, which run reads to count its tries
         self.deferred = None  # why follow last left the shared checkout behind for a run from it, or None
@@ -1789,7 +1795,9 @@ class Worker:
     def progress(self):
         """What a worker that takes over from this one, on a newer toolkit or after a cause that cleared, goes on
         from: its bisect and its count of runs with no verdict. Every entry's state is on disk already."""
-        return {"limit": self.limit, "suspects": self.suspects, "no_verdicts": self.no_verdicts}
+        progress = {"limit": self.limit, "suspects": self.suspects, "no_verdicts": self.no_verdicts}
+        if self.unlocked: progress["unlocked"] = sorted(self.unlocked)
+        return progress
 
     def look(self, host, said):
         """(pressure, one-minute load, where it was read) of the Mac a lane ran on: host, the second Mac, by
@@ -2218,7 +2226,11 @@ class Worker:
             started = time.monotonic()  # for the gate's measured duration
             self.lane_now = (lane, began, tuple(where))
             sampler = BusySampler(self.checkout, lane, began).start() if lane == budgets.GATE else None
-            command = ["python3", "scripts/eng", "run", *where, lane]
+            # A lane a locked screen left without a verdict goes only to a Mac whose screen reads unlocked (#293).
+            screen = ["--unlocked-screen"] if lane in self.unlocked else []
+            if screen: self.say(f"{lane}: only on a Mac whose screen reads unlocked, since a locked screen left its "
+                                "last run without a verdict")
+            command = ["python3", "scripts/eng", "run", *where, *screen, lane]
             if lane == SPELLING and not self.has_lane(lane):
                 command = IMPLICIT_SPELLING
                 self.say(f"{lane}: the project has no spelling lane, so the queue runs the toolkit's: "
@@ -2231,6 +2243,7 @@ class Worker:
                 finally: watch.finish()
             except processes.TimedOut as error:
                 if sampler: sampler.stopped.set()
+                self.unlocked.discard(lane)
                 self.ran_on = remote.dispatched(self.checkout, lane, began)
                 self.ran_where = self.mac(lane, began)
                 if isinstance(error, processes.Canceled) and removal.gone:
@@ -2244,6 +2257,8 @@ class Worker:
                 if sampler: sampler.stopped.set()
                 raise
             ended = time.monotonic()
+            # It ran, unless no Mac admitted it or a host's configuration stopped it: it is placed as before next.
+            if status_ not in UNRUN: self.unlocked.discard(lane)
             ran, self.ran_on = remote.dispatch(self.checkout, lane, began)
             # What the lane printed: here in its own file; on the second Mac in its dispatch's run.log, whose eng
             # unittest summary names the failed tests that rerun reruns alone.
@@ -2831,6 +2846,18 @@ class Worker:
             return QUEUED
         if result in NO_VERDICT:
             queue.mark(applied, QUEUED)
+            locked = runner.screen_locked(result, log)
+            if locked:
+                # The owner's decision of 2026-11-08 (vocaro-engineering#293): a run a locked screen voided does not
+                # count toward the hold, and the lane's next run goes only to a Mac whose screen reads unlocked.
+                lane, reading = locked
+                self.unlocked.add(lane)
+                self.say(f"no verdict (exit {result}){runner.ran_where}: {lane} ran behind a locked screen, the last "
+                         f"reading {reading}, which queue.noVerdictRuns does not count; its next run goes only to a "
+                         "Mac whose screen reads unlocked")
+                busy = self.settle("the lanes run", runner.ran_on)
+                if busy: queue.hold(worded(SESSION, f"{lane} ran behind a locked screen, and {busy}; see {log}"))
+                return NO_VERDICT_OUTCOME
             self.no_verdicts += 1
             runs = no_verdict_runs(config)
             gave = (f"the lanes gave no verdict in {self.no_verdicts} run{'' if self.no_verdicts == 1 else 's'} in a "
@@ -3086,6 +3113,30 @@ class Worker:
         if result == resources.BUSY: return "no admission: the host stayed at capacity"
         return "a shared host's configuration stopped it"
 
+    def screen_locked(self, result, log):
+        """(the lane, the screen reading) when the lane at which the last gate stopped with result, which gave no
+        verdict, ran behind a locked screen; otherwise None. The last reading decides: the receipt's screenAfter,
+        which eng writes when a lane that depends on the screen ends unmeasured, else the log's last `screen:`
+        line. No admission and a host's configuration ran nothing, and count as before (#185, #293)."""
+        if result in UNRUN or not self.lane_now: return None
+        lane, began = self.lane_now[0], self.lane_now[1]
+        ran = remote.dispatch(self.checkout, lane, began)[0]
+        receipts = ([(ran / "source.json", "the second Mac")] if ran is not None else []) \
+            + [(self.checkout / ".build/engineering" / lane / "source.json", HERE_MAC)]
+        for receipt, mac in receipts:
+            try:
+                if receipt.stat().st_mtime < began: continue
+                after = json.loads(receipt.read_text()).get("screenAfter")
+            except (OSError, ValueError, AttributeError):
+                continue
+            if isinstance(after, dict) and after.get("state"):
+                if after["state"] != "locked": return None
+                return lane, offload_host.screen_line(after, f"{mac} ({after.get('mac') or 'unnamed'})")
+        try: said = log.read_text(errors="replace") if log else ""
+        except OSError: said = ""
+        screens = SCREEN_LINE.findall(said)
+        return (lane, screens[-1].strip()) if screens and screens[-1].startswith("screen: locked") else None
+
     def settings(self, base, head):
         """The project's lanes and settings as they stand on main at base, so that no branch chooses its own gate,
         with the checkout left at head. Until main names any lanes, the batch's: the commit that first names a
@@ -3189,6 +3240,7 @@ class Beside(Worker):
         self.role = label
         self.checkout = checkout or worker.queue.home / f"{worker.queue.main_checkout.name}{BESIDE_SUFFIX}"
         self.code, self.environment = worker.code, worker.environment
+        self.unlocked = worker.unlocked  # the worker's own, which a lock either half meets adds to (screen_locked)
         self.unreachable = []  # the newer entries that apply to origin/main only after the older half (left_out)
         self.kept_for = []  # the entries whose changelog resolutions it recorded (noted)
         self.newer, self.tip = [], None  # the newer half on top of origin/main, and its commit (Worker.beside)
@@ -3250,7 +3302,11 @@ class Beside(Worker):
             self.outcome = QUEUED
             return
         if result in NO_VERDICT:
-            self.say(f"no verdict (exit {result}){self.ran_where}: queued again, behind the older half")
+            locked = self.screen_locked(result, log)
+            if locked: self.unlocked.add(locked[0])
+            self.say(f"no verdict (exit {result}){self.ran_where}: queued again, behind the older half"
+                     + (f"; {locked[0]} ran behind a locked screen, and goes next only to a Mac whose screen reads "
+                        "unlocked" if locked else ""))
             self.queue.mark(self.newer, QUEUED)
             self.outcome = QUEUED
             return

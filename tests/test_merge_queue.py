@@ -32,10 +32,16 @@ shard_by = "class"
 # Fails when any tracked file is named bad*, passes otherwise; touches a counter so a test can count gates.
 # A British spelling, built so this file holds none, that eng spelling fails on.
 BRITISH = "a label" + "led point\n"
-LANE = """import pathlib, sys, time
+LANE = """import os, pathlib, shutil, sys, time
 # Appended, so that two gates at once, a bisect's halves (mq.Beside), count as two.
 with open(sys.argv[1], "a") as counter: counter.write("x")
 status = pathlib.Path(sys.argv[2])
+# The screen readings eng would log for the run, which a test writes beside the status (#293).
+screen = pathlib.Path(sys.argv[2] + ".screen")
+if screen.exists(): print(screen.read_text(), flush=True)
+# A screen that locks during the run: the reading eng takes once the lane ends (#293).
+if os.environ.get("FIXTURE_LOCK_DURING_RUN"):
+    shutil.copy(os.environ["FIXTURE_LOCK_DURING_RUN"], os.environ["VOCARO_SCREEN_IOREG"])
 if status.exists(): sys.exit(int(status.read_text()))
 # A tree with a file named slow gates for that many seconds, so that an entry can arrive meanwhile (mq.Stack).
 if pathlib.Path("slow").exists(): time.sleep(float(pathlib.Path("slow").read_text()))
@@ -1254,6 +1260,115 @@ class NoVerdict(Fixture):
                 self.assertIsNone(mq.Queue(self.repo).held())
                 self.assertIn(f"no verdict (exit {status}), run 1 of at most 3", said.getvalue())
                 self.assertIn(f"no verdict (exit {status}), run 2 of at most 3", said.getvalue())
+
+    LOCKED = ("eng: screen: locked (console user t, CGSSessionScreenIsLocked yes, IOConsoleLocked no) on this Mac "
+              "(Fixture-Mac) at 01:58:02")
+    UNLOCKED = ("eng: screen: unlocked (console user t, CGSSessionScreenIsLocked absent, IOConsoleLocked no) on this "
+                "Mac (Fixture-Mac) at 01:39:20")
+
+    @contextlib.contextmanager
+    def commands(self):
+        """The commands the worker runs, each lane's eng run among them."""
+        real, ran = mq.processes.run, []
+        def recorded(command, *arguments, **options):
+            ran.append(list(command))
+            return real(command, *arguments, **options)
+        with patch.object(mq.processes, "run", recorded): yield ran
+
+    def lane_runs(self, ran):
+        return [command for command in ran if command[:3] == ["python3", "scripts/eng", "run"]]
+
+    def test_a_run_a_locked_screen_voided_does_not_count_and_the_next_goes_only_to_an_unlocked_mac(self):
+        """vocaro-engineering#293, the owner's decision of 2026-11-08: more runs than the bound, each unmeasured behind
+        a locked screen, hold nothing; each run after one goes to eng run --unlocked-screen. The first, undeclared,
+        is judged by its log's last screen reading; each later one, which eng reads the screen for, by its receipt's
+        screenAfter, from a recording that reads unlocked as the run starts and locked once the lane has run."""
+        screen = Path(f"{self.status}.screen")
+        screen.write_text(f"{self.UNLOCKED}\n{self.LOCKED}\n")
+        screens = Path(__file__).resolve().parent / "fixtures/ScreenState"
+        recording = self.base / "screen.plist"
+        real = mq.Worker.gate
+        def unlocked_at_start(worker, *arguments, **options):
+            shutil.copy(screens / "this-mac-unlocked.plist", recording)
+            return real(worker, *arguments, **options)
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        with patch.dict(os.environ, {offload_host.SCREEN_RECORDING: str(recording),
+                                     "FIXTURE_LOCK_DURING_RUN": str(screens / "this-mac-locked-idle.plist")}), \
+                patch.object(mq.Worker, "gate", unlocked_at_start), self.no_verdict_for(mq.NO_VERDICT_RUNS + 1), \
+                self.commands() as ran, contextlib.redirect_stdout(io.StringIO()) as said:
+            self.assertEqual(self.work(), 0)
+        self.assertEqual(self.gates(), mq.NO_VERDICT_RUNS + 2)
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertIsNone(mq.Queue(self.repo).held())
+        self.assertIn("no verdict (exit 3) on this Mac", said.getvalue())
+        self.assertEqual(said.getvalue().count("gate ran behind a locked screen"), mq.NO_VERDICT_RUNS + 1)
+        self.assertIn(f"gate ran behind a locked screen, the last reading {self.LOCKED[5:]}, which queue.noVerdictRuns "
+                      "does not count; its next run goes only to a Mac whose screen reads unlocked", said.getvalue())
+        self.assertRegex(said.getvalue(), r"gate ran behind a locked screen, the last reading screen: locked \(console "
+                         r"user trevorharmon, CGSSessionScreenIsLocked yes, IOConsoleLocked no\) on this Mac \(\S+\) at ")
+        self.assertNotIn("of at most", said.getvalue())
+        runs = self.lane_runs(ran)
+        self.assertEqual(runs[0], ["python3", "scripts/eng", "run", "gate"])
+        self.assertEqual(runs[1:], [["python3", "scripts/eng", "run", "--unlocked-screen", "gate"]] * (len(runs) - 1))
+        self.assertIn("gate: only on a Mac whose screen reads unlocked", said.getvalue())
+
+    def test_a_run_whose_last_reading_is_unlocked_or_that_ran_nothing_still_counts(self):
+        """The negative controls: an unmeasured run whose last reading is unlocked, and a run that exits 75 or 78
+        with a lock in its log, as one that waited out the overflow for an unlocked Mac does, count as before."""
+        screen = Path(f"{self.status}.screen")
+        for status, said_screen in (("3", f"{self.LOCKED}\n{self.UNLOCKED}\n"), ("75", f"{self.LOCKED}\n"),
+                                    ("78", f"{self.LOCKED}\n")):
+            with self.subTest(status=status):
+                start = self.gates()
+                screen.write_text(said_screen)
+                self.status.write_text(status)
+                self.commit(f"a{status}", f"a{status}")
+                [identifier] = self.add(f"a{status}")
+                with self.commands() as ran, contextlib.redirect_stdout(io.StringIO()) as said:
+                    self.assertEqual(self.work(), 0)
+                self.assertEqual(self.gates() - start, mq.NO_VERDICT_RUNS)
+                self.assertEqual(self.state(identifier)["state"], "queued")
+                self.assertIn("the most queue.noVerdictRuns allows (3)", mq.Queue(self.repo).held())
+                self.assertNotIn("locked screen", said.getvalue())
+                self.assertTrue(all("--unlocked-screen" not in command for command in self.lane_runs(ran)))
+                mq.Queue(self.repo).hold_file.unlink()
+                for entry in mq.Queue(self.repo).all(): mq.remove(mq.Queue(self.repo), entry["id"], quiet=True)
+        self.status.unlink()
+
+    def test_the_receipts_screen_after_decides_over_the_log(self):
+        """The last reading: a fresh receipt's screenAfter, which eng writes once a lane that depends on the screen
+        ends unmeasured; else the log's last `screen:` line. A receipt older than the run is not the run's."""
+        receipt = self.base / ".build/engineering/gate/source.json"
+        receipt.parent.mkdir(parents=True)
+        log = self.base / "gate.log"
+        log.write_text(f"{self.UNLOCKED}\n")
+        began = time.time() - 60
+        worker = type("Runner", (), {"checkout": self.base, "lane_now": ("gate", began, ())})()
+        locked = {"state": "locked", "user": "t", "CGSSessionScreenIsLocked": True, "IOConsoleLocked": False,
+                  "mac": "Fixture-Mac", "at": "01:58:02"}
+        receipt.write_text(json.dumps({"screenAfter": locked}))
+        self.assertEqual(mq.Worker.screen_locked(worker, 3, log), ("gate", self.LOCKED[5:]))
+        receipt.write_text(json.dumps({"screenAfter": {**locked, "state": "unknown", "reason": "no console"}}))
+        self.assertIsNone(mq.Worker.screen_locked(worker, 3, log))
+        receipt.write_text(json.dumps({"screenAfter": {**locked, "state": "unlocked"}}))
+        log.write_text(f"{self.LOCKED}\n")
+        self.assertIsNone(mq.Worker.screen_locked(worker, 3, log))
+        # A receipt from before the run: the log decides.
+        os.utime(receipt, (began - 10, began - 10))
+        self.assertEqual(mq.Worker.screen_locked(worker, 3, log), ("gate", self.LOCKED[5:]))
+        self.assertIsNone(mq.Worker.screen_locked(worker, 75, log))
+        self.assertIsNone(mq.Worker.screen_locked(worker, 78, log))
+        log.write_text("no reading\n")
+        self.assertIsNone(mq.Worker.screen_locked(worker, 3, log))
+
+    def test_a_worker_that_takes_over_keeps_the_lanes_that_need_an_unlocked_screen(self):
+        queue = mq.Queue(self.repo)
+        self.assertNotIn("unlocked", mq.Worker(queue).progress())
+        worker = mq.Worker(queue, {"limit": None, "suspects": 0, "no_verdicts": 1, "unlocked": ["gate"]})
+        self.assertEqual(worker.unlocked, {"gate"})
+        self.assertEqual(worker.progress()["unlocked"], ["gate"])
+        self.assertIs(mq.Beside(worker).unlocked, worker.unlocked)
 
     def test_a_failure_is_not_read_as_no_verdict(self):
         self.status.write_text("1")

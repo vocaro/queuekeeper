@@ -619,7 +619,14 @@ gave none, as the simulators' voices were not ready in time
 ([EPUBLib#946](https://github.com/vocaro/EPUBLib/issues/946)), and with a single retry each pair held
 the queue until a person resumed it. A project sets another bound on `main`, as
 `"queue": {"noVerdictRuns": N}`, a positive integer; 1 holds at the first. A run with a verdict, a pass
-or a failure, starts the count again, and so does `eng queue resume`. The hold's reason says how many
+or a failure, starts the count again, and so does `eng queue resume`. A run that a locked screen left
+without a verdict does not count (the owner's decision, 2026-11-08,
+[vocaro-engineering#293](https://github.com/vocaro/vocaro-engineering/issues/293)): exit 3, or a lane
+that reached its limit, whose last screen reading shows a lock, from its receipt's `screenAfter` or
+else its log's last `screen:` line. The worker logs that reading, and runs that lane next as
+`eng run --unlocked-screen LANE`, which places it as `"unlockedScreen": true` does: only on a Mac
+whose screen reads unlocked, waiting while neither does. A run that waits out the overflow that way
+exits 75, which counts, as does any run that gives no verdict without a lock. The hold's reason says how many
 runs gave no verdict, on which Mac the last ran (`on this Mac (NAME)` or `on the second Mac (HOST)`, when
 its receipt or dispatch says), and why it gave none: the lane that reached its limit, the number of tests
 its log reports unmeasured with the first of them and the last screen reading eng logged

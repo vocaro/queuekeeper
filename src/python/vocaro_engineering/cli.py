@@ -14,7 +14,7 @@ import time
 from . import __version__, app_builds, app_registrations, budgets, crash_alerts, device_pass, devices, disk, docs, evidence, evidence_offload, failure_records, foreground, github_artifacts, keychain, merge_queue, \
     notification_center, offload_host, parallel, processes, release, remote, resources, skills, spelling, stale_modules, storekit_config, toolkit_copy, xctest_shards
 from .config import TOOLKIT_ROOT, CAPABILITIES, DEFAULT_TOOLKIT, admission as admission_of, load, source_identity, \
-    display_lane_warnings, self_lane_warnings, stays, unlocked_screen
+    display_lane_warnings, self_lane_warnings, stays, unadmitted, unlocked_screen
 from .resources import BUSY, FREE_WAIT
 from .simulators import matrix, pool as simulator_pool
 
@@ -862,6 +862,9 @@ def main(argv=None):
         f"else this Mac's, admits the lane within {FREE_WAIT}s; otherwise exit {BUSY} without running it")
     run.add_argument("--serial", action="store_true", help="run a lane group's lanes one after another, on this "
         "Mac: the reference a failure seen only side by side is checked against")
+    run.add_argument("--unlocked-screen", action="store_true", help="place the lane only on a Mac whose screen reads "
+        "unlocked, and wait for one, as \"unlockedScreen\": true does: the merge queue's next run of a lane whose "
+        "run a locked screen left without a verdict (guides/maintenance.md, A run with no verdict)")
     run.add_argument("lane")
     # Listed for help only: main passes everything after these to their own parsers.
     commands.add_parser("simulator-tests", help="build a scheme's tests once and run them on several members of the "
@@ -1206,6 +1209,13 @@ def main(argv=None):
             lane = config.get("lanes", {}).get(args.lane)
             if lane is None: raise ValueError(f"No configured lane: {args.lane}")
             if args.expect is not None and args.expect < 1: raise ValueError("--expect needs at least 1 test")
+            if args.unlocked_screen:
+                # Placed from here on as a lane that says "unlockedScreen": true is, on whichever Mac runs it
+                # (vocaro-engineering#293). A self lane runs where it starts, and its script places its parts.
+                if unadmitted(lane):
+                    print(f"eng: {args.lane} runs where it starts, as a self lane, so --unlocked-screen does not place "
+                          "it", file=sys.stderr, flush=True)
+                else: lane["unlockedScreen"] = True
             extra = args.passed or []
             # A foreground lane takes a Mac's screen. The second Mac's is eng's to take for the run, below; this
             # Mac's, only the session holding mac-foreground within the owner's window runs it on, with --here.
