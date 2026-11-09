@@ -45,7 +45,8 @@ Under a lane, whose command finds its results/ in ENG_RESULTS_DIR, each test run
 also keeps there, in simulator-tests/, the lines of its log that give each test's and suite's outcome and
 seconds, KIND.log, and its result bundle's summary and each class's or suite's seconds, KIND.json: they
 come back from the second Mac with the lane's dispatch, and are kept by commit beside its receipt, where
-the logs folder's are overwritten by the next run (vocaro-engineering#218).
+the logs folder's are overwritten by the next run (vocaro-engineering#218). `eng results keep` writes the
+same two files for a script that runs xcodebuild itself (vocaro-engineering#260).
 """
 import argparse
 import contextlib
@@ -186,6 +187,13 @@ KEPT = "simulator-tests"
 # `Test Case '-[B.C t]' passed (0.7 seconds).`, `Test Suite 'C' passed at ...` and `Executed N tests`.
 RESULT_LINE = re.compile(r"^(?:\S+ (?:Test|Suite) |Test [Cc]ase '|Test Suite '|\s*Executed \d+ tests?\b|.*: error: -\[)")
 STARTED_LINE = re.compile(r"(?: started\.| started at [-0-9: .]+)$")
+# Each result a bundle's test tree gives a test case, as a kept record names it. Anything else is unmeasured.
+OUTCOMES = {"Passed": "passed", "Failed": "failed", "Skipped": "skipped", "Expected Failure": "expected failure"}
+# What a test that could not measure its subject begins its skip message with.
+UNMEASURED_SKIP = "Test skipped - Unmeasured:"
+# Why a kept record has no test's outcome, though its run may have passed.
+UNREAD = "xcresulttool could not read the result bundle's test results"
+NO_CASES = "the result bundle records no test case"
 # The -only-testing and -skip-testing arguments, which a sharded run applies when it lists the tests.
 SELECTING = ("-only-testing", "-skip-testing")
 
@@ -242,16 +250,44 @@ def suite_seconds(bundle, record=None):
     return seconds
 
 
-def kept(kind, log, record, status, seconds, results=None):
+def test_cases(record):
+    """Each test case in a bundle's test tree (bundle_record), as {test, outcome, seconds}. outcome is passed,
+    failed, skipped, expected failure or unmeasured, the last with its reason: a skip that says it could not
+    measure, or a result this does not know. seconds is None when the bundle gives none."""
+    found = []
+    def skip_reason(node):
+        if node.get("nodeType") == "Skip Message" and UNMEASURED_SKIP in node.get("name", ""):
+            return node["name"].split(UNMEASURED_SKIP, 1)[1].strip()
+        return next(filter(None, map(skip_reason, node.get("children", []))), None)
+    def walk(node, path):
+        name = node.get("name", "")
+        if node.get("nodeType") != "Test Case":
+            for child in node.get("children", []): walk(child, path if node.get("nodeType") == "Test Plan" else [*path, name])
+            return
+        try: seconds = float(node["durationInSeconds"])
+        except (KeyError, TypeError, ValueError): seconds = None
+        case = {"test": node.get("nodeIdentifier") or "/".join([*path, name]),
+                "outcome": OUTCOMES.get(node.get("result"), "unmeasured"), "seconds": seconds}
+        reason = skip_reason(node) if case["outcome"] == "skipped" else None
+        if reason is not None: case["outcome"] = "unmeasured"
+        if case["outcome"] == "unmeasured": case["reason"] = reason or f"the bundle gives its result as {node.get('result')!r}"
+        found.append(case)
+    for node in record[1].get("testNodes", []): walk(node, [])
+    return found
+
+
+def kept(kind, log, record, status, seconds, results=None, unread=None, by="eng simulator-tests"):
     """Keep what a reader cites of one test run in its lane's results/, KEPT/KIND.log and KIND.json, and
     return that folder, or None outside a lane (no RESULTS_VARIABLE): the log's lines that give each test's
     and suite's outcome and seconds (RESULT_LINE), and the result bundle's summary, as xcresulttool prints
-    it, with each class's or suite's seconds. record is the bundle's (bundle_record), None when it could not
-    be read; a log that is missing keeps no lines, and its JSON says so. status is None for a run stopped
-    at its limit."""
+    it, with each class's or suite's seconds and each test case's outcome and seconds (test_cases). record is
+    the bundle's (bundle_record), None when it could not be read, and then bundleUnread says why, as unread
+    when given, as it does for a bundle with no test case; a log that is missing keeps no lines, and its JSON
+    says so. status is None for a run stopped at its limit. by names the command that kept it."""
     results = results if results is not None else os.environ.get(RESULTS_VARIABLE)
     if not results: return None
     folder = Path(results) / KEPT
+    tests = test_cases(record) if record is not None else None
     try:
         folder.mkdir(parents=True, exist_ok=True)
         lines = None
@@ -260,10 +296,12 @@ def kept(kind, log, record, status, seconds, results=None):
                      if RESULT_LINE.match(line) and not STARTED_LINE.search(line)]
             (folder / f"{kind}.log").write_text("".join(f"{line}\n" for line in lines))
         (folder / f"{kind}.json").write_text(json.dumps({
-            "run": kind, "status": status, "seconds": seconds, "log": log.name if lines is not None else None,
+            "run": kind, "keptBy": by, "status": status, "seconds": seconds, "log": log.name if lines is not None else None,
             "resultLines": None if lines is None else len(lines),
             "summary": record[0] if record is not None else None,
-            "suiteSeconds": suite_seconds(None, record) if record is not None else None}, indent=1) + "\n")
+            "suiteSeconds": suite_seconds(None, record) if record is not None else None,
+            "tests": tests, "bundleUnread": unread or (UNREAD if tests is None else None if tests else NO_CASES)},
+            indent=1) + "\n")
     except OSError as error:
         print(f"eng simulator-tests: {kind}'s results were not kept in {folder}: {error}", file=sys.stderr, flush=True)
         return None
@@ -614,7 +652,7 @@ def bundle_results(bundle, kind, record=None):
     unmeasured = []
     def walk(node, test=None):
         if node.get("nodeType") == "Test Case": test = node.get("nodeIdentifier") or node.get("name")
-        if node.get("nodeType") == "Skip Message" and "Test skipped - Unmeasured:" in node.get("name", ""):
+        if node.get("nodeType") == "Skip Message" and UNMEASURED_SKIP in node.get("name", ""):
             unmeasured.append(f"{kind}: -[{test}] : {node['name'][node['name'].index('Test skipped'):]}")
         for child in node.get("children", []): walk(child, test)
     for node in tests.get("testNodes", []): walk(node)

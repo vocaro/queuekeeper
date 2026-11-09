@@ -14,6 +14,7 @@ from unittest import mock
 import uuid
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 from vocaro_engineering import devices, evidence, stale_modules
+from vocaro_engineering.simulators import matrix
 import host_isolation
 from host_isolation import stretched
 
@@ -1003,6 +1004,9 @@ class SimulatorMatrixTests(unittest.TestCase):
                 self.assertEqual((record["run"], record["log"], record["resultLines"]), (run, f"{run}.log", 4))
                 self.assertEqual(record["summary"]["totalTestCount"], 3)
                 self.assertIsInstance(record["suiteSeconds"], dict)
+                # Each test case's outcome, as `eng results keep` records it (#260).
+                self.assertEqual(record["tests"], [{"test": "T/testA()", "outcome": "skipped", "seconds": None}])
+                self.assertIsNone(record["bundleUnread"])
                 self.assertIsInstance(record["seconds"], int)
 
     def test_outside_a_lane_nothing_is_kept_and_a_missing_log_or_bundle_keeps_no_lines(self):
@@ -1017,8 +1021,9 @@ class SimulatorMatrixTests(unittest.TestCase):
                          results / "simulator-tests")
         self.assertEqual(sorted(p.name for p in (results / "simulator-tests").iterdir()), ["iPad-Air-13-inch-M4-2.json"])
         record = json.loads((results / "simulator-tests/iPad-Air-13-inch-M4-2.json").read_text())
-        self.assertEqual(record, {"run": "iPad-Air-13-inch-M4-2", "status": None, "seconds": None, "log": None,
-                                  "resultLines": None, "summary": None, "suiteSeconds": None})
+        self.assertEqual(record, {"run": "iPad-Air-13-inch-M4-2", "keptBy": "eng simulator-tests", "status": None, "seconds": None, "log": None,
+                                  "resultLines": None, "summary": None, "suiteSeconds": None, "tests": None,
+                                  "bundleUnread": matrix.UNREAD})
 
     def test_shards_and_workers_cannot_be_asked_for_together(self):
         status, output = self.run_matrix("--shards", "2", "--workers", "2")
