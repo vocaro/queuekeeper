@@ -2021,6 +2021,20 @@ class RemoteTests(unittest.TestCase):
         self.assertNotIn("keptResults", json.loads((kept / "check.json").read_text()))
         self.assertFalse((kept / "check.results").exists())
 
+    def test_a_run_sent_to_the_second_mac_ends_with_one_summary_from_what_came_back(self):
+        status, output, error = self.eng("run", "check")
+        self.assertEqual(status, 0, output + error)
+        lines = error.splitlines()
+        receipt = lines[-1].removeprefix("  receipt: ")
+        self.assertEqual(lines[-3:-1], ["eng run check: passed, on fake", "  tests: 2 passed, 0 failed, 0 skipped, 0 unmeasured"])
+        self.assertEqual(json.loads(Path(receipt).read_text())["lane"], "check")
+        # The second Mac's own run prints none, which would repeat it with that Mac's paths.
+        self.assertEqual((output + error).count("eng run check:"), 1, output + error)
+        # A lane that returned the unmeasured status there is not passed here.
+        status, output, error = self.eng("run", "fail")
+        self.assertEqual(status, 3, output + error)
+        self.assertEqual(error.splitlines()[-3], "eng run fail: unmeasured (exit 3), on fake")
+
     def test_keep_keeps_a_runs_results_beside_its_receipt_in_place_of_an_earlier_runs(self):
         base = Path(self.temp.name) / "keeping"
         kept, results = base / "store/COMMIT", base / "results"
@@ -3062,7 +3076,8 @@ exec {shlex.quote(real)} "$@"
                           ["--offload-only", "gate"], ["--if-free", "gate"], ["--serial", "pair"], ["missing"]):
             with self.subTest(arguments):
                 status, output, error = self.run_here("--build-host-only", *arguments)
-                self.assertEqual((status, error), (2, refused), output + error)
+                self.assertEqual((status, error), (2, f"{refused}eng run {arguments[-1]}: not run (exit 2); no tests ran\n"),
+                                 output + error)
         for place in ["gate", "failing", "build", "fail", "pair", "remote/gate", "remote/failing", "remote/pair"]:
             self.assertFalse((self.project / ".build/engineering" / place).exists(), place)
         self.assertFalse((self.home / remote.ROOT).exists())
@@ -3101,7 +3116,8 @@ exec {shlex.quote(real)} "$@"
                 self.assertEqual(str(raised.exception), refused)
                 for arguments in (["gate"], ["--offload-only", "gate"], ["--if-free", "gate"], ["pair"]):
                     status, output, error = self.run_here(*arguments)
-                    self.assertEqual((status, error), (2, f"eng: {refused}\n"), output + error)
+                    self.assertEqual((status, error), (2, f"eng: {refused}\neng run {arguments[-1]}: not run (exit 2); no "
+                                                          "tests ran\n"), output + error)
                 # Plain eng admit chooses a Mac now too (the owner's decision, 2026-11-07), and --verify with it.
                 for options in (["--verify"], []):
                     status, output, error = self.admit_in(self.project, *options, "--", *probe)

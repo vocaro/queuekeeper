@@ -5,6 +5,7 @@ from io import StringIO
 import json
 import os
 from pathlib import Path
+import re
 import signal
 import subprocess
 import sys
@@ -255,7 +256,7 @@ exit "${STUB_STATUS:-0}"' "$@"
     def test_a_failed_tool_leaves_the_journal_for_the_next_run_and_keeps_the_runs_status(self):
         executable(self.lsregister, "#!/bin/sh\nexit 3\n")
         self.assertEqual(self.run_command(self.build_command()), 0)
-        self.assertIn("lsregister exited 3", self.said)
+        self.assertIn("lsregister exited 3", self.details())
         self.assertEqual(len(self.journals()), 1)
         executable(self.lsregister, f'#!/bin/sh\necho "lsregister $*" >> "{self.log}"\n')
         # This process stands in for the run, so its journal says the run has gone.
@@ -263,6 +264,44 @@ exit "${STUB_STATUS:-0}"' "$@"
         self.run_command(["/usr/bin/true"])
         self.assertIn(f"lsregister -u {self.app}", self.calls())
         self.assertEqual(self.journals(), [])
+
+    def details(self):
+        """What the file the run's one line names holds."""
+        return Path(re.search(r"\(details: (.+)\)$", self.said, re.M).group(1)).read_text()
+
+    def test_many_runs_left_on_the_same_folders_are_said_in_one_line_with_each_folder_once(self):
+        # On 2026-11-07 a lane printed 130 blocks for the same few folders, each on its own failing tool (#257).
+        executable(self.lsregister, "#!/bin/sh\necho 'failed for a real reason' >&2\nexit 3\n")
+        other = self.make_app(self.base / "other", "Other")
+        for number in range(1, 6):
+            journal = self.journal(number, "Thu Jan  1 00:00:00 1970", [self.derived, self.base / "other"])
+            journal.rename(journal.with_name(f"{number}-other.json"))
+        self.assertEqual(self.run_command(["/usr/bin/true"]), 0)
+        self.assertEqual(len(self.said.splitlines()), 1, self.said)
+        self.assertIn("unregistered 10 app(s) and 10 extension(s)", self.said)
+        self.assertIn("2 folder(s) left registered for the next sweep (details: ", self.said)
+        details = self.details().splitlines()
+        self.assertEqual(sorted(line for line in details if not line.startswith(" ")), sorted([str(self.derived), str(other.parents[3])]))
+        self.assertEqual(sum("failed for a real reason" in line for line in details), 2)
+        self.assertEqual(len(self.journals()), 5, "a tool that failed for another reason keeps its journal")
+
+    def test_a_run_with_nothing_to_say_says_nothing(self):
+        self.assertEqual(self.run_command(["/usr/bin/true"]), 0)
+        self.assertEqual(self.said, "")
+
+    def test_what_the_system_says_is_not_registered_is_dropped_rather_than_swept_again(self):
+        # What lsregister and pluginkit printed for such builds, whose journals every later run retried.
+        executable(self.lsregister, "#!/bin/sh\nprintf 'failed to scan %s: -10814\\n from spotlight\\n' \"$2\" >&2\nexit 1\n")
+        executable(self.pluginkit, "#!/bin/sh\necho \"remove: no plugin at $2\" >&2\nexit 1\n")
+        self.assertEqual(self.run_command(self.build_command()), 0)
+        self.assertEqual(self.journals(), [])
+        self.assertNotIn("left registered", self.said)
+        self.assertNotIn("from spotlight", self.said)
+
+    def test_a_tools_multiline_message_stays_on_the_one_line_of_its_folder_in_the_details(self):
+        executable(self.lsregister, "#!/bin/sh\nprintf 'first\\n second\\n' >&2\nexit 1\n")
+        self.assertEqual(self.run_command(self.build_command()), 0)
+        self.assertIn("lsregister exited 1: first second\n", self.details())
 
     def test_a_killed_run_stays_registered_until_the_next_run_sweeps_it(self):
         # The run must outlive the test that kills it, however slowly the host runs it (#111).

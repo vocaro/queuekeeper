@@ -16,6 +16,8 @@ it. Nested runs leave the work to the outermost, so a run keeps its registration
 Each run keeps a journal, written as soon as it sees a folder. SIGKILL runs
 no cleanup, so the journal stays, its builds stay registered, and the next run on that Mac sweeps it
 once its owner is gone and the folder is free. A cleanup that fails or is put off stays the same way.
+A run says what its sweep and its cleanup did in one line, with the folders left in a file beside the journals
+(Tally): on 2026-11-07 one lane printed 130 blocks of them, which buried its result (#257, #274).
 Not covered: xcodebuild without -derivedDataPath, whose shared default folder belongs to no run (the
 run says so); a copy of a build outside the folder; a folder removed before the cleanup, since
 nothing is left to name to lsregister; and an xcodebuild shorter than one sample that names a folder
@@ -42,6 +44,9 @@ PLUGINKIT = "/usr/bin/pluginkit"
 # Marks a nested run, whose outermost run does the work; the value is that run's PID.
 RUN = "VOCARO_APP_REGISTRATIONS_RUN"
 JOURNALS = "app-registrations"
+# The folder under the journals of each run's list of what it left registered, and how long such a list is kept.
+DETAILS = "left"
+DETAILS_KEPT_SECONDS = 7 * 86400
 SAMPLE_SECONDS = 0.5
 TOOL_SECONDS = 30
 PROCESSES = ["ps", "-axww", "-o", "pid=,ppid=,uid=,lstart=,args="]
@@ -53,6 +58,9 @@ ACTIONS = {"build", "build-for-testing", "test", "test-without-building", "archi
 _PATH_END = r"(?=\s+-[A-Za-z]|\s+[A-Z][A-Z0-9_]*=|\s+(?:" + "|".join(sorted(ACTIONS)) + r")(?:\s|$)|\s*$)"
 _FOLDER = re.compile(r"(?:^|\s)-derivedDataPath[ =](.+?)" + _PATH_END)
 _RUN_FILE = re.compile(r"(?:^|\s)-xctestrun[ =](.+?)/Build/Products/[^/]*?" + _PATH_END)
+# A tool's refusal that says the system holds no such registration, so nothing is left to undo: lsregister's
+# kLSApplicationNotFoundErr, and pluginkit's for a plug-in it does not know. Each kept its journal forever (#257).
+NOT_REGISTERED = re.compile(r":\s*-10814\b|^remove: no plugin at\b", re.M)
 
 
 def is_xcodebuild(args):
@@ -157,7 +165,8 @@ def tool(command):
         done = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=TOOL_SECONDS)
     except (OSError, subprocess.SubprocessError) as error:
         return f"{Path(command[0]).name} did not finish: {error}"
-    if done.returncode: return f"{Path(command[0]).name} exited {done.returncode}: {(done.stderr or '').strip()}"
+    if done.returncode and not NOT_REGISTERED.search(done.stderr or ""):
+        return f"{Path(command[0]).name} exited {done.returncode}: {' '.join((done.stderr or '').split())}"
     return None
 
 
@@ -169,38 +178,72 @@ def unregister(folder):
     return len(apps), len(extensions), problems
 
 
-def settle(path, entry, say):
+class Tally:
+    """What one run's sweep and cleanup did, for the one line that says so when the run ends."""
+
+    def __init__(self, say):
+        self.say, self.apps, self.extensions, self.left, self.notes = say, 0, 0, {}, {}
+
+    def wait(self, folder, why):
+        self.left.setdefault(str(folder), {})[why] = True
+
+    def note(self, text):
+        self.notes[text] = True
+
+    def details(self):
+        """Write what stays registered, each folder once with each reason, and return the file."""
+        directory = journal_directory() / DETAILS
+        directory.mkdir(parents=True, exist_ok=True)
+        for old in directory.glob("*.txt"):
+            with contextlib.suppress(OSError):
+                if old.stat().st_mtime < time.time() - DETAILS_KEPT_SECONDS: old.unlink()
+        path = directory / f"{os.getpid()}-{uuid.uuid4().hex}.txt"
+        path.write_text("".join(f"{folder}\n" + "".join(f"  {why}\n" for why in reasons)
+                                for folder, reasons in self.left.items()))
+        return path
+
+    def report(self):
+        for text in self.notes: self.say(text)
+        if not (self.apps or self.extensions or self.left): return
+        line = f"unregistered {self.apps} app(s) and {self.extensions} extension(s)"
+        if self.left:
+            try: where = self.details()
+            except OSError as error: where = f"not written: {error}"
+            line += f"; {len(self.left)} folder(s) left registered for the next sweep (details: {where})"
+        self.say(line)
+
+
+def settle(path, entry, tally):
     """Unregister what a journal's run built, and remove the journal, unless a folder must wait or a tool
     failed: the journal then stays for the next run's sweep. It never raises."""
     try:
         listed = offload_host.listing(PROCESSES)
         if listed is None:
-            say("unregistered nothing: the processes could not be listed; the next run tries again")
+            tally.note("unregistered nothing: the processes could not be listed; the next run tries again")
             return False
         table, others = offload_host.process_table(listed), read_journals(skip=path)
         own = set(offload_host.lineage(table, os.getpid()))
-        waiting, apps, extensions = [], 0, 0
+        waiting = False
         for folder in dict.fromkeys(Path(item) for item in entry["folders"]):
             why = hold(folder, table, others, own)
             if why:
-                waiting.append(f"{folder}: {why}")
+                waiting = True
+                tally.wait(folder, why)
                 continue
             count, more, problems = unregister(folder)
-            apps, extensions = apps + count, extensions + more
-            waiting += [f"{folder}: {problem}" for problem in problems]
-        if apps or extensions:
-            say(f"unregistered {apps} app(s) and {extensions} extension(s) that run PID {entry.get('pid')} built")
-        if waiting:
-            say("left registered for the next run to sweep: " + "; ".join(waiting))
-            return False
+            tally.apps, tally.extensions = tally.apps + count, tally.extensions + more
+            for problem in problems:
+                waiting = True
+                tally.wait(folder, problem)
+        if waiting: return False
         path.unlink(missing_ok=True)
         return True
     except Exception as error:
-        say(f"unregistered no further build: {type(error).__name__}: {error}; the next run tries again")
+        tally.note(f"unregistered no further build: {type(error).__name__}: {error}; the next run tries again")
         return False
 
 
-def sweep(say):
+def sweep(tally):
     """Settle the journals whose runs have gone, which a SIGKILL or a put-off cleanup left."""
     journals = read_journals()
     if not journals: return
@@ -208,7 +251,7 @@ def sweep(say):
     if listed is None: return
     table = offload_host.process_table(listed)
     for path, entry in journals:
-        if entry is not None and not live(entry, table): settle(path, entry, say)
+        if entry is not None and not live(entry, table): settle(path, entry, tally)
 
 
 class Watch:
@@ -287,11 +330,11 @@ class Watch:
                 said = True
             self.done.wait(SAMPLE_SECONDS)
 
-    def finish(self):
+    def finish(self, tally):
         self.done.set()
         self.thread.join(15)
         if self.path.exists():
-            settle(self.path, json.loads(self.path.read_text()), self.say)
+            settle(self.path, json.loads(self.path.read_text()), tally)
 
 
 def nested():
@@ -307,14 +350,15 @@ def around_run(commands, cwd):
     """Around a run's commands, each an argv: sweep what earlier runs left, follow what this run builds, and
     unregister it when the block ends, however it ends. A problem here is said and never changes the run's result."""
     say = lambda text: print(f"eng: {text}", file=sys.stderr, flush=True)
-    watch = None
+    watch, tally = None, Tally(say)
     try:
         if not nested():
-            sweep(say)
+            sweep(tally)
             watch = Watch(commands, cwd, say)
     except Exception as error:
         say(f"cannot follow this run's builds: {type(error).__name__}: {error}")
     if watch is None:
+        tally.report()
         yield
         return
     before = os.environ.get(RUN)
@@ -325,6 +369,8 @@ def around_run(commands, cwd):
     finally:
         if before is None: os.environ.pop(RUN, None)
         else: os.environ[RUN] = before
-        try: watch.finish()
+        try:
+            watch.finish(tally)
+            tally.report()
         except Exception as error:
             say(f"unregistered no further build: {type(error).__name__}: {error}; the next run tries again")
