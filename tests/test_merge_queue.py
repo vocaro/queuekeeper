@@ -2386,6 +2386,134 @@ class SecondMacSettle(Fixture):
         self.assertIn(f"{self.HOST}'s load can be read again: reading it", said.getvalue())
         self.assertIn(f"{self.HOST} settled after {mq.SETTLE_POLL}s and 2 looks", said.getvalue())
 
+    # Before a retry the wait reads the Mac the retry could use, not the one that voided the last run (#253): two
+    # fake Macs, the second by its capacity and pressure answers and this one by its capacity and resources.pressure.
+    FREE = {"slots": 3, "slotsMax": 3, "busy": [], "busyLimit": 75.0}
+    FULL = {"slots": 3, "slotsMax": 3, "busy": [0, 1, 2], "busyLimit": 75.0}
+
+    @contextlib.contextmanager
+    def macs(self, there, here):
+        """A second Mac whose capacity reads there and this Mac's here, each a reading or a function of nothing."""
+        read = lambda found: found() if callable(found) else found
+        with patch.object(mq.remote, "configured", return_value=self.HOST), \
+                patch.object(mq.remote, "capacity_there", side_effect=lambda host: read(there)), \
+                patch.object(mq.offload_host, "capacity", side_effect=lambda **_: read(here)):
+            yield
+
+    def test_a_loaded_second_mac_the_retry_would_use_is_waited_for_though_this_mac_voided_the_run(self):
+        self.status.write_text("3")
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        # The run was here, and this Mac has settled; the old wait read this Mac and retried at once.
+        with self.macs(self.FREE, self.FREE), self.second_mac([self.THERE_BUSY, self.THERE_SETTLED]) as asked, \
+                self.host([None]) as (slept, said), self.passing_after_no_verdict():
+            self.assertEqual(self.work(), 0)
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual(slept, [mq.SETTLE_POLL])
+        self.assertEqual(asked, [(self.HOST, {"pressure": True})] * 2)
+        self.assertEqual(self.pressure.call_count, 0)
+        log = said.getvalue()
+        self.assertIn(f"the lanes run next on {self.HOST}, which has spare capacity for gate and is asked first", log)
+        self.assertIn(f"the lanes run again once {self.HOST} settles", log)
+
+    def test_a_loaded_this_mac_the_retry_would_use_is_waited_for_though_the_second_mac_voided_the_run(self):
+        """2026-11-07's shape: the wait settled build-host, and the retry went to this Mac."""
+        self.status.write_text("3")
+        self.ran_there()
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        # This Mac has the free slot; the second Mac voided the run, has none, and reads settled throughout.
+        with self.macs(self.FULL, self.FREE), self.second_mac([self.THERE_SETTLED]) as asked, \
+                self.host([self.LOCAL_BUSY, None], then=self.status.unlink) as (slept, said):
+            self.assertEqual(self.work(), 0)
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual(slept, [mq.SETTLE_POLL])
+        self.assertEqual(asked, [])
+        self.assertEqual(self.pressure.call_count, 2)
+        log = said.getvalue()
+        self.assertIn("the lanes run next on this Mac, the one with spare capacity for gate", log)
+        self.assertIn("the lanes run again once this Mac settles", log)
+        self.assertIn("this Mac settled after", log)
+
+    def test_a_settled_target_does_not_wait_for_the_loaded_mac_it_will_not_use(self):
+        """Negative controls, each way round: the Mac that will not take the retry stays loaded."""
+        for name, there, here, ran_there, answers, looks, read_here in [
+                ("second", self.FREE, self.FREE, False, [self.THERE_SETTLED], [self.LOCAL_BUSY], 0),
+                ("this", self.FULL, self.FREE, True, [self.THERE_BUSY], [None], 1)]:
+            with self.subTest(name):
+                self.status.write_text("3")
+                if ran_there: self.ran_there()
+                else: self.receipt.unlink(missing_ok=True)
+                self.commit(f"a-{name}", f"a-{name}")
+                [identifier] = self.add(f"a-{name}")
+                self.pressure.reset_mock()
+                with self.macs(there, here), self.second_mac(answers) as asked, self.host(looks) as (slept, said), \
+                        self.passing_after_no_verdict():
+                    self.assertEqual(self.work(), 0)
+                self.assertEqual(self.state(identifier)["state"], "landed")
+                self.assertEqual(slept, [])
+                self.assertEqual(len(asked), 1 - read_here)
+                self.assertEqual(self.pressure.call_count, read_here)
+                self.assertNotIn("settles", said.getvalue())
+
+    def test_with_neither_mac_free_the_retry_waits_for_both_since_either_may_admit_it(self):
+        self.status.write_text("3")
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        with self.macs(self.FULL, self.FULL), self.second_mac([self.THERE_SETTLED]) as asked, \
+                self.host([self.LOCAL_BUSY, None], then=self.status.unlink) as (slept, said):
+            self.assertEqual(self.work(), 0)
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual(slept, [mq.SETTLE_POLL])
+        self.assertEqual(len(asked), 2)
+        self.assertEqual(self.pressure.call_count, 2)
+        log = said.getvalue()
+        self.assertIn("the lanes run next on whichever Mac admits gate first, since neither has spare capacity", log)
+        self.assertIn(f"{self.HOST} and this Mac settled after", log)
+
+    def test_the_target_is_read_at_each_look_as_slots_come_and_go(self):
+        self.status.write_text("3")
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        readings = iter([self.FREE, self.FULL])
+        # The second Mac has a slot at the first look, loaded, and none at the second, when this Mac has settled.
+        with self.macs(lambda: next(readings, self.FULL), self.FREE), self.second_mac([self.THERE_BUSY]) as asked, \
+                self.host([None], then=self.status.unlink) as (slept, said):
+            self.assertEqual(self.work(), 0)
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual(slept, [mq.SETTLE_POLL])
+        self.assertEqual(len(asked), 1)
+        self.assertEqual(self.pressure.call_count, 1)
+        self.assertEqual(said.getvalue().count("the lanes run next on "), 2)
+
+    def test_a_second_mac_whose_capacity_cannot_be_read_leaves_this_mac_the_retry_goes_to(self):
+        self.status.write_text("3")
+        self.ran_there()
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        def away(): raise mq.remote.Unreachable(f"{self.HOST} cannot be reached: it is asleep", "wake it")
+        with self.macs(away, self.FREE), self.second_mac([AssertionError("the second Mac was read")]) as asked, \
+                self.host([None], then=self.status.unlink) as (slept, said):
+            self.assertEqual(self.work(), 0)
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual(asked, [])
+        self.assertIn(f"the lanes run next on this Mac, since {self.HOST}'s capacity cannot be read: {self.HOST} "
+                      "cannot be reached: it is asleep", said.getvalue())
+
+    def test_a_lane_that_stays_on_this_mac_reads_only_this_mac(self):
+        self.status.write_text("3")
+        config = self.config()
+        config["lanes"]["gate"]["here"] = "a measurement tied to this Mac"
+        self.publish(config)
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        with self.macs(AssertionError, AssertionError), self.second_mac([AssertionError("the second Mac was read")]) as asked, \
+                self.host([self.LOCAL_BUSY, None], then=self.status.unlink) as (slept, said):
+            self.assertEqual(self.work(), 0)
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual(asked, [])
+        self.assertIn("the lanes run next on this Mac, since gate runs only there", said.getvalue())
+
 
 class SecondMacReading(unittest.TestCase):
     """remote.pressure_there and remote.dispatched alone, and the reading offload_host gives."""

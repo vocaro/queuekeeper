@@ -1864,10 +1864,10 @@ class Worker:
         if self.locked_screens: progress["locked_screens"] = self.locked_screens
         return progress
 
-    def look(self, host, said):
-        """(pressure, one-minute load, where it was read) of the Mac a lane ran on: host, the second Mac, by
-        remote.pressure_there, or with host None this Mac. A second Mac that cannot be read gives this Mac's
-        reading, saying so when that starts, in said, and again once it can be read."""
+    def look(self, host, said, here="the host"):
+        """(pressure, one-minute load, where it was read) of a Mac: host, the second Mac, by
+        remote.pressure_there, or with host None this Mac, which here names. A second Mac that cannot be read gives
+        this Mac's reading, saying so when that starts, in said, and again once it can be read."""
         if host is not None:
             try:
                 busy, load = remote.pressure_there(host)
@@ -1879,20 +1879,40 @@ class Worker:
                     self.say(f"{host}, where the lanes ran, cannot be read, so the wait reads this Mac's load instead: "
                              f"{error}")
                 said["fallback"] = True
-        return resources.pressure(), resources.one_minute_load(), "the host"
+        return resources.pressure(), resources.one_minute_load(), here
 
-    def settle(self, what, host=None):
+    def retry_macs(self, config, runner):
+        """([each Mac, None for this one], why them, None without a second Mac) that the next run of the lane
+        that gave no verdict could use, for the settle wait: the Mac is chosen when the run starts, by both Macs'
+        capacity and then by whichever admits it (remote.retry_macs), so each look reads it anew. Without a
+        second Mac to choose, or a lane to place, it is the Mac that ran the lane."""
+        lanes, lane = config.get("lanes", {}), runner.lane_now[0] if runner.lane_now else None
+        try: host = remote.configured()
+        except ValueError: host = None
+        if host is None or lane not in lanes: return [runner.ran_on], None
+        if stays(lanes, lane): return [None], f"this Mac, since {lane} runs only there"
+        return remote.retry_macs(host, lanes, lane, lane in self.unlocked)
+
+    def settle(self, what, host=None, macs=None):
         """None once the host has spare capacity by admission's test (resources.pressure), so that the retry of
         what gave no verdict does not meet the load that voided it; else, past SETTLE_LIMIT, why it has none.
-        With host, the second Mac that ran what gave no verdict, the test reads that Mac (look). It logs what
-        it saw, and a stop request ends it as one ends a lane (processes.Interrupted)."""
+        With host, the second Mac, the test reads that Mac (look). macs, instead, says at each look which Macs
+        to read and why them (retry_macs), all of which must have settled. It logs what it saw, and a stop
+        request ends it as one ends a lane (processes.Interrupted)."""
         start = reported = now()
-        looks, seen = 0, None
+        looks, seen, read = 0, None, None
         loads, said = [], {}
         while True:
             if processes.requested():
                 raise processes.Interrupted(processes.requested(), f"while {what} waited for the host to settle")
-            busy, load, where = self.look(host, said)
+            hosts, why = macs() if macs else ([host], None)
+            if hosts != read:
+                if why: self.say(f"{what} next on {why}")
+                # One-minute loads of different Macs are not one series.
+                loads, read = [], hosts
+            found = [self.look(each, said, "this Mac" if why else "the host") for each in hosts]
+            busy, load, where = next((each for each in found if each[0] is not None), found[-1])
+            if busy is None: where = " and ".join(each[2] for each in found)
             looks += 1
             if load is not None: loads.append(load)
             waited = now() - start
@@ -2999,7 +3019,7 @@ class Worker:
                                                f"{self.locked_screens} runs in a row, the last reading {reading}, the "
                                                f"most LOCKED_SCREEN_RUNS allows ({LOCKED_SCREEN_RUNS}); see {log}"))
                     return NO_VERDICT_OUTCOME
-                busy = self.settle("the lanes run", runner.ran_on)
+                busy = self.settle("the lanes run", macs=lambda: self.retry_macs(config, runner))
                 if busy: queue.hold(worded(SESSION, f"{lane} ran behind a locked screen, and {busy}; see {log}"))
                 return NO_VERDICT_OUTCOME
             # A run that waited for an unlocked Mac and exited 75 ran nothing, so it says nothing of the row of locks;
@@ -3018,8 +3038,8 @@ class Worker:
                 return NO_VERDICT_OUTCOME
             self.say(f"no verdict (exit {result})" + (f" from {runner.ran_on}" if runner.ran_on else "")
                      + f", run {self.no_verdicts} of at most {runs}")
-            # Every retry waits, so that none starts into the load that voided the run before it.
-            busy = self.settle("the lanes run", runner.ran_on)
+            # Every retry waits, so that none starts into the load that voided the run before it, or another Mac's.
+            busy = self.settle("the lanes run", macs=lambda: self.retry_macs(config, runner))
             if busy: queue.hold(worded(kind, f"{gave}, and {busy}; see {log}"))
             return NO_VERDICT_OUTCOME
         self.no_verdicts = self.locked_screens = 0
