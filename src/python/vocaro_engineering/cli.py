@@ -313,17 +313,31 @@ def behind_main(root):
     return int(count.stdout) if count.returncode == 0 else 0
 
 
+# The start of the last line eng instructions prints, which its first line tells the reader to look for.
+INSTRUCTIONS_END = "End of instructions"
+
+
 def instructions(config):
+    """Print the common rules, the enabled capabilities and the project's exceptions, between a first line that gives
+    their length and a last line that says they ended. A cut read loses the last line, and only the first line, which
+    every read keeps, can say that line should be there: `| head -150` once lost most of core.md unnoticed (#294)."""
+    parts = []
     behind = behind_main(TOOLKIT_ROOT)
     if behind:
-        print(f"Note: the toolkit checkout {TOOLKIT_ROOT} lacks {behind} commit(s) of origin/main as last fetched, "
-              f"so these rules may be out of date. Print the current ones with `git -C {TOOLKIT_ROOT} show "
-              "origin/main:agents/core.md`, or update the checkout (guides/adoption.md, Updating and rolling back).\n")
-    print((TOOLKIT_ROOT / "agents/core.md").read_text())
+        parts.append(f"Note: the toolkit checkout {TOOLKIT_ROOT} lacks {behind} commit(s) of origin/main as last fetched, "
+                     f"so these rules may be out of date. Print the current ones with `git -C {TOOLKIT_ROOT} show "
+                     "origin/main:agents/core.md`, or update the checkout (guides/adoption.md, Updating and rolling back).\n")
+    parts.append((TOOLKIT_ROOT / "agents/core.md").read_text())
     for capability in config.get("capabilities", []):
-        print((TOOLKIT_ROOT / "agents/capabilities" / f"{capability}.md").read_text())
+        parts.append((TOOLKIT_ROOT / "agents/capabilities" / f"{capability}.md").read_text())
     for exception in config.get("exceptions", []):
-        print(f"Project exception — {exception['rule']}: {exception['reason']}")
+        parts.append(f"Project exception — {exception['rule']}: {exception['reason']}")
+    body = "".join(f"{part}\n" for part in parts)
+    # The first line, the blank line after it and the last line, beside the body's own.
+    lines, size = body.count("\n") + 3, round(len(body.encode()) / 1024)
+    print(f'Read all of this: {lines} lines, about {size} KB, and the last line starts "{INSTRUCTIONS_END}". Without '
+          "that line you were shown only part, and the rest still applies: write the output to a file and read every "
+          f"part.\n\n{body}{INSTRUCTIONS_END}: {lines} lines, about {size} KB.")
 
 
 class PolicyUnavailable(RuntimeError):
