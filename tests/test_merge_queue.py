@@ -618,7 +618,8 @@ class CheckedWhenQueued(Fixture):
         import argparse
         self.commit("same", "one", "one"); self.commit("same", "two", "two")
         self.add("one")
-        for adder, words, call in ((mq.land_arguments, ["two", "--wait"], mq.land),
+        # Without --wait: with it, a refusal for an entry ahead alone waits for that entry (#302, LandWaitsForAhead).
+        for adder, words, call in ((mq.land_arguments, ["two"], mq.land),
                                    (mq.add_arguments, ["add", "two"], mq.main)):
             parser = argparse.ArgumentParser()
             adder(parser)
@@ -630,6 +631,40 @@ class CheckedWhenQueued(Fixture):
             self.assertIn("eng: ", said.getvalue())
             self.assertIn("is not queued", said.getvalue())
             self.assertEqual(len(mq.Queue(self.repo).all()), 1)
+
+    def test_a_refusal_names_the_command_that_waits_for_the_entries_and_the_lines_in_conflict(self):
+        """#304: the entries that change the files in conflict, in an `eng queue wait` ready to run; #302: the commit's
+        own lines that conflict, from the trial. A conflict with origin/main alone, the negative control, names no
+        wait, since nothing ahead is worth waiting for."""
+        self.commit("same", "one", "a\nb\nc\nd\n"); self.commit("other", "o", "o\n")
+        self.commit("same", "two", "a\nB\nC\nd\n")
+        ahead = self.add("one", "o")
+        identifier, _, error = self.land("two")
+        self.assertIsNone(identifier)
+        self.assertIn(f"/scripts/eng queue wait {ahead[0]}, which says whether it landed, so rebase, or came back",
+                      error)
+        self.assertNotIn(f"queue wait {ahead[0]} {ahead[1]}", error)
+        self.assertIn("`eng land --wait` waits for it itself and checks again", error)
+        # Of the file both add, only the lines that differ: its second and third.
+        self.assertIn("its lines in conflict: same:2-3. ", error)
+        start = run(self.repo, "git", "rev-parse", "origin/main")
+        self.commit("main", "pushed", "pushed")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        self.commit("main", "late", "late", start)
+        identifier, _, error = self.land("late")
+        self.assertIsNone(identifier)
+        self.assertIn("conflicts with origin/main, in main: rebase", error)
+        self.assertIn("its lines in conflict: main:1", error)
+        self.assertNotIn("queue wait", error)
+
+    def test_conflict_hunks_are_the_commits_own_lines(self):
+        checkout = self.base / "hunks"
+        checkout.mkdir()
+        (checkout / "f").write_text("keep\n<<<<<<< HEAD\nahead\n=======\nmine 1\nmine 2\n>>>>>>> abc (Mine)\nkeep\n"
+                                    "<<<<<<< HEAD\nahead\n||||||| parent\nold\n=======\n>>>>>>> abc (Mine)\nlast\n"
+                                    "<<<<<<< HEAD\n=======\nmine 3\n>>>>>>> abc (Mine)\n")
+        (checkout / "g").write_text("no blocks\n")
+        self.assertEqual(mq.conflict_hunks(checkout, ["f", "g", "gone"]), ["f:2-3", "f before line 5", "f:6"])
 
 
     def test_eng_land_from_another_repository_refuses_and_from_a_worktree_or_none_lands(self):
@@ -657,7 +692,130 @@ class CheckedWhenQueued(Fixture):
         self.assertEqual(len(mq.Queue(self.repo).all()), 1)
 
 
-ISOLATED = "import unittest\nimport host_isolation\n\nclass T(unittest.TestCase):\n    def test_t(self): pass\n"
+class LandWaitsForAhead(Fixture):
+    """`eng land --wait` refused for entries ahead alone waits for them and checks again against the whole queue
+    (vocaro-engineering#302), and `eng queue wait` takes several entries (#304). No worker starts by itself: each
+    wait runs the round a worker would."""
+    def land(self, branch, waits=None):
+        """(exit status, what eng land --wait said, the IDs each wait for entries ahead was given). waits, by the call's
+        number from 1, is what to do before that wait looks; by default a worker's round."""
+        import argparse
+        parser = argparse.ArgumentParser()
+        mq.land_arguments(parser)
+        real_wait, real_wait_for, given = mq.wait, mq.wait_for, []
+        def wait_for(root, identifiers, limit=mq.WAIT_LIMIT):
+            given.append(list(identifiers))
+            (waits or {}).get(len(given), self.work)()
+            return real_wait_for(root, identifiers, limit)
+        def wait(root, identifier, limit=mq.WAIT_LIMIT):
+            self.work()
+            return real_wait(root, identifier, limit)
+        said = io.StringIO()
+        with patch.object(mq.Queue, "start"), patch.object(mq, "wait_for", wait_for), patch.object(mq, "wait", wait), \
+                self.polls(lambda: self.fail("a wait polled: nothing would end it")), \
+                contextlib.redirect_stdout(said), contextlib.redirect_stderr(said):
+            status = mq.land(self.repo, parser.parse_args([branch, "--wait"]))
+        return status, said.getvalue(), given
+
+    @staticmethod
+    def polls(step):
+        """A wait's poll, a sleep of mq.POLL, runs step instead; every other sleep, as subprocess's own, is real."""
+        real = time.sleep
+        return patch.object(mq.time, "sleep", lambda seconds: step() if seconds == mq.POLL else real(seconds))
+
+    def test_behind_an_entry_in_its_gate_that_fails_it_is_queued_and_lands_without_a_second_command(self):
+        self.commit("same", "one", "one"); self.commit("bad", "one", "bad", start="one")
+        self.commit("same", "two", "two")
+        [ahead] = self.add("one")
+        mq.Queue(self.repo).mark([self.state(ahead)], mq.TESTING)
+        status, said, given = self.land("two")
+        self.assertEqual(status, 0, said)
+        self.assertEqual(given, [[ahead]])
+        self.assertIn(f"conflicts with {ahead}, ahead of it, not with origin/main", said)
+        self.assertIn(f"eng land --wait: waits for {ahead}, then checks again against the whole queue", said)
+        self.assertIn(f"{ahead} came back", said)
+        self.assertEqual(self.state(ahead)["state"], "failed")
+        mine = next(e for e in mq.Queue(self.repo).all() if e["branch"] == "two")
+        self.assertEqual(mine["state"], "landed")
+        self.assertIn(f"landed: {mine['landedAs']}", said)
+
+    def test_behind_an_entry_that_lands_and_still_conflicts_it_is_refused_saying_to_rebase(self):
+        """The negative control: once the entry ahead lands, the conflict is with origin/main, which no wait ends."""
+        self.commit("same", "one", "one"); self.commit("same", "two", "two")
+        [ahead] = self.add("one")
+        status, said, given = self.land("two")
+        self.assertEqual(status, 1, said)
+        self.assertEqual(given, [[ahead]])
+        self.assertEqual(self.state(ahead)["state"], "landed")
+        self.assertIn("all landed: rebase onto origin/main", said)
+        self.assertIn("conflicts with origin/main, in same: rebase onto origin/main and add it again", said)
+        self.assertFalse(any(e["branch"] == "two" for e in mq.Queue(self.repo).all()))
+
+    def test_a_conflict_with_origin_main_is_refused_at_once_with_no_wait(self):
+        start = run(self.repo, "git", "rev-parse", "origin/main")
+        self.commit("same", "one", "one")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        self.commit("same", "two", "two", start)
+        status, said, given = self.land("two")
+        self.assertEqual((status, given), (1, []), said)
+        self.assertNotIn("eng land --wait: waits", said)
+
+    def test_each_wake_checks_against_the_whole_queue_and_waits_for_an_entry_queued_meanwhile(self):
+        """#302's second case: while it waited, another entry touching the same lines was queued; the check after the
+        wake names it, and the wait goes on for it."""
+        self.commit("same", "one", "one"); self.commit("same", "two", "two"); self.commit("same", "three", "three")
+        [first] = self.add("one")
+        meanwhile = []
+        def first_wait():
+            mq.Queue(self.repo).settle(self.state(first), mq.FAILED, why="its gate failed")
+            meanwhile.extend(self.add("three", checked=False))
+        status, said, given = self.land("two", waits={1: first_wait})
+        self.assertEqual(given, [[first], meanwhile])
+        self.assertEqual(self.state(meanwhile[0])["state"], "landed")
+        # And once that one landed, its conflict is with origin/main: rebase.
+        self.assertEqual(status, 1, said)
+        self.assertIn("conflicts with origin/main, in same: rebase", said)
+
+    def test_eng_queue_wait_takes_several_entries_and_a_return_to_queued_keeps_it_going(self):
+        self.commit("a", "a"); self.commit("bad", "b")
+        ids = self.add("a", "b")
+        queue = mq.Queue(self.repo)
+        # Each poll moves the queue one step: a gate starts, a --front entry sends it back to queued, a round settles.
+        steps = [lambda: queue.mark([self.state(ids[0])], mq.TESTING),
+                 lambda: queue.mark([self.state(ids[0])], mq.QUEUED), self.work]
+        slept = []
+        def poll():
+            slept.append(mq.POLL)
+            steps[len(slept) - 1]()
+        import argparse
+        parser = argparse.ArgumentParser()
+        mq.add_arguments(parser)
+        said = io.StringIO()
+        with patch.object(mq.Queue, "start"), self.polls(poll), contextlib.redirect_stdout(said):
+            status = mq.main(self.repo, parser.parse_args(["wait", *ids]))
+        self.assertEqual(len(slept), 3)
+        self.assertEqual(status, 1, said.getvalue())
+        self.assertEqual([self.state(i)["state"] for i in ids], ["landed", "failed"])
+        self.assertIn(f"{ids[1]} came back, so a commit that conflicted with it may apply as it is", said.getvalue())
+        # Each landed: 0, saying to rebase. An unknown ID is refused before any wait.
+        self.commit("c", "c"); self.commit("d", "d")
+        more = self.add("c", "d")
+        with patch.object(mq.Queue, "start"), self.polls(self.work), \
+                contextlib.redirect_stdout(io.StringIO()) as landed:
+            self.assertEqual(mq.wait_for(self.repo, more), 0)
+        self.assertIn("all landed: rebase onto origin/main", landed.getvalue())
+        with self.assertRaisesRegex(ValueError, "The queue has no entry nobody"):
+            mq.wait_for(self.repo, [more[0], "nobody"])
+        # Held, while one still waits: 75.
+        self.commit("e", "e")
+        [held] = self.add("e")
+        mq.Queue(self.repo).hold("for a test")
+        with patch.object(mq.Queue, "start"), contextlib.redirect_stdout(io.StringIO()) as waiting:
+            self.assertEqual(mq.wait_for(self.repo, [held, more[0]]), mq.resources.BUSY)
+        self.assertIn(f"{held} (queued) waiting, and the queue is held", waiting.getvalue())
+
+
+ISOLATED ="import unittest\nimport host_isolation\n\nclass T(unittest.TestCase):\n    def test_t(self): pass\n"
 UNISOLATED = "import unittest\n\nclass T(unittest.TestCase):\n    def test_t(self): pass\n"
 # What the gate of 2026-11-07 was refused with, in the checkout it ran in (vocaro-engineering#280, #290).
 REFUSED_LINE = ("eng unittest: test_forgot.py must import host_isolation at its top level, as every test module beside "

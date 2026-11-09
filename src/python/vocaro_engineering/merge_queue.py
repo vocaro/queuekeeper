@@ -306,7 +306,12 @@ class NoLocalNetwork(Exception):
 
 class Refused(ValueError):
     """An entry eng land queued nothing of, since the round's integration of it does not apply (check). eng land and
-    `eng queue add` exit 1 for it, as `eng land --wait` does for an entry that came back."""
+    `eng queue add` exit 1 for it, as `eng land --wait` does for an entry that came back. waits_for names the entries
+    ahead that it conflicts with alone, not with origin/main, which `eng land --wait` waits for before it checks again
+    (vocaro-engineering#302); it is empty for any other refusal."""
+    def __init__(self, words, waits_for=()):
+        super().__init__(words)
+        self.waits_for = list(waits_for)
 
 
 def worded(kind, cause):
@@ -1166,14 +1171,24 @@ def land(root, args, directory=None):
         if args.reference is None:
             raise ValueError(f"--repo lands a commit you name: `eng land --repo {args.repo} BRANCH`, since HEAD "
                              "there is another session's")
-    try:
-        identifier = add(target, args.reference or "HEAD", args.note, quiet_wait=args.wait,
-                         front=getattr(args, "front", False), no_gate=getattr(args, "no_gate", False),
-                         why=getattr(args, "why", None))
-    except Refused as error:
-        print(f"eng: {error}", file=sys.stderr)
-        return 1
-    status_ = wait(target, identifier, args.limit) if args.wait and identifier is not None else 0
+    deadline = time.monotonic() + args.limit
+    while True:
+        try:
+            identifier = add(target, args.reference or "HEAD", args.note, quiet_wait=args.wait,
+                             front=getattr(args, "front", False), no_gate=getattr(args, "no_gate", False),
+                             why=getattr(args, "why", None))
+            break
+        except Refused as error:
+            print(f"eng: {error}", file=sys.stderr)
+            if not args.wait or not error.waits_for: return 1
+            # Refused for entries ahead alone: wait for them, then check again against the whole queue, which may
+            # name an entry queued meanwhile (vocaro-engineering#302).
+            print(f"eng land --wait: waits for {', '.join(error.waits_for)}, then checks again against the whole "
+                  "queue", file=sys.stderr, flush=True)
+            waited = wait_for(target, error.waits_for, max(0.0, deadline - time.monotonic()))
+            if waited == resources.BUSY: return waited
+    left = max(0.0, deadline - time.monotonic())
+    status_ = wait(target, identifier, left) if args.wait and identifier is not None else 0
     warn(target)
     return status_
 
@@ -1292,7 +1307,7 @@ def check(root, queue, entry, ahead, front):
         print(f"queue: could not check it against the entries ahead, so the round finds any conflict: {error}",
               file=sys.stderr)
         return
-    if found["why"]: raise Refused(refusal(entry["tip"], found, base))
+    if found["why"]: raise Refused(refusal(entry["tip"], found, base, root), found["waits"])
     for line in tried(found, base, front, now() - began): print(f"queue: {line}", file=sys.stderr)
 
 
@@ -1610,6 +1625,42 @@ def wait(root, identifier, limit=WAIT_LIMIT):
             return resources.BUSY
         if time.monotonic() >= deadline:
             print(f"{identifier} is still {entry['state']} after {limit:g}s")
+            return resources.BUSY
+        queue.start()
+        time.sleep(POLL)
+
+
+def wait_for(root, identifiers, limit=WAIT_LIMIT):
+    """`eng queue wait ID ID ...`, as an eng land refusal names it: return once none of the entries is queued, in its
+    gate or passed, so that one a `--front` entry sends back to queued keeps the wait going, saying where each ended
+    and what is worth doing next: 0 each landed, so rebase; 1 one came back, so the commit it conflicted with may
+    apply as it is; 75 while the queue is held or the limit passes with one still waiting (vocaro-engineering#304).
+    `eng queue wait` with one ID is `wait`'s, which follows an entry of your own; eng land --wait waits here."""
+    identifiers = list(dict.fromkeys(identifiers))
+    queue = Queue(root)
+    unknown = [identifier for identifier in identifiers if queue.read(identifier) is None]
+    if unknown: raise ValueError(f"The queue has no entr{'y' if len(unknown) == 1 else 'ies'} {', '.join(unknown)}")
+    deadline = time.monotonic() + limit
+    while True:
+        entries = [queue.read(identifier) or {"id": identifier, "state": REMOVED, "subject": "(no record)"}
+                   for identifier in identifiers]
+        waiting = [entry for entry in entries if entry["state"] in WAITING]
+        if not waiting:
+            for entry in entries: print(describe(entry))
+            back = [entry["id"] for entry in entries if entry["state"] != LANDED]
+            if not back:
+                print("all landed: rebase onto origin/main, then `eng land` again")
+                return 0
+            print(f"{', '.join(back)} came back, so a commit that conflicted with {'them' if len(back) > 1 else 'it'} "
+                  "may apply as it is: `eng land` again checks again")
+            return 1
+        said = ", ".join(f"{entry['id']} ({entry['state']})" for entry in waiting)
+        why = queue.held()
+        if why:
+            print(f"{said} waiting, and the queue is held {why}")
+            return resources.BUSY
+        if time.monotonic() >= deadline:
+            print(f"{said} still waiting after {limit:g}s")
             return resources.BUSY
         queue.start()
         time.sleep(POLL)
@@ -2025,8 +2076,10 @@ class Worker:
                 self.kept.append(f"{commit[:12]}: kept both sides of {', '.join(conflicted)}, the new lines first")
                 self.say(self.kept[-1])
                 continue
+            hunks = self.hunks_of(conflicted)
             self.reset(before)
             self.conflicted = conflicted  # which Trial reads, to name the entries ahead that change those files
+            self.hunks = hunks
             return self.conflict(commit, conflicted, ", ".join(conflicted) or picked.stderr.strip(), ahead)
         return None
 
@@ -2034,7 +2087,9 @@ class Worker:
         """Why commit, of an entry behind ahead, did not apply in conflicted, files in words: what it conflicts with
         (vocaro-engineering#247). When no entry ahead changes a file in conflict, HEAD's files are origin/main's, so
         origin/main; when some do and origin/main holds those files as commit's parent did, those entries alone, by
-        ID; otherwise origin/main and every entry ahead."""
+        ID; otherwise origin/main and every entry ahead. only_ahead holds those entries in the second case alone, the
+        ones `eng land --wait` waits for (vocaro-engineering#302)."""
+        self.only_ahead = []
         if not ahead:
             return f"{commit[:12]} conflicts with origin/main, in {files}: rebase onto origin/main and add it again"
         touching = [other["id"] for other in ahead if set(conflicted) & set(text(
@@ -2042,11 +2097,16 @@ class Worker:
         if conflicted and not touching:
             return f"{commit[:12]} conflicts with origin/main, in {files}: rebase onto origin/main and add it again"
         if touching and not git(self.checkout, "diff", "--quiet", f"{commit}^", MAIN, "--", *conflicted).returncode:
-            many = len(touching) > 1
+            many, self.only_ahead = len(touching) > 1, touching
             return (f"{commit[:12]} conflicts with {', '.join(touching)}, ahead of it, not with origin/main, in {files}: "
                     f"once {'they land' if many else 'it lands'}, rebase onto origin/main and add it again")
         return (f"{commit[:12]} conflicts with what is ahead of it, origin/main and {', '.join(o['id'] for o in ahead)}, "
                 f"in {files}: once those land, rebase onto origin/main and add it again")
+
+    def hunks_of(self, conflicted):
+        """What a conflict in progress leaves to name, before the reset: nothing for a round, whose send-back names the
+        files; Trial names the hunks."""
+        return []
 
     def blob(self, identifier):
         return subprocess.run(["git", "-C", str(self.checkout), "cat-file", "blob", identifier], capture_output=True,
@@ -3232,6 +3292,33 @@ class Trial(Worker):
     def noted(self, entry, **fields):
         self.notes[entry["id"]] = fields
 
+    def hunks_of(self, conflicted):
+        return conflict_hunks(self.checkout, conflicted)
+
+
+def conflict_hunks(checkout, conflicted):
+    """Each conflict block Git left in the files of conflicted in checkout, as `PATH:FIRST-LAST`, the lines of the
+    picked commit's own version of the file that the block holds (`PATH:N` for one line, `PATH before line N` where
+    the commit's side is empty), so that a refused author knows which hunks to resolve without replaying the queue
+    (vocaro-engineering#302). A file in conflict with no block, as a deletion leaves, gives none."""
+    hunks = []
+    for path in conflicted:
+        try: lines = (Path(checkout) / path).read_text(errors="replace").splitlines()
+        except OSError: continue
+        # line is the next line of the commit's version; side, which part of a block a line is in, or None outside.
+        line, side, first = 1, None, None
+        for content in lines:
+            if side is None and content.startswith("<<<<<<< "): side = "ours"
+            elif side in ("ours", "base") and content.startswith("||||||| "): side = "base"
+            elif side in ("ours", "base") and content == "=======": side, first = "theirs", line
+            elif side == "theirs" and content.startswith(">>>>>>> "):
+                last = line - 1
+                hunks.append(f"{path}:{first}" if last == first else f"{path}:{first}-{last}" if last > first
+                             else f"{path} before line {first}")
+                side = None
+            elif side in (None, "theirs"): line += 1
+    return hunks
+
 
 def round_order(entries):
     """Waiting entries in the order rounds put them on main (Worker.choose): a batch that passed, then a batch in
@@ -3247,7 +3334,8 @@ def trial(queue, entry, ahead, base):
     checkout, which goes when it ends (vocaro-engineering#178). A dict: why, why entry does not apply, or None when
     it applies or main holds it already; against, the entries ahead that went on top; left, those ahead that a round
     would itself leave out, with why; touching, those of against that change a file in conflict; kept, the
-    changelog conflicts of entry that a round would settle."""
+    changelog conflicts of entry that a round would settle; waits, the entries ahead it conflicts with alone, not
+    with origin/main (Worker.conflict); hunks, its conflict blocks (conflict_hunks)."""
     with scratch(queue, base, "trial") as path:
         worker = Trial(queue, path)
         applied = worker.integrate([*ahead, entry], base)
@@ -3261,6 +3349,8 @@ def trial(queue, entry, ahead, base):
                 changed = text(path, "diff", "--name-only", "--no-renames", f"{other['commits'][0]}^", other["tip"])
                 if conflicted & set(changed.splitlines()): touching.append(other["id"])
         return {"why": why, "against": [other["id"] for other in against], "touching": touching,
+                "waits": list(getattr(worker, "only_ahead", ())) if why else [],
+                "hunks": list(getattr(worker, "hunks", ())) if why else [],
                 "left": {other["id"]: worker.outcomes[other["id"]][1] for other in ahead
                          if other["id"] in worker.outcomes},
                 "kept": worker.notes.get(entry["id"], {}).get("kept", [])}
@@ -3312,8 +3402,9 @@ def tried(found, base, front, elapsed):
     return lines
 
 
-def refusal(tip, found, base):
-    """Why eng land queues nothing: the trial's conflict, with what it was checked against."""
+def refusal(tip, found, base, root):
+    """Why eng land queues nothing: the trial's conflict, with what it was checked against, its hunks, and the command
+    that waits for the entries ahead that change the files in conflict (vocaro-engineering#304)."""
     checked_ = f"origin/main at {base[:12]}" + (f" and, in order, {', '.join(found['against'])}" if found["against"]
                                                 else "")
     words = f"{tip[:12]} is not queued: {found['why']}. Checked against {checked_}"
@@ -3323,8 +3414,18 @@ def refusal(tip, found, base):
     if found["left"]:
         words += f"; left out, as a round would leave {'them' if len(found['left']) > 1 else 'it'}: " + \
             ", ".join(found["left"])
-    return words + (". An entry ahead that comes back may let it apply: `eng queue status` says, and `eng land` again "
-                    "checks again (guides/maintenance.md, The merge queue)")
+    if found["hunks"]:
+        words += f"; its lines in conflict: {', '.join(found['hunks'])}"
+    words += (". An entry ahead that comes back may let it apply: `eng queue status` says, and `eng land` again "
+              "checks again (guides/maintenance.md, The merge queue)")
+    if found["touching"]:
+        many = len(found["touching"]) > 1
+        words += (f". To be told when {'they leave' if many else 'it leaves'} the queue, run as a background command: "
+                  f"python3 {shlex.quote(str(root))}/scripts/eng queue wait {' '.join(found['touching'])}, which says "
+                  f"whether {'they all' if many else 'it'} landed, so rebase, or came back, so `eng land` may apply it "
+                  "as it is" + (f"; `eng land --wait` waits for {'them' if many else 'it'} itself and checks again"
+                                if found["waits"] else ""))
+    return words
 
 
 def run(root):
@@ -3406,7 +3507,8 @@ def land_arguments(parser):
     parser.add_argument("--repo", help="another project to land in: its path, or its name beside this project")
     parser.add_argument("--wait", action="store_true", help="follow it to its result and print the landed commit: "
                         "0 landed, 1 came back or was refused, as it conflicts with what is ahead of it, 75 held or "
-                        "still waiting at the limit")
+                        "still waiting at the limit. Refused for entries ahead alone, it waits for them and checks "
+                        "again")
     parser.add_argument("--limit", type=float, default=WAIT_LIMIT, metavar="SECONDS")
     parser.add_argument("--note", help="what the entry is, for `eng queue status`")
     options(parser)
@@ -3439,9 +3541,10 @@ def add_arguments(parser):
                                       "such as gates that ran nothing, and say what each means and what heals it; it "
                                       "changes nothing: 0 healthy, 1 with findings")
     doctoring.add_argument("--json", action="store_true")
-    following =operations.add_parser("wait", help="follow an entry to its result: 0 landed, 1 came back, 75 "
-                                      "held or still waiting at the limit")
-    following.add_argument("id")
+    following = operations.add_parser("wait", help="follow an entry to its result, or several, such as the entries an "
+                                       "eng land conflict names, until none waits: 0 landed, or each did, 1 came back, "
+                                       "or one did, 75 held or still waiting at the limit")
+    following.add_argument("id", nargs="+")
     following.add_argument("--limit", type=float, default=WAIT_LIMIT, metavar="SECONDS")
     removing = operations.add_parser("remove", help="take an entry out; a run in progress finishes, and lands nothing")
     removing.add_argument("id")
@@ -3459,7 +3562,8 @@ def main(root, args):
         return 0
     if args.operation == "status": return status(root, args.json)
     if args.operation == "doctor": return doctor(root, args.json)
-    if args.operation == "wait": return wait(root, args.id, args.limit)
+    if args.operation == "wait":
+        return wait(root, args.id[0], args.limit) if len(args.id) == 1 else wait_for(root, args.id, args.limit)
     if args.operation == "remove": return remove(Queue(root), args.id)
     if args.operation == "resume": return resume(root)
     return run(root)

@@ -410,8 +410,25 @@ entry queued behind a running gate learned of it 15 to 40 minutes later, more on
 is only a hint: `main` and the entries ahead can change before the round, as an entry ahead comes back
 or a hand push lands, so the round integrates again and still sends back what the check could not
 see, below, and an entry ahead that comes back may let a refused entry apply, which `eng land` again
-checks. A check that cannot be made, such as a worktree Git cannot add, queues the entry, says so, and
-leaves any conflict to the round. It costs a worktree checkout and the cherry-picks, measured on
+checks. The refusal also names the commit's own lines in conflict, as `PATH:FIRST-LAST` of its
+version of each file, from the trial's conflict blocks, so that its author can resolve them before
+the entries ahead land without replaying the queue by hand, and, when entries ahead change the files
+in conflict, the command that waits for them, `eng queue wait ID ID ...`, to run as a background
+command. That wait ends once none of them is queued, in its gate or passed, so an entry a `--front`
+entry sends back to queued keeps it going, and says what is worth doing: exit 0 when each landed, so
+rebase onto `origin/main` and `eng land` again; 1 when one came back, so the commit may apply as it
+is and `eng land` again checks; 75 while the queue is held or at its `--limit`
+([#304](https://github.com/vocaro/vocaro-engineering/issues/304)). `eng land --wait` does this
+itself when the conflict is with entries ahead alone, not with `origin/main`: it says it waits for
+them, waits, and checks again against the whole queue, so an entry ahead that comes back lets the
+commit be queued and land with no second command, an entry queued meanwhile that touches the same
+lines is waited for in turn, and once they have landed a commit that still conflicts, now with
+`origin/main`, is refused, saying to rebase, exit 1. A conflict with `origin/main`, alone or beside
+entries ahead, is refused at once, as before, since no wait ends it. On 2026-11-07 two sessions
+hand-wrote loops over `eng queue status` instead, one of which a `--front` preemption ended early, and
+one landing took 4.5 hours of rounds of refusal, replay and wait
+([#302](https://github.com/vocaro/vocaro-engineering/issues/302)). A check that cannot be made, such as a
+worktree Git cannot add, queues the entry, says so, and leaves any conflict to the round. It costs a worktree checkout and the cherry-picks, measured on
 2026-11-04 on this Mac at a one-minute load of 28 to 45 with six one-commit entries ahead: about
 0.6 s with none ahead and 1.6 s with six on the toolkit's tree of 203 files, and 4.5 s and 6 s on a
 tree of 10,000 files, where each cherry-pick adds about 0.3 s. Whole `eng land` runs, fetch included,
