@@ -12,7 +12,7 @@ import unittest
 from unittest.mock import patch
 SOURCE = Path(__file__).resolve().parents[1] / "src/python"
 sys.path.insert(0, str(SOURCE))
-from vocaro_engineering import cli, evidence, parallel, resources
+from vocaro_engineering import cli, evidence, failure_records, merge_queue, parallel, resources
 from vocaro_engineering.parallel import SPLITS
 import host_isolation
 from host_isolation import stretched
@@ -74,10 +74,12 @@ class UnittestRunnerTests(unittest.TestCase):
         # A meeting's limit stretches by load where the modules should meet; a negative control's 1 s stays
         # fixed, since load only makes a module that cannot meet the other fail surer.
         limit = stretched(60) if limit is None else limit
+        # In the suite's own directory by default, where a failing run's kept output goes with the suite.
         finished = subprocess.run([sys.executable, str(ENG), "unittest", "-s", str(root), *arguments],
-                                  capture_output=True, text=True, cwd=cwd,
+                                  capture_output=True, text=True, cwd=root if cwd is None else cwd,
                                   env={"MEET_LIMIT": str(limit), "PATH": "/usr/bin:/bin"})
-        return finished.returncode, finished.stdout + finished.stderr
+        # Standard error first: eng's line about a toolkit copy behind origin/main is not what a run prints last.
+        return finished.returncode, finished.stderr + finished.stdout
 
     def test_modules_run_side_by_side_and_one_job_runs_them_one_after_another(self):
         root = self.suite(module("test_left", meeting("left", "right")), module("test_right", meeting("right", "left")))
@@ -187,6 +189,146 @@ class UnittestRunnerTests(unittest.TestCase):
         self.assertEqual((evidence.executed_tests(output), evidence.skipped_tests(output)), (1, 1))
         self.assertIn("eng unittest: 2 tests (1 skipped) in 1 processes", output)
         self.assertEqual(len(evidence.unmeasured_tests(output)), 1, output)
+
+    def after_summary(self, output):
+        """The lines eng unittest prints after its summary, which comes once."""
+        lines = output.splitlines()
+        summaries = [number for number, line in enumerate(lines) if line.startswith("eng unittest: ")]
+        self.assertEqual(len(summaries), 1, output)
+        return lines[summaries[0] + 1:]
+
+    def test_the_last_lines_of_a_failed_run_say_why_each_test_failed_and_where_the_whole_output_is(self):
+        root = self.suite(
+            module("test_pass", "class P(unittest.TestCase):\n    def test_a(self): pass\n"),
+            module("test_fail", """
+                class F(unittest.TestCase):
+                    def test_planted(self): self.fail('the planted reason')
+                    def test_chained(self):
+                        try: raise KeyError('first')
+                        except KeyError as error: raise ValueError('the last of the chain') from error
+                    def test_lines(self): self.fail('its first line\\nits second line')
+                    def test_cases(self):
+                        for case in (1, 2):
+                            with self.subTest(case=case): self.assertEqual(case, 0)
+            """),
+            module("test_broken", "import a_module_that_does_not_exist\n"),
+            module("test_dies", """
+                class D(unittest.TestCase):
+                    def test_dies(self):
+                        print("the last it said", flush=True)
+                        os._exit(7)
+            """))
+        status, output = self.run_suite(root)
+        self.assertEqual(status, 1, output)
+        after = self.after_summary(output)
+        self.assertRegex(after[0], r"^Why each failed, the first line of each reason; the whole output is in .*\.log:$")
+        self.assertEqual(sorted(after[1:]), sorted([
+            "    test_broken: ModuleNotFoundError: No module named 'a_module_that_does_not_exist'",
+            "    test_dies: its output ends: the last it said",
+            "    test_fail.F.test_cases (case=1): AssertionError: 1 != 0",
+            "    test_fail.F.test_cases (case=2): AssertionError: 2 != 0",
+            "    test_fail.F.test_chained: ValueError: the last of the chain",
+            "    test_fail.F.test_lines: AssertionError: its first line",
+            "    test_fail.F.test_planted: AssertionError: the planted reason"]))
+        # The rest can be read afterwards, in a record the kept-failure rule prunes.
+        log = Path(after[0].split("the whole output is in ", 1)[1][:-1])
+        self.assertTrue(log.is_relative_to((root / ".build/failures/unittest").resolve()), log)
+        saved = log.read_text()
+        self.assertIn("its second line", saved)
+        self.assertIn("eng unittest: ", saved)
+        self.assertIn(log.parent.name, [path.name for path in failure_records.records(root).get("unittest", [])])
+        self.assertIn("Failed: test_fail.F.test_planted", (log.parent / "failures.txt").read_text())
+
+    def test_a_passing_run_adds_nothing_after_its_summary_and_keeps_nothing(self):
+        root = self.suite(module("test_pass", "class P(unittest.TestCase):\n    def test_a(self): pass\n"))
+        status, output = self.run_suite(root)
+        self.assertEqual(status, 0, output)
+        self.assertEqual(self.after_summary(output), [])
+        self.assertFalse((root / ".build").exists())
+
+    def test_a_run_left_unmeasured_adds_nothing_after_its_summary(self):
+        root = self.suite(module("test_hung", "class H(unittest.TestCase):\n    def test_hung(self): time.sleep(600)\n"))
+        status, output = self.run_suite(root, "--timeout", "1")
+        self.assertEqual(status, evidence.UNMEASURED, output)
+        self.assertEqual(self.after_summary(output), [])
+        self.assertFalse((root / ".build").exists())
+
+    def test_the_reasons_after_the_summary_are_bounded_and_say_what_was_cut(self):
+        count, width = parallel.REASONS_SHOWN + 5, parallel.REASON_WIDTH
+        methods = "".join(f"    def test_{number:02}(self): self.fail('words ' * 1000)\n" for number in range(count))
+        root = self.suite(("test_many", f"import unittest\nclass M(unittest.TestCase):\n{methods}"))
+        status, output = self.run_suite(root)
+        self.assertEqual(status, 1, output)
+        after = self.after_summary(output)
+        self.assertEqual(len(after), 2 + parallel.REASONS_SHOWN, output)
+        for line in after[1:-1]:
+            self.assertLess(len(line), 2 * width, line)
+            self.assertRegex(line, r"AssertionError: words words.* \[cut: \d+ more characters\]$")
+        self.assertEqual(after[-1], f"    [cut: 5 more failures of {count}; the whole output has them]")
+        # The control: as many failures as are shown, each within its width, are shown whole.
+        self.assertEqual(parallel.clipped("a b", 3), "a b")
+        reasons = [(f"test_{number}", "why") for number in range(parallel.REASONS_SHOWN)]
+        self.assertEqual(len(parallel.reason_lines(reasons, "kept")), 1 + parallel.REASONS_SHOWN)
+        self.assertNotIn("[cut", "".join(parallel.reason_lines(reasons, "kept")))
+
+    def test_a_cut_reason_ends_at_a_word_so_no_path_is_shortened_into_another(self):
+        # Cut at the width, this reason would end in src/longer/name.py, a path the queue could blame a change for.
+        path, width = "src/longer/name.pyi", parallel.REASON_WIDTH
+        text = "x" * (width - len(path)) + " " + path + " the rest"
+        self.assertTrue(merge_queue.named_in("src/longer/name.py", text[:width] + " [cut]"))
+        cut = parallel.clipped(text, width)
+        self.assertFalse(merge_queue.named_in("src/longer/name.py", cut), cut)
+        self.assertIn("[cut: ", cut)
+        self.assertEqual(parallel.clipped("x" * (width + 1), width), f"[cut: {width + 1} more characters]")
+
+    def test_a_failure_message_that_quotes_another_runs_failures_gives_one_reason(self):
+        quoted = "\n" + "=" * 70 + "\nFAIL: test_inner (test_other.O.test_inner)\n" + "-" * 70 + "\nAssertionError: inner"
+        root = self.suite(module("test_outer", f"""
+            class O(unittest.TestCase):
+                def test_outer(self): self.assertEqual(1, 2, {quoted!r})
+        """))
+        status, output = self.run_suite(root)
+        self.assertEqual(status, 1, output)
+        self.assertIn("AssertionError: inner", output)
+        self.assertEqual(self.after_summary(output)[1:], ["    test_outer.O.test_outer: AssertionError: 1 != 2 : "])
+        # The control: with no test of the process named, as a load_tests module's, each failure read is kept.
+        self.assertEqual(len(parallel.failure_reasons(output, ["test_elsewhere"])), 2)
+
+    def test_the_queue_reads_a_failed_run_with_its_reasons_as_it_reads_one_without_them(self):
+        # Each reason quotes a line the queue reads, from the start of a line; the block must not start any of them.
+        decoys = ["FAIL: test_decoy (test_decoy.D.test_decoy)", "ERROR: test_decoy (test_decoy.D.test_decoy)",
+                  "== test_decoy: FAILED (failures=1) (1 tests, 0.1s)",
+                  "eng unittest: 1 tests (0 skipped) in 1 processes, 1 at a time, 0.1s: OK",
+                  "eng unittest: test_decoy.py does not parse; nothing ran"]
+        methods = "".join(f"    def test_{number}(self): raise RuntimeError({decoy!r})\n"
+                          for number, decoy in enumerate(decoys))
+        root = self.suite(("test_real", f"import unittest\nclass R(unittest.TestCase):\n{methods}"),
+                          module("test_pass", "class P(unittest.TestCase):\n    def test_a(self): pass\n"))
+        status, output = self.run_suite(root)
+        self.assertEqual(status, 1, output)
+        after = self.after_summary(output)
+        self.assertEqual(len(after), 1 + len(decoys), output)
+        lines = output.splitlines()
+        without = "\n".join(lines[:len(lines) - len(after)]) + "\n"
+        ids = [f"test_real.R.test_{number}" for number in range(len(decoys))]
+        for name, log in (("without the reasons", without), ("with them", output)):
+            with self.subTest(name):
+                self.assertEqual(merge_queue.failed_tests(log), (ids, None))
+                self.assertEqual(merge_queue.UNITTEST_SUMMARY.findall(log), merge_queue.UNITTEST_SUMMARY.findall(without))
+                self.assertEqual(merge_queue.REFUSAL.findall(log), [])
+                self.assertEqual(evidence.counted(log), evidence.counted(without))
+        # The negative control: the same lines not indented do change what the queue reads, so the test can fail.
+        unindented = without + "\n".join(decoys) + "\n"
+        self.assertNotEqual(merge_queue.failed_tests(unindented), (ids, None))
+
+    def test_a_failed_run_that_cannot_save_its_output_says_so_and_keeps_its_result(self):
+        root = self.suite(module("test_fail", "class F(unittest.TestCase):\n    def test_a(self): self.fail('planted')\n"))
+        (root / ".build").write_text("a file where the folder would go")
+        status, output = self.run_suite(root)
+        self.assertEqual(status, 1, output)
+        after = self.after_summary(output)
+        self.assertRegex(after[0], r"^Why each failed, the first line of each reason; the whole output was not saved: ")
+        self.assertEqual(after[1:], ["    test_fail.F.test_a: AssertionError: planted"])
 
     def test_a_process_that_ends_before_its_tests_have_run_fails(self):
         root = self.suite(module("test_exits", """

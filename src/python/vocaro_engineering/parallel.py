@@ -36,6 +36,11 @@ PROCESS_LIMIT = 1800
 # The variable that gives a lane's command the absolute path of its results/ directory, which `eng run` empties
 # before each run and brings back from the second Mac (guides/parallel-tests.md, A lane's results).
 RESULTS_VARIABLE = "ENG_RESULTS_DIR"
+# What eng unittest repeats after its summary, so that output cut by `tail` still says why each test failed
+# (vocaro-engineering#264): at most this many failures, each name and reason at most this many characters. Together
+# they stay well under the TAIL lines a failed lane shows, and that lane's summary stays among them.
+REASONS_SHOWN = 20
+REASON_WIDTH = 300
 
 
 def outcome(status):
@@ -229,6 +234,11 @@ def shards(suite, split, origins=None, members=None):
 
 RAN = re.compile(r"^Ran (\d+) tests? in ", re.M)
 RESULT = re.compile(r"^(OK|FAILED)\b.*$", re.M)
+# unittest's heading of one failure, between its two separator lines, with a subtest's parameters after it.
+FAILURE = re.compile(r"^(?:FAIL|ERROR): (\S+) \(([^()\s]+)\)(.*)$")
+TRACEBACK = "Traceback (most recent call last):"
+CHAINED = ("During handling of the above exception, another exception occurred:",
+           "The above exception was the direct cause of the following exception:")
 
 
 # `python3 -m unittest` with its first argument, the top-level directory, first on sys.path, and
@@ -266,11 +276,71 @@ def run_shard(name, tests, top, verbose, descriptors=(), timeout=PROCESS_LIMIT, 
     began = time.monotonic()
     status, output = processes.bounded(command, timeout=timeout, pass_fds=descriptors)
     summary = RESULT.search(output)
-    return {"name": name, "status": status, "output": output,
+    return {"name": name, "tests": list(tests), "status": status, "output": output,
             "ran": sum(int(count) for count in RAN.findall(output)),
             "result": f"timed out after {timeout:g}s" if status is None
                       else summary.group(0) if summary else "no result",
             "seconds": time.monotonic() - began}
+
+
+def last_exception(lines):
+    """The first line of the exception that ended a failure's traceback, the last of a chain of them, from lines, the
+    failure's text; or its last line that says anything when it holds no traceback of that form; or None."""
+    last = next((line for line in reversed(lines) if line.strip()), None)
+    start = next((index for index, line in enumerate(lines) if line.startswith(TRACEBACK)), None)
+    while start is not None:
+        index = start + 1
+        while index < len(lines) and lines[index].startswith(" "): index += 1
+        if index == len(lines) or not lines[index].strip(): return last
+        marker = next((number for number in range(index + 1, len(lines)) if lines[number] in CHAINED), None)
+        if marker is None or marker + 2 >= len(lines) or not lines[marker + 2].startswith(TRACEBACK):
+            return lines[index]
+        start = marker + 2
+    return last
+
+
+def failure_reasons(output, tests):
+    """[(failed test, the first line of why)] for each failure unittest reports in output, the output of a process
+    that ran tests, its module, class or test names. A test's failure message can quote the output of a run it made,
+    and so another run's failures: those name a test that is not among tests, and are left out, unless none is left."""
+    lines, found, opener, closer = output.splitlines(), [], unittest.TextTestResult.separator1, \
+        unittest.TextTestResult.separator2
+    for index, line in enumerate(lines):
+        heading = FAILURE.match(lines[index + 1]) if line == opener and index + 1 < len(lines) else None
+        if not heading: continue
+        # A test's docstring takes a line of its own under the heading.
+        start = next((number for number in range(index + 2, min(index + 4, len(lines))) if lines[number] == closer), None)
+        if start is None: continue
+        end = next((number for number in range(start + 1, len(lines)) if lines[number] in (opener, closer)), len(lines))
+        method, where, parameters = heading.groups()
+        # unittest reports a module that did not load as a test of its loader named after the module.
+        loader = where.startswith("unittest.")
+        identity = method if loader else where if where.endswith(f".{method}") else f"{where}.{method}"
+        own = method in tests if loader else \
+            any(name == where or where.startswith(f"{name}.") or name.startswith(f"{where}.") for name in tests)
+        found.append((own, identity + parameters, last_exception(lines[start + 1:end]) or "it printed no reason"))
+    return [item[1:] for item in found if item[0]] or [item[1:] for item in found]
+
+
+def clipped(text, width):
+    """text, at most about width characters. What is cut is said, and it ends at a word, as a path cut short could
+    read as another path to the merge queue, which looks in a failing test's output for the paths a change touches."""
+    if len(text) <= width: return text
+    kept = text[:width].rsplit(None, 1)[0] if len(text[:width].split(None, 1)) > 1 else ""
+    return f"{kept} [cut: {len(text) - len(kept)} more characters]".lstrip()
+
+
+def reason_lines(reasons, saved):
+    """What eng unittest prints after its summary for reasons, [(failed test, why)]; saved says where the whole output
+    is. Nothing for no reasons. Each reason is one line, indented, so that nothing in it can start a line the merge
+    queue reads as a process's header, a test's failure or a summary (merge_queue.failed_tests, UNITTEST_SUMMARY)."""
+    if not reasons: return []
+    shown = reasons[:REASONS_SHOWN]
+    lines = [f"Why each failed, the first line of each reason; {saved}:"]
+    lines += [f"    {clipped(name, REASON_WIDTH)}: {clipped(why, REASON_WIDTH)}" for name, why in shown]
+    if len(reasons) > len(shown):
+        lines.append(f"    [cut: {len(reasons) - len(shown)} more failures of {len(reasons)}; the whole output has them]")
+    return lines
 
 
 def unittest_main(argv):
@@ -350,26 +420,45 @@ def unittest_main(argv):
         futures = [pool.submit(run_shard, name, tests, top, args.verbose, descriptors, args.timeout,
                                None if chosen is None else chosen[name])
                    for name, tests in found.items()]
-        results = []
+        results, report = [], []
         for future in futures:
             result = future.result()
             results.append(result)
             # Each shard's own output, whole and in discovery order, under one line that names it.
-            print(f"== {result['name']}: {result['result']} ({result['ran']} tests, {result['seconds']:.1f}s)",
-                  result["output"].rstrip("\n"), sep="\n", flush=True)
-    failed, unmeasured = [], []
+            report += [f"== {result['name']}: {result['result']} ({result['ran']} tests, {result['seconds']:.1f}s)",
+                       result["output"].rstrip("\n")]
+            print(*report[-2:], sep="\n", flush=True)
+    failed, unmeasured, reasons = [], [], []
+
+    def fail(result, detail):
+        failed.append(f"{result['name']} ({detail})")
+        ended = next((line for line in reversed(result["output"].splitlines()) if line.strip()), None)
+        reasons.extend(failure_reasons(result["output"], result["tests"])
+                       or [(result["name"], f"its output ends: {ended}" if ended else "it printed nothing")])
+
     for result in results:
         if result["status"] is None: unmeasured.append(f"{result['name']} ({result['result']})")
-        elif result["status"] != 0: failed.append(f"{result['name']} ({result['result']}, status {result['status']})")
+        elif result["status"] != 0: fail(result, f"{result['result']}, status {result['status']}")
         elif result["ran"] != expected[result["name"]]:
             # A shard that ran other than the tests discovery found for it did not run what it was given.
-            failed.append(f"{result['name']} (ran {result['ran']} of {expected[result['name']]} tests)")
+            fail(result, f"ran {result['ran']} of {expected[result['name']]} tests")
     total = sum(result["ran"] for result in results)
     skipped = sum(evidence.skipped_tests(result["output"]) for result in results)
     # Not "Ran N tests": the shards' own lines already count every test once.
-    print(f"eng unittest: {total} tests ({skipped} skipped) in {len(results)} processes, {args.jobs} at a time, "
-          f"{time.monotonic() - began:.1f}s: " + verdict(failed, unmeasured), flush=True)
+    summary = (f"eng unittest: {total} tests ({skipped} skipped) in {len(results)} processes, {args.jobs} at a time, "
+               f"{time.monotonic() - began:.1f}s: " + verdict(failed, unmeasured))
+    print(summary, flush=True)
+    if failed:
+        for line in reason_lines(reasons, saved_output(report + [summary], reasons)): print(line, flush=True)
     return 1 if failed else evidence.UNMEASURED if unmeasured else 0
+
+
+def saved_output(report, reasons):
+    """Keep report, a failed run's lines, as a failure record of the directory eng runs in, which the record's rule
+    prunes, and return words saying where it is, or why it is not: either way the run's result stands."""
+    from . import failure_records  # failure_records imports this module
+    try: return f"the whole output is in {failure_records.keep_output(Path.cwd(), 'unittest', report, reasons)}"
+    except (OSError, ValueError) as error: return f"the whole output was not saved: {error}"
 
 
 ISOLATION = "host_isolation.py"
