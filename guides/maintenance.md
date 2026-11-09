@@ -914,6 +914,10 @@ as its base. Prove each check fails on a bad move before relying on it.
 **State and recovery.** Each repository's state is under `eng-queue` in its common Git directory,
 so every worktree sees one queue. A worker starts by itself with `eng land`, apart from the session,
 and exits when nothing waits; `eng queue wait` and `eng queue resume` start one after a reboot.
+Nothing starts one by itself: a worker started by launchd could not reach the second Mac
+(guides/shared-host.md, Local Network access; vocaro-engineering#287, #299). A worker that starts
+first stops any run on the second Mac that a dead dispatcher left, a crashed worker's gate among
+them, by that dispatcher's own record (guides/shared-host.md, How a run reaches the second Mac).
 Whatever a dead worker left testing was never pushed, so the next worker tests it again. A batch
 whose lanes passed is recorded `passed`, with the commit that passed and its base, before its push;
 a hold the push meets, a refusal or a remote out of reach, keeps it so, and the hold's reason says so.

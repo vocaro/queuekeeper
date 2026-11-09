@@ -143,6 +143,13 @@ UNATTENDED_WAIT = 5400 + 300
 # Seconds between tries at a connection to collect a run from, and how long past that run's own bound a
 # dispatcher keeps trying, in this Mac's waking time (time.monotonic stops for sleep on macOS).
 REATTACH_PAUSE, REATTACH_GRACE = 15, 300
+# Seconds between the dispatcher's heartbeats on the run's standard input, and the seconds with none after which the
+# second Mac stops a run whose connection's end is a stop: one with a device lease, or one that has not said its
+# dispatcher heard it start (offload_host.watch; vocaro-engineering#287). A Mac that crashed closes nothing. The
+# silence outlasts ssh's own two-minute bound, so that whatever silence ssh survives, the run survives too.
+HEARTBEAT_SECONDS, HEARTBEAT_SILENCE = 20, 180
+# Seconds one connection may take to stop a dead dispatcher's run (stop_dead_dispatches).
+STOP_DEAD_WAIT = 30
 # The toolkit's repository, which its origin names for the second Mac's policy refresh.
 UPSTREAM = "https://github.com/vocaro/vocaro-engineering.git"
 # What a Git hook exports for its own repository must not reach another.
@@ -1448,6 +1455,77 @@ def asleep():
     return None
 
 
+def heartbeat(channel, seconds):
+    """Write a heartbeat to the second Mac's standard input every this many seconds until the connection ends, from
+    a thread of its own, so that a stalled reader of this run's output does not read there as this Mac's crash."""
+    while channel.poll() is None:
+        time.sleep(seconds)
+        tell(channel, b"")
+
+
+def dispatch_records():
+    """Where this Mac records its running journaled dispatches: durable, so that a record outlasts a reboot of this
+    Mac, and beside its admission log, so that a test's HEAVY_SLOT_DIR keeps its own."""
+    return resources.log_path().parent / "dispatchers"
+
+
+def remember_dispatch(journal, host):
+    """Record this process as a journaled run's dispatcher, and return the record's path, or None when it cannot be
+    recorded: a run this Mac cannot then find again ends at its bound on the second Mac, as any unattended run does."""
+    try:
+        path, start = dispatch_records() / f"{journal}.json", resources.process_start(os.getpid())
+        if start is None: raise OSError("this process's start time cannot be read")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        partial = path.with_suffix(".partial")
+        partial.write_text(json.dumps({"journal": journal, "host": host, "pid": os.getpid(), "start": start}))
+        partial.rename(path)
+        return path
+    except OSError as error:
+        print(f"remote: this dispatch is not recorded, so a crash of it would not stop its run early: {error}",
+              file=sys.stderr, flush=True)
+        return None
+
+
+def dispatcher_dead(pid, start):
+    """Whether the dispatcher a record names is proven gone: no process has its PID, or one that started at another
+    time does, as after a reboot. A process that started when it did is alive, however long it has been asleep, and
+    a PID that cannot be read proves nothing."""
+    try: return resources.process_start(pid) != start
+    except (OSError, ValueError, subprocess.SubprocessError): return False
+
+
+def stop_dead_dispatches():
+    """Stop each run on the second Mac whose dispatcher on this Mac is proven dead, by its own journal alone, so that
+    the run leaves admission and frees its checkout the usual way. Only a record the second Mac has answered for is
+    removed: one it could not be asked about stays for a later dispatch or worker, and says nothing was stopped."""
+    try: paths = sorted(dispatch_records().glob("*.json"))
+    except OSError: return
+    source = None
+    for path in paths:
+        try:
+            record = json.loads(path.read_text())
+            journal, host, pid, start = record["journal"], record["host"], record["pid"], record["start"]
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        if not dispatcher_dead(pid, start): continue
+        source = source or Path(offload_host.__file__).read_text()
+        request = json.dumps({"reattach": {"root": ROOT, "id": journal, "stop": True}})
+        try:
+            done = ssh(host, shlex.join(["python3", "-c", source, request]), stdin=subprocess.DEVNULL,
+                       capture_output=True, text=True, timeout=STOP_DEAD_WAIT)
+            state = final_object(done).get("stop") if done.returncode == 0 else None
+        except (OSError, subprocess.SubprocessError):
+            state = None
+        if state not in ("stopping", "ended", "gone"):
+            print(f"remote: dispatcher {pid} of {journal} has died, and {host} could not be told to stop its run; "
+                  "a later dispatch tries again", file=sys.stderr, flush=True)
+            continue
+        with contextlib.suppress(OSError): path.unlink()
+        if state == "stopping":
+            print(f"remote: dispatcher {pid} of {journal} has died; told {host} to stop its run", file=sys.stderr,
+                  flush=True)
+
+
 def lost(host, status, said, dispatched, slept, output, journal=None, gone=False):
     """What `eng remote` says of a run that returned no result: ssh's own last line, said, when it exits
     255 for a failure of its own; when the run was dispatched and lost, in UTC; and how long this Mac
@@ -1867,7 +1945,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
             "returns": {"directory": f".build/engineering/{name}", "paths": returns} if returns else None,
             "changes": f".build/engineering/{name}/{CHANGES}" if changes else None,
             "deviceRecord": local["name"], "lease": lease.plan(local["name"]) if lease is not None else None,
-            "dispatcher": local["name"], "subdirectory": subdirectory,
+            "dispatcher": local["name"], "subdirectory": subdirectory, "silence": HEARTBEAT_SILENCE,
             **({"checkoutSlot": slot, "checkoutWait": slot_wait} if slot is not None else {})}
     # A run that uses this Mac's device reservations ends with its connection (Lease). Any other outlives it, within
     # its own bound, for a later connection to collect (Frames, offload_host.Journal; vocaro-engineering#321).
@@ -1881,6 +1959,8 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     if sent:
         print(f"remote: offering {at} to {host} again", file=sys.stderr, flush=True)
     else:
+        # Before anything is sent, so that the slots and admission a crashed dispatcher's run holds come free for this.
+        stop_dead_dispatches()
         # A snapshot's result is no commit's pass, which nothing else says until eng release stops for it
         # (vocaro-engineering#197).
         why = uncounted(root, lane) if lane is not None and commit != head and not arguments and expect is None \
@@ -1958,6 +2038,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     source = Path(offload_host.__file__).read_text()
     command = [*SSH, *moved(host), host, login(shlex.join(["python3", "-c", source, json.dumps(plan)]))]
     stopping = None
+    record = remember_dispatch(journal, host) if detached is not None else None
     # A lane's log comes as it grows. An `eng admit` command's output comes on stdout, live, already.
     progress = Progress(name, host, bool(members), clock_line(config, lane)) if lane is not None else None
     lane_wait.sent(host)
@@ -2030,11 +2111,15 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
         channel = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                    env=environment())
         if lease is not None: lease.connected(channel.pid)
+        threading.Thread(target=heartbeat, args=(channel, HEARTBEAT_SECONDS), daemon=True).start()
         carry(channel)
         ended, said = channel.returncode, frames.stray
         lost_at, reconnections = time.time(), None
         if frames.result is None and frames.journaled: reconnections = collect()
         frames.close()
+    # A run this dispatch could neither collect nor learn the end of stays recorded, for a later one to stop.
+    if record is not None and (frames.result is not None or frames.gone or not frames.journaled):
+        with contextlib.suppress(OSError): record.unlink()
     result, framed, returned = frames.result, frames.framed, frames.returned
     if result is None and not framed and stopping is None:
         # offload_host.py never said it started, so nothing ran there unless its first words were lost.

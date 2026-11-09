@@ -12,8 +12,11 @@ the run as a stop signal stops a local one, `attached` says the dispatcher heard
 that it has the result. A plan with `detach` keeps every frame in a journal here, which an opening `J` announces
 (Journal), and once the dispatcher has said `attached`, the end of standard input is a lost connection, not a stop:
 the run goes on, for at most `detach`'s seconds more, and `{"reattach": ...}`, on a later connection, sends the
-journal from its start and follows it. Without a journal, or before `attached`, that end stops the run, whether a
-stop, the dispatcher's death or a dropped connection sent it (vocaro-engineering#321). Given `{"toolchain": DEVELOPER_DIR}`
+journal from its start and follows it; with `"stop"`, it stops that one run instead, for a dispatcher proven dead
+(remote.stop_dead_dispatches). Without a journal, or before `attached`, that end stops the run, whether a stop,
+the dispatcher's death or a dropped connection sent it (vocaro-engineering#321), and so does the plan's `silence`
+seconds with no heartbeat, which is all that a Mac that crashed sends (vocaro-engineering#287). A journaled run the
+dispatcher has heard start is never stopped by silence: a sleeping Mac is silent too. Given `{"toolchain": DEVELOPER_DIR}`
 instead of a plan, it prints the Mac's Xcodes, simulator runtimes and device record for
 `eng doctor`; given `{"images": ...}`, `{"receive": ...}` or `{"deleteRuntime": ...}`, it lists the Mac's
 runtime images, adds one read from standard input or deletes one that no simulator but Xcode's
@@ -48,6 +51,7 @@ from pathlib import Path
 import plistlib
 import pwd
 import re
+import select
 import shlex
 import shutil
 import signal
@@ -203,11 +207,15 @@ JOURNAL_STALL_SECONDS, RECEIVED_SECONDS = 30, 10
 # Seconds a run stopped at its unattended bound has between SIGTERM and SIGKILL: eng's own stop of a foreground
 # run takes up to about 190 s of LINGER and FOREGROUND_KILL_AFTER (processes.py), and nobody is left to close it.
 OVERRUN_KILL_SECONDS = 300
+# The longest watch goes without looking at the clock for the dispatcher's silence.
+WATCH_SECONDS = 5
 
 _output = threading.Lock()
 _stop = threading.Event()
 # The dispatcher's `attached` and `received`, and that the run outlasted its unattended bound.
 _attached, _received, _overran = threading.Event(), threading.Event(), threading.Event()
+# Set once the dispatcher has gone silent past the plan's bound (watch): nobody is left to read this run's output.
+_silent = threading.Event()
 # The run's Journal, when its plan keeps one, and when its connection ended, by time.monotonic.
 _journal, _detached_at = None, None
 
@@ -222,6 +230,13 @@ class Refusal(RuntimeError):
 
 
 def emit(kind, data):
+    """Write one framed line, unless the dispatcher has gone silent. A connection nobody reads can take a write
+    and never finish it, and a result saying the run stopped would read, to a dispatcher that wakes, as the
+    work's own failure; with none, that dispatcher calls the run unmeasured, as it does any lost run."""
+    if not _silent.is_set(): write_frame(kind, data)
+
+
+def write_frame(kind, data):
     """Write one framed line: to the run's journal when it keeps one, which never waits on the network, and otherwise
     to standard output, where a closed connection is a stop, since nobody is left to read the result. A journal
     that cannot be written is one too."""
@@ -332,12 +347,34 @@ def prune_journals(base):
             pass
 
 
+def stop_journal(directory):
+    """Stop the run that journals in directory, what `reattach` says of it, and only that run."""
+    try:
+        stream = (directory / FRAMES).open("rb", buffering=0)
+    except FileNotFoundError:
+        return "gone"
+    with stream:
+        try:
+            fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            (directory / STOP_FILE).touch()
+            return "stopping"
+    shutil.rmtree(directory, ignore_errors=True)
+    return "ended"
+
+
 def reattach(request):
     """Send a dispatch's journal from its start, then what the run adds to it until its process has ended, and close
     with an `E` frame, for a dispatcher whose connection ended. Standard input carries its words as a run's does:
     `stop` leaves the stop file the run's warden looks for, and `received` has the journal removed once it is whole.
-    The end of standard input changes nothing: the run goes on. A journal that is not here gives only the `E`."""
+    The end of standard input changes nothing: the run goes on. A journal that is not here gives only the `E`.
+
+    With `stop` in the request it follows nothing: it stops this one run, and says on one line what it found.
+    `stopping` is a run told to stop, `ended` one that had already ended, and `gone` a journal not here."""
     directory = Path.home() / request["root"] / JOURNALS / request["id"]
+    if request.get("stop"):
+        print(json.dumps({"stop": stop_journal(directory)}))
+        return
     received = threading.Event()
 
     def listen():
@@ -3000,12 +3037,36 @@ def words():
         return
 
 
-def watch():
-    """The dispatcher's words, and the end of its connection (connection_ended)."""
-    for word in words():
-        if word == b"stop": _stop.set()
-        elif word == b"attached": _attached.set()
-        elif word == b"received": _received.set()
+def watch(silence=None):
+    """The dispatcher's words, the end of its connection (connection_ended), and, when silence is given, that many
+    seconds with nothing read: the dispatcher writes a heartbeat (remote.heartbeat), and a Mac that crashed or lost
+    power closes nothing, so sshd here could hold the connection open for hours (vocaro-engineering#287). A journaled
+    run its dispatcher has heard start is exempt, since a Mac that sleeps is silent too (#321).
+
+    The silence is measured on a clock that stops while this Mac sleeps, so this Mac's own sleep is not counted."""
+    heard, pending = time.monotonic(), b""
+    try:
+        while True:
+            if silence is not None and not (_journal is not None and _attached.is_set()):
+                left = heard + silence - time.monotonic()
+                if left <= 0:
+                    # In this order, so that the stop's own words wait on no connection.
+                    _silent.set()
+                    _stop.set()
+                    write_frame(b"O", f"second Mac: nothing from the dispatcher for {silence}s; stopping this run, "
+                                      "which leaves admission, and sending no result".encode())
+                    return
+                if not select.select([0], [], [], min(left, WATCH_SECONDS))[0]: continue
+            data = os.read(0, 65536)
+            if not data: break
+            heard = time.monotonic()
+            *lines, pending = (pending + data).split(b"\n")
+            for word in lines:
+                if word == b"stop": _stop.set()
+                elif word == b"attached": _attached.set()
+                elif word == b"received": _received.set()
+    except OSError:
+        pass
     connection_ended()
 
 
@@ -3015,7 +3076,7 @@ def main(plan):
         signal.signal(number, lambda *_: _stop.set())
     # sshd's hangup when the connection goes, which is no stop of a run that keeps a journal.
     signal.signal(signal.SIGHUP, lambda *_: connection_ended())
-    threading.Thread(target=watch, daemon=True).start()
+    threading.Thread(target=watch, args=(plan.get("silence"),), daemon=True).start()
     detach = plan.get("detach")
     if detach:
         journals = Path.home() / plan["root"] / JOURNALS
@@ -3132,11 +3193,11 @@ def main(plan):
             result["detached"] = {"seconds": round(time.monotonic() - _detached_at, 3), "limit": detach["seconds"],
                                   "overran": _overran.is_set()}
         # However the work ended, a stop or a failure included, what it wrote that the plan asks back.
-        if back is not None and begun:
+        if back is not None and begun and not _silent.is_set():
             try: send_back(*back)
             except OSError as error: say(f"could not send back what the run wrote in {back[0]}: {error}")
         emit(b"R", json.dumps(result).encode())
-        if _journal is not None: _journal.finish()
+        if _journal is not None and not _silent.is_set(): _journal.finish()
     return result
 
 
@@ -3147,4 +3208,7 @@ if __name__ == "__main__":
     if {"toolchain", "images", "deleteRuntime", "receive", "leftovers", "device", "keychain", "foreground",
             "pressure", "capacity", "admissionLog", "screen", "toolkitCheckout"} & request.keys():
         print(json.dumps(answer(request)))
-    else: main(request)
+    else:
+        main(request)
+        # A write stuck on a connection nobody reads would make Python abort at exit (watch).
+        if _silent.is_set(): os._exit(0)

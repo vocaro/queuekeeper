@@ -21,7 +21,7 @@ import uuid
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
-from vocaro_engineering import budgets, cli, config, device_notifications, devices, evidence, offload_host, processes, release, remote, resources
+from vocaro_engineering import budgets, cli, config, device_notifications, devices, evidence, merge_queue, offload_host, processes, release, remote, resources
 from vocaro_engineering import disk as disk_module
 import host_isolation
 from host_isolation import stretched
@@ -188,6 +188,40 @@ OUTLAST = ("import os, pathlib, sys, time; print('before the drop', flush=True);
            "while not dropped.exists(): time.sleep(0.05)\n"
            "pathlib.Path(os.environ['ENG_RESULTS_DIR'], 'note.txt').write_text('after'); "
            "print('after the drop'); print('Ran 2 tests'); raise SystemExit(int(sys.argv[1]))")
+# A connection whose far end went silent without closing, as a Mac's crash or power loss leaves one: once the file
+# FAKE_DROP names exists, nothing more of the dispatcher's standard input passes, and the second Mac's end stays open
+# until the run there ends. It stands in for DROPPER.
+SILENT = """import os, subprocess, sys, threading
+arguments = sys.argv[1:]
+while arguments[0].startswith("-"):
+    arguments = arguments[2:] if arguments[0] in ("-o", "-p", "-i", "-l", "-F", "-J") else arguments[1:]
+environment = {**os.environ, "HOME": os.environ["FAKE_HOME"], "SHELL": os.environ["FAKE_SHELL"],
+               "HEAVY_SLOT_DIR": os.environ["FAKE_SLOTS"], "SW_GATE_LOCK_FILE": os.environ["FAKE_GATE"],
+               "TMPDIR": os.environ["FAKE_TMPDIR"],
+               "VOCARO_DEVICE_RECORD": os.environ.get("FAKE_DEVICE_RECORD") or os.environ["FAKE_HOME"] + "/device-handoff.json"}
+child = subprocess.Popen(["/bin/sh", "-c", " ".join(arguments[1:])], cwd=os.environ["FAKE_HOME"], env=environment,
+                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+silent = lambda: os.path.exists(os.environ["FAKE_DROP"])
+def inward():
+    while True:
+        chunk = os.read(0, 4096)
+        if silent() or not chunk: return
+        child.stdin.write(chunk)
+        child.stdin.flush()
+def outward():
+    for line in iter(child.stdout.readline, b""):
+        try:
+            sys.stdout.buffer.write(line)
+            sys.stdout.buffer.flush()
+        except OSError:
+            return
+threading.Thread(target=inward, daemon=True).start()
+relay = threading.Thread(target=outward, daemon=True)
+relay.start()
+status = child.wait()
+relay.join(5)
+os._exit(status)
+"""
 # Stands in for ssh in front of FAKE_SSH, whose path FAKE_SSH_REAL names: a push's connection to
 # receive-pack goes through RELAY, which FAKE_RELAY names. With FAKE_DROP_PROTOCOL, the second Mac
 # never sees GIT_PROTOCOL, as a stock macOS sshd, which accepts only LANG and LC_*, never passes it.
@@ -355,6 +389,13 @@ class RemoteTests(unittest.TestCase):
             "linger": {"command": [python, "-c", "import os, pathlib, time; "
                                    "pathlib.Path('.build/linger.pid').write_text(str(os.getpid())); time.sleep(3600)"],
                        "resource": "self"},
+            # Waits to be stopped, under admission, past any test that stops it.
+            "resident": {"command": [python, "-c", "import os, pathlib, time; "
+                                     "pathlib.Path('.build/resident.pid').write_text(str(os.getpid())); time.sleep(3600)"],
+                         "resource": "heavy"},
+            # Lasts as long as the test says, in FAKE_OUTLAST.
+            "outlasting": {"command": [python, "-c", "import os, time; time.sleep(float(os.environ['FAKE_OUTLAST'])); "
+                                       "print('Ran 1 tests')"], "resource": "heavy", "minimumTests": 1},
             "outlast": {"command": [python, "-c", OUTLAST, "0"], "resource": "self", "minimumTests": 2},
             "outlast-failing": {"command": [python, "-c", OUTLAST, "5"], "resource": "self", "minimumTests": 2},
             # Hangs past its own timeout once its connection is lost, as a wedged test does.
@@ -1917,6 +1958,184 @@ class RemoteTests(unittest.TestCase):
             status = offload_host.step([sys.executable, "-c", child], directory, dict(os.environ), lock, None)
         thread.join()
         self.assertEqual(status, -signal.SIGKILL)
+
+    def assert_stopped_and_slot_free(self, lane, slot=0):
+        """The lane has ended, and the second Mac holds neither its checkout's slot nor its admission for it."""
+        # The run ending is the stop's last step, so each is waited for.
+        lock = os.open(self.home / remote.ROOT / f"checkouts/example/{slot}.lock", os.O_RDWR)
+        guard, free = Path(os.environ["FAKE_GATE"] + ".warm-push-guard"), False
+        deadline = time.monotonic() + stretched(60)
+        try:
+            while time.monotonic() < deadline and not free:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    free = True
+                except BlockingIOError:
+                    time.sleep(0.1)
+        finally:
+            os.close(lock)
+        self.assertTrue(free, "the second Mac still holds the checkout's slot")
+        self.all_ended(lane)
+        deadline = time.monotonic() + stretched(60)
+        while guard.exists() and time.monotonic() < deadline: time.sleep(0.1)
+        self.assertFalse(guard.exists(), "the run left its admission entry")
+
+    def read_pid(self, marker, dispatcher):
+        deadline = time.monotonic() + stretched(60)
+        while not (marker.exists() and marker.read_text()) and time.monotonic() < deadline and dispatcher.poll() is None:
+            time.sleep(0.05)
+        self.assertTrue(marker.exists(), dispatcher.stdout.read().decode() if dispatcher.poll() is not None else "no lane")
+        return int(marker.read_text())
+
+    def records(self):
+        directory = remote.dispatch_records()
+        return sorted(directory.glob("*.json")) if directory.exists() else []
+
+    @contextlib.contextmanager
+    def resident(self, kill=True):
+        """A resident lane running on the second Mac under a dispatcher in a process of its own, killed as a crash
+        kills it unless kill is false, and the lane's PID."""
+        marker = self.checkout(0) / ".build/resident.pid"
+        dispatcher = subprocess.Popen([sys.executable, str(self.toolkit / "bin/eng"), "--project", str(self.project),
+                                       "remote", "run", "resident"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        lane = None
+        try:
+            lane = self.read_pid(marker, dispatcher)
+            self.assertEqual(len(self.records()), 1)
+            self.assertTrue(Path(os.environ["FAKE_GATE"] + ".warm-push-guard").exists(), "the run took no admission")
+            if kill:
+                dispatcher.kill()
+                dispatcher.communicate(timeout=stretched(60))
+            yield lane, dispatcher
+        finally:
+            self.reap(lane)
+            if dispatcher.poll() is None: dispatcher.kill()
+            dispatcher.communicate()
+            if lane is not None: self.all_ended(self.runner())
+
+    def test_the_next_dispatch_stops_a_dead_dispatchers_run_and_frees_its_slot_and_admission(self):
+        with self.resident() as (lane, _):
+            self.assertEqual(len(self.records()), 1)
+            os.kill(lane, 0)
+            status, output, error = self.eng("remote", "run", "check")
+            self.assertEqual(status, 0, output + error)
+            self.assertIn("has died; told fake to stop its run", error)
+            self.assert_stopped_and_slot_free(lane)
+            self.assertEqual(self.records(), [])
+
+    def test_a_worker_start_stops_a_dead_dispatchers_run_and_frees_its_slot_and_admission(self):
+        with self.resident() as (lane, _):
+            with patch.object(merge_queue, "Worker"), contextlib.redirect_stderr(StringIO()) as error, \
+                    contextlib.redirect_stdout(StringIO()):
+                merge_queue.run(self.project)
+            self.assertIn("has died; told fake to stop its run", error.getvalue())
+            self.assert_stopped_and_slot_free(lane)
+            self.assertEqual(self.records(), [])
+
+    def test_a_live_dispatchers_run_is_left_alone_by_the_next_dispatch(self):
+        # The negative control: a Mac that sleeps leaves its dispatcher alive, as this one is.
+        with self.resident(kill=False) as (lane, dispatcher):
+            error = StringIO()
+            with contextlib.redirect_stderr(error): remote.stop_dead_dispatches()
+            self.assertEqual(error.getvalue(), "")
+            self.assertEqual(len(self.records()), 1)
+            time.sleep(stretched(1.5))
+            os.kill(lane, 0)
+            self.assertIsNone(dispatcher.poll())
+
+    def test_a_record_whose_pid_another_process_now_has_is_told_from_its_dispatcher_by_start_time(self):
+        # A kill -0 would read the dispatcher as alive for as long as the other process lasts, as after a reboot.
+        other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"])
+        self.addCleanup(other.wait)
+        self.addCleanup(other.kill)
+        with self.resident() as (lane, _):
+            path = self.records()[0]
+            record = json.loads(path.read_text())
+            # Its dispatcher started years before the process that has this PID now did.
+            path.write_text(json.dumps({**record, "pid": other.pid, "start": "Mon Jan  1 00:00:00 2001"}))
+            error = StringIO()
+            with contextlib.redirect_stderr(error): remote.stop_dead_dispatches()
+            self.assertIn("has died; told fake to stop its run", error.getvalue())
+            self.assert_stopped_and_slot_free(lane)
+            self.assertEqual(self.records(), [])
+            # The process that has the PID now is nobody's dispatcher, and nothing was sent to it.
+            self.assertIsNone(other.poll())
+
+    def test_a_second_mac_out_of_reach_leaves_the_record_and_reports_nothing_stopped(self):
+        with self.resident() as (lane, _):
+            error = StringIO()
+            with patch.dict(os.environ, {"FAKE_UNREACHABLE": "1"}), contextlib.redirect_stderr(error):
+                remote.stop_dead_dispatches()
+            self.assertIn("could not be told to stop its run", error.getvalue())
+            self.assertNotIn("told fake to stop", error.getvalue())
+            self.assertEqual(len(self.records()), 1)
+            os.kill(lane, 0)
+            # Once it can be reached, the record that stayed does its work.
+            with contextlib.redirect_stderr(StringIO()): remote.stop_dead_dispatches()
+            self.assert_stopped_and_slot_free(lane)
+            self.assertEqual(self.records(), [])
+
+    def silent_connection(self, marker, **more):
+        """Have a dispatch's connection go silent once marker exists (SILENT)."""
+        (self.tools / "silent.py").write_text(SILENT)
+        return self.dropping(marker, FAKE_DROPPER=str(self.tools / "silent.py"), **more)
+
+    def test_a_leased_run_stops_on_silence_and_reports_unmeasured(self):
+        self.hold()
+        marker, silence = self.checkout(0) / ".build/leased.pid", stretched(6)
+        command = ("import os, pathlib, time; pathlib.Path('.build').mkdir(exist_ok=True); "
+                   "part = pathlib.Path('.build/leased.part'); part.write_text(str(os.getpid())); "
+                   "part.rename('.build/leased.pid'); time.sleep(" + str(stretched(30)) + ")")
+        lane = None
+        try:
+            with self.silent_connection(marker), patch.object(remote, "HEARTBEAT_SECONDS", 0.2), \
+                    patch.object(remote, "HEARTBEAT_SILENCE", silence):
+                status, output, error = self.eng("remote", "admit", "--device", "iPhone", "--device-owner", "session-a",
+                                                 "--", sys.executable, "-c", command)
+            lane = int(marker.read_text())
+            self.assertEqual(status, evidence.UNMEASURED, output + error)
+            self.assertIn(f"nothing from the dispatcher for {silence}s", output)
+            self.assertIn("No result from fake", error)
+            self.assertFalse((self.project / ".build/engineering/remote/admit/source.json").exists())
+            self.all_ended(lane, self.runner())
+        finally:
+            self.reap(lane)
+
+    def test_a_run_before_attached_stops_on_silence(self):
+        # The marker is there from the start: the dispatcher's `attached` never arrives.
+        marker, silence = Path(self.temp.name) / "silent-from-the-start", stretched(6)
+        marker.touch()
+        pid = self.checkout(0) / ".build/slow.pid"
+        with self.silent_connection(marker), patch.object(remote, "HEARTBEAT_SECONDS", 0.2), \
+                patch.object(remote, "HEARTBEAT_SILENCE", silence):
+            status, output, error = self.eng("remote", "run", "slow")
+        self.assertEqual(status, evidence.UNMEASURED, output + error)
+        self.assertIn(f"nothing from the dispatcher for {silence}s", output)
+        self.assertFalse((self.project / ".build/engineering/remote/slow/source.json").exists())
+        if pid.exists(): self.all_ended(int(pid.read_text()))
+
+    def test_a_journaled_run_after_attached_survives_silence(self):
+        # One heartbeat an hour: nothing but `attached` crosses the silence, which the lane outlasts twice over.
+        silence = stretched(4)
+        with patch.dict(os.environ, {"FAKE_OUTLAST": str(silence * 2)}), patch.object(remote, "HEARTBEAT_SECONDS", 3600), \
+                patch.object(remote, "HEARTBEAT_SILENCE", silence):
+            status, output, error = self.eng("remote", "run", "outlasting")
+        self.assertEqual(status, 0, output + error)
+        self.assertNotIn("nothing from the dispatcher", output + error)
+        receipt = json.loads((self.project / ".build/engineering/remote/outlasting/source.json").read_text())
+        self.assertFalse(receipt["result"]["stopped"])
+
+    def test_a_leased_run_with_heartbeats_outlasts_the_silence(self):
+        # The negative control for the silence: heartbeats keep a leased run, for the bound and more.
+        self.hold()
+        silence = stretched(4)
+        command = f"import time; time.sleep({silence * 2}); print('finished')"
+        with patch.object(remote, "HEARTBEAT_SECONDS", 0.2), patch.object(remote, "HEARTBEAT_SILENCE", silence):
+            status, output, error = self.eng("remote", "admit", "--device", "iPhone", "--device-owner", "session-a",
+                                             "--", sys.executable, "-c", command)
+        self.assertEqual(status, 0, output + error)
+        self.assertIn("finished", output)
+        self.assertNotIn("nothing from the dispatcher", output + error)
 
     def test_a_lost_run_names_sleep_only_when_this_mac_slept_and_ssh_only_for_its_own_failure(self):
         output = Path("/build/output.log")
