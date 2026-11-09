@@ -572,8 +572,10 @@ ends unmeasured with a log saying the screen is locked is read again the same wa
 this Mac after it was offered to the second Mac says so in one line, with why, before it starts:
 `eng: gate runs on this Mac (NAME), not the second Mac: REASON; the second Mac's lines above are from
 the offer it did not take`. The merge queue's hold for runs that gave no verdict names the Mac the
-last ran on, and quotes the last screen line of its log
-([maintenance](maintenance.md#the-merge-queue)).
+last ran on, and quotes the last screen line of its log. A run whose last reading shows a locked screen
+does not count toward that hold, and the queue runs the lane next with `eng run --unlocked-screen`,
+which places it as `"unlockedScreen": true` does, on an undeclared lane too
+([maintenance](maintenance.md#the-merge-queue), vocaro-engineering#293).
 
 `eng run` sends the lane to the Mac that has spare capacity for it, whole or filtered
 (`eng run LANE -- FILTER`), over the working tree as it is: a tree with uncommitted changes or new

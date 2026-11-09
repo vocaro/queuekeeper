@@ -2001,6 +2001,36 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual(json.loads((self.project / ".build/engineering/remote/gate/source.json").read_text())["ranOn"],
                          "second Mac")
 
+    def test_unlocked_screen_places_an_undeclared_lane_as_the_declaration_does(self):
+        """vocaro-engineering#293: the merge queue runs a lane a locked screen left without a verdict as
+        `eng run --unlocked-screen LANE`, which places it as "unlockedScreen": true does, though the lane does not
+        say so: away from a locked second Mac, and nowhere while both Macs are locked. Without it the lane goes to
+        the locked second Mac, as the declaration's own test's negative control shows."""
+        with patch.dict(os.environ, {"FAKE_SCREEN_IOREG": str(SCREENS / "second-mac-locked-idle.plist")}):
+            status, output, error = self.run_here("--unlocked-screen", "gate")
+        self.assertEqual(status, 0, output + error)
+        self.assertIn("eng: trying gate on this Mac: the lane needs an unlocked screen, and the second Mac's is locked",
+                      error)
+        self.assertNotIn("remote: sending", error)
+        receipt = self.ran_here()
+        self.assertEqual((receipt["ranOn"], receipt["screen"]["state"]), ("this Mac", "unlocked"))
+        shutil.rmtree(self.project / ".build/engineering/gate")
+        with patch.dict(os.environ, {"FAKE_SCREEN_IOREG": str(SCREENS / "second-mac-locked-by-hand.plist"),
+                                     offload_host.SCREEN_RECORDING: str(SCREENS / "this-mac-locked-idle.plist")}), \
+                patch.object(cli, "SCREEN_POLL", 0.01):
+            status, output, error = self.run_here("--if-free", "--unlocked-screen", "gate")
+        self.assertEqual(status, resources.BUSY, output + error)
+        self.assertIn("its screen is locked, and the lane needs it unlocked", error)
+        self.assertFalse((self.project / ".build/engineering/gate").exists())
+        self.assertFalse((self.project / ".build/engineering/remote/gate").exists())
+        # The control: the same Macs, without the option, and the lane goes to the locked second Mac.
+        with patch.dict(os.environ, {"FAKE_SCREEN_IOREG": str(SCREENS / "second-mac-locked-by-hand.plist")}):
+            status, output, error = self.run_here("gate")
+        self.assertEqual(status, 0, output + error)
+        self.assertNotIn("screen", error)
+        self.assertEqual(json.loads((self.project / ".build/engineering/remote/gate/source.json").read_text())["ranOn"],
+                         "second Mac")
+
     def test_a_whole_host_lane_goes_to_the_mac_whose_guaranteed_slots_are_all_free(self):
         """A gate marked wholeHost is a Mac's work: two never run on one Mac at once, while a lighter heavy lane
         still shares the Mac (vocaro-engineering#168)."""
