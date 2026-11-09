@@ -5978,10 +5978,10 @@ class FlakyReruns(Fixture):
         self.assertEqual(self.main_messages().count(f"{mq.FLAKY}:"), 1)
         self.assertIn("flaky: test_flaky.Flaky.test_sometimes failed the gate at", mq.describe(entries[0]))
 
+    @contextlib.contextmanager
     def second_mac(self):
-        """remote.dispatch as for a gate the second Mac ran: once the lane's own log holds eng unittest's summary, it
-        moves to a dispatch's run.log, as a second Mac's run leaves it, and the dispatch names fake-mac. Before
-        that, as while the lane runs, no dispatch."""
+        """On collection, move the lane's unittest log into a fake second-Mac dispatch. The live observers
+        see no dispatch, so they cannot move the log before the worker collects it (#331)."""
         dispatches = self.base / "dispatches"
         def dispatch(root, name, since):
             own = Path(root) / ".build/engineering" / name / "run.log"
@@ -5990,7 +5990,9 @@ class FlakyReruns(Fixture):
             ran.mkdir(parents=True)
             own.rename(ran / "run.log")
             return ran, "fake-mac"
-        return patch.object(mq.remote, "dispatch", side_effect=dispatch)
+        with patch.object(mq.remote, "dispatch", side_effect=dispatch), \
+                patch.object(mq.remote, "dispatched", return_value=None):
+            yield
 
     def test_a_failed_test_of_a_gate_the_second_mac_ran_is_rerun_alone_from_its_dispatchs_log(self):
         # The queue's log held only what eng run printed here, with no eng unittest summary, so a second Mac's
@@ -5998,7 +6000,16 @@ class FlakyReruns(Fixture):
         self.plan.write_text("F")
         self.commit("a", "a"); self.commit("b", "b")
         ids = self.add("a", "b")
-        with self.second_mac(), contextlib.redirect_stdout(io.StringIO()) as said: self.assertEqual(self.work(), 0)
+        finish = mq.GateWatch.finish
+
+        def final_poll(watch):
+            # Exercise an observation after the lane wrote its log and before the worker collects the dispatch.
+            watch.look()
+            finish(watch)
+
+        with self.second_mac(), patch.object(mq.GateWatch, "finish", final_poll), \
+                contextlib.redirect_stdout(io.StringIO()) as said:
+            self.assertEqual(self.work(), 0)
         log = said.getvalue()
         self.assertIn("gate exited 1 on fake-mac", log)
         self.assertIn(f": {self.TEST}; rerunning each alone up to {mq.RERUNS} times on that commit before a bisect", log)
