@@ -888,6 +888,161 @@ class Doctor(UnittestGate):
         self.assertEqual(vars(parser.parse_args(["doctor", "--json"])), {"operation": "doctor", "json": True})
 
 
+class RefusedGates(UnittestGate):
+    """The worker blames a gate eng unittest refused before running anything on the one entry that brings the refusal,
+    with no rerun and no bisect; with none or several it bisects, and when the same refusal comes again with no entry
+    to blame it holds for a session with `eng queue doctor`'s diagnosis (owner's decision, 2026-11-08,
+    vocaro-engineering#290). These tests run real gates of eng unittest."""
+    def queued(self, *branches):
+        """Queue branches as an older toolkit did, or the entry of 2026-11-07, before eng land checked them."""
+        with patch.object(mq, "checked_before_running"): return self.add(*branches)
+
+    def work_said(self):
+        with contextlib.redirect_stdout(io.StringIO()) as said: self.assertEqual(self.work(), 0)
+        return said.getvalue()
+
+    def past_the_queue(self, name, content=UNISOLATED):
+        """Put a test module on main past the queue, as a hand push might."""
+        run(self.repo, "git", "checkout", "-q", "main")
+        run(self.repo, "git", "pull", "-q", "origin", "main")
+        (self.repo / "tests" / name).write_text(content)
+        run(self.repo, "git", "add", f"tests/{name}")
+        run(self.repo, "git", "commit", "-qm", "Past the queue")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+
+    def test_the_one_entry_a_refusal_names_goes_back_in_one_round_without_a_rerun_or_a_bisect(self):
+        self.commit("c", "c")
+        self.commit("tests/test_forgot.py", "forgot", UNISOLATED)
+        self.commit("tests/test_new.py", "new", ISOLATED)
+        ids = self.queued("c", "forgot", "new")
+        log = self.work_said()
+        self.assertEqual([self.state(i)["state"] for i in ids], ["landed", "failed", "landed"], log)
+        self.assertIn("gate ran nothing, as eng unittest refused it before running anything, which no rerun would "
+                      "change: eng unittest: test_forgot.py must import host_isolation", log)
+        self.assertIn(f"blaming {ids[1]} (Add tests/test_forgot.py): eng unittest refused gate before running "
+                      f"anything, which no rerun would change, and only {ids[1]} brings the refusal, as its tree alone "
+                      "is refused so and it changes tests/test_forgot.py: eng unittest: test_forgot.py must import "
+                      "host_isolation", log)
+        self.assertIn("sending it back and gating the other 2 at once instead of bisecting", log)
+        self.assertNotIn("fail together", log)
+        self.assertNotIn("rerunning", log)
+        self.assertNotIn("no failed test to rerun alone", log)
+        self.assertIn("test_forgot.py must import host_isolation", self.state(ids[1])["why"])
+        # Two gates in all: the batch, then the other two at once.
+        self.assertEqual(log.count("testing "), 2, log)
+        self.assertIsNone(mq.Queue(self.repo).held())
+
+    def test_a_refusal_two_entries_bring_bisects(self):
+        # Each brings a module the one refusal names: no single cause, so the batch bisects, and each half then
+        # blames its own.
+        self.commit("tests/test_one.py", "one", UNISOLATED)
+        self.commit("tests/test_two.py", "two", UNISOLATED)
+        self.commit("c", "c")
+        ids = self.queued("one", "two", "c")
+        log = self.work_said()
+        self.assertIn("eng unittest refused gate before running anything, and 2 entries of the batch's 3 bring it "
+                      f"({ids[0]}: its tree alone is refused so and it changes tests/test_one.py; {ids[1]}: its tree "
+                      "alone is refused so and it changes tests/test_two.py), so no commit is blamed", log)
+        self.assertIn("3 commits fail together", log)
+        self.assertEqual([self.state(i)["state"] for i in ids], ["failed", "failed", "landed"], log)
+        self.assertIsNone(mq.Queue(self.repo).held(), log)
+
+    def test_a_refusal_naming_a_module_two_entries_change_bisects(self):
+        self.past_the_queue("test_old.py")
+        # At either end of the module, so that neither conflicts with the other.
+        self.commit("tests/test_old.py", "one", "# one\n" + UNISOLATED)
+        self.commit("tests/test_old.py", "two", UNISOLATED + "# two\n")
+        ids = self.queued("one", "two")
+        log = self.work_said()
+        self.assertIn(f"and 2 entries of the batch's 2 bring it ({ids[0]}: it changes tests/test_old.py; {ids[1]}: "
+                      "it changes tests/test_old.py), so no commit is blamed", log)
+        self.assertIn("2 commits fail together", log)
+        self.assertNotIn("blaming", log.split("fail together")[0])
+        # Each half alone then has one entry that changes the module: it goes back, as the rule says.
+        self.assertEqual([self.state(i)["state"] for i in ids], ["failed", "failed"], log)
+
+    def refused_by_main(self, beside=True, bisecting=False):
+        """Two entries whose every gate main's own module refuses, run until the worker stops: (ids, log, hold).
+        bisecting starts the worker mid-bisect, as one that took over from another does (Worker.progress), so that
+        the first gate is the bisect's two halves, with no gate before them."""
+        # main took a module without the import past the queue: every gate is refused, and no entry is the cause.
+        self.past_the_queue("test_old.py")
+        self.commit("c", "c")
+        self.commit("d", "d")
+        ids = self.queued("c", "d")
+        with contextlib.ExitStack() as halves:
+            # Both halves on this Mac, as BothHalves gates them, since the fixture has no second Mac; or one at a time.
+            for name, value in ((("HERE", ()), ("BESIDE", ()), ("offerable", lambda config, lanes: None)) if beside
+                                else (("offerable", lambda config, lanes: "a test says so"),)):
+                halves.enter_context(patch.object(mq, name, value))
+            if bisecting:
+                real = mq.Worker.__init__
+                def taken_over(worker, queue, progress=None):
+                    real(worker, queue, {"limit": 1, "suspects": 2} if type(worker) is mq.Worker else progress)
+                halves.enter_context(patch.object(mq.Worker, "__init__", taken_over))
+            log = self.work_said()
+        if not bisecting:
+            self.assertIn("eng unittest refused gate before running anything, and no entry of the batch's 2 brings it, "
+                          "so no commit is blamed", log)
+            self.assertIn("2 commits fail together", log)
+        # Nobody was sent back on a refusal no entry brings.
+        self.assertEqual([self.state(i)["state"] for i in ids], ["queued", "queued"], log)
+        held = mq.Queue(self.repo).held()
+        self.assertIsNotNone(held, log)
+        return ids, log, held
+
+    def test_a_refusal_no_entry_brings_in_both_halves_of_a_bisect_holds_for_a_session_with_the_diagnosis(self):
+        ids, log, held = self.refused_by_main()
+        self.assertIn("eng unittest refused this gate and the bisect's newer half beside it before running anything", held)
+        self.assertEqual(log.count("testing "), 3, log)  # the batch, then its two halves at once
+        self.check_hold(ids, log, held)
+
+    def test_the_same_refusal_in_both_halves_with_no_gate_before_holds_and_sends_back_no_lone_half(self):
+        # Each half is one entry, which a refusal no entry brings would otherwise send back as a lone failure.
+        ids, log, held = self.refused_by_main(bisecting=True)
+        self.assertIn("eng unittest refused this gate and the bisect's newer half beside it before running anything", held)
+        self.assertIn("newer half: eng unittest refused gate before running anything, and no entry of the batch's 1 "
+                      "brings it", log)
+        self.assertIn("queue: held: for a session, not the owner: eng unittest refused this gate and the bisect's older "
+                      "half beside it", log)
+        self.assertEqual(log.count("testing "), 2, log)  # the two halves at once, and nothing after
+        self.check_hold(ids, log, held)
+
+    def test_a_refusal_no_entry_brings_in_two_gates_in_a_row_holds_for_a_session(self):
+        ids, log, held = self.refused_by_main(beside=False)
+        self.assertIn("eng unittest refused this gate and the gate before it before running anything", held)
+        self.assertEqual(log.count("testing "), 2, log)
+        self.check_hold(ids, log, held)
+
+    def check_hold(self, ids, log, held):
+        self.assertTrue(held.startswith("for a session, not the owner: eng unittest refused this gate and "), held)
+        self.assertIn("the same way, and no one entry of the batch brings the refusal", held)
+        self.assertIn("test_old.py must import host_isolation", held)
+        self.assertIn("eng queue doctor: refused gates: ", held)
+        self.assertIn("no waiting entry's tree alone is refused so", held)
+        self.assertIn(f"queue: held: {held}", log)
+        self.assertEqual([self.state(i)["state"] for i in ids], ["queued", "queued"], log)
+        with contextlib.redirect_stdout(io.StringIO()) as status_:
+            mq.status(self.repo)
+        self.assertIn("eng queue doctor: refused gates: ", status_.getvalue())
+
+    def test_a_refusal_that_names_no_module_blames_nobody(self):
+        worker = mq.Worker(mq.Queue(self.repo))
+        self.commit("c", "c")
+        ids = self.queued("c")
+        with contextlib.redirect_stdout(io.StringIO()) as said:
+            self.assertIsNone(worker.blame_refusal([self.state(ids[0])], "gate",
+                                                   "eng unittest: something else; nothing ran", self.config()))
+        self.assertIn("the refusal names no test module, so no commit is blamed", said.getvalue())
+        self.assertEqual(worker.unblamed["line"], "eng unittest: something else; nothing ran")
+
+    def test_the_same_refusal_from_two_checkouts_is_one(self):
+        self.assertEqual(mq.refusal_key(REFUSED_LINE), mq.refusal_key(REFUSED_LINE.replace("/queue/checkout",
+                                                                                            "/elsewhere/beside")))
+        self.assertNotEqual(mq.refusal_key(REFUSED_LINE), mq.refusal_key(REFUSED_LINE.replace("test_forgot",
+                                                                                               "test_other")))
+
+
 class NoVerdict(Fixture):
     @contextlib.contextmanager
     def no_verdict_for(self, runs, status="3"):
