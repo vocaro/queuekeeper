@@ -19,6 +19,8 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src/python"))
 from vocaro_engineering import cli, config as configuration, merge_queue as mq, offload_host
+# What eng land runs before it queues, which Fixture leaves out but SpelledBeforeQueued puts back.
+SPELLED_BEFORE_QUEUED = mq.spelled_before_queued
 import host_isolation
 from host_isolation import stretched
 
@@ -95,6 +97,10 @@ class Fixture(unittest.TestCase):
         reading = patch.object(mq, "busy_of", return_value=(25.0, 75.0, "this Mac"))
         self.busy_of = reading.start()
         self.addCleanup(reading.stop)
+        # eng land runs no spelling lane before it queues unless a test says so (SpelledBeforeQueued, #283).
+        unspelled = patch.object(mq, "spelled_before_queued")
+        unspelled.start()
+        self.addCleanup(unspelled.stop)
         self.counter, self.status = self.base / "gates", self.base / "status"
         self.origin = self.base / "origin.git"
         run(self.base, "git", "init", "-q", "--bare", "-b", "main", str(self.origin))
@@ -2288,6 +2294,135 @@ class ImplicitSpelling(Fixture):
                 with self.assertRaisesRegex(ValueError, "queue.spelling can only be false"): self.config()
         schema = json.loads((ROOT / "schemas/engineering.schema.json").read_text())
         self.assertEqual(schema["properties"]["queue"]["properties"]["spelling"]["const"], False)
+
+
+class SpelledBeforeQueued(Fixture):
+    """eng land and `eng queue add` run the spelling lane the worker would run before the gate, the project's own or
+    the toolkit's, on the entry's commits replayed onto origin/main, and refuse an entry it finds a British spelling in
+    (vocaro-engineering#283)."""
+    def setUp(self):
+        super().setUp()
+        real = patch.object(mq, "spelled_before_queued", SPELLED_BEFORE_QUEUED)
+        real.start()
+        self.addCleanup(real.stop)
+
+    def land(self, branch):
+        """(the new entry's ID or None, what eng land said, the error it refused with or None), no worker started."""
+        said, error = io.StringIO(), None
+        with patch.object(mq.Queue, "start"), contextlib.redirect_stdout(said), contextlib.redirect_stderr(said):
+            try: mq.add(self.repo, branch)
+            except mq.Refused as refused: error = str(refused)
+        identifier = next((e["id"] for e in reversed(mq.Queue(self.repo).all())
+                           if e["branch"] == branch and e["state"] in mq.WAITING), None)
+        return identifier, said.getvalue(), error
+
+    def own_lane(self, code):
+        """Give main a spelling lane of its own that prints a line and exits code on a tree holding a file named fix,
+        and 0 on any other."""
+        config = self.config()
+        config["lanes"]["spelling"] = {"command": [
+            "python3", "-c", f"import os, sys; print('own lane said it'); sys.exit({code} if os.path.exists('fix') else 0)"]}
+        self.publish(config, "Add a spelling lane")
+        return config
+
+    def test_a_british_spelling_is_refused_with_its_findings_and_nothing_is_queued(self):
+        self.commit("fix", "fix", content=BRITISH)
+        identifier, _, error = self.land("fix")
+        self.assertIsNone(identifier)
+        self.assertEqual(mq.Queue(self.repo).all(), [])
+        self.assertEqual(run(self.repo, "git", "for-each-ref", "refs/eng-queue"), "")
+        self.assertIn("is not queued: python3 scripts/eng spelling fails on it replayed onto origin/main", error)
+        self.assertIn("fix:1: British spelling", error)
+        self.assertIn("Checked before it is queued", error)
+
+    def test_a_clean_entry_is_queued_and_says_it_was_checked(self):
+        # The positive control.
+        self.commit("fix", "fix", content="a labeled point\n")
+        identifier, said, error = self.land("fix")
+        self.assertIsNone(error)
+        self.assertEqual(self.state(identifier)["state"], "queued")
+        self.assertIn("spelling checked in", said)
+        self.assertIn("python3 scripts/eng spelling passes on it", said)
+
+    def test_an_entry_behind_main_is_checked_replayed_onto_it(self):
+        old = run(self.repo, "git", "rev-parse", "origin/main")
+        self.commit("other", "other")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        self.commit("fix", "fix", content=BRITISH, start=old)
+        main = run(self.repo, "git", "rev-parse", "origin/main")
+        identifier, _, error = self.land("fix")
+        self.assertIsNone(identifier)
+        self.assertIn(f"replayed onto origin/main at {main[:12]}", error)
+
+    def test_turned_off_nothing_is_checked(self):
+        config = self.config()
+        config["queue"]["spelling"] = False
+        self.publish(config, "Turn the toolkit's spelling off")
+        self.commit("fix", "fix", content=BRITISH)
+        identifier, said, error = self.land("fix")
+        self.assertIsNone(error)
+        self.assertEqual(self.state(identifier)["state"], "queued")
+        self.assertNotIn("spelling", said)
+
+    def test_a_projects_own_lane_runs_in_place_of_the_toolkits(self):
+        # Its lane passes, so the toolkit's never read the British spelling.
+        self.own_lane(0)
+        self.commit("fix", "fix", content=BRITISH)
+        identifier, said, error = self.land("fix")
+        self.assertIsNone(error)
+        self.assertEqual(self.state(identifier)["state"], "queued")
+        self.assertIn("passes on it", said)
+        self.assertNotIn("scripts/eng spelling", said)
+
+    def test_a_finding_of_a_projects_own_lane_refuses_the_entry(self):
+        self.own_lane(1)
+        self.commit("fix", "fix")
+        identifier, _, error = self.land("fix")
+        self.assertIsNone(identifier)
+        self.assertIn("fails on it", error)
+        self.assertIn("own lane said it", error)
+
+    def test_a_branch_that_drops_the_spelling_lane_gets_the_toolkits(self):
+        # Main's lane passes everything; the entry's commit, which the worker's eng run reads, has no lane.
+        config = self.own_lane(0)
+        run(self.repo, "git", "checkout", "-q", "-B", "drop", "origin/main")
+        del config["lanes"]["spelling"]
+        (self.repo / "engineering.json").write_text(json.dumps(config))
+        (self.repo / "fix").write_text(BRITISH)
+        run(self.repo, "git", "add", "engineering.json", "fix")
+        run(self.repo, "git", "commit", "-qm", "Drop the spelling lane")
+        identifier, _, error = self.land("drop")
+        self.assertIsNone(identifier)
+        self.assertIn("python3 scripts/eng spelling fails on it", error)
+
+    def test_a_lane_that_fails_with_no_finding_queues_the_entry(self):
+        self.own_lane(2)
+        self.commit("fix", "fix")
+        identifier, said, error = self.land("fix")
+        self.assertIsNone(error)
+        self.assertEqual(self.state(identifier)["state"], "queued")
+        self.assertIn("exited 2 on it, which is no finding, so the round runs the spelling lane", said)
+
+    def test_a_failure_main_already_has_is_not_the_entrys(self):
+        # main took a British spelling past the queue: an entry that adds a clean file is queued, and says why.
+        run(self.repo, "git", "checkout", "-q", "main")
+        (self.repo / "old").write_text(BRITISH)
+        run(self.repo, "git", "add", "old")
+        run(self.repo, "git", "commit", "-qm", "Past the queue")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        self.commit("other", "other")
+        identifier, said, error = self.land("other")
+        self.assertIsNone(error)
+        self.assertEqual(self.state(identifier)["state"], "queued")
+        self.assertIn("fails on origin/main at", said)
+
+    def test_a_run_past_its_limit_queues_the_entry(self):
+        self.commit("fix", "fix", content=BRITISH)
+        with patch.object(mq.processes, "run", side_effect=mq.processes.TimedOut("300 s")):
+            identifier, said, error = self.land("fix")
+        self.assertIsNone(error)
+        self.assertEqual(self.state(identifier)["state"], "queued")
+        self.assertIn("could not check its spelling, so the round runs the spelling lane", said)
 
 
 class AheadOfTheQueue(Fixture):

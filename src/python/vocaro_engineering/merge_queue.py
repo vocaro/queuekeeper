@@ -141,6 +141,10 @@ SPELLING = "spelling"
 # then fails in a minute, not after a full gate and a bisect (vocaro-engineering, 2026-11-07). It runs in the queue's
 # checkout, on this Mac, as a carry-over check does: a project's own spelling lane, which eng run places, comes first.
 IMPLICIT_SPELLING = ["python3", "scripts/eng", SPELLING]
+# Seconds eng land gives the spelling lane on a new entry's commit before it queues the entry unchecked, and how many
+# of a failed run's last lines its refusal quotes (spelled_before_queued, vocaro-engineering#283).
+SPELLING_LIMIT = 300
+SPELLING_SHOWN = 40
 # eng land's emergency options, in every repository, by the entry field each sets: an entry tested next as a batch
 # of its own, and one landed alone on the spelling lane without the gate, whose written reason --why gives (owner's
 # decision, 2026-11-04, vocaro-engineering#163). Neither is routine.
@@ -656,6 +660,74 @@ def checked_before_running(root, tip, config):
         raise Refused(f"{tip[:12]} is not queued: eng unittest would refuse every gate holding it before running "
                       "anything:\n  " + "\n  ".join(own) + "\nFix that and land it again (guides/maintenance.md, The "
                       "merge queue, Checked before it is queued)")
+
+
+def spelling_run(queue, root, commit):
+    """(exit status, the lines it printed, the command) of the spelling lane on commit, in a scratch worktree outside
+    every checkout, as the worker picks it (Worker.gate): the project's own spelling lane when commit's engineering.json
+    configures one (Worker.has_lane), run as its command, here and with no admission, or the toolkit's check,
+    IMPLICIT_SPELLING, when it does not. A status of None says why it was not run: a lane that is no one command, or
+    a run that reached SPELLING_LIMIT."""
+    with scratch(queue, commit, "spelling") as path:
+        try: lanes = load(path).get("lanes", {})
+        except (OSError, ValueError): lanes = {}
+        lane = lanes.get(SPELLING)
+        command = IMPLICIT_SPELLING if SPELLING not in lanes else lane.get("command") if isinstance(lane, dict) else None
+        if not (isinstance(command, list) and command) or (SPELLING in lanes and any(
+                lane.get(key) for key in ("foreground", "display", "unlockedScreen", "parallel", "wholeHost", "model"))):
+            return None, ["the project's spelling lane is not one command that eng land can run here"], None
+        env = environment()
+        if not os.environ.get(TOOLKIT_VARIABLE):
+            # A project's launcher finds the toolkit beside its own checkout, which a scratch worktree has not: this
+            # one runs it. The toolkit's own entry runs the toolkit it brings, as its queue's gate does.
+            ours = git(TOOLKIT_ROOT, "rev-parse", "--path-format=absolute", "--git-common-dir").stdout.strip()
+            if ours != text(root, "rev-parse", "--path-format=absolute", "--git-common-dir"):
+                env[TOOLKIT_VARIABLE] = str(TOOLKIT_ROOT)
+        log = path.parent / "spelling.log"
+        try: status_ = processes.run(command, cwd=path, log_path=log, timeout=SPELLING_LIMIT, env=env)
+        except processes.TimedOut as error: return None, [f"{shlex.join(command)} reached its limit: {error}"], command
+        printed = [line for line in log.read_text(errors="replace").splitlines() if line.strip()]
+        return status_, printed, command
+
+
+def spelled_before_queued(root, queue, tip, config):
+    """Refuse tip, queuing nothing, when the spelling lane that config, origin/main's, has the queue run before the
+    gate (spelled) finds a British spelling, exit 1, in tip's commits replayed onto origin/main, quoting its findings.
+    The lane takes seconds, where a slip it finds costs a queue round, about 40 minutes on EPUBLib on 2026-11-07
+    (vocaro-engineering#283). It is a hint, as check is: the worker still runs the lane on the batch. A check that
+    cannot be made, or a lane that fails otherwise, queues the entry for the round to judge, and so does a failure
+    origin/main gives too, which is not the entry's to fix."""
+    if not spelled(config, SPELLING): return
+    base = text(root, "rev-parse", MAIN)
+    began = now()
+    try:
+        replayed = tip if git(root, "merge-base", "--is-ancestor", MAIN, tip).returncode == 0 else linear(queue, root, tip)
+        if replayed is None:
+            print("queue: could not check its spelling, as its commits do not apply onto origin/main alone; the round "
+                  "runs the spelling lane", file=sys.stderr)
+            return
+        status_, printed, command = spelling_run(queue, root, replayed)
+        main_status = spelling_run(queue, root, base)[0] if status_ == 1 else None
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:
+        print(f"queue: could not check its spelling, so the round runs the spelling lane: {error}", file=sys.stderr)
+        return
+    ran = shlex.join(command) if command else "the spelling lane"
+    if status_ is None:
+        print(f"queue: could not check its spelling, so the round runs the spelling lane: {printed[0]}",
+              file=sys.stderr)
+    elif status_ == 0:
+        print(f"queue: spelling checked in {now() - began:.1f}s: {ran} passes on it replayed onto origin/main at "
+              f"{base[:12]}", file=sys.stderr)
+    elif status_ != 1:
+        print(f"queue: {ran} exited {status_} on it, which is no finding, so the round runs the spelling lane: "
+              + (printed[-1] if printed else "it printed nothing"), file=sys.stderr)
+    elif main_status == 1:
+        print(f"queue: {ran} fails on origin/main at {base[:12]} too, so its findings are not this entry's alone; the "
+              "round runs the spelling lane", file=sys.stderr)
+    else:
+        raise Refused(f"{tip[:12]} is not queued: {ran} fails on it replayed onto origin/main at {base[:12]}:\n  "
+                      + "\n  ".join(printed[-SPELLING_SHOWN:]) + "\nFix that and land it again (guides/maintenance.md, "
+                      "The merge queue, Checked before it is queued)")
 
 
 def failed_tests(log):
@@ -1182,6 +1254,8 @@ def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False
     checked_before_running(root, tip, gating)
     check(root, queue, {"id": "new", "tip": tip, "commits": commits},
           [] if front else round_order([entry for entry in waiting if entry not in replaced]), front)
+    # Then the spelling lane, on its commits replayed onto origin/main, which takes seconds where a slip costs a round.
+    spelled_before_queued(root, queue, tip, gating)
     for entry in replaced:
         remove(queue, entry["id"], quiet=True)
         print(f"queue: replaced {entry['id']}, the branch's earlier commits", file=sys.stderr)

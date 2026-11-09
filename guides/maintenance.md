@@ -435,6 +435,21 @@ refusal line too. The check reads the suite's files from the entry's commit, not
 the toolkit's 45 test modules it took 0.7 to 1.2 s on this Mac at a one-minute load of about 200
 (2026-11-08).
 
+Then, after the trial integration, they run the spelling lane the worker would run before the gate,
+on the entry's commits replayed onto `origin/main`, in a scratch worktree outside every checkout:
+the lane the replayed commit's `engineering.json` names `spelling`, run as its command, or, when it
+names none, the toolkit's `python3 scripts/eng spelling`, unless `main`'s `queue.spelling` is
+`false`. It runs on this Mac with no admission, as the toolkit's check does in the worker, since it
+takes seconds. A finding, exit 1, refuses the entry with nothing queued and exit 1, quoting the
+lane's last 40 lines. On 2026-11-07 one EPUBLib spelling slip found by the worker cost a queue round
+of about 40 minutes ([#283](https://github.com/vocaro/vocaro-engineering/issues/283)). The check is a
+hint, as the trial is: the worker still runs the lane on the batch, since `main` can move in
+between. It queues the entry, saying why, when it cannot be made: commits that do not apply onto
+`origin/main` alone, a lane that is not one plain command (foreground, display, unlocked screen,
+whole host, model or a parallel group), a run past 300 s, or an exit other than 0 or 1, such as
+`eng spelling`'s 2 for nothing checked. A finding `origin/main` gives too is not the entry's, so it
+queues the entry as well; the round's lane then fails on `main`'s own spelling.
+
 **What comes back to the author.** `eng queue status` and `eng queue wait` name each entry's state,
 reason and log. An entry that conflicts with what is ahead of it, which the check could not see
 when it was queued, comes back at once and costs the others nothing. Its reason names the files in
