@@ -1915,6 +1915,11 @@ Persistent checkouts, Codex worktrees, and detached commits that main cannot rea
 their existing rules. Recognizable Xcode build output can be rebuilt, while logs, result bundles
 and unidentified output are preserved.
 
+The archive pass also recognizes SwiftPM dependency checkouts inside `.build`, including Xcode's
+`SourcePackages/checkouts`. The checkout must match its workspace pin and local fetch mirror.
+Tracked edits, untracked or unexpected ignored files, and refs the mirror cannot reproduce keep
+the worktree. The command checks the dependency again after verifying the archive.
+
 The archive goes under `~/Development/session-evidence/<project>/disk-<worktree>-<digest>`
 on the second Mac, with the original relative paths under `files/` and the worktree's commit and
 file hashes in `worktree.json`. The command stages one archive locally at a time. A failed or

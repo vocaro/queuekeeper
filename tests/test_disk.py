@@ -842,6 +842,29 @@ class WorktreeArchiveTests(Fixture):
     def fresh(self, host, item):
         return self.listing(host).get(item.path)
 
+    def pinned_dependency(self, path, cache=".build/voiceover/ios-simulator/SourcePackages"):
+        upstream = self.root / "dependency-source"
+        if not upstream.exists():
+            upstream.mkdir()
+            git(upstream, "init", "-q", "-b", "main")
+            commit(upstream, ".gitignore", ".swiftpm/\nlocal-output/\n")
+            commit(upstream, "Package.swift", "// package\n")
+            git(upstream, "tag", "v1")
+        head = git(upstream, "rev-parse", "HEAD")
+        workspace = path / cache
+        mirror = workspace / "repositories/Dependency-1234"
+        checkout = workspace / "checkouts/Dependency"
+        git(upstream, "clone", "-q", "--mirror", str(upstream), str(mirror))
+        location = "https://example.test/Dependency.git"
+        git(mirror, "remote", "set-url", "origin", location)
+        git(upstream, "clone", "-q", str(mirror), str(checkout))
+        git(checkout, "checkout", "-q", "--detach", head)
+        (workspace / "workspace-state.json").write_text(json.dumps({"object": {"dependencies": [{
+            "subpath": "Dependency", "packageRef": {"kind": "remoteSourceControl", "location": location},
+            "state": {"name": "sourceControlCheckout", "checkoutState": {"revision": head}},
+        }]}}))
+        return checkout
+
     def test_opt_in_keeps_worktrees_that_fail_ordinary_ownership_or_landing_checks(self):
         self.assertEqual(self.listing(archive=False)[str(self.path)].status, disk.KEPT)
         self.assertEqual(self.listing(self.host())[str(self.path)].status, disk.KEPT)
@@ -868,7 +891,15 @@ class WorktreeArchiveTests(Fixture):
         self.assertEqual(self.listing()[str(self.path)].status, disk.ARCHIVE)
 
     def test_removal_follows_verification_and_the_branch_remains(self):
+        swiftpm = self.pinned_dependency(self.path, ".build/gate-release")
+        xcode = self.pinned_dependency(self.path)
+        workspace = xcode / ".swiftpm/xcode/package.xcworkspace"
+        workspace.mkdir(parents=True)
+        (workspace / "contents.xcworkspacedata").write_text("<Workspace/>")
+        old_mirror = self.root / "old-workspace/repositories/Dependency-1234"
+        git(xcode, "remote", "set-url", "origin", str(old_mirror))
         item = self.listing()[str(self.path)]
+        self.assertEqual(item.status, disk.ARCHIVE, item.reason)
 
         def verify(stage, **options):
             self.assertTrue(self.path.exists())
@@ -878,6 +909,8 @@ class WorktreeArchiveTests(Fixture):
             self.assertEqual((archive / "files/.build/issue-992/receipt.json").read_bytes(),
                              self.receipt.read_bytes())
             self.assertFalse((archive / "files/.build/debug").exists())
+            for checkout in (swiftpm, xcode):
+                self.assertFalse((archive / "files" / checkout.relative_to(self.path)).exists())
             self.assertEqual(json.loads((archive / "worktree.json").read_text())["head"],
                              git(self.path, "rev-parse", "HEAD"))
             return 0
@@ -891,6 +924,59 @@ class WorktreeArchiveTests(Fixture):
         record = json.loads(self.ledger.read_text())
         self.assertTrue(record["archiveVerified"])
         self.assertEqual(record["outcome"], "removed")
+
+    def test_unverified_dependency_checkouts_still_block_the_worktree(self):
+        for failure in ("dirty", "hidden-edit", "untracked", "ignored", "different-pin", "local-branch", "local-tag",
+                        "stash", "missing-mirror", "linked-worktree"):
+            with self.subTest(failure=failure):
+                path = self.worktree(failure)
+                dependency = self.pinned_dependency(path)
+                if failure == "dirty":
+                    (dependency / "Package.swift").write_text("// edited\n")
+                elif failure == "hidden-edit":
+                    git(dependency, "update-index", "--assume-unchanged", "Package.swift")
+                    (dependency / "Package.swift").write_text("// edited\n")
+                elif failure == "untracked":
+                    (dependency / "notes").write_text("local notes")
+                elif failure == "ignored":
+                    (dependency / "local-output").mkdir()
+                    (dependency / "local-output/capture").write_text("local capture")
+                elif failure == "different-pin":
+                    git(dependency, "checkout", "-q", "--detach", "HEAD^")
+                elif failure == "local-branch":
+                    git(dependency, "checkout", "-q", "-b", "local")
+                    commit(dependency, "local.txt", "local commit")
+                    git(dependency, "checkout", "-q", "--detach", "v1")
+                elif failure == "local-tag":
+                    git(dependency, "tag", "-a", "-m", "local note", "local-tag")
+                elif failure == "missing-mirror":
+                    mirror = Path(git(dependency, "config", "--get", "remote.origin.url"))
+                    mirror.rename(mirror.with_name("old-mirror"))
+                elif failure == "linked-worktree":
+                    git(dependency, "worktree", "add", "-q", "--detach", str(self.root / "linked-dependency"))
+                else:
+                    (dependency / "Package.swift").write_text("// stashed\n")
+                    git(dependency, "stash", "push", "-q")
+                head = git(path, "rev-parse", "HEAD")
+                item = disk.worktree(self.mac, disk.Usage([]), disk.Sizes(measure=False), self.main,
+                                     {"worktree": str(path), "HEAD": head}, head, "origin/main",
+                                     archive_worktrees=True)
+                self.assertEqual(item.status, disk.KEPT, item.reason)
+                self.assertIn("could not be verified as a clean pinned cache", item.reason)
+
+    def test_dependency_changed_during_archive_keeps_the_worktree(self):
+        dependency = self.pinned_dependency(self.path)
+        item = self.listing()[str(self.path)]
+        self.assertEqual(item.status, disk.ARCHIVE, item.reason)
+
+        def verified_old_copy(stage, **options):
+            (dependency / "Package.swift").write_text("// now modified\n")
+            return 0
+
+        with patch.object(evidence_offload, "offload", side_effect=verified_old_copy):
+            self.assertFalse(disk.archive_worktrees([item], self.mac, self.ledger, out=lambda _: None, fresh=self.fresh))
+        self.assertTrue(self.path.exists())
+        self.assertIn("skipped after archiving", self.ledger.read_text())
 
     def test_failed_verification_or_changed_evidence_keeps_the_worktree(self):
         item = self.listing()[str(self.path)]

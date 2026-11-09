@@ -486,10 +486,10 @@ def worktree(host, usage, sizes, main, entry, base, name, archive_worktrees=Fals
     if status.returncode: return item(KEPT, "git status failed: " + status.stderr.strip()[:200])
     changed = status.stdout.splitlines()
     if changed: return item(KEPT, f"dirty: {len(changed)} modified or untracked paths")
-    try: evidence, results, blockers = ignored.held(path)
-    except (ignored.Refusal, OSError) as error: return item(KEPT, f"could not list its ignored files: {error}")
     session_dir = session_root(host, main, path)
     archive = archive_worktrees and host.offload_host and session_dir == Path(main) / ".claude/worktrees"
+    try: evidence, results, blockers = ignored.held(path, verify_dependencies=archive)
+    except (ignored.Refusal, OSError) as error: return item(KEPT, f"could not list its ignored files: {error}")
     if archive and blockers:
         return item(KEPT, "worktree archive blocked: " + "; ".join(blockers[:3]))
     if evidence and not archive:
@@ -1279,7 +1279,7 @@ def fresh_archive_item(host, item):
 
 
 def archive_snapshot(path):
-    entries, blockers = ignored.inventory(path)
+    entries, blockers = ignored.inventory(path, verify_dependencies=True)
     if blockers: raise ignored.Refusal("; ".join(blockers[:3]))
     return {entry["path"]: entry for entry in entries}
 
