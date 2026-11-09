@@ -254,6 +254,33 @@ was used to prepare and verify the patch, and the owner applied and landed it fr
 When the hook fix lands or the hook moves to the shared toolkit, update this guide and the
 toolkit issue. [mpm#96](https://github.com/vocaro/mpm/issues/96) · [vocaro-engineering#325](https://github.com/vocaro/vocaro-engineering/issues/325)
 
+### Closing verified issues
+
+When a result confirms that an open issue meets all its acceptance criteria, follow the
+[common rules](../agents/core.md#concurrent-work). From the issue's repository, post the
+evidence first and check that the comment succeeded. Run each command in its own tool call,
+using the issue number and the path to the reviewed Markdown comment.
+
+```sh
+gh issue comment ISSUE_NUMBER --body-file "COMMENT_FILE"
+gh issue close ISSUE_NUMBER
+```
+
+Each plain command matches its own Claude Code allow rule. Using `--body-file` lets
+`gh issue comment` read the evidence directly.
+
+The owner manages these rules in Claude Code's user settings at `~/.claude/settings.json`
+or `$CLAUDE_CONFIG_DIR/settings.json` when that variable is set. The entries under
+`permissions.allow` are `Bash(gh issue comment:*)` and `Bash(gh issue close:*)`. These
+rules match command text across repositories. The owner-run setup work tracks installation
+of the rules. [vocaro-engineering#338](https://github.com/vocaro/vocaro-engineering/issues/338)
+
+An auto-mode classifier denial comes from Claude Code before GitHub receives the command.
+Report the refusal and stop the close. Verify the effective permission by observing a
+successful close of an eligible issue in Claude Code auto mode. Reading the settings file
+only establishes which rules it contains.
+[Claude Code permissions](https://code.claude.com/docs/en/permissions)
+
 ## The merge queue
 
 Six of the owner's repositories landed 8 to 14 times a day in the two weeks to 2026-10-31, so a
