@@ -4365,10 +4365,22 @@ exec {shlex.quote(real)} "$@"
     def admits_after_waiting(self, words, release, directory=None):
         """`eng admit -- WORDS` from directory, the checkout's pkg by default, in a process of its own: call release
         once it waits for whichever Mac admits it first, and return its status and output once it has ended."""
+        # One second is enough for the held local probe to decline and the overflow marker to appear.
+        # Patch the dispatcher process so the fake second Mac uses the original toolkit.
+        launch = (
+            "from pathlib import Path\n"
+            "import runpy, sys\n"
+            "sys.argv = sys.argv[1:]\n"
+            "sys.path.insert(0, str(Path(sys.argv[0]).resolve().parents[1] / 'src/python'))\n"
+            "from vocaro_engineering import remote\n"
+            "remote.FREE_WAIT = 1\n"
+            "runpy.run_path(sys.argv[0], run_name='__main__')"
+        )
         log = Path(self.temp.name) / "admit.log"
         with log.open("w") as output:
-            admitting = subprocess.Popen([sys.executable, str(self.toolkit / "bin/eng"), "--project", str(self.project),
-                                          "admit", "--", *words], cwd=directory or self.project / "pkg",
+            admitting = subprocess.Popen([sys.executable, "-c", launch, str(self.toolkit / "bin/eng"),
+                                          "--project", str(self.project), "admit", "--", *words],
+                                         cwd=directory or self.project / "pkg",
                                          stdout=output, stderr=subprocess.STDOUT,
                                          env={key: value for key, value in os.environ.items()
                                               if key != "VOCARO_ENGINEERING_ROOT"})
