@@ -48,7 +48,7 @@ import threading
 import time
 import urllib.request
 
-from . import app_builds, budgets, disk, evidence, landing, lane_wait, offload_host, parallel, processes, remote, \
+from . import app_builds, budgets, disk, evidence, landing, lane_report, lane_wait, offload_host, parallel, processes, remote, \
     resources
 from .config import IMPLICIT_SPELLING, SPELLING, SPELLING_LIMIT, TOOLKIT_ROOT, load, parse, stays, unlocked_screen
 
@@ -1678,6 +1678,63 @@ def result_files(folder):
             + (f", and {rest} more folder{'' if rest == 1 else 's'}" if rest else "") + ")")
 
 
+def dispatch_logs(directory):
+    """The returned files of this exact dispatch, or what could not be read."""
+    lines = []
+    for name in ("run.log", "output.log"):
+        path = Path(directory) / name
+        try: present = path.is_file()
+        except OSError: present = False
+        lines.append(f"remote dispatch {name}: {path}" if present else
+                     f"remote dispatch {name}: unavailable (not returned or pruned)")
+    return lines
+
+
+FAILURE_LINE_LIMIT = 500
+FAILURE_EXCERPT_LIMIT = 4000
+
+
+def failed_lane_excerpt(lane_log, dispatch_output, lane):
+    """Read the outer unittest verdict, or the dispatcher's own lane report when there is none."""
+    summaries = list(UNITTEST_SUMMARY.finditer(lane_log))
+    summary = summaries[-1] if summaries else None
+    if summary and summary[1].startswith("FAILED: "):
+        lines = [summary[0]]
+        confirmed = set(failed_tests(lane_log)[0] or ())
+        assertions = []
+        for failed in FAILED_TEST.finditer(lane_log, 0, summary.start()):
+            method, where = failed.groups()
+            identity = where if where.endswith(f".{method}") else f"{where}.{method}"
+            if identity not in confirmed:
+                continue
+            end = lane_report.UNITTEST_END.search(lane_log, failed.end())
+            traceback = lane_log[failed.end():end.start() if end else summary.start()]
+            assertion = re.search(r"^AssertionError(?::[^\n]*)?$", traceback, re.M)
+            if assertion:
+                assertions.append(f"{failed[0]}: {assertion[0]}")
+        lines.extend(assertions[:lane_report.SHOWN])
+        if len(assertions) > lane_report.SHOWN:
+            lines.append(f"{len(assertions) - lane_report.SHOWN} more assertions in the queue log")
+    else:
+        # Do not repeat the report's inferred failed test names: for a group they can come from a nested fixture.
+        rows = dispatch_output.splitlines()
+        report = next((index for index in reversed(range(len(rows)))
+                       if rows[index].startswith(f"eng run {lane}: failed")), None)
+        if report is None:
+            return []
+        lines = rows[report:report + 1]
+        if report + 1 < len(rows) and rows[report + 1].startswith("  tests: "):
+            lines.append(rows[report + 1])
+    excerpt, remaining = [], FAILURE_EXCERPT_LIMIT
+    for line in lines:
+        limit = min(FAILURE_LINE_LIMIT, remaining)
+        if limit < 4:
+            break
+        excerpt.append(line if len(line) <= limit else line[:limit - 3] + "...")
+        remaining -= len(excerpt[-1]) + 1
+    return excerpt
+
+
 def wait(root, identifier, limit=WAIT_LIMIT):
     """Exit 0 once the entry lands, 1 when it comes back to its author, 75 while the queue is held or
     the limit passes with the entry still waiting. A worker a reboot ended starts again here."""
@@ -1694,6 +1751,8 @@ def wait(root, identifier, limit=WAIT_LIMIT):
                 # Where the gate's per-test results are (Worker.results_named), from a gate that named them.
                 if isinstance(gate, dict) and gate.get("results"): print(f"{gate['results']}\ngate log: {gate['log']}")
                 print(f"landed: {entry['landedAs']}")
+            elif entry["state"] == FAILED and (dispatch := entry.get("failedDispatch")):
+                print(*dispatch["excerpt"], *dispatch_logs(dispatch["directory"]), sep="\n")
             return 0 if entry["state"] == LANDED else 1
         why = queue.held()
         if why:
@@ -1833,6 +1892,7 @@ class Worker:
         self.rounds = 0  # the rounds this worker has finished, which run reads to count its tries
         self.deferred = None  # why follow last left the shared checkout behind for a run from it, or None
         self.timed_out = None  # why the last gate's lane reached its limit, or None (gate)
+        self.failed_dispatch = None  # the last failed gate log and its dispatch evidence (gate)
         self.ran_on = None  # the second Mac that ran the last lane the gate ran, or None (gate)
         self.environment = environment()  # what the lanes, the hook and the carry-over checks run in
         self.measured = None  # the passing gate run of the last round, which its landed entries record
@@ -2294,6 +2354,7 @@ class Worker:
         a gate stacked on this one goes to the other Mac (Worker.other_mac)."""
         log, self.ran_on, self.measured, self.timed_out, self.ran_where = None, None, None, None, ""
         self.failed_lane, self.failed_load, self.withdrawn = None, None, []
+        self.failed_dispatch = None
         removal = Removal(self.queue, self.gating, cancel)
         for identifier in self.gating: self.queue.record({"id": identifier}, stopsWhenRemoved=REMOVAL_POLL)
         for lane in lanes:
@@ -2353,13 +2414,26 @@ class Worker:
             # What the lane printed: here in its own file; on the second Mac in its dispatch's run.log, whose eng
             # unittest summary names the failed tests that rerun reruns alone.
             printed = lane_log if ran is None else ran / "run.log"
-            with contextlib.suppress(OSError), log.open("a") as kept: kept.write(printed.read_text(errors="replace"))
+            remote_failure = ran is not None and status_ and status_ not in NO_VERDICT
+            dispatch_output, lane_text = "", ""
+            if remote_failure:
+                with contextlib.suppress(OSError):
+                    dispatch_output = log.read_text(errors="replace")
+            with contextlib.suppress(OSError), log.open("a") as kept:
+                lane_text = printed.read_text(errors="replace")
+                kept.write(lane_text)
             self.ran_where = self.mac(lane, began)
             busy = sampler.finish() if sampler else {}
             self.say(f"{lane} exited {status_}{self.placed(lane, began)}")
             if status_:
                 self.failed_lane = lane
-                if status_ not in NO_VERDICT: self.failed_load = loads.finish(self.ran_on)
+                if status_ not in NO_VERDICT:
+                    self.failed_load = loads.finish(self.ran_on)
+                    if remote_failure:
+                        excerpt = failed_lane_excerpt(lane_text, dispatch_output, lane)
+                        self.failed_dispatch = (log, {"directory": str(ran), "excerpt": excerpt})
+                        with contextlib.suppress(OSError), log.open("a") as kept:
+                            kept.write("\n" + "\n".join(dispatch_logs(ran)) + "\n")
                 return status_, log
             if lane == budgets.GATE:
                 with contextlib.suppress(OSError):
@@ -2852,10 +2926,16 @@ class Worker:
             touched = f"Whether this entry changes a file of the failed tests could not be determined: {error}"
         return f" {load}. {touched}"
 
-    def send_back(self, applied, log, entry, why, facts=""):
+    def settle_failure(self, entry, log, why, runner=None):
+        """Keep only the dispatch of the gate that actually rejected this entry."""
+        dispatch = (self if runner is None else runner).failed_dispatch
+        details = {"failedDispatch": dispatch[1]} if dispatch is not None and dispatch[0] == log else {}
+        self.queue.settle(entry, FAILED, why=why, log=str(log), **details)
+
+    def send_back(self, applied, log, entry, why, facts="", *, runner=None):
         """Settle entry, the one of applied that blame found, as failed, and queue the rest to gate again at once."""
-        self.queue.settle(entry, FAILED, why=f"the queue's lanes fail on this commit on top of origin/main: {why}. Fix "
-                                            f"it and add it again.{facts}", log=str(log))
+        self.settle_failure(entry, log, f"the queue's lanes fail on this commit on top of origin/main: {why}. Fix "
+                                       f"it and add it again.{facts}", runner)
         self.queue.mark([other for other in applied if other["id"] != entry["id"]], QUEUED)
 
     def suite_top(self, command):
@@ -2877,13 +2957,13 @@ class Worker:
             check=True)
         return self.head()
 
-    def failed(self, applied, log, facts=""):
+    def failed(self, applied, log, facts="", *, runner=None):
         """Bisect: the oldest half next. A lone entry that fails is the one to send back, saying facts
         (rejection_facts)."""
         if len(applied) == 1:
             why = f"the queue's lanes fail on this commit on top of origin/main: fix it and add it again.{facts}"
             self.say(f"{applied[0]['id']}: {why}")
-            self.queue.settle(applied[0], FAILED, why=why, log=str(log))
+            self.settle_failure(applied[0], log, why, runner)
             # An entry on its own was no suspect of a bisect, which goes on where it was.
             if not self.alone: self.limit, self.suspects = None, 0
             return
@@ -3049,14 +3129,15 @@ class Worker:
             if not flakes:
                 blamed = runner.blame(applied)
                 if blamed:
-                    self.send_back(applied, log, *blamed, runner.rejection_facts(blamed[0], log, config))
+                    self.send_back(applied, log, *blamed, runner.rejection_facts(blamed[0], log, config), runner=runner)
                     if not self.alone: self.limit, self.suspects = None, 0
                     self.blamed = True
                     return FAILED
                 if runner.unblamed and runner.unblamed["key"] in before:
                     return self.refused_again(applied, runner.unblamed["line"], before[runner.unblamed["key"]], log)
                 if runner.unblamed: self.refusals[runner.unblamed["key"]] = "the gate before it"
-                self.failed(applied, log, runner.rejection_facts(applied[0], log, config) if len(applied) == 1 else "")
+                self.failed(applied, log, runner.rejection_facts(applied[0], log, config) if len(applied) == 1 else "",
+                            runner=runner)
                 return FAILED
         # An entry removed during the gate was part of what passed, so what is left has not been tested.
         current = [queue.read(entry["id"]) for entry in applied]
@@ -3582,7 +3663,7 @@ class Beside(Worker):
         """The one newer entry that failed comes back, as a lone entry that fails does (Worker.failed)."""
         why = f"the queue's lanes fail on this commit on top of origin/main: fix it and add it again.{facts}"
         self.say(f"{applied[0]['id']}: {why}")
-        self.queue.settle(applied[0], FAILED, why=why, log=str(log))
+        self.settle_failure(applied[0], log, why)
 
 
 class Stack:
