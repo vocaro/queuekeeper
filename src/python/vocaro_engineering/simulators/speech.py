@@ -8,6 +8,7 @@ import re
 import signal
 import subprocess
 import time
+from xml.parsers.expat import ExpatError
 from . import __name__ as _package_name
 from vocaro_engineering.voiceover import activation
 
@@ -85,6 +86,8 @@ def silence_cues_at_rest(data):
         settings = plistlib.loads(path.read_bytes())
     except FileNotFoundError:
         settings = {}
+    except ExpatError as error:
+        raise ValueError(f"{path} is not a valid property list: {error}") from error
     if not isinstance(settings, dict):
         raise ValueError(f"{path} is not a dictionary")
     if settings.get(CUE_KEY) is False:

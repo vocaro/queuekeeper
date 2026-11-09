@@ -13,6 +13,7 @@ import tempfile
 import unittest
 from unittest import mock
 import uuid
+from xml.parsers.expat import ExpatError
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 from vocaro_engineering import devices, evidence, offload_host, resources
 import host_isolation
@@ -50,7 +51,7 @@ class Simctl:
         path = self.cue_preferences(udid)
         try:
             return plistlib.loads(path.read_bytes()).get("VoiceOverUseSoundEffects")
-        except (OSError, plistlib.InvalidFileException):
+        except (OSError, plistlib.InvalidFileException, ExpatError):
             return None
 
     def add(self, name, device_type=DUO, runtime=RUNTIME, state="Shutdown", days=0, available=True, origin="fresh"):
@@ -855,8 +856,8 @@ class PoolTests(unittest.TestCase):
         self.assertTrue(self.pool.release(lease, outcome="done"))
 
     def test_sound_cues_that_cannot_be_written_are_logged_and_a_take_without_voiceover_still_boots(self):
-        # Negative controls: no folder can be made for the file, and a file that is not a property list. The
-        # pool does not know whether the holder will run VoiceOver, so the take goes on and says so.
+        # The pool does not know whether the holder will run VoiceOver, so an unreadable
+        # preference file is reported and the take goes on.
         def no_folder(path):
             path.parent.parent.mkdir(parents=True, exist_ok=True)
             path.parent.write_text("a file, where the folder would be")
@@ -865,16 +866,24 @@ class PoolTests(unittest.TestCase):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("junk")
 
-        for damage in (no_folder, not_a_list):
+        def malformed_xml(path):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b'<?xml version="1.0"?><plist version="1.0"><dict></plist>')
+
+        for damage in (no_folder, not_a_list, malformed_xml):
             with self.subTest(damage.__name__):
                 self.simctl, self.log = Simctl(), []
                 self.warm = Warm()
                 self.pool = self.make("me")
                 udid = self.simctl.add("Project Duo 1")
                 lease = self.pool.take(DUO, RUNTIME, purpose="no VoiceOver", keep_state=True)
-                damage(self.simctl.cue_preferences(udid))
+                path = self.simctl.cue_preferences(udid)
+                damage(path)
+                original = path.read_bytes() if path.is_file() else None
                 self.assertIsNone(simulator_pool.boot(self.pool, lease, 600))
                 self.assertEqual(self.simctl.devices[udid]["state"], "Booted")
+                if original is not None:
+                    self.assertEqual(path.read_bytes(), original)
                 cues = [line for line in self.log if line.startswith("CUES")]
                 self.assertEqual(len(cues), 1, self.log)
                 self.assertIn("Project Duo 1: VoiceOver's sound cues could not be switched off", cues[0])
