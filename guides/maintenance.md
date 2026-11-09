@@ -214,6 +214,46 @@ Read an issue's body before its comments. `gh issue view N` prints the title and
 (gh 2.102.0). A session that read an issue that way once closed it having done only what a
 comment added (2026-10-27).
 
+### Diagnose a worktree write refusal
+
+In Claude Code, compare the refusal's wording and paths with the intended worktree.
+
+| Guard | Refusal | What it checks |
+| --- | --- | --- |
+| Subagent worktree isolation | The target “belongs to a different worktree.” | Claude Code confines an isolated subagent to its own worktree. |
+| Desktop app worktree guard | The session is “running in an isolated git worktree” and “Edits there do not land on this session's branch.” | The Claude desktop app refuses edits to the main checkout from a worktree session. |
+| Project confinement hook | “Blocked: this session was started in” names a different Git working tree. | The project's hook compares the write's Git top level with the session root it resolved. |
+
+A desktop session launched in a linked worktree can have writes to both checkouts refused.
+In the 2026-11-09 mpm report, the project hook identified the main checkout as the session
+root and refused writes to the intended worktree. The desktop guard refused writes to the main
+checkout. The app's session metadata showed the linked worktree in `cwd` and `worktreePath`,
+and the main checkout in `originCwd`. This was seen in fresh and reused worktrees.
+[mpm#96](https://github.com/vocaro/mpm/issues/96) · [vocaro-engineering#325](https://github.com/vocaro/vocaro-engineering/issues/325)
+
+Inspect the project's hook configuration and how the hook resolves its root. In mpm,
+`PreToolUse` selects the hook script through `$CLAUDE_PROJECT_DIR`. The script also prefers
+that variable when resolving the session root, then tries the hook payload's `cwd` and finally
+`$PWD`. A hook process that gets the main checkout in `CLAUDE_PROJECT_DIR` can therefore run
+the main checkout's script and check writes against that checkout. Any project that uses this
+variable as the root of its write guard is exposed to the same mismatch. The refusal is
+consistent with the hook receiving the main checkout in that variable. Its value in the hook
+process and whether it came from `originCwd` were inferred, not logged. A `SessionStart` hook
+that repairs worktree-specific settings may also be acting on the wrong checkout. Verify its
+working directory before relying on the repair.
+
+Before relying on write access in a fresh or reused desktop worktree with a confinement hook,
+try one harmless write to the intended worktree. If it is refused, stop and report the exact
+message, the intended Git root, the root named in the denial, and the app's session metadata.
+The report may describe the proposed patch and its base. Preparing or verifying a patch in a
+plain copy outside Git requires the owner's express approval for that handoff. Only the
+owner applies and lands it. In the recorded mpm handoff, a plain copy made with `git archive`
+was used to prepare and verify the patch, and the owner applied and landed it from a terminal.
+[Common rules](../agents/core.md#concurrent-work)
+
+When the hook fix lands or the hook moves to the shared toolkit, update this guide and the
+toolkit issue. [mpm#96](https://github.com/vocaro/mpm/issues/96) · [vocaro-engineering#325](https://github.com/vocaro/vocaro-engineering/issues/325)
+
 ## The merge queue
 
 Six of the owner's repositories landed 8 to 14 times a day in the two weeks to 2026-10-31, so a
