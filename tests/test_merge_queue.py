@@ -7229,6 +7229,93 @@ class GateResultsNamed(Fixture):
         self.assertEqual(mq.result_files(self.base / "absent"), "")
 
 
+class FailedGateEvidence(Fixture):
+    FIRST = "test_sample.Sample.test_first"
+    SECOND = "test_sample.Sample.test_second"
+    SUMMARY = (f"eng unittest: 2 tests (0 skipped) in 2 processes, 1 at a time, 0.1s: FAILED: "
+               f"{FIRST} (FAILED (failures=1), status 1), {SECOND} (FAILED (failures=1), status 1)")
+
+    def failed(self, context):
+        self.status.write_text("1")
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        with context, contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(self.work(), 0)
+        entry = self.state(identifier)
+        self.assertEqual(entry["state"], mq.FAILED)
+        return entry
+
+    def wait_output(self, entry):
+        with contextlib.redirect_stdout(io.StringIO()) as waited:
+            self.assertEqual(mq.wait(self.repo, entry["id"], 1), 1)
+        return waited.getvalue()
+
+    def test_a_failed_remote_gate_keeps_its_assertions_and_dispatch_paths_in_the_wait(self):
+        dispatch = self.base / ".dispatches/gate/retained"
+        dispatch.mkdir(parents=True)
+        log, output = dispatch / "run.log", dispatch / "output.log"
+        log.write_text("== nested.Sample.test_turn: OK (1 tests, 0.1s)\n"
+                       "FAIL: test_turn (nested.Sample.test_turn)\nAssertionError: nested mismatch\n" + "=" * 70 + "\n"
+                       f"== {self.FIRST}: FAILED (1 tests, 0.1s)\n"
+                       f"FAIL: test_first ({self.FIRST})\nAssertionError: first mismatch\n" + "=" * 70 + "\n"
+                       f"== {self.SECOND}: FAILED (1 tests, 0.1s)\n"
+                       f"FAIL: test_second ({self.SECOND})\nAssertionError: second mismatch\n" + "-" * 70 + "\n"
+                       f"Ran 2 tests in 0.1s\n{self.SUMMARY}\n")
+        output.write_text("the dispatch's transport output\n")
+
+        def remote_gate(root, lane, began):
+            return (dispatch, "fake-mac") if lane == "gate" else (None, None)
+
+        entry = self.failed(patch.object(mq.remote, "dispatch", side_effect=remote_gate))
+        waited = self.wait_output(entry)
+        gate = Path(entry["log"]).read_text()
+        for text in (gate, waited):
+            self.assertIn(self.SUMMARY, text)
+            self.assertIn("AssertionError: first mismatch", text)
+            self.assertIn("AssertionError: second mismatch", text)
+            self.assertIn(f"remote dispatch run.log: {log}", text)
+            self.assertIn(f"remote dispatch output.log: {output}", text)
+        self.assertIn("AssertionError: nested mismatch", gate)
+        self.assertNotIn("AssertionError: nested mismatch", waited)
+        log.unlink()
+        waited = self.wait_output(entry)
+        self.assertIn("remote dispatch run.log: unavailable (not returned or pruned)", waited)
+        self.assertNotIn(f"remote dispatch run.log: {log}", waited)
+        self.assertIn(f"remote dispatch output.log: {output}", waited)
+        self.assertIn(self.SUMMARY, waited)
+        self.assertIn(entry["log"], waited)
+
+    def test_an_outer_report_does_not_repeat_a_nested_fixture_failure(self):
+        lane_log = "    FAIL: test_turn (nested.Sample.test_turn)\n    AssertionError: nested mismatch\n"
+        report = "eng run gate: failed (exit 1), on fake-mac\n  tests: 2 passed\n  failed: Pages/testTurn\n"
+        self.assertEqual(mq.failed_lane_excerpt(lane_log, report, "gate"), report.splitlines()[:2])
+        self.assertEqual(mq.failed_lane_excerpt(lane_log, "", "gate"), [])
+
+    def test_the_persisted_excerpt_has_both_line_and_total_bounds(self):
+        assertions, statuses = [], []
+        for index in range(15):
+            method = f"test_{index}"
+            name = f"test_sample.Sample.{method}"
+            assertions.extend([f"== {name}: FAILED (1 tests, 0.1s)", f"FAIL: {method} ({name})",
+                               "AssertionError: " + "x" * 1000, "=" * 70])
+            statuses.append(f"{name} (FAILED (failures=1), status 1)")
+        assertions.append("eng unittest: 15 tests (0 skipped) in 15 processes, 1 at a time, 0.1s: FAILED: "
+                          + ", ".join(statuses))
+        excerpt = mq.failed_lane_excerpt("\n".join(assertions), "", "gate")
+        self.assertTrue(excerpt[0].startswith("eng unittest:"))
+        self.assertTrue(excerpt[1].startswith("FAIL: test_0"))
+        self.assertTrue(all(len(line) <= mq.FAILURE_LINE_LIMIT for line in excerpt))
+        self.assertLessEqual(len("\n".join(excerpt)), mq.FAILURE_EXCERPT_LIMIT)
+        self.assertLess(len(excerpt), 16)
+
+    def test_a_local_gate_failure_keeps_the_existing_queue_log_guidance(self):
+        entry = self.failed(patch.object(mq.remote, "dispatch", return_value=(None, None)))
+        self.assertNotIn("failedDispatch", entry)
+        waited = self.wait_output(entry)
+        self.assertNotIn("remote dispatch", waited)
+        self.assertIn(entry["log"], waited)
+
+
 # What the module says before a test's patches: each half's placement option, and which lanes may go to the second Mac.
 OFFERED = (mq.HERE, mq.BESIDE)
 OFFERABLE = mq.offerable
