@@ -551,8 +551,8 @@ def carry_checks(config, moved, base):
 def rerun_command(command):
     """The command, without its test, that reruns one test of a lane whose command is eng unittest
     (vocaro-engineering#231): the lane's command through `unittest`, its -s, -p, -t, --split and --timeout, one
-    process at a time and verbose. None for a lane that is not eng unittest, as a project's own lane, a group or
-    one with an option the rerun cannot carry, which then bisects as before."""
+    process at a time and verbose. None for a lane that is not eng unittest, as a project's own lane, or one with an
+    option the rerun cannot carry, which then bisects as before; a group's eng unittest lane is unittest_member's."""
     if not isinstance(command, list) or not all(isinstance(word, str) for word in command): return None
     at = next((index for index, word in enumerate(command[:-1])
                if Path(word).name == "eng" and command[index + 1] == "unittest"), None)
@@ -593,11 +593,23 @@ def suite_of(command):
     return start, patterns or None
 
 
+def unittest_member(lanes, lane):
+    """The lane whose command would be eng unittest for lane: lane itself, or the one such lane of the group lane
+    names, as the toolkit's own gate has (#289). None for a group with none or several, or a lane that is no lane."""
+    settings = lanes.get(lane)
+    if not isinstance(settings, dict): return None
+    if "parallel" not in settings: return lane
+    found = [name for name in settings["parallel"] if isinstance(lanes.get(name), dict) and suite_of(lanes[name].get("command"))]
+    return found[0] if len(found) == 1 else None
+
+
 def unittest_lanes(config):
-    """{lane: (start, patterns)} of config's queue lanes (lanes_of) whose command is eng unittest."""
+    """{lane: (start, patterns)} of config's queue lanes (lanes_of) whose command is eng unittest, or that are a group
+    holding one such lane."""
     lanes, found = config.get("lanes", {}), {}
     for lane in lanes_of(config):
-        suite = suite_of(lanes[lane].get("command")) if isinstance(lanes.get(lane), dict) else None
+        member = unittest_member(lanes, lane)
+        suite = suite_of(lanes[member].get("command")) if member else None
         if suite: found[lane] = suite
     return found
 
@@ -1899,6 +1911,7 @@ class Worker:
         self.alone = False  # whether this round's batch is one entry an option of eng land put on its own (choose)
         self.failed_lane = None  # the lane whose failure the last gate returned, or None (gate)
         self.failed_load = None  # load_words for that lane, or None (gate)
+        self.group_failed = []  # the lanes of the last group lane that did not pass (read_group)
         self.confirmed = None  # the failed tests the last rerun confirmed, which blame reads (rerun)
         self.refused = None  # (lane, line, config) of the last gate eng unittest refused before running, for blame (rerun)
         self.unblamed = None  # {"key", "line"} of that refusal when blame found no one entry that brings it (blame)
@@ -2368,6 +2381,7 @@ class Worker:
             lane_log = self.checkout / ".build/engineering" / lane / "run.log"
             with contextlib.suppress(OSError): lane_log.unlink()
             lane_wait.remove(lane_wait.path_of(self.checkout, lane))
+            shutil.rmtree(lane_log.parent / "lanes", ignore_errors=True)
             self.say(f"{lane} on {self.head()[:12]}")
             began = time.time()  # wall clock, to match the dispatch records' start times
             started = time.monotonic()  # for the gate's measured duration
@@ -2422,6 +2436,7 @@ class Worker:
             with contextlib.suppress(OSError), log.open("a") as kept:
                 lane_text = printed.read_text(errors="replace")
                 kept.write(lane_text)
+            self.read_group(lane, printed.parent / "lanes", log)
             self.ran_where = self.mac(lane, began)
             busy = sampler.finish() if sampler else {}
             self.say(f"{lane} exited {status_}{self.placed(lane, began)}")
@@ -2446,6 +2461,24 @@ class Worker:
                     self.say(said)
                     if self.measured: self.measured.update(results=said, log=str(log))
         return 0, log
+
+    def read_group(self, lane, folder, log):
+        """For a lane that is a group, whose own output gives only the end of a failed lane's log: add its eng unittest
+        lane's whole log to log, which rerun and `eng queue doctor` read as any eng unittest gate's, and note in
+        self.group_failed the lanes in folder, its lanes' logs and receipts, that did not pass (#289)."""
+        self.group_failed = []
+        try: lanes = load(self.checkout).get("lanes", {})
+        except (OSError, ValueError): return
+        members = lanes.get(lane, {}).get("parallel") if isinstance(lanes.get(lane), dict) else None
+        if not members: return
+        member = unittest_member(lanes, lane)
+        if member:
+            with contextlib.suppress(OSError), log.open("a") as kept:
+                kept.write((folder / f"{member}.log").read_text(errors="replace"))
+        for name in members:
+            try: status_ = json.loads((folder / f"{name}.json").read_text()).get("status")
+            except (OSError, ValueError, AttributeError): status_ = None
+            if status_ != 0: self.group_failed.append(name)
 
     def has_lane(self, lane):
         """Whether the checkout's own engineering.json, which eng run reads, configures lane: where it does not, eng run
@@ -2708,8 +2741,15 @@ class Worker:
         entries, a rerun that fails goes on to rerun the other failed tests, so that blame can weigh them all."""
         self.confirmed = self.refused = None
         lane = self.failed_lane
-        command = rerun_command(config.get("lanes", {}).get(lane, {}).get("command")) if lane else None
+        lanes = config.get("lanes", {})
+        member = unittest_member(lanes, lane) if lane else None
+        command = rerun_command(lanes[member].get("command")) if member else None
         if command is None: return None
+        others = [name for name in self.group_failed if name != member]
+        if others:
+            self.say(f"{lane}'s lane{'' if len(others) == 1 else 's'} {', '.join(others)} did not pass, which no rerun of "
+                     "a Python test can clear: bisecting")
+            return None
         try: said = log.read_text(errors="replace")
         except OSError as error:
             self.say(f"{lane}'s log cannot be read, so no failed test is rerun: {error}")
@@ -2855,7 +2895,7 @@ class Worker:
         or its commits change one of them in the suite's directory (#280). Any doubt bisects: a refusal that names
         no module, no entry or several that bring it, or a tree eng unittest's checks cannot read."""
         modules = refused_modules(line)
-        suite = suite_of(config.get("lanes", {}).get(lane, {}).get("command"))
+        suite = unittest_lanes(config).get(lane)
         folder = os.path.normpath(suite[0]) if suite else None
         reached, doubt = {}, None
         for entry in applied if modules else []:

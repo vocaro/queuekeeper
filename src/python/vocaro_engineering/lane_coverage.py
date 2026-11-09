@@ -5,7 +5,7 @@ the tracked source, without building or running anything, and each lane's select
 
 - swift test and eng xctest select their package's test targets, narrowed by --filter and --skip;
 - eng unittest and python3 -m unittest discover select the modules their discovery reaches;
-- xcodebuild test -only-testing:Target/Class selects that class;
+- xcodebuild test and eng simulator-tests, with -only-testing:Target/Class, select that class;
 - eng spelling, eng docs, eng run (whose lane is read in its own right), swift build, swift run and an xcodebuild
   that tests nothing select no test.
 
@@ -256,6 +256,7 @@ def eng_command(root, words):
     action, rest = words[0], words[1:]
     if action in ("spelling", "docs", "run"): return NOTHING
     if action == "xctest": return swift_package(root, rest)
+    if action == "simulator-tests": return only_testing(rest)
     if action == "unittest": return unittest_discovery(root, rest, False)
     raise Unread(f"it runs eng {action}, whose selection this does not read")
 

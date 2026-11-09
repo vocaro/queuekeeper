@@ -90,6 +90,12 @@ for variable in (remote.DISPATCHER, "VOCARO_DEVICE_LEASE"): os.environ.pop(varia
 # The gate is a lane, so its suite inherits the name of the gate's own wait record: a lane a test runs would report its
 # waits there, into what `eng queue status` says of the gate, and never into its project's record (vocaro-engineering#335).
 os.environ.pop(remote.lane_wait.VARIABLE, None)
+# Nor does a lane a test runs write into what the enclosing lane set up for its own command: its results/, whose fixture
+# files then read as the gate's own failures and per-test results (vocaro-engineering#289), the checkout whose module
+# cache a stale build may clear, its self lane, app registrations, device window and owner, or the toolkit it dispatched.
+for variable in (cli.parallel.RESULTS_VARIABLE, cli.stale_modules.ROOT_VARIABLE, cli.SELF_LANE, cli.app_registrations.RUN,
+                 cli.devices.WINDOW, cli.devices.OWNER, "VOCARO_ENGINEERING_ROOT"):
+    os.environ.pop(variable, None)
 resources.GATE_LOCK = offload_host.GATE_LOCK = GATE
 # Nor does any reach the host's crash-report setting or its screen's alerts (#118): a foreground run a test
 # makes reads DialogType unset and no alert, and changes nothing. A test of either replaces these again.

@@ -495,7 +495,7 @@ passes it. `--no-gate` and `--front` do not skip it.
 
 Next, `eng land` and `eng queue add` run `eng unittest`'s own checks
 before a run, the ones whose refusal ends `nothing ran`, on the entry's tree, for each queue lane on
-`origin/main` whose command is `eng unittest`, with that lane's `-s` and `-p`. In a suite that keeps
+`origin/main` whose command is `eng unittest`, or a group's one such lane, with that lane's `-s` and `-p`. In a suite that keeps
 its tests off the real hosts in `host_isolation.py`, a test module that does not import
 `host_isolation` at its top level, or does not parse, refuses every gate that holds it, in seconds,
 with no summary and no failed test to rerun or blame, so a batch holding it bisected blind. On
@@ -602,7 +602,8 @@ testing; under a worker started from a toolkit older than this, it says instead 
 its lanes end, at most `LANE_LIMIT` a lane, holding the queue until then.
 
 **A failed test that passes alone is a flake.** Before it bisects a batch whose failing lane is
-`eng unittest`, the worker reruns the failed tests alone on the same batch commit (owner's decision,
+`eng unittest`, or a lane group holding one `eng unittest` lane whose other lanes all passed, as the
+toolkit's `gate` does, the worker reruns the failed tests alone on the same batch commit (owner's decision,
 2026-11-07, [#231](https://github.com/vocaro/vocaro-engineering/issues/231)). It reads their IDs from the
 lane's log: unittest's `FAIL:` and `ERROR:` lines under each failed process. It first waits for this
 Mac, where the reruns run, to settle, as for a retry with no verdict below. Then it runs each test by
