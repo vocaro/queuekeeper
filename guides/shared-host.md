@@ -2565,6 +2565,10 @@ run against it.
 
 Tests of supervision code bound stalls rather than durations and start a timeout under test
 only once the real descendant has published its identity ([app testing](app-testing.md)).
+A bound the supervisor enforces, such as SIGKILL's wait for an admission owner, is checked at
+each sample: once a sample comes after the bound, the supervisor must act before the next one.
+A wall-clock limit on the whole run failed on the second Mac when the run stalled for a minute
+without the load average showing it (#314).
 
 ## Long-running measurements
 

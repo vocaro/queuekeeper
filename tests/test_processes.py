@@ -483,53 +483,90 @@ class ProcessTests(unittest.TestCase):
                 self.assertEqual({pid for pid, birth in births.items() if current.get(pid, (0, 0, None))[2] == birth}, set())
                 self.assertIn("SIGTERM received; forwarding it to the command", error.getvalue())
 
+    def owner_never_settles(self, how, directory, kill_after, settle, waits):
+        """Supervise ROOT with STUCK_OWNER, an admission owner that ignores SIGTERM and never settles, and end it
+        by a stop or, with how "linger", by ROOT's exit. supervise's SETTLE_WAIT is waits; the test's is settle.
+
+        Each sample checks the bound: once a sample returns kill_after + settle seconds after the owner's SIGTERM,
+        which supervise sends after it starts timing SIGKILL, supervise must send SIGKILL before its next
+        sample, however loaded the host is. Return the stderr, the owner, the moments the stop under test
+        started and the owner ended, and the grace before the SIGTERM."""
+        here, real, births, moments, sent, kill, linger = Path(directory), processes.snapshot, {}, {}, [], os.kill, 0.2
+        # A hang's backstop only, never the bound under test: it counts from the latest progress (a file the
+        # command writes, the owner seen, a signal to it) and starts after supervise's deliberate wait (#128).
+        progress = {"at": time.monotonic(), "state": None, "due": False}
+        def observed():
+            if progress["due"] and signal.SIGKILL not in sent:
+                self.fail(f"SIGKILL did not reach the owner at the first sample {kill_after:g}s + {settle:g}s "
+                          "after its SIGTERM")
+            state = (sorted(path.name for path in here.iterdir()), bool(births), len(sent))
+            if state != progress["state"]: progress.update(at=time.monotonic(), state=state)
+            if time.monotonic() - progress["at"] > (linger + kill_after + settle if births else 0) + stretched(60):
+                self.fail("supervision made no progress for 60 s, stretched by load")
+            current = real()
+            returned = time.monotonic()
+            try: root, owner = map(int, (here / "children").read_text().split())
+            except FileNotFoundError: return current
+            if not births and current.get(owner, (None,))[0] == root and (here / f"ready-{owner}").exists():
+                births[owner] = current[owner][2]
+                # A stop, or ROOT's exit once it sees its descendant adopted, starts the stop under test.
+                moments["started"] = time.monotonic()
+                if how == "stop": processes.request_stop(signal.SIGTERM)
+                else: (here / "adopted").touch()
+            alive = bool(births) and current.get(owner, (0, 0, None))[2] == births[owner]
+            if births and "ended" not in moments and not alive:
+                moments["ended"] = time.monotonic()
+            if alive and "term" in moments and returned - moments["term"] >= kill_after + settle:
+                progress["due"] = True
+            return current
+        def recorded(pid, number):
+            if pid in births:
+                if number == signal.SIGTERM: moments.setdefault("term", time.monotonic())
+                sent.append(number)
+            kill(pid, number)
+        def cleanup():
+            for pid, birth in births.items():
+                if real().get(pid, (0, 0, None))[2] == birth: kill(pid, signal.SIGKILL)
+        self.addCleanup(cleanup)
+        with patch.object(processes, "snapshot", observed), patch.object(processes.os, "kill", recorded), \
+             patch.multiple(processes, create=True, LINGER=linger, SETTLE_WAIT=waits), \
+             patch.dict(os.environ, {"SW_GATE_LOCK_FILE": str(here / "gate")}), \
+             contextlib.redirect_stderr(StringIO()) as error:
+            command = [sys.executable, "-c", ROOT, directory, STUCK_OWNER]
+            if how == "stop":
+                with self.assertRaises(processes.Interrupted):
+                    processes.supervise(command, cwd=directory, kill_after=kill_after)
+            else:
+                self.assertEqual(processes.supervise(command, cwd=directory, kill_after=kill_after), 3)
+        (owner, _birth), = births.items()
+        self.assertEqual(sent[:1], [signal.SIGTERM])
+        self.assertIn(signal.SIGKILL, sent)
+        return error.getvalue(), owner, moments, linger if how == "linger" else 0
+
     def test_sigkill_waits_a_bounded_time_for_an_admission_owner_that_never_settles(self):
         # An owner that never settles, as one behind a hung coordination lock would not, still ends:
         # SIGKILL reaches it SETTLE_WAIT seconds after it was due, after a stop and after the grace.
         # supervise sees the owner only at its first sample once SIGKILL is due, and waits only if that
         # comes within SETTLE_WAIT: a loaded host's samples can come seconds apart, so it is stretched.
+        # Each sample checks the upper bound (owner_never_settles), not a wall-clock limit: a stall
+        # that the load average did not show outlasted one on the second Mac (#314).
         self.addCleanup(processes._stops.clear)
         kill_after = 0.5
         for how in ["stop", "linger"]:
             with self.subTest(how=how), tempfile.TemporaryDirectory() as directory:
                 processes._stops.clear()
-                limits = {"LINGER": 0.2, "SETTLE_WAIT": stretched(2)}
-                here, real, births, begun, moments = Path(directory), processes.snapshot, {}, time.monotonic(), {}
-                def observed():
-                    # Bound a stall from the latest cue: the start, then the stop under test.
-                    if time.monotonic() - moments.get("started", begun) > stretched(60):
-                        self.fail("supervision stalled for 60 s, stretched by load")
-                    current = real()
-                    try: root, owner = map(int, (here / "children").read_text().split())
-                    except FileNotFoundError: return current
-                    if not births and current.get(owner, (None,))[0] == root and (here / f"ready-{owner}").exists():
-                        births[owner] = current[owner][2]
-                        # A stop, or ROOT's exit once it sees its descendant adopted, starts the stop under test.
-                        moments["started"] = time.monotonic()
-                        if how == "stop": processes.request_stop(signal.SIGTERM)
-                        else: (here / "adopted").touch()
-                    if births and "ended" not in moments and current.get(owner, (0, 0, None))[2] != births[owner]:
-                        moments["ended"] = time.monotonic()
-                    return current
-                def cleanup():
-                    for pid, birth in births.items():
-                        if real().get(pid, (0, 0, None))[2] == birth: os.kill(pid, signal.SIGKILL)
-                self.addCleanup(cleanup)
-                with patch.object(processes, "snapshot", observed), patch.multiple(processes, create=True, **limits), \
-                     patch.dict(os.environ, {"SW_GATE_LOCK_FILE": str(here / "gate")}), \
-                     contextlib.redirect_stderr(StringIO()) as error:
-                    command = [sys.executable, "-c", ROOT, directory, STUCK_OWNER]
-                    if how == "stop":
-                        with self.assertRaises(processes.Interrupted):
-                            processes.supervise(command, cwd=directory, kill_after=kill_after)
-                    else:
-                        self.assertEqual(processes.supervise(command, cwd=directory, kill_after=kill_after), 3)
-                (owner, _birth), = births.items()
-                self.assertIn(f"then SIGKILL after {kill_after:g}s", error.getvalue())
-                self.assertIn(f"admission owner(s) PID {owner} still running; SIGKILL waits", error.getvalue())
+                settle = stretched(2)
+                error, owner, moments, grace = self.owner_never_settles(how, directory, kill_after, settle, settle)
+                self.assertIn(f"then SIGKILL after {kill_after:g}s", error)
+                self.assertIn(f"admission owner(s) PID {owner} still running; SIGKILL waits", error)
                 # A lower bound only, which a busy host cannot break.
-                due = (limits["LINGER"] if how == "linger" else 0) + kill_after
-                self.assertGreaterEqual(moments["ended"] - moments["started"], due + limits["SETTLE_WAIT"])
+                self.assertGreaterEqual(moments["ended"] - moments["started"], grace + kill_after + settle)
+            # Negative control: a SIGKILL that waits for the owner forever fails at the first sample it was due.
+            with self.subTest(how=how, waits="forever"), tempfile.TemporaryDirectory() as directory:
+                processes._stops.clear()
+                with self.assertRaisesRegex(AssertionError, "SIGKILL did not reach the owner at the first sample"):
+                    # Fixed: the check's own bound, which no clock enforces: supervise never sends SIGKILL.
+                    self.owner_never_settles(how, directory, kill_after, 0.5, float("inf"))
 
     def test_a_stop_leaves_an_admission_owners_new_children_to_it(self):
         # Sent the stop's SIGTERM as each appeared, three of a nested admission's ps samples in a
