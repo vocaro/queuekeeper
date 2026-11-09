@@ -143,6 +143,20 @@ class HostIsolationTests(unittest.TestCase):
             seen[mode] = result.stdout.strip()
         self.assertEqual(seen, {"isolated": "None none None", "control": f"{token} build-host gate.json"})
 
+    def test_a_suite_run_inside_a_lane_drops_what_that_lane_set_for_its_own_command(self):
+        # On 2026-11-09 fixtures wrote into the real gate's results/, and its summary named a fixture's test as failed (#289).
+        cli = host_isolation.cli
+        names = (cli.parallel.RESULTS_VARIABLE, cli.stale_modules.ROOT_VARIABLE, cli.SELF_LANE, cli.app_registrations.RUN,
+                 cli.devices.WINDOW, cli.devices.OWNER, "VOCARO_ENGINEERING_ROOT")
+        source = str(Path(resources.__file__).resolve().parents[1])
+        for name in names:
+            for mode, imports, expected in (("isolated", "import host_isolation; ", "None"), ("control", "", "outer")):
+                with self.subTest(name=name, mode=mode):
+                    code = f"import os, sys; sys.path.insert(0, sys.argv[1]); {imports}print(os.environ.get(sys.argv[2]))"
+                    result = subprocess.run([sys.executable, "-c", code, source, name], env={**os.environ, name: "outer"},
+                                            cwd=TESTS, capture_output=True, text=True, timeout=stretched(60))
+                    self.assertEqual((result.returncode, result.stdout.strip()), (0, expected), result.stderr)
+
     def test_an_admission_that_forgets_to_redirect_stays_out_of_the_namespace_it_inherited(self):
         # The inherited namespace stands in for the host's: a test must never admit into the real one.
         with tempfile.TemporaryDirectory() as directory:

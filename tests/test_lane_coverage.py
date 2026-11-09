@@ -215,6 +215,16 @@ class Reading(Project):
         self.assertEqual(self.selected("xcodebuild", "test", "-only-testing:AUITests/Elsewhere")["result"],
                          TESTS_WITHOUT_A_LANE)
 
+    def test_eng_simulator_tests_reads_its_named_classes_as_xcodebuild_does(self):
+        self.write("App/AUITests/Flow.swift", XCTEST.format(name="Flow"))
+        run = ("python3", "scripts/eng", "simulator-tests", "--scheme", "P", "--device", "iPhone-17-Pro", "--")
+        self.assertEqual(self.selected(*run, "-only-testing:AUITests/Flow")["result"], EVERY_TEST_HAS_A_LANE)
+        self.assertEqual(self.selected(*run, "-only-testing:AUITests/Elsewhere")["result"], TESTS_WITHOUT_A_LANE)
+        # Negative controls: what a scheme holds, a whole target and a skip are not spelled out class by class.
+        for words in ((), ("-only-testing:AUITests",), ("-skip-testing:AUITests/Flow",)):
+            with self.subTest(words):
+                self.assertEqual(self.selected(*run, *words)["result"], COULD_NOT_TELL)
+
     def test_commands_that_run_no_test_select_none_and_are_read(self):
         self.write("App/AUITests/Flow.swift", XCTEST.format(name="Flow"))
         for command in (["xcodebuild", "build", "-scheme", "A"], ["swift", "build"], ["swift", "run", "Tool"],
@@ -339,7 +349,12 @@ class ThisRepository(unittest.TestCase):
         result = lane_coverage.report(root, config.load(root), tracked=modules)
         self.assertEqual((result["result"], result["withLane"]), (EVERY_TEST_HAS_A_LANE, len(modules)))
         # Over the whole tree: a lane filtered to Swift classes, storekit-tests, reads as unread among Python tests alone.
-        self.assertEqual(lane_coverage.report(root, config.load(root))["unreadLanes"], {})
+        whole = lane_coverage.report(root, config.load(root))
+        self.assertEqual(whole["unreadLanes"], {})
+        for suite in ("AppKitSnapshotTests", "GoldenTests", "OffscreenWindowTests", "SRGBPixelSamplerTests",
+                      "VoiceOverSpeechTests", "UIKitSnapshotTests", "SpeechFixtureTests"):
+            with self.subTest(suite):
+                self.assertFalse([line for line in whole["noLane"] if line.endswith(f": {suite}")], "belongs to a gate lane")
 
 
 if __name__ == "__main__":

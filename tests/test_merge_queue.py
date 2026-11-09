@@ -6132,6 +6132,86 @@ class FlakyReruns(Fixture):
         self.assertEqual([entry["state"] for entry in entries], ["landed", "landed"])
         self.assertIn(f"FAIL: test_sometimes ({self.TEST})", Path(entries[0]["flakes"][0]["gateLog"]).read_text())
 
+    def make_gate_a_group(self, other_status):
+        """Make the gate a group of the eng unittest suite and a lane that exits other_status, as the toolkit's is (#289)."""
+        declared = json.loads((self.repo / "engineering.json").read_text())
+        declared["lanes"]["suite"] = declared["lanes"]["gate"]
+        declared["lanes"]["other"] = {"command": ["python3", "-c", f"raise SystemExit({other_status})"], "timeout": 600}
+        declared["lanes"]["gate"] = {"parallel": ["suite", "other"], "resource": "heavy"}
+        (self.repo / "engineering.json").write_text(json.dumps(declared))
+        run(self.repo, "git", "add", "engineering.json")
+        run(self.repo, "git", "commit", "-qm", "Gate on a group of lanes")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+
+    def test_a_flake_in_a_groups_eng_unittest_lane_reruns_alone_and_the_batch_lands(self):
+        self.make_gate_a_group(0)
+        self.plan.write_text("F")
+        self.commit("a", "a"); self.commit("b", "b")
+        ids = self.add("a", "b")
+        with contextlib.redirect_stdout(io.StringIO()) as said: self.assertEqual(self.work(), 0)
+        log = said.getvalue()
+        self.assertIn(f": {self.TEST}; rerunning each alone up to {mq.RERUNS} times on that commit before a bisect", log)
+        self.assertNotIn("no eng unittest summary", log)
+        self.assertEqual(self.runs_of_the_test(), 1 + mq.RERUNS)
+        entries = [self.state(identifier) for identifier in ids]
+        self.assertEqual([entry["state"] for entry in entries], ["landed", "landed"])
+        self.assertIn(f"FAIL: test_sometimes ({self.TEST})", Path(entries[0]["flakes"][0]["gateLog"]).read_text())
+
+    def group_on_the_second_mac(self, keep_lanes=True):
+        """remote.dispatch as for a group gate the second Mac ran: its lanes' logs and receipts are only in the
+        dispatch's lanes/, as eng files them, and none is left in the worker's checkout."""
+        dispatches = self.base / "dispatches"
+        def dispatch(root, name, since):
+            own = Path(root) / ".build/engineering" / name / "lanes"
+            if not own.is_dir(): return None, None
+            ran = dispatches / f"{len(list(dispatches.glob('*'))) if dispatches.exists() else 0}"
+            ran.mkdir(parents=True)
+            (ran / "run.log").write_text("")
+            if keep_lanes: own.rename(ran / "lanes")
+            else: shutil.rmtree(own)
+            return ran, "fake-mac"
+        return patch.object(mq.remote, "dispatch", side_effect=dispatch)
+
+    def test_a_flake_in_a_group_gate_the_second_mac_ran_reruns_from_its_dispatchs_lane_log(self):
+        # A dispatched group's run.log is empty and its output holds eng unittest's summary only indented, in a
+        # failed lane's tail; the lane's own log came back to the dispatch, not to the worker's checkout.
+        self.make_gate_a_group(0)
+        self.plan.write_text("F")
+        self.commit("a", "a"); self.commit("b", "b")
+        ids = self.add("a", "b")
+        with self.group_on_the_second_mac(), contextlib.redirect_stdout(io.StringIO()) as said:
+            self.assertEqual(self.work(), 0)
+        log = said.getvalue()
+        self.assertIn("gate exited 1 on fake-mac", log)
+        self.assertIn(f": {self.TEST}; rerunning each alone up to {mq.RERUNS} times on that commit before a bisect", log)
+        self.assertNotIn("no eng unittest summary", log)
+        entries = [self.state(identifier) for identifier in ids]
+        self.assertEqual([entry["state"] for entry in entries], ["landed", "landed"])
+        self.assertIn(f"FAIL: test_sometimes ({self.TEST})", Path(entries[0]["flakes"][0]["gateLog"]).read_text())
+
+    def test_a_group_gate_whose_dispatch_brought_no_lane_logs_bisects_and_says_why(self):
+        # The negative control: with no receipt, no lane is known to have passed, so nothing is rerun.
+        self.make_gate_a_group(0)
+        self.plan.write_text("F")
+        self.commit("a", "a"); self.commit("b", "b")
+        self.add("a", "b")
+        with self.group_on_the_second_mac(keep_lanes=False), contextlib.redirect_stdout(io.StringIO()) as said:
+            self.assertEqual(self.work(), 0)
+        self.assertIn("gate's lane other did not pass, which no rerun of a Python test can clear: bisecting", said.getvalue())
+        self.assertNotIn("rerunning each alone", said.getvalue())
+
+    def test_a_group_whose_other_lane_failed_too_bisects_without_a_rerun(self):
+        # The negative control: passing reruns of the Python tests must not land a batch another lane failed.
+        self.make_gate_a_group(1)
+        self.plan.write_text("F")
+        self.commit("a", "a")
+        self.add("a")
+        with contextlib.redirect_stdout(io.StringIO()) as said: self.assertEqual(self.work(), 0)
+        log = said.getvalue()
+        self.assertIn("gate's lane other did not pass, which no rerun of a Python test can clear: bisecting", log)
+        self.assertNotIn("rerunning each alone", log)
+        self.assertEqual(self.runs_of_the_test(), 1)
+
     def test_a_second_mac_gate_whose_dispatch_kept_no_log_bisects_and_says_why(self):
         # The negative control: a dispatch with no run.log gives the rerun nothing to read.
         self.plan.write_text("F")
@@ -6478,6 +6558,20 @@ class FlakyParts(unittest.TestCase):
                         None, "python3 scripts/eng unittest"):
             with self.subTest(command=command):
                 self.assertIsNone(mq.rerun_command(command))
+
+    def test_a_group_counts_as_its_one_eng_unittest_lane(self):
+        suite = {"command": ["python3", "scripts/eng", "unittest", "-s", "tests", "-p", "test_a*.py"]}
+        other = {"command": ["swift", "test"]}
+        lanes = {"suite": suite, "suite2": suite, "other": other, "plain": suite,
+                 "gate": {"parallel": ["suite", "other"]}, "two": {"parallel": ["suite", "suite2"]},
+                 "none": {"parallel": ["other"]}}
+        self.assertEqual(mq.unittest_member(lanes, "gate"), "suite")
+        self.assertEqual(mq.unittest_member(lanes, "plain"), "plain")
+        self.assertEqual(mq.unittest_lanes({"lanes": lanes, "queue": {"lanes": ["gate"]}}), {"gate": ("tests", ["test_a*.py"])})
+        # Negative controls: two such lanes, none, and no lane at all give no one lane to rerun.
+        for lane in ("two", "none", "gone"):
+            with self.subTest(lane=lane):
+                self.assertIsNone(mq.unittest_member(lanes, lane))
 
     def test_a_test_modules_files_are_itself_and_the_projects_files_it_imports_directly(self):
         with tempfile.TemporaryDirectory() as directory:
