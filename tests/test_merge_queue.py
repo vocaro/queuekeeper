@@ -4438,6 +4438,7 @@ class ToolkitCopy(Fixture):
         self.kit = self.base / "toolkit"
         run(self.base, "git", "clone", "-q", str(self.kit_origin), str(self.kit))
         shutil.copytree(ROOT / "src/python", self.kit / "src/python", ignore=shutil.ignore_patterns("__pycache__"))
+        shutil.copy(ROOT / ".gitignore", self.kit)
         # The policy every admitted lane reads, as the toolkit's origin holds it (cli.refresh_policy).
         shutil.copytree(ROOT / "policies", self.kit / "policies")
         run(self.kit, "git", "add", ".")
@@ -4450,6 +4451,8 @@ class ToolkitCopy(Fixture):
         variables.start()
         self.addCleanup(variables.stop)
         del os.environ["VOCARO_ENGINEERING_ROOT"]
+        # Let subprocesses write bytecode even if the calling shell turns it off.
+        os.environ.pop("PYTHONDONTWRITEBYTECODE", None)
         toolkit = patch.object(mq, "TOOLKIT_ROOT", self.kit)
         toolkit.start()
         self.addCleanup(toolkit.stop)
@@ -4505,6 +4508,8 @@ class ToolkitCopy(Fixture):
         self.assertEqual(status, 0)
         self.assertEqual(self.state(identifier)["state"], "landed")
         self.assertEqual(self.seen.read_text().split("\n"), [str(self.copy), landed, ""])
+        cache = self.copy / "src/python/vocaro_engineering/__pycache__"
+        self.assertTrue(any(cache.glob("cli.*.pyc")))
         self.assertEqual(run(self.kit, "git", "rev-parse", "HEAD"), behind)
         # And so does the worker itself, once, from the copy (vocaro-engineering#173).
         self.assertEqual(len(self.moves), 1)
