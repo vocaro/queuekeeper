@@ -6791,11 +6791,15 @@ class PooledStack(Fixture):
             (mq.lane_wait.HERE, mq.BESIDE, None),
             (mq.lane_wait.second_mac("gate-03"), ("--if-free",), "gate-03"),
         ]:
+            record = {"mac": mac, "kind": None, "pid": os.getpid(), "admitted": False}
             with self.subTest(mac=mac), patch.dict(os.environ, {
                 mq.remote.HOST_VARIABLE: "build-host", mq.remote.GATE_HOSTS: "build-host,gate-03,gate-04"
             }), patch.object(worker.queue, "waiting", return_value=waiting), \
-                    patch.object(mq.lane_wait, "current", return_value={"mac": mac, "kind": None}), \
+                    patch.object(mq.lane_wait, "current", return_value=record), \
                     patch.object(mq, "Stack") as stack:
+                worker.stack(worker, config, ["gate"], "head", [], threading.Event(), set())
+                stack.assert_not_called()
+                record["admitted"] = True
                 worker.stack(worker, config, ["gate"], "head", [], threading.Event(), set())
                 runner = stack.call_args.args[1]
                 self.assertEqual(stack.call_args.args[5], where)
@@ -6866,6 +6870,49 @@ class Stacked(Fixture):
     def added(self, branch):
         return next(entry for entry in mq.Queue(self.repo).all() if entry["branch"] == branch)
 
+    def test_stack_waits_for_the_final_lanes_admission_before_choosing_the_other_mac(self):
+        self.commit("a", "a"); self.commit("b", "b")
+        first, second = self.add("a", "b")
+        worker = mq.Worker(mq.Queue(self.repo))
+        lanes = ["spelling", "gate"]
+        args = (worker, self.config(), lanes, self.state(first)["tip"], [self.state(first)], threading.Event(), set())
+        waits = mq.lane_wait
+        spelling = waits.path_of(worker.checkout, "spelling")
+        gate = waits.path_of(worker.checkout, "gate")
+        with (patch.multiple(mq, HERE=("--here",), BESIDE=("--offload-only",)),
+              patch.object(mq, "Stack") as stack,
+              patch.dict(os.environ, {waits.VARIABLE: str(spelling)})):
+            worker.stack(*args)
+            stack.assert_not_called()
+            worker.lane_now = ("spelling", time.time(), ())
+            waits.running()
+            worker.stack(*args)
+            stack.assert_not_called()
+
+            worker.lane_now = ("gate", time.time(), ())
+            os.environ[waits.VARIABLE] = str(gate)
+            waits.sent("build-host")
+            worker.stack(*args)
+            stack.assert_not_called()
+            waits.relayed(b'{"kind":"admission","reason":"busy"}', "build-host")
+            worker.stack(*args)
+            stack.assert_not_called()
+            waits.relayed(b"null", "build-host")
+            worker.stack(*args)
+            stack.assert_not_called()
+            waits.relayed(b'{"kind":null,"admitted":true}', "build-host")
+            worker.stack(*args)
+            stack.assert_called_once()
+            self.assertEqual(stack.call_args.args[-1], mq.HERE)
+            self.assertEqual([entry["id"] for entry in stack.call_args.args[2]], [second])
+
+            worker.pending = None
+            stack.reset_mock()
+            waits.running()
+            worker.stack(*args)
+            stack.assert_called_once()
+            self.assertEqual(stack.call_args.args[-1], mq.BESIDE)
+
     def test_an_entry_that_arrives_during_a_gate_lands_on_its_gate_stacked_on_the_batch(self):
         self.commit("hold", "a"); self.commit("b", "b")
         [first] = self.add("a")
@@ -6934,6 +6981,10 @@ class Stacked(Fixture):
         worker.pending = SimpleNamespace(done=lambda: True, void=lambda: "busy", not_admitted=lambda: True,
                                          drop=dropped.append)
         config, lanes, head = self.config(), ["gate"], self.state(first)["tip"]
+        worker.lane_now = ("gate", time.time(), ())
+        path = mq.lane_wait.path_of(worker.checkout, "gate")
+        with patch.dict(os.environ, {mq.lane_wait.VARIABLE: str(path)}):
+            mq.lane_wait.running()
         arguments = (worker, config, lanes, head, [self.state(first)], threading.Event(), set())
         with patch.object(mq.time, "monotonic", return_value=100) as clock, patch.object(mq, "Stack") as stack:
             worker.stack(*arguments)
@@ -7283,8 +7334,10 @@ class RoundAccount(Fixture):
         queue, watch = self.watch()
         mq.lane_wait.waiting(mq.lane_wait.ADMISSION, "all 3 guaranteed slots are busy")
         path = Path(os.environ[mq.lane_wait.VARIABLE])
-        self.assertEqual(set(json.loads(path.read_text())),
-                         {"schemaVersion", "kind", "reason", "mac", "offer", "stranded", "pid", "since", "written"})
+        record = json.loads(path.read_text())
+        self.assertEqual(set(record), {"schemaVersion", "kind", "reason", "mac", "offer", "stranded", "pid", "since",
+                                       "written", "admitted"})
+        self.assertIs(record["admitted"], False)
         gate = self.gate_after_look(queue, watch)
         self.assertNotIn("status", gate)
         self.assertNotIn("outcome", gate)

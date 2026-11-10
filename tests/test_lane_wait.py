@@ -275,11 +275,11 @@ class Relay(unittest.TestCase):
         self.addCleanup(folder.cleanup)
         self.path = Path(folder.name) / "wait.json"
 
-    def record(self, kind, reason="busy", pid=None):
+    def record(self, kind, reason="busy", pid=None, admitted=False):
         # Replaced whole, as lane_wait.write does: a relay that read a file being rewritten would see no record.
         staged = self.path.with_suffix(".staged")
         staged.write_text(json.dumps({"schemaVersion": 1, "kind": kind, "reason": reason, "stranded": False,
-                                      "pid": os.getpid() if pid is None else pid}))
+                                      "pid": os.getpid() if pid is None else pid, "admitted": admitted}))
         os.replace(staged, self.path)
 
     def run_relay(self, change, work=True):
@@ -309,19 +309,19 @@ class Relay(unittest.TestCase):
             self.wait_for_frame(waiter)
             self.record("admission", "2 are busy")
             self.wait_for_frame(waiter)
-            self.record(None, None)
+            self.record(None, None, admitted=True)
             self.wait_for_frame(waiter)
         frames = self.run_relay(change)
         self.assertEqual([json.loads(data) for kind, data in frames],
-                         [{"kind": "admission", "reason": "all 3 are busy", "stranded": False},
-                          {"kind": "admission", "reason": "2 are busy", "stranded": False},
-                          {"kind": None, "reason": None, "stranded": False}])
+                         [{"kind": "admission", "reason": "all 3 are busy", "stranded": False, "admitted": False},
+                          {"kind": "admission", "reason": "2 are busy", "stranded": False, "admitted": False},
+                          {"kind": None, "reason": None, "stranded": False, "admitted": True}])
         self.assertEqual({kind for kind, _ in frames}, {b"W"})
 
     def test_a_lane_that_waits_for_nothing_sends_no_wait(self):
         """Negative control: no record, and a running record from the provision lane, send nothing."""
         self.assertEqual(self.run_relay(lambda waiter: None), [])
-        self.record(None, None)
+        self.record(None, None, admitted=True)
         self.assertEqual(self.run_relay(lambda waiter: None, work=False), [])
         # The lane's own step says so: it runs.
         self.assertEqual(len(self.run_relay(lambda waiter: None)), 1)
