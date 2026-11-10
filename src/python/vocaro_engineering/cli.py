@@ -630,22 +630,21 @@ def foreground_held(stack, name, label, timeout, **options):
     return None
 
 
-def window_wait(name, window, label):
-    """How long work on the devices of window may wait for admission, a devices.WindowWait, or None for work with no
-    window. It is said at the start, since it decides when the work stops waiting (vocaro-engineering#292). label is
-    the admission's, whose runs in the admission log measure the work; None for work no earlier run measures."""
+def window_wait(name, window, label, *, keys=None, budget=None, fallback=None):
+    """Report the last safe start. For a named device plan use passing samples and its budget, or the
+    lane timeout when it has neither. An ad hoc command keeps its label-based estimate."""
     if window is None: return None
-    waiting = devices.WindowWait(window, resources.measured_seconds(label) if label is not None else None)
+    measured = resources.measured_seconds(label, devices=keys) if label is not None else None
+    waiting = devices.WindowWait(window, measured, budget=fallback if measured is None and budget is None else budget)
     if waiting.left() > 0: print(f"eng: {name} waits for admission at most until {waiting.latest.isoformat()}: {waiting}",
                                  file=sys.stderr, flush=True)
     return waiting
 
 
 def window_closed(name, waiting):
-    """BUSY, after saying so, once the last start that can finish within the device window has passed for work whose
-    measured time says it cannot finish, or None: such work does not start, and nothing ran. Work no run has measured
-    waits for nothing then, and if admitted at once meets the bound its reservation sets, which refuses or stops it."""
-    if waiting is None or waiting.measured is None or waiting.left() > 0: return None
+    """Refuse an estimated run that can no longer fit. An unestimated diagnostic can try an immediate
+    admission and then meets the device runner's own bound."""
+    if waiting is None or waiting.estimate is None or waiting.left() > 0: return None
     print(f"eng: {name} not run on {this_mac()}: {waiting}. No device result was recorded", file=sys.stderr, flush=True)
     return BUSY
 
@@ -1464,6 +1463,8 @@ def perform(argv, report):
                        "policy": policy_commit, **placement(reason)}
             # A run of the whole lane, which a pass of counts for its commit once kept (concluded).
             whole = not extra and args.expect is None and not args.serial
+            keys = lane_devices(lane)
+            admission = None
             if whole and receipt["project"].get("workingChangesSHA256") != remote.CLEAN:
                 # vocaro-engineering#197: nothing said so until eng release stopped for it.
                 why = remote.uncounted(root, args.lane)
@@ -1524,9 +1525,12 @@ def perform(argv, report):
                             # The window the session holds the lane's devices for, here or leased by the Mac that
                             # sent it. Arguments such as a filter make a run no earlier one measures.
                             device_window = device_window if device_window is not None else devices.held_window(
-                                lane_devices(lane), devices.default_owner())
+                                keys, devices.default_owner())
                             waiting = window_wait(args.lane, device_window,
-                                                  None if extra else lane_label(root, config, args.lane))
+                                                  lane_label(root, config, args.lane) if whole else None,
+                                                  keys=keys or None,
+                                                  budget=(lane.get("deviceRunMinutes", 0) * 60 or None) if whole else None,
+                                                  fallback=limit if whole and keys else None)
                             allowed = waiting.seconds if waiting is not None else lambda seconds: seconds
                             closed = window_closed(args.lane, waiting)
                             if closed is not None: return closed
@@ -1560,6 +1564,8 @@ def perform(argv, report):
                             if isinstance(alerts, int): return alerts
                             blocked = cleared_notifications(receipt) if second else None
                             if blocked is not None: return blocked
+                            closed = window_closed(args.lane, waiting)
+                            if closed is not None: return closed
                             result = execute(admission.interrupted)
                             # A failed build ran no test an alert could have disturbed.
                             if alerts is not None and not compile_failed(receipt): result = alerts.judged(result)
@@ -1585,6 +1591,8 @@ def perform(argv, report):
             if status == evidence.UNMEASURED and (reads_screen or SCREEN_LOCKED.search(log)):
                 unmeasured_screen(args.lane, receipt)
             concluded(status, **({"unmeasured": unmeasured} if status == evidence.UNMEASURED else {}))
+            if status == 0 and whole and keys and admission is not None and device_pass.passed(directory / "results", keys):
+                admission.device_lane_passed(keys)
             return status
         return 0
     except (remote.Lost, PolicyUnavailable) as error:

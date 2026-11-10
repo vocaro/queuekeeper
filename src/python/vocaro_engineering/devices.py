@@ -243,12 +243,14 @@ def held_window(keys, owner, record=None):
 
 class WindowWait:
     """How long work on the devices of window may wait for admission (vocaro-engineering#292): until the last start
-    that can still finish within it, its end less the cleanup a run keeps and measured, the work's measured seconds,
-    or MINIMUM when it has none. A wait that outlasts that spends the owner's window queued."""
+    that leaves room for cleanup and the larger of the measured time and budget.
+    A diagnostic without an estimate leaves room for the shortest bounded run."""
 
-    def __init__(self, window, measured=None):
+    def __init__(self, window, measured=None, *, budget=None):
         self.window, self.measured, self.limited = window, measured, False
-        needs = (MINIMUM if measured is None else max(measured, MINIMUM)) + window["cleanupSeconds"]
+        self.budget = budget
+        self.estimate = max(measured or 0, budget or 0) if measured is not None or budget is not None else None
+        needs = max(MINIMUM, self.estimate or 0) + window["cleanupSeconds"]
         self.latest = moment(window["until"]) - timedelta(seconds=needs)
 
     def left(self):
@@ -262,8 +264,12 @@ class WindowWait:
         return min(timeout, left)
 
     def __str__(self):
-        run = (f"its measured {self.measured:.0f}s" if self.measured is not None
-               else f"no measured run of it, so the shortest bounded run, {MINIMUM}s")
+        if self.budget is not None and self.estimate == self.budget:
+            run = f"its full-pass budget of {self.budget:.0f}s"
+        elif self.measured is not None:
+            run = f"its measured {self.measured:.0f}s"
+        else:
+            run = f"no measured run of it, so the shortest bounded run, {MINIMUM}s"
         return (f"the window on {' and '.join(self.window['devices'])} ends {self.window['until']}, and the last start "
                 f"that can finish within it is {self.latest.isoformat()}: {run}, and "
                 f"{self.window['cleanupSeconds']:g}s kept for cleanup")

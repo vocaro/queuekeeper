@@ -48,6 +48,17 @@ WAIT = 3600
 SUMMARY = "device-pass.json"
 
 
+def passed(results, keys):
+    """Whether this run's summary records a pass on every device in the lane's plan."""
+    try:
+        summary = json.loads((Path(results) / SUMMARY).read_text())
+        parts = summary["devices"]
+        return (summary["status"] == 0 and len(parts) == len(set(keys))
+                and {part["key"] for part in parts if part["outcome"] == PASSED} == set(keys))
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+
+
 class Misplaced(RuntimeError):
     """The pass runs where it can reserve no physical device: on the second Mac, whose record defers them."""
 

@@ -22,7 +22,8 @@ def load(root):
 # The keys a lane and a lane group take, which parse checks and schemas/engineering.schema.json lists (a test
 # compares them, vocaro-engineering#248).
 LANE_KEYS = frozenset({"command", "resource", "minimumTests", "timeout", "foreground", "here", "model", "display",
-                       "budgetMinutes", "wholeHost", "apps", "unlockedScreen", "devices", "compileFirst"})
+                       "budgetMinutes", "wholeHost", "apps", "unlockedScreen", "devices", "compileFirst",
+                       "deviceRunMinutes"})
 GROUP_KEYS = frozenset({"parallel", "jobs", "resource", "here", "model", "budgetMinutes", "wholeHost", "unlockedScreen"})
 
 
@@ -48,7 +49,8 @@ def lane_devices(lane):
     words = command[command.index("device-pass") + 1:]
     if "--" in words: words = words[:words.index("--")]
     return [word.split("=", 1)[1] if word.startswith("--device=") else words[index + 1]
-            for index, word in enumerate(words) if word.startswith("--device=") or word == "--device"]
+            for index, word in enumerate(words) if word.startswith("--device=")
+            or (word == "--device" and index + 1 < len(words))]
 
 
 def parse(source):
@@ -127,6 +129,12 @@ def parse(source):
         for key in ["minimumTests", "timeout"]:
             if key in lane and (type(lane[key]) is not int or lane[key] <= 0):
                 raise ValueError(f"{name}.{key} must be a positive integer")
+        if "deviceRunMinutes" in lane:
+            minutes = lane["deviceRunMinutes"]
+            if type(minutes) is not int or minutes <= 0:
+                raise ValueError(f"{name}.deviceRunMinutes must be a positive integer")
+            if not lane_devices(lane) or unadmitted(lane):
+                raise ValueError(f"{name}.deviceRunMinutes needs an admitted device lane")
     merge_queue(value.get("queue", {}), lanes)
     release(value.get("release", {}), lanes, value.get("queue", {}))
     if "app" in value: app(value["app"])

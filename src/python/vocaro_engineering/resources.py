@@ -668,6 +668,7 @@ class Admission:
         self.kind = "exclusive" if exclusive else "model" if model else "heavy"
         # When the request began to wait, and when it was admitted, by the monotonic clock.
         self.started, self.admitted = time.monotonic(), None
+        self.held_seconds = None
         self.directory = slot_directory()
         # Each from its environment variable, the host's limits file or the default (#49).
         found = limits()
@@ -1269,8 +1270,20 @@ class Admission:
             # stop the host), or a stop or a timeout saw the command and every observed descendant end.
             outcome = ending(kind)
             self._settle(release=outcome != "uncertain")
-            self._log("ended", outcome=outcome, slots=slots, held=round(time.monotonic() - self.admitted, 3))
+            self.held_seconds = round(time.monotonic() - self.admitted, 3)
+            self._log("ended", outcome=outcome, slots=slots, held=self.held_seconds)
         return False
+
+    def device_lane_passed(self, keys):
+        """Add the verdict after coverage was judged, independently of releasing the slot."""
+        if self.held_seconds is None:
+            return  # An inherited admission has no timing of its own.
+        try:
+            with (self.directory / "coordination.lock").open("a+") as bridge:
+                fcntl.flock(bridge, fcntl.LOCK_EX)
+                self._log("device-lane-passed", held=self.held_seconds, devices=list(keys))
+        except OSError as error:
+            print(f"heavy: the device lane's timing was not recorded: {error}", file=sys.stderr, flush=True)
 
 
 @contextlib.contextmanager
@@ -1287,7 +1300,8 @@ def read_entry(line):
         entry = json.loads(line)
         entry["time"] = datetime.fromisoformat(entry["time"])
         # A recovery's line counts no seconds of its own.
-        field = {"admitted": "waited", "withdrawn": "waited", "ended": "held", "recovered": None}[entry["event"]]
+        field = {"admitted": "waited", "withdrawn": "waited", "ended": "held", "recovered": None,
+                 "device-lane-passed": "held"}[entry["event"]]
         seconds = entry[field] if field else 0
         # What the request saw, as the summary reads it: the load, and the refusals of each kind and the
         # highest load of a request that waited.
@@ -1327,13 +1341,20 @@ def read_log(paths=None):
     return entries, unreadable
 
 
-def measured_seconds(label, paths=None):
-    """The median seconds label's latest MEASURED_RUNS admissions held the host, from the admission log, or None when
-    it records no run of label that ended on its own: a stopped or timed-out one measures nothing. The log has no
-    verdict, so a run that failed early counts, and the median keeps one from moving it far."""
+def measured_seconds(label, paths=None, *, devices=None):
+    """The median duration of the latest matching admissions, or None without a sample.
+
+    A device lane uses only judged, whole passes for its device plan. A released slot by itself
+    carries no verdict and is usable only for the estimate of an ad hoc command.
+    """
     entries, _unreadable = read_log(paths)
-    held = [entry["held"] for entry in entries
-            if entry["event"] == "ended" and entry["outcome"] == "released" and entry["label"] == label[:LABEL_LIMIT]]
+    matching = [entry for entry in entries if entry["label"] == label[:LABEL_LIMIT]]
+    if devices is None:
+        held = [entry["held"] for entry in matching if entry["event"] == "ended" and entry["outcome"] == "released"]
+    else:
+        keys = list(devices)
+        held = [entry["held"] for entry in matching
+                if entry["event"] == "device-lane-passed" and entry.get("devices") == keys]
     return statistics.median(held[-MEASURED_RUNS:]) if held else None
 
 
