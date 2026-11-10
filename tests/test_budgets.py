@@ -226,8 +226,8 @@ class CommitLimit(unittest.TestCase):
         (directory / f"{lane}.json").write_text(json.dumps({"commit": commit, "lane": lane, "arguments": [],
             "result": {"exitStatus": status, "host": {"name": "second"}}}))
 
-    def passed_here(self, commit, lane, outcome="passed"):
-        directory = self.root / ".build/engineering" / lane
+    def passed_here(self, commit, lane, outcome="passed", *, checkout=None):
+        directory = (checkout or self.root) / ".build/engineering" / lane
         directory.mkdir(parents=True, exist_ok=True)
         (directory / "source.json").write_text(json.dumps({"project": {"revision": commit,
             "workingChangesSHA256": release.CLEAN}, "arguments": [], "outcome": outcome}))
@@ -247,6 +247,25 @@ class CommitLimit(unittest.TestCase):
         self.assertIn("Run a checkpoint", warning)
         self.assertIn("guides/releasing.md, Checkpoints", warning)
         self.assertNotIn("has not passed", warning)
+
+    def test_a_prunable_worktree_is_left_registered_and_live_worktree_receipts_count(self):
+        checkouts = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, checkouts, ignore_errors=True)
+        stale, live = checkouts / "stale checkout", checkouts / "live checkout"
+        for checkout in (stale, live):
+            run(self.root, "git", "worktree", "add", "-q", "--detach", str(checkout))
+        (stale / ".git").unlink()
+        listing = run(self.root, "git", "worktree", "list", "--porcelain")
+        stale_entry = next(entry for entry in listing.split("\n\n") if entry.startswith(f"worktree {stale}\n"))
+        self.assertIn("\nprunable ", stale_entry)
+        self.passed_here(self.commits[5], "device", checkout=live)
+        self.passed_here(self.commits[5], "corpus", checkout=live)
+        self.passed_remotely(self.commits[8], "device")
+        [warning] = budgets.commit_warnings(self.root, self.config())
+        self.assertIn(f"origin/main holds 4 commits since {self.commits[5][:12]}", warning)
+        self.assertIn(f"{self.commits[8][:12]}, a newer commit, has not passed corpus", warning)
+        self.assertEqual(run(self.root, "git", "worktree", "list", "--porcelain"), listing)
+        self.assertTrue(stale.is_dir())
 
     def test_no_release_lanes_gives_no_warning(self):
         self.assertEqual(budgets.commit_warnings(self.root, self.config(lanes=())), [])

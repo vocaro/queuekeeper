@@ -21,6 +21,8 @@ import statistics
 import subprocess
 from pathlib import Path
 
+from . import toolkit_copy
+
 GATE = "gate"
 # The passing gate runs the median is taken over, newest first, and the fewest that judge a budget.
 RECENT_RUNS = 10
@@ -180,10 +182,9 @@ def git(root, *arguments):
 
 
 def checkouts(root):
-    """Every worktree of the repository, each with its own lane receipts in .build/engineering."""
-    listed = git(root, "worktree", "list", "--porcelain")
-    paths = [Path(line[len("worktree "):]) for line in listed.stdout.splitlines() if line.startswith("worktree ")]
-    return paths or [Path(root)]
+    """Usable worktrees of the repository, each with its own lane receipts in .build/engineering."""
+    paths = [Path(entry["worktree"]) for entry in toolkit_copy.worktrees(root) if "prunable" not in entry]
+    return [path for path in paths if path.is_dir()] or [Path(root)]
 
 
 def passed_lanes(root, places, lanes, commit):
