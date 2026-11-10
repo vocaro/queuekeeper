@@ -971,8 +971,12 @@ def perform(argv, report):
     init.add_argument("--name")
     init.add_argument("--capability", action="append", choices=sorted(CAPABILITIES), default=[])
     commands.add_parser("doctor")
-    local_setup = commands.add_parser("setup", help="check or install Claude Code issue permissions on this Mac")
-    local_setup.add_argument("--check", action="store_true", help="report missing rules without changing settings")
+    local_setup = commands.add_parser("setup", help="check Mac readiness and offer supported owner-run setup changes")
+    local_setup.add_argument("--check", action="store_true", help="report readiness without applying changes")
+    local_setup.add_argument("--local", action="store_true", help="check only this Mac")
+    local_setup.add_argument("--step", choices=["claude-permissions"], help="run just the named setup step")
+    local_setup.add_argument("--xcode-mcp", action="store_true", help="include this Mac's Xcode headless MCP service")
+    local_setup.add_argument("--signing", action="store_true", help="include the build host's kept keychain setup")
     commands.add_parser("instructions")
     artifacts = commands.add_parser("github-artifacts", help="prepare checksum-pinned GitHub binary artifacts "
         "through authenticated API downloads in SwiftPM's artifact cache")
@@ -1258,8 +1262,12 @@ def perform(argv, report):
     if args.action == "setup":
         if split < len(argv):
             parser.error("setup takes no arguments after --")
+        if args.step and (args.local or args.xcode_mcp or args.signing):
+            parser.error("--step runs one step and takes no other setup selection flags")
+        if args.local and args.signing:
+            parser.error("--signing checks the build host and requires omitting --local")
         # This check must not recover crash-alert settings or start any host work.
-        return setup.main(args.check)
+        return setup.main(args)
     # Only the remote work itself reports its admission. Provisioning and nested commands do not.
     window = os.environ.pop(devices.WINDOW, None)
     device_window = json.loads(window) if window is not None else None

@@ -1365,6 +1365,13 @@ and a test that dispatches uses a fake second Mac or `VOCARO_OFFLOAD_HOST=none`.
 
 ### Setting up the second Mac
 
+Start with `eng setup --check` from the workstation. It reports local readiness and checks
+the configured build host over trusted SSH without applying changes. Use `--local` for one
+Mac, or `--signing` to include the build host's kept keychain setup. The report identifies
+which checks are incomplete and points to the owner-run procedures below. It checks that the build
+host can read the private toolkit. The keychain setup check inspects file metadata. Use a signing
+workflow to prove key use.
+
 The owner prepares the second Mac once:
 
 1. Turn on Remote Login (System Settings, General, Sharing) and add this Mac's public key to the
@@ -1423,8 +1430,8 @@ The owner prepares the second Mac once:
    setting, and `~/.ssh/config`, are the owner's: eng changes neither, needs `sudo` for the first,
    and says what to set. Nothing else in eng depends on the old name.
 
-3. Install the Xcode this Mac uses at the same path. Accept its license and run its first launch
-   (`sudo xcodebuild -license accept`, then `xcodebuild -runFirstLaunch`).
+3. Install the Xcode this Mac uses at the same path and follow the first-launch instructions
+   from the setup report.
 4. Install Homebrew there (https://brew.sh); its installer asks for the second Mac's password.
    Then, from this Mac, install the tools the projects' gates use:
 

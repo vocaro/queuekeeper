@@ -269,9 +269,9 @@ gh issue close ISSUE_NUMBER
 Each plain command matches its own Claude Code allow rule. Using `--body-file` lets
 `gh issue comment` read the evidence directly.
 
-Use `eng setup --check` to check the Claude Code issue rules on this Mac. The owner runs
-`eng setup` in their Terminal to review and install missing rules in Claude Code's user
-settings. The rules match command text across repositories.
+Use `eng setup --step claude-permissions --check` to check the Claude Code issue rules on
+this Mac. The owner omits `--check` in their Terminal to review and install missing rules in
+Claude Code's user settings. The rules match command text across repositories.
 [vocaro-engineering#338](https://github.com/vocaro/vocaro-engineering/issues/338)
 
 An auto-mode classifier denial comes from Claude Code before GitHub receives the command.
