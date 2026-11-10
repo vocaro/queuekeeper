@@ -79,6 +79,7 @@ ALIASES = (DEFAULT_HOST, "second-mac")
 # The variable that names the second Mac's SSH destination, or none for this Mac only, and the name it
 # had until vocaro-engineering#58, which eng refuses (named_host).
 HOST_VARIABLE, OLD_HOST_VARIABLE = "VOCARO_OFFLOAD_HOST", "VOCARO_BUILD_HOST"
+GATE_HOSTS = "VOCARO_GATE_HOSTS"
 # The second Mac's directory for repositories and checkouts, relative to its home. It keeps the build
 # host's name: another would leave every warm checkout there behind.
 ROOT = "Development/build-host"
@@ -87,6 +88,7 @@ CHECKOUTS = 4
 # Where each dispatch's own results stay, unique to it, under .build/engineering/remote/DISPATCHES/NAME/,
 # beside NAME/, the latest; and how many of each name's stay: two for each run that can overlap another.
 DISPATCHES = ".dispatches"
+DISPATCH_HOST = "dispatch-host"
 DISPATCHES_KEPT = 2 * CHECKOUTS
 # Seconds ssh waits for each address the second Mac's name resolves to before it tries the next.
 CONNECT_TIMEOUT = 10
@@ -163,6 +165,7 @@ LOST_ACCESS = 69
 # Set by a queue worker on the `eng run` of a gate's lane, the one `eng run` that stops for LOST_ACCESS. That `eng run`
 # takes it out of its environment, so that no lane it runs here, nor what that lane starts, stops for it.
 QUEUE_GATE = "VOCARO_QUEUE_GATE"
+QUEUE_GATE_EXCLUDE = "VOCARO_QUEUE_GATE_EXCLUDE"
 # Seconds the check before a dispatch gives each address of the second Mac's name to answer on its ssh
 # port, and then `ssh true` to finish there, login shell included: an offline second Mac costs a few
 # seconds, where ssh's ConnectTimeout would take ten for each address.
@@ -571,6 +574,19 @@ def configured():
     if host is not None:
         return None if host.strip().lower() in {"", "none", "off"} else host
     return alias()
+
+
+def gate_hosts():
+    """Ordered SSH aliases for queue gates, or None to use the ordinary single remote."""
+    value = os.environ.get(GATE_HOSTS)
+    if value is None: return None
+    host = named_host()
+    if host is not None and host.strip().lower() in {"", "none", "off"}: return None
+    hosts = tuple(part.strip() for part in value.split(","))
+    if any(not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]*", alias) or alias.lower() in {"none", "off"}
+           for alias in hosts) or len(hosts) != len(set(hosts)):
+        raise ValueError(f"{GATE_HOSTS} needs a comma-separated list of distinct SSH aliases")
+    return hosts
 
 
 def named_host():
@@ -2136,6 +2152,9 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
         raise Misconfigured(f"{host} refused it: {result['refused']}",
                             result.get("fix") or f"repair on {host} what that names")
     if result is None:
+        # A lost dispatch has no receipt. Keep its destination beside the log for queue diagnostics.
+        with contextlib.suppress(OSError):
+            (staging / DISPATCH_HOST).write_text(host + "\n")
         own = file_results(base, name, dispatch, staging)
         kept = f"~/{ROOT}/{offload_host.JOURNALS}/{journal}" if frames.journaled else None
         raise Lost(lost(host, ended, said, started, slept, own / "output.log", journal=kept, gone=frames.gone))
@@ -2801,7 +2820,7 @@ def bring_runtimes(host, developer, check):
     return 1
 
 
-def first(root, config, lane, arguments, expect, fallback=True, queue_gate=False):
+def first(root, config, lane, arguments, expect, fallback=True, queue_gate=False, exclude=None):
     """Offer a lane to the second Mac to start now, once (Offer.make), and return the Offer.
 
     With fallback, the offer first reads both Macs' capacity for the lane (Offer.choose): a whole-host
@@ -2812,6 +2831,7 @@ def first(root, config, lane, arguments, expect, fallback=True, queue_gate=False
     arguments name a physical device of this Mac's record, nor any lane when Git cannot name the
     commits to send. With queue_gate, for a queue worker's own `eng run` of a gate's lane, a process that lost Local
     Network access ends with LOST_ACCESS rather than the work running on this Mac (Offer.lost_access).
+    A configured gate pool tries the listed aliases in order, excluding the active batch's host when stacking.
     """
     work = ["run", "--here", "--if-free", *(["--expect", str(expect)] if expect else []), lane,
             *(["--", *arguments] if arguments else [])]
@@ -2820,10 +2840,12 @@ def first(root, config, lane, arguments, expect, fallback=True, queue_gate=False
     refused = (f"its arguments name the physical device of {', '.join(named)}, which the second Mac uses only under "
                "a reservation `eng remote run --device` carries from here") if named else None
     settings = config.get("lanes", {}).get(lane, {})
+    hosts = gate_hosts() if queue_gate else None
     offered = Offer(lane, f"`eng run --here {lane}`", lambda host, sent: execute(
         root, config, host, work, lane=lane, arguments=arguments, expect=expect, decline=True, sent=sent), refused,
         whole_host=bool(settings.get("wholeHost")), exclusive=settings.get("resource") == "exclusive",
-        screen=unlocked_screen(config.get("lanes", {}), lane), queue_gate=queue_gate)
+        screen=unlocked_screen(config.get("lanes", {}), lane), queue_gate=queue_gate and (fallback or hosts is not None),
+        hosts=None if hosts is None else tuple(host for host in hosts if host != exclude))
     offered.make(fallback)
     return offered
 
@@ -2956,10 +2978,12 @@ class Offer:
     and this Mac has (Loaded); and None once it ran there or can no longer take it."""
 
     def __init__(self, name, instead, send, refused=None, whole_host=False, exclusive=False, screen=False,
-                 queue_gate=False):
+                 queue_gate=False, hosts=None):
         self.name, self.instead, self.send, self.refused = name, instead, send, refused
         self.whole_host, self.exclusive, self.screen, self.queue_gate = whole_host, exclusive, screen, queue_gate
         self.sent, self.host, self.status, self.busy, self.away = {}, None, None, None, None
+        self.hosts = hosts
+        self.remote_macs = "the build Macs" if hosts is not None else "the second Mac"
         # Whether each offer first reads both Macs' capacity (choose): an offer this Mac may take does, and
         # --offload-only's, which never runs the work here, does not. Set by make.
         self.choosing = False
@@ -2973,12 +2997,36 @@ class Offer:
         when the second Mac has no spare capacity for it while this Mac has, with nothing offered."""
         if self.refused is not None: raise Unavailable(self.refused)
         with processes.forwarding_signals():
+            if self.hosts is not None: return self.attempt_pool()
             # A second Mac that cannot be reached costs seconds here, and nothing is sent to it.
             reachable(self.host)
             if self.choosing:
                 reason = self.choose()
                 if reason is not None: raise Loaded(reason)
             return self.send(self.host, self.sent)
+
+    def attempt_pool(self):
+        """Offer to each eligible Mac in order until one takes it. Keep prepared commits per destination."""
+        refused = []
+        for host in self.hosts:
+            try:
+                reachable(host)
+                reason = spare(capacity_there(host), host, self.whole_host, self.exclusive, self.screen, extra=True)
+            except (NoLocalNetwork, Misconfigured):
+                raise
+            except Unavailable as error:
+                refused.append(getattr(error, "problem", str(error)))
+                continue
+            if reason is not None:
+                refused.append(reason)
+                continue
+            try:
+                return self.send(host, self.sent.setdefault(host, {}))
+            except (NoLocalNetwork, Misconfigured):
+                raise
+            except (Busy, Unreachable) as error:
+                refused.append(error.problem if isinstance(error, Unreachable) else str(error))
+        raise Loaded("; ".join(refused))
 
     def choose(self):
         """Why the work goes to this Mac's queue now rather than being offered, by both Macs' capacity for it
@@ -3006,9 +3054,12 @@ class Offer:
         """Offer the work once and set status. Without fallback, for a caller that runs the work itself
         when the second Mac does not, every reason that it does not is BUSY, after saying why; the capacity
         of the Macs is not read for it, since the work never runs here (--offload-only)."""
-        self.host = configured()
+        self.host = configured() if self.hosts is None else next(iter(self.hosts), None)
         self.choosing = fallback
         if self.host is None:
+            if self.hosts is not None:
+                self.status = "no other build Mac is eligible" if fallback else BUSY
+                return self.status
             if not fallback:
                 print(f"eng: {self.name} not run: no second Mac is configured ({HOST_VARIABLE}, or the ssh alias "
                       f"{' or '.join(ALIASES)} in ~/.ssh/config)", file=sys.stderr, flush=True)
@@ -3116,13 +3167,14 @@ def overflow(offered, admit, timeout=OVERFLOW_TIMEOUT, once=False, refused=()):
         admission = admit(max(min(bound, deadline - time.monotonic()), 0))
         if admission is not None: return admission
         if once or time.monotonic() >= deadline:
-            print(f"eng: {offered.name} not run: neither Mac admitted it {'now' if once else f'in {timeout:g}s'}"
+            who = "no Mac" if offered.hosts is not None else "neither Mac"
+            print(f"eng: {offered.name} not run: {who} admitted it {'now' if once else f'in {timeout:g}s'}"
                   + (f"; the second Mac cannot be reached: {offered.away}" if offered.away
                      else f"; {offered.busy}" if offered.busy else "")
                   + (f"; this Mac's last wait: {refused[-1]}" if refused else ""), file=sys.stderr, flush=True)
             return BUSY
         if offered.busy is not None and offered.away is None and offered.busy != said:
-            print(f"eng: {offered.name} waits for whichever Mac admits it first, the second Mac asked again every "
+            print(f"eng: {offered.name} waits for whichever Mac admits it first, {offered.remote_macs} asked again every "
                   f"{OVERFLOW_WAIT_MAX}s or sooner: {offered.busy}, and this Mac has not admitted it",
                   file=sys.stderr, flush=True)
             said = offered.busy
@@ -3199,7 +3251,7 @@ def screen_refusal(found, mac):
     return f"the lane needs an unlocked screen, and {mac}'s is {found['state']} ({offload_host.screen_line(found)})"
 
 
-def spare(reading, mac, whole_host=False, exclusive=False, screen=False):
+def spare(reading, mac, whole_host=False, exclusive=False, screen=False, *, extra=False):
     """Why mac, read as reading (offload_host.capacity), has no spare capacity now for the work, or None while
     it has (vocaro-engineering#168). The work needs a guaranteed slot free there, every guaranteed slot for a
     whole-host lane and every slot up to the maximum for exclusive work, no whole-host lane or exclusive work
@@ -3215,7 +3267,8 @@ def spare(reading, mac, whole_host=False, exclusive=False, screen=False):
     normal (memory), as resources.Admission._extra_refusal rules (vocaro-engineering#201). The reason names the
     Mac and, for its CPU, the busy share read and the limit, and the request queued ahead; the receipt's hereBecause
     carries it. With screen, for a lane
-    that needs an unlocked screen, a Mac whose screen is locked or unknown has none (screen_refusal)."""
+    that needs an unlocked screen, a Mac whose screen is locked or unknown has none (screen_refusal).
+    With extra, a pool may also offer ordinary work to a Mac with an eligible slot beyond the guaranteed ones."""
     if screen:
         refused = screen_refusal(reading.get("screen"), mac)
         if refused is not None: return refused
@@ -3234,27 +3287,29 @@ def spare(reading, mac, whole_host=False, exclusive=False, screen=False):
                 f"{'is' if len(busy) == 1 else 'are'} busy")
     # An older toolkit's reading has no kept, and keeps nothing by it.
     kept = reading.get("kept") if isinstance(reading.get("kept"), str) and reading.get("kept") else None
+    held = None
     if kept is not None:
         held = f"the guaranteed slots of {mac} are kept for a whole-host lane queued ahead: {kept}"
         if exclusive or whole_host:
             return f"{held}, which the lane would wait behind"
         if len([slot for slot in busy if slot >= slots]) >= maximum - slots:
             return f"{held}, and every slot beyond them up to HEAVY_SLOTS_MAX={maximum} is busy"
-        # An older toolkit's reading has no sinceAdmission or settle, and withholds nothing by them.
-        since, settle = reading.get("sinceAdmission"), reading.get("settle")
-        if all(isinstance(value, (int, float)) and not isinstance(value, bool) for value in (since, settle)) \
-                and since < settle:
-            return (f"{held}, and the CPU of {mac} does not yet show the job admitted {int(since)}s ago, within "
-                    f"HEAVY_SETTLE_SECONDS={settle:g}")
     taken = [slot for slot in busy if slot < slots]
     if whole_host and taken:
         return (f"a whole-host lane needs every guaranteed slot of {mac} (HEAVY_SLOTS={slots}) free, and {len(taken)} "
                 f"{'is' if len(taken) == 1 else 'are'} busy")
     if not exclusive and not whole_host and kept is None and len(taken) >= slots:
-        return f"every guaranteed slot of {mac} is busy (HEAVY_SLOTS={slots})"
+        held = f"every guaranteed slot of {mac} is busy (HEAVY_SLOTS={slots})"
+        if not extra or len(busy) >= maximum: return held
     # A guaranteed slot is admitted whatever the CPU and memory read, so they bound only a slot beyond them.
-    if kept is None:
+    if held is None:
         return None
+    # An older toolkit's reading has no sinceAdmission or settle, and withholds nothing by them.
+    since, settle = reading.get("sinceAdmission"), reading.get("settle")
+    if all(isinstance(value, (int, float)) and not isinstance(value, bool) for value in (since, settle)) \
+            and since < settle:
+        return (f"{held}, and the CPU of {mac} does not yet show the job admitted {int(since)}s ago, within "
+                f"HEAVY_SETTLE_SECONDS={settle:g}")
     found, limit = reading.get("cpuBusy"), reading["busyLimit"]
     busy = found if isinstance(found, (int, float)) and not isinstance(found, bool) else None
     if busy is None:
@@ -3281,6 +3336,18 @@ def retry_macs(host, lanes, lane, screen=False):
     unlocked screen, for this run if not by its configuration."""
     settings = lanes[lane]
     needs = bool(settings.get("wholeHost")), settings.get("resource") == "exclusive", screen or unlocked_screen(lanes, lane)
+    if isinstance(host, tuple):
+        busy = []
+        for candidate in host:
+            try: reason = spare(capacity_there(candidate), candidate, *needs, extra=True)
+            except Unavailable: continue
+            if reason is None:
+                return [candidate], f"{candidate}, the first build Mac with spare capacity for {lane}"
+            busy.append(candidate)
+        reading = offload_host.capacity()
+        if not busy or (not reading.get("error") and spare(reading, HERE, *needs) is None):
+            return [None], f"this Mac, since no build Mac reports spare capacity for {lane}"
+        return [*busy, None], f"whichever Mac admits {lane} first, since none reports spare capacity"
     try: there = spare(capacity_there(host), "the second Mac", *needs)
     except Unavailable as away:
         return [None], f"this Mac, since {host}'s capacity cannot be read: {getattr(away, 'problem', away)}"
@@ -3328,8 +3395,7 @@ def dispatched(root, name, since):
     """The second Mac that ran the newest dispatch of name from root that started at or after since, an epoch
     time, or None when none did: the merge queue's record of where a lane it ran gave no verdict. A dispatch's
     directory is named for the second it started (execute); one that only prepared, whose receipt says so,
-    ran nothing there. A run that ended without a receipt, as a lost one does, ran on the configured second
-    Mac."""
+    ran nothing there. A lost dispatch records its destination beside the log."""
     return dispatch(root, name, since)[1]
 
 
@@ -3343,7 +3409,11 @@ def dispatch(root, name, since):
         except ValueError: continue
         if started < int(since): return None, None
         try: receipt = json.loads((run / "source.json").read_text())
-        except FileNotFoundError: receipt = {}
+        except FileNotFoundError:
+            try: host = (run / DISPATCH_HOST).read_text().strip()
+            except (OSError, ValueError): host = ""
+            if host: return run, host
+            receipt = {}
         except (OSError, ValueError): continue
         if not isinstance(receipt, dict) or receipt.get("stage") == "preparation": continue
         if receipt.get("host"): return run, receipt["host"]

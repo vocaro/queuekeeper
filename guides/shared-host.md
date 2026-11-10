@@ -546,6 +546,35 @@ not a reason to keep the lane here. A lane group runs its lanes under its one ad
 Mac, so a group stays here when it, or one of its lanes, says `here`. `"buildHost"`, which once
 marked a lane for the second Mac, is refused, true or false ([earlier names](#earlier-names)).
 
+#### Build Macs for merge queue gates
+
+With no `VOCARO_GATE_HOSTS`, the queue uses this Mac and the existing offload host. To add Macs,
+give each a distinct SSH alias, follow [the build host setup](#setting-up-the-second-mac) for each,
+and list the existing build Mac and the new ones in the order the queue should try them. This
+example keeps the existing build Mac first.
+
+```sh
+export VOCARO_GATE_HOSTS=build-host,gate-03,gate-04
+python3 scripts/eng remote setup --host gate-03 --check
+python3 scripts/eng remote setup --host gate-03 --runtimes --check
+```
+
+Set the list in the environment that starts each project's queue worker, such as the shell running
+`eng land --wait`. A running worker keeps its inherited list until it exits. The queue includes
+this Mac as the local fallback automatically. Each alias must identify a different physical Mac.
+For each eligible lane, the queue tries the first listed Mac with capacity. If that Mac is
+unreachable or declines before the work starts, the queue tries the next alias. When all decline,
+the ordinary gate can take local admission and rechecks the build Macs while waiting. A
+misconfigured host stops the offer with its diagnosis, and an interrupted connection to a run
+that may have started yields no verdict.
+
+The list applies to merge queue gates. Foreground lanes use the designated foreground Mac, and
+standalone `eng run` and commands that act on one remote, such as `eng remote setup`, use the
+ordinary offload host or their explicit host. `VOCARO_OFFLOAD_HOST=none` disables offloading,
+including the queue list.
+
+#### Screen state
+
 No guide, policy or log line assumes either Mac's screen state. eng reads it on the Mac that runs
 a lane, with the check `eng host screen [--remote]` runs
 ([checking a Mac's screen](background-mac-testing.md#checking-a-macs-screen)), and writes what it

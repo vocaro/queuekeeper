@@ -6780,6 +6780,29 @@ class BothHalves(Fixture):
         self.assertEqual(beside.checkout.name, f"{self.repo.name}{mq.BESIDE_SUFFIX}")
 
 
+class PooledStack(Fixture):
+    def test_a_stack_tries_build_macs_other_than_the_one_running_the_batch(self):
+        worker = mq.Worker(mq.Queue(self.repo))
+        worker.lane_now = ("gate", time.time(), ())
+        worker.environment = {}
+        waiting = [{"id": "new", "state": mq.QUEUED}]
+        config = {"lanes": {"gate": {"resource": "heavy"}}}
+        for mac, where, excluded in [
+            (mq.lane_wait.HERE, mq.BESIDE, None),
+            (mq.lane_wait.second_mac("gate-03"), ("--if-free",), "gate-03"),
+        ]:
+            with self.subTest(mac=mac), patch.dict(os.environ, {
+                mq.remote.HOST_VARIABLE: "build-host", mq.remote.GATE_HOSTS: "build-host,gate-03,gate-04"
+            }), patch.object(worker.queue, "waiting", return_value=waiting), \
+                    patch.object(mq.lane_wait, "current", return_value={"mac": mac, "kind": None}), \
+                    patch.object(mq, "Stack") as stack:
+                worker.stack(worker, config, ["gate"], "head", [], threading.Event(), set())
+                runner = stack.call_args.args[1]
+                self.assertEqual(stack.call_args.args[5], where)
+                self.assertEqual(runner.environment.get(mq.remote.QUEUE_GATE_EXCLUDE), excluded)
+            worker.pending = None
+
+
 class Stacked(Fixture):
     """Entries that arrive while a batch gates gate stacked on its tip, on the other Mac, and land once it has,
     without a gate of their own; a batch that does not land throws that gate away (vocaro-engineering#241). Both

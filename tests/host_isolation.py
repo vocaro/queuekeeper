@@ -84,6 +84,7 @@ GATE = str(ROOT / "gate")
 os.environ.update(HEAVY_SLOT_DIR=str(ROOT / "slots"), SW_GATE_LOCK_FILE=GATE)
 os.environ.pop(resources.TOKEN, None)
 os.environ["VOCARO_OFFLOAD_HOST"] = "none"
+os.environ.pop(remote.GATE_HOSTS, None)
 # A suite the second Mac runs for a dispatch, as the toolkit's gate is, inherits the dispatch's variables, which make every
 # receipt a test writes say it ran there; a test of a dispatch sets them itself.
 for variable in (remote.DISPATCHER, "VOCARO_DEVICE_LEASE"): os.environ.pop(variable, None)

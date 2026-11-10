@@ -1420,16 +1420,17 @@ def perform(argv, report):
             if group is None and args.serial: raise ValueError(f"--serial runs a lane group, and {args.lane} is not one")
             # Why the lane runs only here, as its configuration says, or None: it goes to the second Mac.
             reason = stays(config["lanes"], args.lane)
+            # Keep the queue's placement scope at the outer lane.
+            queue_gate = bool(os.environ.pop(remote.QUEUE_GATE, None))
+            exclude = os.environ.pop(remote.QUEUE_GATE_EXCLUDE, None)
             if args.offload_only:
                 if reason is not None:
                     raise ValueError(f"{args.lane} stays on this Mac ({reason}), so --offload-only cannot offer it "
                                      "to the second Mac")
                 if args.serial: raise ValueError("--serial runs a lane group here, and --offload-only never does")
                 # The caller runs the lane under its own admission when the second Mac declines it.
-                return remote.first(root, config, args.lane, extra, args.expect, fallback=False).status
-            # Only a queue worker's own `eng run` of a gate's lane stops for lost Local Network access, and not what
-            # that lane starts here (vocaro-engineering#300).
-            queue_gate = bool(os.environ.pop(remote.QUEUE_GATE, None))
+                return remote.first(root, config, args.lane, extra, args.expect, fallback=False,
+                                    queue_gate=queue_gate, exclude=exclude).status
             # Nested work runs inside the admission it inherits, here. The serial reference runs here too.
             inherited = bool(os.environ.get(resources.TOKEN))
             reason = reason or ("--here" if args.here else "--serial runs the serial reference here" if args.serial
@@ -1438,7 +1439,8 @@ def perform(argv, report):
             if reason is None:
                 # Whichever Mac has spare capacity for the lane, the second Mac first, and while neither has,
                 # whichever admits the lane first (remote.first, admitted_here).
-                offered = remote.first(root, config, args.lane, extra, args.expect, queue_gate=queue_gate)
+                offered = remote.first(root, config, args.lane, extra, args.expect, queue_gate=queue_gate,
+                                       exclude=exclude)
                 if not isinstance(offered.status, str): return offered.status
                 reason = offered.status
             # Every lane is admitted, a light one as heavy work, except a self lane, whose script admits its parts.

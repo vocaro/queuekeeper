@@ -591,6 +591,8 @@ as before, when:
 
 Under #231 the rerun-alone check runs on each failed half, so the failure that splits a half is a
 real one, and a half whose real failure blames one entry sends it back instead of splitting (below).
+With [a build Mac list](shared-host.md#build-macs-for-merge-queue-gates), the newer half uses the
+first listed Mac that can start it. The older half runs on this Mac.
 
 **Entries that arrive during a gate gate on top of it.** While a batch gates, the worker checks every
 `STACK_POLL` (30 s) for entries that have arrived behind it. When it finds some, it gates them stacked on
@@ -610,15 +612,19 @@ canceling its lanes and queuing its entries again:
 - the queue holds; or
 - the worker stops or moves to a newer toolkit.
 
-If neither Mac admits the stack's next lane, the worker waits two minutes before trying another stack on
+With [a build Mac list](shared-host.md#build-macs-for-merge-queue-gates), the queue waits for the
+active lane's placement before offering the stacked gate. It tries the other build Macs and,
+when the active lane runs remotely, this Mac. A gate that uses the foreground waits its turn.
+
+If no eligible Mac admits the stack's next lane, the worker waits two minutes before trying another stack on
 that batch. This avoids rebuilding it on each 30-second look. If the preceding batch lands before the
 decline returns, the stack's entries go into an ordinary round without counting the speculative attempt
 against `queue.noVerdictRuns`.
 
 Only one stacked gate runs at a time, so entries that arrive after it starts wait for the next round, where
 they stack on it in turn. A stacked gate settles nothing itself: an entry that conflicts with the batch below
-waits for its own round, and the worker's log names the entries below that it conflicts with. A bisect stacks
-nothing, as both its halves already use both Macs. An entry that comes back keeps its ref until
+waits for its own round, and the worker's log names the entries below that it conflicts with. A bisect
+already runs two halves and does not start a stack. An entry that comes back keeps its ref until
 `eng queue remove ID`. Fix it, rebase and land it again.
 
 **Removing an entry that is testing stops its gate.** `eng queue remove ID`, or `eng land` of the branch

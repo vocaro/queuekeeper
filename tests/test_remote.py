@@ -2185,6 +2185,8 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual(status, evidence.UNMEASURED, output + error)
         self.assertIn(f"nothing from the dispatcher for {silence}s", output)
         self.assertFalse((self.project / ".build/engineering/remote/slow/source.json").exists())
+        with patch.object(remote, "configured", return_value="another-mac"):
+            self.assertEqual(remote.dispatched(self.project, "slow", 0), "fake")
         if pid.exists(): self.all_ended(int(pid.read_text()))
 
     def test_a_journaled_run_after_attached_survives_silence(self):
@@ -3637,6 +3639,23 @@ exec {shlex.quote(real)} "$@"
         self.assertIn("Ran 2 tests", (self.project / ".build/engineering/remote/failing/run.log").read_text())
         for lane in ["gate", "failing"]:
             self.assertFalse((self.project / ".build/engineering" / lane).exists())
+
+    def test_queue_offload_only_skips_an_unreachable_alias_and_dispatches_to_the_next(self):
+        reach = remote.reachable
+        away = remote.Unreachable("away is offline", "wake it")
+
+        def reachable(host):
+            if host == "away": raise away
+            return reach(host)
+
+        with patch.dict(os.environ, {remote.GATE_HOSTS: "away, fake", remote.QUEUE_GATE: "1"}), \
+                patch.object(remote, "reachable", side_effect=reachable) as asked:
+            status, output, error = self.run_here("--offload-only", "gate")
+        self.assertEqual(status, 0, output + error)
+        self.assertEqual([call.args[0] for call in asked.call_args_list[:2]], ["away", "fake"])
+        receipt = json.loads((self.project / ".build/engineering/remote/gate/source.json").read_text())
+        self.assertEqual(receipt["host"], "fake")
+        self.assertFalse((self.project / ".build/engineering/gate").exists())
 
     def test_offload_only_exits_busy_when_the_second_mac_declines_and_stops_when_it_is_misconfigured(self):
         with self.busy_second_mac():
@@ -7347,6 +7366,69 @@ class ToolkitUpdateTests(unittest.TestCase):
                                    "refs/remotes/origin/main^{commit}"], capture_output=True, text=True).stdout.strip()
         self.assertEqual(request.get("want"), expected or None)
         self.assertNotIn("want", remote.update_request(want=False))
+
+
+class GateHostPoolTests(unittest.TestCase):
+    def test_the_pool_can_use_an_extra_slot_when_admission_limits_allow_it(self):
+        capacity = {"slots": 1, "slotsMax": 2, "busy": [0], "cpuBusy": 10, "busyLimit": 70,
+                    "sinceAdmission": 15, "settle": 5, "memory": 1}
+        self.assertIsNone(remote.spare(capacity, "gate-03", extra=True))
+        self.assertIn("guaranteed slot", remote.spare(capacity, "gate-03"))
+        self.assertIn("whole-host lane", remote.spare(capacity, "gate-03", whole_host=True, extra=True))
+        for changed in ({"busy": [0, 1]}, {"cpuBusy": 80}, {"sinceAdmission": 2}, {"memory": 2}):
+            with self.subTest(changed=changed):
+                self.assertIsNotNone(remote.spare({**capacity, **changed}, "gate-03", extra=True))
+
+    def test_the_pool_is_opt_in_and_requires_distinct_ssh_aliases(self):
+        with patch.dict(os.environ, {remote.HOST_VARIABLE: "build-host"}):
+            self.assertIsNone(remote.gate_hosts())
+            for value in ("", "build-host,", "build-host,build-host", "-bad", "build-host,none"):
+                with self.subTest(value=value), patch.dict(os.environ, {remote.GATE_HOSTS: value}):
+                    with self.assertRaisesRegex(ValueError, remote.GATE_HOSTS): remote.gate_hosts()
+            with patch.dict(os.environ, {remote.GATE_HOSTS: "build-host, gate-03, gate-04"}):
+                self.assertEqual(remote.gate_hosts(), ("build-host", "gate-03", "gate-04"))
+                self.assertEqual(remote.configured(), "build-host")
+                with patch.dict(os.environ, {remote.HOST_VARIABLE: "none"}):
+                    self.assertIsNone(remote.gate_hosts())
+
+    def test_a_later_mac_takes_the_gate_and_preparation_stays_with_its_mac(self):
+        attempts = []
+
+        def send(host, sent):
+            attempts.append((host, dict(sent)))
+            sent["prepared"] = host
+            if host == "gate-03": raise remote.Busy("another gate took the slot")
+            return 5  # a real failing verdict must stop placement
+
+        offer = remote.Offer("gate", "run here", send, whole_host=True, queue_gate=True,
+                             hosts=("build-host", "gate-03", "gate-04", "unused"))
+        free = {"slots": 1, "slotsMax": 1, "busy": [], "busyLimit": 70}
+        busy = {**free, "wholeHost": ["another gate"]}
+        with patch.object(remote, "reachable") as reachable, \
+                patch.object(remote, "capacity_there", side_effect=[busy, free, busy, busy, busy, free, free]), \
+                contextlib.redirect_stderr(StringIO()):
+            self.assertEqual(offer.make(), "build-host is running a whole-host lane: another gate; "
+                             "another gate took the slot; gate-04 is running a whole-host lane: another gate; "
+                             "unused is running a whole-host lane: another gate")
+            self.assertEqual(offer.again(), 5)
+        self.assertEqual(attempts, [("gate-03", {}), ("gate-03", {"prepared": "gate-03"}), ("gate-04", {})])
+        self.assertEqual(reachable.call_count, 7)
+
+    def test_a_lost_dispatch_or_bad_configuration_never_starts_another_copy(self):
+        free = {"slots": 1, "slotsMax": 1, "busy": [], "busyLimit": 70}
+        for error in (remote.Lost("run may still be alive"), remote.Misconfigured("bad Xcode", "match Xcode")):
+            with self.subTest(error=type(error).__name__), patch.object(remote, "reachable") as reachable, \
+                    patch.object(remote, "capacity_there", return_value=free), \
+                    patch.object(remote, "execute", side_effect=error), \
+                    patch.dict(os.environ, {remote.HOST_VARIABLE: "build-host", remote.GATE_HOSTS: "gate-03,gate-04"}), \
+                    contextlib.redirect_stderr(StringIO()):
+                if isinstance(error, remote.Lost):
+                    with self.assertRaises(remote.Lost):
+                        remote.first(".", {}, "gate", [], None, queue_gate=True, exclude="gate-03")
+                else:
+                    offer = remote.first(".", {}, "gate", [], None, queue_gate=True, exclude="gate-03")
+                    self.assertEqual(offer.status, remote.MISCONFIGURED)
+                reachable.assert_called_once_with("gate-04")
 
 
 class OfferAgainTests(unittest.TestCase):
