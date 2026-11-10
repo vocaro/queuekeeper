@@ -574,6 +574,26 @@ standalone `eng run` and commands that act on one remote, such as `eng remote se
 ordinary offload host or their explicit host. `VOCARO_OFFLOAD_HOST=none` disables offloading,
 including the queue list.
 
+#### Check gate placement without running a gate
+
+Run `python3 scripts/eng queue placement` from the project. It reads the first gate lane on
+`origin/main`, lists the build Macs in their configured order, and checks each host's current
+capacity over SSH. Give a lane name to inspect a different lane, or add `--json` to save the
+timestamped readings. This command leaves queue entries, workers, and admissions alone.
+
+Read the refusal beside the slot counts. With one of three guaranteed slots occupied, a
+`wholeHost` gate waits for the last occupied guaranteed slot. A queued exclusive request also
+holds back later work while existing admissions drain. When that request starts, it can take
+all slots up to the host's maximum. The same PID and process start in two readings identify the
+same blocker. The admission identity lets you match a running holder to its release in that host's
+admission log. Keep shell commands and project evidence with the owning project.
+
+Use `eng queue status` for a gate already waiting and `eng admissions usage` for capacity and
+utilization history on this Mac and the ordinary offload host. A placement reading is a snapshot.
+The host checks admission again when the lane actually starts.
+
+[Cloud gate runners](cloud-gate-runners.md) compares overflow hosts and the cost of a pilot.
+
 #### Screen state
 
 No guide, policy or log line assumes either Mac's screen state. eng reads it on the Mac that runs

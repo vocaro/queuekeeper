@@ -3224,12 +3224,12 @@ def screen_there(host):
     return ask(host, {"screen": True}, timeout=CENSUS_TIMEOUT)
 
 
-def capacity_there(host):
+def capacity_there(host, *, diagnostic=False):
     """The second Mac's capacity for heavy work, as offload_host.capacity reads it there, in its login shell as a
     run there reads it. A second Mac that cannot be reached raises Unreachable, as the connection that prepares
     a run does, and one that does not answer with a reading Unavailable: the work then runs on this Mac, saying so. One whose admission limits cannot
     be read refuses every request there, which is its owner's to fix (Misconfigured)."""
-    answered = ask(host, {"capacity": True}, timeout=CENSUS_TIMEOUT, unsent=True)
+    answered = ask(host, {"capacity": "diagnostic" if diagnostic else True}, timeout=CENSUS_TIMEOUT, unsent=True)
     if isinstance(answered, dict) and answered.get("error"):
         raise Misconfigured(f"{host} could not read its admission limits: {answered['error']}",
                             f"correct the limits file or variable it names on {host} (guides/shared-host.md, "

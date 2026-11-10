@@ -52,7 +52,7 @@ import urllib.request
 
 from . import app_builds, budgets, disk, evidence, landing, lane_report, lane_wait, offload_host, parallel, processes, remote, \
     resources
-from .config import IMPLICIT_SPELLING, SPELLING, SPELLING_LIMIT, TOOLKIT_ROOT, load, parse, stays, unlocked_screen
+from .config import IMPLICIT_SPELLING, SPELLING, SPELLING_LIMIT, TOOLKIT_ROOT, lane_to_run, load, parse, stays, unlocked_screen
 
 MAIN = "refs/remotes/origin/main"
 FETCH = ["fetch", "--no-tags", "origin", f"refs/heads/main:{MAIN}"]
@@ -1657,6 +1657,66 @@ def doctor(root, as_json=False):
     for finding in findings:
         print(f"{finding['signal']}: {finding['diagnosis']}\n  next: {finding['remedy']}")
     return 1
+
+
+def placement(root, name=None, as_json=False):
+    """Inspect current capacity for a configured gate lane without dispatching or taking admission."""
+    base = text(root, "rev-parse", MAIN)
+    config = config_at(root, base)
+    name = name or (config.get("queue", {}).get("lanes") or ["gate"])[0]
+    lane = lane_to_run(config, name)
+    if lane is None:
+        raise ValueError(f"{name} is not a lane on {MAIN}; give the lane to inspect")
+    lanes = config["lanes"]
+    local = stays(lanes, name)
+    foreground = bool(lane.get("foreground"))
+    model = bool(lane.get("model"))
+    whole_host, exclusive, screen = bool(lane.get("wholeHost")), lane.get("resource") == "exclusive", unlocked_screen(lanes, name)
+    pool = remote.gate_hosts() if not local and not foreground else None
+    default = remote.configured() if not local and pool is None else None
+    hosts = pool or ((default,) if default else ())
+    checked = []
+    candidates = hosts + ((None,) if local or not foreground else ())
+    for host in candidates:
+        mac = host or "this Mac"
+        row = {"host": mac, "checkedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+        checked.append(row)
+        try:
+            reading = remote.capacity_there(host, diagnostic=True) if host else offload_host.capacity(diagnostic=True)
+        except remote.Unavailable as error:
+            row.update(status="unavailable", reason=getattr(error, "problem", str(error)))
+            continue
+        if reading.get("error"):
+            row.update(status="unavailable", reason=reading["error"])
+            continue
+        slots = reading["slots"]
+        reason = remote.spare(reading, mac, whole_host, exclusive, screen, extra=True)
+        row.update(guaranteedSlots=slots, maximumSlots=reading["slotsMax"], busySlots=reading["busy"],
+                   blockers=reading.get("blockers", []), status="waiting" if reason else "eligible", reason=reason)
+        if (foreground or model) and reason is None:
+            kind = "foreground" if foreground else "model"
+            row.update(status="unmeasured", reason=f"{kind} admission is separate from heavy-work capacity")
+    report = {"lane": name, "commit": base, "wholeHost": whole_host, "exclusive": exclusive,
+              "unlockedScreen": screen, "foreground": foreground, "model": model, "localOnly": local,
+              "remoteHosts": list(hosts), "hosts": checked}
+    if as_json:
+        print(json.dumps(report, indent=2))
+    else:
+        print(f"{name} at {base[:12]} (whole host: {whole_host}, exclusive: {exclusive}, unlocked screen: {screen})")
+        print(f"build Macs: {', '.join(hosts) or 'none'}" + (f"; local only: {local}" if local else ""))
+        for row in checked:
+            slots = ""
+            if "busySlots" in row:
+                busy = row["busySlots"]
+                guaranteed = sum(slot < row["guaranteedSlots"] for slot in busy)
+                slots = (f" ({guaranteed}/{row['guaranteedSlots']} guaranteed slots busy, "
+                         f"{len(busy)}/{row['maximumSlots']} total)")
+            print(f"{row['checkedAt']} {row['host']}: {row['status']}{slots}"
+                  + (f" — {row['reason']}" if row["reason"] else ""))
+            for blocker in row.get("blockers", []):
+                print(f"  {blocker['state']} {blocker['kind']}: PID {blocker['pid']}, "
+                      f"admission {blocker['identity']}, process started {blocker['processStart']}")
+    return 0
 
 
 def diagnose(root):
@@ -4191,6 +4251,9 @@ def add_arguments(parser):
                                       "such as gates that ran nothing, and say what each means and what heals it; it "
                                       "changes nothing: 0 healthy, 1 with findings")
     doctoring.add_argument("--json", action="store_true")
+    placing = operations.add_parser("placement", help="probe current host capacity for a gate lane without queuing it")
+    placing.add_argument("lane", nargs="?", help="lane on origin/main (default: the first configured gate lane)")
+    placing.add_argument("--json", action="store_true")
     following = operations.add_parser("wait", help="follow an entry to its result, or several, such as the entries an "
                                        "eng land conflict names, until none waits: 0 landed, or each did, 1 came back, "
                                        "or one did, 75 held or still waiting at the limit")
@@ -4215,6 +4278,7 @@ def main(root, args):
         return 0
     if args.operation == "status": return status(root, args.json)
     if args.operation == "doctor": return doctor(root, args.json)
+    if args.operation == "placement": return placement(root, args.lane, args.json)
     if args.operation == "wait":
         return wait(root, args.id[0], args.limit) if len(args.id) == 1 else wait_for(root, args.id, args.limit)
     if args.operation == "remove": return remove(Queue(root), args.id)

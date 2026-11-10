@@ -1027,6 +1027,9 @@ decision, 2026-11-08, #290). For the other findings a session acts itself, as ea
 Restarting a worker that died (#287) and moving a no-verdict run to the other Mac are not the doctor's
 yet.
 
+Use [`eng queue placement`](shared-host.md#check-gate-placement-without-running-a-gate) to see
+whether each configured build Mac could admit a gate lane now, even when the queue is empty.
+
 ### Signed queue launcher
 
 Set this up once on the Mac that owns the queues. From the toolkit checkout, build the app in its

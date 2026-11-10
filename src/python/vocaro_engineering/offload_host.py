@@ -1413,7 +1413,7 @@ def busy_share(earlier, later):
     return None if total == 0 else round(100.0 * (total - passed[2]) / total, 1)
 
 
-def cpu_busy(directory):
+def cpu_busy(directory, *, record=True):
     """The CPU's busy share in percent now, None when unreadable, as resources.cpu_busy reads it with wait: against
     a kept sample when one is old enough, else over BUSY_QUICK seconds of its own; it adds its sample."""
     current, at = cpu_ticks(), time.time()
@@ -1425,7 +1425,7 @@ def cpu_busy(directory):
                 and all(isinstance(value, (int, float)) and not isinstance(value, bool) for value in sample)
                 and at - BUSY_KEEP <= sample[0] <= at]
     except (OSError, ValueError, TypeError): kept = []
-    if not kept or at - max(sample[0] for sample in kept) >= 1:
+    if record and (not kept or at - max(sample[0] for sample in kept) >= 1):
         with contextlib.suppress(OSError):
             Path(directory).mkdir(parents=True, exist_ok=True)
             partial = path.with_name(f"{CPU_SAMPLES}.{os.getpid()}.{threading.get_ident()}")
@@ -1494,8 +1494,8 @@ def stranded_slots(directory, maximum, owners):
 
 
 def queued_ahead(directory, slots, maximum, owners, own=None):
-    """The request queued ahead that holds this Mac's later heavy work back now, as ("wholeHost", LABEL), for
-    which admission keeps the guaranteed slots, or ("exclusive", LABEL), behind which every later request waits;
+    """The request queued ahead that holds this Mac's later heavy work back now, as ("wholeHost", WAITER), for
+    which admission keeps the guaranteed slots, or ("exclusive", WAITER), behind which every later request waits;
     or None. It applies the rule resources.Admission._attempt applies (vocaro-engineering#174, #186, #191): the
     first queued request that holds later work back, an exclusive one whose process runs or a whole-host one
     whose process runs and last asked within HEAVY_PLACE_SECONDS, unless a dead or uncertain guard entry is
@@ -1514,18 +1514,17 @@ def queued_ahead(directory, slots, maximum, owners, own=None):
         # The asking work's own place: nothing queued behind it holds it back.
         if own is not None and waiter.get("identity") == own: return None
         if not alive(waiter): continue
-        label = str(waiter.get("label") or "an unnamed request")
         if not waiter.get("wholeHost"):
             # Exclusive work queued ahead holds every request back, unless a stranded entry is counted as any slot.
-            return None if stranded_slots(directory, maximum, owners) else ("exclusive", label)
+            return None if stranded_slots(directory, maximum, owners) else ("exclusive", waiter)
         seen = waiter.get("seen")
         if not (isinstance(seen, (int, float)) and not isinstance(seen, bool) and time.time() - seen < hold): continue
         if any(slot < slots for slot in stranded_slots(directory, maximum, owners)): return None
-        return "wholeHost", label
+        return "wholeHost", waiter
     return None
 
 
-def capacity(own=None):
+def capacity(own=None, *, diagnostic=False):
     """This Mac's spare capacity for heavy work, which `eng run` reads on both Macs before it chooses one
     (remote.spare; vocaro-engineering#168): its guaranteed slots and their maximum; the slots busy among those
     up to the maximum; its CPU's busy share in percent, None when unavailable (cpuBusy), and the limit at or above
@@ -1538,7 +1537,8 @@ def capacity(own=None):
     HEAVY_SETTLE_SECONDS (settle) and its memory pressure level, None when unread (memory), by which its admission
     withholds a slot beyond the guaranteed ones (resources.Admission._extra_refusal, vocaro-engineering#201); and
     its console screen (screen), which a lane that needs it unlocked reads. A reading it cannot take says why, as
-    error, as pressure does."""
+    error, as pressure does. A diagnostic keeps no CPU sample and identifies blockers by admission and process,
+    since their command labels can be long and need not identify the work."""
     try: found = limits()
     except ValueError as error: return {"error": str(error)}
     try: directory = slot_directory()
@@ -1547,16 +1547,27 @@ def capacity(own=None):
     except OSError: load = None
     owners = guard_entries()
     running = [owner for owner in owners if alive(owner)]
-    label = lambda owner: str(owner.get("label") or "an unnamed owner")
     kind, ahead = queued_ahead(directory, found["slots"], found["slotsMax"], owners, own) or (None, None)
+    def label(owner, default="an unnamed owner"):
+        return f"PID {owner['pid']}" if diagnostic else str(owner.get("label") or default)
+    blockers = []
+    if diagnostic:
+        for owner in running:
+            owner_kind = "exclusive" if owner.get("exclusive") else "wholeHost" if owner.get("wholeHost") else None
+            if owner_kind:
+                blockers.append({"state": "running", "kind": owner_kind, "pid": owner["pid"],
+                                 "identity": owner["identity"], "processStart": owner["start"]})
+        if ahead:
+            blockers.append({"state": "queued", "kind": kind, "pid": ahead["pid"],
+                             "identity": ahead.get("identity"), "processStart": ahead["start"]})
     return {"slots": found["slots"], "slotsMax": found["slotsMax"], "busy": busy_slots(directory, found["slotsMax"]),
-            "load": load, "cpuBusy": cpu_busy(directory), "busyLimit": found["busyLimit"],
+            "load": load, "cpuBusy": cpu_busy(directory, record=not diagnostic), "busyLimit": found["busyLimit"],
             "wholeHost": [label(owner) for owner in running if owner.get("wholeHost") and not owner.get("exclusive")],
             "exclusive": [label(owner) for owner in running if owner.get("exclusive")],
-            "kept": ahead if kind == "wholeHost" else None,
-            "queuedExclusive": ahead if kind == "exclusive" else None,
+            "kept": label(ahead, "an unnamed request") if kind == "wholeHost" else None,
+            "queuedExclusive": label(ahead, "an unnamed request") if kind == "exclusive" else None,
             "sinceAdmission": since_admission(directory, found["slotsMax"]), "settle": found["settleSeconds"],
-            "memory": memory_level(), "screen": screen()}
+            "memory": memory_level(), "screen": screen(), **({"blockers": blockers} if diagnostic else {})}
 
 
 def admission_log(since):
@@ -2535,7 +2546,7 @@ def answer(request):
     if "keychain" in request: return keychain(request["keychain"])
     if "foreground" in request: return foreground()
     if "pressure" in request: return pressure()
-    if "capacity" in request: return capacity()
+    if "capacity" in request: return capacity(diagnostic=request["capacity"] == "diagnostic")
     if "admissionLog" in request: return admission_log(request["admissionLog"])
     if "screen" in request: return screen()
     if "leftovers" in request or "device" in request:

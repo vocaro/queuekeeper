@@ -1061,6 +1061,34 @@ class CheckedBeforeRunning(UnittestGate):
         self.assertIsNone(mq.suite_of(["python3", "lane.py"]))
 
 
+class Placement(Fixture):
+    def test_the_cli_checks_the_configured_gate_on_every_mac_without_starting_work(self):
+        config = self.config()
+        config["lanes"]["gate"].update(resource="heavy", wholeHost=True)
+        self.publish(config)
+        free = {"slots": 3, "slotsMax": 7, "busy": [], "busyLimit": 90}
+        blocker = {"state": "queued", "kind": "exclusive", "pid": 12, "identity": "admission-12", "processStart": "start"}
+        queued = {**free, "busy": [1], "queuedExclusive": "PID 12", "blockers": [blocker]}
+        busy = {**free, "busy": [1]}
+        with patch.object(mq.remote, "gate_hosts", return_value=("build-host", "gate-03", "gate-04")), \
+                patch.object(mq.remote, "capacity_there", side_effect=[
+                    queued, busy, mq.remote.Unreachable("gate-04 is offline", "wake it")
+                ]) as probe, patch.object(offload_host, "capacity", return_value=free) as here, \
+                patch.object(mq.Queue, "__init__", side_effect=AssertionError("placement touched the queue")), \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(cli.main(["--project", str(self.repo), "queue", "placement", "--json"]), 0)
+        report = json.loads(output.getvalue())
+        self.assertTrue(report["wholeHost"])
+        self.assertEqual(report["remoteHosts"], ["build-host", "gate-03", "gate-04"])
+        self.assertEqual([row["status"] for row in report["hosts"]], ["waiting", "waiting", "unavailable", "eligible"])
+        self.assertEqual(report["hosts"][0]["blockers"], [blocker])
+        self.assertIn("exclusive work is queued ahead", report["hosts"][0]["reason"])
+        self.assertIn("needs every guaranteed slot", report["hosts"][1]["reason"])
+        self.assertEqual([call.args[0] for call in probe.call_args_list], report["remoteHosts"])
+        self.assertTrue(all(call.kwargs == {"diagnostic": True} for call in probe.call_args_list))
+        here.assert_called_once_with(diagnostic=True)
+
+
 class Doctor(UnittestGate):
     """`eng queue doctor` reads the queue for the signs that it is stuck rather than testing, says what each means and
     what heals it, and changes nothing (vocaro-engineering#290)."""
