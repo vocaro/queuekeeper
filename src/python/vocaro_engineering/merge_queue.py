@@ -423,12 +423,16 @@ def lanes_of(config):
     return [name for name in BEFORE_GATE if spelled(config, name) and name not in named] + named
 
 
-def config_at(root, commit):
-    """The project's configuration as commit has it, not as a checkout's working tree does, which
-    may lag: the queue serves every session from one main checkout that nobody keeps current."""
+def config_source(root, commit):
+    """The configuration text at commit. A checkout's working tree can lag behind it."""
     shown = git(root, "show", f"{commit}:engineering.json")
     if shown.returncode: raise ValueError(f"{commit} has no engineering.json: {shown.stderr.strip() or 'no output'}")
-    return parse(shown.stdout)
+    return shown.stdout
+
+
+def config_at(root, commit):
+    """The project's validated configuration at commit, for queue decisions."""
+    return parse(config_source(root, commit))
 
 
 def blank(line):
@@ -1317,7 +1321,15 @@ def other_repository(root, directory):
 def warn(root):
     """After eng land's result, the gate over its budget and main past its release commit limit, by main's
     settings (budgets.py)."""
-    for warning in budgets.landing_warnings(root, config_at(root, MAIN), Queue(root).all()):
+    # While this command waited, main may have landed settings validated by a newer toolkit.
+    # The advisory checks read their own fields, so the waiter's schema must not reject main.
+    try:
+        config = json.loads(config_source(root, MAIN))
+        if not isinstance(config, dict): raise ValueError("engineering.json must be an object")
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        print(f"warning: could not read landing budget configuration: {error}", flush=True)
+        return
+    for warning in budgets.landing_warnings(root, config, Queue(root).all()):
         print(f"warning: {warning}", flush=True)
 
 

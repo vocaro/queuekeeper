@@ -827,6 +827,29 @@ class LandWaitsForAhead(Fixture):
         real = time.sleep
         return patch.object(mq.time, "sleep", lambda seconds: step() if seconds == mq.POLL else real(seconds))
 
+    def test_landing_budget_warning_reads_main_after_a_new_lane_key_lands(self):
+        config = self.config()
+        config["lanes"]["device-voiceover"] = {
+            "command": ["true"], "devices": ["iPad"], "here": "the fixture device", "deviceRunMinutes": 90}
+        config["release"] = {"lanes": ["device-voiceover"], "maxCommits": 1}
+        self.commit("fix", "fix")
+        real_wait = mq.wait
+
+        def wait(root, identifier, limit):
+            result = real_wait(root, identifier, limit)
+            run(self.repo, "git", "checkout", "-q", "--detach", "origin/main")
+            self.publish(config, "Add a release lane with a new key")
+            with self.assertRaisesRegex(ValueError, "Invalid lane device-voiceover"):
+                mq.config_at(root, mq.MAIN)
+            return result
+
+        with patch.object(mq, "wait", wait), \
+                patch.object(configuration, "LANE_KEYS", configuration.LANE_KEYS - {"deviceRunMinutes"}):
+            result, said, _ = self.land("fix")
+        self.assertEqual(result, 0, said)
+        self.assertIn("landed:", said)
+        self.assertIn("(device-voiceover), over release.maxCommits, 1", said)
+
     def test_behind_an_entry_in_its_gate_that_fails_it_is_queued_and_lands_without_a_second_command(self):
         self.commit("same", "one", "one"); self.commit("bad", "one", "bad", start="one")
         self.commit("same", "two", "two")
