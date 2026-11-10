@@ -1117,6 +1117,20 @@ class Doctor(UnittestGate):
         self.assertEqual([f["signal"] for f in found["findings"]], ["no verdict"])
         self.assertIn("2 gates since the last verdict gave none", said)
 
+    def test_stacked_admission_declines_neither_count_nor_hide_main_gate_no_verdicts(self):
+        for number in range(mq.DOCTOR_LOGS + 1):
+            self.gate_log(f"stack-{number}", f"nothing ran\n{mq.STACK_ADMISSION_DECLINED}\n", 1000 + number)
+        status_, said, _ = self.doctor()
+        self.assertEqual(status_, 0, said)
+        # Real no-verdict runs still count, even with more than the log limit's worth of newer stack declines.
+        self.gate_log("main-busy", "nothing ran\n", 900)
+        self.gate_log("main-timed-out", "eng: lane gate reached its limit\n", 901)
+        status_, said, found = self.doctor()
+        self.assertEqual(status_, 1, said)
+        self.assertEqual([f["signal"] for f in found["findings"]], ["no verdict"])
+        self.assertIn("2 gates since the last verdict gave none", said)
+        self.assertIn("main-timed-out-gate.log, main-busy-gate.log", said)
+
     def test_a_hold_and_entries_waiting_with_no_worker_are_findings(self):
         self.commit("c", "c")
         self.add("c")
@@ -6875,20 +6889,81 @@ class Stacked(Fixture):
         gates after the batch, as before."""
         self.commit("hold", "a"); self.commit("b", "b")
         [first] = self.add("a")
+        declined_log = self.base / "declined-gate.log"
         def declined(worker, lanes, round_name, where=(), cancel=None):
-            worker.ran_where = ""
-            return mq.resources.BUSY, None
-        real, begun = mq.Stack.begin, []
-        def once(stack):
-            """One stacked gate only, as a later look's could still run when the batch lands, and go on as the round."""
-            begun.append(True)
-            return len(begun) == 1 and real(stack)
+            declined_log.write_text("nothing ran\n")
+            return mq.resources.BUSY, declined_log
         log = self.worked("b", lambda log: "since it gave no verdict" in log,
-                          patch.object(mq.Beside, "gate", declined), patch.object(mq.Stack, "begin", once))
+                          patch.object(mq.Beside, "gate", declined),
+                          patch.object(mq, "STACK_ADMISSION_BACKOFF", stretched(self.PATIENCE)))
         self.assertEqual((self.state(first)["state"], self.added("b")["state"]), ("landed", "landed"), log)
         self.assertEqual(self.gates(), 2, log)
         self.assertIn(f"is thrown away, since it gave no verdict (exit {mq.resources.BUSY}): queued again", log)
         self.assertNotIn("goes on as the next round", log)
+        self.assertEqual(log.count("that arrived during the gate"), 1, log)
+        self.assertIn(mq.STACK_ADMISSION_DECLINED, declined_log.read_text())
+
+    def test_a_stacked_gate_is_offered_again_only_after_its_admission_backoff(self):
+        self.commit("a", "a"); self.commit("b", "b")
+        first, second = self.add("a", "b")
+        worker = mq.Worker(mq.Queue(self.repo))
+        dropped = []
+        worker.pending = SimpleNamespace(done=lambda: True, void=lambda: "busy", not_admitted=lambda: True,
+                                         drop=dropped.append)
+        config, lanes, head = self.config(), ["gate"], self.state(first)["tip"]
+        arguments = (worker, config, lanes, head, [self.state(first)], threading.Event(), set())
+        with patch.object(mq.time, "monotonic", return_value=100) as clock, patch.object(mq, "Stack") as stack:
+            worker.stack(*arguments)
+            self.assertEqual(dropped, ["busy"])
+            stack.assert_not_called()
+            clock.return_value += mq.STACK_ADMISSION_BACKOFF - 1
+            worker.stack(*arguments)
+            stack.assert_not_called()
+            clock.return_value += 1
+            worker.stack(*arguments)
+        stack.assert_called_once()
+        self.assertEqual([entry["id"] for entry in stack.call_args.args[2]], [second])
+        stack.return_value.begin.assert_called_once()
+
+    def test_a_stacked_gate_admitted_on_retry_gives_the_verdict(self):
+        self.commit("hold", "a"); self.commit("b", "b")
+        [first] = self.add("a")
+        attempts, gate = [], mq.Beside.gate
+        def offer(worker, lanes, round_name, where=(), cancel=None):
+            attempts.append(round_name)
+            if len(attempts) == 1: return mq.resources.BUSY, None
+            return gate(worker, lanes, round_name, where=where, cancel=cancel)
+        # The preceding fixture checks the wait itself with a monotonic clock.
+        log = self.worked("b", self.stacked_started, patch.object(mq, "STACK_ADMISSION_BACKOFF", 0),
+                          patch.object(mq.Beside, "gate", offer))
+        b = self.added("b")
+        self.assertEqual((self.state(first)["state"], b["state"]), ("landed", "landed"), log)
+        self.assertEqual(len(attempts), 2, log)
+        self.assertEqual(self.gates(), 2, log)
+        self.assertIn("whose gate began on top of the batch that just landed", log)
+        self.assertEqual(b["gatedOn"], self.state(first)["landedAs"])
+
+    def test_an_adopted_stack_refused_admission_is_gated_normally_without_holding(self):
+        config = self.config()
+        config["queue"]["noVerdictRuns"] = 1
+        self.publish(config)
+        self.commit("hold", "a"); self.commit("b", "b")
+        [first] = self.add("a")
+        offered, adopted = threading.Event(), threading.Event()
+        begun = mq.Worker.begun
+        def began(worker, *args, **kwargs):
+            begun(worker, *args, **kwargs)
+            if kwargs.get("adopted"): adopted.set()
+        def declined(worker, lanes, round_name, where=(), cancel=None):
+            offered.set()
+            self.assertTrue(adopted.wait(stretched(self.PATIENCE)), "the batch never adopted the stacked gate")
+            return mq.resources.BUSY, None
+        log = self.worked("b", lambda _: offered.is_set(), patch.object(mq.Worker, "begun", began),
+                          patch.object(mq.Beside, "gate", declined))
+        self.assertEqual((self.state(first)["state"], self.added("b")["state"]), ("landed", "landed"), log)
+        self.assertIn("whose gate began on top of the batch that just landed", log)
+        self.assertEqual(self.gates(), 2, log)
+        self.assertIsNone(mq.Queue(self.repo).held(), log)
 
     def test_an_entry_that_conflicts_with_the_batch_is_not_stacked_or_sent_back_by_it(self):
         """A stacked gate settles nothing: an entry that conflicts with the batch below waits, and its own round

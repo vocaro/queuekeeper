@@ -611,6 +611,11 @@ canceling its lanes and queuing its entries again:
 - the queue holds; or
 - the worker stops or moves to a newer toolkit.
 
+If neither Mac admits the stack's next lane, the worker waits two minutes before trying another stack on
+that batch. This avoids rebuilding it on each 30-second look. If the preceding batch lands before the
+decline returns, the stack's entries go into an ordinary round without counting the speculative attempt
+against `queue.noVerdictRuns`.
+
 Only one stacked gate runs at a time, so entries that arrive after it starts wait for the next round, where
 they stack on it in turn. A stacked gate settles nothing itself: an entry that conflicts with the batch below
 waits for its own round, and the worker's log names the entries below that it conflicts with. A bisect stacks
@@ -989,8 +994,8 @@ gate's log also copies once the lane ends.
 queue doctor` says whether that is testing or being stuck, from signals the queue already keeps, and
 for each what it means and what heals it ([#290](https://github.com/vocaro/vocaro-engineering/issues/290)).
 It reads the entries, the hold, whether a worker runs, and the logs of the newest twelve gates of the
-`eng unittest` lanes back to the last that gave a verdict, a pass or a failure; a gate still running
-is left out. Its signals:
+`eng unittest` lanes back to the last that gave a verdict, a pass or a failure. It skips running
+gates and speculative stacks whose last lane no Mac admitted. Its signals:
 
 - **refused gates**: gates that `eng unittest` refused before running anything (a line ending
   `nothing ran`), how many in a row with the same refusal, their logs, and the waiting entry whose

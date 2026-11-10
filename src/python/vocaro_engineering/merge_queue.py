@@ -167,6 +167,9 @@ BESIDE_SUFFIX = "-beside"
 # failure or no landing throws the stacked gate away (owner's decision of 2026-11-07, vocaro-engineering#241). The
 # worker looks for them this often (Worker.watched).
 STACK_POLL = 30
+# A busy Mac can stay busy over many polls. Wait four polls before reintegrating a declined stack (#348).
+STACK_ADMISSION_BACKOFF = 4 * STACK_POLL
+STACK_ADMISSION_DECLINED = "queue: no Mac admitted the last lane of this stacked gate"
 # What a gate's lanes return when `eng queue remove` took an entry it tests out of the queue, which stopped them by the
 # cancel a thrown-away stacked gate's lanes end with, here or on the second Mac, freeing their admission there: no
 # verdict on anything, and what is left of the batch gates again (Worker.gate, vocaro-engineering#247). The gate looks
@@ -1554,8 +1557,8 @@ def patch_of(root, entry):
 
 def gate_logs(queue, lanes, working):
     """The logs of the newest DOCTOR_LOGS gates of lanes, eng unittest lanes, newest first, back to the last that gave
-    a verdict, OK or FAILED: [(name, the refusal it printed or None, its eng unittest verdict or None)]. A gate that
-    still runs is no gate without a verdict, so its log is left out."""
+    a verdict, OK or FAILED: [(name, the refusal it printed or None, its eng unittest verdict or None)]. Leave out
+    gates still running and stacked gates whose last lane no Mac admitted."""
     running = {gate.get("log") for gate in (queue.round_state() or {}).get("gates", {}).values()} if working else set()
     logs = []
     for lane in lanes:
@@ -1563,8 +1566,10 @@ def gate_logs(queue, lanes, working):
             if str(path) in running: continue
             with contextlib.suppress(OSError): logs.append((path.stat().st_mtime, path.name, path))
     found = []
-    for _, name, path in sorted(logs)[-DOCTOR_LOGS:][::-1]:
+    for _, name, path in sorted(logs, reverse=True):
+        if len(found) == DOCTOR_LOGS: break
         said = path.read_text(errors="replace")
+        if said.endswith(STACK_ADMISSION_DECLINED + "\n"): continue
         summaries = UNITTEST_SUMMARY.findall(said)
         if summaries and "UNMEASURED: " not in summaries[-1]: break
         refused = REFUSAL.findall(said)
@@ -1922,6 +1927,7 @@ class Worker:
         self.lane_now = None  # (lane, began, where) of the lane the gate runs or ran last (gate)
         self.stacked = None  # a Stack whose batch below landed, which the next round adopts as its own (after_stack)
         self.pending = None  # the Stack started on this round's batch while it gates (watched)
+        self.stack_retry_after = 0  # monotonic time before which this round does not retry a declined stack
         self.gating = ()  # the IDs of the entries integrate last put on top, which the gate tests (Removal)
         self.withdrawn = []  # those of them that left the queue, which stopped the last gate (gate)
         self.role = "batch"  # what its gate is in the round's account (GateWatch): the batch, or a bisect's older half
@@ -3250,6 +3256,11 @@ class Worker:
         self.begun(stacked.name, stacked.tip, base, applied, adopted=True)
         result, log = self.watched(stacked.runner, config, lanes, base, stacked.tip, applied, stacked.wait)
         self.prune()
+        if stacked.not_admitted():
+            # The speculative offer never started. Gate the entries normally without charging a no-verdict run.
+            stacked.drop(stacked.void())
+            self.after_stack(QUEUED, stacked.runner)
+            return True
         outcome = self.older(config, applied, base, stacked.tip, None, None, result, log, stacked.name,
                              runner=stacked.runner)
         self.after_stack(outcome, stacked.runner)
@@ -3260,6 +3271,7 @@ class Worker:
         entries that arrive behind them and gates them stacked on head in the other checkout, on the other Mac
         (stack), which after_stack keeps or throws away."""
         self.pending = None
+        self.stack_retry_after = 0
         stop, said = threading.Event(), set()
         def stacker():
             while not stop.wait(STACK_POLL):
@@ -3277,16 +3289,17 @@ class Worker:
     def stack(self, runner, config, lanes, head, applied, stop, said):
         """Start self.pending, the waiting entries not in applied, the batch at head, gated stacked on head, when
         there are any and none is pending: on the Mac runner's lane does not run on (other_mac), in the checkout it
-        does not use. One the second Mac declined or left with no verdict, or one an entry's removal stopped, is
-        thrown away, for a later look to start again. An entry eng land put first, or that it lands without the gate,
-        starts none: it goes first, on main; nor does a batch an entry of which has left the queue, as its gate stops
-        (Worker.gate, vocaro-engineering#247)."""
+        does not use. One that gave no verdict or stopped when an entry left the queue is thrown away. An admission
+        decline delays the next attempt. An entry eng land put first or lands without the gate goes first on main.
+        A batch with a withdrawn entry does not start a stack, as its own gate stops (Worker.gate, #247)."""
         if self.pending is not None:
             if not self.pending.done(): return
             why = self.pending.void()
             if why is None: return
+            if self.pending.not_admitted(): self.stack_retry_after = time.monotonic() + STACK_ADMISSION_BACKOFF
             self.pending.drop(why)
             self.pending = None
+        if time.monotonic() < self.stack_retry_after: return
         ids = {entry["id"] for entry in applied}
         waiting = self.queue.waiting()
         if not ids <= {entry["id"] for entry in waiting}: return
@@ -3729,7 +3742,12 @@ class Stack:
                         f"at {self.tip[:12]}, stacked on {self.base[:12]}, "
                         + ("on this Mac" if self.where == HERE else "on the second Mac if it can start them now"))
         def gate():
-            try: self.box["result"] = self.runner.gate(self.lanes, self.name, where=self.where, cancel=self.cancel)
+            try:
+                self.box["result"] = self.runner.gate(self.lanes, self.name, where=self.where, cancel=self.cancel)
+                _, log = self.box["result"]
+                if log is not None and self.not_admitted():
+                    with contextlib.suppress(OSError), log.open("a") as kept:
+                        kept.write("\n" + STACK_ADMISSION_DECLINED + "\n")
             except BaseException as error: self.box["error"] = error
         self.thread = threading.Thread(target=gate, name="stacked gate", daemon=True)
         self.thread.start()
@@ -3741,6 +3759,11 @@ class Stack:
     def peek(self):
         """(status, log) of a stacked gate that has ended, None for one whose lanes raised."""
         return self.box.get("result")
+
+    def not_admitted(self):
+        """Whether the stacked gate's last lane exited busy without running on either Mac."""
+        result = self.peek()
+        return result is not None and result[0] == resources.BUSY and not self.runner.ran_where
 
     def void(self):
         """Why a stacked gate that has ended cannot be kept, or None: it gave no verdict, its lanes raised, or an
