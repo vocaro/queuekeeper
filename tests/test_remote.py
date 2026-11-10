@@ -3654,7 +3654,10 @@ exec {shlex.quote(real)} "$@"
             if host == "away": raise away
             return reach(host)
 
-        with patch.dict(os.environ, {remote.GATE_HOSTS: "away, fake", remote.QUEUE_GATE: "1"}), \
+        directory = offload_host.admission_directory()
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / remote.GATE_HOSTS_FILE).write_text("away, fake\n")
+        with patch.dict(os.environ, {remote.QUEUE_GATE: "1"}), \
                 patch.object(remote, "reachable", side_effect=reachable) as asked:
             status, output, error = self.run_here("--offload-only", "gate")
         self.assertEqual(status, 0, output + error)
@@ -7375,6 +7378,34 @@ class ToolkitUpdateTests(unittest.TestCase):
 
 
 class GateHostPoolTests(unittest.TestCase):
+    def test_workers_read_the_account_file_without_a_shell_export(self):
+        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {"HOME": folder + "/other"}), \
+                patch.object(offload_host.pwd, "getpwuid") as account:
+            for key in ("HEAVY_SLOT_DIR", remote.HOST_VARIABLE, remote.GATE_HOSTS):
+                os.environ.pop(key, None)
+            account.return_value.pw_dir = folder
+            path = Path(folder) / offload_host.ADMISSION_STATE / remote.GATE_HOSTS_FILE
+            self.assertIsNone(remote.gate_hosts())
+            path.parent.mkdir(parents=True)
+            path.write_text("build-host, gate-03, gate-04\n")
+            self.assertEqual(remote.gate_hosts(), ("build-host", "gate-03", "gate-04"))
+            with patch.dict(os.environ, {remote.GATE_HOSTS: "old-export"}):
+                self.assertEqual(remote.gate_hosts(), ("build-host", "gate-03", "gate-04"))
+                path.unlink()
+                self.assertEqual(remote.gate_hosts(), ("old-export",))
+
+    def test_a_present_invalid_file_is_reported_by_path(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
+            "HEAVY_SLOT_DIR": directory, remote.HOST_VARIABLE: "build-host", remote.GATE_HOSTS: "old-export"
+        }):
+            path = Path(directory) / remote.GATE_HOSTS_FILE
+            for invalid in (b"", b"build-host,build-host", b"\xff"):
+                with self.subTest(invalid=invalid):
+                    path.write_bytes(invalid)
+                    with self.assertRaisesRegex(ValueError, re.escape(str(path))): remote.gate_hosts()
+            with patch.dict(os.environ, {remote.HOST_VARIABLE: "none"}):
+                self.assertIsNone(remote.gate_hosts())
+
     def test_the_pool_can_use_an_extra_slot_when_admission_limits_allow_it(self):
         capacity = {"slots": 1, "slotsMax": 2, "busy": [0], "cpuBusy": 10, "busyLimit": 70,
                     "sinceAdmission": 15, "settle": 5, "memory": 1}

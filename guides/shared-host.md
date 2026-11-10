@@ -548,20 +548,21 @@ marked a lane for the second Mac, is refused, true or false ([earlier names](#ea
 
 #### Build Macs for merge queue gates
 
-With no `VOCARO_GATE_HOSTS`, the queue uses this Mac and the existing offload host. To add Macs,
-give each a distinct SSH alias, follow [the build host setup](#setting-up-the-second-mac) for each,
-and list the existing build Mac and the new ones in the order the queue should try them. This
-example keeps the existing build Mac first.
+To add Macs, give each a distinct SSH alias and follow [the build host setup](#setting-up-the-second-mac).
+On the Mac that starts the queue workers, put the existing build Mac and the new ones in
+`~/Library/Application Support/vocaro-engineering/gate-hosts`, in the order the queue should try
+them. The file holds a comma-separated list of aliases.
 
-```sh
-export VOCARO_GATE_HOSTS=build-host,gate-03,gate-04
-python3 scripts/eng remote setup --host gate-03 --check
-python3 scripts/eng remote setup --host gate-03 --runtimes --check
+```text
+build-host,gate-03,gate-04
 ```
 
-Set the list in the environment that starts each project's queue worker, such as the shell running
-`eng land --wait`. A running worker keeps its inherited list until it exits. The queue includes
-this Mac as the local fallback automatically. Each alias must identify a different physical Mac.
+Workers started from Terminal, Codex, or the signed LaunchAgent read the same file for that account.
+When the file is missing, an existing `VOCARO_GATE_HOSTS` export still works. With neither setting,
+the queue uses this Mac and the existing offload host. An explicit `HEAVY_SLOT_DIR` namespace reads
+its own `gate-hosts` file from that directory.
+
+The queue includes this Mac as the local fallback automatically. Each alias must identify a different physical Mac.
 For each eligible lane, the queue tries the first listed Mac with capacity. If that Mac is
 unreachable or declines before the work starts, the queue tries the next alias. When all decline,
 the ordinary gate can take local admission and rechecks the build Macs while waiting. A

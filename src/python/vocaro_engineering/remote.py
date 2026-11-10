@@ -80,6 +80,7 @@ ALIASES = (DEFAULT_HOST, "second-mac")
 # had until vocaro-engineering#58, which eng refuses (named_host).
 HOST_VARIABLE, OLD_HOST_VARIABLE = "VOCARO_OFFLOAD_HOST", "VOCARO_BUILD_HOST"
 GATE_HOSTS = "VOCARO_GATE_HOSTS"
+GATE_HOSTS_FILE = "gate-hosts"
 # The second Mac's directory for repositories and checkouts, relative to its home. It keeps the build
 # host's name: another would leave every warm checkout there behind.
 ROOT = "Development/build-host"
@@ -578,14 +579,22 @@ def configured():
 
 def gate_hosts():
     """Ordered SSH aliases for queue gates, or None to use the ordinary single remote."""
-    value = os.environ.get(GATE_HOSTS)
-    if value is None: return None
     host = named_host()
     if host is not None and host.strip().lower() in {"", "none", "off"}: return None
+    path = offload_host.admission_directory() / GATE_HOSTS_FILE
+    try:
+        value = path.read_text(encoding="utf-8")
+        source = str(path)
+    except FileNotFoundError:
+        value = os.environ.get(GATE_HOSTS)
+        if value is None: return None
+        source = GATE_HOSTS
+    except UnicodeError as error:
+        raise ValueError(f"{path} must be UTF-8 text") from error
     hosts = tuple(part.strip() for part in value.split(","))
     if any(not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]*", alias) or alias.lower() in {"none", "off"}
            for alias in hosts) or len(hosts) != len(set(hosts)):
-        raise ValueError(f"{GATE_HOSTS} needs a comma-separated list of distinct SSH aliases")
+        raise ValueError(f"{source} needs a comma-separated list of distinct SSH aliases")
     return hosts
 
 
