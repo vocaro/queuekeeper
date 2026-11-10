@@ -2423,7 +2423,7 @@ class Worker:
         limit would (processes.Canceled), for a stacked gate thrown away (Stack). So does an entry it tests that leaves
         the queue, as `eng queue remove` takes it out, and the gate then returns WITHDRAWN, with self.withdrawn naming
         those entries (Removal, vocaro-engineering#247). lane_now is (the lane running, when it began, where), by which
-        a gate stacked on this one goes to the other Mac (Worker.other_mac)."""
+        a gate stacked on this one goes to another Mac (Worker.admitted_mac)."""
         log, self.ran_on, self.measured, self.timed_out, self.ran_where = None, None, None, None, ""
         self.failed_lane, self.failed_load, self.withdrawn = None, None, []
         self.failed_dispatch = None
@@ -3135,6 +3135,7 @@ class Worker:
             result, log = self.gate(ungated["lanes"] if ungated else docs or lanes_of(config), round_name)
         else:
             lanes = lanes_of(config)
+            self.lane_now = None
             result, log = self.watched(self, config, lanes, base, head, applied,
                                        lambda: self.gate(lanes, round_name))
         self.prune()
@@ -3346,8 +3347,8 @@ class Worker:
 
     def stack(self, runner, config, lanes, head, applied, stop, said):
         """Start self.pending, the waiting entries not in applied, the batch at head, gated stacked on head, when
-        there are any and none is pending: on the Mac runner's lane does not run on (other_mac), in the checkout it
-        does not use. One that gave no verdict or stopped when an entry left the queue is thrown away. An admission
+        there are any and none is pending: away from the Mac running the primary's final lane (admitted_mac), in the
+        other checkout. One that gave no verdict or stopped when an entry left the queue is thrown away. An admission
         decline delays the next attempt. An entry eng land put first or lands without the gate goes first on main.
         A batch with a withdrawn entry does not start a stack, as its own gate stops (Worker.gate, #247)."""
         if self.pending is not None:
@@ -3364,23 +3365,20 @@ class Worker:
         fresh = [entry for entry in waiting if entry["id"] not in ids]
         if not fresh or any(entry.get("front") or entry.get("noGate") or entry["state"] != QUEUED for entry in fresh):
             return
+        mac = self.admitted_mac(runner, lanes[-1])
+        if mac is None: return
         excluded = None
         hosts = remote.gate_hosts()
-        if hosts is None:
-            where = self.other_mac(runner)
+        # A foreground lane uses the designated foreground Mac, outside pooled placement.
+        if hosts is not None and any(config.get("lanes", {}).get(lane, {}).get("foreground") for lane in lanes): return
+        if mac == HERE_MAC:
+            where = BESIDE
+        elif hosts is None:
+            where = HERE
         else:
-            lane, began, _ = runner.lane_now or (None, None, ())
-            if lane is None: return
-            record = lane_wait.current(lane_wait.path_of(runner.checkout, lane), began)
-            if not record or record.get("kind") or not record.get("mac"): return  # placement is still in progress
-            mac = record.get("mac")
-            if mac == HERE_MAC:
-                where = BESIDE
-            else:
-                excluded = next((host for host in hosts if mac == lane_wait.second_mac(host)), None)
-                where = ("--if-free",)
-            # A foreground lane uses the designated foreground Mac, outside pooled placement.
-            if any(config.get("lanes", {}).get(lane, {}).get("foreground") for lane in lanes): return
+            excluded = next((host for host in hosts if mac == lane_wait.second_mac(host)), None)
+            if excluded is None: return
+            where = ("--if-free",)
         why = offerable(config, lanes) if where == BESIDE else None
         if why:
             if why not in said: self.say(f"the entries behind the batch wait for it, since {why}")
@@ -3392,13 +3390,14 @@ class Worker:
         stacked = Stack(self, other, fresh, head, lanes, where, below=applied)
         if not stop.is_set() and stacked.begin(): self.pending = stacked
 
-    def other_mac(self, runner):
-        """The placement option of eng run for a gate stacked on runner's: HERE when runner's lane runs on the
-        second Mac, by its option or the dispatch record it left (remote.dispatched), else BESIDE."""
-        lane, began, where = runner.lane_now or (None, time.time(), ())
-        if where and where == BESIDE: return HERE
-        if where and where == HERE: return BESIDE
-        return HERE if lane and remote.dispatched(runner.checkout, lane, began) else BESIDE
+    def admitted_mac(self, runner, final_lane):
+        """The Mac that admitted the primary's final lane. Earlier lanes can use a different Mac."""
+        current = runner.lane_now
+        if current is None or current[0] != final_lane: return None
+        lane, began, _ = current
+        record = lane_wait.current(lane_wait.path_of(runner.checkout, lane), began)
+        if not record or record.get("admitted") is not True or not lane_wait.alive(record.get("pid")): return None
+        return record.get("mac")
 
     def after_stack(self, outcome, runner):
         """Keep the pending Stack for the next round when the batch below it landed at exactly the tip it was

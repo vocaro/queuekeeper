@@ -2988,7 +2988,8 @@ def wait_state(path):
     if record.get("kind"):
         try: os.kill(record.get("pid"), 0)
         except (OSError, OverflowError, TypeError): return None
-    return {"kind": record.get("kind"), "reason": record.get("reason"), "stranded": record.get("stranded", False)}
+    return {"kind": record.get("kind"), "reason": record.get("reason"), "stranded": record.get("stranded", False),
+            "admitted": record.get("admitted") is True}
 
 
 def relay_wait(path, done, work):
@@ -3188,11 +3189,9 @@ def main(plan):
         # `eng admit --verify` runs its command in the checkout's directory that matches the sender's.
         steps.append(("work", [*eng, *plan["work"]], checkout / plan["log"] if plan.get("log") else None,
                       checkout / plan["subdirectory"] if plan.get("subdirectory") else checkout))
-        # The lane's wait record (lane_wait): what an earlier run left in it is not this run's.
+        # The lane's wait record (lane_wait) is shared by provision and work.
         wait = checkout / plan["wait"] if plan.get("wait") else None
-        if wait is not None:
-            wait.unlink(missing_ok=True)
-            environment["VOCARO_LANE_WAIT"] = str(wait)
+        if wait is not None: environment["VOCARO_LANE_WAIT"] = str(wait)
         returns = plan.get("returns")
         if returns:
             back = checkout / returns["directory"], returns["paths"]
@@ -3202,6 +3201,8 @@ def main(plan):
                 else: (back[0] / path).unlink(missing_ok=True)
         for stage, command, log, directory in steps:
             if _stop.is_set(): break
+            # Neither an earlier dispatch nor provision can establish this step's admission.
+            if wait is not None: wait.unlink(missing_ok=True)
             begun, began = True, time.monotonic()
             work_environment = environment
             if stage == "work" and "cleanupSeconds" in (plan.get("lease") or {}):

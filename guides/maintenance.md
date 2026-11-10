@@ -595,9 +595,11 @@ With [a build Mac list](shared-host.md#build-macs-for-merge-queue-gates), the ne
 first listed Mac that can start it. The older half runs on this Mac.
 
 **Entries that arrive during a gate gate on top of it.** While a batch gates, the worker checks every
-`STACK_POLL` (30 s) for entries that have arrived behind it. When it finds some, it gates them stacked on
-the batch's tip, in the checkout the batch does not use, on the other Mac: on this Mac when the batch went
-to the second Mac, and otherwise on the second Mac if it can start them now (owner's decision, 2026-11-07,
+`STACK_POLL` (30 s) for entries that have arrived behind it. Once the batch's final lane has secured admission,
+the worker gates those entries stacked on the batch's tip, in the other checkout and on another Mac. Earlier
+lanes can run on a different Mac, and a dispatch can be declined before admission. In the two-Mac setup, the
+stack runs on this Mac when the final lane runs on the second Mac, and otherwise on the second Mac if it can
+start now (owner's decision, 2026-11-07,
 [#241](https://github.com/vocaro/vocaro-engineering/issues/241)). The batch's push makes that tip
 `origin/main`, so the next round adopts the stacked gate as its own: it gates on, and its result settles
 it as any round's would, with no gate of its own to start. Anything else throws the stacked gate away,
@@ -612,9 +614,9 @@ canceling its lanes and queuing its entries again:
 - the queue holds; or
 - the worker stops or moves to a newer toolkit.
 
-With [a build Mac list](shared-host.md#build-macs-for-merge-queue-gates), the queue waits for the
-active lane's placement before offering the stacked gate. It tries the other build Macs and,
-when the active lane runs remotely, this Mac. A gate that uses the foreground waits its turn.
+With [a build Mac list](shared-host.md#build-macs-for-merge-queue-gates), the stack can run on any
+build Mac besides the one running the primary's final lane. When that lane runs remotely, the stack
+can also run on this Mac. A gate that uses the foreground waits its turn.
 
 If no eligible Mac admits the stack's next lane, the worker waits two minutes before trying another stack on
 that batch. This avoids rebuilding it on each 30-second look. If the preceding batch lands before the

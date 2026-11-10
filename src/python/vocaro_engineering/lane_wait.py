@@ -5,9 +5,9 @@ removes it when it ends. A lane on the second Mac has its own there, which offlo
 `W` frames that the dispatcher writes to the lane's record here (relayed), so that the one file says it on either Mac.
 The queue reads the record and no printed line: rewording what a wait prints changes nothing in status.
 
-The record says only what the lane waits for, since when and on which Mac. It holds no status or outcome, and nothing
-judges a run by it: a lane's verdict is its receipt's (source.json) alone. It is a statement of the moment, so that a
-wait stops counting once the process that reported it is gone (current).
+The record says what the lane waits for, since when and on which Mac, and whether the lane started there. The
+lane's receipt (source.json) gives its verdict. A wait stops counting once the process that reported it is gone
+(current).
 
 Nothing here may stop a lane: a record that cannot be written or read is left as it is."""
 import json
@@ -33,7 +33,7 @@ WORDS = {ADMISSION: "admission on {mac}: {reason}",
          ALONE: "this Mac alone, as the second Mac cannot take it: {reason}",
          OVERFLOW: "whichever Mac admits it first, the second Mac asked again: {reason}"}
 # What identifies a state of the record, apart from when it was written.
-STATE = ("kind", "reason", "mac", "offer", "stranded", "pid")
+STATE = ("kind", "reason", "mac", "offer", "stranded", "pid", "admitted")
 
 _owned = None  # the record this process named, and so removes (begin, finish)
 _offer = None  # why this run waits for this Mac instead of the second Mac, until it is admitted
@@ -104,19 +104,20 @@ def waiting(kind, reason, mac=HERE, stranded=False):
     if not os.environ.get(VARIABLE): return
     if mac == HERE and kind in OFFERS: _offer = {"kind": kind, "reason": reason}
     record = {"kind": kind, "reason": reason, "mac": mac, "offer": _offer if mac == HERE and kind not in OFFERS else None,
-              "stranded": stranded, "pid": os.getpid()}
+              "stranded": stranded, "pid": os.getpid(), "admitted": False}
     found = read(os.environ[VARIABLE])
     if same(found, record): return
     since = found.get("since") if found and found.get("kind") else None
     write({**record, "since": since if isinstance(since, (int, float)) else time.time()})
 
 
-def running(mac=HERE):
-    """The lane no longer waits, and runs on mac: the wait is cleared."""
+def running(mac=HERE, *, admitted=True):
+    """Clear the wait. Only a confirmed start on mac establishes placement for a stacked gate."""
     global _offer
     if not os.environ.get(VARIABLE): return
     _offer = None
-    record = {"kind": None, "reason": None, "mac": mac, "offer": None, "stranded": False, "pid": os.getpid()}
+    record = {"kind": None, "reason": None, "mac": mac, "offer": None, "stranded": False,
+              "pid": os.getpid(), "admitted": admitted}
     if not same(read(os.environ[VARIABLE]), record): write({**record, "since": None})
 
 
@@ -128,7 +129,7 @@ def sent(host):
     """The lane has gone to host to run. A wait goes on until the second Mac takes it (relayed) or declines it."""
     if not os.environ.get(VARIABLE): return
     found = read(os.environ[VARIABLE])
-    if not (found and found.get("kind")): running(second_mac(host))
+    if not (found and found.get("kind")): running(second_mac(host), admitted=False)
 
 
 def relayed(data, host):
@@ -138,7 +139,7 @@ def relayed(data, host):
     except ValueError: return
     if isinstance(record, dict) and record.get("kind") in WORDS:
         waiting(record["kind"], record.get("reason"), second_mac(host), bool(record.get("stranded")))
-    else: running(second_mac(host))
+    else: running(second_mac(host), admitted=isinstance(record, dict) and record.get("admitted") is True)
 
 
 def alive(pid):
