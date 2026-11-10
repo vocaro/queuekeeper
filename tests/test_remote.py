@@ -516,6 +516,8 @@ class RemoteTests(unittest.TestCase):
         (root / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "vocaro-engineering",
                                                            "toolkit": {"path": "."}}))
         subprocess.run(["git", "init", "-q", "-b", "main", str(root)], check=True)
+        # The fixture can be removed as soon as its first commit returns. A detached repack can race that cleanup.
+        git(root, "config", "maintenance.auto", "false")
         commit_all(root)
         git(root, "remote", "add", "origin", remote.UPSTREAM)
         # Here in the copy's own configuration, and there in the second Mac's home's.
