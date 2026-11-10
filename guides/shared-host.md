@@ -1828,9 +1828,10 @@ the candidates, with their commands: exactly what `--delete` removes.
 
 - **In use.** One `lsof` and `ps` census of the account's processes is taken first. A path is in
   use when a process's working directory, an open file or a path in its arguments lies inside
-  it, and a path in use is kept. Every candidate has also been unchanged for `--min-idle-hours`
-  (24 by default): a worktree created a moment ago at origin/main is clean and landed before its
-  session's first process starts.
+  it, and a path in use is kept. A worktree without proof of retirement must also have been unchanged
+  for 24 hours by default. One created at origin/main can look clean and landed before its session's
+  first process starts. An explicit `--min-idle-hours` applies the requested wait even to archived
+  sessions.
 - **Linked worktrees** of every main checkout in `~/Development`, from `git worktree list`. A
   candidate lies in its project's `.claude/worktrees` or `.codex/worktrees` or in
   `~/.codex/worktrees`, is unlocked (Claude Code locks an agent's worktree while the agent
@@ -1853,7 +1854,10 @@ the candidates, with their commands: exactly what `--delete` removes.
   folder (`cwd`) of a Claude desktop session not yet archived, by the app's session records in
   `~/Library/Application Support/Claude/claude-code-sessions`, is kept; an unreadable record
   keeps every landed worktree. A session's last activity there, and its transcript in
-  `~/.claude/projects`, count toward the idle time. The inventory reads
+  `~/.claude/projects`, count toward the idle time. The worktree also uses the timestamps recorded
+  inside its Git reflog, so rewriting an unchanged log does not restart the wait. An archived
+  desktop session can satisfy the default rule immediately for its Claude worktree when the record
+  belongs to the current checkout and no activity postdates the session. The inventory reads
   origin/main once per repository and does not fetch, so work that landed after the last fetch
   stays kept. Its `git status` runs with `GIT_OPTIONAL_LOCKS=0`, so it never refreshes another
   session's index. The command is `git worktree remove` without `--force`, which itself refuses

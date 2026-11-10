@@ -34,6 +34,7 @@ import pwd
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -278,6 +279,7 @@ class Host:
     # The second Mac's runtime images as `eng remote setup --runtimes` reads them (remote.runtime_images), or
     # {"error": why} when they cannot be read; None without a second Mac.
     remote_runtimes: dict = None
+    strict_idle: bool = False  # an explicit --min-idle-hours also applies to archived sessions
 
     @classmethod
     def current(cls, min_idle, development=None, run=subprocess.run):
@@ -380,6 +382,21 @@ def session_activity(host, path):
     return max(times, default=0.0)
 
 
+def archived_owner(host, path, activity):
+    """A desktop session that belongs to this checkout and was archived after its last activity."""
+    try: created = Path(path).stat().st_birthtime
+    except (AttributeError, OSError): return False
+    target = canonical(os.path.realpath(path))
+    for record in host.sessions.values():
+        if not record or record.get("isArchived") is not True: continue
+        cwd, started, latest = (record.get(key) for key in ("cwd", "createdAt", "lastActivityAt"))
+        if not isinstance(cwd, str) or canonical(os.path.realpath(cwd)) != target: continue
+        if (type(started) in (int, float) and type(latest) in (int, float)
+                and 0 < created <= started / 1000 <= latest / 1000 <= host.now and activity <= latest / 1000):
+            return True
+    return False
+
+
 def git_environment():
     # A hook's exported GIT_DIR and its relatives would point every command at one repository.
     environment = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
@@ -392,10 +409,30 @@ def git(run, cwd, *arguments, timeout=300):
                env=git_environment())
 
 
+def reflog_activity(path):
+    """Read the event times, so a maintenance rewrite does not make an old reflog new."""
+    try: info = path.lstat()
+    except OSError: return 0
+    if not stat.S_ISREG(info.st_mode): return info.st_mtime
+    latest = 0
+    try:
+        with path.open("rb") as log:
+            for line in log:
+                header = line.rstrip(b"\n").split(b"\t", 1)[0]
+                match = re.fullmatch(rb"[0-9a-f]{40,64} [0-9a-f]{40,64} .+> ([0-9]{1,12}) [+-][0-9]{4}",
+                                     header)
+                if not match: return info.st_mtime
+                latest = max(latest, int(match[1]))
+    except OSError:
+        return info.st_mtime
+    return latest or info.st_mtime
+
+
 def last_activity(path):
     """The newest change to a directory, its top-level entries and, for a worktree, its Git state."""
     path = Path(path)
     paths = [path]
+    times = []
     try: paths += list(path.iterdir())
     except OSError: pass
     try:
@@ -403,9 +440,9 @@ def last_activity(path):
         if text.startswith("gitdir:"):
             gitdir = Path(text.split(":", 1)[1].strip())
             gitdir = gitdir if gitdir.is_absolute() else path / gitdir
-            paths += [gitdir / "HEAD", gitdir / "index", gitdir / "logs/HEAD"]
+            paths += [gitdir / "HEAD", gitdir / "index"]
+            times.append(reflog_activity(gitdir / "logs/HEAD"))
     except OSError: pass
-    times = []
     for candidate in paths:
         try: times.append(candidate.lstat().st_mtime)
         except OSError: pass
@@ -487,7 +524,8 @@ def worktree(host, usage, sizes, main, entry, base, name, archive_worktrees=Fals
     changed = status.stdout.splitlines()
     if changed: return item(KEPT, f"dirty: {len(changed)} modified or untracked paths")
     session_dir = session_root(host, main, path)
-    archive = archive_worktrees and host.offload_host and session_dir == Path(main) / ".claude/worktrees"
+    claude_worktree = session_dir == Path(main) / ".claude/worktrees"
+    archive = archive_worktrees and host.offload_host and claude_worktree
     try: evidence, results, blockers = ignored.held(path, verify_caches=archive)
     except (ignored.Refusal, OSError) as error: return item(KEPT, f"could not list its ignored files: {error}")
     if archive and blockers:
@@ -506,13 +544,18 @@ def worktree(host, usage, sizes, main, entry, base, name, archive_worktrees=Fals
                           "landed.sh checks")
     session = live_sessions(host, path)
     if session: return item(KEPT, f"landed ({why}), but {session}")
-    idle = host.now - max(last_activity(path), session_activity(host, path))
-    if idle < host.min_idle: return item(KEPT, f"clean and landed ({why}), but changed {age(idle)} ago", idle=idle)
+    activity = max(last_activity(path), session_activity(host, path))
+    idle = host.now - activity
+    idle_reason = f"idle {age(idle)}"
+    if idle < host.min_idle:
+        if host.strict_idle or not claude_worktree or not archived_owner(host, path, activity):
+            return item(KEPT, f"clean and landed ({why}), but changed {age(idle)} ago", idle=idle)
+        idle_reason = "owning desktop session is archived"
     # eng's results go with a worktree whose HEAD is landed: its work is on origin/main, where a lane runs it
     # again, and what a result showed that matters is on its issue (vocaro-engineering#187). Git removes
     # ignored files with the worktree, and without --force refuses one that gained a change since.
     command = ["git", "-C", str(main), "worktree", "remove", path]
-    reason = f"clean, unlocked, no process or live session; {why}; idle {age(idle)}"
+    reason = f"clean, unlocked, no process or live session; {why}; {idle_reason}"
     if archive and (evidence or results):
         return item(ARCHIVE, reason + f"; verify an archive on {host.offload_host} before removal; "
                     + ", ".join((evidence + results)[:3]), command, idle)
@@ -1366,8 +1409,8 @@ def add_arguments(parser):
                         help="with --delete, name in each ledger entry who asked for this run (such as 'owner, "
                         "2026-11-05 chat'); --delete asks nobody since 2026-11-05, so this only records the ask")
     parser.add_argument("--json", action="store_true", help="print the items as JSON")
-    parser.add_argument("--min-idle-hours", type=float, default=24.0,
-                        help="how long a candidate must have been unchanged (default 24)")
+    parser.add_argument("--min-idle-hours", type=float,
+                        help="require this many unchanged hours even for archived sessions (default 24 without retirement proof)")
     parser.add_argument("--min-size-mb", type=float, default=100.0, help="list smaller items only as totals")
     parser.add_argument("--development", type=Path, help="directory holding the projects (default ~/Development)")
 
@@ -1384,7 +1427,9 @@ def execute(args, run=subprocess.run, out=print):
         print("eng disk: --yes names who asked for --delete's removals, so it needs --delete", file=sys.stderr)
         return 2
     def collect(categories=None, measure=True):
-        host = Host.current(args.min_idle_hours * 3600, args.development, run)
+        idle_hours = 24.0 if args.min_idle_hours is None else args.min_idle_hours
+        host = replace(Host.current(idle_hours * 3600, args.development, run),
+                       strict_idle=args.min_idle_hours is not None)
         sizes = Sizes(run, measure)
         if measure:
             print("Measuring the items listed.", file=sys.stderr)

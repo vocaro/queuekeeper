@@ -213,6 +213,45 @@ class WorktreeTests(Fixture):
         self.assertEqual(item.status, disk.KEPT)
         self.assertIn("changed 60 min ago", item.reason)
 
+    def test_an_archived_owner_can_clear_the_default_idle_wait_for_its_worktree(self):
+        archived, replaced, changed = [self.worktree(name) for name in ("archived", "replaced", "changed")]
+        if not hasattr(archived.stat(), "st_birthtime"):
+            self.skipTest("worktree generation proof needs birth time")
+        now = time.time() + 3
+        sessions = {path.name: {"cwd": str(path), "isArchived": True, "createdAt": (now - 2) * 1000,
+                                "lastActivityAt": (now - 1) * 1000}
+                    for path in (archived, replaced, changed)}
+        sessions["replaced"]["createdAt"] = (replaced.stat().st_birthtime - 60) * 1000
+        os.utime(changed / "README", (now, now))
+        items = self.items(self.host(now=now, sessions=sessions), ["worktree"])
+        self.assertEqual(items[str(archived)].status, disk.CANDIDATE, items[str(archived)].reason)
+        self.assertIn("owning desktop session is archived", items[str(archived)].reason)
+        for path in (replaced, changed):
+            self.assertEqual(items[str(path)].status, disk.KEPT, items[str(path)].reason)
+        strict = self.items(self.host(now=now, sessions=sessions, strict_idle=True), ["worktree"])
+        self.assertEqual(strict[str(archived)].status, disk.KEPT)
+        live = self.items(self.host([disk.Process(8, cwd=str(archived))], now=now, sessions=sessions), ["worktree"])
+        self.assertIn("in use", live[str(archived)].reason)
+
+    def test_reflog_events_count_as_activity_but_a_maintenance_rewrite_does_not(self):
+        worktree = self.worktree("reflog")
+        reflog = Path(git(worktree, "rev-parse", "--absolute-git-dir")) / "logs/HEAD"
+        original = reflog.read_bytes()
+        os.utime(reflog, (LATER, LATER))
+        def item():
+            return self.items(self.host(), ["worktree"])[str(worktree)]
+        rewritten = item()
+        self.assertEqual(rewritten.status, disk.CANDIDATE, rewritten.reason)
+
+        header = original.splitlines()[-1].split(b"\t", 1)[0]
+        identity, _, zone = header.rsplit(b" ", 2)
+        reflog.write_bytes(original + b" ".join((identity, str(int(LATER - 60)).encode(), zone))
+                           + b"\treset: moving to HEAD\n")
+        self.assertEqual(item().status, disk.KEPT)
+        reflog.write_text("unreadable event time\n")
+        os.utime(reflog, (LATER, LATER))
+        self.assertEqual(item().status, disk.KEPT)
+
     def test_the_inventory_and_landed_sh_share_one_containment_proof(self):
         self.assertIs(disk.landing, landing)
         script = (Path(__file__).resolve().parents[1] / "skills/closeout/scripts/landed.sh").read_text()
