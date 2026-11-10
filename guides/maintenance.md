@@ -1056,8 +1056,9 @@ python3 scripts/eng admit --here -- /usr/bin/clang -std=c11 -O2 -Wall -Wextra -W
 /usr/bin/codesign --verify --strict "$app"
 ```
 
-Install the app at a stable path and register it with Launch Services. macOS may ask to allow
-Local Network access when a worker first connects to the second Mac.
+Install the app at a stable path and register it with Launch Services. When macOS prompts for
+Local Network access, allow Vocaro Queue Launcher. If the app is blocked from reaching the second
+Mac, check its access in System Settings under Privacy & Security, then Local Network.
 
 ```sh
 mkdir -p "$HOME/Applications"
