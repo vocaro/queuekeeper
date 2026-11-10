@@ -851,8 +851,7 @@ class WorktreeArchiveTests(Fixture):
         git(self.path, "merge", "--ff-only", "origin/main")
         interpreter = self.root / "uv/python/bin/python3.12"
         interpreter.parent.mkdir(parents=True)
-        interpreter.write_text("outside interpreter fixture\n")
-        interpreter.chmod(0o755)
+        host_isolation.executable(interpreter, "#!/bin/sh\nexit 0\n")
         env = self.path / "pipeline/.venv"
         (env / "bin").mkdir(parents=True)
         (env / "pyvenv.cfg").write_text(f"home = {interpreter.parent}\nimplementation = CPython\n"
@@ -880,7 +879,7 @@ class WorktreeArchiveTests(Fixture):
         with patch.object(evidence_offload, "offload", side_effect=verify):
             self.assertTrue(disk.archive_worktrees([item], self.mac, self.ledger, out=lambda _: None, fresh=self.fresh))
         self.assertFalse(self.path.exists())
-        self.assertEqual(interpreter.read_text(), "outside interpreter fixture\n")
+        self.assertEqual(interpreter.read_text(), "#!/bin/sh\nexit 0\n")
 
     def test_uv_environment_does_not_excuse_an_unexpected_link_or_untracked_lock(self):
         from vocaro_engineering import ignored
