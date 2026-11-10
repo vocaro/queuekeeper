@@ -269,11 +269,10 @@ gh issue close ISSUE_NUMBER
 Each plain command matches its own Claude Code allow rule. Using `--body-file` lets
 `gh issue comment` read the evidence directly.
 
-The owner manages these rules in Claude Code's user settings at `~/.claude/settings.json`
-or `$CLAUDE_CONFIG_DIR/settings.json` when that variable is set. The entries under
-`permissions.allow` are `Bash(gh issue comment:*)` and `Bash(gh issue close:*)`. These
-rules match command text across repositories. The owner-run setup work tracks installation
-of the rules. [vocaro-engineering#338](https://github.com/vocaro/vocaro-engineering/issues/338)
+Use `eng setup --check` to check the Claude Code issue rules on this Mac. The owner runs
+`eng setup` in their Terminal to review and install missing rules in Claude Code's user
+settings. The rules match command text across repositories.
+[vocaro-engineering#338](https://github.com/vocaro/vocaro-engineering/issues/338)
 
 An auto-mode classifier denial comes from Claude Code before GitHub receives the command.
 Report the refusal and stop the close. Verify the effective permission by observing a

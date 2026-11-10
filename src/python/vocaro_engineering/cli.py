@@ -12,7 +12,7 @@ import sys
 import time
 
 from . import __version__, app_builds, app_registrations, budgets, checkpoint, crash_alerts, device_pass, devices, disk, docs, evidence, evidence_offload, failure_records, foreground, github_artifacts, keychain, lane_coverage, lane_report, lane_wait, merge_queue, run_results, \
-    notification_center, offload_host, parallel, processes, release, remote, resources, skills, spelling, stale_modules, storekit_config, toolkit_copy, xctest_shards
+    notification_center, offload_host, parallel, processes, release, remote, resources, setup, skills, spelling, stale_modules, storekit_config, toolkit_copy, xctest_shards
 from .config import TOOLKIT_ROOT, CAPABILITIES, DEFAULT_TOOLKIT, admission as admission_of, lane_to_run, load, source_identity, \
     display_lane_warnings, lane_devices, self_lane_warnings, stays, unadmitted, unlocked_screen
 from .resources import BUSY, FREE_WAIT
@@ -971,6 +971,8 @@ def perform(argv, report):
     init.add_argument("--name")
     init.add_argument("--capability", action="append", choices=sorted(CAPABILITIES), default=[])
     commands.add_parser("doctor")
+    local_setup = commands.add_parser("setup", help="check or install Claude Code issue permissions on this Mac")
+    local_setup.add_argument("--check", action="store_true", help="report missing rules without changing settings")
     commands.add_parser("instructions")
     artifacts = commands.add_parser("github-artifacts", help="prepare checksum-pinned GitHub binary artifacts "
         "through authenticated API downloads in SwiftPM's artifact cache")
@@ -1253,6 +1255,11 @@ def perform(argv, report):
     if argv[first:first + 2] == ["admissions", "usage"]: return resources.usage_main(argv[first + 2:])
     split = argv.index("--") if "--" in argv else len(argv)
     args = parser.parse_args(argv[:split])
+    if args.action == "setup":
+        if split < len(argv):
+            parser.error("setup takes no arguments after --")
+        # This check must not recover crash-alert settings or start any host work.
+        return setup.main(args.check)
     # Only the remote work itself reports its admission. Provisioning and nested commands do not.
     window = os.environ.pop(devices.WINDOW, None)
     device_window = json.loads(window) if window is not None else None

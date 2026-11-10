@@ -33,7 +33,7 @@ TOOLKIT_PATHS = ("src/python", "scripts/eng", "integrations")
 # merge queue, both Macs and their keychains, the simulator pool, the device record, the kept app builds and the
 # policy file.
 HOST_COMMANDS = frozenset({"admissions", "admit", "app", "device-pass", "disk", "host", "keychain", "land", "policy", "queue",
-                           "remote", "simulator-pool"})
+                           "remote", "setup", "simulator-pool"})
 GIT_TIMEOUT = 10
 # Set to off, `eng doctor` lists no leftover worktrees: tests/host_isolation.py sets it, so that no doctor test
 # reads the host's own worktrees of the toolkit.
