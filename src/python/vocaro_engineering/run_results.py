@@ -8,6 +8,8 @@ a run (matrix.kept), simulator-tests/NAME.log and NAME.json, in DIRECTORY, or el
 STATUS is the exit status of the script's xcodebuild. A lane's output goes to its log, so `eng run` prints
 these lines again from results/ when the lane ends, here or, for a run on the second Mac, once its results
 have come back (report); it leaves out what `eng simulator-tests` kept, whose lanes print their own.
+Use --activity-timing-prefix PREFIX to keep activities titled "PREFIX N s" under each test. The number
+in the title measures the wait. An unreadable activity tree is reported separately from the test outcome.
 
 It exits 0 once it has read the bundle's outcomes, whether or not a lane gave it a results directory; 3, the
 status eng reads as unmeasured, when the bundle is missing, unreadable or holds no test case, which NAME.json's
@@ -16,6 +18,7 @@ A result bundle is never copied, and nothing is kept outside the lane's results/
 """
 import argparse
 from collections import Counter
+from functools import partial
 import json
 import os
 from pathlib import Path
@@ -40,6 +43,23 @@ def case_line(name, case):
     return f"{name}: {case['outcome']} {seconds} {case['test']}{reason}"
 
 
+def activity_timings(bundle, title_pattern, test_id):
+    """Read only the selected, named timings across a test's activity trees."""
+    def walk(activities):
+        for activity in activities:
+            title = activity["title"]
+            match = title_pattern.fullmatch(title)
+            if match:
+                yield {"title": title, "seconds": float(match[1])}
+            yield from walk(activity.get("childActivities", []))
+
+    result = matrix.bundle_json(bundle, "activities", "--test-id", test_id, timeout=30)
+    try:
+        return [timing for run in result["testRuns"] for timing in walk(run["activities"])]
+    except (KeyError, TypeError):
+        return None
+
+
 def lines(record):
     """What to print of a kept record: a line per test case and the totals, or why no test's outcome is known."""
     name, status = record["run"], record["status"]
@@ -47,8 +67,18 @@ def lines(record):
         return [f"UNMEASURED {name}: no test's outcome is known, whatever xcodebuild's status {status} says: "
                 f"{record['bundleUnread']}"]
     totals = Counter(case["outcome"] for case in record["tests"])
-    return [*(case_line(name, case) for case in record["tests"]),
-            f"{name}: " + ", ".join(f"{totals[outcome]} {outcome}" for outcome in OUTCOMES) + f" (xcodebuild status {status})"]
+    found = []
+    for case in record["tests"]:
+        found.append(case_line(name, case))
+        prefix = f"{name}: {case['test']}:"
+        activities = case.get("activities", [])
+        if activities is None:
+            found.append(f"{prefix} activity timings could not be read")
+        else:
+            found.extend(f"{prefix} {activity['title']}" for activity in activities)
+    found.append(f"{name}: " + ", ".join(f"{totals[outcome]} {outcome}" for outcome in OUTCOMES)
+                 + f" (xcodebuild status {status})")
+    return found
 
 
 def report(results, out=print):
@@ -66,7 +96,7 @@ def report(results, out=print):
         for line in found: out(line)
 
 
-def keep(log, bundle, name, status, results=None, out=print):
+def keep(log, bundle, name, status, results=None, out=print, *, activity_prefixes=()):
     """Keep a run's outcomes as `kept` does and print them; return the exit status the module's text gives."""
     results = results if results is not None else os.environ.get(RESULTS_VARIABLE)
     if results and (Path(results) / matrix.KEPT / f"{name}.json").exists():
@@ -75,10 +105,15 @@ def keep(log, bundle, name, status, results=None, out=print):
         return 1
     log, bundle = Path(log), Path(bundle)
     record = matrix.bundle_record(bundle) if bundle.is_dir() else None
-    cases = matrix.test_cases(record) if record is not None else []
+    reader = None
+    if activity_prefixes:
+        prefixes = "|".join(map(re.escape, activity_prefixes))
+        title_pattern = re.compile(rf"(?:{prefixes}) ([0-9]+(?:\.[0-9]+)?) s")
+        reader = partial(activity_timings, bundle, title_pattern)
+    cases = matrix.test_cases(record, reader) if record is not None else None
     unread = (f"no result bundle at {bundle}" if not bundle.is_dir() else
               f"{matrix.UNREAD}: {bundle}" if record is None else None if cases else f"{matrix.NO_CASES}: {bundle}")
-    folder = matrix.kept(name, log, record, status, None, results, unread, KEPT_BY)
+    folder = matrix.kept(name, log, record, status, None, results, unread, KEPT_BY, cases=cases)
     if results and folder is None: return 1
     for line in lines({"run": name, "status": status, "tests": cases, "bundleUnread": unread}): out(line)
     out(f"{name}: kept in {folder}" if folder else f"{name}: not kept: no lane gave it a results directory ({RESULTS_VARIABLE} is unset)")
@@ -95,6 +130,10 @@ def main(argv):
     keeping.add_argument("--name", required=True, help="the run's name in results/, such as iPhone-17-Pro")
     keeping.add_argument("--status", required=True, type=int, help="the exit status of the run's xcodebuild")
     keeping.add_argument("--results", type=Path, help=f"where to keep them (default: {RESULTS_VARIABLE}, the lane's results/)")
+    keeping.add_argument("--activity-timing-prefix", action="append", default=[], metavar="PREFIX",
+                         help='keep test activities titled "PREFIX N s" (repeatable)')
     args = parser.parse_args(argv)
     if not re.fullmatch(r"[\w.-]+", args.name): parser.error("--name must be a plain name")
-    return keep(args.log, args.bundle, args.name, args.status, args.results)
+    if any(not prefix.strip() for prefix in args.activity_timing_prefix):
+        parser.error("--activity-timing-prefix must be nonempty")
+    return keep(args.log, args.bundle, args.name, args.status, args.results, activity_prefixes=args.activity_timing_prefix)

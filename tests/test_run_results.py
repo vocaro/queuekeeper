@@ -18,10 +18,17 @@ import host_isolation
 ENG = Path(__file__).resolve().parents[1] / "scripts/eng"
 # xcresulttool, printing the summary.json and tests.json a fixture bundle holds; without them, a failure.
 FAKE_XCRUN = r'''
-import pathlib, sys
+import json, pathlib, sys
 args = sys.argv[1:]
 assert args[:3] == ["xcresulttool", "get", "test-results"], args
-record = pathlib.Path(args[args.index("--path") + 1]) / f"{args[3]}.json"
+bundle = pathlib.Path(args[args.index("--path") + 1])
+if args[3] == "activities":
+    records = json.loads((bundle / "activities.json").read_text())
+    test = args[args.index("--test-id") + 1]
+    if test not in records: sys.exit("Error: no activities for the requested test")
+    print(json.dumps(records[test]))
+    sys.exit(0)
+record = bundle / f"{args[3]}.json"
 if not record.exists(): sys.exit(f"Error: {record.parent} is not a result bundle")
 print(record.read_text())
 '''
@@ -120,6 +127,38 @@ class KeepTests(unittest.TestCase):
         status, output = self.keep("--results", str(self.results), status="65")
         self.assertEqual(status, 0, output)
         self.assertEqual((self.record()["status"], self.record()["tests"][0]["outcome"]), (65, "failed"))
+
+    def test_keeps_selected_timed_activities_under_their_test(self):
+        identifier_url = "test://com.apple.xcode/Example/UI/Smoke/testOpens"
+        opens = {**case("testOpens", "Passed", 10), "nodeIdentifierURL": identifier_url}
+        self.fixture([opens, case("testBroken", "Failed", 5), case("testLost", "Passed", 3)])
+        (self.bundle / "activities.json").write_text(json.dumps({
+            identifier_url: {"testRuns": [
+                {"activities": [{"title": "Setup", "childActivities": [
+                    {"title": "Files Recents still loading after 30 s"},
+                    {"title": "Files Recents loaded after 5 s"},
+                    {"title": "Files Recents loaded after retry"},
+                ]}]},
+                {"activities": [{"title": "Files Recents loaded after 0 s"}]},
+            ]},
+            "Smoke/testBroken()": {"testRuns": [{"activities": [{"title": "Setup"}]}]},
+        }))
+        status, output = self.keep("--results", str(self.results), "--activity-timing-prefix",
+                                   "Files Recents loaded after", status="65")
+        self.assertEqual(status, 0, output)
+        self.assertEqual(self.record()["status"], 65)
+        opened, broken, lost = self.record()["tests"]
+        self.assertEqual(opened["seconds"], 10)
+        self.assertEqual(opened["activities"], [
+            {"title": "Files Recents loaded after 5 s", "seconds": 5},
+            {"title": "Files Recents loaded after 0 s", "seconds": 0},
+        ])
+        self.assertEqual(broken["activities"], [])
+        self.assertIsNone(lost["activities"])
+        self.assertIn("Smoke/testOpens(): Files Recents loaded after 5 s", output)
+        self.assertIn("Smoke/testLost(): activity timings could not be read", output)
+        self.assertNotIn("still loading", output)
+        self.assertNotIn("after retry", output)
 
     def test_a_run_with_no_readable_results_says_so_and_is_not_success(self):
         unreadable = self.root / "unreadable.xcresult"

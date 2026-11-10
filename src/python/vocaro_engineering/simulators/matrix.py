@@ -318,10 +318,11 @@ def suite_seconds(bundle, record=None):
     return seconds
 
 
-def test_cases(record):
+def test_cases(record, activity_timings=None):
     """Each test case in a bundle's test tree (bundle_record), as {test, outcome, seconds}. outcome is passed,
     failed, skipped, expected failure or unmeasured, the last with its reason: a skip that says it could not
-    measure, or a result this does not know. seconds is None when the bundle gives none."""
+    measure, or a result this does not know. seconds is None when the bundle gives none.
+    An optional activity reader gets the case's identifier and supplies its selected timings."""
     found = []
     def skip_reason(node):
         if node.get("nodeType") == "Skip Message" and UNMEASURED_SKIP in node.get("name", ""):
@@ -339,23 +340,26 @@ def test_cases(record):
         reason = skip_reason(node) if case["outcome"] == "skipped" else None
         if reason is not None: case["outcome"] = "unmeasured"
         if case["outcome"] == "unmeasured": case["reason"] = reason or f"the bundle gives its result as {node.get('result')!r}"
+        if activity_timings is not None:
+            case["activities"] = activity_timings(node.get("nodeIdentifierURL") or case["test"])
         found.append(case)
     for node in record[1].get("testNodes", []): walk(node, [])
     return found
 
 
-def kept(kind, log, record, status, seconds, results=None, unread=None, by="eng simulator-tests"):
+def kept(kind, log, record, status, seconds, results=None, unread=None, by="eng simulator-tests", *, cases=None):
     """Keep what a reader cites of one test run in its lane's results/, KEPT/KIND.log and KIND.json, and
     return that folder, or None outside a lane (no RESULTS_VARIABLE): the log's lines that give each test's
     and suite's outcome and seconds (RESULT_LINE), and the result bundle's summary, as xcresulttool prints
     it, with each class's or suite's seconds and each test case's outcome and seconds (test_cases). record is
     the bundle's (bundle_record), None when it could not be read, and then bundleUnread says why, as unread
     when given, as it does for a bundle with no test case; a log that is missing keeps no lines, and its JSON
-    says so. status is None for a run stopped at its limit. by names the command that kept it."""
+    says so. status is None for a run stopped at its limit. by names the command that kept it.
+    A caller can supply cases already read, including any selected activity timings."""
     results = results if results is not None else os.environ.get(RESULTS_VARIABLE)
     if not results: return None
     folder = Path(results) / KEPT
-    tests = test_cases(record) if record is not None else None
+    tests = test_cases(record) if record is not None and cases is None else cases
     try:
         folder.mkdir(parents=True, exist_ok=True)
         lines = None
@@ -703,14 +707,21 @@ class Run:
             self.test(kind, device, xctestrun)
 
 
+def bundle_json(bundle, what, *options, timeout=300):
+    """Read one xcresulttool test-results view, or None when unavailable."""
+    try:
+        found = subprocess.run(["xcrun", "xcresulttool", "get", "test-results", what, "--path", str(bundle), *options],
+                               capture_output=True, text=True, timeout=timeout, check=True)
+        return json.loads(found.stdout)
+    except (OSError, ValueError, subprocess.SubprocessError): return None
+
+
 def bundle_record(bundle):
     """(summary, tests) as xcresulttool prints a result bundle's, or None when it cannot read them."""
-    def read(what):
-        found = subprocess.run(["xcrun", "xcresulttool", "get", "test-results", what, "--path", str(bundle)],
-                               capture_output=True, text=True, timeout=300, check=True)
-        return json.loads(found.stdout)
-    try: return read("summary"), read("tests")
-    except (OSError, ValueError, subprocess.SubprocessError): return None
+    summary = bundle_json(bundle, "summary")
+    if summary is None: return None
+    tests = bundle_json(bundle, "tests")
+    return (summary, tests) if tests is not None else None
 
 
 def bundle_results(bundle, kind, record=None):

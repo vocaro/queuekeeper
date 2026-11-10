@@ -378,7 +378,8 @@ class RemoteTests(unittest.TestCase):
             "kept-tests": {"command": [python, "-c", "import json, os, pathlib; "
                                        "folder = pathlib.Path(os.environ['ENG_RESULTS_DIR']) / 'simulator-tests'; folder.mkdir(); "
                                        "(folder / 'iPhone.json').write_text(json.dumps({'run': 'iPhone', 'keptBy': 'eng results keep', "
-                                       "'status': 0, 'bundleUnread': None, 'tests': [{'test': 'T/a()', 'outcome': 'passed', 'seconds': 0.5}]}))"],
+                                       "'status': 0, 'bundleUnread': None, 'tests': [{'test': 'T/a()', 'outcome': 'passed', "
+                                       "'seconds': 0.5, 'activities': [{'title': 'Files Recents loaded after 0 s', 'seconds': 0}]}]}))"],
                            "resource": "heavy"},
             "notes": {"parallel": ["noted", "left"], "resource": "heavy"},
             # Runs noted inside itself, as a gate's script runs its suites with `eng run --here suites` (#218).
@@ -2564,7 +2565,10 @@ class RemoteTests(unittest.TestCase):
         status, output, error = self.eng("run", "kept-tests")
         self.assertEqual(status, 0, output + error)
         self.assertEqual((output + error).count("iPhone: passed 0.500s T/a()\n"), 1, output + error)
-        self.assertTrue((self.project / ".build/engineering/remote/kept-tests/results/simulator-tests/iPhone.json").exists())
+        self.assertEqual((output + error).count("iPhone: T/a(): Files Recents loaded after 0 s\n"), 1, output + error)
+        record = self.project / ".build/engineering/remote/kept-tests/results/simulator-tests/iPhone.json"
+        self.assertEqual(json.loads(record.read_text())["tests"][0]["activities"],
+                         [{"title": "Files Recents loaded after 0 s", "seconds": 0}])
         status, output, error = self.eng("run", "noted")
         self.assertEqual(status, 0, output + error)
         self.assertEqual((self.project / ".build/engineering/remote/noted/results/note.txt").read_text(), "noted")
