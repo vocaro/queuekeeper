@@ -6737,6 +6737,8 @@ class FlakyParts(unittest.TestCase):
         self.assertEqual(mq.rerun_command(["eng", "unittest", "-p", "test_x*.py", "-j", "8", "-k", "slow", "--timeout=60",
                                            "-t", ".", "test_x.Selected"]),
                          ["eng", "unittest", "-p", "test_x*.py", "--timeout=60", "-t", ".", "-j", "1", "-v"])
+        batched = ["eng", "unittest", "--split", "class", "--batch-size", "4"]
+        self.assertEqual(mq.rerun_command(batched + ["-j", "8"]), batched + ["-j", "1", "-v"])
         # Negative controls: a lane that is not eng unittest, an option the rerun cannot carry, a value left out.
         for command in (["python3", "lane.py"], ["python3", "scripts/eng", "xctest"], ["python3", "-m", "unittest"],
                         ["python3", "scripts/eng", "unittest", "--failfast"], ["python3", "scripts/eng", "unittest", "-s"],
