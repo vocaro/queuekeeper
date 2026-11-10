@@ -2442,7 +2442,7 @@ class Worker:
             with contextlib.suppress(OSError), log.open("a") as kept:
                 lane_text = printed.read_text(errors="replace")
                 kept.write(lane_text)
-            self.read_group(lane, printed.parent / "lanes", log)
+            member_log = self.read_group(lane, printed.parent / "lanes", log)
             self.ran_where = self.mac(lane, began)
             busy = sampler.finish() if sampler else {}
             self.say(f"{lane} exited {status_}{self.placed(lane, began)}")
@@ -2451,7 +2451,8 @@ class Worker:
                 if status_ not in NO_VERDICT:
                     self.failed_load = loads.finish(self.ran_on)
                     if remote_failure:
-                        excerpt = failed_lane_excerpt(lane_text, dispatch_output, lane)
+                        excerpt = failed_lane_excerpt(lane_text if member_log is None else member_log,
+                                                      dispatch_output, lane)
                         self.failed_dispatch = (log, {"directory": str(ran), "excerpt": excerpt})
                         with contextlib.suppress(OSError), log.open("a") as kept:
                             kept.write("\n" + "\n".join(dispatch_logs(ran)) + "\n")
@@ -2471,20 +2472,24 @@ class Worker:
     def read_group(self, lane, folder, log):
         """For a lane that is a group, whose own output gives only the end of a failed lane's log: add its eng unittest
         lane's whole log to log, which rerun and `eng queue doctor` read as any eng unittest gate's, and note in
-        self.group_failed the lanes in folder, its lanes' logs and receipts, that did not pass (#289)."""
+        self.group_failed the lanes in folder, its lanes' logs and receipts, that did not pass (#289).
+        Return the unittest member's log for the failure excerpt, empty if unavailable, or None for a single lane."""
         self.group_failed = []
         try: lanes = load(self.checkout).get("lanes", {})
         except (OSError, ValueError): return
         members = lanes.get(lane, {}).get("parallel") if isinstance(lanes.get(lane), dict) else None
         if not members: return
         member = unittest_member(lanes, lane)
+        member_log = ""
         if member:
             with contextlib.suppress(OSError), log.open("a") as kept:
-                kept.write((folder / f"{member}.log").read_text(errors="replace"))
+                member_log = (folder / f"{member}.log").read_text(errors="replace")
+                kept.write(member_log)
         for name in members:
             try: status_ = json.loads((folder / f"{name}.json").read_text()).get("status")
             except (OSError, ValueError, AttributeError): status_ = None
             if status_ != 0: self.group_failed.append(name)
+        return member_log
 
     def has_lane(self, lane):
         """Whether the checkout's own engineering.json, which eng run reads, configures lane: where it does not, eng run

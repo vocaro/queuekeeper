@@ -6214,6 +6214,24 @@ class FlakyReruns(Fixture):
         self.assertIn("gate's lane other did not pass, which no rerun of a Python test can clear: bisecting", said.getvalue())
         self.assertNotIn("rerunning each alone", said.getvalue())
 
+    def test_a_failed_remote_group_gate_reports_the_unittest_members_summary_and_assertion_in_the_wait(self):
+        self.make_gate_a_group(1)
+        self.plan.write_text("F")
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        with self.group_on_the_second_mac(), contextlib.redirect_stdout(io.StringIO()) as worker:
+            self.assertEqual(self.work(), 0, worker.getvalue())
+        entry = self.state(identifier)
+        self.assertEqual(entry["state"], mq.FAILED)
+        gate_log = Path(entry["log"]).read_text()
+        [summary] = [line for line in gate_log.splitlines() if line.startswith("eng unittest: ") and
+                     "FAILED: test_flaky" in line]
+        with contextlib.redirect_stdout(io.StringIO()) as waited:
+            self.assertEqual(mq.wait(self.repo, identifier, 1), 1)
+        self.assertIn(summary, waited.getvalue())
+        self.assertIn("AssertionError: 'F' == 'F' : run 1 fails, as planned", waited.getvalue())
+        self.assertIn("remote dispatch run.log:", waited.getvalue())
+
     def test_a_group_whose_other_lane_failed_too_bisects_without_a_rerun(self):
         # The negative control: passing reruns of the Python tests must not land a batch another lane failed.
         self.make_gate_a_group(1)
