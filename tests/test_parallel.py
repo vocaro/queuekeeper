@@ -393,6 +393,34 @@ class UnittestRunnerTests(unittest.TestCase):
         self.assertEqual(seen["four"], seen["five"])
         self.assertEqual(len(set(seen.values())), 6)
 
+    def test_class_batches_keep_the_selected_tests_and_respect_finer_or_serial_shards(self):
+        root = self.suite(module("test_batched", """
+            class A(unittest.TestCase):
+                def test_one(self): pass
+                def test_two(self): pass
+                def test_three(self): pass
+            class Serial(A):
+                serial_group = "kept"
+        """), module("test_fine", """
+            shard_by = "test"
+            class F(unittest.TestCase):
+                def test_one(self): pass
+                def test_two(self): pass
+        """))
+        batch = ["--split", "class", "--batch-size", "2"]
+        status, output = self.run_suite(root, *batch)
+        self.assertEqual(status, 0, output)
+        self.assertIn("== test_batched.A[1]: OK (2 tests", output)
+        self.assertIn("== test_batched.A[2]: OK (1 tests", output)
+        self.assertIn("== group:kept: OK (3 tests", output)
+        self.assertIn("8 tests (0 skipped) in 5 processes", output)
+        status, output = self.run_suite(root, *batch, "test_batched.A.test_three", "-v")
+        self.assertEqual(status, 0, output)
+        self.assertIn("test_batched.A.test_three", output)
+        self.assertIn("1 tests (0 skipped) in 1 processes", output)
+        self.assertEqual(self.run_suite(root, "--batch-size", "2")[0], 2)
+        self.assertEqual(self.run_suite(root, "--split", "class", "--batch-size", "0")[0], 2)
+
     def test_a_module_loaded_under_a_name_no_process_can_import_runs_whole_in_its_loaders_process(self):
         root = self.suite(module("test_loader", """
             import importlib.util

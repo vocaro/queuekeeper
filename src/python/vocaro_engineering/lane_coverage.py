@@ -233,6 +233,7 @@ def unittest_discovery(root, words, discover_form):
     parser.add_argument("-v", "--verbose", action="store_true")
     parser.add_argument("-j", "--jobs")
     parser.add_argument("--split")
+    parser.add_argument("--batch-size")
     parser.add_argument("--timeout")
     parser.add_argument("names", nargs="*")
     known = parser.parse_args(words)

@@ -200,16 +200,18 @@ def addressable(test):
 SPLITS = ("module", "class", "test")
 
 
-def shards(suite, split, origins=None, members=None):
+def shards(suite, split, origins=None, members=None, *, batch_size=None):
     """{shard name: [test ids]}, in discovery order. A shard is a module, class or test, as split
     says, or finer where a module sets shard_by to "class" or "test": a module that alone bounds a
     run splits itself without every module splitting. Tests whose class or module sets serial_group
     share one shard, so they run one after another in one process. A module that failed to import is a shard of its own, which reports
     the import error when it runs. A module whose load_tests loads a module that a fresh process
     cannot import by name cannot be split: it runs whole in one shard, addressed by its own name,
-    which stands in for each of its tests. A members dict gets each shard's test ids."""
+    which stands in for each of its tests. With batch_size, bound the number of tests in each class shard.
+    A members dict gets each shard's test ids."""
     tests, origins = list(flattened(suite)), origins or {}
     found = {}
+    class_counts = {}
 
     def add(shard, entry, test):
         found.setdefault(shard, []).append(entry)
@@ -233,6 +235,10 @@ def shards(suite, split, origins=None, members=None):
         group = getattr(module, "serial_group", None) if finest == "module" else \
             getattr(cls, "serial_group", getattr(module, "serial_group", None))
         unit = {"module": cls.__module__, "class": f"{cls.__module__}.{cls.__qualname__}", "test": test.id()}[finest]
+        if batch_size is not None and finest == "class" and not group:
+            count = class_counts.get(unit, 0)
+            class_counts[unit] = count + 1
+            unit = f"{unit}[{count // batch_size + 1}]"
         add(f"group:{group}" if group else unit, test.id(), test)
     return found
 
@@ -361,6 +367,8 @@ def unittest_main(argv):
                         help=f"processes at a time (default {DEFAULT_JOBS}); 1 runs them one after another")
     parser.add_argument("--split", choices=SPLITS, default="module",
                         help="what one process runs (default: one module)")
+    parser.add_argument("--batch-size", type=int, metavar="TESTS",
+                        help="maximum tests in one class process with --split class")
     parser.add_argument("--timeout", type=float, default=PROCESS_LIMIT, metavar="SECONDS",
                         help=f"seconds one process may run before it is stopped and left unmeasured "
                         f"(default {PROCESS_LIMIT})")
@@ -373,6 +381,8 @@ def unittest_main(argv):
                         "test_merge_queue.Landing; each must name a discovered test")
     args = parser.parse_args(argv)
     if args.jobs < 1: parser.error("--jobs needs at least 1")
+    if args.batch_size is not None and (args.batch_size < 1 or args.split != "class"):
+        parser.error("--batch-size needs a positive count and --split class")
     if args.timeout <= 0: parser.error("--timeout needs a positive number of seconds")
     start = Path(args.start_directory).resolve()
     top = Path(args.top_level_directory).resolve() if args.top_level_directory else start
@@ -411,7 +421,7 @@ def unittest_main(argv):
             return NO_TESTS
         # Each shard's selected ids, which a module it names whole passes to its process.
         chosen = {}
-    found = shards(unittest.TestSuite(tests), args.split, loader.origins, chosen)
+    found = shards(unittest.TestSuite(tests), args.split, loader.origins, chosen, batch_size=args.batch_size)
     if not found:
         print(f"eng unittest: no tests found in {start} matching {' or '.join(patterns)}", file=sys.stderr)
         return NO_TESTS

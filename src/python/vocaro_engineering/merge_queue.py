@@ -204,7 +204,8 @@ SHARD_HEADER = re.compile(r"^== (\S+): .* \(\d+ tests, [\d.]+s\)$", re.M)
 FAILED_TEST = re.compile(r"^(?:FAIL|ERROR): (\S+) \(([^()\s]+)\)", re.M)
 # The options of eng unittest a rerun keeps, and those it drops, each with its value: it names its own test and
 # runs one process at a time.
-RERUN_KEPT = {"-s", "--start-directory", "-p", "--pattern", "-t", "--top-level-directory", "--split", "--timeout"}
+RERUN_KEPT = {"-s", "--start-directory", "-p", "--pattern", "-t", "--top-level-directory", "--split", "--batch-size",
+              "--timeout"}
 RERUN_DROPPED = {"-j", "--jobs", "-k"}
 GH_TIMEOUT = 60
 # Seconds between readings of the CPU busy share of the Mac a gate lane runs on, which the gate's record keeps
@@ -563,7 +564,7 @@ def carry_checks(config, moved, base):
 
 def rerun_command(command):
     """The command, without its test, that reruns one test of a lane whose command is eng unittest
-    (vocaro-engineering#231): the lane's command through `unittest`, its -s, -p, -t, --split and --timeout, one
+    (vocaro-engineering#231): the lane's command through `unittest`, its selection and shard options, one
     process at a time and verbose. None for a lane that is not eng unittest, as a project's own lane, or one with an
     option the rerun cannot carry, which then bisects as before; a group's eng unittest lane is unittest_member's."""
     if not isinstance(command, list) or not all(isinstance(word, str) for word in command): return None

@@ -244,6 +244,7 @@ class Reading(Project):
         self.python()
         self.write("tools/test_b.py", "def test_y(): pass\n")
         for command in (["python3", "scripts/eng", "unittest", "-s", "tests", "--split", "test", "-v"],
+                        ["python3", "scripts/eng", "unittest", "-s", "tests", "--split", "class", "--batch-size", "4"],
                         ["python3", "-B", "-m", "unittest", "discover", "-s", "tests", "-v"]):
             with self.subTest(command):
                 self.assertEqual(self.selected(*command)["noLane"], ["tools/test_b.py: tools.test_b"])
