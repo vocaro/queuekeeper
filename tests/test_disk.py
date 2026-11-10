@@ -842,6 +842,61 @@ class WorktreeArchiveTests(Fixture):
     def fresh(self, host, item):
         return self.listing(host).get(item.path)
 
+    def locked_uv_environment(self):
+        commit(self.main, ".gitignore", ".build/\n.venv/\n")
+        (self.main / "pipeline").mkdir()
+        commit(self.main, "pipeline/pyproject.toml", "[project]\nname = 'pipeline'\nversion = '1.0'\n")
+        commit(self.main, "pipeline/uv.lock", "version = 1\n")
+        self.publish()
+        git(self.path, "merge", "--ff-only", "origin/main")
+        interpreter = self.root / "uv/python/bin/python3.12"
+        interpreter.parent.mkdir(parents=True)
+        interpreter.write_text("outside interpreter fixture\n")
+        interpreter.chmod(0o755)
+        env = self.path / "pipeline/.venv"
+        (env / "bin").mkdir(parents=True)
+        (env / "pyvenv.cfg").write_text(f"home = {interpreter.parent}\nimplementation = CPython\n"
+                                       "uv = 0.12.19\nversion_info = 3.12\ninclude-system-site-packages = false\n")
+        (env / "bin/python").symlink_to(interpreter)
+        (env / "bin/python3").symlink_to("python")
+        (env / "bin/python3.12").symlink_to("python")
+        return env, interpreter
+
+    def test_archive_excludes_uv_interpreter_links_and_preserves_other_environment_files(self):
+        env, interpreter = self.locked_uv_environment()
+        (env / "notes.txt").write_text("local evidence\n")
+        item = self.listing()[str(self.path)]
+        self.assertEqual(item.status, disk.ARCHIVE, item.reason)
+        self.assertEqual(self.listing(archive=False)[str(self.path)].status, disk.KEPT)
+
+        def verify(stage, **options):
+            copied = Path(stage) / "files/pipeline/.venv"
+            self.assertEqual((copied / "notes.txt").read_text(), "local evidence\n")
+            self.assertTrue((copied / "pyvenv.cfg").is_file())
+            for name in ("python", "python3", "python3.12"):
+                self.assertFalse(os.path.lexists(copied / "bin" / name))
+            return 0
+
+        with patch.object(evidence_offload, "offload", side_effect=verify):
+            self.assertTrue(disk.archive_worktrees([item], self.mac, self.ledger, out=lambda _: None, fresh=self.fresh))
+        self.assertFalse(self.path.exists())
+        self.assertEqual(interpreter.read_text(), "outside interpreter fixture\n")
+
+    def test_uv_environment_does_not_excuse_an_unexpected_link_or_untracked_lock(self):
+        from vocaro_engineering import ignored
+
+        env, interpreter = self.locked_uv_environment()
+        (env / "bin/python3").unlink()
+        (env / "bin/python3").symlink_to(interpreter)
+        item = self.listing()[str(self.path)]
+        self.assertEqual(item.status, disk.KEPT)
+        self.assertIn(".venv/bin/python3: a link that leaves the worktree", item.reason)
+        (env / "bin/python3").unlink()
+        (env / "bin/python3").symlink_to("python")
+        git(self.path, "rm", "--cached", "pipeline/uv.lock")
+        _, blockers = ignored.inventory(self.path, hashes=False, verify_caches=True)
+        self.assertTrue(any(".venv/bin/python:" in blocker for blocker in blockers))
+
     def pinned_dependency(self, path, cache=".build/voiceover/ios-simulator/SourcePackages"):
         upstream = self.root / "dependency-source"
         if not upstream.exists():

@@ -1920,10 +1920,15 @@ The archive pass also recognizes SwiftPM dependency checkouts inside `.build`, i
 Tracked edits, untracked or unexpected ignored files, and refs the mirror cannot reproduce keep
 the worktree. The command checks the dependency again after verifying the archive.
 
+For an ignored uv `.venv` beside a tracked `pyproject.toml` and `uv.lock`, the archive pass
+can omit the standard interpreter symlinks. It checks them against the CPython version and home
+recorded in `pyvenv.cfg`. Other environment files follow the regular archive rules, and unexpected
+external links still block removal.
+
 The archive goes under `~/Development/session-evidence/<project>/disk-<worktree>-<digest>`
 on the second Mac, with the original relative paths under `files/` and the worktree's commit and
 file hashes in `worktree.json`. The command stages one archive locally at a time. A failed or
-unavailable transfer, an external link, or a change to the checkout during the transfer keeps the
+unavailable transfer, an unverified external link, or a change to the checkout during the transfer keeps the
 worktree. After verification, the command checks ownership and the file inventory again and uses
 `git worktree remove` without force. The cleanup ledger records the archive and removal outcome.
 
