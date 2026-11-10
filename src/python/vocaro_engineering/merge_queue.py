@@ -1329,7 +1329,12 @@ def warn(root):
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         print(f"warning: could not read landing budget configuration: {error}", flush=True)
         return
-    for warning in budgets.landing_warnings(root, config, Queue(root).all()):
+    try:
+        entries = Queue(root).all()
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+        print(f"warning: could not read queue entries for landing budget checks: {error}", flush=True)
+        return
+    for warning in budgets.landing_warnings(root, config, entries):
         print(f"warning: {warning}", flush=True)
 
 

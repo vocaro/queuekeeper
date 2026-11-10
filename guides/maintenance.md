@@ -294,6 +294,10 @@ python3 scripts/eng land --repo EPUBLib BRANCH  # from any project: land a fix i
 python3 scripts/eng queue status
 ```
 
+The budget and release-limit checks after `eng land` are advisory. They read the fields they
+need even when main uses newer lane settings. If the advisory inputs cannot be read, the caller
+prints a warning and preserves the queue outcome and exit status (vocaro-engineering#355).
+
 **A gated push keeps the app.** For a project whose engineering.json has `app`, the worker starts
 `eng app keep --after-landing` for the pushed commit in the background once the push lands, and the
 round goes on without waiting. That build is what `eng app run` opens ([kept app builds](app-builds.md)).

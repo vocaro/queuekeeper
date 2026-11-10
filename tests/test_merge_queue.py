@@ -253,6 +253,18 @@ class Fixture(unittest.TestCase):
 
 
 class Landing(Fixture):
+    def test_advisory_queue_read_error_preserves_wait_status(self):
+        parser = argparse.ArgumentParser()
+        mq.land_arguments(parser)
+        for status in (0, 1, mq.resources.BUSY):
+            with self.subTest(status=status), patch.object(mq, "add", return_value="entry"), \
+                    patch.object(mq, "wait", return_value=status), \
+                    patch.object(mq.Queue, "all", side_effect=OSError("cannot read entries")), \
+                    contextlib.redirect_stdout(io.StringIO()) as said:
+                self.assertEqual(mq.land(self.repo, parser.parse_args(["--wait"])), status)
+                self.assertIn("warning: could not read queue entries for landing budget checks: cannot read entries",
+                              said.getvalue())
+
     def test_the_log_says_where_each_lane_ran_as_eng_run_chose(self):
         """The queue's lanes go where eng run sends every lane, by both Macs' capacity (vocaro-engineering#168), and
         its log says where each ran and why: here, by the receipt's reason; on the second Mac, by its dispatch."""
