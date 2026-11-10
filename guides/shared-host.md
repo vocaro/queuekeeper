@@ -1296,13 +1296,14 @@ configured, and on such an answer exits, holding nothing, with its entries back 
 `eng queue wait` or `eng queue resume` from a live session starts a worker that reaches the second Mac. A session
 that finds the queue waiting with no worker runs `eng queue resume`.
 
-A worker independent of every session needs a responsible process that holds a Local Network grant and outlives the
-sessions. A launchd agent running Python is not one, as above. The owner decided on 2026-11-07 to keep detection only
-for now: a session that lands work keeps `eng land --wait` or `eng queue wait` running, and the wait starts a new
-worker within a poll of the old one's exit. Worker exits are to be measured first in each queue's `worker.log`. If
-they cost real time, the preferred fix is a small launcher app signed with the owner's identity, with a grant of its
-own. This Mac's sshd as a `ProxyJump` hop is not preferred: it needs Remote Login on this Mac, and it covers ssh
-alone (vocaro-engineering#282, #299).
+A queue can use a signed launcher app as the responsible process. A per-repository LaunchAgent runs the app directly
+and names its bundle ID in `AssociatedBundleIdentifiers`. The app stays alive while its Python worker runs, including
+when the worker replaces itself with a newer toolkit. On 2026-11-09, a Developer ID–signed LaunchAgent probe connected
+to the second Mac on all 192 attempts over 122 seconds after its starter exited. A matched probe detached from a second
+instance of the same app connected eight times while its launcher lived and failed all 144 attempts after the launcher
+exited and macOS attributed it to Python (vocaro-engineering#299). See [Signed queue launcher](maintenance.md#signed-queue-launcher)
+for setup and recovery. Apple describes the bundle attribution and signing requirements in
+[TN3179](https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy).
 
 A worker whose session ends during a gate exits too. The `eng run` of each of the gate's lanes offers the lane to the
 second Mac first, and when that offer gets `NoLocalNetwork` it runs nothing on this Mac and exits 69 (`EX_UNAVAILABLE`).

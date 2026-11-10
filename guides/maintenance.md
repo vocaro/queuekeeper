@@ -403,7 +403,7 @@ started it ends, so it could no longer reach the second Mac. Before each round, 
 worker checks for this and, if so, exits, holding nothing, with its entries back in the queue. A gate that finds it
 during a round, by the exit 69 of a lane's `eng run`, which then ran nothing on this Mac, does the same. Its log then
 says `exits, holding nothing, since this worker cannot reach the second Mac`. The next `eng land`, `eng queue wait` or
-`eng queue resume` starts a worker from a live session (guides/shared-host.md, Local Network access;
+`eng queue resume` starts another worker (guides/shared-host.md, Local Network access;
 vocaro-engineering#282, #300).
 
 **The shared checkout follows each toolkit landing.** After each push, the toolkit's own worker
@@ -951,9 +951,9 @@ as its base. Prove each check fails on a bad move before relying on it.
 
 **State and recovery.** Each repository's state is under `eng-queue` in its common Git directory,
 so every worktree sees one queue. A worker starts with `eng land`, apart from the session,
-and exits when nothing waits. After a reboot, `eng queue wait` and `eng queue resume` can start a
-worker. Automatic startup stays deferred with vocaro-engineering#299 because a launchd worker
-could not reach the second Mac (guides/shared-host.md, Local Network access; #287). After taking
+and exits when nothing waits. A queue set up with the [signed launcher](#signed-queue-launcher)
+also checks for waiting work at login and every two minutes. After a reboot, `eng queue wait`
+can start a worker, and `eng queue resume` can clear a hold and start one. After taking
 the queue lock, a worker checks for dispatchers proven gone and requests a stop for each run
 their records identify, including a crashed worker's gate (guides/shared-host.md, How a run
 reaches the second Mac).
@@ -1024,6 +1024,52 @@ when the same refusal comes again with no entry to blame (A gate `eng unittest` 
 decision, 2026-11-08, #290). For the other findings a session acts itself, as each `next:` line says.
 Restarting a worker that died (#287) and moving a no-verdict run to the other Mac are not the doctor's
 yet.
+
+### Signed queue launcher
+
+Set this up once on the Mac that owns the queues. From the toolkit checkout, build the app in its
+build directory, then sign it in your Terminal with an Apple-issued signing identity.
+
+```sh
+app="$PWD/.build/Vocaro Queue Launcher.app"
+mkdir -p "$app/Contents/MacOS"
+cp src/objc/QueueLauncher/Info.plist "$app/Contents/Info.plist"
+python3 scripts/eng admit --here -- /usr/bin/clang -std=c11 -O2 -Wall -Wextra -Werror \
+  src/objc/QueueLauncher/main.c -o "$app/Contents/MacOS/QueueLauncher"
+/usr/bin/codesign --force --sign "Developer ID Application" --timestamp=none "$app"
+/usr/bin/codesign --verify --strict "$app"
+```
+
+Install the app at a stable path and register it with Launch Services. macOS may ask to allow
+Local Network access when a worker first connects to the second Mac.
+
+```sh
+mkdir -p "$HOME/Applications"
+/usr/bin/ditto "$app" "$HOME/Applications/Vocaro Queue Launcher.app"
+app="$HOME/Applications/Vocaro Queue Launcher.app"
+/usr/bin/open -g -a "$app" --args /usr/bin/true
+```
+
+For each queue, run the following from its main checkout using the Python installation and
+`PATH` its worker should use after login. The generated file also keeps `VOCARO_OFFLOAD_HOST` if
+set. Use the account's normal Git and SSH configuration for credentials.
+
+```sh
+draft="$(mktemp)"
+python3 scripts/eng queue launcher-plist "$app" > "$draft" &&
+  label="$(/usr/libexec/PlistBuddy -c 'Print :Label' "$draft")" &&
+  mkdir -p "$HOME/Library/LaunchAgents" &&
+  install -m 644 "$draft" "$HOME/Library/LaunchAgents/$label.plist" &&
+  /bin/launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/$label.plist"
+rm -f "$draft"
+```
+
+`eng land`, `eng queue wait` and `eng queue resume` ask launchd to start the installed agent.
+At login and on its interval the agent runs the same worker entry point. Empty and held queues
+return before recovering dispatches or running gates. The queue lock excludes duplicate workers.
+If launchd rejects a start request, `worker.log` records the error and eng starts the session
+worker. To remove the setup, wait for the queue to be idle, run
+`/bin/launchctl bootout "gui/$(id -u)/$label"`, and remove that queue's plist.
 
 ## Working through a backlog
 

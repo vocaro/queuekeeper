@@ -35,9 +35,11 @@ import collections
 import contextlib
 import fcntl
 import fnmatch
+import hashlib
 import json
 import os
 from pathlib import Path
+import plistlib
 import re
 import shlex
 import shutil
@@ -54,6 +56,10 @@ from .config import IMPLICIT_SPELLING, SPELLING, SPELLING_LIMIT, TOOLKIT_ROOT, l
 
 MAIN = "refs/remotes/origin/main"
 FETCH = ["fetch", "--no-tags", "origin", f"refs/heads/main:{MAIN}"]
+LAUNCHER_BUNDLE = "com.vocaro.eng.queue-launcher"
+LAUNCHER_PROGRAM = "QueueLauncher"
+LAUNCHER_INTERVAL = 120
+LAUNCHCTL = "/bin/launchctl"
 QUEUED, TESTING, PASSED, LANDED, FAILED, CONFLICT, REMOVED = \
     "queued", "testing", "passed", "landed", "failed", "conflict", "removed"
 # Passed is a batch whose lanes passed and whose push has not landed it: Worker.keep and Worker.push_passed.
@@ -1180,19 +1186,65 @@ class Queue:
     def working(self):
         with self.worker() as free: return not free
 
-    def command(self, toolkit):
+    def command(self, toolkit, *, if_waiting=False):
         """What runs this repository's worker on the toolkit at toolkit: `eng queue run` for the main checkout, from
         that toolkit's Python, as start starts one and as a worker starts itself again on a newer toolkit
         (Worker.move_to)."""
         script = ("import sys; sys.path.insert(0, sys.argv[1]); from vocaro_engineering.cli import main; "
-                  "sys.exit(main(['--project', sys.argv[2], 'queue', 'run']))")
-        return [sys.executable, "-c", script, str(Path(toolkit) / "src/python"), str(self.main_checkout)]
+                  "sys.exit(main(['--project', sys.argv[2], 'queue', 'run', *sys.argv[3:]]))")
+        return [sys.executable, "-c", script, str(Path(toolkit) / "src/python"), str(self.main_checkout),
+                *(["--if-waiting"] if if_waiting else [])]
+
+    def launcher_label(self):
+        """One login service per repository, shared by all its worktrees."""
+        digest = hashlib.sha256(os.fsencode(self.directory.resolve())).hexdigest()[:24]
+        return f"{LAUNCHER_BUNDLE}.{digest}"
+
+    def launcher_plist(self, app):
+        """Describe the signed service for this repository without installing it."""
+        if sys.platform != "darwin": raise ValueError("the signed queue launcher requires macOS")
+        app = Path(app).expanduser().resolve()
+        executable = app / "Contents" / "MacOS" / LAUNCHER_PROGRAM
+        if not executable.is_file(): raise ValueError(f"the queue launcher is missing at {executable}")
+        requirement = f'-R=anchor apple generic and identifier "{LAUNCHER_BUNDLE}"'
+        checked = subprocess.run(["/usr/bin/codesign", "--verify", "--strict", requirement, str(app)],
+                                 capture_output=True, text=True, timeout=10)
+        if checked.returncode: raise ValueError(f"the queue launcher needs an Apple signing identity: {checked.stderr.strip()}")
+        toolkit = Path(text(TOOLKIT_ROOT, "rev-parse", "--path-format=absolute", "--git-common-dir")).parent
+        variables = {key: os.environ[key] for key in ("PATH", "VOCARO_OFFLOAD_HOST") if key in os.environ}
+        log = str(self.directory / "worker.log")
+        return {
+            "Label": self.launcher_label(),
+            "AssociatedBundleIdentifiers": [LAUNCHER_BUNDLE],
+            "ProgramArguments": [str(executable), *self.command(toolkit, if_waiting=True)],
+            "WorkingDirectory": str(self.main_checkout),
+            "EnvironmentVariables": variables,
+            "RunAtLoad": True,
+            "StartInterval": LAUNCHER_INTERVAL,
+            "StandardOutPath": log,
+            "StandardErrorPath": log,
+        }
+
+    def start_with_launcher(self, log):
+        if sys.platform != "darwin": return False
+        label = self.launcher_label()
+        if not (Path.home() / "Library" / "LaunchAgents" / f"{label}.plist").is_file(): return False
+        try:
+            done = subprocess.run([LAUNCHCTL, "kickstart", f"gui/{os.getuid()}/{label}"],
+                                  capture_output=True, text=True, timeout=10)
+            if done.returncode == 0: return True
+            error = done.stderr.strip() or f"launchctl exited {done.returncode}"
+        except (OSError, subprocess.TimeoutExpired) as failure:
+            error = str(failure)
+        print(f"queue: signed launcher {label} could not start ({error}); starting a session worker", file=log, flush=True)
+        return False
 
     def start(self):
         """Start a worker apart from this session, so that it outlives the session's turn and its
         task stop. One that finds another working exits at once."""
         if self.held() or not self.waiting() or self.working(): return
         with (self.directory / "worker.log").open("a") as log:
+            if self.start_with_launcher(log): return
             started = subprocess.Popen(self.command(TOOLKIT_ROOT), cwd=self.main_checkout, stdin=subprocess.DEVNULL,
                                        stdout=log, stderr=subprocess.STDOUT, env=environment(), start_new_session=True)
             # It is meant to outlive this process, which must not wait for it, but one that ends first
@@ -4012,7 +4064,7 @@ def refusal(tip, found, base, root):
     return words
 
 
-def run(root):
+def run(root, *, if_waiting=False):
     """Be the repository's worker until nothing waits. A second worker exits at once. Anything
     unexpected holds the queue, with every entry still waiting, rather than guessing at a verdict; the hold's
     reason says whom it is for (worded). A cause that clears by itself, a remote out of reach past its backoff,
@@ -4025,6 +4077,7 @@ def run(root):
     while True:
         with queue.worker() as free:
             if not free: return 0
+            if if_waiting and (queue.held() or not queue.waiting()): return 0
             # A gate its worker's crash left running holds a slot and admission this worker needs.
             remote.stop_dead_dispatches()
             # Whatever a worker that died left testing was never pushed. What it left passed is pushed first,
@@ -4136,7 +4189,10 @@ def add_arguments(parser):
     removing.add_argument("id")
     operations.add_parser("resume", help="clear a hold and start the worker: any session does this itself once the "
                           "hold's cause is dealt with or gone, and asks the owner only for a hold that says it is his")
-    operations.add_parser("run", help="be the worker in the foreground; `add` starts one by itself")
+    running = operations.add_parser("run", help="be the worker in the foreground; `add` starts one by itself")
+    running.add_argument("--if-waiting", action="store_true", help="do nothing when the queue is empty or held")
+    launcher = operations.add_parser("launcher-plist", help="print this queue's LaunchAgent for a signed launcher app")
+    launcher.add_argument("app", type=Path)
 
 
 def main(root, args):
@@ -4152,4 +4208,7 @@ def main(root, args):
         return wait(root, args.id[0], args.limit) if len(args.id) == 1 else wait_for(root, args.id, args.limit)
     if args.operation == "remove": return remove(Queue(root), args.id)
     if args.operation == "resume": return resume(root)
-    return run(root)
+    if args.operation == "launcher-plist":
+        sys.stdout.write(plistlib.dumps(Queue(root).launcher_plist(args.app)).decode())
+        return 0
+    return run(root, if_waiting=args.if_waiting)

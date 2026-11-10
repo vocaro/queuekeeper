@@ -1,4 +1,5 @@
 """The merge queue against real Git repositories: a bare origin, a clone, and lanes that read the tree."""
+import argparse
 import atexit
 import contextlib
 import functools
@@ -7,6 +8,7 @@ import io
 import json
 import os
 from pathlib import Path
+import plistlib
 import shlex
 import shutil
 import signal
@@ -5291,6 +5293,94 @@ class Unreachable(Fixture):
             with self.remote_says(REFUSED["ssh key"], {1}) as (fetches, slept):
                 with self.assertRaisesRegex(ValueError, "Permission denied"): mq.add(self.repo, "b")
             self.assertEqual((len(fetches), slept), (1, []))
+
+
+class SignedLauncher(Fixture):
+    def arguments(self, *words):
+        parser = argparse.ArgumentParser()
+        mq.add_arguments(parser)
+        return parser.parse_args(words)
+
+    def registered(self, queue):
+        directory = self.base / "Library" / "LaunchAgents"
+        directory.mkdir(parents=True)
+        (directory / f"{queue.launcher_label()}.plist").touch()
+
+    def test_a_registered_launcher_is_started_instead_of_the_session_worker(self):
+        self.commit("a", "a")
+        self.add("a")
+        queue = mq.Queue(self.repo)
+        self.registered(queue)
+        with patch.object(mq.Path, "home", return_value=self.base), patch.object(mq.sys, "platform", "darwin"), \
+                patch.object(mq.subprocess, "run", return_value=SimpleNamespace(returncode=0)) as request, \
+                patch.object(mq.subprocess, "Popen") as detached:
+            queue.start()
+        request.assert_called_once_with([mq.LAUNCHCTL, "kickstart", f"gui/{os.getuid()}/{queue.launcher_label()}"],
+                                        capture_output=True, text=True, timeout=10)
+        detached.assert_not_called()
+
+    def test_a_rejected_launcher_start_falls_back_and_records_the_reason(self):
+        self.commit("a", "a")
+        self.add("a")
+        queue = mq.Queue(self.repo)
+        self.registered(queue)
+        refusal = SimpleNamespace(returncode=1, stderr="service is unavailable")
+        with patch.object(mq.Path, "home", return_value=self.base), patch.object(mq.sys, "platform", "darwin"), \
+                patch.object(mq.subprocess, "run", return_value=refusal), patch.object(mq, "environment", return_value={}), \
+                patch.object(mq.subprocess, "Popen") as detached, patch.object(mq.threading, "Thread"):
+            queue.start()
+        detached.assert_called_once()
+        self.assertTrue(detached.call_args.kwargs["start_new_session"])
+        self.assertIn("service is unavailable", (queue.directory / "worker.log").read_text())
+
+    def test_launcher_plist_uses_a_stable_checkout_and_an_idle_safe_command(self):
+        queue = mq.Queue(self.repo)
+        app = self.base / "Queue Launcher.app"
+        executable = app / "Contents" / "MacOS" / mq.LAUNCHER_PROGRAM
+        executable.parent.mkdir(parents=True)
+        executable.touch()
+        args = self.arguments("launcher-plist", str(app))
+        stable = self.base / "stable-toolkit"
+        output = io.StringIO()
+        with patch.object(mq.sys, "platform", "darwin"), patch.object(mq, "Queue", return_value=queue), \
+                patch.object(mq, "text", return_value=str(stable / ".git")), \
+                patch.object(mq.subprocess, "run", return_value=SimpleNamespace(returncode=0)) as verify, \
+                contextlib.redirect_stdout(output):
+            self.assertEqual(mq.main(self.repo, args), 0)
+        verify.assert_called_once_with(["/usr/bin/codesign", "--verify", "--strict",
+                                        f'-R=anchor apple generic and identifier "{mq.LAUNCHER_BUNDLE}"', str(app)],
+                                       capture_output=True, text=True, timeout=10)
+        agent = plistlib.loads(output.getvalue().encode())
+        self.assertEqual(agent["Label"], queue.launcher_label())
+        self.assertEqual(agent["AssociatedBundleIdentifiers"], [mq.LAUNCHER_BUNDLE])
+        self.assertEqual(agent["ProgramArguments"], [str(executable), *queue.command(stable, if_waiting=True)])
+        self.assertTrue(agent["RunAtLoad"])
+        self.assertEqual(agent["StartInterval"], mq.LAUNCHER_INTERVAL)
+
+    def test_agent_entry_does_nothing_for_an_empty_held_or_running_queue(self):
+        queue = mq.Queue(self.repo)
+        args = self.arguments("run", "--if-waiting")
+        with patch.object(mq.remote, "stop_dead_dispatches") as recover:
+            self.assertEqual(mq.main(self.repo, args), 0)
+            self.commit("a", "a")
+            self.add("a")
+            queue.hold_file.write_text("held for this test")
+            self.assertEqual(mq.main(self.repo, args), 0)
+            self.assertEqual(queue.hold_file.read_text(), "held for this test")
+            queue.hold_file.unlink()
+            with queue.worker() as free:
+                self.assertTrue(free)
+                self.assertEqual(mq.main(self.repo, args), 0)
+        recover.assert_not_called()
+        self.assertEqual(self.gates(), 0)
+
+    def test_agent_entry_drains_a_waiting_queue(self):
+        self.commit("a", "a")
+        identifier, = self.add("a")
+        args = self.arguments("run", "--if-waiting")
+        self.assertEqual(mq.main(self.repo, args), 0)
+        self.assertEqual(self.state(identifier)["state"], mq.LANDED)
+        self.assertIn("a", self.main_files())
 
 
 class LostLocalNetwork(Fixture):
