@@ -2798,6 +2798,18 @@ repository-local settings apply to linked worktrees, including the queue's check
 Closeout and direct Git pushes to `origin` use that push URL. HTTPS pushes use the GitHub
 credential helper described in [Adoption](adoption.md).
 
+Protect explicit GitHub SSH push URLs at the transport layer too. From the publishing checkout,
+point Git's SSH command at the shared toolkit's guard:
+
+```sh
+git config --local core.sshCommand '"$HOME/Development/vocaro-engineering/bin/eng-git-ssh"'
+```
+
+Use the actual toolkit path if it is installed elsewhere. The guard refuses writes to
+`github.com`, `ssh.github.com`, and SSH aliases for either before the pre-push hook starts.
+GitHub fetches and SSH operations on other hosts still use OpenSSH. A publishing command that
+overrides `core.sshCommand` or sets `GIT_SSH_COMMAND` must select an HTTPS push URL itself.
+
 HTTPS has failure modes of its own:
 
 - A pack larger than `http.postBuffer` (1 MiB by default) is streamed with chunked encoding, and
