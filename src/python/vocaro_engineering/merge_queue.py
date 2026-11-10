@@ -1833,16 +1833,26 @@ def dispatch_logs(directory):
 
 FAILURE_LINE_LIMIT = 500
 FAILURE_EXCERPT_LIMIT = 4000
+SWIFT_TESTING_ASSERTION = re.compile(
+    lane_report.SWIFT_TESTING_ISSUE.pattern + r"(?::\d+)?: (?:Expectation|Requirement) failed\b[^\n]*", re.M)
 
 
-def failed_lane_excerpt(lane_log, dispatch_output, lane):
-    """Read the outer unittest verdict, or the dispatcher's own lane report when there is none."""
+def swift_test_assertions(log):
+    """Distinct assertion lines for tests that Swift Testing reported failed."""
+    if not lane_report.SWIFT_TESTING_FAILED_RUN.search(log):
+        return []
+    failed = set(lane_report.SWIFT_TESTING_FAILED.findall(log))
+    return list(dict.fromkeys(issue[0] for issue in SWIFT_TESTING_ASSERTION.finditer(log) if issue[1] in failed))
+
+
+def failed_lane_excerpt(lane_log, dispatch_output, lane, swift_assertions=()):
+    """Read the outer unittest verdict or the dispatcher's lane report, with the confirmed assertions."""
     summaries = list(UNITTEST_SUMMARY.finditer(lane_log))
     summary = summaries[-1] if summaries else None
+    assertions = []
     if summary and summary[1].startswith("FAILED: "):
         lines = [summary[0]]
         confirmed = set(failed_tests(lane_log)[0] or ())
-        assertions = []
         for failed in FAILED_TEST.finditer(lane_log, 0, summary.start()):
             method, where = failed.groups()
             identity = where if where.endswith(f".{method}") else f"{where}.{method}"
@@ -1853,19 +1863,20 @@ def failed_lane_excerpt(lane_log, dispatch_output, lane):
             assertion = re.search(r"^AssertionError(?::[^\n]*)?$", traceback, re.M)
             if assertion:
                 assertions.append(f"{failed[0]}: {assertion[0]}")
-        lines.extend(assertions[:lane_report.SHOWN])
-        if len(assertions) > lane_report.SHOWN:
-            lines.append(f"{len(assertions) - lane_report.SHOWN} more assertions in the queue log")
     else:
         # Do not repeat the report's inferred failed test names: for a group they can come from a nested fixture.
         rows = dispatch_output.splitlines()
         report = next((index for index in reversed(range(len(rows)))
                        if rows[index].startswith(f"eng run {lane}: failed")), None)
-        if report is None:
-            return []
-        lines = rows[report:report + 1]
-        if report + 1 < len(rows) and rows[report + 1].startswith("  tests: "):
-            lines.append(rows[report + 1])
+        lines = []
+        if report is not None:
+            lines.append(rows[report])
+            if report + 1 < len(rows) and rows[report + 1].startswith("  tests: "):
+                lines.append(rows[report + 1])
+    assertions.extend(swift_assertions)
+    lines.extend(assertions[:lane_report.SHOWN])
+    if len(assertions) > lane_report.SHOWN:
+        lines.append(f"{len(assertions) - lane_report.SHOWN} more assertions in the queue log")
     excerpt, remaining = [], FAILURE_EXCERPT_LIMIT
     for line in lines:
         limit = min(FAILURE_LINE_LIMIT, remaining)
@@ -2567,7 +2578,8 @@ class Worker:
             with contextlib.suppress(OSError), log.open("a") as kept:
                 lane_text = printed.read_text(errors="replace")
                 kept.write(lane_text)
-            member_log = self.read_group(lane, printed.parent / "lanes", log)
+            member_log, group_assertions = self.read_group(lane, printed.parent / "lanes", log,
+                                                           include_swift=remote_failure)
             self.ran_where = self.mac(lane, began)
             busy = sampler.finish() if sampler else {}
             self.say(f"{lane} exited {status_}{self.placed(lane, began)}")
@@ -2576,11 +2588,12 @@ class Worker:
                 if status_ not in NO_VERDICT:
                     self.failed_load = loads.finish(self.ran_on)
                     if remote_failure:
+                        swift_assertions = swift_test_assertions(lane_text) if member_log is None else group_assertions
                         excerpt = failed_lane_excerpt(lane_text if member_log is None else member_log,
-                                                      dispatch_output, lane)
+                                                      dispatch_output, lane, swift_assertions)
                         self.failed_dispatch = (log, {"directory": str(ran), "excerpt": excerpt})
                         with contextlib.suppress(OSError), log.open("a") as kept:
-                            kept.write("\n" + "\n".join(dispatch_logs(ran)) + "\n")
+                            kept.write("\n" + "\n".join([*group_assertions, *dispatch_logs(ran)]) + "\n")
                 return status_, log
             if lane == budgets.GATE:
                 with contextlib.suppress(OSError):
@@ -2594,27 +2607,32 @@ class Worker:
                     if self.measured: self.measured.update(results=said, log=str(log))
         return 0, log
 
-    def read_group(self, lane, folder, log):
+    def read_group(self, lane, folder, log, *, include_swift=False):
         """For a lane that is a group, whose own output gives only the end of a failed lane's log: add its eng unittest
         lane's whole log to log, which rerun and `eng queue doctor` read as any eng unittest gate's, and note in
         self.group_failed the lanes in folder, its lanes' logs and receipts, that did not pass (#289).
-        Return the unittest member's log for the failure excerpt, empty if unavailable, or None for a single lane."""
+        Return the unittest member's log (empty if unavailable, None for a single lane) and the distinct Swift
+        Testing assertions from failed members when requested."""
         self.group_failed = []
         try: lanes = load(self.checkout).get("lanes", {})
-        except (OSError, ValueError): return
+        except (OSError, ValueError): return None, []
         members = lanes.get(lane, {}).get("parallel") if isinstance(lanes.get(lane), dict) else None
-        if not members: return
+        if not members: return None, []
         member = unittest_member(lanes, lane)
         member_log = ""
         if member:
             with contextlib.suppress(OSError), log.open("a") as kept:
                 member_log = (folder / f"{member}.log").read_text(errors="replace")
                 kept.write(member_log)
+        assertions = []
         for name in members:
             try: status_ = json.loads((folder / f"{name}.json").read_text()).get("status")
             except (OSError, ValueError, AttributeError): status_ = None
             if status_ != 0: self.group_failed.append(name)
-        return member_log
+            if include_swift and name != member and isinstance(status_, int) and status_ and status_ not in NO_VERDICT:
+                with contextlib.suppress(OSError):
+                    assertions.extend(swift_test_assertions((folder / f"{name}.log").read_text(errors="replace")))
+        return member_log, list(dict.fromkeys(assertions))
 
     def has_lane(self, lane):
         """Whether the checkout's own engineering.json, which eng run reads, configures lane: where it does not, eng run

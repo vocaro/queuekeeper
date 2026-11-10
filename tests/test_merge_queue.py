@@ -7797,6 +7797,64 @@ class FailedGateEvidence(Fixture):
         self.assertIn(self.SUMMARY, waited)
         self.assertIn(entry["log"], waited)
 
+    def assert_swift_failure_evidence(self, *, grouped):
+        dispatch = self.base / ".dispatches/gate/swift"
+        dispatch.mkdir(parents=True)
+        run_log, output = dispatch / "run.log", dispatch / "output.log"
+        report = "eng run gate: failed (exit 1), on fake-mac\n  tests: 1 passed, 2 failed, 0 skipped, 0 unmeasured\n"
+        first = '✘ Test "Keeps the heading" recorded an issue at LayoutTests.swift:42:9: Expectation failed: width > 0'
+        second = "✘ Test wraps() recorded an issue at LayoutTests.swift:64:5: Expectation failed: height > 0"
+        failure = ("✘ Test fixture() recorded an issue at LayoutTests.swift:10:5: Expectation failed: fixture only\n"
+                   "✔ Test fixture() passed after 0.1 seconds.\n"
+                   f"{first}\n{first}\n{second}\n"
+                   '✘ Test "Keeps the heading" failed after 0.1 seconds with 1 issue.\n'
+                   "✘ Test wraps() failed after 0.1 seconds with 1 issue.\n"
+                   "✘ Test run with 3 tests in 1 suite failed after 0.2 seconds with 2 issues.\n")
+        output.write_text(report)
+        if grouped:
+            config = self.config()
+            lanes = config["lanes"]
+            lanes["swift"] = lanes["other"] = lanes["gate"]
+            lanes["gate"] = {"parallel": ["swift", "other"], "resource": "heavy"}
+            self.publish(config)
+            members = dispatch / "lanes"
+            members.mkdir()
+            (members / "swift.log").write_text(failure)
+            (members / "swift.json").write_text('{"status": 1}')
+            (members / "other.log").write_text(failure.replace("width > 0", "passing member fixture"))
+            (members / "other.json").write_text('{"status": 0}')
+        run_log.write_text("" if grouped else failure)
+
+        run_command = mq.processes.run
+
+        def run_gate(command, **options):
+            if command[:3] == ["python3", "scripts/eng", "run"] and command[-1] == "gate":
+                options["log_path"].write_text(report)
+                return 1
+            return run_command(command, **options)
+
+        def remote_gate(root, lane, began):
+            return (dispatch, "fake-mac") if lane == "gate" else (None, None)
+
+        with patch.object(mq.processes, "run", run_gate):
+            entry = self.failed(patch.object(mq.remote, "dispatch", side_effect=remote_gate))
+        waited = self.wait_output(entry)
+        for text in (waited, Path(entry["log"]).read_text()):
+            self.assertIn(report.strip(), text)
+            self.assertIn(first, text)
+            self.assertIn(second, text)
+            self.assertIn(f"remote dispatch run.log: {run_log}", text)
+            self.assertIn(f"remote dispatch output.log: {output}", text)
+        self.assertEqual(waited.count(first), 1)
+        self.assertNotIn("fixture only", waited)
+        self.assertNotIn("passing member fixture", waited)
+
+    def test_a_failed_remote_gate_reports_swift_testing_assertions_in_the_wait(self):
+        self.assert_swift_failure_evidence(grouped=False)
+
+    def test_a_failed_remote_group_gate_reports_its_swift_testing_members_assertions(self):
+        self.assert_swift_failure_evidence(grouped=True)
+
     def test_an_outer_report_does_not_repeat_a_nested_fixture_failure(self):
         lane_log = "    FAIL: test_turn (nested.Sample.test_turn)\n    AssertionError: nested mismatch\n"
         report = "eng run gate: failed (exit 1), on fake-mac\n  tests: 2 passed\n  failed: Pages/testTurn\n"
