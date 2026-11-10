@@ -364,6 +364,12 @@ class SimulatorMatrixTests(unittest.TestCase):
         self.assertIn("SERIES iPhone-17-Pro run 2 of 3: PASSED on Project iPhone 17 Pro 1", output)
         self.assertEqual(evidence.series_reported(output), 3)
 
+    def test_a_series_counts_iphone_and_ipad_tests_once_per_repeat(self):
+        status, output = self.run_matrix("--repeat", "2")
+        self.assertEqual(status, 0, output)
+        self.assertEqual(self.series_record()["tests"]["passed"], 12)
+        self.assertEqual(evidence.require_tests(output, expected=12), 12)
+
     def test_each_of_a_series_runs_keeps_its_own_log_and_load_words(self):
         status, output = self.run_series("--repeat", "2")
         self.assertEqual(status, 0, output)

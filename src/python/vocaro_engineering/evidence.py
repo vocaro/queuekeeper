@@ -19,6 +19,8 @@ def sha256(path):
 SKIPPED = r"(?:, with (\d+) tests? skipped)?"
 SUITE_TOTAL = re.compile(r"^Test Suite '([^'\n]*)' (?:passed|failed) at [^\n]*\n\s*Executed (\d+) tests?\b" + SKIPPED, re.M)
 EXECUTED = re.compile(r"Executed (\d+) tests?\b" + SKIPPED)
+# A repeat series recaps each device's result after that result has already been printed.
+SERIES_RUN_RECAP = re.compile(r"^[ \t]*SERIES \S+ run \d+ of \d+:[^\n]*$", re.M)
 # Swift Testing's total counts a test it skipped or that canceled itself, and names neither: each
 # has a line of its own instead (Swift 6.4, October 2026).
 SWIFT_TESTING_RUN = re.compile(r"Test run with (\d+) tests?(?: in \d+ suites?)? (?:passed|failed)")
@@ -52,6 +54,7 @@ def counted(text):
     the log holds no XCTest totals, which it would repeat. XCTest's, unittest's and Swift Testing's
     totals include their skips; XCTest and unittest name them apart, and Swift Testing gives each
     skipped or canceled test a line. pytest names each outcome apart, its skips among them."""
+    text = SERIES_RUN_RECAP.sub("", text)
     suites = list(SUITE_TOTAL.finditer(text))
     top = [(int(match.group(2)), int(match.group(3) or 0)) for match in suites
            if match.group(1) in ("All tests", "Selected tests")]
