@@ -2742,20 +2742,20 @@ keepalive, and the push ended on SIGPIPE after every gate had passed (October 20
 HTTPS instead: it reads the refs before the hook and sends the pack in a separate request after
 it, so no connection has to outlast the gates.
 
-A per-command global configuration publishes over HTTPS without changing the repository's or the
-user's configuration. Pass it through the environment so the hook and every nested gate see it:
+On a GitHub checkout used to publish, configure `origin` with the repository's SSH fetch URL
+and its HTTPS push URL. Run this in the main checkout, substituting the owner and repository:
 
 ```sh
-cat > "$SCRATCH/push.gitconfig" <<'EOF'
-[include]
-	path = ~/.gitconfig
-[url "https://github.com/"]
-	insteadOf = git@github.com:
-[credential "https://github.com"]
-	helper = !gh auth git-credential
-EOF
-GIT_CONFIG_GLOBAL="$SCRATCH/push.gitconfig" git push origin SHA:refs/heads/main
+git remote set-url --push origin https://github.com/OWNER/REPOSITORY.git
+git remote set-url origin git@github.com:OWNER/REPOSITORY.git
+git remote get-url origin
+git remote get-url --push origin
 ```
+
+Set the push URL first so an existing HTTPS origin keeps pushing over HTTPS throughout. The
+repository-local settings apply to linked worktrees, including the queue's checkout. `eng land`,
+Closeout and direct Git pushes to `origin` use that push URL. HTTPS pushes use the GitHub
+credential helper described in [Adoption](adoption.md).
 
 HTTPS has failure modes of its own:
 
