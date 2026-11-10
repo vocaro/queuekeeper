@@ -2678,7 +2678,8 @@ def claim(base, count, directory, wait=True, commit=None, slot=None, timeout=CLA
     It waits for that slot under the same lock, and changes in it are a refusal, since no other slot may stand in.
     """
     base.mkdir(parents=True, exist_ok=True)
-    started, reported, named = time.monotonic(), None, set()
+    started, reported = time.monotonic(), None
+    reported_changes = set()
     record = json.dumps({"pid": os.getpid(), "start": output(["ps", "-p", str(os.getpid()), "-o", "lstart="])})
     order, distances = nearest(base, count, directory, commit)
     if slot is not None: order = [slot]
@@ -2706,21 +2707,21 @@ def claim(base, count, directory, wait=True, commit=None, slot=None, timeout=CLA
                               f"inspect and remove them, with `git --git-dir {repository} worktree remove --force "
                               f"{checkout}`")
             changed += 1
-            if index not in named:
+            if index not in reported_changes:
                 say(f"passing over {checkout}, which a run left with changes:\n{left}")
-                named.add(index)
+                reported_changes.add(index)
         if changed == count:
             repository = base.parents[1] / "repositories" / f"{directory}.git"
             raise Refusal(f"every checkout under {base} has changes a run left",
                           f"inspect and remove them, each with `git --git-dir {repository} worktree remove --force PATH`")
-        named = f"checkout slot {slot} of {directory}"
-        busy = f"every checkout of {directory} is in use" if slot is None else f"{named} is in use{holding(base, slot)}"
+        slot_name = f"checkout slot {slot} of {directory}"
+        busy = f"every checkout of {directory} is in use" if slot is None else f"{slot_name} is in use{holding(base, slot)}"
         if not wait:
             raise Refusal(busy, busy=True)
         waited = int(time.monotonic() - started)
         if time.monotonic() - started >= timeout:
             raise Refusal(f"no checkout of {directory} came free in {timeout}s" if slot is None else
-                          f"{named} did not come free in {timeout:g}s{holding(base, slot)}", busy=True)
+                          f"{slot_name} did not come free in {timeout:g}s{holding(base, slot)}", busy=True)
         if reported is None or waited - reported >= REPORT_SECONDS:
             say(f"waiting ({waited}s): {busy}")
             reported = waited

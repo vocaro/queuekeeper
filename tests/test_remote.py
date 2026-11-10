@@ -1554,6 +1554,24 @@ class RemoteTests(unittest.TestCase):
         self.assertIn(f"passing over {self.checkout(1)}", output)
         self.assertEqual(self.slot_receipt()["result"]["slot"], 0)
 
+    def test_automatic_checkout_selection_retries_past_a_dirty_checkout(self):
+        status, output, error = self.eng("remote", "run", "check")
+        self.assertEqual(status, 0, output + error)
+        self.assertEqual(self.slot_receipt()["result"]["slot"], 0)
+        left = self.checkout(0) / "left.txt"
+        left.write_text("a run left this\n")
+        release = self.hold_slot(1)
+        for slot in range(2, remote.CHECKOUTS):
+            self.hold_slot(slot)
+
+        process, log = self.slot_dispatcher("remote", "run", "check")
+        self.await_condition(process, log, lambda: "every checkout of example is in use" in log.read_text())
+        release()
+        self.assertEqual(process.wait(stretched(120)), 0, log.read_text())
+        self.assertEqual(self.slot_receipt()["result"]["slot"], 1)
+        self.assertEqual(log.read_text().count(f"passing over {self.checkout(0)}"), 1)
+        self.assertEqual(left.read_text(), "a run left this\n")
+
     def test_two_requests_for_one_slot_run_there_in_turn(self):
         settings = self.project / "engineering.json"
         project = json.loads(settings.read_text())
