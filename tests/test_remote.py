@@ -1144,7 +1144,7 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual(status, 0)
         self.assertIn(f"named id={PHONE.lower()}", output)
         # eng run keeps a lane that would go to the second Mac on this Mac when it names a physical device.
-        status, output, error = self.eng("run", "gate", "--", PHONE)
+        status, output, error = self.run_here("gate", "--", PHONE)
         self.assertEqual(status, 0, error)
         self.assertIn("the second Mac uses only under a reservation", error)
         self.assertIn(f"Ran 2 tests in {self.project.resolve()}", (self.project / ".build/engineering/gate/run.log").read_text())
