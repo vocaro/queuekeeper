@@ -23,7 +23,7 @@ def load(root):
 # compares them, vocaro-engineering#248).
 LANE_KEYS = frozenset({"command", "resource", "minimumTests", "timeout", "foreground", "here", "model", "display",
                        "budgetMinutes", "wholeHost", "apps", "unlockedScreen", "devices", "compileFirst",
-                       "deviceRunMinutes"})
+                       "deviceRunMinutes", "stall"})
 GROUP_KEYS = frozenset({"parallel", "jobs", "resource", "here", "model", "budgetMinutes", "wholeHost", "unlockedScreen"})
 
 
@@ -120,6 +120,7 @@ def parse(source):
         whole_host(name, lane)
         screen(name, lane)
         compile_first(name, lane)
+        stall(name, lane)
         if lane.get("display") and unadmitted(lane):
             raise ValueError(f"{name}.display needs an admitted lane: only an admitted test run holds the display's "
                              "assertions, and a self lane is not admitted")
@@ -150,6 +151,24 @@ def parse(source):
     if not isinstance(exceptions, list) or any(not isinstance(x, dict) or not all(isinstance(x.get(k), str) and x[k] for k in ["rule", "reason"]) for x in exceptions):
         raise ValueError("Exceptions require a rule and a reason")
     return value
+
+
+def stall(name, lane):
+    """Quiet monitoring is opt-in on the admitted work, never on a polling/group wrapper."""
+    if "stall" not in lane: return
+    settings = lane["stall"]
+    if not isinstance(settings, dict) or set(settings) - {"seconds", "action", "reason"}:
+        raise ValueError(f"{name}.stall supports seconds, action and reason")
+    if type(settings.get("seconds")) is not int or settings["seconds"] <= 0:
+        raise ValueError(f"{name}.stall.seconds must be a positive integer")
+    if settings.get("action", "report") not in ("report", "stop"):
+        raise ValueError(f"{name}.stall.action must be report or stop")
+    if "reason" in settings and (not isinstance(settings["reason"], str) or not settings["reason"].strip()):
+        raise ValueError(f"{name}.stall.reason must describe the quiet-interval measurement")
+    if settings.get("action") == "stop" and not settings.get("reason"):
+        raise ValueError(f"{name}.stall stop needs a reason naming the healthy-run measurement and bound")
+    if unadmitted(lane):
+        raise ValueError(f"{name}.stall needs an admitted leaf lane, not a self lane's polling wrapper")
 
 
 def test_lanes(declared):

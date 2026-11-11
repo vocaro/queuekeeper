@@ -126,6 +126,9 @@ def lanes(root, members, directory, jobs, judge, receipt, on_stop=None, results_
             status = processes.run(lane["command"], cwd=root, log_path=log,
                                    timeout=lane.get("timeout", processes.DEFAULT_LIMIT),
                                    on_stop=on_stop,
+                                   **({"stall": lane["stall"], "progress_path": results_directory / name / "progress.json"
+                                      if results_directory is not None else directory / f"{name}.progress.json"}
+                                      if "stall" in lane else {}),
                                    env=stale_modules.environment(results_environment(results_directory / name)
                                        if results_directory is not None else os.environ, root))
             status = judge(lane, status, log.read_text(errors="replace"))

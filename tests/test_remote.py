@@ -2708,6 +2708,39 @@ class RemoteTests(unittest.TestCase):
         self.assertFalse((results / "lanes").exists())
         self.assertFalse((there / "lanes/right.log").exists())
 
+    def test_a_stalled_direct_or_group_lane_returns_unmeasured_and_retains_its_observations(self):
+        # The real ps sampler has its own independent control. Here deterministic samples isolate
+        # remote config forwarding, stopping, admission settlement and copying back typed results.
+        sampler = self.toolkit / "src/python/vocaro_engineering/progress.py"
+        with sampler.open("a") as output:
+            output.write("\ndef cpu(identities):\n    return {pid: (start, 0) for pid, start in identities.items()} "
+                         "if identities else None\n")
+        commit_all(self.toolkit)
+        settings = json.loads((self.project / "engineering.json").read_text())
+        # Fixed: one second is the test's configured quiet bound, not a production calibration.
+        settings["lanes"].update({
+            "quiet": {"command": [sys.executable, "-c", "import time; time.sleep(120)"],
+                      "timeout": round(stretched(30)), "stall": {
+                          "seconds": 1, "action": "stop", "reason": "fixture's deliberately idle command"}},
+            "quiet-group": {"parallel": ["quiet", "left"]}})
+        (self.project / "engineering.json").write_text(json.dumps(settings))
+        commit_all(self.project)
+        for lane, observation in (("quiet", "results/progress.json"),
+                                  ("quiet-group", "results/quiet/progress.json")):
+            status, output, error = self.eng("remote", "run", lane)
+            self.assertEqual(status, evidence.UNMEASURED, output + error)
+            directory = self.project / ".build/engineering/remote" / lane
+            retained = json.loads((directory / observation).read_text())
+            self.assertEqual((retained["phase"], retained["state"]), ("ended", "Stalled"))
+            self.assertEqual(retained["wait"], "unknown")
+            self.assertNotEqual(self.eng("remote", "passed", lane)[0], 0)
+            if lane == "quiet-group":
+                self.assertEqual(self.lane_files(lane, "quiet")[1]["outcome"], "unmeasured")
+                self.assertEqual(self.lane_files(lane, "left")[1]["outcome"], "passed")
+        # Admission and checkout leases must both be available for a subsequent ordinary run.
+        status, output, error = self.eng("remote", "run", "check")
+        self.assertEqual(status, 0, output + error)
+
     def test_a_failed_lane_and_one_its_timeout_ended_bring_their_logs_and_receipts_back(self):
         results = self.project / ".build/engineering/remote/mixed"
         status, output, error = self.eng("run", "mixed")

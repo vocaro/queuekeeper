@@ -208,6 +208,10 @@ class Canceled(TimedOut):
     as after a timeout: the merge queue throws away a gate stacked on a batch that did not land."""
 
 
+class Stalled(TimedOut):
+    """A lane's explicit quiet bound stopped it, and ownership cleanup confirmed every process ended."""
+
+
 def default_background_signals():
     """Put back the default for each of BACKGROUND_IGNORED this process ignores, so that the commands it starts do
     not inherit how it was launched: a merge-queue worker that `eng land &` started passes SIG_IGN for SIGINT to every
@@ -275,7 +279,7 @@ def released(on_start, pid, environment, go, told):
 
 
 def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None, on_start=None,
-              kill_after=KILL_AFTER, cancel=None):
+              kill_after=KILL_AFTER, cancel=None, progress=None):
     """Wait for the owned root and observed descendants, including separate process groups.
 
     on_start(pid) runs once the root's process exists and before its command does, so the command
@@ -299,6 +303,8 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
     SIGKILL leave it uncertain.
     A timeout that expires while the root runs is carried out the same way with SIGTERM, without
     on_stop, and the run raises TimedOut, which admission also releases.
+    With an opt-in progress monitor, a confirmed quiet bound uses that same stop and cleanup,
+    raising Stalled only once the owned tree ended. Missing samples never establish a stall.
     Any SIGKILL waits up to SETTLE_WAIT seconds more while the root or an observed descendant is
     an admission owner the guard records: a nested admission stops its own command and then
     settles its entry, which SIGKILL would strand. After the first SIGTERM or stop signal, such an
@@ -358,7 +364,7 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
     # When the timeout expired and when a stop was first seen, whether the signal reached the
     # root's group, and who else had it.
     expired, stopped, group_forwarded, forwarded = None, None, False, set()
-    canceled = False  # whether expired is the caller's cancel rather than the timeout
+    canceled, stalled = False, None
     # Whether the stop's or timeout's first signal went out, and when its SIGKILL began.
     signaled, killed = False, None
     # Each process seen as an admission owner, as (PID, start), and the PIDs SIGKILL was reported waiting for.
@@ -439,6 +445,20 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
                          closed=closed_updates)
                 noted.update(fresh)
             spaces |= sampled
+            if progress is not None and root_active and expired is None and stopped is None:
+                # A nested admission's polling is control work, not evidence its command progresses.
+                observation = progress.last
+                detail = progress.observe(identities, recognize(identities))
+                if progress.last is not observation: note(progress=progress.last)
+                if detail and child.poll() is None:
+                    # Recheck CPU/output immediately before committing to the stop. A completed
+                    # command keeps its real verdict, and a new observation can invalidate the interval.
+                    detail = progress.observe(identities, recognize(identities), force=True)
+                    if detail and child.poll() is None:
+                        expired, stalled = time.monotonic(), detail
+                        print(f"supervise: stalled: {detail}; sending SIGTERM to the command (PID {child.pid}) "
+                              f"and its observed descendants, then SIGKILL after {kill_after:g}s",
+                              file=sys.stderr, flush=True)
             if timeout is not None and exited is None and expired is None and time.monotonic() - started >= timeout:
                 expired = time.monotonic()
                 print(f"supervise: timed out after {timeout:g}s; sending SIGTERM to the command (PID {child.pid}) "
@@ -478,7 +498,8 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
                 signaled = True
             result = child.poll()
             cause = (f"Stopped by {signal.Signals(signum).name}" if signum is not None
-                     else "Canceled" if canceled else f"Timed out after {timeout:g}s" if expired is not None
+                     else "Canceled" if canceled else f"Stalled: {stalled}" if stalled is not None
+                     else f"Timed out after {timeout:g}s" if expired is not None
                      else f"{command[0]} exited with status {result}")
             if result is not None and not live:
                 # Sampling cannot prove that a failed, stopped or timed-out command orphaned nothing
@@ -498,10 +519,13 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
                                            f"PID {pid} (group {group}, session {sid})" for pid, group, sid in left)
                                        + "; reservation retained")
                 # Confirmed, so recovery has nothing of this command to check.
-                note(settled="stopped" if signum is not None else "timed-out" if expired is not None else "exited")
+                note(settled="stopped" if signum is not None else "stalled" if stalled is not None
+                     else "timed-out" if expired is not None else "exited")
                 if signum is not None: raise Interrupted(signum, "after its command and observed descendants ended")
                 if canceled:
                     raise Canceled(f"Owned command was canceled: {command[0]}; it and its observed descendants ended")
+                if stalled is not None:
+                    raise Stalled(f"Owned command stalled: {command[0]}; {stalled}; it and its observed descendants ended")
                 if expired is not None:
                     raise TimedOut(f"Owned command timed out after {timeout:g}s: {command[0]}; it and its observed "
                                    "descendants ended")
@@ -580,9 +604,23 @@ def bounded(command, *, cwd=None, timeout, pass_fds=(), kill_after=KILL_AFTER):
         return status, output.read()
 
 
-def run(command, *, cwd, log_path, timeout=None, env=None, on_stop=None, kill_after=KILL_AFTER, cancel=None):
+def run(command, *, cwd, log_path, timeout=None, env=None, on_stop=None, kill_after=KILL_AFTER, cancel=None,
+        stall=None, progress_path=None):
     path = Path(log_path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    if stall is not None:
+        from .progress import Monitor
+        monitor = Monitor(stall, path, progress_path)
+    else:
+        monitor = None
     with path.open("w") as log:
-        return supervise(command, cwd=cwd, stdout=log, timeout=timeout, env=env, on_stop=on_stop,
-                         kill_after=kill_after, cancel=cancel)
+        try:
+            result = supervise(command, cwd=cwd, stdout=log, timeout=timeout, env=env, on_stop=on_stop,
+                               kill_after=kill_after, cancel=cancel, **({"progress": monitor} if monitor else {}))
+        except BaseException as error:
+            if monitor is not None:
+                monitor.finish(type(error).__name__, settled=isinstance(error, (TimedOut, Interrupted, NotStarted)))
+            raise
+        else:
+            if monitor is not None: monitor.finish(f"exit-{result}")
+            return result

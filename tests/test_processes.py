@@ -170,7 +170,7 @@ class ProcessTests(unittest.TestCase):
     # supervise takes its kill_after when it is defined, so a test passes the grace it needs:
     # patching KILL_AFTER changes nothing, and with 10 s a loaded host failed these tests (#81).
     def outlive_the_root(self, directory, *descendants, root=ROOT, timeout=None, kill_after=processes.KILL_AFTER,
-                         late=0, awaits=None, **limits):
+                         late=0, awaits=None, progress=None, **limits):
         """Supervise ROOT with these descendants; return its result or timeout, stderr and their start identities.
 
         late delays the first sample after the root is reaped by that many seconds, as a busy host
@@ -217,7 +217,7 @@ class ProcessTests(unittest.TestCase):
         with patch.object(processes, "snapshot", observed), contextlib.redirect_stderr(StringIO()) as error, \
              patch.object(processes.subprocess, "run", run), patch.dict(processes.__dict__, limits):
             try: result = processes.supervise([sys.executable, "-c", root, directory, *descendants], cwd=directory, timeout=timeout,
-                                                kill_after=kill_after)
+                                                kill_after=kill_after, **({"progress": progress} if progress else {}))
             except TimeoutError as expired: result = expired
             current = real()
         self.assertEqual({pid for pid, birth in births.items() if current.get(pid, (0, 0, None))[2] == birth}, set())
@@ -402,6 +402,31 @@ class ProcessTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "refused"):
                 processes.supervise([sys.executable, "-c", f"open({str(ran)!r}, 'w')"], cwd=directory, on_start=on_start)
             self.assertFalse(ran.exists())
+
+    def test_a_stall_stops_the_owned_tree_but_leaves_an_unrelated_process_alive(self):
+        from vocaro_engineering import progress
+        with tempfile.TemporaryDirectory() as directory:
+            here = Path(directory)
+            log = here / "lane.log"
+            log.touch()
+            monitor = progress.Monitor({"seconds": 1, "action": "stop"}, log, here / "progress.json")
+            unrelated = processes.subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"],
+                                                   start_new_session=True, stderr=processes.subprocess.DEVNULL)
+            self.addCleanup(processes.stop, unrelated)
+            # Fixed: the one-second quiet interval and SIGTERM grace are tested. Only begin
+            # observing once the root's own handshake proves the supervisor saw both descendants.
+            def readings(identities):
+                if not (here / "adopted").exists(): return None
+                return {pid: (start, 0) for pid, start in identities.items()}
+            with patch.object(progress, "cpu", side_effect=readings):
+                result, error, births = self.outlive_the_root(directory, IGNORES_TERM, HANDLES_TERM, root=STAYS,
+                    progress=monitor, timeout=stretched(30), kill_after=0.5, awaits="terminated")
+            self.assertIsInstance(result, processes.Stalled, error)
+            self.assertEqual(len(births), 2)
+            self.assertTrue((here / "terminated").exists(), "the ordinary TERM handler must run before KILL")
+            self.assertIsNone(unrelated.poll(), "an unrelated process must remain untouched")
+            self.assertIn("stalled:", error)
+            self.assertIn("wait unknown", error)
 
     def test_a_timeout_is_not_a_successful_terminal_result(self):
         with tempfile.TemporaryDirectory() as directory:
