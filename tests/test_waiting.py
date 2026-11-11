@@ -48,6 +48,57 @@ class WaitUntilTests(unittest.TestCase):
             self.assertTrue(waiting.wait_until(lambda: next(answers, True), progress=lambda: 0, stall=0, interval=0))
 
 
+    def test_setting_stall_shortens_a_default_wait(self):
+        """stall is read when the call is made, so a test that sets waiting.STALL shortens every default wait (#388)."""
+        started = time.monotonic()
+        with patch.object(waiting, "STALL", 0.2), patch.object(waiting.os, "getloadavg", return_value=(0.0,) * 3):
+            self.assertFalse(waiting.wait_until(lambda: False, interval=0.02))
+        self.assertLess(time.monotonic() - started, 5)
+
+
+def until_exit(process, done):
+    """A pause that returns when process exits, and once it has exited sleeps out the interval while done() fails."""
+    def pause(interval):
+        started = time.monotonic()
+        try:
+            process.wait(timeout=interval)
+        except subprocess.TimeoutExpired:
+            return
+        if not done():
+            time.sleep(max(0, interval - (time.monotonic() - started)))
+    return pause
+
+
+class PauseTests(unittest.TestCase):
+    """A caller's pause wakes the wait early, and never turns it into a busy loop (#395)."""
+
+    def child(self, seconds):
+        process = subprocess.Popen([sys.executable, "-c", f"import time; time.sleep({seconds})"],
+                                   stdin=subprocess.DEVNULL)
+        self.addCleanup(lambda: (process.kill(), process.wait()))
+        return process
+
+    def test_a_pause_that_wakes_on_exit_ends_the_wait_before_its_interval(self):
+        process = self.child(0.3)
+        done = lambda: process.poll() is not None
+        started = time.monotonic()
+        self.assertTrue(waiting.wait_until(done, interval=60, pause=until_exit(process, done)))
+        self.assertLess(time.monotonic() - started, 10, "The wait slept out its 60 s interval after the exit.")
+
+    def test_a_pause_lasts_the_interval_while_done_still_fails(self):
+        process = self.child(0)
+        samples = []
+        def progress():
+            samples.append(time.monotonic())
+            return "still"
+        never = lambda: False
+        with patch.object(waiting.os, "getloadavg", return_value=(0.0,) * 3):
+            self.assertFalse(waiting.wait_until(never, progress=progress, stall=1, interval=0.2,
+                                                pause=until_exit(process, never)))
+        gaps = [later - earlier for earlier, later in zip(samples, samples[1:])]
+        self.assertTrue(gaps)
+        self.assertGreaterEqual(min(gaps), 0.2, f"Progress was sampled {len(samples)} times, {min(gaps):.3f} s apart.")
+
 class ProbeTests(unittest.TestCase):
     def test_files_change_with_a_new_file_a_size_or_a_removal(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -39,12 +39,22 @@ def stretched(seconds):
     return seconds * max(1, os.getloadavg()[0] / (os.cpu_count() or 1))
 
 
-def wait_until(done, progress=None, stall=STALL, interval=0.1):
+def wait_until(done, progress=None, stall=None, interval=0.1, pause=None):
     """Wait until done() is true; return False once progress() has returned the same value for stretched(stall).
 
     Without progress, the stall is the whole wait, a stretched deadline. Pass every sign the work is moving, such
     as files(...) and cpu(...) combined. The stretch is read again at each look, so a load that rises during
-    the wait lengthens it. done() is asked once more after a stall, so work that ends on the last look counts."""
+    the wait lengthens it. done() is asked once more after a stall, so work that ends on the last look counts.
+    stall defaults to STALL as it reads when the call is made, so setting waiting.STALL shortens every default
+    wait (#388).
+
+    Between looks the wait calls pause(interval), time.sleep by default. A pause may return early when done() may
+    now hold, such as when the child process it waits on exits, so the wait notices at once rather than up to an
+    interval and a progress probe later (#395). Otherwise it lasts the whole interval: once its child has exited,
+    a pause whose done() still fails sleeps out the rest of the interval, so the wait does not sample in a busy
+    loop."""
+    stall = STALL if stall is None else stall
+    pause = pause or time.sleep
     last, still = None, time.monotonic()
     while not done():
         state = progress() if progress else None
@@ -52,7 +62,7 @@ def wait_until(done, progress=None, stall=STALL, interval=0.1):
             last, still = state, time.monotonic()
         elif time.monotonic() - still > stretched(stall):
             return bool(done())
-        time.sleep(interval)
+        pause(interval)
     return True
 
 
