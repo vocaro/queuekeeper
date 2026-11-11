@@ -205,7 +205,9 @@ receiving-host timestamp unchanged, so connection latency does not shift it on e
 Capacity preflight ignores exclusive requests that
 arrived after the requesting work. This keeps later exclusive arrivals from repeatedly overtaking
 ordinary work. Queue age establishes order, not an absolute start deadline: unavailable resources
-can still prevent admission.
+can still prevent admission. The transport age stops at the receiving CLI step: leaf commands
+keep inherited admission tokens, but independently admitted child work starts with a fresh age.
+This also applies to each independently admitted part of a self lane.
 
 A queued request holds no slots. Admission drops it when its process has ended or its PID has a
 different start time. A stop removes its record; a timed-out local attempt can retain its place

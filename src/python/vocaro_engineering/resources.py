@@ -640,6 +640,22 @@ def request_order(started):
     finally: _request_started.reset(token)
 
 
+@contextlib.contextmanager
+def child_requests():
+    """Keep a dispatch's arrival local to its CLI step, while preserving inherited admission.
+
+    A leaf command can request independent work, including each part of a self lane. Such new
+    requests must not reuse their ancestor's arrival. The parent keeps its input until it ends.
+    """
+    before = os.environ.pop(REQUEST_STARTED, None)
+    token = _request_started.set(None)
+    try: yield
+    finally:
+        _request_started.reset(token)
+        if before is None: os.environ.pop(REQUEST_STARTED, None)
+        else: os.environ[REQUEST_STARTED] = before
+
+
 class Place:
     """A request's arrival, retained across local attempts between remote offers (remote.overflow).
 

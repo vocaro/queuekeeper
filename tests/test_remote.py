@@ -588,13 +588,26 @@ class RemoteTests(unittest.TestCase):
             self.assertEqual(dispatch(), 0)
         self.assertEqual(self.slot_receipt()["result"]["requestStarted"], arrivals[0])
 
-    def test_a_dispatch_translates_the_original_request_age_before_remote_admission(self):
-        command = "import os,time; print('priority-age:', time.time()-float(os.environ['VOCARO_ADMISSION_REQUEST_STARTED']))"
-        with resources.request_order(time.time() - 60):
-            status, output, error = self.eng("remote", "admit", "--", sys.executable, "-c", command)
-        self.assertEqual(status, 0, output + error)
-        age = float(re.search(r"priority-age: ([0-9.]+)", output).group(1))
-        self.assertGreaterEqual(age, 60)
+    def test_a_dispatch_keeps_its_age_for_admission_without_backdating_child_requests(self):
+        command = ("import os,sys,time; sys.path.insert(0, os.environ['VOCARO_ENGINEERING_ROOT']+'/src/python'); "
+                   "from vocaro_engineering import resources; "
+                   "print('transport-age-absent:', resources.REQUEST_STARTED not in os.environ); "
+                   "print('fresh-child-priority:', time.time()-resources.request_started()<30); print('Ran 1 tests')")
+        settings = json.loads((self.project / "engineering.json").read_text())
+        settings["lanes"]["own"]["command"] = [sys.executable, "-c", command]
+        (self.project / "engineering.json").write_text(json.dumps(settings))
+        commit_all(self.project)
+        for name, arguments in [("admit", ["remote", "admit", "--", sys.executable, "-c", command]),
+                                ("own", ["remote", "run", "own"])]:
+            with self.subTest(name=name), resources.request_order(time.time() - 60):
+                status, output, error = self.eng(*arguments)
+                self.assertEqual(status, 0, output + error)
+                observed = output if name == "admit" else \
+                    (self.project / ".build/engineering/remote/own/run.log").read_text()
+                self.assertIn("transport-age-absent: True", observed)
+                self.assertIn("fresh-child-priority: True", observed)
+                result = self.slot_receipt(name)["result"]
+                self.assertGreaterEqual(result["started"] - result["requestStarted"], 60)
 
     def eng(self, *arguments):
         with contextlib.redirect_stdout(StringIO()) as output, contextlib.redirect_stderr(StringIO()) as error:

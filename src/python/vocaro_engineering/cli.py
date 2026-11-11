@@ -915,7 +915,7 @@ def admit(root, args, config=None, *, device_window=None):
         reap_here(root, inherited)
         def work():
             # Finalize the alert report before record() writes the receipt, while admission still holds.
-            with contextlib.ExitStack() as alert_stack:
+            with resources.child_requests(), contextlib.ExitStack() as alert_stack:
                 alerts = guarded_alerts(alert_stack, " ".join(command), receipt, args.app or ()) \
                     if args.foreground else None
                 if isinstance(alerts, int): return alerts
@@ -1493,7 +1493,7 @@ def perform(argv, report):
                 commands = [config["lanes"][name]["command"] for name in group] if group is not None else \
                     [lane["command"], *([lane["compileFirst"]] if "compileFirst" in lane else [])]
                 try:
-                    with app_registrations.around_run(commands, root): return work()
+                    with resources.child_requests(), app_registrations.around_run(commands, root): return work()
                 finally:
                     # Nested in another lane, its results go into that lane's too, however it ended (#218).
                     parallel.hand_up(directory / "results", args.lane)
