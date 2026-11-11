@@ -52,7 +52,8 @@ import urllib.request
 
 from . import app_builds, budgets, disk, evidence, landing, lane_report, lane_wait, offload_host, parallel, processes, remote, \
     resources
-from .config import IMPLICIT_SPELLING, SPELLING, SPELLING_LIMIT, TOOLKIT_ROOT, lane_to_run, load, parse, stays, unlocked_screen
+from .config import DOCS, DOCS_FILES, DOCS_FOLDERS, IMPLICIT_DOCS, IMPLICIT_SPELLING, SPELLING, SPELLING_LIMIT, \
+    TOOLKIT_ROOT, lane_to_run, load, parse, stays, unlocked_screen
 
 MAIN = "refs/remotes/origin/main"
 FETCH = ["fetch", "--no-tags", "origin", f"refs/heads/main:{MAIN}"]
@@ -520,14 +521,24 @@ def ahead(front, no_gate, why):
 
 
 def docs_lanes(config, changed):
-    """The lanes main's queue.docsOnly names when every path a batch changes is one it lists, after the spelling
-    lane, the project's or the toolkit's (implicit_spelling), where they do not name it, since documents are where
-    words change; else None: a batch that changes nothing, or anything else, runs every lane."""
-    declared = config.get("queue", {}).get("docsOnly")
-    if not declared or not changed: return None
-    if not all(any(named(path, key) for key in declared["paths"]) for path in changed): return None
-    first = [SPELLING] if spelled(config, SPELLING) and SPELLING not in declared["lanes"] else []
-    return first + declared["lanes"]
+    """The docs-only checks, from main's explicit declaration or conventional Markdown defaults.
+
+    An explicit declaration replaces the defaults. False disables this path. Both sides of a rename
+    arrive in changed, so moving a source or fixture into documentation still runs the code gate.
+    """
+    queue = config.get("queue", {})
+    declared = queue.get("docsOnly")
+    if not changed or declared is False: return None
+    if declared is None:
+        if not all(path in DOCS_FILES or (path.startswith(DOCS_FOLDERS) and path.endswith((".md", ".markdown")))
+                   for path in changed): return None
+        lanes = [DOCS]
+    else:
+        if not all(any(named(path, key) for key in declared["paths"])
+                   and not any(named(path, key) for key in declared.get("exclude", {})) for path in changed): return None
+        lanes = declared["lanes"]
+    first = [SPELLING] if spelled(config, SPELLING) and SPELLING not in lanes else []
+    return first + lanes
 
 
 def offerable(config, lanes):
@@ -536,6 +547,7 @@ def offerable(config, lanes):
     for lane in lanes:
         # eng run places the toolkit's spelling lane as it does any lane that says no `here`, so it holds no half back.
         if lane == SPELLING and implicit_spelling(config): continue
+        if lane == DOCS and DOCS not in config.get("lanes", {}): continue
         why = stays(config.get("lanes", {}), lane) if lane in config.get("lanes", {}) else "it is no configured lane"
         if why: return f"{lane} runs only on this Mac: {why}"
     return None
@@ -546,8 +558,12 @@ def carried_over(path, config, batch_files):
     in queue.carryOver as read by none of its queue lanes, or a Markdown document, and in either
     case one the batch does not touch."""
     if path in batch_files: return False
-    listed = config.get("queue", {}).get("carryOver", {})
-    return path.endswith(".md") or any(named(path, key) for key in listed)
+    queue = config.get("queue", {})
+    declared = queue.get("docsOnly")
+    # A declared code input cannot keep an older gate result, even if a carry-over list also names it.
+    if isinstance(declared, dict) and any(named(path, key) for key in declared.get("exclude", {})): return False
+    listed = queue.get("carryOver", {})
+    return (declared is not False and path.endswith(".md")) or any(named(path, key) for key in listed)
 
 
 def carry_checks(config, moved, base):
@@ -2545,6 +2561,9 @@ class Worker:
             if lane == SPELLING and not self.has_lane(lane):
                 self.say(f"{lane}: the project has no spelling lane, so eng run runs the toolkit's: "
                          f"{shlex.join(IMPLICIT_SPELLING)}")
+            if lane == DOCS and not self.has_lane(lane):
+                self.say(f"{lane}: the project has no docs lane, so eng run runs the toolkit's: "
+                         f"{shlex.join(IMPLICIT_DOCS)}")
             watch = GateWatch(self, lane, began, log).start()
             try:
                 try:
@@ -2759,7 +2778,9 @@ class Worker:
                 base, head = carried
                 if ungated: head = self.mark_ungated(ungated, base)
                 if flakes: head = self.mark_flaky(flakes, base)
-            if covered:
+            if docs:
+                self.say("no pre-push hook: documentation landing passed its docs lanes; code hooks are skipped")
+            elif covered:
                 self.say(f"no pre-push hook: main's queue.hookCoveredBy says {', '.join(covered)} cover it"
                          + (", and this landing skips them" if ungated and not set(covered) <= set(ungated["lanes"]) else ""))
             elif checked != head:

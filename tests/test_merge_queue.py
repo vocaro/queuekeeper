@@ -2774,6 +2774,27 @@ class MainMoves(Fixture):
         self.assertEqual(self.gates(), 1)
         self.assertLessEqual({"a", "records"}, self.main_files())
 
+    def test_a_code_read_markdown_input_on_main_gates_again(self):
+        config = self.config()
+        config["queue"]["docsOnly"] = {"paths": {"README.md": "prose"}, "lanes": ["docs"],
+                                        "exclude": {"README.md": "the code gate reads this input"}}
+        self.publish(config)
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        with self.during_gate("README.md", "changed input\n"): self.work()
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual(self.gates(), 2)
+
+    def test_disabling_docs_only_disables_automatic_markdown_carry_over(self):
+        config = self.config()
+        config["queue"]["docsOnly"] = False
+        self.publish(config)
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        with self.during_gate("README.md", "changed input\n"): self.work()
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual(self.gates(), 2)
+
     def test_code_on_main_gates_again(self):
         self.commit("a", "a")
         [identifier] = self.add("a")
@@ -3218,14 +3239,14 @@ class DocsOnly(Fixture):
         self.assertNotIn("docsOnly", self.state(ids[0]))
         self.assertNotIn("docs lanes only", mq.describe(self.state(ids[0])))
 
-    def test_an_undeclared_project_runs_every_lane(self):
+    def test_an_undeclared_project_uses_the_default_docs_paths(self):
         self.publish(self.configured, "Declare nothing")
         self.commit("doc/guide.md", "guide")
         [identifier] = self.add("guide")
         self.work()
         self.assertEqual(self.state(identifier)["state"], "landed")
-        self.assertEqual((self.gates(), self.docs_runs()), (1, 0))
-        self.assertNotIn("docsOnly", self.state(identifier))
+        self.assertEqual((self.gates(), self.docs_runs()), (0, 1))
+        self.assertEqual(self.state(identifier)["docsOnly"], ["spelling", "docs"])
 
     def test_a_path_beside_a_listed_file_or_directory_runs_every_lane(self):
         for name in ("docs/guide.md", "README.md.orig", "doc"):
@@ -3286,13 +3307,13 @@ class DocsOnly(Fixture):
         self.assertEqual(self.state(identifier)["state"], "landed")
         self.assertEqual((self.gates(), self.docs_runs(), PrePushHooks.runs(self)), (0, 1, []))
 
-    def test_a_hook_no_lane_covers_runs(self):
+    def test_a_docs_only_hook_no_lane_covers_is_skipped(self):
         PrePushHooks.hook(self, "exit 0")
         self.commit("doc/guide.md", "guide")
         [identifier] = self.add("guide")
         self.work()
         self.assertEqual(self.state(identifier)["state"], "landed")
-        self.assertEqual(len(PrePushHooks.runs(self)), 1)
+        self.assertEqual(len(PrePushHooks.runs(self)), 0)
 
     def test_a_docs_only_landing_is_no_gate_eng_release_takes(self):
         from vocaro_engineering import release
@@ -3327,7 +3348,8 @@ class DocsOnly(Fixture):
         for bad in ({}, {"paths": {"doc/": "why"}}, {"lanes": ["docs"]}, {**good, "other": 1}, {**good, "paths": {}},
                     {**good, "paths": ["doc/"]}, {**good, "paths": {"doc/": ""}}, {**good, "paths": {" ": "why"}},
                     {**good, "lanes": []}, {**good, "lanes": "docs"}, {**good, "lanes": ["docs", "docs"]},
-                    {**good, "lanes": ["absent"]}, {**good, "lanes": ["gate"]}, {**good, "lanes": ["docs", "gate"]}, []):
+                    {**good, "lanes": ["absent"]}, {**good, "lanes": ["gate"]}, {**good, "lanes": ["docs", "gate"]}, {**good, "exclude": []},
+                    {**good, "exclude": {"doc/input.md": ""}}, True, []):
             with self.subTest(bad=bad):
                 (self.repo / "engineering.json").write_text(json.dumps({**config, "queue": {"docsOnly": bad}}))
                 with self.assertRaisesRegex(ValueError, "docsOnly"): self.config()
@@ -3335,8 +3357,106 @@ class DocsOnly(Fixture):
     def test_the_schema_knows_the_setting(self):
         schema = json.loads((ROOT / "schemas/engineering.schema.json").read_text())
         declared = schema["properties"]["queue"]["properties"]["docsOnly"]
-        self.assertEqual(set(declared["properties"]), {"paths", "lanes"})
+        self.assertEqual(set(declared["properties"]), {"paths", "lanes", "exclude"})
         self.assertEqual(declared["properties"]["lanes"]["items"]["not"], {"const": "gate"})
+
+
+class DocsCarryPolicy(unittest.TestCase):
+    def test_known_inputs_override_carry_permissions_and_false_keeps_explicit_permissions(self):
+        excluded = {"queue": {"docsOnly": {"paths": {"docs/": "prose unless excluded"}, "lanes": ["docs"],
+                                            "exclude": {"docs/": "code reads these inputs"}},
+                              "carryOver": {"docs/": "an older declaration"}}}
+        self.assertFalse(mq.carried_over("docs/input.md", excluded, []))
+        self.assertTrue(mq.carried_over("README.md", excluded, []))
+        disabled = {"queue": {"docsOnly": False, "carryOver": {"records/": "not read by code"}}}
+        self.assertFalse(mq.carried_over("README.md", disabled, []))
+        self.assertTrue(mq.carried_over("records/input.json", disabled, []))
+        self.assertFalse(mq.carried_over("records/input.json", disabled, ["records/input.json"]))
+
+
+class DefaultDocsOnly(Fixture):
+    def test_conventional_markdown_uses_implicit_docs_and_skips_code_and_hook(self):
+        self.ran = self.base / "hook-runs"
+        PrePushHooks.hook(self, "exit 1")
+        self.commit("guides/guide.md", "guide", "# Guide\n")
+        [identifier] = self.add("guide")
+        self.assertEqual(self.work(), 0)
+        state = self.state(identifier)
+        self.assertEqual(state["state"], "landed")
+        self.assertEqual(state["docsOnly"], ["spelling", "docs"])
+        self.assertEqual(self.gates(), 0)
+        self.assertNotIn("gatedOn", state)
+        self.assertEqual(PrePushHooks.runs(self), [])
+        logs = list(mq.Queue(self.repo).logs.glob("*-docs.log"))
+        self.assertTrue(logs)
+        self.assertIn("Documentation checks passed", logs[-1].read_text())
+
+    def test_broken_links_in_the_default_docs_folder_are_rejected(self):
+        self.commit("docs/guide.md", "guide", "[missing](missing.md)\n")
+        [identifier] = self.add("guide")
+        self.work()
+        self.assertEqual(self.state(identifier)["state"], "failed")
+        self.assertEqual(self.gates(), 0)
+        self.assertNotIn("docs", self.main_files())
+
+    def test_spelling_failure_in_default_docs_is_rejected(self):
+        self.commit("README.md", "guide", BRITISH)
+        [identifier] = self.add("guide")
+        self.work()
+        self.assertEqual(self.state(identifier)["state"], "failed")
+        self.assertEqual(self.gates(), 0)
+
+    def test_false_disables_defaults_and_keeps_code_gate_and_hook(self):
+        config = self.config()
+        config["queue"]["docsOnly"] = False
+        self.publish(config)
+        self.ran = self.base / "hook-runs"
+        PrePushHooks.hook(self, "exit 0")
+        self.commit("README.md", "guide", "# Guide\n")
+        [identifier] = self.add("guide")
+        self.work()
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertNotIn("docsOnly", self.state(identifier))
+        self.assertEqual(self.gates(), 1)
+        self.assertEqual(len(PrePushHooks.runs(self)), 1)
+
+    def test_an_explicit_excluded_document_keeps_the_code_gate(self):
+        config = self.config()
+        config["queue"]["docsOnly"] = {"paths": {"guides/": "prose"}, "lanes": ["docs"],
+                                        "exclude": {"guides/input.md": "a test reads this fixture"}}
+        self.publish(config)
+        self.commit("guides/input.md", "input", "# Input\n")
+        [identifier] = self.add("input")
+        self.work()
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertNotIn("docsOnly", self.state(identifier))
+        self.assertEqual(self.gates(), 1)
+
+    def test_default_classification_keeps_code_configuration_and_fixtures_gated(self):
+        config = self.config()
+        for path in ("README.md", "CONTRIBUTING.md", "CHANGELOG.md", "doc/guide.md", "docs/guide.md",
+                     "guides/guide.md", "knowledge/apple/topic.md", "guides/topic.markdown"):
+            with self.subTest(path=path):
+                self.assertEqual(mq.docs_lanes(config, [path]), ["spelling", "docs"])
+                self.assertIsNone(mq.docs_lanes(config, [path, "src/code.py"]))
+        for path in ("engineering.json", "guides/config.json", "guides/code.py", "tests/input.md", "src/input.md",
+                     "AGENTS.md", "agents/core.md", ".github/workflows/check.yml", "README.md.orig"):
+            with self.subTest(path=path): self.assertIsNone(mq.docs_lanes(config, [path]))
+        self.assertIsNone(mq.docs_lanes(config, []))
+        self.assertEqual(configuration.lane_to_run(config, "docs")["command"], configuration.IMPLICIT_DOCS)
+
+    def test_a_default_docs_file_moved_into_source_keeps_code_gate(self):
+        self.commit("README.md", "guide", "# Guide\n")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        run(self.repo, "git", "checkout", "-q", "-B", "move", "origin/main")
+        (self.repo / "src").mkdir()
+        run(self.repo, "git", "mv", "README.md", "src/input.md")
+        run(self.repo, "git", "commit", "-qm", "Move documentation to source")
+        [identifier] = self.add("move")
+        self.work()
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertNotIn("docsOnly", self.state(identifier))
+        self.assertEqual(self.gates(), 1)
 
 
 class ImplicitSpelling(Fixture):
@@ -4283,10 +4403,13 @@ class Changelogs(Fixture):
         self.assertEqual(refused, [state == "conflict" for state in states], states)
         return states
 
-    def test_each_branch_lands_with_its_line_first_after_one_gate(self):
+    def test_each_branch_lands_with_its_line_first_after_one_docs_pass(self):
         self.assertEqual(self.outcome(self.top("- a"), self.top("- b"), self.top("- c")), ["landed"] * 3)
         self.assertEqual(self.changelog(), self.START.replace("- old\n", "- c\n- b\n- a\n- old\n", 1))
-        self.assertEqual(self.gates(), 1)
+        self.assertEqual(self.gates(), 0)
+        self.assertEqual(len(list(mq.Queue(self.repo).logs.glob("*-docs.log"))), 1)
+        self.assertEqual([entry["docsOnly"] for entry in mq.Queue(self.repo).all()],
+                         [["spelling", "docs"]] * 3)
         self.assertIsNone(mq.Queue(self.repo).held())
         # The first went in as it was; each settled one adds its very line beside other neighbors, which
         # Closeout's landed.sh proves resolved, so its branch goes unasked (#164, guides/maintenance.md).
@@ -6208,6 +6331,8 @@ class FlakyReruns(Fixture):
         (library / "helper.py").write_text("from . import deeper\nVALUE = 1\n")
         (library / "deeper.py").write_text("DEPTH = 1\n")
         config = self.config()
+        # This gate intentionally consumes docs/*.md as test inputs, so its documents keep the code gate.
+        config["queue"]["docsOnly"] = False
         config["lanes"]["gate"] = {"command": ["python3", "scripts/eng", "unittest", "-s", "tests", "-v"], "timeout": 600}
         (self.repo / "engineering.json").write_text(json.dumps(config))
         run(self.repo, "git", "add", ".")

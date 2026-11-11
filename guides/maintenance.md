@@ -912,35 +912,47 @@ and is reported to the owner with its reason. No check enforces this.
 does not touch, or by paths in `queue.carryOver`, each with why no queue lane reads it, the worker
 checks that the batch's patch is unchanged on the new `main`, runs `eng docs check` when a document
 moved, then the project's `queue.carryOverChecks`, and pushes. A carried-over result is no gate of the pushed commit: `eng release` will not
-take it. Any other move gates again, with no blame. List in `queue.carryOver` only
+take it. A path in `queue.docsOnly.exclude` always gates again: it is a known code input.
+`queue.docsOnly: false` disables automatic Markdown carry-over too, while explicit
+`queue.carryOver` permissions still apply unless excluded. Any other move gates again, with no blame. List in `queue.carryOver` only
 records no queue lane reads, and check first: studywright's gate compiles sources under
 `measurements/audits`, and BreezEPUB's script tests read parts of `evidence/`.
 
-**A docs-only batch runs the docs lanes.** A project may declare on `main` which paths are
-documentation, each with why no code lane reads it, and the lanes a batch that changes only those
-paths runs instead of every queue lane:
+**A docs-only batch runs the docs lanes.** By default, existing and newly initialized
+repositories use this path for root `README.md`, `CONTRIBUTING.md`, and `CHANGELOG.md`, and
+Markdown files (`.md` or `.markdown`) under `doc/`, `docs/`, `guides/`, and `knowledge/`.
+The worker runs spelling, unless disabled, followed by the project's `docs` lane or the toolkit's
+implicit `docs` lane (`python3 scripts/eng docs check`). Both run through ordinary lane admission
+and leave their logs and receipts. This includes this toolkit's guides and knowledge articles.
+Code, configuration, agent instructions, non-Markdown data, and documents under source or test
+folders retain the code gate. A mixed batch and a batch that changes nothing run every code lane.
+
+A project may replace the defaults on `main` with exact paths and validators:
 
 ```json
 "docsOnly": {"paths": {"doc/guide/": "read by no code lane; eng docs check reads it",
                        "README.md": "read by no code lane; eng docs check reads it"},
+             "exclude": {"doc/guide/input.md": "a code test reads this fixture"},
              "lanes": ["docs"]}
 ```
 
-When every path the batch changes, counting a moved file's old path, is a listed file or under a
-listed directory ending in `/`, the worker runs only those lanes, in order, after the
-spelling lane, the project's or the toolkit's, where they do not name it, since documents are where
-words change, and lands the batch on their pass (owner's decision, 2026-11-02,
-[#112](https://github.com/vocaro/vocaro-engineering/issues/112)). Several docs-only entries land
-together as one batch. A batch with any other path, a mixed batch, and every batch of a project
-that declares nothing run every lane, as does a batch that changes nothing. Only `main`'s
-declaration counts, as with `hookCoveredBy`, so a branch cannot widen it. A project with
-`hookCoveredBy` has said its hook is part of code lanes that read none of these paths, so a
-docs-only batch skips the hook too; a project without it runs its hook as on any batch. A docs-only landing, like a carried-over
-result, is no gate of the pushed commit: `gate` may not be a docs lane, so no gate receipt names
-that commit and `eng release` will not take it; a release commit gets its gate from the release
-procedure. The worker's log and `eng queue status` say an entry landed on the docs lanes only. List
-only paths no code lane reads, and check first, as for `carryOver`: a path a docs check reads is
-listed only when that check is a docs lane.
+An explicit declaration replaces the default paths and lanes; it does not extend them.
+Directories end in `/`. `exclude` is optional and takes precedence over `paths`. A project whose
+code or tests consume a conventional documentation path must exclude it in its declaration or
+set `queue.docsOnly` to `false` to keep every landing gated. Name any project-specific
+documentation validators as docs lanes. Only `main`'s settings count, so a branch cannot widen
+its own docs classification. Both a moved file's old and new paths must qualify: a move across
+the code/documentation boundary runs the code gate.
+
+Several docs-only entries land as one batch after their docs checks pass. The pre-push code
+hook is skipped for a docs-only batch, including in projects without `queue.hookCoveredBy`;
+put required documentation checks in the docs lanes rather than that hook. Code and mixed
+landings keep their ordinary hook policy. No emergency option is needed for documentation.
+
+A docs-only landing is no full gate of the pushed commit: `gate` may not be a docs lane, no
+gate receipt names that commit, and `eng release` will not take it as a release qualification.
+A release commit gets its gate from the release procedure. The worker's log and
+`eng queue status` record the docs lanes actually run and say this was a documentation landing.
 
 **Checks before a carry-over.** A project whose rule asks for more than the docs lane names the
 commands in `queue.carryOverChecks`, in order, on the batch rebased onto the new `main`:
