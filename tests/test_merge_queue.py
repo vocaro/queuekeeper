@@ -7486,15 +7486,28 @@ class RemovedWhileTesting(Fixture):
         """The case of #247: the replacement, based on origin/main, changes the removed entry's file. It stacks on
         nothing, is told it conflicts with the removed entry rather than origin/main, and lands once that entry's gate
         has stopped."""
-        self.commit("slow", "a", self.SLOW); self.commit("same", "a", "a", start="a"); self.commit("same", "c", "c")
+        # a is removed once the stacker has looked at c and said it conflicts with a, while a's gate still runs: a
+        # condition observed, not a time guessed, so that a loaded Mac's slow look cannot fall after the removal
+        # (vocaro-engineering#381). The stacker looks only once a's final lane runs admitted (Worker.admitted_mac),
+        # which on a Mac loaded far past its cores came more than 15 s after c arrived; the wait ends at the look, and
+        # its bound, a third of a's gate, only ends a failing run, with a removed either way. a's gate is twice the
+        # class's, which a stopped gate never costs.
+        slow = 2 * float(self.SLOW)
+        self.commit("slow", "a", str(int(slow))); self.commit("same", "a", "a", start="a"); self.commit("same", "c", "c")
         [a] = self.add("a")
+        conflicted, looked, real_say = threading.Event(), [], mq.Worker.say
+        def say(worker, words):
+            real_say(worker, words)
+            if words.startswith("stacked: ") and f" conflicts with {a}, ahead of it" in words: conflicted.set()
         def replace():
             self.arrive("c")
-            time.sleep(1)  # some looks of the stacker, which finds c conflicting with a
+            seen = conflicted.wait(slow / 3)
+            looked.append((seen, self.state(a)["state"]))
             self.remove(a)
-        log, took = self.worked(self.during(replace))
+        log, took = self.worked(self.during(replace), patch.object(mq.Worker, "say", say))
         c = self.added("c")
-        self.assertLess(took, float(self.SLOW) / 2, log)
+        self.assertEqual(looked, [(True, mq.TESTING)], log)
+        self.assertLess(took, slow / 2, log)
         self.assertEqual((self.state(a)["state"], c["state"]), ("removed", "landed"), log)
         self.assertIn(f"stacked: {c['id']}: {c['tip'][:12]} conflicts with {a}, ahead of it, not with "
                       "origin/main, in same: once it lands, rebase onto origin/main and add it again", log)
