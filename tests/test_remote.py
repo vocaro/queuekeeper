@@ -6121,7 +6121,7 @@ class SecondMacDoctorTests(unittest.TestCase):
         with loaded:
             sent = Path(stretched_host(temp / "loaded.py")).read_text()
             self.assertEqual(subprocess.run(["sleep", "1"], timeout=0.2).returncode, 0)
-        self.assertIn("def listing(command, timeout=60000.0):", sent)
+        self.assertIn("def listing(command, timeout=60000.0,", sent)
         self.assertIn("UPDATE_SECONDS, UPDATE_FETCH_SECONDS = 40000.0, 25000.0", sent)
         self.assertNotRegex(sent, r"timeout=60\b")
         # The stretch is finite and only load makes it: an idle host keeps each limit as it is, and it still ends.
