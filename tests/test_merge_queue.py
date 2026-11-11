@@ -4530,8 +4530,12 @@ class ToolkitCopy(Fixture):
         variables.start()
         self.addCleanup(variables.stop)
         del os.environ["VOCARO_ENGINEERING_ROOT"]
-        # Let subprocesses write bytecode even if the calling shell turns it off.
+        # Let subprocesses write bytecode even if the calling shell turns it off. Apple's Python 3.9
+        # defaults to a central cache rather than an adjacent __pycache__; keep both interpreters'
+        # caches inside this fixture and check the copied checkout's path below (#368).
         os.environ.pop("PYTHONDONTWRITEBYTECODE", None)
+        self.bytecode = self.base / "bytecode"
+        os.environ["PYTHONPYCACHEPREFIX"] = str(self.bytecode)
         toolkit = patch.object(mq, "TOOLKIT_ROOT", self.kit)
         toolkit.start()
         self.addCleanup(toolkit.stop)
@@ -4587,7 +4591,7 @@ class ToolkitCopy(Fixture):
         self.assertEqual(status, 0)
         self.assertEqual(self.state(identifier)["state"], "landed")
         self.assertEqual(self.seen.read_text().split("\n"), [str(self.copy), landed, ""])
-        cache = self.copy / "src/python/vocaro_engineering/__pycache__"
+        cache = self.bytecode / self.copy.relative_to(self.copy.anchor) / "src/python/vocaro_engineering"
         self.assertTrue(any(cache.glob("cli.*.pyc")))
         self.assertEqual(run(self.kit, "git", "rev-parse", "HEAD"), behind)
         # And so does the worker itself, once, from the copy (vocaro-engineering#173).
@@ -6210,6 +6214,13 @@ class FlakyReruns(Fixture):
         run(self.repo, "git", "commit", "-qm", "Gate on an eng unittest suite")
         run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
 
+    def assert_gate_failure(self, path):
+        """The original failure and assertion survive collection on both supported unittest formats."""
+        log = Path(path).read_text()
+        # Python 3.9 names the class in parentheses; later versions include the method there too.
+        self.assertRegex(log, r"(?m)^FAIL: test_sometimes \(test_flaky\.Flaky(?:\.test_sometimes)?\)$")
+        self.assertIn("AssertionError: 'F' == 'F' : run 1 fails, as planned", log)
+
     def runs_of_the_test(self):
         return len(self.runs.read_text()) if self.runs.exists() else 0
 
@@ -6242,7 +6253,7 @@ class FlakyReruns(Fixture):
             [flake] = entry["flakes"]
             self.assertEqual(flake["test"], self.TEST)
             self.assertTrue(Path(flake["gateLog"]).is_file())
-            self.assertIn(f"FAIL: test_sometimes ({self.TEST})", Path(flake["gateLog"]).read_text())
+            self.assert_gate_failure(flake["gateLog"])
             self.assertEqual(len(flake["rerunLogs"]), mq.RERUNS)
             self.assertTrue(all("OK" in Path(path).read_text() for path in flake["rerunLogs"]))
             self.assertEqual(flake["issue"], "https://example.invalid/fixture/issues/1")
@@ -6297,7 +6308,7 @@ class FlakyReruns(Fixture):
         self.assertNotIn("fail together", log)
         entries = [self.state(identifier) for identifier in ids]
         self.assertEqual([entry["state"] for entry in entries], ["landed", "landed"])
-        self.assertIn(f"FAIL: test_sometimes ({self.TEST})", Path(entries[0]["flakes"][0]["gateLog"]).read_text())
+        self.assert_gate_failure(entries[0]["flakes"][0]["gateLog"])
 
     def make_gate_a_group(self, other_status):
         """Make the gate a group of the eng unittest suite and a lane that exits other_status, as the toolkit's is (#289)."""
@@ -6322,7 +6333,7 @@ class FlakyReruns(Fixture):
         self.assertEqual(self.runs_of_the_test(), 1 + mq.RERUNS)
         entries = [self.state(identifier) for identifier in ids]
         self.assertEqual([entry["state"] for entry in entries], ["landed", "landed"])
-        self.assertIn(f"FAIL: test_sometimes ({self.TEST})", Path(entries[0]["flakes"][0]["gateLog"]).read_text())
+        self.assert_gate_failure(entries[0]["flakes"][0]["gateLog"])
 
     def group_on_the_second_mac(self, keep_lanes=True):
         """remote.dispatch as for a group gate the second Mac ran: its lanes' logs and receipts are only in the
@@ -6354,7 +6365,7 @@ class FlakyReruns(Fixture):
         self.assertNotIn("no eng unittest summary", log)
         entries = [self.state(identifier) for identifier in ids]
         self.assertEqual([entry["state"] for entry in entries], ["landed", "landed"])
-        self.assertIn(f"FAIL: test_sometimes ({self.TEST})", Path(entries[0]["flakes"][0]["gateLog"]).read_text())
+        self.assert_gate_failure(entries[0]["flakes"][0]["gateLog"])
 
     def test_a_group_gate_whose_dispatch_brought_no_lane_logs_bisects_and_says_why(self):
         # The negative control: with no receipt, no lane is known to have passed, so nothing is rerun.

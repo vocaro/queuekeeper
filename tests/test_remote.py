@@ -2,6 +2,7 @@ from concurrent.futures import ThreadPoolExecutor
 import contextlib
 from datetime import datetime, timedelta, timezone
 import fcntl
+import importlib.util
 from io import StringIO
 import json
 import os
@@ -433,8 +434,10 @@ class RemoteTests(unittest.TestCase):
                                    "pathlib.Path('.build/first.running').exists()); print('Ran 1 tests')"]},
             "turns": {"parallel": ["first", "second"], "resource": "heavy"},
             # Imports a module of the project's, as a project's scripts/eng imports scripts/_engineering.py,
-            # and says whether its Python may write bytecode.
-            "imports": {"command": [python, "-c", "import sys; sys.path.insert(0, 'scripts'); import helper; "
+            # and says whether its Python may write bytecode. Force adjacent caching so the dirty-checkout
+            # negative control also exercises its intended path on Apple's system Python (#368).
+            "imports": {"command": [python, "-c", "import sys; sys.pycache_prefix = None; "
+                                    "sys.path.insert(0, 'scripts'); import helper; "
                                     "print('bytecode', 'off' if sys.dont_write_bytecode else 'on'); print('Ran 1 tests')"]},
             "pair": {"parallel": ["left", "right"], "resource": "heavy"},
             "mixed": {"parallel": ["left", "broken", "overdue"], "resource": "heavy"},
@@ -2861,8 +2864,9 @@ class RemoteTests(unittest.TestCase):
         source.write_text(text.replace("def group_files(config, lane):\n",
                                        "def group_files(config, lane):\n    return None\n", 1))
         self.assertNotEqual(source.read_text(), text)
-        # The dispatcher wrote bytecode beside the toolkit's source, which stays out of its commit.
-        self.assertTrue((source.parent / "__pycache__").is_dir())
+        # The dispatcher wrote bytecode, which stays out of the toolkit's commit. Apple's system
+        # Python uses a central cache by default; Homebrew writes an adjacent __pycache__ (#368).
+        self.assertTrue(Path(importlib.util.cache_from_source(str(source.resolve()))).is_file())
         commit_all(self.toolkit)
         self.assertNotIn("__pycache__", git(self.toolkit, "ls-files"))
         shutil.rmtree(results)
