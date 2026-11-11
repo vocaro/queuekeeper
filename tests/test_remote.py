@@ -568,6 +568,34 @@ class RemoteTests(unittest.TestCase):
             git(clone, "remote", "set-url", "origin", url)
             self.assertEqual(remote.origin(clone), sent)
 
+    def test_declined_dispatches_reuse_the_hosts_original_arrival_after_a_busy_checkout(self):
+        release = self.hold_slot(1)
+        settings = json.loads((self.project / "engineering.json").read_text())
+        sent, arrivals = {}, []
+        def dispatch():
+            return remote.execute(self.project, settings, "fake", ["run", "--here", "--if-free", "check"],
+                                  lane="check", sent=sent, decline=True, slot=1, slot_wait=0)
+        with contextlib.redirect_stdout(StringIO()), contextlib.redirect_stderr(StringIO()):
+            for age in [60, 1, 0]:
+                with resources.request_order(time.time() - age), self.assertRaises(remote.Busy):
+                    dispatch()
+                arrivals.append(sent["requestStarted"])
+                self.assertFalse(self.checkout(1).exists())
+                slots = Path(os.environ["FAKE_SLOTS"])
+                self.assertFalse((slots / resources.QUEUE).exists())
+            self.assertEqual(arrivals, [arrivals[0]] * 3)
+            release()
+            self.assertEqual(dispatch(), 0)
+        self.assertEqual(self.slot_receipt()["result"]["requestStarted"], arrivals[0])
+
+    def test_a_dispatch_translates_the_original_request_age_before_remote_admission(self):
+        command = "import os,time; print('priority-age:', time.time()-float(os.environ['VOCARO_ADMISSION_REQUEST_STARTED']))"
+        with resources.request_order(time.time() - 60):
+            status, output, error = self.eng("remote", "admit", "--", sys.executable, "-c", command)
+        self.assertEqual(status, 0, output + error)
+        age = float(re.search(r"priority-age: ([0-9.]+)", output).group(1))
+        self.assertGreaterEqual(age, 60)
+
     def eng(self, *arguments):
         with contextlib.redirect_stdout(StringIO()) as output, contextlib.redirect_stderr(StringIO()) as error:
             status = cli.main(["--project", str(self.project), *arguments])
@@ -5157,11 +5185,11 @@ class KeptSlotsTests(unittest.TestCase):
         with patch.object(remote, "capacity_there", return_value=loaded), \
                 patch.object(remote.offload_host, "capacity", return_value={**self.IDLE, "screen": None}) as here:
             self.assertIsNotNone(offered.choose())
-            here.assert_called_once_with(own=None)
+            here.assert_called_once_with(own=None, before=offered.started)
             here.reset_mock()
             offered.place = resources.Place()
             offered.choose()
-            here.assert_called_once_with(own=offered.place.identity)
+            here.assert_called_once_with(own=offered.place.identity, before=offered.started)
         # Its admission here hands it the place it keeps.
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
                 "HEAVY_SLOT_DIR": directory, "SW_GATE_LOCK_FILE": str(Path(directory) / "gate"), "HEAVY_SLOTS": "1",
@@ -7630,6 +7658,39 @@ class GateHostPoolTests(unittest.TestCase):
 
 
 class OfferAgainTests(unittest.TestCase):
+    def test_repeated_declines_send_one_stable_request_age_and_release_the_context(self):
+        seen = []
+        def decline(host, sent):
+            seen.append(resources.request_started())
+            raise remote.Busy("all checkout slots are busy")
+        offered = remote.Offer("work", "", decline)
+        with patch.object(remote, "configured", return_value="fake"), \
+                patch.object(remote, "reachable"), contextlib.redirect_stderr(StringIO()):
+            offered.make(fallback=False)
+            offered.again()
+            offered.again()
+        self.assertEqual(seen, [offered.started] * 3)
+        self.assertIsNone(resources._request_started.get())
+
+    def test_remote_capacity_carries_elapsed_age_instead_of_the_dispatchers_wall_clock(self):
+        reading = {"slots": 1, "slotsMax": 1, "busy": [], "busyLimit": 75}
+        with resources.request_order(time.time() - 60), \
+                patch.object(remote, "ask", return_value=reading) as ask:
+            self.assertEqual(remote.capacity_there("fake"), reading)
+        request = ask.call_args.args[1]
+        self.assertGreaterEqual(request["requestAge"], 60)
+        self.assertLess(request["requestAge"], 65)
+        with patch.object(remote.offload_host, "capacity", return_value=reading) as capacity, \
+                patch.object(remote.offload_host.time, "time", return_value=1000):
+            self.assertEqual(remote.offload_host.answer({"capacity": True, "requestAge": 60}), reading)
+        capacity.assert_called_once_with(diagnostic=False, before=940)
+        with patch.object(remote, "ask", return_value=reading) as ask:
+            remote.capacity_there("fake", started=940)
+        self.assertEqual(ask.call_args.args[1], {"capacity": True, "requestStarted": 940})
+        with patch.object(remote.offload_host, "capacity", return_value=reading) as capacity:
+            remote.offload_host.answer({"capacity": True, "requestStarted": 940, "requestAge": 1})
+        capacity.assert_called_once_with(diagnostic=False, before=940)
+
     """While both Macs are busy, a second Mac that cannot be reached at one offer is asked at the next."""
 
     def offer(self):

@@ -190,18 +190,28 @@ the slots below its own maximum, and a caller with a higher one can take slots a
 `python3 scripts/eng admissions limits` prints the limits a process started like it would use,
 and where each comes from. Waiting messages name a limit by its variable whatever set it.
 
-Exclusive and whole-host requests are admitted one at a time, in the order they asked. Each joins
-the queue, `exclusive-queue.json` in the slot directory, at its first attempt, and is admitted once
-it is first and the slots it needs are free: every slot for exclusive work, every guaranteed slot
-for a whole-host lane. While a live exclusive request waits, no other request is admitted
-ahead of it: a heavy request waits even when a guaranteed slot is free, and prints that it waits
-behind exclusive work. Jobs already running finish normally, so an exclusive request waits for
-the work admitted before it asked and for the exclusive requests ahead of it, never for heavy
-work that arrives later. Exclusive requests that follow one another hold heavy work back in turn.
-A queued request holds nothing: one whose process has ended, or whose PID now has another start
-time, is dropped from the queue, and a timeout or a stop takes the request out. A waiting process
-keeps its place for as long as it runs, even orphaned from the script that started it; stop that
-process to give up its place.
+All requests record their arrival in `exclusive-queue.json` in the slot directory. An older
+ordinary request runs before a later exclusive or whole-host request; ordinary requests can still
+share slots with each other. An older exclusive request holds later requests back while the slots
+it needs drain. A whole-host request similarly keeps the guaranteed slots for itself. Jobs already
+running finish normally. Each request still needs its own resources: admission order does not
+create a free checkout, unlock a screen, or release a model lock.
+
+`eng run` and `eng admit` retain one place across local waits between remote offers, for every
+request kind. A remote dispatch carries elapsed request age, which the receiving Mac translates
+to its own clock. A declined offer releases its checkout and queue record; a later offer restores
+the original age when a checkout is available. After the first reply, retries carry the same
+receiving-host timestamp unchanged, so connection latency does not shift it on each offer.
+Capacity preflight ignores exclusive requests that
+arrived after the requesting work. This keeps later exclusive arrivals from repeatedly overtaking
+ordinary work. Queue age establishes order, not an absolute start deadline: unavailable resources
+can still prevent admission.
+
+A queued request holds no slots. Admission drops it when its process has ended or its PID has a
+different start time. A stop removes its record; a timed-out local attempt can retain its place
+until the overall caller finishes waiting, when the caller removes it. A retained place stops
+holding later work back once it has not asked within HEAVY_PLACE_SECONDS (180), while keeping
+its arrival for its next attempt. This freshness bound also applies to exclusive requests.
 
 A whole-host request queued ahead holds back less. Exclusive and whole-host requests behind it
 wait their turn, but other heavy work goes on in a slot beyond the guaranteed ones while the host
@@ -215,7 +225,7 @@ and the gate could wait out its 5,400 s
 HEAVY_SLOTS_MAX equals HEAVY_SLOTS, or the host shows no spare capacity, the heavy work waits
 for the whole-host lane as it would for exclusive work. A whole-host request holds anything back
 only while its process keeps asking: one that last asked more than HEAVY_PLACE_SECONDS (180) ago
-holds nothing back, though it keeps its place. That is how `eng run` keeps a whole-host lane's
+holds nothing back, though it keeps its place. That is how `eng run` keeps a lane's
 place across its waits on this Mac while it also offers the lane to the second Mac
 ([which Mac runs a lane](#which-mac-runs-a-lane)): the place stays between waits, so the lane
 does not rejoin behind requests that came meanwhile, and it holds nothing back once the offer has
@@ -794,10 +804,9 @@ default DerivedData, stays. The receipt's `project` is the commit sent and its `
 where it ran and what had changed. Nothing but that patch touches the session's tree. A lane still
 refuses, as above: its results, kept results and logs are the checkout's.
 
-Each of this Mac's waits that ends unadmitted leaves its queue and is logged as withdrawn, as each
-declined offer is on the second Mac ([admission log](#admission-log)); an exclusive lane rejoins
-this Mac's exclusive queue at each wait, behind requests that came meanwhile, and a whole-host lane
-keeps its place there across the waits ([heavy-work admission](#heavy-work-admission)). `eng run --if-free`
+Each of this Mac's waits that ends unadmitted is logged as withdrawn, as each
+declined offer is on the second Mac ([admission log](#admission-log)); every request retains
+its arrival across retries, and keeps its place in this Mac's queue across local waits ([heavy-work admission](#heavy-work-admission)). `eng run --if-free`
 asks each Mac once, five seconds each, and exits 75 when both are busy. The admission logs of
 2026-10-27 hold this overflow before it was the rule: the build host's three `timed-out` requests
 were `eng run --if-free` declining after 5.5 s, and each of those lanes then ran on this Mac
@@ -2991,14 +3000,14 @@ Three kinds of marker coexist, and they are reclaimed differently:
   and `eng admissions recover` refuse it, and nested work inside an admission it records fails
   rather than reusing that admission.
 - The exclusive queue (`exclusive-queue.json` in the slot directory, changed only under its
-  `coordination.lock`) records each waiting exclusive or whole-host request's PID, process start
-  and label, in arrival order, a whole-host one with `wholeHost` and `seen`, when it last asked. A
+  `coordination.lock`) records each waiting request's PID, process start, label, `queuedAt` arrival
+  and `seen` last attempt. Ordinary records carry `ordinary`; whole-host records carry `wholeHost`. A
   queued request holds no slot and has started nothing, so admission drops one whose process has
   ended or whose PID has another start time, and a request that times out or is stopped takes
-  itself out, unless a whole-host request keeps its place across waits; one whose `seen` is
+  itself out, unless the overall caller keeps its place across local waits; one whose `seen` is
   more than HEAVY_PLACE_SECONDS old holds nothing back ([heavy-work admission](#heavy-work-admission)).
-  A toolkit older than 2026-11-04 reads a whole-host record as an exclusive one, and so holds its
-  own heavy work back behind it entirely, never less.
+  An older toolkit reads an ordinary record as an exclusive one and may hold later work back
+  more conservatively until the record leaves; upgrade the running toolkit copies together.
 - The device record's lock (`device-handoff.json.lock` beside the record) is an `flock` held for
   one change. The kernel releases it when its process ends, so it needs no reclamation, and its
   file is never removed. A reservation in the record ends only by its owner's release or an

@@ -575,11 +575,12 @@ def admitted_here(stack, name, label, timeout, offered=None, once=False, exclusi
     as busy or not offered while it had no spare capacity and this Mac had, goes to whichever Mac admits
     it first, this Mac asked first (remote.overflow). Other work waits in this Mac's queue for timeout
     seconds, or at most FREE_WAIT with once. A whole-host lane takes every guaranteed slot,
-    and keeps one place in this Mac's queue across its waits until it no longer waits here (resources.Place). A
+    and every request keeps one place across local waits and its age across remote offers (resources.Place). A
     lane that needs an unlocked screen (screen) is admitted only while this Mac's screen reads unlocked, and waits
     for it as for a slot (screen_wait). Its admission line says placement (admission_placement)."""
     refused, said = [], []
-    place = resources.Place() if whole_host and not exclusive else None
+    place = resources.Place()
+    if offered is not None: place.started = getattr(offered, "started", place.started)
     # Its own place is no request queued ahead of it when eng reads this Mac's capacity for it (#186).
     if offered is not None: offered.place = place
 
