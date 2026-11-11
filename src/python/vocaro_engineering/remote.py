@@ -1485,7 +1485,7 @@ def heartbeat(channel, seconds):
     a thread of its own, so that a stalled reader of this run's output does not read there as this Mac's crash."""
     while channel.poll() is None:
         time.sleep(seconds)
-        tell(channel, b"")
+        if channel.poll() is None: tell(channel, b"")
 
 
 def dispatch_records():
@@ -1593,6 +1593,16 @@ def tell(channel, word):
         channel.stdin.flush()
     except (OSError, ValueError):
         pass
+
+
+def hang_up(channel):
+    """Close channel's standard input once its connection has ended. A word it could no longer take, such as a
+    heartbeat that woke after a busy decline, stays in the writer's buffer, and closing tries it once more: that
+    fails with a broken pipe, which here means only that the second Mac's end has closed, as the connection's end
+    already says. Left open, the writer's finalizer would try it again, in whichever thread drops the channel last,
+    and print the failure as an ignored exception (vocaro-engineering#380). Any other failure is raised."""
+    try: channel.stdin.close()
+    except BrokenPipeError: pass
 
 
 class Frames:
@@ -2117,6 +2127,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
                 if kind == b"J ": tell(channel, b"attached")
                 elif kind == b"R ": tell(channel, b"received")
             channel.wait()
+            hang_up(channel)
 
         def collect():
             """Reconnect, as often as it takes, until a connection brings the run's result or says it has gone. This

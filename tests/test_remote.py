@@ -2,6 +2,7 @@ from concurrent.futures import ThreadPoolExecutor
 import contextlib
 from datetime import datetime, timedelta, timezone
 import fcntl
+import gc
 import importlib.util
 from io import StringIO
 import json
@@ -319,6 +320,74 @@ def commit_all(directory):
     return git(directory, "rev-parse", "HEAD")
 
 
+@contextlib.contextmanager
+def ignored_exceptions():
+    """Collect what Python would print as "Exception ignored", such as a file's failure at its finalization."""
+    ignored = []
+    with patch.object(sys, "unraisablehook", lambda raised: ignored.append(
+            f"{raised.err_msg or 'Exception ignored in'}: {raised.object!r}: {raised.exc_value!r}")):
+        yield ignored
+
+
+class ChannelWriterTests(unittest.TestCase):
+    """The dispatcher's writer on a connection that has ended (vocaro-engineering#380)."""
+
+    def ended(self):
+        channel = subprocess.Popen([sys.executable, "-c", "pass"], stdin=subprocess.PIPE)
+        channel.wait()
+        return channel
+
+    def test_a_word_after_the_end_is_dropped_without_a_finalization_traceback(self):
+        # Positive control: a word the ended connection could not take stays buffered, and finalizing its writer
+        # reports the broken pipe as an ignored exception, which is what the dispatch printed.
+        with ignored_exceptions() as ignored:
+            channel = self.ended()
+            remote.tell(channel, b"")
+            del channel
+            gc.collect()
+        self.assertEqual(len(ignored), 1, ignored)
+        self.assertIn("BrokenPipeError", ignored[0])
+        # Hung up, the writer holds nothing for its finalizer.
+        with ignored_exceptions() as ignored:
+            channel = self.ended()
+            remote.tell(channel, b"")
+            remote.tell(channel, b"stop")
+            remote.hang_up(channel)
+            self.assertTrue(channel.stdin.closed)
+            remote.tell(channel, b"")  # A heartbeat that wakes after the hang-up says nothing, and raises nothing.
+            remote.hang_up(channel)
+            del channel
+            gc.collect()
+        self.assertEqual(ignored, [])
+
+    def test_a_hang_up_with_nothing_buffered_is_silent(self):
+        with ignored_exceptions() as ignored:
+            channel = self.ended()
+            remote.hang_up(channel)
+            del channel
+            gc.collect()
+        self.assertEqual(ignored, [])
+
+    def test_a_writer_failure_other_than_the_ended_connection_is_raised(self):
+        # Negative control: only the broken pipe of a connection that has ended is expected at the hang-up.
+        class Writer:
+            def close(self): raise OSError(5, "Input/output error")
+        class Channel:
+            stdin = Writer()
+        with self.assertRaisesRegex(OSError, "Input/output error"):
+            remote.hang_up(Channel())
+
+    def test_the_heartbeat_says_nothing_once_the_connection_has_ended(self):
+        said = []
+        class Channel:
+            ends = iter([None, None, 0])
+            def poll(self): return next(self.ends)
+        with patch.object(remote, "tell", lambda channel, word: said.append(word)):
+            remote.heartbeat(Channel(), 0)
+        # Alive at the first two looks, ended at the third: one heartbeat, between them.
+        self.assertEqual(said, [b""])
+
+
 class RemoteTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -587,6 +656,37 @@ class RemoteTests(unittest.TestCase):
             release()
             self.assertEqual(dispatch(), 0)
         self.assertEqual(self.slot_receipt()["result"]["requestStarted"], arrivals[0])
+
+    def test_a_busy_decline_with_the_heartbeat_running_leaves_no_writer_to_finalize(self):
+        # vocaro-engineering#380: the heartbeat's last word falls after the decline's connection ended, and its writer
+        # was finalized with the failed word still buffered, which printed a BrokenPipeError as an ignored exception.
+        release = self.hold_slot(1)
+        settings = json.loads((self.project / "engineering.json").read_text())
+        beating, original = [], remote.heartbeat
+        def heartbeat(channel, seconds):
+            beating.append(threading.current_thread())
+            original(channel, seconds)
+        def dispatch():
+            return remote.execute(self.project, settings, "fake", ["run", "--here", "--if-free", "check"],
+                                  lane="check", sent={}, decline=True, slot=1, slot_wait=0)
+        with ignored_exceptions() as ignored, patch.object(remote, "heartbeat", heartbeat), \
+                patch.object(remote, "HEARTBEAT_SECONDS", 0.05), \
+                contextlib.redirect_stdout(StringIO()), contextlib.redirect_stderr(StringIO()):
+            for _ in range(3):
+                with self.assertRaises(remote.Busy): dispatch()
+                # The decline started nothing there.
+                self.assertFalse(self.checkout(1).exists())
+            for thread in beating: thread.join(stretched(10))
+            gc.collect()
+            self.assertEqual(ignored, [])
+            self.assertTrue(beating and not any(thread.is_alive() for thread in beating))
+            # A live eligible offer still runs, with its heartbeat, as before.
+            release()
+            self.assertEqual(dispatch(), 0)
+            for thread in beating: thread.join(stretched(10))
+            gc.collect()
+        self.assertEqual(ignored, [])
+        self.assertTrue((self.checkout(1) / ".build/provisioned").exists())
 
     def test_a_dispatch_keeps_its_age_for_admission_without_backdating_child_requests(self):
         command = ("import os,sys,time; sys.path.insert(0, os.environ['VOCARO_ENGINEERING_ROOT']+'/src/python'); "
