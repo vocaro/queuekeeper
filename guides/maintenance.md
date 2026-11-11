@@ -650,9 +650,10 @@ toolkit's `gate` does, the worker reruns the failed tests alone on the same batc
 2026-11-07, [#231](https://github.com/vocaro/vocaro-engineering/issues/231)). It reads their IDs from the
 lane's log: unittest's `FAIL:` and `ERROR:` lines under each failed process. It first waits for this
 Mac, where the reruns run, to settle, as for a retry with no verdict below. Then it runs each test by
-itself, with the lane's `-s`, `-p`, `-t`, `--split` and `--timeout`, one process at a time, up to `RERUNS`
-times (3). Any rerun that fails, or ends unmeasured, makes the failure real, and the batch bisects as
-before unless one entry explains it (below). When every rerun of every failed test passes, each test is a flake, and option (b) applies: the
+itself, with the lane's `-s`, `-p`, `-t`, `--split`, `--batch-size` and `--timeout`, one process at a
+time, up to `RERUNS` times (3). Any rerun that fails, or ends unmeasured, makes the failure real, and
+the batch bisects as before unless one entry explains it (below). When every rerun of every failed
+test passes, each test is a flake, and option (b) applies: the
 batch lands only if none of its commits changes the test's module or a file of the project that module
 imports. Only its own import statements count, at any depth of the module, looked up under the suite's
 top-level directory, `src/python`, `src` and the checkout, with each package's `__init__.py`. The files
@@ -662,6 +663,12 @@ logs, which `eng queue status` shows); in the worker's log; in a `Flaky-test:` t
 one per test, which survives a carry-over; and on the tracker. For the tracker the worker searches the
 project's open issues for the test's name just before it writes, then comments on the first match, or
 files a hardening issue. A tracker gh cannot reach is noted in the entry and stops nothing.
+
+When adding an option to an `eng unittest` gate, check the actual lane command with the runner, the
+[test coverage checker](app-testing.md#every-test-has-a-lane) and the merge queue's single-test
+rerun. The first toolkit gate with `--batch-size` ran the suite and failed its coverage check because
+the checker treated the option as unknown. A focused check of the configured command catches that
+failure before the full gate. [Batching gate results](https://github.com/vocaro/vocaro-engineering/issues/145#issuecomment-6774878492).
 
 **A real failure that one entry explains sends that entry back without a bisect.** When a rerun
 confirms the failure of a batch of several entries, the worker reruns the other failed tests too, and
