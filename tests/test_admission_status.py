@@ -278,6 +278,56 @@ class WaiterTests(Namespace):
         self.assertEqual(said.getvalue().count("was not recorded for `eng admissions now`"), 1)
 
 
+class OriginTests(Namespace):
+    """Where each holder's and waiter's work comes from: repository, branch, worktree, session and Mac (#342)."""
+    hold_slots, records, waiting = WaiterTests.hold_slots, WaiterTests.records, WaiterTests.waiting
+    SENT = {"repository": "BreezEPUB", "branch": "codex/issue-6", "worktree": "/Users/x/.codex/worktrees/ab/BreezEPUB",
+            "session": "local_1234", "mac": "Trevors-MacBook-Pro-715"}
+
+    def test_a_holder_and_a_waiter_say_where_their_work_comes_from(self):
+        with patch.dict(os.environ, {"CLAUDE_CODE_HOST_SESSION_ID": "local_here"}):
+            mine = resources.work_origin()
+            held = self.hold_slots()
+            with contextlib.redirect_stderr(StringIO()):
+                thread, outcome = self.waiting(resources.Admission("python3 scripts/x.py", timeout=stretched(30)))
+                (waiter,) = self.read()["waiters"]
+                for fd in held: os.close(fd)
+                thread.join(stretched(30))
+            self.assertTrue(outcome.get("admitted"), outcome)
+        top = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True).stdout.strip()
+        self.assertEqual((mine["worktree"], mine["session"], mine["mac"]), (top, "local_here", os.uname().nodename.split(".")[0]))
+        self.assertTrue(mine["repository"])
+        self.assertEqual(waiter["origin"], mine)
+        with resources.Admission("python3 scripts/x.py", timeout=0) as admission:
+            (holder,) = self.read()["holders"]
+            self.assertEqual(holder["origin"], admission.origin)
+            self.assertEqual(json.loads(self.guard.read_text())["owners"][admission.identity]["origin"], admission.origin)
+
+    def test_work_sent_from_another_mac_names_the_senders_origin_and_a_bad_one_reads_past(self):
+        with patch.dict(os.environ, {resources.ORIGIN: json.dumps({**self.SENT, "extra": 1, "branch": 7})}):
+            self.assertEqual(resources.work_origin(), {k: v for k, v in self.SENT.items() if k != "branch"})
+        with patch.dict(os.environ, {resources.ORIGIN: "not json"}):
+            self.assertIn("mac", resources.work_origin())
+        self.assertIsNone(offload_host.origin_of("x"))
+        self.assertEqual(offload_host.origin_of({"repository": "r" * 400})["repository"], "r" * 300)
+        # An entry with an origin is still in admission's format, and one with a malformed origin is refused, never read.
+        self.assertIsNotNone(resources.entries({"vocaroEngineering": 1, "owners": {"a": self.owner("x", origin=self.SENT)}}))
+        self.assertIsNone(resources.entries({"vocaroEngineering": 1, "owners": {"a": self.owner("x", origin="here")}}))
+
+    def test_the_report_names_the_origin_and_no_longer_lists_unattributed_slots(self):
+        reading = CommandTests.reading(None, holders=[{"identity": "a", "label": "python3 scripts/x.py", "pid": 1,
+                                                       "exclusive": False, "wholeHost": False, "model": False,
+                                                       "guaranteed": [0], "extra": [], "slots": [0], "heldSeconds": 5,
+                                                       "process": "running", "origin": self.SENT}],
+                                       unattributed=[1, 2], slots=[{"slot": 0, "guaranteed": True, "holder": "a"}])
+        lines = []
+        with patch.dict(os.environ, {"HEAVY_SLOT_DIR": "", "SW_GATE_LOCK_FILE": ""}):
+            resources.now_main([], out=lines.append, read=lambda here_only: {"hosts": [{**reading, "name": "this Mac"}]})
+        self.assertIn("      from repository BreezEPUB, branch codex/issue-6, worktree /Users/x/.codex/worktrees/ab/BreezEPUB, "
+                      "session local_1234, mac Trevors-MacBook-Pro-715", lines)
+        self.assertFalse([line for line in lines if "other slots" in line], lines)
+
+
 class OrderingControl(Namespace):
     """An ordinary waiter's record changes neither who is admitted nor in what order, whether written, not written
     or failing (#342; the order itself is #21, #196, #360)."""

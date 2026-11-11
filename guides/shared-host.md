@@ -499,8 +499,9 @@ python3 scripts/eng admissions <(ssh build-host \
 ### Who holds and who waits
 
 `python3 scripts/eng admissions now` shows admission as it stands on this Mac and the second Mac:
-each holder's slots, kind and hold time, and each waiter's wait and the reason it prints itself.
-It changes nothing. A Mac it cannot read in 10 seconds is unknown, never idle, and this Mac's reading
+each holder's slots, kind and hold time, and each waiter's wait and the reason it prints itself,
+with where each one's work comes from: its repository, branch, worktree, agent session and Mac
+(`resources.work_origin`), the sender's for work the second Mac runs for this one. It changes nothing. A Mac it cannot read in 10 seconds is unknown, never idle, and this Mac's reading
 stands beside it. `--json` gives the same; `--here` reads only this Mac, and is required under an
 isolated `HEAVY_SLOT_DIR` or `SW_GATE_LOCK_FILE`. What it reads, and what it marks partial, is in
 `offload_host.admissions_now`; each waiter's record is `resources.Admission._observe`

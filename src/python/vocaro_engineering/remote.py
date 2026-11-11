@@ -1986,6 +1986,8 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
             "changes": f".build/engineering/{name}/{CHANGES}" if changes else None,
             "deviceRecord": local["name"], "lease": lease.plan(local["name"]) if lease is not None else None,
             "dispatcher": local["name"], "subdirectory": subdirectory, "silence": HEARTBEAT_SILENCE,
+            # Its admissions there name the repository, branch, worktree and session here (resources.work_origin).
+            **({"origin": sender} if (sender := resources.work_origin()) else {}),
             **({"checkoutSlot": slot, "checkoutWait": slot_wait} if slot is not None else {})}
     # A run that uses this Mac's device reservations ends with its connection (Lease). Any other outlives it, within
     # its own bound, for a later connection to collect (Frames, offload_host.Journal; vocaro-engineering#321).

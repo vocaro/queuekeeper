@@ -159,7 +159,49 @@ def guard_path(environment):
 # four; an entry may lack the others, which later toolkits added or which mark it. A field named in neither,
 # such as a newer toolkit may add, is read past.
 FIELDS, LATER = {"pid": int, "start": str, "label": str, "exclusive": bool}, {"model": bool, "admitted": str, "uncertain": bool,
-                                                                                "wholeHost": bool}
+                                                                                "wholeHost": bool, "origin": dict}
+# Where work that asks for admission comes from, as JSON: the second Mac's runs of a dispatch read it from the Mac that
+# sent them (remote.dispatch), since their own checkout is a copy that names no session (work_origin).
+ORIGIN = "VOCARO_ADMISSION_ORIGIN"
+# The fields of an origin, each a string, and the longest each keeps.
+ORIGIN_FIELDS, ORIGIN_LIMIT = ("repository", "branch", "worktree", "session", "mac"), 300
+
+
+def clean_origin(found):
+    """The origin fields of found that are nonempty strings, each cut to ORIGIN_LIMIT, or None when it has none."""
+    if not isinstance(found, dict): return None
+    kept = {field: found[field][:ORIGIN_LIMIT] for field in ORIGIN_FIELDS if isinstance(found.get(field), str) and found[field]}
+    return kept or None
+
+
+def work_origin(directory=None):
+    """Where the work asking for admission comes from, for `eng admissions now` to name beside its label, which for a
+    plain command is only the command (vocaro-engineering#342): the repository (its main checkout's directory name),
+    the branch, the worktree's path, the agent session that ran eng, and the Mac it ran on. Work the second Mac runs for
+    another Mac takes the sender's (ORIGIN). Each field it cannot read is left out; it never raises."""
+    try:
+        sent = clean_origin(json.loads(os.environ[ORIGIN])) if os.environ.get(ORIGIN) else None
+    except ValueError: sent = None
+    if sent: return sent
+    found = {"session": os.environ.get("CLAUDE_CODE_HOST_SESSION_ID") or os.environ.get("CLAUDE_CODE_SESSION_ID"),
+             "mac": os.uname().nodename.split(".")[0]}
+    try:
+        read = subprocess.run(["git", "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir",
+                               "--abbrev-ref", "HEAD"], cwd=directory, capture_output=True, text=True, timeout=5)
+        top, common, branch = read.stdout.splitlines()[:3] if read.returncode == 0 else (None, None, None)
+    except (OSError, ValueError, subprocess.SubprocessError): top = common = branch = None
+    if common:
+        common = Path(common)
+        found["repository"] = (common.parent if common.name == ".git" else common).name
+    found.update(worktree=top, branch=None if branch == "HEAD" else branch)
+    return clean_origin(found)
+
+
+def whence(origin):
+    """An origin as a report line's words, or None."""
+    origin = clean_origin(origin)
+    if not origin: return None
+    return ", ".join(f"{field} {origin[field]}" for field in ORIGIN_FIELDS if field in origin)
 
 
 def entries(state):
@@ -740,6 +782,8 @@ class Admission:
         # them. Exclusive work holds every slot already (vocaro-engineering#168).
         self.whole_host = bool(whole_host) and not exclusive
         self.kind = "exclusive" if exclusive else "model" if model else "heavy"
+        # Where the work comes from, which its guard entry and wait record carry for `eng admissions now`.
+        self.origin = work_origin()
         # When the request began to wait, and when it was admitted, by the monotonic clock.
         self.started, self.admitted = time.monotonic(), None
         self.held_seconds = None
@@ -822,7 +866,7 @@ class Admission:
                       "queueKind": "exclusive" if self.exclusive else "wholeHost" if self.whole_host else "ordinary",
                       "model": self.model, "queuedAt": self.ordered, "startedAt": time.time() - waited,
                       "sampledAt": time.time(), "waited": round(waited, 3), "refusal": self.refusal,
-                      "reason": self.waiting}
+                      "reason": self.waiting, **({"origin": self.origin} if self.origin else {})}
             with tempfile.NamedTemporaryFile("w", dir=folder, prefix=f".{self.identity}.", delete=False) as stream:
                 staged = Path(stream.name)
                 json.dump(record, stream)
@@ -1227,7 +1271,8 @@ class Admission:
                 state["owners"][self.identity] = {"pid": os.getpid(), "start": born, "label": self.label,
                                                    "exclusive": self.exclusive, "model": self.model,
                                                    "admitted": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                                                   **({"wholeHost": True} if self.whole_host else {})}
+                                                   **({"wholeHost": True} if self.whole_host else {}),
+                                                   **({"origin": self.origin} if self.origin else {})}
                 publish_guard(self.guard, state)
             except BaseException:
                 # An interrupt can follow the guard's atomic rename. Keep the opening record if the guard
@@ -1909,9 +1954,7 @@ def now_lines(reading, at=None):
                           else "; stranded: uncertain, counted until recovered" if holder.get("stranded")
                           else "; its process could not be checked" if holder["process"] == "unknown" else "")
                 lines.append(f"    {holder['label']}: {kind}, {where}, PID {holder['pid']}, {held}{status}")
-        if host.get("unattributed"):
-            lines.append("  other slots: " + ", ".join(f"slot {slot}" for slot in host["unattributed"])
-                         + " (free, or held by work outside admission's guard: their locks are not probed)")
+                if whence(holder.get("origin")): lines.append(f"      from {whence(holder['origin'])}")
         waiters = host.get("waiters")
         if waiters is None: lines.append("  waiting: unknown")
         elif not waiters: lines.append("  waiting: none")
@@ -1936,6 +1979,7 @@ def now_lines(reading, at=None):
                     if waiter.get("stale"): why += f" (as of {duration(waiter['sampledSeconds'])} ago: stale)"
                 status = "; its process could not be checked" if waiter.get("process") == "unknown" else ""
                 lines.append(f"    {waiter['label']}: {kind}, PID {waiter['pid']}, {waited}: {why}{status}")
+                if whence(waiter.get("origin")): lines.append(f"      from {whence(waiter['origin'])}")
     return lines
 
 

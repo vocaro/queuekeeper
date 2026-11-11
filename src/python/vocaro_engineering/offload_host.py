@@ -1740,6 +1740,7 @@ def admissions_now(at=None):
                             "pid": owner["pid"], "start": owner["start"], "admittedAt": since,
                             "heldSeconds": None if since is None else round(max(0.0, at - since), 1),
                             "exclusive": exclusive, "wholeHost": owner.get("wholeHost") is True,
+                            "origin": origin_of(owner.get("origin")),
                             "model": owner.get("model") is True or exclusive,
                             # Slots its files name; None for an entry that held a slot no file still names, such as one
                             # an older toolkit wrote over, which admission counts but no reading can place.
@@ -1801,7 +1802,7 @@ def waiter_reading(waiter, record, kind, position, process, at, hold):
             "model": record.get("model") is True, "label": str(waiter.get("label") or record.get("label") or "an unnamed request")[:160],
             "pid": waiter.get("pid") if type(waiter.get("pid")) is int else record.get("pid"), "process": process,
             "position": position, "queued": bool(waiter), "waitedSeconds": None if total is None else round(total, 1),
-            "refusal": record.get("refusal"), "reason": record.get("reason"),
+            "refusal": record.get("refusal"), "reason": record.get("reason"), "origin": origin_of(record.get("origin")),
             "sampledSeconds": None if sampled is None else round(max(0.0, at - sampled), 1),
             "stale": sampled is not None and at - sampled > NOW_STALE,
             # A queued request with no record that asked lately is asking here, under a toolkit that writes no record or
@@ -1809,6 +1810,15 @@ def waiter_reading(waiter, record, kind, position, process, at, hold):
             "away": not record and (seen is None or at - seen > NOW_STALE),
             "lastAskedSeconds": None if seen is None else round(max(0.0, at - seen), 1),
             "holdsBack": None if record or seen is None else at - seen < hold}
+
+
+def origin_of(found):
+    """Where an admission's work comes from, as its guard entry or wait record says (resources.work_origin): its string
+    fields, each cut to 300 characters, or None."""
+    if not isinstance(found, dict): return None
+    kept = {field: found[field][:300] for field in ("repository", "branch", "worktree", "session", "mac")
+            if isinstance(found.get(field), str) and found[field]}
+    return kept or None
 
 
 def bounded(reading):
@@ -3483,6 +3493,8 @@ def main(plan):
         if plan.get("developerDir"): environment["DEVELOPER_DIR"] = plan["developerDir"]
         # A receipt the work writes here says that it ran on the second Mac, sent from this Mac (remote.DISPATCHER).
         if plan.get("dispatcher"): environment["VOCARO_DISPATCHED_FROM"] = plan["dispatcher"]
+        # Where the work comes from on the sending Mac, which this Mac's admissions name (resources.ORIGIN).
+        if isinstance(plan.get("origin"), dict): environment["VOCARO_ADMISSION_ORIGIN"] = json.dumps(plan["origin"])
         if (root / "git-credentials").is_file(): credentials(environment, root / "git-credentials")
         eng = [sys.executable, str(kit / "bin/eng"), "--project", str(checkout)]
         # The provision lane is admitted here as every lane is, and runs here, never offered on. Offered work that
