@@ -13,11 +13,14 @@ options. guides/parallel-tests.md says when this is safe and how to bound it.
 """
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 import json
+import os
 from pathlib import Path
 import re
 import statistics
 import subprocess
+import tempfile
 import time
 
 from . import evidence, parallel, processes
@@ -33,6 +36,15 @@ TIMINGS = ".build/engineering/xctest/timings-{configuration}.json"
 CASE = re.compile(r"^Test Case '-\[(\S+) (\S+)\]' (?:passed|failed|skipped) \((\d+(?:\.\d+)?) seconds\)", re.M)
 # Swift Testing's line for a suite that ended, named by its type or, in quotes, its display name.
 SUITE = re.compile(r"Suite (\S+|\"[^\"]*\") (?:passed|failed) after (\d+(?:\.\d+)?) seconds", re.M)
+# Each Swift Testing test's wall-clock start and finish, from its process's event stream, which records an
+# event as it happens whatever order the processes' output is printed in (vocaro-engineering#367). In the
+# lane's results/ when eng run gives it one, so it comes back and is kept by commit with them (#218);
+# otherwise in the first package's .build/engineering/xctest/.
+TEST_TIMES = "xctest/swift-testing-times.json"
+LOCAL_TEST_TIMES = ".build/engineering/xctest/swift-testing-times-{configuration}.json"
+EVENT_STREAM_VERSION = "0"
+# A test's id in the event stream goes on past the one `swift test list` prints with its source location.
+SOURCE_LOCATION = re.compile(r"/[^/]+\.swift:\d+:\d+$")
 
 
 def swift(directory, options, *arguments):
@@ -87,6 +99,88 @@ def suite_seconds(text, units):
     return seconds
 
 
+def wall_clock(instant):
+    """An event's instant as local ISO 8601 time with its offset, to the millisecond, or None."""
+    since1970 = (instant or {}).get("since1970")
+    if not isinstance(since1970, (int, float)): return None
+    return datetime.fromtimestamp(since1970).astimezone().isoformat(timespec="milliseconds")
+
+
+def test_times(events, shard, timed_out=False):
+    """[{test, shard, verdict, seconds, started, finished}] for each Swift Testing test function in one
+    process's event stream (JSON lines, `swift test --event-stream-output-path`, version 0): its id as
+    `swift test list` prints it, the process's name, passed, failed, skipped, canceled or unmeasured, and
+    its seconds and wall-clock start and finish. A test that started and never finished, as in a process
+    stopped at its timeout, keeps its start, is unmeasured and has no finish or seconds. A line cut short by
+    the stop is passed over."""
+    functions, started, ended, failed, skipped, canceled, order = set(), {}, {}, set(), {}, {}, []
+    for line in events.splitlines():
+        try: record = json.loads(line)
+        except ValueError: continue
+        payload = record.get("payload") if isinstance(record, dict) else None
+        if not isinstance(payload, dict): continue
+        if record.get("kind") == "test":
+            if payload.get("kind") == "function" and payload.get("id"): functions.add(payload["id"])
+            continue
+        if record.get("kind") != "event": continue
+        kind, test, instant = payload.get("kind"), payload.get("testID"), payload.get("instant")
+        if not test: continue
+        if test not in started and test not in skipped: order.append(test)
+        if kind == "testStarted": started[test] = instant
+        elif kind == "testEnded": ended[test] = instant
+        elif kind == "testSkipped": skipped[test] = instant
+        elif kind == "testCancelled": canceled[test] = instant
+        elif kind == "issueRecorded":
+            issue = payload.get("issue") or {}
+            # A known issue (withKnownIssue) or a warning does not fail its test.
+            if not issue.get("isKnown") and issue.get("severity", "error") == "error": failed.add(test)
+    # A suite's events carry its id too; without the stream's test records, a function's id ends in its
+    # parentheses before its source location.
+    function = (lambda test: test in functions) if functions \
+        else (lambda test: SOURCE_LOCATION.sub("", test).endswith(")"))
+    found = []
+    for test in dict.fromkeys(order):
+        if not function(test): continue
+        began, finished = started.get(test), ended.get(test, canceled.get(test))
+        if test in skipped and test not in started: verdict = "skipped"
+        elif finished is None: verdict = "unmeasured"
+        elif test in failed: verdict = "failed"
+        elif test in canceled: verdict = "canceled"
+        else: verdict = "passed"
+        seconds = None
+        if began and finished:
+            for clock in ("absolute", "since1970"):
+                if isinstance(began.get(clock), (int, float)) and isinstance(finished.get(clock), (int, float)):
+                    seconds = round(finished[clock] - began[clock], 6)
+                    break
+        found.append({"test": SOURCE_LOCATION.sub("", test), "shard": shard, "verdict": verdict, "seconds": seconds,
+                      "started": wall_clock(began), "finished": wall_clock(finished),
+                      **({"reason": "timed out" if timed_out else "its process ended first"}
+                         if verdict == "unmeasured" else {})})
+    return found
+
+
+def keep_test_times(found, directory, configuration):
+    """Write found, every process's test_times, where TEST_TIMES says, and return its path or None. A second
+    eng xctest in one lane writes beside the first, never over it."""
+    results = os.environ.get(parallel.RESULTS_VARIABLE)
+    path = Path(results) / TEST_TIMES if results else directory / LOCAL_TEST_TIMES.format(configuration=configuration)
+    candidate, number = path, 1
+    while results and candidate.exists():
+        number += 1
+        candidate = path.with_name(f"{path.stem}-{number}{path.suffix}")
+    ordered = sorted(found, key=lambda entry: (entry["started"] is None,
+                                               datetime.fromisoformat(entry["started"]).timestamp() if entry["started"] else 0,
+                                               entry["test"]))
+    try:
+        candidate.parent.mkdir(parents=True, exist_ok=True)
+        candidate.write_text(json.dumps({"tests": ordered}, indent=1) + "\n")
+    except OSError as error:
+        print(f"eng xctest: Swift Testing's test times were not kept: {error}", flush=True)
+        return None
+    return candidate
+
+
 def unit(test):
     """What a test is packed with: its XCTest class or its top-level Swift Testing suite, Module.Name, or a
     Swift Testing function outside a suite by itself."""
@@ -123,14 +217,22 @@ def shards(selected, seconds, count):
     return sorted(((total, names) for total, names in bins if names), key=lambda entry: -entry[0]), classes
 
 
-def run(name, command, directory, expected, timeout=parallel.PROCESS_LIMIT):
-    """Run one process's tests; one still running after timeout seconds is stopped, and its status is None."""
+def run(name, command, directory, expected, timeout=parallel.PROCESS_LIMIT, events=None):
+    """Run one process's tests; one still running after timeout seconds is stopped, and its status is None.
+    With events, a path, a swift test process writes its event stream there, and its tests' times are read
+    from it however the process ended."""
+    if events: command = [*command, "--event-stream-output-path", str(events), "--event-stream-version",
+                          EVENT_STREAM_VERSION]
     began = time.monotonic()
     status, output = processes.bounded(command, cwd=directory, timeout=timeout)
     found = evidence.counted(output)
+    times = []
+    if events:
+        try: times = test_times(Path(events).read_text(errors="replace"), name, timed_out=status is None)
+        except OSError: pass
     return {"name": name, "status": status, "output": output, "expected": expected, "directory": directory,
             "ran": found[0] if found else 0, "skipped": found[1] if found else 0,
-            "seconds": time.monotonic() - began}
+            "seconds": time.monotonic() - began, "times": times}
 
 
 def planned(directory, options, filters, jobs, timings, label, split=False):
@@ -235,9 +337,12 @@ def main(argv):
     # Each package's Swift Testing run first, then every package's shards together, longest first.
     work.sort(key=lambda entry: (entry[3] is not None, -(entry[3] or 0)))
     began = time.monotonic()
-    with ThreadPoolExecutor(max_workers=args.jobs) as pool:
-        futures = [pool.submit(run, name, command, directory, expected, args.timeout)
-                   for name, command, expected, _, directory, _ in work]
+    streams = tempfile.TemporaryDirectory(prefix="eng-xctest-events-")
+    with streams, ThreadPoolExecutor(max_workers=args.jobs) as pool:
+        # Each swift test process's event stream, for its tests' wall-clock start and finish.
+        futures = [pool.submit(run, name, command, directory, expected, args.timeout,
+                               Path(streams.name) / f"{number}.jsonl" if command[0] == "swift" else None)
+                   for number, (name, command, expected, _, directory, _) in enumerate(work)]
         results = []
         for future in futures:
             result = future.result()
@@ -267,6 +372,10 @@ def main(argv):
             timings.write_text(json.dumps(kept, indent=1, sort_keys=True) + "\n")
         except OSError as error:
             print(f"eng xctest: the classes' times were not kept: {error}", flush=True)
+    found = [entry for result in results for entry in result["times"]]
+    if found:
+        kept = keep_test_times(found, directories[0], args.configuration)
+        if kept: print(f"eng xctest: {len(found)} Swift Testing tests' start and finish times in {kept}", flush=True)
     # A test the host decided skips with a reason that begins "Unmeasured:"; its process still passes.
     decided = evidence.unmeasured_tests("\n".join(result["output"] for result in results))
     if decided: unmeasured.append(f"{len(decided)} tests the host decided, listed below")

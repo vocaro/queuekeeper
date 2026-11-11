@@ -172,7 +172,7 @@ PREFIXES = ("un", "re", "pre", "non", "in", "im", "dis", "over", "under", "mis",
 # Whole identifier runs other projects named the British way: Unity's and Apple's APIs.
 EXEMPT_RUNS = frozenset({
     "MonoBehaviour", "MonoBehaviours", "StateMachineBehaviour", "StateMachineBehaviours",
-    "isCancelled", "userCancelled", "paymentCancelled", "operationCancelled",
+    "isCancelled", "testCancelled", "userCancelled", "paymentCancelled", "operationCancelled",
     "NSUserCancelledError", "NSURLErrorCancelled", "touchesCancelled", "documentPickerWasCancelled",
     "matchmakerViewControllerWasCancelled", "turnBasedMatchmakerViewControllerWasCancelled",
     "reindexAllSearchableItemsWithAcknowledgementHandler", "acknowledgementHandler"})
