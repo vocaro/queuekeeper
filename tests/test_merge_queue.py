@@ -3353,6 +3353,20 @@ class DocsOnly(Fixture):
         self.assertEqual(self.state(identifier)["state"], "landed")
         self.assertEqual((self.gates(), self.docs_runs()), (1, 0))
 
+    def test_a_bisects_gates_look_for_docs_entries_to_land_beside_them(self):
+        """A bisect's gates stack nothing, but docs entries that arrive during them still land beside them: the old
+        worker ran a bisect's gates with no watch at all, so a docs entry waited out every half."""
+        self.commit("bad", "bad"); self.commit("code", "code")
+        ids = self.add("bad", "code")
+        watched, real = [], mq.Worker.watched
+        def watch(worker, runner, config, lanes, base, head, applied, gate, stacks=True):
+            watched.append((len(applied), stacks))
+            return real(worker, runner, config, lanes, base, head, applied, gate, stacks=stacks)
+        with patch.object(mq.Worker, "watched", watch), patch.object(mq, "STACK_POLL", 0.05): self.work()
+        self.assertEqual([self.state(i)["state"] for i in ids], ["failed", "landed"])
+        # The bisect's round, the older half gating with the newer beside it, ran under the watch, stacking nothing.
+        self.assertIn((2, False), watched)
+
     def test_a_failing_docs_lane_sends_the_batch_back(self):
         self.docs_status.write_text("1")
         self.commit("doc/guide.md", "guide")

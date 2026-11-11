@@ -961,8 +961,9 @@ change, by `main`'s settings as above, and keeps docs-only entries out of code b
 
 - Queued beside code entries, the docs-only entries land first, in a round of their own on the
   docs lanes; the code entries gate in the next round, without them.
-- While a code batch gates, a docs-only entry that waits lands beside the gate, in a checkout of
-  its own beside the worker's (suffix `-docs`), looked for every `STACK_POLL`. Only entries whose
+- While a code batch gates, a bisect's half among them, a docs-only entry that waits lands
+  beside the gate, in a checkout of its own beside the worker's (suffix `-docs`), looked for
+  every `STACK_POLL`. Only entries whose
   every path a carry-over takes go there; when the code batch passes, its result carries over
   the documents `main` gained (*Main moving under a passed batch*), and so does a gate stacked on
   it. A docs-only entry is never stacked on a code gate.

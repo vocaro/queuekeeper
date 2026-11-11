@@ -3361,8 +3361,14 @@ class Worker:
         beside = self.beside(waiting, batch, base, config, docs, ungated)
         self.role = "older half" if beside else "batch"
         self.begun(round_name, head, base, applied, beside)
-        if beside: result, log = beside.both(self, lanes_of(config), round_name)
-        elif self.alone or docs or ungated or self.limit:
+        # A bisect's gates stack nothing, but docs entries still land beside them (docs_beside, #394).
+        if beside:
+            result, log = self.watched(self, config, lanes_of(config), base, head, [*applied, *beside.newer],
+                                       lambda: beside.both(self, lanes_of(config), round_name), stacks=False)
+        elif self.limit and not (self.alone or docs or ungated):
+            result, log = self.watched(self, config, lanes_of(config), base, head, applied,
+                                       lambda: self.gate(lanes_of(config), round_name), stacks=False)
+        elif self.alone or docs or ungated:
             result, log = self.gate(ungated["lanes"] if ungated else docs or lanes_of(config), round_name)
         else:
             lanes = lanes_of(config)
@@ -3660,15 +3666,17 @@ class Worker:
         self.after_stack(outcome, stacked.runner, config)
         return True
 
-    def watched(self, runner, config, lanes, base, head, applied, gate):
+    def watched(self, runner, config, lanes, base, head, applied, gate, stacks=True):
         """gate(), the lanes of applied at head in runner's checkout, while a thread looks every STACK_POLL for
-        entries that arrive behind them and gates them stacked on head in the other checkout, on the other Mac
+        entries that arrive behind them: docs-only entries it lands beside the gate (docs_beside), and, unless stacks
+        is false, as for a bisect's gates, the others it gates stacked on head in the other checkout, on the other Mac
         (stack), which after_stack keeps or throws away."""
         self.pending = None
         self.stack_retry_after = 0
         stop, said = threading.Event(), set()
         def stacker():
-            docs, stacks = True, True
+            nonlocal stacks
+            docs = True
             while (docs or stacks) and not stop.wait(STACK_POLL):
                 # Docs entries first, as they land on main and a stacked gate keeps its result over them (after_stack).
                 if docs:
