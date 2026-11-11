@@ -1502,7 +1502,9 @@ def perform(argv, report):
                                                      env, on_stop, kill_after)
                         if failed is not None: return failed
                         return processes.run(command, cwd=root, log_path=directory / "run.log", timeout=left,
-                                             on_stop=on_stop, env=env, kill_after=kill_after)
+                                             on_stop=on_stop, env=env, kill_after=kill_after,
+                                             **({"stall": lane["stall"], "progress_path": directory / "results/progress.json"}
+                                                if "stall" in lane else {}))
                     return record(directory, receipt, lambda: prepared(work))
             else:
                 jobs = 1 if args.serial else lane.get("jobs", len(group))
