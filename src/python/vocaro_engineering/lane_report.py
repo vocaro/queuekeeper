@@ -44,6 +44,20 @@ PYTEST_HEADING = re.compile(r"^_{3,} (?:ERROR [a-z ]*at [a-z]+ of )?(.+?) _{3,}$
 PYTEST_PLACE = re.compile(r"^(\S+\.py):(\d+): ", re.M)
 # pytest's folded skip line, which stands for the count it gives.
 FOLDED = re.compile(r"^SKIPPED \[(\d+)\]")
+# Signs that a test may have started though a log counts none: XCTest's and Swift Testing's lines for a suite, test or
+# run that started, xcodebuild's for a test session and a runner that exited early, unittest's -v line for a test,
+# pytest's session heading and collection, and a process that crashed or was signaled, which a test can be.
+STARTED = re.compile(r"^Test (?:Suite|Case) '[^'\n]+' started"
+                     r"|^\S+ (?:Test|Suite) .+ started\.?$"
+                     r"|Testing started|Test session results|unexpected exit"
+                     r"|^\w+ \([^()\n]+\) \.\.\. "
+                     r"|test session starts|^collect(?:ed|ing) \d+ items?"
+                     r"|(?i:crash|segmentation fault|abort trap|illegal instruction|bus error|trace/bpt trap|"
+                     r"fatal python error|killed: 9|\bsignal \d+|\bSIG[A-Z]{2,}\b)", re.M)
+# A line that says something failed, the last of which a run that stopped before its tests quotes.
+ERROR_LINE = re.compile(r"^.*\b(?:error|errors|fail|failed|failure|fatal)\b.*$", re.M | re.I)
+# The most of that line a summary quotes.
+QUOTED = 300
 
 
 def failed_tests(text):
@@ -99,6 +113,17 @@ def failing(text):
     for name in PYTEST_FAILED.findall(text):
         found.setdefault(name, places.get(name.split("::", 1)[-1].replace("::", ".")))
     return list(found.items())
+
+
+def before_tests(text):
+    """The last line of a failed run's log that says what failed, when the log shows that no test started: it counts
+    no test, names no failing or unmeasured test, and has no line in which a test, suite or session started or a
+    process crashed (STARTED). None when a test may have run, or when no line says what failed, as a run whose tests
+    crashed before printing counts can leave neither (vocaro-engineering#393). eng's own lines are not quoted."""
+    if evidence.counted(text) is not None or evidence.unmeasured_tests(text) or failing(text) or STARTED.search(text):
+        return None
+    errors = [line.strip() for line in ERROR_LINE.findall(text) if not line.startswith("eng:")]
+    return errors[-1][:QUOTED] if errors else None
 
 
 def records(results):
@@ -208,7 +233,13 @@ class Report:
         texts = {name: path.read_text(errors="replace") if path.is_file() else "" for name, path in logs.items()}
         kept = records(directory / "results")
         joined = "\n".join(texts.values())
-        if self.complete:
+        # eng run's status for a lane that stopped before its tests, which a command can also exit with itself.
+        quoted = before_tests(joined) if verdict == "failed" and status == evidence.BEFORE_TESTS and self.group is None \
+            and not kept else None
+        if quoted is not None:
+            lines[0] = f"eng run {self.lane}: failed before any test ran{ending}, {where}"
+            lines.append(f"  tests: none ran; the last error in its log: {quoted}")
+        elif self.complete:
             parts = {name: counts(text) for name, text in texts.items()}
             present = [part for part in parts.values() if part]
             found = combined(present, status if known else None) or recorded_counts(kept)
@@ -221,7 +252,9 @@ class Report:
         names = (recorded_failing(kept) or failing(joined)) if verdict != "passed" else []
         lines += [f"  failed: {name}" + (f" at {place}" if place else "") for name, place in names[:SHOWN]]
         if len(names) > SHOWN: lines.append(f"  ... and {len(names) - SHOWN} more")
-        if verdict == "failed" and not names:
+        if quoted is not None:
+            lines.append(f"  the log is {directory / 'run.log'}")
+        elif verdict == "failed" and not names:
             log = directory / "run.log" if self.group is None else directory / "lanes"
             lines.append(f"  no failing test is named; the log is {log}")
         if kept:

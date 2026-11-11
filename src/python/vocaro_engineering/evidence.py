@@ -111,6 +111,10 @@ def require_tests(text, minimum=1, expected=None):
 
 # The exit status of a run whose unmeasured results are all that stand between it and a pass.
 UNMEASURED = 3
+# The exit status of a failed lane whose log shows that no test started and names what failed, such as its project's
+# generation (lane_report.before_tests, vocaro-engineering#393). It is a failure, as any status but 0 and the no-verdict
+# ones is: it tells a setup or build that stopped the run apart from a test that failed, not a defect from the host.
+BEFORE_TESTS = 4
 
 # A test the host left unmeasured skips (XCTest, unittest) or cancels itself (Swift Testing) with a
 # reason that begins "Unmeasured:", and swift test and xcodebuild still exit 0. unittest prints the

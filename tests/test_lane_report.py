@@ -57,6 +57,10 @@ Test Case '-[Mod.ReaderTests testPage]' failed (0.1 seconds).
 Test Suite 'All tests' failed at 2026-11-07 10:00:00.000.
 \t Executed 5 tests, with 1 test skipped and 2 failures (2 unexpected) in 0.1 (0.2) seconds
 """
+SETUP_FAILED = """Generating BreezEPUB.xcodeproj from project.yml
+Spec validation error: Invalid local package "EngineeringTestSupport"
+Failed: project generation or canonical package-lock seeding failed
+"""
 SWIFT_TESTING_FAILED = """✘ Test page() recorded an issue at PageTests.swift:9:4: Expectation failed
 ✘ Test page() failed after 0.1 seconds with 1 issue.
 ✘ Test run with 3 tests in 1 suite failed after 0.2 seconds with 1 issue.
@@ -139,6 +143,35 @@ class Parsing(unittest.TestCase):
             log = Path(directory) / "log"
             log.write_text(summary)
             self.assertEqual((failure_records.logged_failures(log), failure_records.failing_tests(log)), ([], []))
+
+
+class BeforeTests(unittest.TestCase):
+    """A failed run whose log shows no test started, as when its project could not be generated (vocaro-engineering#393),
+    and the logs of runs whose tests may have run, crashed or not, which stay failures."""
+
+    def test_a_setup_that_failed_quotes_its_last_error_line(self):
+        self.assertEqual(lane_report.before_tests(SETUP_FAILED),
+                         "Failed: project generation or canonical package-lock seeding failed")
+
+    def test_a_log_that_shows_a_test_started_is_not_before_tests(self):
+        for started in ("Test Suite 'All tests' started at 2026-11-11 08:34:00.000\n",
+                        "Test Case '-[Mod.ReaderTests testPage]' started.\n",
+                        "◇ Test run started.\n", "◇ Suite \"Pages\" started.\n",
+                        "Testing started\n", "test_a (m.T.test_a) ... ",
+                        "============ test session starts ============\ncollected 3 items\n",
+                        "Restarting after unexpected exit, crash, or test timeout\n",
+                        "Segmentation fault: 11\n", "Fatal Python error: Aborted\n", "xctest crashed\n"):
+            self.assertIsNone(lane_report.before_tests(started + "error: it stopped\n"), started)
+
+    def test_a_log_that_counts_names_or_leaves_tests_unmeasured_is_not_before_tests(self):
+        for text in (UNITTEST_FAILED, PYTEST_FAILED, XCTEST_FAILED, SWIFT_TESTING_FAILED,
+                     "Ran 0 tests in 0.0s\n\nOK\nerror: nothing\n",
+                     "/p/T.swift:3: -[M.T test] : Test skipped - Unmeasured: busy\nerror: then\n"):
+            self.assertIsNone(lane_report.before_tests(text), text)
+
+    def test_a_log_that_says_nothing_failed_quotes_nothing(self):
+        for text in ("", "the build broke\n", "eng: the build failed: compileFirst exited 65, and no test ran\n"):
+            self.assertIsNone(lane_report.before_tests(text), text)
 
 
 class Summary(unittest.TestCase):
@@ -231,6 +264,66 @@ class Summary(unittest.TestCase):
         self.configure(lane=self.printing("the build broke", 65))
         lines = self.eng("lane")[1]
         self.assertEqual(lines[-2], f"  no failing test is named; the log is {self.lane_dir / 'run.log'}")
+
+    def test_a_lane_that_failed_before_any_test_is_told_apart_from_a_test_failure(self):
+        self.configure(lane=self.printing(SETUP_FAILED, 1))
+        status, lines = self.eng("lane")
+        self.assertEqual(status, evidence.BEFORE_TESTS)
+        self.assertNotIn(status, (1, evidence.UNMEASURED))
+        self.assertEqual(lines[-4:], ["eng run lane: failed before any test ran (exit 4), on this Mac",
+                                      "  tests: none ran; the last error in its log: "
+                                      "Failed: project generation or canonical package-lock seeding failed",
+                                      f"  the log is {self.lane_dir / 'run.log'}",
+                                      f"  receipt: {self.lane_dir / 'source.json'}"])
+        receipt = json.loads((self.lane_dir / "source.json").read_text())
+        self.assertEqual((receipt["outcome"], receipt["exitStatus"], receipt["beforeTests"]),
+                         ("failed", 1, "Failed: project generation or canonical package-lock seeding failed"))
+        # It is a failure to the queue, as it was: whether it gives no verdict is the owner's call.
+        self.assertNotIn(evidence.BEFORE_TESTS, merge_queue.NO_VERDICT)
+        summary = "\n".join(lines[-4:])
+        self.assertIsNone(evidence.counted(summary))
+        self.assertEqual(merge_queue.FAILED_TEST.findall(summary), [])
+
+    def test_a_lane_whose_tests_crashed_before_their_counts_stays_failed(self):
+        crashed = ("Test Suite 'All tests' started at 2026-11-11 08:34:00.000\n"
+                   "Test Case '-[Mod.ReaderTests testPage]' started.\nFatal error: index out of range\n")
+        for text, status in ((crashed, 1), ("test_a (m.T.test_a) ... Fatal Python error: Segmentation fault\n", 139)):
+            with self.subTest(status=status):
+                self.configure(lane=self.printing(text, status))
+                result, lines = self.eng("lane")
+                self.assertEqual(result, status)
+                self.assertEqual(lines[-4:-2], [f"eng run lane: failed (exit {status}), on this Mac",
+                                                "  tests: no test counts in its log"])
+                self.assertNotIn("beforeTests", json.loads((self.lane_dir / "source.json").read_text()))
+
+    def test_a_lane_that_exits_unmeasured_or_a_failed_build_keeps_its_status(self):
+        self.configure(lane=self.printing(SETUP_FAILED, evidence.UNMEASURED))
+        self.assertEqual(self.eng("lane")[0], evidence.UNMEASURED)
+        self.configure(lane={**self.printing("Ran 1 test in 0.1s\n\nOK"),
+                             "compileFirst": self.printing("error: cannot find 'x' in scope", 65)["command"]})
+        status, lines = self.eng("lane")
+        self.assertEqual(status, 65)
+        self.assertIn("eng run lane: failed (exit 65), on this Mac", lines)
+
+    def test_a_lane_with_a_failure_record_is_a_test_failure_whatever_its_log_says(self):
+        script = textwrap.dedent("""\
+            import json, os, pathlib
+            directory = pathlib.Path(os.environ['ENG_RESULTS_DIR']) / 'failures/one'
+            directory.mkdir(parents=True)
+            (directory / 'failures.json').write_text(json.dumps({'failingTests': ['Pages/testTurn()']}))
+            print('error: the test bundle stopped')
+            raise SystemExit(65)
+            """)
+        self.configure(lane={"command": [sys.executable, "-c", script]})
+        status, lines = self.eng("lane")
+        self.assertEqual(status, 65)
+        self.assertIn("  failed: Pages/testTurn()", lines)
+
+    def test_a_command_that_exits_4_itself_after_its_tests_is_only_failed(self):
+        self.configure(lane=self.printing(UNITTEST_FAILED, 4))
+        status, lines = self.eng("lane")
+        self.assertEqual(status, 4)
+        self.assertIn("eng run lane: failed (exit 4), on this Mac", lines)
 
     def test_a_too_short_run_says_why_in_its_summary(self):
         self.configure(lane={**self.printing("Ran 1 test in 0.1s\n\nOK"), "minimumTests": 2})

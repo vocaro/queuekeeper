@@ -1613,7 +1613,15 @@ def perform(argv, report):
                 raise
             if status == evidence.UNMEASURED and (reads_screen or SCREEN_LOCKED.search(log)):
                 unmeasured_screen(args.lane, receipt)
-            concluded(status, **({"unmeasured": unmeasured} if status == evidence.UNMEASURED else {}))
+            # A failure whose log shows no test started, such as a project that could not be generated, exits apart
+            # from a test's failure, and stays a failure (vocaro-engineering#393). A compileFirst build that failed
+            # is already told apart, a status that gives no verdict keeps its meaning, and a failure record in its
+            # results is a test's.
+            before = lane_report.before_tests(log) if status > 0 and status not in merge_queue.NO_VERDICT \
+                and not compile_failed(receipt) and not lane_report.records(directory / "results") else None
+            if before is not None: status = evidence.BEFORE_TESTS
+            concluded(status, **({"unmeasured": unmeasured} if status == evidence.UNMEASURED else {}),
+                      **({"beforeTests": before} if before is not None else {}))
             if status == 0 and whole and keys and admission is not None and device_pass.passed(directory / "results", keys):
                 admission.device_lane_passed(keys)
             return status
