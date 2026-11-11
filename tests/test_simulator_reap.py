@@ -986,13 +986,18 @@ class ReapTests(unittest.TestCase):
 
     def test_a_census_request_reaps_first_and_a_failure_leaves_the_census(self):
         with patch.object(offload_host, "reap", return_value={"problem": "broken"}) as reap, \
+                patch.object(offload_host, "stop_leftovers", return_value={"stopped": []}) as stopping, \
                 patch.object(offload_host, "leftovers", return_value={"leftovers": []}):
             found = offload_host.answer({"leftovers": remote.ROOT, "reap": {"pools": ["Pagepour"]}})
         reap.assert_called_once_with(remote.ROOT, pools=["Pagepour"])
-        self.assertEqual(found, {"leftovers": [], "reap": {"problem": "broken"}})
-        with patch.object(offload_host, "reap") as reap, patch.object(offload_host, "leftovers", return_value={"leftovers": []}):
+        # The cleanup also stops what it proves an ended run left, before the census (vocaro-engineering#353).
+        stopping.assert_called_once_with(remote.ROOT, dry_run=False)
+        self.assertEqual(found, {"leftovers": [], "reap": {"problem": "broken", "processes": {"stopped": []}}})
+        with patch.object(offload_host, "reap") as reap, patch.object(offload_host, "stop_leftovers") as stopping, \
+                patch.object(offload_host, "leftovers", return_value={"leftovers": []}):
             self.assertEqual(offload_host.answer({"leftovers": remote.ROOT}), {"leftovers": []})
         reap.assert_not_called()
+        stopping.assert_not_called()
 
     def test_the_second_mac_failing_or_not_answering_is_a_problem_in_the_report(self):
         cases = [(subprocess.CompletedProcess([], 255, "", "no route to host"), "exit 255: no route to host"),

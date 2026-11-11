@@ -2110,8 +2110,32 @@ call's disk I/O count left out a buffered 4 MiB that the process never flushed i
 The search itself only reports. A search that fails says why, and the work is sent all the same.
 Tell the owner what it lists, with its PIDs and their writes: whether to stop a process is the
 owner's decision, as is any other change to a shared host
-([shared resources](../agents/core.md#shared-resources)). The one exception is a stale pool
-simulator, below.
+([shared resources](../agents/core.md#shared-resources)). The exceptions are a process that an
+ended run provably launched, and a stale pool simulator, both below.
+
+### Leftovers an ended run launched
+
+The owner wants routine cleanup to stop a process the toolkit can prove an ended run left
+([vocaro-engineering#353](https://github.com/vocaro/vocaro-engineering/issues/353)). On 2026-11-10
+two EPUBLib dispatches each listed a BreezEPUB Preview app extension, parent 1, running from a
+checkout slot with no live run accounting for it, and left it running: a path, parent 1 and the
+census's silence say only that nothing claims a process now, not that a run started it, and an
+extension from a slot's build products also starts when anything on the Mac previews a file.
+
+So each dispatch records, while it holds its checkout slot, the processes launchd starts or adopts
+from the slot's bundle executables after its claim: `offload_host.Launches`, sampled every
+`LAUNCH_SAMPLE_SECONDS` and once as each command ends, in `SLOT.launched.jsonl` beside the slot's
+lock, each line naming the process by PID, start and command line and the run by its PID and
+start. The cleanup that reaps stale pool simulators, before work is sent to the second Mac and in
+`eng simulator-pool reap` and `eng doctor` there, then runs `offload_host.stop_leftovers`, whose
+`proofs` lists every condition a process must meet; it stops nothing while the census could not
+check everything. It runs the census and every check again from fresh listings immediately before
+the signal, sends SIGTERM alone, and logs each stop with why it qualified in
+`leftover-stops.jsonl` beside the admission log, before the signal and after it ends. Each leftover
+it keeps is said with the evidence that is missing (`did not stop PID …: …`), and stays for the
+owner as above. A process started by hand, by a run that was not watching, or before this
+recording existed has no record, and is only listed; so are Xcode's programs, such as
+`DTServiceHub`, and anything in the temporary directory or a simulator's device.
 
 ### Stale pool simulators
 

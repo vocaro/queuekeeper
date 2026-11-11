@@ -169,6 +169,12 @@ REAP_AFTER = 2 * 60 * 60
 REAP_SECONDS, REAP_STOP_SECONDS, REAP_CHECK_SECONDS, REAP_LOCK_SECONDS = 60, 20, 20, 5
 # The durable log of its stops, beside the admission log, whose audit reads only admissions.
 REAP_LOG = "simulator-reaps.jsonl"
+# Leftovers eng stops itself (vocaro-engineering#353, stop_leftovers): the record beside each checkout slot's lock,
+# SLOT.LAUNCHED, of what launchd started or adopted from the slot's build products while a run held it, and how many
+# of its lines a claim keeps; how often a run samples them; the log of stops, beside REAP_LOG; the seconds a stop
+# waits for a process to end after SIGTERM, and that all of one cleanup's stops may take.
+LAUNCHED, LAUNCHED_KEPT, LAUNCH_SAMPLE_SECONDS = "launched.jsonl", 1000, 5
+STOP_LOG, STOP_WAIT_SECONDS, STOP_SECONDS = "leftover-stops.jsonl", 5, 30
 # The log of how long sessions hold the members `eng simulator-pool take` hands them, beside the reap log: a
 # line for each take, extend, release and reap release of one, so that TAKE_HOLD (simulators/pool.py) is sized
 # from measurement (vocaro-engineering#179). A line that would take it past HOLD_LOG_LIMIT bytes first makes it
@@ -2077,6 +2083,240 @@ def device_users(request, listed=listing, written=disk_writes):
     return {**census, "leftovers": later, "naming": naming}
 
 
+PS = ["ps", "-axww", "-o", "pid=,ppid=,uid=,lstart=,args="]
+
+
+def collapsed(start):
+    """A start with its spacing collapsed, or None."""
+    return " ".join(start.split()) if isinstance(start, str) else None
+
+
+class Launches:
+    """The record a run keeps, while it holds a checkout slot, of each process launchd starts or adopts from the
+    slot's build products: the bundle executable (.app, .xpc or .appex) that a UI test or an extension's host
+    launches, which descends from no process of the run and so is in no admission's process record. Each line names
+    the process by PID, start and command line, the run by its PID and start, and when the run claimed the slot and
+    first saw the process. It is stop_leftovers' positive evidence that the process is that run's, which the census
+    alone cannot give: a path, parent 1 and no live owner say only that nothing claims it now. A failure to sample or
+    to write never stops the run; it leaves the process unrecorded, which only keeps it running."""
+
+    def __init__(self, base, index, listed=listing, clock=time.time):
+        self.path, self.listed, self.clock = base / f"{index}.{LAUNCHED}", listed, clock
+        self.prefixes, self.uid, self.broken = forms(base / str(index)), os.getuid(), False
+        self.run = {"pid": os.getpid(), "start": collapsed(output(["ps", "-p", str(os.getpid()), "-o", "lstart="]))}
+        self.claimed, self.seen = clock(), set()
+        try:
+            # What earlier runs recorded stays while its process runs, for the stop that proves it theirs.
+            table = process_table(listed(PS))
+            kept = [line for line in self.path.read_text(errors="replace").splitlines()[-LAUNCHED_KEPT:]
+                    if self.running(line, table)] if table else None
+            if kept is not None:
+                temporary = self.path.with_name(self.path.name + ".new")
+                temporary.write_text("".join(line + "\n" for line in kept))
+                temporary.replace(self.path)
+        except (OSError, ValueError):
+            pass
+
+    @staticmethod
+    def running(line, table):
+        try: entry = json.loads(line)
+        except ValueError: return False
+        found = table.get(entry.get("pid")) if isinstance(entry, dict) else None
+        return found is not None and found["start"] == collapsed(entry.get("start"))
+
+    def sample(self):
+        if self.broken or self.run["start"] is None: return
+        try:
+            table, now, lines = process_table(self.listed(PS)), self.clock(), []
+            for pid, process in table.items():
+                bundle = BUNDLE.match(process["args"])
+                began = started(process["start"])
+                if process["uid"] != self.uid or process["parent"] != 1 or bundle is None or began is None \
+                        or began < self.claimed - 1 or (pid, process["start"]) in self.seen \
+                        or not any(bundle.group(0).startswith(prefix) for prefix in self.prefixes): continue
+                self.seen.add((pid, process["start"]))
+                lines.append({"pid": pid, "start": process["start"], "args": process["args"], "run": self.run,
+                              "claimed": self.claimed, "seen": now})
+            if lines:
+                with open(self.path, "a") as stream: stream.write("".join(json.dumps(line) + "\n" for line in lines))
+        except Exception as error:
+            self.broken = True
+            with contextlib.suppress(Exception):
+                say(f"records no further process launched from this checkout slot, which stays running after the run "
+                    f"rather than be stopped by a later cleanup: {type(error).__name__}: {error}")
+
+
+def launch_records(path, limit=NOW_BYTES * 4):
+    """The lines of a slot's Launches record, or None when it exists and cannot be read."""
+    try: entries = [json.loads(line) for line in read_text(path, limit).splitlines() if line.strip()]
+    except FileNotFoundError: return []
+    except (OSError, ValueError): return None
+    return [entry for entry in entries if isinstance(entry, dict)]
+
+
+def read_text(path, limit):
+    """A file's text without following a link or waiting on a FIFO, or raise OSError or ValueError."""
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0))
+    with os.fdopen(fd, "rb") as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode): raise ValueError(f"{path} is no regular file")
+        data = stream.read(limit + 1)
+    if len(data) > limit: raise ValueError(f"{path} is larger than {limit} bytes")
+    return data.decode(errors="replace")
+
+
+def proofs(root, listed=listing, written=disk_writes):
+    """Which leftovers in a checkout slot stop_leftovers may stop, each with why it qualifies, and which it keeps,
+    each with the evidence that is missing, and anything that makes the whole census uncertain, which stops nothing.
+    A leftover qualifies only when every one of these holds:
+
+    - The census lists it, with nothing it could not check: no live run, admission or reservation accounts for it.
+    - Its parent is launchd (PID 1), it has no descendants, and its command line starts with a bundle executable
+      inside the checkout slot it runs from.
+    - The slot's Launches record names this very process, by PID, start and command line, and the run that saw it
+      start after that run claimed the slot; and names no other run for it.
+    - That run has ended: its PID runs no more, or runs a process with another start.
+    - No live run holds the slot now, as its lock's record says; a lock that cannot be read keeps it."""
+    census = leftovers(root, listed, written)
+    if "error" in census: return [], [], census["error"]
+    if census.get("unchecked"):
+        return [], [], "the census could not check " + "; ".join(census["unchecked"])
+    if not census.get("leftovers"): return [], [], None
+    table = process_table(listed(PS))
+    if not table: return [], [], "ps listed no processes for the check"
+    checkouts = Path.home() / root / "checkouts"
+    prefixes = forms(checkouts)
+    proven, kept = [], []
+    for row in census["leftovers"]:
+        if row["place"] != "checkout": continue
+        pid, why = row["pid"], None
+        item = {"pid": pid, "start": row["start"], "command": row["command"], "path": row["path"]}
+        process = table.get(pid)
+        where = next((row["path"][len(prefix):].split("/") for prefix in prefixes
+                      if (row["path"] + "/").startswith(prefix)), [])
+        bundle = BUNDLE.match(process["args"]) if process else None
+        slot = checkouts / where[0] / where[1] if len(where) > 1 and where[0] and where[1] else None
+        if process is None or process["start"] != row["start"] or process["parent"] != row["parent"]:
+            why = "it changed while it was checked"
+        elif row["parent"] != 1:
+            why = f"its parent is PID {row['parent']}, not launchd, so it is not a process launchd started or adopted"
+        elif row["descendants"]:
+            why = f"it has {len(row['descendants'])} descendants, which no run recorded"
+        elif slot is None or bundle is None or not any(bundle.group(0).startswith(form) for form in forms(slot)):
+            why = "its command line does not start with a bundle executable in the checkout slot it runs from"
+        if why is None:
+            item.update(executable=bundle.group(0), slot=str(slot))
+            records = launch_records(slot.parent / f"{slot.name}.{LAUNCHED}")
+            named = [entry for entry in records or [] if entry.get("pid") == pid
+                     and collapsed(entry.get("start")) == process["start"]]
+            runs = {json.dumps(entry.get("run"), sort_keys=True) for entry in named}
+            run = named[0].get("run") if named else None
+            run = run if isinstance(run, dict) else {}
+            if records is None:
+                why = f"its slot's record of launched processes, {slot.name}.{LAUNCHED}, cannot be read"
+            elif not named:
+                why = ("no run's record names this process with its start, so nothing ties it to a run that ended: "
+                       "a run that started it was not seeing it, or it was started by hand or after the run")
+            elif len(runs) > 1 or any(entry.get("args") != process["args"] for entry in named):
+                why = "its slot's record names it for more than one run, or with another command line"
+            elif not isinstance(run.get("pid"), int) or not run.get("start"):
+                why = "its slot's record does not name the run that saw it start"
+            elif table.get(run["pid"], {}).get("start") == collapsed(run["start"]):
+                why = f"the run that saw it start, PID {run['pid']}, still runs"
+            elif not all(isinstance(named[0].get(key), (int, float)) for key in ("claimed", "seen")) or \
+                    started(process["start"]) is None or \
+                    not named[0]["claimed"] - 1 <= started(process["start"]) <= named[0]["seen"] + 1:
+                why = "its start does not lie between its run's claim of the slot and when the run saw it"
+            else:
+                # A claim truncates the lock before it writes its holder, so an empty one may be a live run's.
+                try: lock = json.loads(read_text(slot.parent / f"{slot.name}.lock", 4096))
+                except FileNotFoundError: lock = None
+                except (OSError, ValueError): lock = False
+                holder = identities([lock]) if isinstance(lock, dict) else []
+                if lock is False or (lock is not None and not holder):
+                    why = "its slot's lock names no holder that can be read, so a live run may hold the slot"
+                elif holder and table.get(holder[0][0], {}).get("start") == holder[0][1]:
+                    why = f"a live run, PID {holder[0][0]}, holds its checkout slot"
+                else:
+                    item.update(run=run, reason=(
+                        f"launchd started it from checkout slot {slot}'s build products at {process['start']}, while "
+                        f"the run PID {run['pid']}, started {run['start']}, held the slot and recorded it; that run "
+                        "has ended, and no live run, admission or reservation accounts for it"))
+        (kept if why else proven).append({**item, "hold": why} if why else item)
+    return proven, kept, None
+
+
+def log_stop(event, item, **more):
+    """Append one line to the log of leftover stops; raise OSError when it cannot be written."""
+    line = {"time": datetime.now(timezone.utc).isoformat(timespec="seconds"), "event": event,
+            **{key: item.get(key) for key in ("pid", "start", "command", "executable", "slot", "run", "reason")}, **more}
+    path = admission_directory() / STOP_LOG
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NONBLOCK, 0o644)
+    try: os.write(descriptor, (json.dumps(line) + "\n").encode())
+    finally: os.close(descriptor)
+
+
+def stop_leftovers(root, dry_run=False, listed=None, kill=os.kill, clock=time.monotonic, sleep=time.sleep):
+    """Stop each leftover that proofs proves an ended run's, in the routine cleanup before a dispatch to the second
+    Mac and in `eng simulator-pool reap` there (vocaro-engineering#353). Immediately before the signal it runs the
+    census and every check again from fresh listings, and signals only a process with the same PID, start, command
+    line and run; it logs the stop before SIGTERM and how it ended after, and sends nothing more: one still running
+    STOP_WAIT_SECONDS later is reported. Whatever is uncertain it keeps running and reports with the evidence that is
+    missing. It never raises; listed, kill, clock and sleep are for tests. It answers with stopped, failed, kept,
+    eligible (for a dry run) and problem."""
+    report = {"dryRun": dry_run, "stopped": [], "failed": [], "kept": [], "eligible": [], "problem": None}
+    look = listed or (lambda command: listing(command, 20))
+    try:
+        deadline = clock() + STOP_SECONDS
+        found, report["kept"], report["problem"] = proofs(root, look)
+        if dry_run or report["problem"]:
+            report["eligible"] = found if dry_run else []
+            return report
+        identity = lambda item: (item["pid"], item["start"], item.get("executable"), json.dumps(item.get("run")))
+        for item in found:
+            if deadline - clock() < STOP_WAIT_SECONDS + 5:
+                report["kept"].append({**item, "hold": f"this cleanup's {STOP_SECONDS}s were used up"})
+                continue
+            again, kept, problem = proofs(root, look)
+            match = next((other for other in again if identity(other) == identity(item)), None)
+            if match is None:
+                why = problem or next((other["hold"] for other in kept if other["pid"] == item["pid"]),
+                                      "the census no longer lists it")
+                report["kept"].append({**item, "hold": f"it changed before the second check passed: {why}"})
+                continue
+            try: log_stop("stopping", match)
+            except OSError as error:
+                report["failed"].append({**match, "error": f"the log {STOP_LOG} could not be written, so it was not "
+                                                           f"stopped: {error}"})
+                continue
+            try: kill(match["pid"], signal.SIGTERM)
+            except ProcessLookupError:
+                report["stopped"].append({**match, "ended": "before SIGTERM"})
+                with contextlib.suppress(OSError): log_stop("gone", match)
+                continue
+            except OSError as error:
+                report["failed"].append({**match, "error": f"SIGTERM failed: {error}"})
+                with contextlib.suppress(OSError): log_stop("failed", match, error=report["failed"][-1]["error"])
+                continue
+            waited = clock() + STOP_WAIT_SECONDS
+            while True:
+                table = process_table(look(PS))
+                if table and table.get(match["pid"], {}).get("start") != match["start"]:
+                    report["stopped"].append(match)
+                    with contextlib.suppress(OSError): log_stop("stopped", match)
+                    break
+                if clock() >= waited:
+                    error = (f"it still ran {STOP_WAIT_SECONDS}s after SIGTERM, and nothing more is sent"
+                             if table else "ps could not say whether it ended after SIGTERM")
+                    report["failed"].append({**match, "error": error})
+                    with contextlib.suppress(OSError): log_stop("failed", match, error=error)
+                    break
+                sleep(0.2)
+    except Exception as error:
+        report["problem"] = f"{type(error).__name__}: {error}"
+    return report
+
+
 class ReapProblem(RuntimeError):
     """What reap could not read or do, which leaves the simulator running."""
 
@@ -2804,6 +3044,9 @@ def answer(request):
     if "screen" in request: return screen()
     if "leftovers" in request or "device" in request:
         reaped = reap(request["leftovers"], **request["reap"]) if "reap" in request else None
+        # The routine cleanup there also stops what it proves an ended run left (stop_leftovers), before the census.
+        if reaped is not None and "leftovers" in request:
+            reaped["processes"] = stop_leftovers(request["leftovers"], dry_run=bool(request["reap"].get("dry_run")))
         # A census that fails says why: it must never stop the work it is printed before.
         try: found = leftovers(request["leftovers"]) if "leftovers" in request else device_users(request["device"])
         except Exception as error: found = {"error": f"{type(error).__name__}: {error}"}
@@ -3344,9 +3587,10 @@ def send_back(directory, paths):
                 emit(b"D", base64.b64encode(chunk))
 
 
-def step(command, directory, environment, lock, log, wait=None, work=False):
+def step(command, directory, environment, lock, log, wait=None, work=False, launches=None):
     """Run one eng command in directory; a stop sends it SIGTERM, which it carries out as a supervised stop. wait is
-    the path of the lane's wait record, sent back as it changes (relay_wait)."""
+    the path of the lane's wait record, sent back as it changes (relay_wait). launches, the slot's Launches, samples
+    what launchd starts from the slot while it runs, and once more when it has ended."""
     if log is not None: log.unlink(missing_ok=True)
     child = subprocess.Popen(command, cwd=directory, env=environment, stdin=subprocess.DEVNULL,
                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True,
@@ -3356,8 +3600,11 @@ def step(command, directory, environment, lock, log, wait=None, work=False):
     if log is not None: threads.append(threading.Thread(target=follow, args=(log, done), daemon=True))
     if wait is not None: threads.append(threading.Thread(target=relay_wait, args=(wait, done, work), daemon=True))
     for thread in threads: thread.start()
-    forwarded, killed = None, False
+    forwarded, killed, sampled = None, False, time.monotonic()
     while child.poll() is None:
+        if launches is not None and time.monotonic() - sampled >= LAUNCH_SAMPLE_SECONDS:
+            launches.sample()
+            sampled = time.monotonic()
         if _stop.is_set() and forwarded is None:
             say("stop requested; sending SIGTERM to the run, which stops its command and leaves admission")
             try: os.killpg(child.pid, signal.SIGTERM)
@@ -3371,6 +3618,7 @@ def step(command, directory, environment, lock, log, wait=None, work=False):
             except ProcessLookupError: pass
             killed = True
         time.sleep(0.1)
+    if launches is not None: launches.sample()
     done.set()
     for thread in threads: thread.join(DRAIN_SECONDS)
     return child.returncode
@@ -3474,6 +3722,8 @@ def main(plan):
             result["stopped"] = True
             return result
         index, lock = claimed
+        # Before anything runs in the slot, so that what launchd starts from it is recorded as this run's.
+        launches = Launches(base, index)
         checkout = base / str(index) / project["directory"]
         began = time.monotonic()
         place(root / project["repository"], checkout, project["commit"], project["ref"], project.get("origin"))
@@ -3527,7 +3777,7 @@ def main(plan):
             if stage == "work" and "cleanupSeconds" in (plan.get("lease") or {}):
                 work_environment = {**environment, "VOCARO_DEVICE_WINDOW": environment["VOCARO_DEVICE_LEASE"]}
             result.update(stage=stage, exitStatus=step(command, directory, work_environment, lock, log, wait,
-                                                       stage == "work"))
+                                                       stage == "work", launches))
             timed(stage, began)
             if result["exitStatus"] != 0: break
         result["stopped"] = _stop.is_set()

@@ -3610,9 +3610,10 @@ def reap_there(host, request):
     empty = {"stopped": [], "failed": [], "skipped": [], "eligible": [], "kept": [], "dryRun": request.get("dry_run")}
     try:
         found = ssh(host, census_command(reap=request), stdin=subprocess.DEVNULL, capture_output=True, text=True,
-                    timeout=CENSUS_TIMEOUT + offload_host.REAP_SECONDS)
+                    timeout=CENSUS_TIMEOUT + offload_host.REAP_SECONDS + offload_host.STOP_SECONDS)
     except subprocess.TimeoutExpired:
-        return {**empty, "problem": f"it did not answer in {CENSUS_TIMEOUT + offload_host.REAP_SECONDS}s"}
+        return {**empty, "problem": f"it did not answer in "
+                                    f"{CENSUS_TIMEOUT + offload_host.REAP_SECONDS + offload_host.STOP_SECONDS}s"}
     except OSError as error:
         return {**empty, "problem": str(error)}
     report = final_object(found).get("reap")
@@ -3638,6 +3639,16 @@ def reap_lines(where, report, listing=True, held=False):
         lines += [f"on {where}, would stop {item_line(item)}: {item['reason']}" for item in report.get("eligible", [])]
         lines += [f"on {where}, keeps {item_line(item)}: {item['hold']}" for item in report.get("kept", [])]
     lines += [f"on {where}, {offload_host.released_line(item)}" for item in report.get("released", [])]
+    # The leftovers it stopped as an ended run's, and those it kept with the evidence missing (stop_leftovers).
+    found = report.get("processes") if isinstance(report.get("processes"), dict) else {}
+    named = lambda item: f"PID {item['pid']}, started {item['start']} ({item.get('executable') or item['command']})"
+    lines += [f"on {where}, stopped {named(item)}" + (", which had ended before SIGTERM" if item.get("ended") else "")
+              + f": {item['reason']} ({offload_host.STOP_LOG}; {LEFTOVER_GUIDE})" for item in found.get("stopped", [])]
+    lines += [f"on {where}, failed to stop {named(item)}, which is not tried again in this run: {item['error']}"
+              for item in found.get("failed", [])]
+    lines += [f"on {where}, did not stop {named(item)}: {item['hold']}" for item in found.get("kept", [])]
+    if found.get("problem"): lines.append(f"on {where}, stopped no leftover process: {found['problem']}")
+    if listing: lines += [f"on {where}, would stop {named(item)}: {item['reason']}" for item in found.get("eligible", [])]
     # Before a dispatch, only an entry whose simulator this reap stopped; a listing names every one.
     stopped = {item["udid"] for item in report.get("stopped", [])}
     # One not yet due is named only by a listing: most are a take's, which its session still holds.
@@ -3676,7 +3687,8 @@ def leftover_lines(host, census, missing):
     if rows:
         lines.append(f"{host} runs {len(rows)} process{'es' if len(rows) > 1 else ''} left over from runs, which no "
                      f"live run or admission there accounts for. These were not stopped; tell the owner, unless a stale pool "
-                     f"simulator among them is `eng simulator-pool reap`'s to stop ({LEFTOVER_GUIDE}):")
+                     f"simulator among them is `eng simulator-pool reap`'s to stop, or a later cleanup proves one an "
+                     f"ended run's ({LEFTOVER_GUIDE}):")
     for row in rows:
         written = row.get("written")
         rate = f", {disk.human(written / row['seconds'])}/s since it started" if written and row.get("seconds") else ""

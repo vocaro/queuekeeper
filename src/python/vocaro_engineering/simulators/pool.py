@@ -1245,7 +1245,9 @@ def reap_command(pool, project, *, dry_run, here):
     for where, report in reports:
         lines = remote.reap_lines(where, report)
         print("\n".join(lines) if lines else f"on {where}, no stale pool simulator")
-    return 1 if any(report.get("problem") or report.get("failed") for _, report in reports) else 0
+    processes = lambda report: report.get("processes") if isinstance(report.get("processes"), dict) else {}
+    return 1 if any(report.get("problem") or report.get("failed") or processes(report).get("problem")
+                    or processes(report).get("failed") for _, report in reports) else 0
 
 
 def main(argv, project=None):
