@@ -7892,6 +7892,24 @@ class GateResultsNamed(Fixture):
 
 
 class FailedGateEvidence(Fixture):
+    def setUp(self):
+        # Keep this prerequisite deterministic: a generated path can match a spelling rule (#378).
+        create, first = tempfile.mkdtemp, True
+
+        def generated_root(*args, **options):
+            nonlocal first
+            if first:
+                first = False
+                options["prefix"] = "fixture_" + "oei" + "tre_"
+            return create(*args, **options)
+
+        with patch.object(tempfile, "mkdtemp", side_effect=generated_root):
+            super().setUp()
+        config = self.config()
+        config.setdefault("spelling", {}).setdefault("exemptPhrases", {})[str(self.base)] = (
+            "the generated root is an opaque fixture identity")
+        self.publish(config, "Keep generated fixture paths out of spelling findings")
+
     FIRST = "test_sample.Sample.test_first"
     SECOND = "test_sample.Sample.test_second"
     SUMMARY = (f"eng unittest: 2 tests (0 skipped) in 2 processes, 1 at a time, 0.1s: FAILED: "
@@ -7911,6 +7929,21 @@ class FailedGateEvidence(Fixture):
         with contextlib.redirect_stdout(io.StringIO()) as waited:
             self.assertEqual(mq.wait(self.repo, entry["id"], 1), 1)
         return waited.getvalue()
+
+    def test_root_exemption_keeps_spelling_checks_for_contents_and_child_filenames(self):
+        self.assertTrue(cli.spelling.Rules().british_in(str(self.base)))
+        with contextlib.redirect_stdout(io.StringIO()) as said:
+            self.assertEqual(cli.main(["--project", str(self.repo), "spelling"]), 0)
+        for index, (name, content, word) in enumerate([
+                ("payload.txt", BRITISH, "label" + "led"),
+                ("co" + "lour.txt", "American words\n", "co" + "lour")]):
+            with self.subTest(name=name):
+                self.commit(name, f"spelling-{index}", content)
+                with contextlib.redirect_stdout(io.StringIO()) as said:
+                    status = cli.main(["--project", str(self.repo), "spelling"])
+                self.assertEqual(status, 1, said.getvalue())
+                self.assertIn("British spelling", said.getvalue())
+                self.assertIn(word, said.getvalue())
 
     def test_a_failed_remote_gate_keeps_its_assertions_and_dispatch_paths_in_the_wait(self):
         dispatch = self.base / ".dispatches/gate/retained"
