@@ -26,8 +26,10 @@ NAME = "Pagepour Duo 1"
 # The pool's warmed template of the kind, on its own runtime, as simulators/pool.py names and lists one.
 TEMPLATE = "Pagepour Duo template (iOS-27-2)"
 RUNTIME = "com.apple.CoreSimulator.SimRuntime.iOS-27-2"
-LAUNCHD = 7000
-HOLDER = 6000
+# Every fake PID lies above macOS's highest, 99998, so that none is this test's own: the reap leaves out its own
+# process and its ancestors, and the gate failed when the test ran as PID 7000 (vocaro-engineering#352).
+LAUNCHD = 107000
+HOLDER = 106000
 
 
 def ago(seconds):
@@ -83,6 +85,8 @@ class ReapTests(unittest.TestCase):
         self.process(pid + 1, pid, f"{devices_directory}/{udid}/data/Containers/Bundle/Application/X/Example.app/Example", age)
 
     def process(self, pid, parent, args, age=3 * 3600, start=None):
+        # A fake that took this process's PID would hide it, and the reap would take the fake for its own.
+        if pid == os.getpid(): self.fail(f"fake PID {pid} is this test's own")
         self.table[pid] = (parent, self.uid, start or ago(age), args)
 
     def listed(self, command):
@@ -187,7 +191,7 @@ class ReapTests(unittest.TestCase):
         self.assertReleased()
         # A dispatch's reap says so too, and the next reservation of the member takes it as usual.
         said = "\n".join(remote.reap_lines("fake", report, listing=False))
-        self.assertIn(f"on fake, released {NAME} ({UDID}), held for owner session: reap on this Mac found PID 6000",
+        self.assertIn(f"on fake, released {NAME} ({UDID}), held for owner session: reap on this Mac found PID 106000",
                       said)
         self.assertNotIn("stays held", said)
         future = time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(time.time() + 3600))
@@ -219,7 +223,7 @@ class ReapTests(unittest.TestCase):
 
     def test_one_already_shut_down_is_released_without_a_stop(self):
         self.table.clear()
-        self.process(5000, 1, "/usr/bin/other")
+        self.process(105000, 1, "/usr/bin/other")
         self.states[UDID] = "Shutdown"
         self.reserve(**self.held_entry())
         report = self.reap()
@@ -241,10 +245,10 @@ class ReapTests(unittest.TestCase):
         self.assertReleased()
 
     def test_an_orphaned_active_run_is_released_as_an_orphan(self):
-        self.reserve(**self.held_entry(activeRun=True, hostProcessIdentifier=4242, hostProcessStart=ago(3600),
-                                       ownedProcesses=[{"pid": 4243, "start": ago(3600)}]))
+        self.reserve(**self.held_entry(activeRun=True, hostProcessIdentifier=104242, hostProcessStart=ago(3600),
+                                       ownedProcesses=[{"pid": 104243, "start": ago(3600)}]))
         self.reap()
-        self.assertFalse(self.assertReleased(condition="orphan", pids=(HOLDER, 4242, 4243))["activeRun"])
+        self.assertFalse(self.assertReleased(condition="orphan", pids=(HOLDER, 104242, 104243))["activeRun"])
 
     def test_a_dry_run_says_what_it_would_release_and_changes_nothing(self):
         self.states[UDID] = "Shutdown"
@@ -313,7 +317,7 @@ class ReapTests(unittest.TestCase):
             with self.subTest(name):
                 self.setUp()
                 self.table.clear()
-                self.process(5000, 1, "/usr/bin/other")
+                self.process(105000, 1, "/usr/bin/other")
                 self.states[UDID] = "Shutdown"
                 if arrange: arrange()
                 key = more.pop("key", NAME)
@@ -336,7 +340,7 @@ class ReapTests(unittest.TestCase):
 
     def test_simctl_that_cannot_list_releases_nothing(self):
         self.table.clear()
-        self.process(5000, 1, "/usr/bin/other")
+        self.process(105000, 1, "/usr/bin/other")
         self.simctl_fails = True
         self.reserve(**self.held_entry())
         before = self.record.read_bytes()
@@ -376,7 +380,7 @@ class ReapTests(unittest.TestCase):
 
     def test_a_release_that_cannot_be_logged_releases_nothing(self):
         self.table.clear()
-        self.process(5000, 1, "/usr/bin/other")
+        self.process(105000, 1, "/usr/bin/other")
         self.states[UDID] = "Shutdown"
         self.reserve(**self.held_entry())
         before = self.record.read_bytes()
@@ -387,7 +391,7 @@ class ReapTests(unittest.TestCase):
 
     def test_a_doctor_names_every_dead_entry_reap_left(self):
         self.table.clear()
-        self.process(5000, 1, "/usr/bin/other")
+        self.process(105000, 1, "/usr/bin/other")
         self.reserve(**self.held_entry())
         report = self.reap()
         self.assertEqual(remote.reap_lines("fake", report, listing=False), [])
@@ -405,7 +409,7 @@ class ReapTests(unittest.TestCase):
     def early(self, **more):
         """setUp's member shut down, with nothing else running, and its early entry reserved."""
         self.table.clear()
-        self.process(5000, 1, "/usr/bin/other")
+        self.process(105000, 1, "/usr/bin/other")
         self.states[UDID] = "Shutdown"
         self.reserve(**self.early_entry(**more))
         return self.record.read_bytes()
@@ -444,7 +448,7 @@ class ReapTests(unittest.TestCase):
 
     def test_one_whose_release_passed_says_so(self):
         self.table.clear()
-        self.process(5000, 1, "/usr/bin/other")
+        self.process(105000, 1, "/usr/bin/other")
         self.states[UDID] = "Shutdown"
         self.reserve(**self.held_entry())
         self.reap()
@@ -466,32 +470,32 @@ class ReapTests(unittest.TestCase):
 
     def test_a_live_admission_that_names_the_owner_keeps_it(self):
         before = self.early()
-        self.process(6100, 900, "python3 scripts/eng admit -- swift test")
-        self.process(6101, 6100, "swift test")
-        self.environments[6101] = f"PATH=/usr/bin CLAUDE_CODE_SESSION_ID={self.OWNER}"
+        self.process(106100, 100900, "python3 scripts/eng admit -- swift test")
+        self.process(106101, 106100, "swift test")
+        self.environments[106101] = f"PATH=/usr/bin CLAUDE_CODE_SESSION_ID={self.OWNER}"
         self.guard.write_text(json.dumps({"vocaroEngineering": 1, "owners": {"a" * 32: {
-            "pid": 6100, "start": self.table[6100][2], "label": "swift test"}}}))
-        self.assertHeldEarly(self.reap(), "live admission PID 6100 accounts for its owner: PID 6101 names", before)
+            "pid": 106100, "start": self.table[106100][2], "label": "swift test"}}}))
+        self.assertHeldEarly(self.reap(), "live admission PID 106100 accounts for its owner: PID 106101 names", before)
 
     def test_an_unended_admission_in_the_log_that_names_the_owner_keeps_it(self):
         before = self.early()
-        self.process(6100, 900, "python3 scripts/eng run gate", age=600)
-        self.environments[6100] = f"VOCARO_DEVICE_OWNER={self.OWNER}"
+        self.process(106100, 100900, "python3 scripts/eng run gate", age=600)
+        self.environments[106100] = f"VOCARO_DEVICE_OWNER={self.OWNER}"
         (self.slots / "admissions.jsonl").write_text(json.dumps({
-            "event": "admitted", "identity": "b" * 32, "pid": 6100,
+            "event": "admitted", "identity": "b" * 32, "pid": 106100,
             "time": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime())}) + "\n")
-        self.assertHeldEarly(self.reap(), "live admission PID 6100 accounts for its owner", before)
+        self.assertHeldEarly(self.reap(), "live admission PID 106100 accounts for its owner", before)
 
     def test_any_process_naming_the_owner_or_the_device_keeps_it(self):
         for name, arrange, hold in (
-                ("its environment", lambda: self.environments.update({5000: f"CODEX_THREAD_ID={self.OWNER}"}),
-                 f"PID 5000 names its owner {self.OWNER}"),
-                ("its command line", lambda: self.process(5100, 1, f"tool --owner {self.OWNER}"),
-                 f"PID 5100 names its owner"),
+                ("its environment", lambda: self.environments.update({105000: f"CODEX_THREAD_ID={self.OWNER}"}),
+                 f"PID 105000 names its owner {self.OWNER}"),
+                ("its command line", lambda: self.process(105100, 1, f"tool --owner {self.OWNER}"),
+                 f"PID 105100 names its owner"),
                 ("this reap's own", lambda: self.environments.update({os.getpid(): f"PATH=/bin X={self.OWNER}"}),
                  "names its owner"),
-                ("the device", lambda: self.process(5100, 1, f"xcrun simctl io {UDID.lower()} screenshot x.png"),
-                 f"PID 5100 names its device {UDID}")):
+                ("the device", lambda: self.process(105100, 1, f"xcrun simctl io {UDID.lower()} screenshot x.png"),
+                 f"PID 105100 names its device {UDID}")):
             with self.subTest(name):
                 self.setUp()
                 before = self.early()
@@ -567,10 +571,10 @@ class ReapTests(unittest.TestCase):
             self.record.write_text(json.dumps(entry))
             self.process(HOLDER, 1, "python3 -m vocaro_engineering.simulators.matrix", start=ago(600))
         def live_admission():
-            self.process(6100, 900, "python3 scripts/eng admit -- swift test")
-            self.environments[6100] = f"PATH=/usr/bin CLAUDE_CODE_SESSION_ID={self.OWNER}"
+            self.process(106100, 100900, "python3 scripts/eng admit -- swift test")
+            self.environments[106100] = f"PATH=/usr/bin CLAUDE_CODE_SESSION_ID={self.OWNER}"
             self.guard.write_text(json.dumps({"vocaroEngineering": 1, "owners": {"a" * 32: {
-                "pid": 6100, "start": self.table[6100][2], "label": "swift test"}}}))
+                "pid": 106100, "start": self.table[106100][2], "label": "swift test"}}}))
         cases = (
             ("a take's reservation", {offload_host.ALONE: None, "purpose": "eng simulator-pool take"}, None,
              "not due for release"),
@@ -578,7 +582,7 @@ class ReapTests(unittest.TestCase):
             # Its expected release, not yet passed, still holds it: the process that would end that runs.
             ("a live holder", {}, live_holder, "not due for release"),
             ("a live admission naming its owner", {}, live_admission,
-             "not due for release .*live admission PID 6100 accounts for its owner"))
+             "not due for release .*live admission PID 106100 accounts for its owner"))
         for name, more, arrange, hold in cases:
             with self.subTest(name):
                 self.setUp()
@@ -696,7 +700,7 @@ class ReapTests(unittest.TestCase):
     def test_a_template_whose_warm_up_still_runs_is_kept(self):
         # Pool.template reserves the template in the warming process's name, its holder, before it boots it.
         self.template()
-        self.process(HOLDER, 900, "python3 -m vocaro_engineering.simulators.pool template --device iPhone-Duo "
+        self.process(HOLDER, 100900, "python3 -m vocaro_engineering.simulators.pool template --device iPhone-Duo "
                                   "--runtime iOS-27-2")
         self.reserve(TEMPLATE, holderProcess={"pid": HOLDER, "start": self.table[HOLDER][2]}, expectedReleaseBy=self.DUE)
         self.assertKept(self.reap(), f"its reservation {TEMPLATE.replace('(', '[(]').replace(')', '[)]')} is live: "
@@ -710,7 +714,7 @@ class ReapTests(unittest.TestCase):
 
     def test_a_template_another_session_holds_by_name_or_udid_is_kept(self):
         self.template()
-        self.process(HOLDER, 900, "python3 tool")
+        self.process(HOLDER, 100900, "python3 tool")
         live = {"holderProcess": {"pid": HOLDER, "start": self.table[HOLDER][2]}}
         for key, device in ((TEMPLATE, None), ("another key", UDID)):
             with self.subTest(key=key):
@@ -780,7 +784,7 @@ class ReapTests(unittest.TestCase):
     # Condition 2: left over.
 
     def test_a_live_admission_that_holds_it_keeps_it_out_of_the_census(self):
-        self.process(HOLDER, 900, "python3 eng simulator-tests")
+        self.process(HOLDER, 100900, "python3 eng simulator-tests")
         self.guard.write_text(json.dumps({"vocaroEngineering": 1, "owners": {"a" * 32: {
             "pid": HOLDER, "start": self.table[HOLDER][2]}}}))
         self.reserve(holderProcess={"pid": HOLDER, "start": self.table[HOLDER][2]})
@@ -788,8 +792,8 @@ class ReapTests(unittest.TestCase):
         self.assertEqual((self.stops, report["kept"], report["problem"]), ([], [], None), report)
 
     def test_a_process_outside_it_that_names_its_udid_keeps_it(self):
-        self.process(6100, 900, f"xcodebuild test -destination id={UDID}")
-        self.assertKept(self.reap(), "PID 6100 names its UDID")
+        self.process(106100, 100900, f"xcodebuild test -destination id={UDID}")
+        self.assertKept(self.reap(), "PID 106100 names its UDID")
 
     def test_its_own_processes_naming_it_do_not_keep_it(self):
         # setUp's simulator has a descendant whose path names the UDID: the positive control above stops it too.
@@ -798,7 +802,7 @@ class ReapTests(unittest.TestCase):
     # Condition 3: no live reservation.
 
     def test_a_live_reservation_keeps_it(self):
-        self.process(HOLDER, 900, "python3 tool")
+        self.process(HOLDER, 100900, "python3 tool")
         self.reserve(holderProcess={"pid": HOLDER, "start": self.table[HOLDER][2]})
         self.assertKept(self.reap(), f"is live: PID {HOLDER}")
 
@@ -815,25 +819,25 @@ class ReapTests(unittest.TestCase):
         self.assertKept(self.reap(), "uncertain")
 
     def test_a_live_owned_process_keeps_it_though_the_holder_is_gone(self):
-        self.process(HOLDER, 900, "python3 tool")
+        self.process(HOLDER, 100900, "python3 tool")
         self.reserve(holderProcess={"pid": 4, "start": "x"},
                      ownedProcesses=[{"pid": HOLDER, "start": self.table[HOLDER][2]}])
         self.assertKept(self.reap(), f"PID {HOLDER} still runs")
 
     def test_a_dead_reservation_not_yet_due_for_release_keeps_it(self):
-        self.reserve(holderProcess={"pid": 4242, "start": ago(3600)}, expectedReleaseBy="2999-01-01T00:00:00Z")
+        self.reserve(holderProcess={"pid": 104242, "start": ago(3600)}, expectedReleaseBy="2999-01-01T00:00:00Z")
         self.assertKept(self.reap(), "not due for release")
 
     def test_a_dead_reservation_past_its_release_does_not_count(self):
-        self.reserve(holderProcess={"pid": 4242, "start": ago(3600)}, expectedReleaseBy="2020-01-01T00:00:00Z")
+        self.reserve(holderProcess={"pid": 104242, "start": ago(3600)}, expectedReleaseBy="2020-01-01T00:00:00Z")
         self.assertStopped(self.reap())
 
     def test_a_dead_reservation_with_an_unreadable_release_keeps_it(self):
-        self.reserve(holderProcess={"pid": 4242, "start": ago(3600)}, expectedReleaseBy="soon")
+        self.reserve(holderProcess={"pid": 104242, "start": ago(3600)}, expectedReleaseBy="soon")
         self.assertKept(self.reap(), "cannot be read")
 
     def test_a_dead_reservation_does_not_count_and_its_entry_stays(self):
-        self.reserve(holderProcess={"pid": 4242, "start": ago(3600)})
+        self.reserve(holderProcess={"pid": 104242, "start": ago(3600)})
         before = self.record.read_text()
         report = self.reap()
         self.assertStopped(report)
@@ -841,11 +845,11 @@ class ReapTests(unittest.TestCase):
         self.assertEqual(self.record.read_text(), before)
 
     def test_an_orphaned_active_run_does_not_count(self):
-        self.reserve(activeRun=True, hostProcessIdentifier=4242, hostProcessStart=ago(3600))
+        self.reserve(activeRun=True, hostProcessIdentifier=104242, hostProcessStart=ago(3600))
         self.assertStopped(self.reap())
 
     def test_a_recycled_pid_does_not_count(self):
-        self.process(HOLDER, 900, "someone else's process", age=60)
+        self.process(HOLDER, 100900, "someone else's process", age=60)
         self.reserve(holderProcess={"pid": HOLDER, "start": ago(3600)})
         self.assertStopped(self.reap())
 
@@ -871,7 +875,7 @@ class ReapTests(unittest.TestCase):
     # The second check.
 
     def taken(self):
-        self.process(HOLDER, 900, "python3 eng simulator-pool take")
+        self.process(HOLDER, 100900, "python3 eng simulator-pool take")
         self.reserve(holderProcess={"pid": HOLDER, "start": self.table[HOLDER][2]})
 
     def test_a_device_taken_between_the_two_checks_is_not_stopped(self):
@@ -965,7 +969,7 @@ class ReapTests(unittest.TestCase):
 
     def test_time_used_up_leaves_the_rest_for_later(self):
         self.names[OTHER] = "Pagepour Duo 2"
-        self.simulator(OTHER, 7100)
+        self.simulator(OTHER, 107100)
         moments = iter([0, *[offload_host.REAP_SECONDS - offload_host.REAP_STOP_SECONDS + 1] * 20])
         report = self.reap(clock=lambda: next(moments))
         self.assertEqual(self.stops, [])
@@ -1062,7 +1066,7 @@ class ReapBeforeRunTests(unittest.TestCase):
     """cli.reap_here: heavy work that runs on this Mac reaps it first, as a dispatch reaps the second Mac before it
     sends work there (vocaro-engineering#156), over a fake offload_host.reap."""
     RELEASED = {**ReapCommandTests.EMPTY, "recoverable": [], "released": [{
-        "key": NAME, "device": UDID, "owner": "session-gone", "verified": "PID 6000 gone; Shutdown", "dryRun": False}]}
+        "key": NAME, "device": UDID, "owner": "session-gone", "verified": "PID 106000 gone; Shutdown", "dryRun": False}]}
 
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
