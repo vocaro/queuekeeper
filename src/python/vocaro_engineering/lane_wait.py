@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import time
+import uuid
 
 # Set by the outermost `eng run` for itself and all it starts, and by offload_host for the run it starts.
 VARIABLE = "VOCARO_LANE_WAIT"
@@ -56,6 +57,7 @@ def begin(root, lane):
     _owned, _offer = path_of(root, lane), None
     remove(_owned)
     os.environ[VARIABLE] = str(_owned)
+    os.environ["VOCARO_LANE_PROGRESS_RUN"] = uuid.uuid4().hex
 
 
 def finish():
@@ -64,6 +66,7 @@ def finish():
     if _owned is None: return
     remove(_owned)
     os.environ.pop(VARIABLE, None)
+    os.environ.pop("VOCARO_LANE_PROGRESS_RUN", None)
     _owned = None
 
 
@@ -87,13 +90,16 @@ def write(record):
         # own .gitignore leaves .build out too (a run's identity would otherwise not be its commit's).
         ignored = path.parent / ".gitignore"
         if not ignored.exists(): ignored.write_text("*\n")
-        staged.write_text(json.dumps({"schemaVersion": SCHEMA, **record, "written": time.time()}) + "\n")
+        staged.write_text(json.dumps({"schemaVersion": SCHEMA, **record, "written": time.time(),
+                                       **({"progressRun": os.environ["VOCARO_LANE_PROGRESS_RUN"]}
+                                          if os.environ.get("VOCARO_LANE_PROGRESS_RUN") else {})}) + "\n")
         os.replace(staged, path)
     except OSError: remove(staged)
 
 
 def same(found, record):
-    return found is not None and all(found.get(key) == record[key] for key in STATE)
+    return (found is not None and all(found.get(key) == record[key] for key in STATE)
+            and found.get("progressRun") == os.environ.get("VOCARO_LANE_PROGRESS_RUN"))
 
 
 def waiting(kind, reason, mac=HERE, stranded=False):
@@ -137,6 +143,10 @@ def relayed(data, host):
     nothing to wait for, in this Mac's record of the lane, named for the Mac it is on and by this Mac's clock."""
     try: record = json.loads(data)
     except ValueError: return
+    if isinstance(record, dict) and "progress" in record:
+        from . import lane_progress
+        lane_progress.relayed(record["progress"], host)
+        if "kind" not in record: return
     if isinstance(record, dict) and record.get("kind") in WORDS:
         waiting(record["kind"], record.get("reason"), second_mac(host), bool(record.get("stranded")))
     else: running(second_mac(host), admitted=isinstance(record, dict) and record.get("admitted") is True)
