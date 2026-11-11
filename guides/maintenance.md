@@ -438,9 +438,11 @@ toolkits. Otherwise the worker leaves the checkout as it is and its log says why
 of the processes and what of each it found, such as
 `left ~/Development/vocaro-engineering as it is: it is on BRANCH, not main`; nothing of this holds
 the queue, and the next landing tries again. A checkout left only for such a run, or for a census that
-failed, the worker also tries again once nothing waits, every 30 seconds for up to an hour, ending the
-tries as soon as an entry arrives, and says when it gives up; one left for any other reason is a
-person's to settle. A worker whose code came from that checkout, the
+failed, the worker also tries again once nothing waits, every 30 seconds until it moves, so it moves as
+soon as the last such run ends (owner's decision, 2026-11-11, vocaro-engineering#384); an entry that
+arrives or a hold ends the tries, and the next landing's follow starts them again. While it tries,
+`eng queue status` shows the worker running and waiting for the shared checkout, and its log names what
+holds it when that begins or changes; one left for any other reason is a person's to settle. A worker whose code came from that checkout, the
 toolkit's own among them, is such a process until its first round after a toolkit landing, when it
 starts itself again from its copy, above. A process that loaded the toolkit from it without keeping a path there,
 as a project's launcher does, cannot be seen, and a process that starts between the check and the

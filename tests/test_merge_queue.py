@@ -5574,17 +5574,17 @@ class SharedCheckout(Fixture):
             tries.append(seconds)
             if len(tries) == 2: self.runner.kill()
         def started(): self.runner = self.python(self.repo / "scripts")
-        with patch.object(mq, "FOLLOW_LIMIT", 3600), patch.object(mq, "pause", ended):
+        with patch.object(mq, "FOLLOW_LIMIT", None), patch.object(mq, "pause", ended):
             before, after, main, said = self.land(started)
         self.assertEqual(after, main)
         self.assertEqual(tries, [mq.FOLLOW_POLL] * 2)
         self.assertIn(f"left {self.repo} as it is: {mq.IN_USE}", said)
         self.assertIn(f"fast-forwarded {self.repo} from {before[:12]} to {main[:12]}", said)
         # The negative controls: a checkout left on another branch is a person's, so nothing tries it again, and a
-        # run that outlasts the tries leaves it behind, saying so.
+        # test's bound on the tries leaves it behind, saying so.
         tries.clear()
         def elsewhere(): run(self.repo, "git", "checkout", "-q", "-B", "elsewhere", "origin/main")
-        with patch.object(mq, "FOLLOW_LIMIT", 3600), patch.object(mq, "pause", ended):
+        with patch.object(mq, "FOLLOW_LIMIT", None), patch.object(mq, "pause", ended):
             before, after, main, said = self.land(elsewhere)
         self.assertEqual((after, tries), (before, []))
         run(self.repo, "git", "checkout", "-q", "main")
@@ -5592,6 +5592,62 @@ class SharedCheckout(Fixture):
             before, after, main, said = self.land(started)
         self.assertEqual(after, before)
         self.assertIn(f"left {self.repo} behind after 0.5s of tries: {mq.IN_USE}", said)
+
+    def held_back(self, during):
+        """Land one commit while a Python runs from the checkout, as the census shows it, with no bound on the
+        tries; during(tries, holders) runs at each try's pause. Returns (before, after, origin/main, said, tries)."""
+        holders = [mq.disk.Process(pid=42, command="Python", cwd=str(self.repo / "scripts"))]
+        tries = []
+        def paused(seconds):
+            tries.append(seconds)
+            during(len(tries), holders)
+        with patch.object(mq.disk, "census", return_value=holders), patch.object(mq, "FOLLOW_LIMIT", None), \
+                patch.object(mq, "pause", paused):
+            before, after, main, said = self.land()
+        return before, after, main, said, tries
+
+    def test_a_run_that_outlasts_an_hour_still_lets_it_follow_once_it_ends(self):
+        """vocaro-engineering#384, owner's decision of 2026-11-11: the tries go on until the checkout moves, past
+        the hour they once stopped at, saying the deferral once while the same run holds it and again when another
+        does, and the round's account says what the worker waits for."""
+        hour = 3600 // mq.FOLLOW_POLL
+        waits = []
+        def during(tried, holders):
+            if tried == 1: waits.append(mq.Queue(self.repo).round_state().get("waiting"))
+            if tried == hour: holders[:] = [mq.disk.Process(pid=43, command="Python", cwd=str(self.repo / "scripts"))]
+            if tried == hour + 2: holders.clear()
+        before, after, main, said, tries = self.held_back(during)
+        self.assertEqual(after, main)
+        self.assertEqual(len(tries), hour + 2)
+        self.assertGreater(sum(tries), 3600)
+        self.assertIn(f"fast-forwarded {self.repo} from {before[:12]} to {main[:12]}", said)
+        told = f"left {self.repo} behind for now, trying again every {mq.FOLLOW_POLL}s until it moves: {mq.IN_USE}: "
+        self.assertEqual(said.count(told), 2)
+        self.assertIn(told + "PID 42 (Python)", said)
+        self.assertIn(told + "PID 43 (Python)", said)
+        self.assertEqual(waits, ["the shared checkout to follow origin/main once nothing runs from it"])
+        self.assertIsNone(mq.Queue(self.repo).round_state().get("waiting"))
+        self.assertNotIn("behind after", said)
+
+    def test_a_hold_during_the_tries_ends_them(self):
+        def during(tried, holders):
+            if tried == 2: mq.Queue(self.repo).hold("for a test")
+        before, after, main, said, tries = self.held_back(during)
+        self.assertEqual((after, len(tries)), (before, 2))
+        self.assertIn(f"stops trying to move {self.repo}: the queue is held", said)
+
+    def test_a_checkout_left_for_another_reason_during_the_tries_ends_them(self):
+        """The negative control: a run holds it back, then a session's edit makes it a person's, so the tries stop
+        rather than go on forever, and the log says why it was left."""
+        def during(tried, holders):
+            if tried == 2:
+                holders.clear()
+                (self.repo / "AGENTS.md").write_text("a session's edit\n")
+            self.assertLess(tried, 3, "a dirty checkout should not be tried again")
+        before, after, main, said, tries = self.held_back(during)
+        self.assertEqual((after, len(tries)), (before, 2))
+        self.assertIn(f"left {self.repo} as it is: it has 1 changed or untracked path(s), such as AGENTS.md", said)
+        self.assertEqual((self.repo / "AGENTS.md").read_text(), "a session's edit\n")
 
     def test_a_landing_that_arrives_during_the_tries_ends_them(self):
         # Keep the checkout in use until the test releases it, independent of the host census.
@@ -5608,13 +5664,14 @@ class SharedCheckout(Fixture):
             if len(tries) == 3:
                 holders.clear()
         with patch.object(mq.disk, "census", return_value=holders), \
-                patch.object(mq, "FOLLOW_LIMIT", 3600), patch.object(mq, "pause", arrived):
+                patch.object(mq, "FOLLOW_LIMIT", None), patch.object(mq, "pause", arrived):
             _, after, main, said = self.land()
         # The arrival ended the first tries, the second round landed it, and the tries after it caught up.
         self.assertIn("later", self.main_files())
         self.assertEqual(tries, [mq.FOLLOW_POLL] * 3)
         self.assertEqual(after, main)
         self.assertEqual(said.count(f"left {self.repo} as it is: {mq.IN_USE}"), 2)
+        self.assertIn(f"stops trying to move {self.repo}: an entry waits", said)
 
     def test_a_signed_launcher_does_not_hold_it_back(self):
         """vocaro-engineering#374, #384: a LaunchAgent's launcher names the shared checkout's src/python in its

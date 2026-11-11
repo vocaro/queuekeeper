@@ -138,9 +138,10 @@ OPERATIONAL = "operational"
 REFUSAL_POLL = 60
 POLL = 5
 # Seconds between the worker's tries to bring the shared checkout to origin/main once nothing waits, while only a
-# process running from it kept it behind, and how long it goes on: longer than a gate run from it (Worker.catch_up).
+# process running from it kept it behind (Worker.catch_up). The tries go on until it moves, with no bound
+# (owner's decision, 2026-11-11, vocaro-engineering#384): a test sets FOLLOW_LIMIT, in seconds, to end them.
 FOLLOW_POLL = 30
-FOLLOW_LIMIT = 3600
+FOLLOW_LIMIT = None
 # How Worker.stays begins the reasons catch_up tries again, and how many of the processes it names.
 IN_USE = "a process started from it may still run its toolkit"
 UNKNOWN_USE = "whether a process started from it still runs is unknown"
@@ -2151,6 +2152,7 @@ class Worker:
         self.code = running()  # the commit this worker's code came from, which toolkit compares with the copy's
         self.rounds = 0  # the rounds this worker has finished, which run reads to count its tries
         self.deferred = None  # why follow last left the shared checkout behind for a run from it, or None
+        self.left = None  # why follow last left the shared checkout as it is, for any reason, or None
         self.timed_out = None  # why the last gate's lane reached its limit, or None (gate)
         self.failed_dispatch = None  # the last failed gate log and its dispatch evidence (gate)
         self.ran_on = None  # the second Mac that ran the last lane the gate ran, or None (gate)
@@ -2405,7 +2407,7 @@ class Worker:
         is, and the log says why; nothing of this holds the queue. One left only for such a run is deferred, which
         catch_up tries again; quiet, for those tries, says only a fast-forward."""
         shared = self.queue.main_checkout
-        self.deferred = None
+        self.deferred = self.left = None
         try:
             why = self.stays(shared)
             if why is None:
@@ -2427,6 +2429,7 @@ class Worker:
                     return
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
             why = str(error)
+        self.left = why
         if why and why.startswith((IN_USE, UNKNOWN_USE)): self.deferred = why
         if why and not quiet:
             self.say(f"left {shared} as it is: {why}" + ("; tried again once nothing waits" if self.deferred else ""))
@@ -2484,20 +2487,40 @@ class Worker:
         return [line[2:] for line in listed if line.startswith("+ ")]
 
     def catch_up(self):
-        """After the worker's rounds, while nothing waits, try follow again every FOLLOW_POLL seconds for up to
-        FOLLOW_LIMIT while only a process running from the shared checkout, or a census that failed, kept it
-        behind; such a run ends by itself (vocaro-engineering#182). A checkout left for any other reason is a
-        person's to settle. The next landing tries again either way. It looks once first, since a worker that
-        moved to a newer toolkit after a landing (move_to) has not followed itself."""
+        """After the worker's rounds, while nothing waits, try follow again every FOLLOW_POLL seconds for as long as
+        only a process running from the shared checkout, or a census that failed, keeps it behind, so that it moves
+        as soon as the last such run ends (owner's decision, 2026-11-11, vocaro-engineering#384); such a run ends by
+        itself (#182). A checkout left for any other reason is a person's to settle. An entry that arrives, or a
+        hold, ends the tries at once: the next round's landing follows again and comes back here. The tries target
+        origin/main as the last round fetched it, so the worker's own code cannot change under them. It looks once
+        first, since a worker that moved to a newer toolkit after a landing (move_to) has not followed itself. The
+        log says the deferral when it begins, when what holds the checkout changes and when it ends, not each try,
+        and the round's account says what the worker waits for, which `eng queue status` shows."""
         if self.queue.held() or not self.toolkits_own(): return
+        shared = self.queue.main_checkout
         self.follow(quiet=True)
-        deadline = time.monotonic() + FOLLOW_LIMIT
-        while self.deferred and time.monotonic() < deadline:
-            pause(FOLLOW_POLL)
-            if self.queue.held() or self.queue.waiting(): return
-            self.follow(quiet=True)
-        if self.deferred:
-            self.say(f"left {self.queue.main_checkout} behind after {FOLLOW_LIMIT}s of tries: {self.deferred}")
+        deadline = None if FOLLOW_LIMIT is None else time.monotonic() + FOLLOW_LIMIT
+        told, since = None, time.time()
+        try:
+            while self.deferred and (deadline is None or time.monotonic() < deadline):
+                if self.deferred != told:
+                    self.say(f"left {shared} behind for now, trying again every {FOLLOW_POLL}s until it moves: "
+                             f"{self.deferred}")
+                    told = self.deferred
+                    self.queue.note(lambda state: state.update(
+                        waiting="the shared checkout to follow origin/main once nothing runs from it", waitingSince=since))
+                pause(FOLLOW_POLL)
+                if self.queue.held() or self.queue.waiting():
+                    if told: self.say(f"stops trying to move {shared}: "
+                                      f"{'the queue is held' if self.queue.held() else 'an entry waits'}")
+                    return
+                self.follow(quiet=True)
+            if self.deferred:
+                self.say(f"left {shared} behind after {FOLLOW_LIMIT}s of tries: {self.deferred}")
+            elif told and self.left:
+                self.say(f"left {shared} as it is: {self.left}")
+        finally:
+            if told: self.queue.note(lambda state: state.update(waiting=None, waitingSince=None))
 
     def reset(self, commit):
         """Exactly commit's tracked files. Ignored inputs a lane provisioned stay for the next round."""
