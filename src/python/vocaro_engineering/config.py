@@ -157,8 +157,10 @@ def stall(name, lane):
     """Quiet monitoring is opt-in on the admitted work, never on a polling/group wrapper."""
     if "stall" not in lane: return
     settings = lane["stall"]
-    if not isinstance(settings, dict) or set(settings) - {"seconds", "action", "reason"}:
-        raise ValueError(f"{name}.stall supports seconds, action and reason")
+    if not isinstance(settings, dict) or set(settings) - {"seconds", "action", "reason", "primaryControl"}:
+        raise ValueError(f"{name}.stall supports seconds, action, reason and primaryControl")
+    if "primaryControl" in settings and type(settings["primaryControl"]) is not bool:
+        raise ValueError(f"{name}.stall.primaryControl must be a boolean declaring the primary process only coordinates work")
     if type(settings.get("seconds")) is not int or settings["seconds"] <= 0:
         raise ValueError(f"{name}.stall.seconds must be a positive integer")
     if settings.get("action", "report") not in ("report", "stop"):
