@@ -16,6 +16,7 @@ from . import __version__, app_builds, app_registrations, budgets, checkpoint, c
 from .config import TOOLKIT_ROOT, CAPABILITIES, DEFAULT_TOOLKIT, admission as admission_of, lane_to_run, load, source_identity, \
     display_lane_warnings, lane_devices, self_lane_warnings, stays, unadmitted, unlocked_screen
 from .resources import BUSY, FREE_WAIT
+from . import project as project_support
 from .simulators import matrix, pool as simulator_pool
 
 
@@ -574,11 +575,12 @@ def admitted_here(stack, name, label, timeout, offered=None, once=False, exclusi
     as busy or not offered while it had no spare capacity and this Mac had, goes to whichever Mac admits
     it first, this Mac asked first (remote.overflow). Other work waits in this Mac's queue for timeout
     seconds, or at most FREE_WAIT with once. A whole-host lane takes every guaranteed slot,
-    and keeps one place in this Mac's queue across its waits until it no longer waits here (resources.Place). A
+    and every request keeps one place across local waits and its age across remote offers (resources.Place). A
     lane that needs an unlocked screen (screen) is admitted only while this Mac's screen reads unlocked, and waits
     for it as for a slot (screen_wait). Its admission line says placement (admission_placement)."""
     refused, said = [], []
-    place = resources.Place() if whole_host and not exclusive else None
+    place = resources.Place()
+    if offered is not None: place.started = getattr(offered, "started", place.started)
     # Its own place is no request queued ahead of it when eng reads this Mac's capacity for it (#186).
     if offered is not None: offered.place = place
 
@@ -913,7 +915,7 @@ def admit(root, args, config=None, *, device_window=None):
         reap_here(root, inherited)
         def work():
             # Finalize the alert report before record() writes the receipt, while admission still holds.
-            with contextlib.ExitStack() as alert_stack:
+            with resources.child_requests(), contextlib.ExitStack() as alert_stack:
                 alerts = guarded_alerts(alert_stack, " ".join(command), receipt, args.app or ()) \
                     if args.foreground else None
                 if isinstance(alerts, int): return alerts
@@ -952,7 +954,9 @@ def admit(root, args, config=None, *, device_window=None):
 def main(argv=None):
     report = lane_report.Report()
     try:
-        status = perform(argv, report)
+        # XcodeGen expands this selected, host-local path before generating its project (#373).
+        with patch_environment({project_support.PACKAGE_ROOT_VARIABLE: str(TOOLKIT_ROOT.resolve())}):
+            status = perform(argv, report)
     except Exception as error:
         report.finish(None, error)
         raise
@@ -1162,6 +1166,9 @@ def perform(argv, report):
         "test, as eng admit's")
     remote_admit.add_argument("--time-limit", type=float, metavar="SECONDS", help="seconds the command may run "
         f"there once admitted, as eng admit's (default {processes.DEFAULT_LIMIT})")
+    remote_admit.add_argument("--git-commit", action="append", metavar="REPOSITORY=SHA", help="verify a full "
+        "foreign commit hash in a local repository, so its exact positional argument names no hardware device "
+        "(repeatable); device options and known device identifiers still require reservations")
     remote_admit.add_argument("command", nargs=argparse.REMAINDER, help="the command and its arguments, after --")
     remote_passed = operations.add_parser("passed", help="exit 0 when the whole lane passed on the second Mac at "
         "exactly this commit; a snapshot's run never counts")
@@ -1311,6 +1318,8 @@ def perform(argv, report):
         if args.action == "remote" and args.operation == "prune-results":
             return remote.prune_results_main(args.checkout or root, args.dry_run)
         config = load(root)
+        if args.action in {"run", "admit"} or (args.action == "remote" and args.operation in {"run", "admit"}):
+            project_support.check_package_paths(root, TOOLKIT_ROOT)
         if args.action == "app": return app_builds.execute(root, args, config)
         if args.action == "instructions": instructions(config)
         elif args.action == "doctor":
@@ -1453,8 +1462,8 @@ def perform(argv, report):
             # Every lane is admitted, a light one as heavy work, except a self lane, whose script admits its parts.
             resource = admission_of(lane)
             # A lane whose result depends on the screen has it read on the Mac that runs it, at its start and again
-            # when it ends unmeasured (vocaro-engineering#185). One that needs it unlocked waits for that, unless it
-            # is nested in an admission that placed it already.
+            # when it ends unmeasured (vocaro-engineering#185). A nested lane rechecks its own requirement:
+            # the outer admission may not have placed work for an unlocked screen (#366).
             needs = unlocked_screen(config["lanes"], args.lane)
             reads_screen = needs or any(config["lanes"][name].get("display") for name in (group or [args.lane]))
             policy_commit = refresh_policy(root) if resource != "self" else None
@@ -1484,7 +1493,7 @@ def perform(argv, report):
                 commands = [config["lanes"][name]["command"] for name in group] if group is not None else \
                     [lane["command"], *([lane["compileFirst"]] if "compileFirst" in lane else [])]
                 try:
-                    with app_registrations.around_run(commands, root): return work()
+                    with resources.child_requests(), app_registrations.around_run(commands, root): return work()
                 finally:
                     # Nested in another lane, its results go into that lane's too, however it ended (#218).
                     parallel.hand_up(directory / "results", args.lane)
@@ -1559,7 +1568,6 @@ def perform(argv, report):
                                 receipt["hereBecause"] = offered.status
                                 fell_back(args.lane, offered)
                             reap_here(root, inherited)
-                            if reads_screen: receipt["screen"] = screen_reading()
                             scroll_bars_recorded(receipt, args.lane, inherited)
                             alerts = guarded_alerts(stack, args.lane, receipt, lane.get("apps", ())) \
                                 if lane.get("foreground") else None
@@ -1568,6 +1576,13 @@ def perform(argv, report):
                             if blocked is not None: return blocked
                             closed = window_closed(args.lane, waiting)
                             if closed is not None: return closed
+                            if reads_screen: receipt["screen"] = screen_reading()
+                            if inherited and needs and receipt["screen"]["state"] != "unlocked":
+                                print(f"eng: {args.lane} not run on {this_mac()}: "
+                                      f"{remote.screen_refusal(receipt['screen'], this_mac())}; "
+                                      "release the outer admission before waiting for an unlocked screen and retry",
+                                      file=sys.stderr, flush=True)
+                                return BUSY
                             result = execute(admission.interrupted)
                             # A failed build ran no test an alert could have disturbed.
                             if alerts is not None and not compile_failed(receipt): result = alerts.judged(result)

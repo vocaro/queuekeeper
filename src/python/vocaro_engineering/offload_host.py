@@ -1493,7 +1493,7 @@ def stranded_slots(directory, maximum, owners):
     return reserved
 
 
-def queued_ahead(directory, slots, maximum, owners, own=None):
+def queued_ahead(directory, slots, maximum, owners, own=None, before=None):
     """The request queued ahead that holds this Mac's later heavy work back now, as ("wholeHost", WAITER), for
     which admission keeps the guaranteed slots, or ("exclusive", WAITER), behind which every later request waits;
     or None. It applies the rule resources.Admission._attempt applies (vocaro-engineering#174, #186, #191): the
@@ -1502,7 +1502,9 @@ def queued_ahead(directory, slots, maximum, owners, own=None):
     counted as a slot it would wait for, any slot for an exclusive request and a guaranteed one for a whole-host
     request, when it holds nothing back (#89). A request whose process ended and one that has not asked lately
     hold nothing back, and the reading looks past them, as admission does. own is the identity of the asking
-    work's own place in this queue (resources.Place): what is queued behind it holds nothing back from it."""
+    work's own place in this queue (resources.Place): what is queued behind it holds nothing back from it.
+    before is this request's arrival on this Mac's clock, carried unchanged after the first dispatch;
+    newer dated arrivals cannot hold it back. Ordinary waiters share and are not capacity blockers."""
     try: recorded = json.loads((directory / QUEUE).read_text())["waiters"]
     except (OSError, ValueError, KeyError, TypeError): return None
     if not isinstance(recorded, list): return None
@@ -1513,7 +1515,11 @@ def queued_ahead(directory, slots, maximum, owners, own=None):
             continue
         # The asking work's own place: nothing queued behind it holds it back.
         if own is not None and waiter.get("identity") == own: return None
-        if not alive(waiter): continue
+        if before is not None and waiter.get("queuedAt", float("-inf")) > before: continue
+        if not alive(waiter) or waiter.get("ordinary"): continue
+        if "seen" in waiter:
+            seen = waiter["seen"]
+            if not isinstance(seen, (int, float)) or isinstance(seen, bool) or time.time() - seen >= hold: continue
         if not waiter.get("wholeHost"):
             # Exclusive work queued ahead holds every request back, unless a stranded entry is counted as any slot.
             return None if stranded_slots(directory, maximum, owners) else ("exclusive", waiter)
@@ -1524,7 +1530,7 @@ def queued_ahead(directory, slots, maximum, owners, own=None):
     return None
 
 
-def capacity(own=None, *, diagnostic=False):
+def capacity(own=None, *, diagnostic=False, before=None):
     """This Mac's spare capacity for heavy work, which `eng run` reads on both Macs before it chooses one
     (remote.spare; vocaro-engineering#168): its guaranteed slots and their maximum; the slots busy among those
     up to the maximum; its CPU's busy share in percent, None when unavailable (cpuBusy), and the limit at or above
@@ -1547,7 +1553,7 @@ def capacity(own=None, *, diagnostic=False):
     except OSError: load = None
     owners = guard_entries()
     running = [owner for owner in owners if alive(owner)]
-    kind, ahead = queued_ahead(directory, found["slots"], found["slotsMax"], owners, own) or (None, None)
+    kind, ahead = queued_ahead(directory, found["slots"], found["slotsMax"], owners, own, before) or (None, None)
     def label(owner, default="an unnamed owner"):
         return f"PID {owner['pid']}" if diagnostic else str(owner.get("label") or default)
     blockers = []
@@ -2546,7 +2552,10 @@ def answer(request):
     if "keychain" in request: return keychain(request["keychain"])
     if "foreground" in request: return foreground()
     if "pressure" in request: return pressure()
-    if "capacity" in request: return capacity(diagnostic=request["capacity"] == "diagnostic")
+    if "capacity" in request:
+        options = ({"before": request["requestStarted"]} if "requestStarted" in request else
+                   {"before": time.time() - request["requestAge"]} if "requestAge" in request else {})
+        return capacity(diagnostic=request["capacity"] == "diagnostic", **options)
     if "admissionLog" in request: return admission_log(request["admissionLog"])
     if "screen" in request: return screen()
     if "leftovers" in request or "device" in request:
@@ -3148,6 +3157,8 @@ def main(plan):
     phases = {}
     result = {"started": time.time(), "exitStatus": None, "stopped": False,
               "host": identity(plan.get("developerDir")), "phases": phases}
+    if "requestAge" in plan:
+        result["requestStarted"] = plan.get("requestStarted", result["started"] - plan["requestAge"])
     timed = lambda name, began: phases.__setitem__(name, round(time.monotonic() - began, 3))
     # Until the first command starts, a failure is a refusal: nothing ran. The dispatcher may run
     # the work on its own Mac instead only when the refusal is busy.
@@ -3185,6 +3196,8 @@ def main(plan):
         result.update(checkout=str(checkout), slot=index)
         say(f"{checkout} at {project['commit'][:12]}")
         environment = {**os.environ, "VOCARO_ENGINEERING_ROOT": str(kit), **NO_BYTECODE}
+        if "requestAge" in plan:
+            environment["VOCARO_ADMISSION_REQUEST_STARTED"] = str(result["requestStarted"])
         if plan.get("deviceRecord"): defer_devices(kit, plan["deviceRecord"])
         # The reservations, held in the sending Mac's record, that this run may use (devices.LEASE).
         if plan.get("lease"): environment["VOCARO_DEVICE_LEASE"] = json.dumps(plan["lease"])

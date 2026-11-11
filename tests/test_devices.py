@@ -1120,6 +1120,25 @@ class BoundedRunTests(unittest.TestCase):
         # A device the record knows is named wherever it appears.
         self.assertEqual(devices.named([f"SIGN_IDENTITY={identity}"], [identity.lower()]), {identity})
 
+    def test_a_declared_commit_exempts_only_its_exact_argument_and_never_a_known_device(self):
+        commit = "ab12" * 10
+        self.assertEqual(devices.named(["tool", commit], commits=[commit]), set())
+        self.assertEqual(devices.named(["tool", commit.upper()], commits=[commit]), set())
+        for word in [f"id={commit}", f"--device={commit}", f"tool {commit}"]:
+            with self.subTest(word=word):
+                self.assertEqual(devices.named([word], commits=[commit]), {commit.upper()})
+        self.assertEqual(devices.named(["--device", commit], commits=[commit]), {commit.upper()})
+        # Masking a commit must not move the next argument into a signing option's value.
+        other = "cd34" * 10
+        self.assertEqual(devices.named(["codesign", "-s", commit, other], commits=[commit]), {other.upper()})
+        self.assertEqual(devices.named([commit], known=[commit], commits=[commit]), {commit.upper()})
+        self.assertEqual(devices.named([commit, PHONE], commits=[commit]), {PHONE})
+        self.hold()
+        # The bounded leased path shares the same check, including known devices.
+        devices.BoundedRun(["iPad"], "session-a", [commit], record=self.record, commits=[commit])
+        with self.assertRaises(devices.Refused):
+            devices.BoundedRun(["iPad"], "session-a", [f"id={commit}"], record=self.record, commits=[commit])
+
     def test_only_the_holder_with_no_run_active_may_run(self):
         command = ["--", *self.mark()]
         def refused(message, *arguments, key="iPad", owner="session-a"):

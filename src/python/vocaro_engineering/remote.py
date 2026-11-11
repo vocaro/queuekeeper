@@ -1695,8 +1695,8 @@ class Lease(devices.BoundedRun):
     so the owner's lines never leave it, and offload_host.py, which imports nothing of the toolkit,
     runs no copy of the watch."""
 
-    def __init__(self, keys, owner, words, *, record, root, budget):
-        super().__init__(keys, owner, words, record=record, root=root)
+    def __init__(self, keys, owner, words, *, record, root, budget, commits=()):
+        super().__init__(keys, owner, words, record=record, root=root, commits=commits)
         self.window = {"devices": dict(self.devices), "until": self.deadline.isoformat(),
                        "cleanupSeconds": self.keep, "budgetSeconds": budget}
 
@@ -1745,7 +1745,7 @@ def named_devices(words, record=None):
             if devices.physical(udid) and udid in named}
 
 
-def lease(keys, owner, words, record=None, root=None, *, budget=None):
+def lease(keys, owner, words, record=None, root=None, *, budget=None, commits=()):
     """The reservations held here that a run on the second Mac carries, or None when it uses no physical
     device.
 
@@ -1754,7 +1754,8 @@ def lease(keys, owner, words, record=None, root=None, *, budget=None):
     them. The second Mac reaches the paired devices too, and its own record refuses them, so
     without a key a command that names any hardware UDID is refused, whether or not this record
     holds its device: a run on a device goes through a reservation. Forty hex digits that the Git
-    of root's checkout knows as an object, such as a commit's whole hash, name no device (devices.named)."""
+    of root's checkout knows as an object, such as a commit's whole hash, name no device (devices.named).
+    commits contains only hashes verified by commit_arguments; it exempts exact positional arguments."""
     record = record or devices.Record()
     if not keys:
         named = named_devices(words, record)
@@ -1763,14 +1764,14 @@ def lease(keys, owner, words, record=None, root=None, *, budget=None):
             raise devices.Refused(f"the command names {key}'s device {udid}, which no --device covers: reserve {key} "
                                   f"here and add --device {key}. Nothing was sent")
         # A device no entry here holds, which the second Mac may reach all the same.
-        for udid in sorted(devices.named(words, root=root)):
+        for udid in sorted(devices.named(words, root=root, commits=commits)):
             raise devices.Refused(f"the command names the hardware UDID {udid}, which no entry of this Mac's record "
                                   "holds and no --device covers: reserve its device here under a key and add "
                                   "--device KEY. Nothing was sent")
         return None
     if not owner:
         raise ValueError(f"name the session whose reservations --device carries: --device-owner, or {devices.OWNER}")
-    return Lease(keys, owner, words, record=record, root=root, budget=budget)
+    return Lease(keys, owner, words, record=record, root=root, budget=budget, commits=commits)
 
 
 def carrying(lease, root, host, work, name, send):
@@ -2065,6 +2066,9 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     staging.mkdir(parents=True)
     started, slept = time.time(), asleep()
     source = Path(offload_host.__file__).read_text()
+    plan["requestAge"] = max(0, time.time() - resources.request_started())
+    if sent is not None and "requestStarted" in sent:
+        plan["requestStarted"] = sent["requestStarted"]
     command = [*SSH, *moved(host), host, login(shlex.join(["python3", "-c", source, json.dumps(plan)]))]
     stopping = None
     record = remember_dispatch(journal, host) if detached is not None else None
@@ -2155,6 +2159,10 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
         shutil.rmtree(staging, ignore_errors=True)
         if ended == 255: raise ssh_failure(host, said, slept, sent=True)
         raise no_toolkit(host, ended, said)
+    if sent is not None and result is not None and "requestStarted" in result:
+        # An opaque timestamp on this host: send it back unchanged, even after a checkout refusal.
+        # Reconstructing it from elapsed age on every retry would add connection latency each time.
+        sent["requestStarted"] = result["requestStarted"]
     if result is not None and result.get("refused"):
         shutil.rmtree(staging, ignore_errors=True)
         if result.get("busy"): raise Busy(f"{host} did not take it: {result['refused']}")
@@ -2269,6 +2277,26 @@ def not_run_if_busy(name, send):
         return BUSY
 
 
+def commit_arguments(declarations):
+    """Verify --git-commit REPOSITORY=SHA locally, before dispatch. Only commits qualify; no repository
+    path or exemption needs to reach the second Mac, whose admitted command keeps the original argv."""
+    commits = set()
+    for declaration in declarations:
+        repository, separator, commit = declaration.rpartition("=")
+        if not separator or not repository or not re.fullmatch(r"[0-9a-fA-F]{40}", commit):
+            raise ValueError("--git-commit needs REPOSITORY=SHA with a full 40-digit commit hash")
+        try:
+            result = subprocess.run(["git", "--no-replace-objects", "-C", repository, "cat-file", "-t", commit],
+                                    env=environment(),
+                                    capture_output=True, text=True, timeout=devices.OBJECT_TIMEOUT)
+        except (OSError, subprocess.SubprocessError) as error:
+            raise ValueError(f"--git-commit could not verify {commit} in {repository}: {error}") from error
+        if result.returncode or result.stdout.strip() != "commit":
+            raise ValueError(f"--git-commit {commit} is not a commit in {repository}")
+        commits.add(commit.upper())
+    return commits
+
+
 def main(root, config, args):
     if args.operation == "passed":
         receipt = passed(root, args.lane, args.commit)
@@ -2317,8 +2345,9 @@ def main(root, config, args):
         (["--foreground"] if args.foreground else []) + \
         [word for app in (getattr(args, "app", None) or []) for word in ("--app", app)] + \
         (["--time-limit", f"{args.time_limit:g}"] if args.time_limit is not None else [])
+    commits = commit_arguments(getattr(args, "git_commit", None) or [])
     held = lease(args.device or [], args.device_owner or devices.default_owner(), command, root=root,
-                 budget=args.time_limit)
+                 budget=args.time_limit, commits=commits)
     work = ["admit", *kind, "--", *command]
     sent = {}
     send = lambda: execute(root, config, host, work, lease=held, sent=sent, slot=slot, slot_wait=slot_wait)
@@ -2988,6 +3017,7 @@ class Offer:
 
     def __init__(self, name, instead, send, refused=None, whole_host=False, exclusive=False, screen=False,
                  queue_gate=False, hosts=None):
+        self.started = resources.request_started()
         self.name, self.instead, self.send, self.refused = name, instead, send, refused
         self.whole_host, self.exclusive, self.screen, self.queue_gate = whole_host, exclusive, screen, queue_gate
         self.sent, self.host, self.status, self.busy, self.away = {}, None, None, None, None
@@ -2997,7 +3027,7 @@ class Offer:
         # --offload-only's, which never runs the work here, does not. Set by make.
         self.choosing = False
         self.neither = None
-        # This Mac's queue place of the work, a whole-host lane's while it waits here (resources.Place), set by
+        # This Mac's queue place of the work while it waits here (resources.Place), set by
         # its admission here: this Mac's capacity reading does not count it as a request queued ahead (#186).
         self.place = None
 
@@ -3005,7 +3035,7 @@ class Offer:
         """Offer the work once: its status there, or Busy, Unreachable or Unavailable raised; Loaded, a Busy,
         when the second Mac has no spare capacity for it while this Mac has, with nothing offered."""
         if self.refused is not None: raise Unavailable(self.refused)
-        with processes.forwarding_signals():
+        with processes.forwarding_signals(), resources.request_order(self.started):
             if self.hosts is not None: return self.attempt_pool()
             # A second Mac that cannot be reached costs seconds here, and nothing is sent to it.
             reachable(self.host)
@@ -3020,7 +3050,8 @@ class Offer:
         for host in self.hosts:
             try:
                 reachable(host)
-                reason = spare(capacity_there(host), host, self.whole_host, self.exclusive, self.screen, extra=True)
+                options = {"started": self.sent[host]["requestStarted"]} if "requestStarted" in self.sent.get(host, {}) else {}
+                reason = spare(capacity_there(host, **options), host, self.whole_host, self.exclusive, self.screen, extra=True)
             except (NoLocalNetwork, Misconfigured):
                 raise
             except Unavailable as error:
@@ -3043,9 +3074,10 @@ class Offer:
         work goes to whichever admits it first, the second Mac asked first, as before the choice existed. Both
         Macs are for work: a session uses the one with capacity and never asks the owner which
         (vocaro-engineering#168)."""
-        there = spare(capacity_there(self.host), "the second Mac", self.whole_host, self.exclusive, self.screen)
+        options = {"started": self.sent["requestStarted"]} if "requestStarted" in self.sent else {}
+        there = spare(capacity_there(self.host, **options), "the second Mac", self.whole_host, self.exclusive, self.screen)
         if there is None: return None
-        reading = offload_host.capacity(own=self.place.identity if self.place is not None else None)
+        reading = offload_host.capacity(own=self.place.identity if self.place is not None else None, before=self.started)
         here = (f"this Mac's capacity cannot be read: {reading['error']}" if reading.get("error")
                 else spare(reading, HERE, self.whole_host, self.exclusive, self.screen))
         if here is None: return there
@@ -3162,11 +3194,11 @@ def overflow(offered, admit, timeout=OVERFLOW_TIMEOUT, once=False, refused=()):
     work starts on whichever Mac admits it first, and the second Mac is asked again at least every
     OVERFLOW_WAIT_MAX seconds: each offer costs it a checkout claim, the project's provision lane and
     a policy refresh, so not every few seconds. Each of this Mac's waits that ends unadmitted is logged
-    as withdrawn, as a declined offer is there, and leaves its queue; an exclusive request rejoins the
-    queue behind those that came meanwhile, and a whole-host one keeps its place across the waits
-    (resources.Place), holding later heavy work back while it waits here and for HEAVY_PLACE_SECONDS
-    after (vocaro-engineering#174). With once, as for --if-free, each Mac is asked once. refused holds why each of
-    this Mac's waits ended unadmitted, the last of which the give-up line says (vocaro-engineering#270)."""
+    as withdrawn, as a declined offer is there. All kinds keep their arrival across local waits
+    (resources.Place) and remote retries (elapsed age in the dispatch plan). A retained place holds
+    later work back only for HEAVY_PLACE_SECONDS after its last local attempt (#360). With once, as
+    for --if-free, each Mac is asked once. refused holds why each of this Mac's waits ended unadmitted,
+    the last of which the give-up line says (vocaro-engineering#270)."""
     deadline, window, said = time.monotonic() + timeout, FREE_WAIT, None
     while True:
         # Once the second Mac can no longer take it, this Mac's queue alone, for the rest of the time.
@@ -3224,12 +3256,17 @@ def screen_there(host):
     return ask(host, {"screen": True}, timeout=CENSUS_TIMEOUT)
 
 
-def capacity_there(host, *, diagnostic=False):
+def capacity_there(host, *, diagnostic=False, started=None):
     """The second Mac's capacity for heavy work, as offload_host.capacity reads it there, in its login shell as a
     run there reads it. A second Mac that cannot be reached raises Unreachable, as the connection that prepares
     a run does, and one that does not answer with a reading Unavailable: the work then runs on this Mac, saying so. One whose admission limits cannot
     be read refuses every request there, which is its owner's to fix (Misconfigured)."""
-    answered = ask(host, {"capacity": "diagnostic" if diagnostic else True}, timeout=CENSUS_TIMEOUT, unsent=True)
+    request = {"capacity": "diagnostic" if diagnostic else True}
+    if started is not None:
+        request["requestStarted"] = started
+    elif resources._request_started.get() is not None:
+        request["requestAge"] = max(0, time.time() - resources.request_started())
+    answered = ask(host, request, timeout=CENSUS_TIMEOUT, unsent=True)
     if isinstance(answered, dict) and answered.get("error"):
         raise Misconfigured(f"{host} could not read its admission limits: {answered['error']}",
                             f"correct the limits file or variable it names on {host} (guides/shared-host.md, "

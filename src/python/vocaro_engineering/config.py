@@ -336,6 +336,11 @@ SPELLING = "spelling"
 # fails in a minute, not after a full gate and a bisect (vocaro-engineering, 2026-11-07). eng run admits and places it
 # as any lane (lane_to_run).
 IMPLICIT_SPELLING = ["python3", "scripts/eng", SPELLING]
+DOCS = "docs"
+IMPLICIT_DOCS = ["python3", "scripts/eng", "docs", "check"]
+# Conventional prose only; configuration, agent policy, source and test fixtures keep their code gates.
+DOCS_FILES = {"README.md", "CONTRIBUTING.md", "CHANGELOG.md"}
+DOCS_FOLDERS = ("doc/", "docs/", "guides/", "knowledge/")
 # Seconds the spelling check may run, as that lane and before eng land queues an entry (vocaro-engineering#283).
 SPELLING_LIMIT = 300
 
@@ -348,8 +353,9 @@ def landing_lanes(lanes, queue):
     found = {name: "the merge queue runs it before the gate" for name in LANDING_FIRST if name in lanes}
     found.update({name: "the merge queue runs it as " + ("one of queue.lanes" if queue.get("lanes") else "the gate")
                   for name in named})
-    found.update({name: "a docs-only batch runs it, as queue.docsOnly.lanes says"
-                  for name in queue.get("docsOnly", {}).get("lanes", []) if name not in found})
+    found.update({name: "a docs-only batch runs it, by the default or queue.docsOnly.lanes"
+                  for name in (queue.get("docsOnly") or {}).get("lanes",
+                      [DOCS] if "docsOnly" not in queue else []) if name not in found})
     waiting = list(found)
     while waiting:
         name = waiting.pop()
@@ -426,10 +432,11 @@ def merge_queue(queue, lanes):
                                                                  or not what.strip() for lane, what in covering.items()):
             raise ValueError("queue.hookCoveredBy maps each lane the queue runs that covers the pre-push hook to what "
                              "of the hook it runs")
-    if "docsOnly" in queue and not docs_only(queue["docsOnly"], lanes):
-        raise ValueError("queue.docsOnly holds paths, mapping each path, a directory ending in /, to why no code lane "
+    if "docsOnly" in queue and queue["docsOnly"] is not False and not docs_only(queue["docsOnly"], lanes):
+        raise ValueError("queue.docsOnly is false to disable docs-only landings, or holds paths, mapping each path, "
+                         "a directory ending in /, to why no code lane "
                          "reads it, and lanes, the distinct configured lanes a docs-only batch runs instead, never gate, "
-                         "whose receipt eng release reads")
+                         "whose receipt eng release reads; optional exclude maps code-read paths to their reasons")
     checks = queue.get("carryOverChecks", [])
     if not isinstance(checks, list) or any(not carry_over_check(check) for check in checks):
         raise ValueError("queue.carryOverChecks lists objects with a command, an argv list and never shell source, and "
@@ -437,12 +444,16 @@ def merge_queue(queue, lanes):
 
 
 def docs_only(declared, lanes):
-    if not isinstance(declared, dict) or set(declared) != {"paths", "lanes"}: return False
+    if not isinstance(declared, dict) or not {"paths", "lanes"} <= set(declared) \
+            or set(declared) - {"paths", "lanes", "exclude"}: return False
+    excluded = declared.get("exclude", {})
+    if not isinstance(excluded, dict) or any(not isinstance(key, str) or not key.strip() or not isinstance(why, str)
+                                            or not why.strip() for key, why in excluded.items()): return False
     paths, named = declared["paths"], declared["lanes"]
     return isinstance(paths, dict) and paths and all(isinstance(key, str) and key.strip() and isinstance(why, str)
                                                       and why.strip() for key, why in paths.items()) \
         and isinstance(named, list) and named and len(set(map(str, named))) == len(named) \
-        and all(name in lanes and name != "gate" for name in named)
+        and all((name in lanes or name == DOCS) and name != "gate" for name in named)
 
 
 def carry_over_check(check):
@@ -514,13 +525,15 @@ def unlocked_screen(lanes, name):
 
 
 def lane_to_run(config, name):
-    """The lane eng run runs as name, or None when there is no such lane: the one config has, or, for spelling in a
-    project with no spelling lane, the toolkit's check, added to config's lanes so that the run treats it as any other,
+    """The lane eng run runs as name, or None when there is no such lane: the one config has, or, for spelling and docs in a
+    project with no such lane, the toolkit's check, added to config's lanes so that the run treats it as any other,
     which is how the merge queue's gate runs it (owner's decision, 2026-11-09, vocaro-engineering#305). queue.spelling
     says only whether the queue asks for it, and main's says that, so a batch's own setting cannot leave a lane unknown."""
     lanes = config.setdefault("lanes", {})
     if name == SPELLING and name not in lanes:
         lanes[name] = {"command": list(IMPLICIT_SPELLING), "timeout": SPELLING_LIMIT}
+    if name == DOCS and name not in lanes:
+        lanes[name] = {"command": list(IMPLICIT_DOCS), "timeout": SPELLING_LIMIT}
     return lanes.get(name)
 
 

@@ -2,6 +2,7 @@ from concurrent.futures import ThreadPoolExecutor
 import contextlib
 from datetime import datetime, timedelta, timezone
 import fcntl
+import importlib.util
 from io import StringIO
 import json
 import os
@@ -433,8 +434,10 @@ class RemoteTests(unittest.TestCase):
                                    "pathlib.Path('.build/first.running').exists()); print('Ran 1 tests')"]},
             "turns": {"parallel": ["first", "second"], "resource": "heavy"},
             # Imports a module of the project's, as a project's scripts/eng imports scripts/_engineering.py,
-            # and says whether its Python may write bytecode.
-            "imports": {"command": [python, "-c", "import sys; sys.path.insert(0, 'scripts'); import helper; "
+            # and says whether its Python may write bytecode. Force adjacent caching so the dirty-checkout
+            # negative control also exercises its intended path on Apple's system Python (#368).
+            "imports": {"command": [python, "-c", "import sys; sys.pycache_prefix = None; "
+                                    "sys.path.insert(0, 'scripts'); import helper; "
                                     "print('bytecode', 'off' if sys.dont_write_bytecode else 'on'); print('Ran 1 tests')"]},
             "pair": {"parallel": ["left", "right"], "resource": "heavy"},
             "mixed": {"parallel": ["left", "broken", "overdue"], "resource": "heavy"},
@@ -564,6 +567,47 @@ class RemoteTests(unittest.TestCase):
                           ("build-host:repositories/vocaro-engineering.git", "build-host:repositories/vocaro-engineering.git")]:
             git(clone, "remote", "set-url", "origin", url)
             self.assertEqual(remote.origin(clone), sent)
+
+    def test_declined_dispatches_reuse_the_hosts_original_arrival_after_a_busy_checkout(self):
+        release = self.hold_slot(1)
+        settings = json.loads((self.project / "engineering.json").read_text())
+        sent, arrivals = {}, []
+        def dispatch():
+            return remote.execute(self.project, settings, "fake", ["run", "--here", "--if-free", "check"],
+                                  lane="check", sent=sent, decline=True, slot=1, slot_wait=0)
+        with contextlib.redirect_stdout(StringIO()), contextlib.redirect_stderr(StringIO()):
+            for age in [60, 1, 0]:
+                with resources.request_order(time.time() - age), self.assertRaises(remote.Busy):
+                    dispatch()
+                arrivals.append(sent["requestStarted"])
+                self.assertFalse(self.checkout(1).exists())
+                slots = Path(os.environ["FAKE_SLOTS"])
+                self.assertFalse((slots / resources.QUEUE).exists())
+            self.assertEqual(arrivals, [arrivals[0]] * 3)
+            release()
+            self.assertEqual(dispatch(), 0)
+        self.assertEqual(self.slot_receipt()["result"]["requestStarted"], arrivals[0])
+
+    def test_a_dispatch_keeps_its_age_for_admission_without_backdating_child_requests(self):
+        command = ("import os,sys,time; sys.path.insert(0, os.environ['VOCARO_ENGINEERING_ROOT']+'/src/python'); "
+                   "from vocaro_engineering import resources; "
+                   "print('transport-age-absent:', resources.REQUEST_STARTED not in os.environ); "
+                   "print('fresh-child-priority:', time.time()-resources.request_started()<30); print('Ran 1 tests')")
+        settings = json.loads((self.project / "engineering.json").read_text())
+        settings["lanes"]["own"]["command"] = [sys.executable, "-c", command]
+        (self.project / "engineering.json").write_text(json.dumps(settings))
+        commit_all(self.project)
+        for name, arguments in [("admit", ["remote", "admit", "--", sys.executable, "-c", command]),
+                                ("own", ["remote", "run", "own"])]:
+            with self.subTest(name=name), resources.request_order(time.time() - 60):
+                status, output, error = self.eng(*arguments)
+                self.assertEqual(status, 0, output + error)
+                observed = output if name == "admit" else \
+                    (self.project / ".build/engineering/remote/own/run.log").read_text()
+                self.assertIn("transport-age-absent: True", observed)
+                self.assertIn("fresh-child-priority: True", observed)
+                result = self.slot_receipt(name)["result"]
+                self.assertGreaterEqual(result["started"] - result["requestStarted"], 60)
 
     def eng(self, *arguments):
         with contextlib.redirect_stdout(StringIO()) as output, contextlib.redirect_stderr(StringIO()) as error:
@@ -1190,6 +1234,55 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual(status, 0, error)
         self.assertIn(f"signed {IDENTITY} CODE_SIGN_IDENTITY={IDENTITY.lower()} codesign -f -s {IDENTITY}", output)
 
+    def test_a_verified_foreign_commit_argument_runs_without_a_device_reservation(self):
+        # A real commit in another repository, absent from the caller and from the second Mac's checkout.
+        elsewhere = git(self.toolkit, "rev-parse", "HEAD")
+        self.assertFalse(devices.git_object(elsewhere, self.project))
+        declaration = f"{self.toolkit}={elsewhere}"
+        status, output, error = self.eng(
+            "remote", "admit", "--git-commit", declaration, "--", sys.executable, "-c",
+            "import sys; print('foreign', sys.argv[1])", elsewhere)
+        self.assertEqual(status, 0, error)
+        self.assertIn(f"foreign {elsewhere}", output)
+        self.assertFalse(devices.git_object(elsewhere, self.checkout(0)))
+
+    def test_foreign_commit_declarations_preserve_hardware_checks_and_require_a_commit(self):
+        elsewhere = git(self.toolkit, "rev-parse", "HEAD")
+        declaration = f"{self.toolkit}={elsewhere}"
+        for word in [f"platform=iOS,id={elsewhere}", "ab12" * 10, PHONE]:
+            with self.subTest(word=word):
+                status, _output, error = self.eng(
+                    "remote", "admit", "--git-commit", declaration, "--", sys.executable, "-c", "pass", word)
+                self.assertEqual(status, 2)
+                self.assertIn("hardware UDID", error)
+                self.assertTrue(self.nothing_sent())
+        status, _output, error = self.eng(
+            "remote", "admit", "--git-commit", declaration, "--", "tool", "--device", elsewhere)
+        self.assertEqual(status, 2)
+        self.assertIn("hardware UDID", error)
+        self.assertTrue(self.nothing_sent())
+        # A known device stays a device, even when its identifier is also a real commit.
+        self.hold(device=elsewhere.upper())
+        status, _output, error = self.eng(
+            "remote", "admit", "--git-commit", declaration, "--", sys.executable, "-c", "pass", elsewhere)
+        self.assertEqual(status, 2)
+        self.assertIn("which no --device covers", error)
+        self.assertTrue(self.nothing_sent())
+        tree = git(self.toolkit, "rev-parse", "HEAD^{tree}")
+        # Replacement refs can make an arbitrary forty-digit identifier look like a commit.
+        # The declaration must verify the object itself, not a replacement for it.
+        forged = "ab12" * 10
+        git(self.toolkit, "replace", "-f", forged, elsewhere)
+        self.assertEqual(git(self.toolkit, "cat-file", "-t", forged), "commit")
+        for invalid in [str(self.toolkit), f"{self.toolkit}=HEAD", f"{self.project}={elsewhere}",
+                        f"{self.toolkit}={tree}", f"{self.toolkit}={'ab12' * 10}"]:
+            with self.subTest(invalid=invalid):
+                status, _output, error = self.eng(
+                    "remote", "admit", "--git-commit", invalid, "--", sys.executable, "-c", "pass", elsewhere)
+                self.assertEqual(status, 2)
+                self.assertIn("--git-commit", error)
+                self.assertTrue(self.nothing_sent())
+
     def test_recovering_a_run_sent_here_waits_for_what_on_the_second_mac_names_its_device(self):
         # Its own device, which no other test's processes name, nor another run's of this suite (#80).
         udid = f"00008730-{uuid.uuid4().hex[:16].upper()}"
@@ -1613,6 +1706,63 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual((receipt["checkoutSlot"]["requested"], receipt["checkoutSlot"]["assigned"]), (1, None))
         self.assertFalse(self.checkout(1).exists())
         self.assertFalse(self.checkout(0).exists())
+
+    def test_a_foreground_dispatch_can_be_canceled_while_waiting_without_touching_the_holder(self):
+        # Real dispatch, checkout and lease handling; only desktop/VoiceOver I/O is a stand-in.
+        source = self.toolkit / "src/python/vocaro_engineering"
+        waiter = Path(self.temp.name) / "foreground-waiter.pid"
+        with (source / "foreground.py").open("a") as fixture:
+            fixture.write("\ndef problems():\n    from pathlib import Path\n"
+                          f"    Path({str(waiter)!r}).write_text(str(os.getpid()))\n    return []\n"
+                          "front = lambda: None\n"
+                          "@contextlib.contextmanager\ndef fixture_preserved(*args, **kwargs):\n    yield\n"
+                          "voiceover_state.preserved = fixture_preserved\n")
+        with (source / "cli.py").open("a") as fixture:
+            fixture.write("\nguarded_alerts = lambda *args, **kwargs: None\n"
+                          "cleared_notifications = lambda *args, **kwargs: None\n")
+        commit_all(self.toolkit)
+        record = devices.Record(self.record_there)
+        record.defer(offload_host.mac_name())
+        marker = self.checkout(1) / ".build/foreground-command-started"
+        command = [sys.executable, "-c", "from pathlib import Path; "
+                   "Path('.build/foreground-command-started').touch()"]
+        # Cancellation is the regression. The same dispatch subsequently taking the released lease
+        # is the independent positive control; neither uses the real foreground on either Mac.
+        for cancel in (True, False):
+            with self.subTest(cancel=cancel):
+                old = record.entry(devices.FOREGROUND) or {}
+                held = record.reserve(devices.FOREGROUND, owner="other foreground run",
+                                      revision=old.get("revision", 0), purpose="fixture holder",
+                                      release_by=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat())
+                process, log = self.slot_dispatcher("remote", "admit", "--foreground", "--checkout-slot", "1",
+                                                    "--", *command)
+                self.await_condition(process, log, lambda: "waiting for the second Mac's foreground, held by "
+                                     "other foreground run" in log.read_text())
+                waiter_pid = int(waiter.read_text())
+                self.assertEqual(record.entry(devices.FOREGROUND), held)
+                self.assertFalse(marker.exists())
+                self.assertFalse(Path(os.environ["FAKE_GATE"] + ".warm-push-guard").exists())
+                if cancel:
+                    process.send_signal(signal.SIGTERM)
+                    self.assertEqual(process.wait(stretched(60)), -signal.SIGTERM, log.read_text())
+                    self.assertIn("asking fake to stop the run", log.read_text())
+                    self.assertTrue(self.slot_receipt("admit")["result"]["stopped"])
+                    self.assertEqual(record.entry(devices.FOREGROUND), held)
+                    self.assertFalse(marker.exists())
+                else:
+                    record.release(devices.FOREGROUND, owner="other foreground run", revision=held["revision"],
+                                   outcome="fixture done", restoration="fixture checked", frontmost="restored")
+                    self.assertEqual(process.wait(stretched(120)), 0, log.read_text())
+                    self.assertTrue(marker.exists())
+                    self.assertEqual(record.entry(devices.FOREGROUND)["state"], "released")
+                with self.assertRaises(ProcessLookupError): os.kill(waiter_pid, 0)
+                # The canceled waiter and the completed control both release their checkout.
+                lock = os.open(self.checkout(1).parents[1] / "1.lock", os.O_RDWR)
+                try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                finally: os.close(lock)
+                if cancel:
+                    record.release(devices.FOREGROUND, owner="other foreground run", revision=held["revision"],
+                                   outcome="fixture done", restoration="fixture checked", frontmost="restored")
 
     @patch.object(remote, "CHECKOUTS", 2)
     def test_work_on_the_second_mac_leaves_no_bytecode_in_its_checkout(self):
@@ -2812,8 +2962,9 @@ class RemoteTests(unittest.TestCase):
         source.write_text(text.replace("def group_files(config, lane):\n",
                                        "def group_files(config, lane):\n    return None\n", 1))
         self.assertNotEqual(source.read_text(), text)
-        # The dispatcher wrote bytecode beside the toolkit's source, which stays out of its commit.
-        self.assertTrue((source.parent / "__pycache__").is_dir())
+        # The dispatcher wrote bytecode, which stays out of the toolkit's commit. Apple's system
+        # Python uses a central cache by default; Homebrew writes an adjacent __pycache__ (#368).
+        self.assertTrue(Path(importlib.util.cache_from_source(str(source.resolve()))).is_file())
         commit_all(self.toolkit)
         self.assertNotIn("__pycache__", git(self.toolkit, "ls-files"))
         shutil.rmtree(results)
@@ -5047,11 +5198,11 @@ class KeptSlotsTests(unittest.TestCase):
         with patch.object(remote, "capacity_there", return_value=loaded), \
                 patch.object(remote.offload_host, "capacity", return_value={**self.IDLE, "screen": None}) as here:
             self.assertIsNotNone(offered.choose())
-            here.assert_called_once_with(own=None)
+            here.assert_called_once_with(own=None, before=offered.started)
             here.reset_mock()
             offered.place = resources.Place()
             offered.choose()
-            here.assert_called_once_with(own=offered.place.identity)
+            here.assert_called_once_with(own=offered.place.identity, before=offered.started)
         # Its admission here hands it the place it keeps.
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
                 "HEAVY_SLOT_DIR": directory, "SW_GATE_LOCK_FILE": str(Path(directory) / "gate"), "HEAVY_SLOTS": "1",
@@ -7520,6 +7671,39 @@ class GateHostPoolTests(unittest.TestCase):
 
 
 class OfferAgainTests(unittest.TestCase):
+    def test_repeated_declines_send_one_stable_request_age_and_release_the_context(self):
+        seen = []
+        def decline(host, sent):
+            seen.append(resources.request_started())
+            raise remote.Busy("all checkout slots are busy")
+        offered = remote.Offer("work", "", decline)
+        with patch.object(remote, "configured", return_value="fake"), \
+                patch.object(remote, "reachable"), contextlib.redirect_stderr(StringIO()):
+            offered.make(fallback=False)
+            offered.again()
+            offered.again()
+        self.assertEqual(seen, [offered.started] * 3)
+        self.assertIsNone(resources._request_started.get())
+
+    def test_remote_capacity_carries_elapsed_age_instead_of_the_dispatchers_wall_clock(self):
+        reading = {"slots": 1, "slotsMax": 1, "busy": [], "busyLimit": 75}
+        with resources.request_order(time.time() - 60), \
+                patch.object(remote, "ask", return_value=reading) as ask:
+            self.assertEqual(remote.capacity_there("fake"), reading)
+        request = ask.call_args.args[1]
+        self.assertGreaterEqual(request["requestAge"], 60)
+        self.assertLess(request["requestAge"], 65)
+        with patch.object(remote.offload_host, "capacity", return_value=reading) as capacity, \
+                patch.object(remote.offload_host.time, "time", return_value=1000):
+            self.assertEqual(remote.offload_host.answer({"capacity": True, "requestAge": 60}), reading)
+        capacity.assert_called_once_with(diagnostic=False, before=940)
+        with patch.object(remote, "ask", return_value=reading) as ask:
+            remote.capacity_there("fake", started=940)
+        self.assertEqual(ask.call_args.args[1], {"capacity": True, "requestStarted": 940})
+        with patch.object(remote.offload_host, "capacity", return_value=reading) as capacity:
+            remote.offload_host.answer({"capacity": True, "requestStarted": 940, "requestAge": 1})
+        capacity.assert_called_once_with(diagnostic=False, before=940)
+
     """While both Macs are busy, a second Mac that cannot be reached at one offer is asked at the next."""
 
     def offer(self):

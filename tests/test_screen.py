@@ -326,6 +326,64 @@ class AdmissionTests(unittest.TestCase):
         self.assertIn("eng: gate not run on the second Mac (Trevors-MacBook-Pro-715)", error)
 
 
+class InheritedAdmissionTests(unittest.TestCase):
+    """A generic outer admission cannot promise the nested lane an unlocked console (#366)."""
+
+    def run_lane(self, state, declared=True, explicit=False, group=False):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            marker = root / "ran"
+            lane = {"command": [sys.executable, "-c", f"from pathlib import Path; Path({str(marker)!r}).touch()"],
+                    "resource": "heavy", "timeout": 30}
+            if declared: lane["unlockedScreen"] = True
+            lanes = {"check": lane}
+            name = "check"
+            if group:
+                name = "group"
+                lanes[name] = {"parallel": ["check"], "resource": "heavy",
+                               "unlockedScreen": declared}
+            (root / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Nested", "lanes": lanes}))
+            with resources.Admission("outer", exclusive=True, timeout=0), \
+                    patch.object(cli, "refresh_policy", return_value="policy"), \
+                    patch.object(cli, "source_identity", return_value={}), \
+                    patch.object(offload_host, "screen", return_value=reading(state)) as screen, \
+                    patch.object(cli, "screen_wait", side_effect=AssertionError("nested work waited")), \
+                    patch.object(remote, "first", side_effect=AssertionError("nested work was dispatched")), \
+                    contextlib.redirect_stdout(StringIO()), contextlib.redirect_stderr(StringIO()) as error:
+                status = cli.main(["--project", str(root), "run", *(["--unlocked-screen"] if explicit else []), name])
+                return status, marker.exists(), error.getvalue(), screen.call_count
+
+    def test_a_declared_nested_lane_runs_only_with_an_unlocked_reading(self):
+        for state in ("unlocked", "locked", "unknown"):
+            with self.subTest(state=state):
+                status, ran, error, reads = self.run_lane(state)
+                self.assertEqual((status, ran), (0, True) if state == "unlocked" else (resources.BUSY, False), error)
+                self.assertEqual(reads, 1)
+                if state != "unlocked":
+                    self.assertIn("release the outer admission before waiting", error)
+                    self.assertIn(f"screen: {state}", error)
+
+    def test_the_explicit_option_rechecks_an_undeclared_nested_lane(self):
+        for state in ("unlocked", "locked", "unknown"):
+            with self.subTest(state=state):
+                status, ran, error, reads = self.run_lane(state, declared=False, explicit=True)
+                self.assertEqual((status, ran), (0, True) if state == "unlocked" else (resources.BUSY, False), error)
+                self.assertEqual(reads, 1)
+
+    def test_a_nested_group_checks_before_starting_any_member(self):
+        for state in ("unlocked", "locked", "unknown"):
+            with self.subTest(state=state):
+                status, ran, error, reads = self.run_lane(state, group=True)
+                self.assertEqual((status, ran), (0, True) if state == "unlocked" else (resources.BUSY, False), error)
+                self.assertEqual(reads, 1)
+
+    def test_an_undeclared_nested_lane_still_needs_no_screen_reading(self):
+        for state in ("locked", "unknown"):
+            with self.subTest(state=state):
+                status, ran, error, reads = self.run_lane(state, declared=False)
+                self.assertEqual((status, ran, reads), (0, True, 0), error)
+
+
 class MessageTests(unittest.TestCase):
     def setUp(self):
         names = patch.object(offload_host, "mac_name", return_value="Trevors-MacBook-Pro-715")

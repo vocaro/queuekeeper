@@ -4,6 +4,7 @@ from io import StringIO
 import json
 import os
 import re
+import signal
 from pathlib import Path
 import subprocess
 import sys
@@ -14,7 +15,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
-from vocaro_engineering import cli, config, devices, foreground, offload_host, remote
+from vocaro_engineering import cli, config, devices, foreground, offload_host, processes, remote
 import host_isolation
 from host_isolation import stretched
 from vocaro_engineering.voiceover import state as voiceover_state
@@ -246,6 +247,47 @@ class SlotTests(unittest.TestCase):
         with self.slot(voiceover=baseline, ready=late, said=said, timeout=stretched(10)) as owner:
             self.assertEqual(self.record.entry(devices.FOREGROUND)["ownerChatID"], owner)
         self.assertEqual(len([line for line in self.said if "held by other run" in line]), 1)
+
+    def test_a_canceled_foreground_waiter_takes_nothing_and_leaves_the_holder_intact(self):
+        self.second_mac()
+        held = self.record.reserve(devices.FOREGROUND, owner="other run", revision=0, purpose="Other run",
+                                   release_by=(datetime.now().astimezone() + timedelta(hours=1)).isoformat())
+        stopped = []
+        def said(text):
+            self.said.append(text)
+            if "held by other run" in text: stopped.append(signal.SIGTERM)
+        with patch.object(foreground, "time") as clock, \
+                patch.object(processes, "requested", side_effect=lambda: stopped[0] if stopped else None), \
+                patch.object(self.record, "reserve", wraps=self.record.reserve) as reserve, \
+                patch.object(voiceover_state, "preserved") as preserve:
+            # One held poll, then an expired deadline: cancellation must win on the next read.
+            # No scheduler pause changes the order, and the old loop still reaches its timeout.
+            clock.monotonic.return_value = 0
+            def after_poll(_seconds):
+                clock.monotonic.return_value = 1
+            clock.sleep.side_effect = after_poll
+            with self.assertRaisesRegex(processes.Interrupted, "SIGTERM.*waiting for.*foreground"):
+                with self.slot(said=said, timeout=0.2): self.fail("canceled command started")
+        reserve.assert_not_called()
+        preserve.assert_not_called()
+        self.assertEqual(self.record.entry(devices.FOREGROUND), held)
+        self.assertNotIn(devices.OWNER, os.environ)
+
+    def test_a_stop_seen_as_the_foreground_comes_free_does_not_reserve_it(self):
+        self.second_mac()
+        # The stop arrives during the record read that reports a free foreground, before reserve.
+        stopped = []
+        def entry(_key):
+            stopped.append(signal.SIGINT)
+            return None
+        with patch.object(self.record, "entry", side_effect=entry), \
+                patch.object(processes, "requested", side_effect=lambda: stopped[0] if stopped else None), \
+                patch.object(self.record, "reserve", side_effect=AssertionError("canceled waiter attempted reservation")) as reserve, \
+                patch.object(voiceover_state, "preserved") as preserve:
+            with self.assertRaisesRegex(processes.Interrupted, "SIGINT.*waiting for.*foreground"):
+                with self.slot(): self.fail("canceled command started")
+        reserve.assert_not_called()
+        preserve.assert_not_called()
 
     def test_a_run_that_waits_too_long_or_finds_an_orphan_takes_nothing(self):
         self.second_mac()
