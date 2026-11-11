@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import os
 import signal
+import subprocess
 import sys
 import tempfile
 import threading
@@ -249,6 +250,110 @@ class ProcessTests(unittest.TestCase):
         self.assertEqual(processes.bounded([sys.executable, "-c", "print('done'); raise SystemExit(4)"],
                                            timeout=stretched(60)),
                          (4, "done\n"))
+
+    def own_tree(self, *pinned):
+        """A processes.snapshot of this test's own process tree and of the PIDs each of pinned lists, a file of PIDs:
+        a listing of every process on the Mac is slow at a gate's start (guides/parallel-tests.md). The pinned ones
+        are the run's descendants that its root's end leaves to launchd, outside this tree."""
+        def listing():
+            children = {}
+            for line in subprocess.run(["ps", "-axo", "pid=,ppid="], capture_output=True, text=True,
+                                       timeout=stretched(60)).stdout.splitlines():
+                pid, parent = map(int, line.split())
+                children.setdefault(parent, []).append(pid)
+            found, pending = set(), [os.getpid()]
+            while pending:
+                pid = pending.pop()
+                if pid not in found: found.add(pid); pending.extend(children.get(pid, []))
+            for path in pinned:
+                with contextlib.suppress(FileNotFoundError): found.update(map(int, path.read_text().split()))
+            rows = subprocess.run(["ps", "-o", "pid=,ppid=,pgid=,lstart=", "-p", ",".join(map(str, sorted(found)))],
+                                  capture_output=True, text=True, timeout=stretched(60)).stdout
+            return {int(parts[0]): (int(parts[1]), int(parts[2]), parts[3])
+                    for parts in (line.split(maxsplit=3) for line in rows.splitlines()) if len(parts) == 4}
+        return listing
+
+    def started(self, pid):
+        """When pid started, as ps prints it (lstart) with its spacing collapsed, or None once it has ended."""
+        return " ".join(subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True,
+                                       timeout=stretched(60)).stdout.split()) or None
+
+    def gone(self, pid, start):
+        """Whether the process that started then as pid has ended and been reaped, within 10 s stretched by load."""
+        deadline = time.monotonic() + stretched(10)
+        while time.monotonic() < deadline:
+            if self.started(pid) != start: return True
+            time.sleep(0.05)
+        return False
+
+    def test_bounded_stops_descendants_in_groups_and_sessions_of_their_own_at_its_timeout_and_nothing_else(self):
+        # As swiftpm-testing-helper runs below `swift test` in a group of its own (#387): one helper makes a session
+        # of its own and ends on SIGTERM, the other a process group of its own, ignores SIGTERM and has a child of
+        # its own. The root ends on SIGTERM, which leaves both to launchd.
+        helper = ("import os, signal, subprocess, sys, time\nfrom pathlib import Path\nhere = Path(sys.argv[1])\nchild = ''\n"
+                  "if sys.argv[2] == 'session': os.setsid()\n"
+                  "else:\n    os.setpgid(0, 0); signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+                  f"    child = subprocess.Popen(['/bin/sleep', '{stretched(120)}']).pid\n"
+                  f"(here / f'ready-{{os.getpid()}}').write_text(f'{{os.getpid()}} {{child}}')\ntime.sleep({stretched(120)})")
+        root = ("import os, subprocess, sys, time\nfrom pathlib import Path\nhere = Path(sys.argv[1])\n"
+                f"helpers = [subprocess.Popen([sys.executable, '-c', {helper!r}, str(here), kind]).pid "
+                "for kind in ('session', 'group')]\n"
+                "ready = [here / f'ready-{pid}' for pid in helpers]\n"
+                "while not all(path.exists() and path.read_text() for path in ready): time.sleep(0.01)\n"
+                "(here / 'listing').write_text(' '.join(path.read_text() for path in ready))\n"
+                "(here / 'listing').replace(here / 'descendants')\n"
+                f"print('started', flush=True)\ntime.sleep({stretched(120)})")
+        with tempfile.TemporaryDirectory() as directory:
+            here = Path(directory)
+            # The negative control: a process of this test's own, beside the run in the listing, that is no
+            # descendant of it.
+            bystander = subprocess.Popen(["/bin/sleep", str(stretched(120))], start_new_session=True)
+            self.addCleanup(bystander.wait)
+            self.addCleanup(bystander.kill)
+            listing = self.own_tree(here / "descendants")
+            # Each helper and the helper's child, by PID and start as first listed, for the assertions and a cleanup
+            # that never signals a PID taken over since.
+            descendants, seen = set(), {}
+            def snapshot():
+                current = listing()
+                with contextlib.suppress(FileNotFoundError):
+                    descendants.update(map(int, (here / "descendants").read_text().split()))
+                seen.update({pid: " ".join(current[pid][2].split()) for pid in descendants if pid in current and pid not in seen})
+                return current
+            def cleanup():
+                for pid, start in seen.items():
+                    if self.started(pid) == start:
+                        with contextlib.suppress(ProcessLookupError): os.kill(pid, signal.SIGKILL)
+            self.addCleanup(cleanup)
+            # Stretched: the root and its helpers must be ready before it expires; that it expires is what is tested.
+            with patch.object(processes, "snapshot", snapshot):
+                status, output = processes.bounded([sys.executable, "-c", root, directory], timeout=stretched(10),
+                                                   kill_after=1)
+                # Listed by the test too, so that a run that never listed them still leaves none to the cleanup.
+                snapshot()
+            self.assertIsNone(status)
+            self.assertIn("started", output)
+            self.assertEqual(len(seen), 3, f"both helpers and the group helper's child were listed: {seen}")
+            for pid, start in seen.items():
+                self.assertTrue(self.gone(pid, start), f"descendant {pid} outlived the timed-out run")
+            self.assertIsNone(bystander.poll(), "a process that is no descendant of the run was stopped")
+
+    def test_bounded_leaves_the_descendants_of_a_run_that_ends_in_time_as_they_are(self):
+        # The control: only a timeout lists or stops descendants; a daemon a passing command starts keeps running.
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "child.pid"
+            script = (f"import pathlib, subprocess\nchild = subprocess.Popen(['/bin/sleep', '{stretched(120)}'], "
+                      f"start_new_session=True)\npathlib.Path({str(marker)!r}).write_text(str(child.pid))\nprint('done')")
+            with patch.object(processes, "snapshot", side_effect=AssertionError("listed")) as listed:
+                self.assertEqual(processes.bounded([sys.executable, "-c", script], timeout=stretched(60)), (0, "done\n"))
+            listed.assert_not_called()
+            child = int(marker.read_text())
+            start = self.started(child)
+            self.assertIsNotNone(start, "the passing command's daemon was stopped")
+            def cleanup():
+                if self.started(child) == start:
+                    with contextlib.suppress(ProcessLookupError): os.kill(child, signal.SIGKILL)
+            self.addCleanup(cleanup)
 
     def test_descendants_that_outlive_the_root_are_reported_then_stopped_keeping_its_status(self):
         with tempfile.TemporaryDirectory() as directory:

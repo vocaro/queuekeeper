@@ -88,6 +88,17 @@ def snapshot():
     return result
 
 
+def descendants(current, roots):
+    """The processes of a snapshot below these PIDs by parent, whatever their process group or session, as
+    {PID: (parent, group, start)}; the roots themselves are not included."""
+    found, frontier = {}, set(roots)
+    while frontier:
+        frontier = {pid for pid, (parent, _group, _birth) in current.items()
+                    if parent in frontier and pid not in found and pid not in roots}
+        found.update({pid: current[pid] for pid in frontier})
+    return found
+
+
 def session(pid):
     """A live process's session, or None once it has ended. ps -o sess prints 0 on macOS."""
     try: return os.getsid(pid)
@@ -429,12 +440,9 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
                     if pid not in parents and group == child.pid:
                         known[pid] = current[pid]
                         parents.add(pid)
-            while True:
-                added = {pid for pid, (parent, _group, _birth) in current.items()
-                         if parent in parents and pid not in parents}
-                if not added: break
-                parents.update(added)
-                known.update({pid: current[pid] for pid in added})
+            below = descendants(current, parents)
+            parents.update(below)
+            known.update(below)
             live = {pid for pid, seen in known.items() if pid in current and current[pid][2] == seen[2]}
             sampled = {space for pid in live for space in (current[pid][1], session(pid)) if space is not None}
             identities = {pid: known[pid][2] for pid in live} | ({child.pid: born} if root_active else {})
@@ -592,9 +600,10 @@ def stop(process):
 
 def bounded(command, *, cwd=None, timeout, pass_fds=(), kill_after=KILL_AFTER):
     """Run command in a session of its own, its output in a file, and return (status, output): status
-    is None once it ran past timeout seconds, after which its process group had SIGTERM, then SIGKILL
-    after kill_after seconds. For many short commands side by side, such as test processes, where
-    supervise's sampling would cost too much; a descendant that leaves the group is not followed."""
+    is None once it ran past timeout seconds, after which it was stopped (end_tree). For many short
+    commands side by side, such as test processes, where supervise's sampling would cost too much: the
+    processes are listed only once the timeout has expired, so a descendant that left the root's tree
+    before then, as a daemon does, is not followed."""
     with tempfile.TemporaryFile("w+", errors="replace") as output:
         child = subprocess.Popen(command, cwd=cwd, stdout=output, stderr=subprocess.STDOUT,
                                  start_new_session=True, pass_fds=pass_fds)
@@ -602,16 +611,58 @@ def bounded(command, *, cwd=None, timeout, pass_fds=(), kill_after=KILL_AFTER):
             status = child.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             status = None
-            with contextlib.suppress(ProcessLookupError): os.killpg(child.pid, signal.SIGTERM)
-            with contextlib.suppress(subprocess.TimeoutExpired): child.wait(timeout=kill_after)
-            # The root may have gone on SIGTERM and left the rest of its group running.
-            with contextlib.suppress(ProcessLookupError, PermissionError): os.killpg(child.pid, signal.SIGKILL)
-            child.wait(timeout=KILL_WAIT)
+            try: end_tree(child, kill_after)
+            except BaseException:
+                stop(child)
+                raise
         except BaseException:
             stop(child)
             raise
         output.seek(0)
         return status, output.read()
+
+
+def end_tree(child, kill_after=KILL_AFTER):
+    """Stop a timed-out root, its process group and every descendant listed below it by parent in its own group
+    or session, as swiftpm-testing-helper runs below `swift test` (vocaro-engineering#387): SIGTERM, then SIGKILL
+    after kill_after seconds, or as soon as each has ended. The descendants are listed before the first signal,
+    so that one the root's end leaves to launchd is still known, and again at each poll, so that one born
+    since is found below a live one. Each is known by PID and start, and a PID that names another process
+    by then is never signaled. RuntimeError when the root, or any such descendant, survives SIGKILL."""
+    known, signaled = {}, set()
+
+    def sweep(number):
+        """List the processes, note the descendants, and send number to each one outside the root's group that has
+        not had it yet (SIGKILL again each time); those still running, by PID."""
+        current = snapshot()
+        alive = lambda: {pid for pid, start in known.items() if current.get(pid, (0, 0, None))[2] == start}
+        # Unreaped, the root keeps its PID, so that the snapshot's listing under it is the root's own.
+        roots = alive() | ({child.pid} if child.returncode is None else set())
+        known.update({pid: row[2] for pid, row in descendants(current, roots).items()})
+        outside = {pid for pid in alive() if current[pid][1] != child.pid}
+        for pid in outside:
+            if number == signal.SIGKILL or (pid, known[pid]) not in signaled:
+                with contextlib.suppress(ProcessLookupError, PermissionError): os.kill(pid, number)
+                signaled.add((pid, known[pid]))
+        return outside
+
+    # Listed first: SIGTERM can end the root and leave its other descendants to launchd.
+    outside = sweep(signal.SIGTERM)
+    with contextlib.suppress(ProcessLookupError, PermissionError): os.killpg(child.pid, signal.SIGTERM)
+    deadline = time.monotonic() + kill_after
+    while time.monotonic() < deadline:
+        with contextlib.suppress(subprocess.TimeoutExpired): child.wait(timeout=0.2)
+        outside = sweep(signal.SIGTERM)
+        if child.returncode is not None and not outside: break
+    # The root may have gone on SIGTERM and left the rest of its group running.
+    with contextlib.suppress(ProcessLookupError, PermissionError): os.killpg(child.pid, signal.SIGKILL)
+    deadline = time.monotonic() + KILL_WAIT
+    while outside := sweep(signal.SIGKILL):
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"Timed-out command {child.pid}'s descendant(s) PID "
+                               f"{', '.join(map(str, sorted(outside)))} survived SIGKILL")
+        time.sleep(0.05)
+    child.wait(timeout=KILL_WAIT)
 
 
 def run(command, *, cwd, log_path, timeout=None, env=None, on_stop=None, kill_after=KILL_AFTER, cancel=None,
