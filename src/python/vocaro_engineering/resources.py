@@ -1184,7 +1184,7 @@ class Admission:
             return self
         from vocaro_engineering.processes import Interrupted, requested
         started = self.started = time.monotonic()
-        reported = None
+        reported, said_progress, progress_at, progress_next = None, None, 0, 0
         try:
             while not self._attempt():
                 self._count()
@@ -1193,6 +1193,17 @@ class Admission:
                 # so a stop or a timeout leaves nothing to release once it withdraws.
                 if requested() is not None:
                     raise Interrupted(requested(), "while waiting for admission")
+                if hasattr(self, "guard") and time.monotonic() >= progress_next:
+                    from . import lane_progress
+                    progress_next = time.monotonic() + 5
+                    recorded = self._recorded()
+                    observations = lane_progress.blockers(self.guard, recorded["owners"] if recorded else {})
+                    shown = [lane_progress.words(item) for item in observations]
+                    signature = [(r.get("run"), r.get("state")) for r in observations]
+                    if shown and (signature != said_progress or time.monotonic() - progress_at >= 30):
+                        print("heavy: running work: " + "; ".join(shown), file=sys.stderr, flush=True)
+                        progress_at = time.monotonic()
+                    said_progress = signature
                 elapsed = time.monotonic() - started
                 waited = int(elapsed)
                 if reported is None or waited - reported >= 300:

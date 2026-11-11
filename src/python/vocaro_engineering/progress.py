@@ -58,8 +58,15 @@ class Monitor:
         self.status = Path(status) if status is not None else self.log.with_suffix(".progress.json")
         self.quiet, self.next, self.warned, self.last = Quiet(), 0, False, None
         self.run = f"{os.getpid()}-{time.time_ns()}"
+        self.began = time.time()
         self.maximum, self.samples, self.unobservable = 0, 0, 0
         self.write_error = None
+        from . import lane_progress
+        self.live_paths = lane_progress.destinations(self.run, self.status)
+        self.reporter_start = lane_progress.start(os.getpid()) if self.live_paths else None
+        self.observed_seconds, self.maximum_gap, self.observed_previous = 0, 0, None
+        self.previously_observable = False
+        self.observed_wall = None
 
     def observe(self, identities, excluded=(), force=False):
         now, wall = time.monotonic(), time.time()
@@ -73,26 +80,44 @@ class Monitor:
         except OSError:
             output = None
         quiet = self.quiet.sample(now, wall, (readings, output) if readings is not None and output is not None else None)
+        added_coverage = 0
+        if self.observed_previous is not None:
+            gap = now - self.observed_previous
+            self.maximum_gap = max(self.maximum_gap, gap, wall - self.observed_wall)
+            if self.previously_observable and quiet is not None and 0 <= gap <= 3 * INTERVAL:
+                added_coverage = gap
+                self.observed_seconds += gap
+        self.observed_previous, self.observed_wall = now, wall
+        self.previously_observable = quiet is not None
         self.samples += 1
         if quiet is None: self.unobservable += 1
         else: self.maximum = max(self.maximum, quiet)
         threshold = self.settings["seconds"]
         stalled = quiet is not None and quiet >= threshold
         self.last = {"run": self.run, "host": socket.gethostname(), "phase": "running", "observedAt": wall,
+                     "startedAt": self.began,
                      "quietSeconds": quiet, "thresholdSeconds": threshold, "action": self.settings.get("action", "report"),
                      "state": "quiet" if stalled else "observing" if quiet is not None else "unobservable",
                      "maximumQuietSeconds": self.maximum, "samples": self.samples,
                      "unobservableSamples": self.unobservable, "reason": self.settings.get("reason"),
                      "lastProgressAt": None if quiet is None else wall - quiet,
                      "processes": [{"pid": pid, "start": start} for pid, start in sorted(work.items())],
-                     "wait": "unknown"}
+                     "wait": "unknown", "reporter": os.getpid(), "reporterStart": self.reporter_start,
+                     "lane": self.log.stem if self.log.name != "run.log" else self.log.parent.name,
+                     "observedSeconds": self.observed_seconds, "maximumObservationGapSeconds": self.maximum_gap}
         if not self.publish():
             # An optional observer must never turn its own I/O failure into a stop, or
             # preserve a quiet interval that it could not record for review.
             self.quiet.sample(now, wall, None)
+            self.previously_observable = False
+            self.observed_seconds -= added_coverage
+            self.last["observedSeconds"] = self.observed_seconds
             if quiet is not None: self.unobservable += 1
             self.last.update(state="unobservable", quietSeconds=None, lastProgressAt=None,
                              unobservableSamples=self.unobservable)
+            if self.live_paths:
+                from . import lane_progress
+                lane_progress.publish(self.last, self.live_paths)
             self.warned = False
             return None
         if not stalled:
@@ -131,9 +156,15 @@ class Monitor:
             self.last["observationError"] = detail
             return False
         self.write_error = None
+        if self.live_paths:
+            from . import lane_progress
+            lane_progress.publish(self.last, self.live_paths)
         return True
 
     def finish(self, state, settled=True):
         if self.last is not None:
             self.last.update(phase="ended" if settled else "uncertain", state=state, finishedAt=time.time())
             self.publish()
+            if self.live_paths:
+                from . import lane_progress
+                lane_progress.publish(self.last, self.live_paths)
