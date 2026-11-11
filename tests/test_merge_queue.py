@@ -6241,7 +6241,10 @@ class RejectionFacts(Fixture):
         self.commit("a", "a")
         [identifier] = self.add("a")
         self.status.write_text("1")
-        with contextlib.redirect_stdout(io.StringIO()): self.assertEqual(self.work(), 0)
+        # The positive control of sampled_while_running: the rejected lane's end is read once, sampling or not.
+        with self.sampled_while_running() as finish, contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(self.work(), 0)
+        finish.assert_called_once()
         entry = self.state(identifier)
         self.assertEqual(entry["state"], "failed")
         self.assertIn("the one-minute load was highest 3", entry["why"])
@@ -6250,12 +6253,22 @@ class RejectionFacts(Fixture):
         self.assertNotIn("changes no file", entry["why"])
         self.assertIn("could not be determined", mq.describe(entry))
 
+    @contextlib.contextmanager
+    def sampled_while_running(self):
+        """The lane's load sampled while it runs, as a lane longer than BUSY_SAMPLE is (or one a sleep or a clock step
+        stretches past it), and the end-of-lane reading a rejection adds watched apart from it: such a sampling is no
+        reading of the lane's end (#358). Yields the watched LoadSampler.finish."""
+        with patch.object(mq, "BUSY_SAMPLE", 0.01), \
+                patch.object(mq.LoadSampler, "finish", autospec=True, side_effect=mq.LoadSampler.finish) as finish:
+            yield finish
+
     def test_a_gate_that_passes_reads_no_end_of_lane_load_and_names_none(self):
         # The negative control: at a passing lane's end nothing is read, and the entry has no reason at all.
         self.commit("a", "a")
         [identifier] = self.add("a")
-        with contextlib.redirect_stdout(io.StringIO()): self.assertEqual(self.work(), 0)
-        self.load_of.assert_not_called()
+        with self.sampled_while_running() as finish, contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(self.work(), 0)
+        finish.assert_not_called()
         self.assertEqual(self.state(identifier)["state"], "landed")
         self.assertNotIn("why", self.state(identifier))
 
@@ -6264,8 +6277,8 @@ class RejectionFacts(Fixture):
         self.commit("a", "a")
         [identifier] = self.add("a")
         self.status.write_text(str(mq.evidence.UNMEASURED))
-        with contextlib.redirect_stdout(io.StringIO()): self.work()
-        self.load_of.assert_not_called()
+        with self.sampled_while_running() as finish, contextlib.redirect_stdout(io.StringIO()): self.work()
+        finish.assert_not_called()
         entry = self.state(identifier)
         self.assertNotEqual(entry["state"], "failed")
         self.assertNotIn("During gate", entry.get("why", ""))
