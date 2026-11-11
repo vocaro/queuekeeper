@@ -570,6 +570,26 @@ hour later, from `eng queue status`
 ([#130](https://github.com/vocaro/vocaro-engineering/issues/130)). When a batch fails, the oldest half runs next, and so on until one entry fails
 alone; every entry that passes along the way lands.
 
+**A later commit does not repair an earlier one.** The check and the round cherry-pick an entry's
+commits one at a time, in order, and stop at the first that conflicts (`Worker.pick` in
+`merge_queue.py`), so a branch whose final tree would apply is still refused when one of its earlier
+commits does not. On 2026-11-10 a narration paragraph's branch held a commit inserting it at the
+paragraph boundary a queued Quick Look entry also changed, and a later commit moving it elsewhere;
+`eng land` refused the range at the first commit until the two were made one, which then passed the
+gate and landed (vocaro/BreezEPUB#6). Diagnose the commit the refusal names, in `COMMIT conflicts
+with` and its lines in conflict, not the branch's whole diff. Then:
+
+- When the commits from that one on are yours alone, clean and pushed nowhere, amend or consolidate
+  them so that each commit the queue replays applies in order, as with `git reset --soft COMMIT^` and
+  one new commit. Rewrite no other session's commits or working changes.
+- Otherwise wait for the entry ahead to land (`eng land --wait`, or the `eng queue wait` the refusal
+  names) and rebase onto `origin/main`, resolving the conflict at that commit.
+
+Either way, check that the new tip's tree is the one you meant (`git diff OLD-TIP NEW-TIP` empty when
+only the history changed), run the relevant checks again, and add it through the ordinary queue.
+Consolidating skips no check and gives no leave to rewrite someone else's published branch. A conflict
+confined to changelog lines is the worker's to settle, as above, and needs none of this.
+
 **A branch that goes on after a landing.** The queue lands a branch's commits under new IDs, so a
 branch that gets more work after one of its landings still holds the landed commits under their old
 IDs. `eng land` replays them onto `origin/main`, and one whose lines a later landed commit changed
