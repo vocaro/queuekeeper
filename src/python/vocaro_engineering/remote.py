@@ -2960,6 +2960,35 @@ def local_paths(command, top):
     return None
 
 
+def ignored_inputs(command, top, directory):
+    """Why the second Mac cannot run command as it runs here because a word names, relative to directory, a file
+    in the checkout that exists now and Git ignores, such as a session's scratch script under .build (#390), or
+    None. The commit sent leaves out every file Git ignores. A directory keeps nothing here: one Git ignores is most
+    often build output the command makes there itself, such as DerivedData or a scratch path. A tracked file Git
+    would otherwise ignore is sent, and so goes there."""
+    top, directory, candidates = Path(top), Path(directory), {}
+    for word in map(str, command):
+        for part in PATH_SEPARATOR.split(word):
+            # An absolute path or one under ~ is local_paths'; an option is no path.
+            if not part or part.startswith(("/", "~", "-")): continue
+            path = Path(os.path.normpath(directory / part))
+            try:
+                relative = path.relative_to(top).as_posix()
+            except ValueError:
+                continue
+            try:
+                if relative != "." and path.is_file(): candidates.setdefault(relative, part)
+            except OSError:
+                continue
+    if not candidates: return None
+    found = subprocess.run(["git", "-C", str(top), "check-ignore", "-z", "--stdin"], env=environment(),
+                           input="\0".join(candidates) + "\0", capture_output=True, text=True)
+    ignored = [name for name in found.stdout.split("\0") if name in candidates] if found.returncode == 0 else []
+    if not ignored: return None
+    return (f"it names {candidates[ignored[0]]}, a file Git ignores, which the commit sent to the second Mac lacks; "
+            "a command that runs or reads one runs here")
+
+
 def local_environment(environment=None):
     """Why the second Mac cannot run a command as it runs here because of this Mac's environment, or None. Its login
     shell has none of this Mac's variables: an xcodebuild TEST_RUNNER_ variable would not reach the tests there.
@@ -2981,7 +3010,7 @@ def first_command(root, config, command, kind):
     second Mac cannot run it as it runs here when its directory is outside the checkout or one Git
     ignores, which the commit sent lacks, or when its words name this checkout's path, a simulator by
     its identifier, or a hardware UDID (devices.named), all of which are this Mac's, a path of this Mac's
-    alone (local_paths), or when this Mac's environment sets TEST_RUNNER_ variables or DEVELOPER_DIR
+    alone (local_paths) or a file Git ignores (ignored_inputs), or when this Mac's environment sets TEST_RUNNER_ variables or DEVELOPER_DIR
     (local_environment); a device goes
     to the second Mac only under a reservation `eng remote admit --device` carries. kind is
     --exclusive or --model, if either, and --time-limit when the command has a limit of its own."""
@@ -3004,7 +3033,7 @@ def first_command(root, config, command, kind):
         refused = (f"it names the hardware UDID {', '.join(named)}, which the second Mac uses only under a "
                    "reservation `eng remote admit --device` carries from here")
     else:
-        refused = local_paths(command, top) or local_environment()
+        refused = local_paths(command, top) or ignored_inputs(command, top, directory) or local_environment()
     # The second Mac's admission takes it now or declines it, as `eng run --if-free` does a lane. There it runs
     # where it was sent, since it runs for the Mac that sent it (DISPATCHER).
     work = ["admit", *kind, "--if-free", "--", *command]

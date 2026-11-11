@@ -1077,7 +1077,8 @@ def perform(argv, report):
         "second Mac: for a command whose products this session uses here afterwards, such as build output, derived "
         "data, files Git ignores or an app it then launches. Without it, the command goes to the second Mac first, "
         "to run in its checkout's directory that matches this one, at HEAD or a snapshot commit, and stays here when "
-        "its directory is outside the checkout or one Git ignores, it names this checkout's path, a simulator or "
+        "its directory is outside the checkout or one Git ignores, it names this checkout's path, an existing file "
+        "Git ignores (such as a scratch script under .build, which the commit sent lacks), a simulator or "
         "device, it is nested in an admission or a self lane's part, or the second Mac has no spare capacity or "
         f"cannot be reached. What it changed there in files Git does not ignore is applied here; exit {remote.UNAPPLIED} "
         "says it could not be, and names the patch kept")

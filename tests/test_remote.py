@@ -4627,6 +4627,51 @@ exec {shlex.quote(real)} "$@"
         status, output, error = self.admit_in(self.project, "--", *probe, "/usr/bin/true", "pkg/README.md")
         self.assertEqual((status, self.ran_in()), (0, self.checkout(0).resolve()), output + error)
 
+    def test_admit_keeps_here_a_command_that_names_an_existing_file_git_ignores(self):
+        # A session's scratch script under .build, which the commit sent lacks, runs here (#390).
+        probe = self.probe()
+        top = self.project.resolve()
+        scratch = self.project / ".build/issue-52/main"
+        scratch.mkdir(parents=True)
+        (scratch / "stall_control.py").write_text("print('stall')\n")
+        (scratch / "input.json").write_text("{}\n")
+        said = "a file Git ignores, which the commit sent to the second Mac lacks"
+        for words, directory, named in [
+                ([".build/issue-52/main/stall_control.py"], top, ".build/issue-52/main/stall_control.py"),
+                (["--input=.build/issue-52/main/input.json"], top, ".build/issue-52/main/input.json"),
+                (["sh", "-c", "python3 .build/issue-52/main/stall_control.py > out.txt"], top,
+                 ".build/issue-52/main/stall_control.py"),
+                (["../.build/issue-52/main/input.json"], top / "pkg", "../.build/issue-52/main/input.json")]:
+            with self.subTest(words):
+                self.assertEqual(remote.ignored_inputs(words, top, directory), f"it names {named}, {said}; a command "
+                                 "that runs or reads one runs here")
+        # The controls: a tracked file, a path that does not exist yet (output the command may make there), an
+        # ignored directory, such as DerivedData, a path outside the checkout, and a tracked file Git would ignore.
+        outside = Path(self.temp.name) / "outside.txt"
+        outside.write_text("x\n")
+        controls = ["pkg/README.md", ".build/issue-52/main/missing.py", ".build/issue-52/main", ".build",
+                    "--derived-data", ".build/ios-derived", os.path.relpath(outside, top), str(outside), "python3",
+                    "https://example.com/.build/x"]
+        self.assertIsNone(remote.ignored_inputs(controls, top, top))
+        forced = self.project / ".build/tracked.txt"
+        forced.write_text("tracked\n")
+        subprocess.run(["git", "-C", str(top), "add", "-f", ".build/tracked.txt"], check=True, capture_output=True)
+        try:
+            self.assertIsNone(remote.ignored_inputs([".build/tracked.txt"], top, top))
+        finally:
+            subprocess.run(["git", "-C", str(top), "rm", "-q", "--cached", ".build/tracked.txt"], check=True,
+                           capture_output=True)
+        self.assertIsNotNone(remote.ignored_inputs([".build/tracked.txt"], top, top))
+        # End to end: the scratch script keeps it here, naming the path, and the tracked control goes there.
+        status, output, error = self.admit_in(self.project, "--", *probe, ".build/issue-52/main/stall_control.py")
+        self.assertEqual((status, self.ran_in()), (0, top), output + error)
+        self.assertIn(f"eng: running the command on this Mac: it names .build/issue-52/main/stall_control.py, {said}",
+                      error)
+        receipt = json.loads((self.project / ".build/engineering/admit/source.json").read_text())
+        self.assertIn(said, receipt["hereBecause"])
+        status, output, error = self.admit_in(self.project, "--", *probe, "pkg/README.md", ".build/ios-derived")
+        self.assertEqual((status, self.ran_in()), (0, self.checkout(0).resolve()), output + error)
+
     def test_admit_keeps_here_a_command_that_this_macs_environment_sets_up(self):
         probe = self.probe()
         for variables, said in [({"TEST_RUNNER_EXAMPLE_FLAG": "1"},
@@ -4681,7 +4726,8 @@ exec {shlex.quote(real)} "$@"
                 "pathlib.Path('pkg/generated.bin').write_bytes(bytes(range(256)))\n"
                 "pathlib.Path('gone.txt').unlink()\n"
                 "pathlib.Path('.build').mkdir(exist_ok=True); pathlib.Path('.build/product').write_text('built')\n"
-                "for name in sys.argv[2:]: pathlib.Path(name).write_text('there\\n')\n"
+                "for name in sys.argv[2:] + os.environ.get('EDITS', '').split(): "
+                "pathlib.Path(name).write_text('there\\n')\n"
                 "edit = os.environ.get('EDIT_HERE_TOO')\n"
                 "if edit: pathlib.Path(edit).write_text('a session edited this meanwhile\\n')\n"
                 "raise SystemExit(int(sys.argv[1]))", *more]
@@ -4721,7 +4767,9 @@ exec {shlex.quote(real)} "$@"
         # out.txt is ignored here alone, so the tree sent lacks it, and the second Mac's command creates it.
         (self.project / ".git/info/exclude").write_text("out.txt\n")
         (self.project / "out.txt").write_text("this Mac's own\n")
-        status, output, error = self.admit_in(self.project, "--", *self.edits("0", "out.txt"))
+        # Named in its environment: a word naming an existing file Git ignores keeps a command here (#390).
+        with patch.dict(os.environ, {"EDITS": "out.txt"}):
+            status, output, error = self.admit_in(self.project, "--", *self.edits("0"))
         self.assertEqual(status, remote.UNAPPLIED, output + error)
         kept = sorted((self.project.resolve() / remote.UNAPPLIED_DIRECTORY).glob("*.patch"))
         self.assertEqual(len(kept), 1, error)
