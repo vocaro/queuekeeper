@@ -286,6 +286,9 @@ class OriginTests(Namespace):
 
     def test_a_holder_and_a_waiter_say_where_their_work_comes_from(self):
         with patch.dict(os.environ, {"CLAUDE_CODE_HOST_SESSION_ID": "local_here"}):
+            # A run dispatched from another Mac, as the queue's gate is, carries its sender's origin, which work_origin
+            # reads first (#401).
+            os.environ.pop(resources.ORIGIN, None)
             mine = resources.work_origin()
             held = self.hold_slots()
             with contextlib.redirect_stderr(StringIO()):
