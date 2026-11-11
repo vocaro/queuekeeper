@@ -893,6 +893,11 @@ set for `eng run` or `eng admit` here does not reach it. On 2026-10-27 a variabl
 read as unset there (toolkit `e137d7e`). A run that a variable selects, such as one that points a
 package at a binary built here into an ignored path or sets an xcodebuild `TEST_RUNNER_` variable,
 takes `--here` (`eng run --here`, `eng admit --here`), or names the setting in its command.
+The loss is silent when the lane's script has a default: on 2026-11-11 a BreezEPUB purchase lane
+given its simulator runtime in a variable ran on the default iOS 27.0, and only
+the receipt's `Taking:` line showed it. A lane setting meant to reach the second Mac is an
+argument after `--` (`eng run purchases -- --runtime ID`), and the receipt is where to confirm
+it took effect.
 
 `eng admit -- COMMAND` goes as a lane does, at HEAD or a snapshot commit: to whichever Mac has
 spare capacity for it, the second Mac first, to this Mac while the second Mac has none or cannot
