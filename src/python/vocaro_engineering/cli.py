@@ -16,6 +16,7 @@ from . import __version__, app_builds, app_registrations, budgets, checkpoint, c
 from .config import TOOLKIT_ROOT, CAPABILITIES, DEFAULT_TOOLKIT, admission as admission_of, lane_to_run, load, source_identity, \
     display_lane_warnings, lane_devices, self_lane_warnings, stays, unadmitted, unlocked_screen
 from .resources import BUSY, FREE_WAIT
+from . import project as project_support
 from .simulators import matrix, pool as simulator_pool
 
 
@@ -952,7 +953,9 @@ def admit(root, args, config=None, *, device_window=None):
 def main(argv=None):
     report = lane_report.Report()
     try:
-        status = perform(argv, report)
+        # XcodeGen expands this selected, host-local path before generating its project (#373).
+        with patch_environment({project_support.PACKAGE_ROOT_VARIABLE: str(TOOLKIT_ROOT.resolve())}):
+            status = perform(argv, report)
     except Exception as error:
         report.finish(None, error)
         raise
@@ -1314,6 +1317,8 @@ def perform(argv, report):
         if args.action == "remote" and args.operation == "prune-results":
             return remote.prune_results_main(args.checkout or root, args.dry_run)
         config = load(root)
+        if args.action in {"run", "admit"} or (args.action == "remote" and args.operation in {"run", "admit"}):
+            project_support.check_package_paths(root, TOOLKIT_ROOT)
         if args.action == "app": return app_builds.execute(root, args, config)
         if args.action == "instructions": instructions(config)
         elif args.action == "doctor":
