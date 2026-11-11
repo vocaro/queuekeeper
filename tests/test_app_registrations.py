@@ -47,7 +47,31 @@ else until ls "$HEAVY_SLOT_DIR"/app-registrations/*.json >/dev/null 2>&1 || [ $n
 fi
 exit "${STUB_STATUS:-0}"' "$@"
 """)
-        for patcher in (patch.dict(os.environ, {"HEAVY_SLOT_DIR": str(self.slots),
+        # The real ps, over this test's own processes: every process these tests start descends from it. Reading
+        # every command line on the Mac took tens of seconds at a gate's start, and once over the 60 s a cleanup
+        # gives ps, which left the cleanup to the next run and failed two of these tests (#361, #362). A run that
+        # cannot list the processes has a test of its own. Other ps commands run as given.
+        executable(self.tools / "ps", """#!/bin/sh
+if [ "$1" = "-axww" ] && [ -n "$PS_ROOT" ]; then
+  shift
+  pids=$(/bin/ps -axo pid=,ppid= | awk -v root="$PS_ROOT" '
+    { children[$2] = children[$2] " " $1 }
+    END {
+      found = root; pending = root
+      while (pending != "") {
+        count = split(pending, at, " "); pending = ""
+        for (i = 1; i <= count; i++) {
+          n = split(children[at[i]], below, " ")
+          for (j = 1; j <= n; j++) { found = found "," below[j]; pending = pending " " below[j] }
+        }
+      }
+      print found
+    }')
+  exec /bin/ps -ww -p "$pids" "$@"
+fi
+exec /bin/ps "$@"
+""")
+        for patcher in (patch.dict(os.environ, {"HEAVY_SLOT_DIR": str(self.slots), "PS_ROOT": str(os.getpid()),
                                                 "PATH": f"{self.tools}:{os.environ['PATH']}"}),
                         patch.object(registrations, "LSREGISTER", str(self.lsregister)),
                         patch.object(registrations, "PLUGINKIT", str(self.pluginkit))):
@@ -284,6 +308,33 @@ exit "${STUB_STATUS:-0}"' "$@"
         self.assertEqual(sorted(line for line in details if not line.startswith(" ")), sorted([str(self.derived), str(other.parents[3])]))
         self.assertEqual(sum("failed for a real reason" in line for line in details), 2)
         self.assertEqual(len(self.journals()), 5, "a tool that failed for another reason keeps its journal")
+
+    def test_a_sweep_lists_the_processes_once_for_all_the_journals_it_settles(self):
+        # One listing each made a sweep of five journals list every process six times, each able to fail alone (#362).
+        for number in range(1, 6):
+            self.journal(number, "Thu Jan  1 00:00:00 1970")
+        listings = []
+        real = registrations.offload_host.listing
+        def listing(command, *arguments, **options):
+            if command == registrations.PROCESSES: listings.append(command)
+            return real(command, *arguments, **options)
+        tally = registrations.Tally(lambda text: None)
+        with patch.object(registrations.offload_host, "listing", listing):
+            registrations.sweep(tally)
+        self.assertEqual(len(listings), 1)
+        self.assertEqual(self.journals(), [])
+        self.assertEqual((tally.apps, tally.extensions), (5, 5))
+
+    def test_a_cleanup_that_cannot_list_the_processes_keeps_the_journal_for_the_next_run(self):
+        # As when ps outlasts its bound: nothing is unregistered while what holds a folder is unknown.
+        with patch.object(registrations.offload_host, "listing", return_value=None):
+            self.assertEqual(self.run_command(self.build_command()), 0)
+        self.assertEqual(self.said, "eng: unregistered nothing: the processes could not be listed; the next run tries again\n")
+        self.assertEqual(self.calls(), [])
+        self.assertEqual(len(self.journals()), 1)
+        self.owners_gone()
+        self.run_command(["/usr/bin/true"])
+        self.assert_settled()
 
     def test_a_run_with_nothing_to_say_says_nothing(self):
         self.assertEqual(self.run_command(["/usr/bin/true"]), 0)

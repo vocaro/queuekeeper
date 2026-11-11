@@ -49,6 +49,10 @@ DETAILS = "left"
 DETAILS_KEPT_SECONDS = 7 * 86400
 SAMPLE_SECONDS = 0.5
 TOOL_SECONDS = 30
+# How long a sweep's or a cleanup's listing of every process may take before the run leaves the work to the next
+# one. It only catches a hang: in gates on 2026-11-10, beside the Swift lanes at a gate's start, listings took
+# tens of seconds, and once over this (#361, #362).
+LISTING_SECONDS = 60
 PROCESSES = ["ps", "-axww", "-o", "pid=,ppid=,uid=,lstart=,args="]
 # What a derived-data folder holds besides builds: much to walk, and no app anyone registers.
 UNBUILT = {"Index.noindex", "ModuleCache.noindex", "SourcePackages", "Logs", "CompilationCache.noindex",
@@ -213,15 +217,18 @@ class Tally:
         self.say(line)
 
 
-def settle(path, entry, tally):
+def settle(path, entry, tally, table=None):
     """Unregister what a journal's run built, and remove the journal, unless a folder must wait or a tool
-    failed: the journal then stays for the next run's sweep. It never raises."""
+    failed: the journal then stays for the next run's sweep. table is a sweep's listing of the processes, which
+    it reads once for all the journals it settles; without one, this lists them. It never raises."""
     try:
-        listed = offload_host.listing(PROCESSES)
-        if listed is None:
-            tally.note("unregistered nothing: the processes could not be listed; the next run tries again")
-            return False
-        table, others = offload_host.process_table(listed), read_journals(skip=path)
+        if table is None:
+            listed = offload_host.listing(PROCESSES, LISTING_SECONDS)
+            if listed is None:
+                tally.note("unregistered nothing: the processes could not be listed; the next run tries again")
+                return False
+            table = offload_host.process_table(listed)
+        others = read_journals(skip=path)
         own = set(offload_host.lineage(table, os.getpid()))
         waiting = False
         for folder in dict.fromkeys(Path(item) for item in entry["folders"]):
@@ -244,14 +251,15 @@ def settle(path, entry, tally):
 
 
 def sweep(tally):
-    """Settle the journals whose runs have gone, which a SIGKILL or a put-off cleanup left."""
+    """Settle the journals whose runs have gone, which a SIGKILL or a put-off cleanup left, from one listing of
+    the processes: one each would take as long again for every journal, and each could fail on its own (#362)."""
     journals = read_journals()
     if not journals: return
-    listed = offload_host.listing(PROCESSES)
+    listed = offload_host.listing(PROCESSES, LISTING_SECONDS)
     if listed is None: return
     table = offload_host.process_table(listed)
     for path, entry in journals:
-        if entry is not None and not live(entry, table): settle(path, entry, tally)
+        if entry is not None and not live(entry, table): settle(path, entry, tally, table)
 
 
 class Watch:
