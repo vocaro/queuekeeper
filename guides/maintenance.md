@@ -624,7 +624,9 @@ With [a build Mac list](shared-host.md#build-macs-for-merge-queue-gates), the ne
 first listed Mac that can start it. The older half runs on this Mac.
 
 **Entries that arrive during a gate gate on top of it.** While a batch gates, the worker checks every
-`STACK_POLL` (30 s) for entries that have arrived behind it. Once the batch's final lane has secured admission,
+`STACK_POLL` (30 s) for entries that have arrived behind it. A docs-only entry among them is never
+stacked: it lands beside the gate on the docs lanes instead (*A docs-only entry never rides a code
+gate*, below). Once the batch's final lane has secured admission,
 the worker gates those entries stacked on the batch's tip, in the other checkout and on another Mac. Earlier
 lanes can run on a different Mac, and a dispatch can be declined before admission. In the two-Mac setup, the
 stack runs on this Mac when the final lane runs on the second Mac, and otherwise on the second Mac if it can
