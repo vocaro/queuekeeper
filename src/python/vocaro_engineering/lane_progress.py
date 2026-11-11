@@ -41,7 +41,7 @@ def start(pid):
 
 def write(path, record):
     path = Path(path)
-    staged = path.with_name(path.name + f".tmp-{os.getpid()}")
+    staged = path.with_name(path.name + ".tmp")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         (path.parent / ".gitignore").write_text("*\n")
@@ -105,6 +105,8 @@ def publish(record, paths):
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 previous = read(path)
                 if not isinstance(previous, dict): previous = None
+                if record.get("phase") != "running" and (previous is None or any(
+                        previous.get(key) != record.get(key) for key in ("run", "reporter", "reporterStart"))): continue
                 if previous and previous.get("run") != record.get("run"):
                     if record.get("phase") != "running" or previous.get("startedAt", 0) > record.get("startedAt", 0): continue
                 if record.get("phase") != "running": path.unlink(missing_ok=True)
@@ -137,20 +139,28 @@ def relayed(records, host):
     if not wait or not isinstance(records, list): return
     reporter, born = os.getpid(), start(os.getpid())
     if not born: return
-    # A relay is a snapshot: remove only this dispatcher's prior records, including completed members.
-    prefix = f"relay-{reporter}-"
     folder = directory(wait, os.environ.get(VARIABLE))
     if folder is None: return
-    try:
-        for path in islice(folder.iterdir(), 2 * LIMIT + 1):
-            if path.name.startswith(prefix): path.unlink(missing_ok=True)
-    except OSError: pass
+    active = set()
     for record in records[:LIMIT]:
         if not valid(record): continue
-        safe = {**record, "host": host, "reporter": reporter, "reporterStart": born}
-        # Never use remote content as a path component.
-        key = hashlib.sha256(record["run"].encode()).hexdigest()
-        write(folder / f"{prefix}{key}.json", safe)
+        safe = {**record, "host": host, "reporter": reporter, "reporterStart": born, "relay": True}
+        # Stable per host/leaf even when its dispatcher or supervised run is restarted. Hash all
+        # remote content; none is a path component. Namespace already scopes this project/run.
+        key = hashlib.sha256(json.dumps([host, record.get("lane")]).encode()).hexdigest()
+        path = folder / f"relay-{key}.json"
+        active.add(path.name)
+        publish(safe, [path])
+    # A snapshot's empty/end clears only copies still owned by this exact dispatcher. The
+    # publication lock rechecks run/PID/start, so an old end cannot delete a new collector.
+    try:
+        for path in islice(folder.iterdir(), 2 * LIMIT + 1):
+            if path.suffix != ".json" or not path.name.startswith("relay-") or path.name in active: continue
+            previous = read(path)
+            if (isinstance(previous, dict) and previous.get("relay") is True
+                    and previous.get("reporter") == reporter and previous.get("reporterStart") == born):
+                publish({**previous, "phase": "ended"}, [path])
+    except OSError: pass
 
 
 def blockers(guard, owners):

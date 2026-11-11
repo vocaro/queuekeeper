@@ -124,6 +124,35 @@ class LiveProgress(unittest.TestCase):
             lane_progress.relayed([], "second")
             self.assertEqual([r["run"] for r in lane_progress.current(os.environ[lane_wait.VARIABLE])], ["other"])
 
+    def test_restarted_remote_dispatchers_share_one_leaf_slot_and_cannot_clear_its_new_owner(self):
+        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {
+                lane_wait.VARIABLE: str(self.wait(folder)), lane_progress.VARIABLE: "a" * 32}):
+            began = time.time() - 1000
+            for index in range(lane_progress.LIMIT + 20):
+                pid = 10000 + index
+                with patch.object(lane_progress.os, "getpid", return_value=pid), \
+                        patch.object(lane_progress, "start", return_value="born"):
+                    lane_progress.relayed([self.record(run=str(index), startedAt=began + index)], "second")
+            iterate = Path.iterdir
+            new_pid = pid + 1
+            with patch.object(lane_progress, "starts", return_value={pid: "born", new_pid: "born"}), \
+                    patch.object(Path, "iterdir", lambda folder: iter(sorted(iterate(folder), key=lambda p: p.name))):
+                records = lane_progress.current(os.environ[lane_wait.VARIABLE])
+                self.assertEqual([record["run"] for record in records], [str(index)])
+                self.assertEqual(len(list(lane_progress.directory(os.environ[lane_wait.VARIABLE]).glob("*.json"))), 1)
+                # Reconnection can retain the SAME remote work run while changing its collector.
+                with patch.object(lane_progress.os, "getpid", return_value=new_pid), \
+                        patch.object(lane_progress, "start", return_value="born"):
+                    lane_progress.relayed([self.record(run=str(index), startedAt=began + index)], "second")
+                with patch.object(lane_progress.os, "getpid", return_value=pid), \
+                        patch.object(lane_progress, "start", return_value="born"):
+                    lane_progress.relayed([], "second")
+                self.assertEqual([r["run"] for r in lane_progress.current(os.environ[lane_wait.VARIABLE])], [str(index)])
+                with patch.object(lane_progress.os, "getpid", return_value=new_pid), \
+                        patch.object(lane_progress, "start", return_value="born"):
+                    lane_progress.relayed([], "second")
+                self.assertEqual(lane_progress.current(os.environ[lane_wait.VARIABLE]), [])
+
     def test_remote_host_relay_filters_pid_reuse_and_ends_with_empty_snapshot(self):
         with tempfile.TemporaryDirectory() as folder:
             wait = self.wait(folder)
@@ -231,6 +260,9 @@ class LiveProgress(unittest.TestCase):
             path.write_text('["malformed", "prior record"]')
             lane_progress.publish(self.record(), [path])
             self.assertEqual(lane_progress.read(path)["run"], "run-1")
+            with patch.object(lane_progress, "read", return_value=None):
+                lane_progress.publish(self.record(phase="ended"), [path])
+            self.assertTrue(path.exists(), "an unreadable slot cannot prove the ending publisher owns it")
             lane_progress.publish(self.record(phase="ended"), [path])
             self.assertFalse(path.exists())
             with patch.object(Path, "mkdir", side_effect=OSError("denied")):
