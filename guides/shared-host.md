@@ -1965,9 +1965,14 @@ their commands are only printed. Immediately before each
 removal it takes a fresh census and checks that candidate again, refuses an `rm` inside any
 working tree or reached through a link, and appends every decision to
 `~/Library/Application Support/vocaro-engineering/disk-reclaimed.jsonl`. It never runs an owner
-item's command. Sizes are allocated sizes from `du`; APFS clones share blocks, so removing one
-can free less than its size. Run the inventory again after removing worktrees: DerivedData whose
-workspace went with them becomes a candidate.
+item's command. Inventory and dry-run sizes are allocated sizes from `du`. APFS clones share
+blocks, so removing one can free less than its size. To report how much space a cleanup freed,
+measure free space on the same volume immediately before and after the run, for example with
+`df -k /System/Volumes/Data`. Report the difference as the net change in free space and label
+the dry-run footprint as allocated size. If you also measure each removal, label those changes
+separately because other activity on the volume can affect the net change across the run.
+Run the inventory again after removing worktrees because DerivedData whose workspace went with
+them becomes a candidate.
 
 Use `eng disk --dry-run --archive-worktrees` to see which additional worktrees can go after
 archiving. `eng disk --delete --archive-worktrees` also stages the ignored evidence, lane results
