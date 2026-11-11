@@ -59,6 +59,9 @@ MAIN = "refs/remotes/origin/main"
 FETCH = ["fetch", "--no-tags", "origin", f"refs/heads/main:{MAIN}"]
 LAUNCHER_BUNDLE = "com.vocaro.eng.queue-launcher"
 LAUNCHER_PROGRAM = "QueueLauncher"
+LAUNCHER_REQUIREMENT = f'-R=anchor apple generic and identifier "{LAUNCHER_BUNDLE}"'
+# The signed launcher's executable at the start of its arguments, and the app that holds it.
+LAUNCHER_ARGUMENTS = re.compile(rf"^(/.+?\.app)/Contents/MacOS/{LAUNCHER_PROGRAM}(?: |$)")
 LAUNCHER_INTERVAL = 120
 LAUNCHCTL = "/bin/launchctl"
 QUEUED, TESTING, PASSED, LANDED, FAILED, CONFLICT, REMOVED = \
@@ -1229,8 +1232,7 @@ class Queue:
         app = Path(app).expanduser().resolve()
         executable = app / "Contents" / "MacOS" / LAUNCHER_PROGRAM
         if not executable.is_file(): raise ValueError(f"the queue launcher is missing at {executable}")
-        requirement = f'-R=anchor apple generic and identifier "{LAUNCHER_BUNDLE}"'
-        checked = subprocess.run(["/usr/bin/codesign", "--verify", "--strict", requirement, str(app)],
+        checked = subprocess.run(["/usr/bin/codesign", "--verify", "--strict", LAUNCHER_REQUIREMENT, str(app)],
                                  capture_output=True, text=True, timeout=10)
         if checked.returncode: raise ValueError(f"the queue launcher needs an Apple signing identity: {checked.stderr.strip()}")
         toolkit = Path(text(TOOLKIT_ROOT, "rev-parse", "--path-format=absolute", "--git-common-dir")).parent
@@ -2014,6 +2016,20 @@ def execute(command, env):
     os.execve(command[0], command, env)
 
 
+def parent_pid():
+    """This process's parent, for a test to replace: a worker under the signed launcher has it as its parent."""
+    return os.getppid()
+
+
+def signed_launcher(app):
+    """Whether app is the queue launcher, signed as the LaunchAgent requires it (Queue.launcher_plist)."""
+    try:
+        checked = subprocess.run(["/usr/bin/codesign", "--verify", "--strict", LAUNCHER_REQUIREMENT, str(app)],
+                                 capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError): return False
+    return checked.returncode == 0
+
+
 def starts(toolkit, commit):
     """None when the toolkit at commit imports what a worker runs, else why not: a worker checks this in a
     process of its own, from commit's files, before it moves there (Worker.toolkit), so that a commit that does
@@ -2390,12 +2406,27 @@ class Worker:
         try: users = disk.runners(disk.census(), shared, apart)
         except (OSError, RuntimeError, subprocess.SubprocessError) as error:
             return f"{UNKNOWN_USE}: {error}"
+        own = self.own_launcher(users)
+        users = [use for use in users if not (use[0].pid == own and use[1] == "argument")]
         if users:
             named = "; ".join(f"PID {process.pid} ({process.command or process.args.split(' ')[0] or '?'}), "
                               f"{how} {path}" for process, how, path in users[:SHOWN_USERS])
             more = f"; and {len(users) - SHOWN_USERS} more" if len(users) > SHOWN_USERS else ""
             return f"{IN_USE}: {named}{more}"
         return None
+
+    @staticmethod
+    def own_launcher(users):
+        """The PID of this worker's own signed launcher among users, or None. The LaunchAgent runs the launcher with
+        the worker's command as its arguments, which name the shared checkout's src/python, and the launcher waits
+        on the worker as its parent while move_to replaces the worker with a command from a toolkit copy: by its
+        arguments alone the launcher would hold back the checkout its own worker means to follow, as it did on
+        2026-11-10 (vocaro-engineering#374). Only the worker's parent counts, and only when it is the launcher's
+        executable in an app that verifies as signed; any other process, another launcher included, still does."""
+        parent = parent_pid()
+        process = next((process for process, _, _ in users if process.pid == parent), None)
+        found = process and LAUNCHER_ARGUMENTS.match(process.args)
+        return parent if found and signed_launcher(found.group(1)) else None
 
     @staticmethod
     def unlanded(shared, head):

@@ -5192,6 +5192,49 @@ class ToolkitsOwnWorker(Fixture):
         self.assertIn(f"moving to the toolkit at {landed[:12]}, origin/main, from {code[:12]}", said)
         self.assertFalse((mq.Queue(self.repo).directory / mq.MOVED).exists())
 
+    def test_a_worker_under_its_launcher_follows_after_moving_to_a_newer_toolkit(self):
+        """vocaro-engineering#374, as the production worker ran on 2026-11-10: the signed launcher started the worker
+        from the shared checkout, the worker moved to a toolkit copy, and the launcher, still its parent with the
+        original arguments, held back the checkout the worker then meant to follow."""
+        queue = mq.Queue(self.repo)
+        own = launcher_process(4242, queue, self.repo)
+        another = launcher_process(4343, queue, self.repo)
+        load = mq.load
+        # One try after the landing, as SharedCheckout makes it: a held-back checkout ends the worker at once.
+        limit = patch.object(mq, "FOLLOW_LIMIT", 0)
+        limit.start()
+        self.addCleanup(limit.stop)
+        later = self.toolkit_branch("later", lambda source: source + "\n# A later toolkit.\n")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        for name, processes in (("another launcher", [own, another]), ("own launcher", [own])):
+            with self.subTest(name):
+                self.commit(name.replace(" ", "-"), name.replace(" ", "-"))
+                [identifier] = self.add(name.replace(" ", "-"))
+                # The shared checkout on main, behind the landing to come.
+                run(self.repo, "git", "checkout", "-q", "-B", "main", "origin/main")
+                before = run(self.repo, "git", "rev-parse", "HEAD")
+                moves = len(self.moves)
+                with under_launcher(processes, 4242), contextlib.redirect_stdout(io.StringIO()) as said:
+                    self.assertEqual(self.work(), 0)
+                said = said.getvalue()
+                self.assertEqual(self.state(identifier)["state"], "landed")
+                self.assertEqual(len(self.moves), moves + 1, said)
+                # The moved worker runs from the copy, while its launcher's arguments still name the shared checkout.
+                self.assertIn(str(self.copy / "src/python"), self.moves[-1].command)
+                self.assertNotIn(str(self.repo / "src/python"), self.moves[-1].command)
+                after, main = run(self.repo, "git", "rev-parse", "HEAD"), run(self.repo, "git", "rev-parse", "origin/main")
+                if name == "own launcher":
+                    self.assertEqual(after, main)
+                    self.assertIn(f"fast-forwarded {self.repo} from {before[:12]} to {main[:12]}", said)
+                else:
+                    # The negative control: an unrelated launcher with the same arguments still holds it back.
+                    self.assertEqual(after, before)
+                    self.assertIn(f"{mq.IN_USE}: PID 4343 ({mq.LAUNCHER_PROGRAM}), argument {self.repo}/src/python", said)
+                    self.assertNotIn(f"PID 4242 ({mq.LAUNCHER_PROGRAM})", said)
+                # The next worker the launcher starts begins from the older toolkit again and moves.
+                mq.TOOLKIT_ROOT, mq.load = self.started, load
+        self.assertEqual(run(self.copy, "git", "log", "-1", "--format=%s", later), "Change the toolkit on later")
+
     def landed_again(self):
         """Work the entry a worker left queued: (exit, its state, what the worker said)."""
         [entry] = mq.Queue(self.repo).waiting()
@@ -5208,6 +5251,30 @@ class ToolkitsOwnWorker(Fixture):
         self.assertEqual((status, state), (1, "queued"))
         self.assertIn("could not start itself again", mq.Queue(self.repo).held())
         self.assertFalse((mq.Queue(self.repo).directory / mq.MOVED).exists())
+
+
+LAUNCHER_APP = "/Applications/Queue Launcher.app"
+
+
+def launcher_process(pid, queue, toolkit):
+    """A signed queue launcher as its LaunchAgent runs it (Queue.launcher_plist): the launcher's executable with the
+    worker's command from toolkit as its arguments, at the queue's main checkout, as ps and lsof show it."""
+    return mq.disk.Process(pid=pid, command=mq.LAUNCHER_PROGRAM, cwd=str(queue.main_checkout),
+                           args=" ".join([f"{LAUNCHER_APP}/Contents/MacOS/{mq.LAUNCHER_PROGRAM}",
+                                          *queue.command(toolkit, if_waiting=True)]))
+
+
+@contextlib.contextmanager
+def under_launcher(processes, parent, verified=True):
+    """The host's census is processes, this worker's parent is the PID parent, and a launcher app verifies as signed
+    when verified; yields the apps checked."""
+    checked = []
+    def signed(app):
+        checked.append(app)
+        return verified
+    with patch.object(mq.disk, "census", return_value=processes), patch.object(mq, "parent_pid", return_value=parent), \
+            patch.object(mq, "signed_launcher", signed):
+        yield checked
 
 
 class SharedCheckout(Fixture):
@@ -5391,6 +5458,37 @@ class SharedCheckout(Fixture):
         self.assertEqual(tries, [mq.FOLLOW_POLL] * 3)
         self.assertEqual(after, main)
         self.assertEqual(said.count(f"left {self.repo} as it is: {mq.IN_USE}"), 2)
+
+    def test_the_workers_own_signed_launcher_does_not_hold_it_back(self):
+        """vocaro-engineering#374: the LaunchAgent's launcher names the shared checkout's src/python in its arguments
+        and waits on the worker as its parent; it runs nothing from the checkout, so it does not hold it back."""
+        queue = mq.Queue(self.repo)
+        own = launcher_process(4242, queue, self.repo)
+        self.assertEqual([how for _, how, _ in mq.disk.runners([own], self.repo)], ["argument"],
+                         "the fixture's launcher is one the census counts by its arguments")
+        with under_launcher([own], 4242) as checked:
+            before, after, main, said = self.land()
+        self.assertEqual(after, main)
+        self.assertIn(f"fast-forwarded {self.repo} from {before[:12]} to {main[:12]}", said)
+        self.assertIn(LAUNCHER_APP, checked)
+        # The negative controls: another launcher, the parent unsigned or not a launcher, a launcher that is not the
+        # parent, and a process that runs from the checkout beside the worker's own launcher each still hold it back.
+        runner = mq.disk.Process(pid=4444, command="eng", cwd=str(self.repo / "scripts"))
+        worker = mq.disk.Process(pid=4242, command="python3", cwd=str(self.repo),
+                                 args=" ".join(queue.command(self.repo, if_waiting=True)))
+        cases = {"another launcher": ([own, launcher_process(4343, queue, self.repo)], 4242, True,
+                                      f"PID 4343 ({mq.LAUNCHER_PROGRAM}), argument {self.repo}/src/python"),
+                 "unsigned": ([own], 4242, False, f"PID 4242 ({mq.LAUNCHER_PROGRAM}), argument {self.repo}/src/python"),
+                 "not its parent": ([own], 4343, True, f"PID 4242 ({mq.LAUNCHER_PROGRAM}), argument"),
+                 "not a launcher": ([worker], 4242, True, f"PID 4242 (python3), argument {self.repo}/src/python"),
+                 "a run from it": ([own, runner], 4242, True, "PID 4444 (eng), working directory")}
+        for name, (processes, parent, verified, why) in cases.items():
+            with self.subTest(name), under_launcher(processes, parent, verified):
+                before, after, main, said = self.land()
+                self.assertEqual(after, before)
+                self.assertIn(f"left {self.repo} as it is: {mq.IN_USE}: ", said)
+                self.assertIn(why, said)
+                if name == "a run from it": self.assertNotIn(f"PID 4242 ({mq.LAUNCHER_PROGRAM})", said)
 
     def test_a_projects_queue_leaves_the_toolkits_checkout_alone(self):
         with patch.object(mq, "TOOLKIT_ROOT", ROOT):
