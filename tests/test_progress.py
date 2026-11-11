@@ -67,6 +67,38 @@ class CpuTests(unittest.TestCase):
 
 
 class MonitorTests(unittest.TestCase):
+    def test_the_1200_second_boundary_and_final_work_recheck_are_independent_of_real_time(self):
+        # Exact value verification, not a claim that a physical 20-minute run occurred or
+        # that this fixture value is calibrated for a production lane.
+        for channel in ("cpu", "output"):
+            with self.subTest(channel=channel), tempfile.TemporaryDirectory() as directory:
+                log = Path(directory) / "run.log"
+                log.touch()
+                monitor = progress.Monitor({"seconds": 1200, "action": "stop", "primaryControl": True},
+                                           log, Path(directory) / "progress.json")
+                used = [0]
+                def readings(identities):
+                    self.assertEqual(identities, {2: "worker-start"})
+                    return {2: ("worker-start", used[0])}
+                with patch.object(progress, "cpu", side_effect=readings), \
+                        patch.object(monitor, "publish", return_value=True), \
+                        contextlib.redirect_stderr(StringIO()):
+                    for moment in range(1201):
+                        with patch.object(progress.time, "monotonic", return_value=moment), \
+                                patch.object(progress.time, "time", return_value=moment):
+                            detail = monitor.observe({1: "controller-start", 2: "worker-start"}, excluded={1})
+                        self.assertEqual(bool(detail), moment == 1200)
+                    self.assertEqual(monitor.last["samples"], 1201)
+                    self.assertEqual(monitor.last["unobservableSamples"], 0)
+                    self.assertEqual(monitor.last["quietSeconds"], 1200)
+                    if channel == "cpu": used[0] = 1
+                    else: log.write_text("new work output")
+                    with patch.object(progress.time, "monotonic", return_value=1200.5), \
+                            patch.object(progress.time, "time", return_value=1200.5):
+                        self.assertIsNone(monitor.observe({1: "controller-start", 2: "worker-start"},
+                                                          excluded={1}, force=True))
+                    self.assertEqual(monitor.last["quietSeconds"], 0)
+
     def test_report_default_and_explicit_stop_use_this_lanes_own_output_and_processes(self):
         with tempfile.TemporaryDirectory() as directory:
             log, status, sibling = [Path(directory) / name for name in ("run.log", "progress.json", "sibling.log")]
@@ -164,10 +196,15 @@ class LaneTests(unittest.TestCase):
                 "test": {"command": ["true"], "stall": settings, **options}}}))
         self.assertEqual(parsed({"seconds": 10})["lanes"]["test"]["stall"], {"seconds": 10})
         parsed({"seconds": 10, "action": "stop", "reason": "measured healthy quiet intervals"})
+        for declared in (True, False):
+            self.assertIs(parsed({"seconds": 10, "primaryControl": declared})["lanes"]["test"]["stall"]["primaryControl"], declared)
         for settings in ({}, {"seconds": 0}, {"seconds": True}, {"seconds": 1, "extra": 0},
                          {"seconds": 1, "action": "ignore"}, {"seconds": 1, "action": "stop"},
                          {"seconds": 1, "action": "stop", "reason": " "}):
             with self.subTest(settings=settings), self.assertRaises(ValueError): parsed(settings)
+        for invalid in (None, 0, 1, "true", [], {}):
+            with self.subTest(primaryControl=invalid), self.assertRaisesRegex(ValueError, "primaryControl must be a boolean"):
+                parsed({"seconds": 10, "primaryControl": invalid})
         with self.assertRaises(ValueError): parsed({"seconds": 1}, resource="self")
 
     def test_direct_and_group_stalls_are_unmeasured_and_a_sibling_keeps_its_verdict(self):

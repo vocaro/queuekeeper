@@ -378,6 +378,16 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
         recognized.update((pid, identities[pid]) for pid in owners(identities, environment))
         return {pid for pid, start in recognized if identities.get(pid) == start}
 
+    def progress_controls(identities):
+        ignored = recognize(identities)
+        # Opt-in role declaration, never a name/CPU heuristic. root_active established this
+        # exact child's start identity; its descendant work still supplies CPU and output.
+        # No descendants means no readable work, not evidence of idleness. Serial callers
+        # and primary-process computation must retain the ordinary policy.
+        if progress.settings.get("primaryControl") is True:
+            ignored.add(child.pid)
+        return ignored
+
     def unowned(pids, identities):
         """These processes but the children of an admission owner among these processes. The owner
         forwards a stop to its command itself, and its other children are its own samples, which a
@@ -448,12 +458,12 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
             if progress is not None and root_active and expired is None and stopped is None:
                 # A nested admission's polling is control work, not evidence its command progresses.
                 observation = progress.last
-                detail = progress.observe(identities, recognize(identities))
+                detail = progress.observe(identities, progress_controls(identities))
                 if progress.last is not observation: note(progress=progress.last)
                 if detail and child.poll() is None:
                     # Recheck CPU/output immediately before committing to the stop. A completed
                     # command keeps its real verdict, and a new observation can invalidate the interval.
-                    detail = progress.observe(identities, recognize(identities), force=True)
+                    detail = progress.observe(identities, progress_controls(identities), force=True)
                     if detail and child.poll() is None:
                         expired, stalled = time.monotonic(), detail
                         print(f"supervise: stalled: {detail}; sending SIGTERM to the command (PID {child.pid}) "

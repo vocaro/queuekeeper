@@ -435,6 +435,55 @@ class ProcessTests(unittest.TestCase):
                 processes.run([sys.executable, "-c", "import time; time.sleep(30)"],
                               cwd=directory, log_path=Path(directory)/"run.log", timeout=0.1)
 
+    def test_only_an_explicit_primary_controller_can_exclude_its_cpu(self):
+        from vocaro_engineering import progress
+        # CPU is deterministic; real owned processes still exercise root identity, stop,
+        # descendant cleanup and the final verdict. The primary's polling advances CPU,
+        # while a working descendant must keep the entire command alive under either policy.
+        for primary, working in ((False, "primary"), (True, "primary"), (True, "descendant")):
+            with self.subTest(primaryControl=primary, working=working), tempfile.TemporaryDirectory() as directory:
+                here = Path(directory)
+                log = here / "lane.log"
+                log.touch()
+                monitor = progress.Monitor({"seconds": 1, "action": "stop", "primaryControl": primary},
+                                           log, here / "progress.json")
+                seen, ticks = [], [0]
+                def readings(identities):
+                    if not (here / "adopted").exists(): return None
+                    ticks[0] += 1
+                    root, descendant, *_ = map(int, (here / "children").read_text().split())
+                    seen.append((root, set(identities)))
+                    active = root if working == "primary" else descendant
+                    return {pid: (start, ticks[0] if pid == active else 0) for pid, start in identities.items()}
+                should_stop = primary and working == "primary"
+                root = STAYS if should_stop else ROOT.replace("raise SystemExit(3)", "time.sleep(3)")
+                with patch.object(progress, "cpu", side_effect=readings):
+                    result, error, births = self.outlive_the_root(directory, HANDLES_TERM, HANDLES_TERM,
+                        root=root, progress=monitor, timeout=stretched(5), kill_after=0.5,
+                        awaits="terminated" if should_stop else None)
+                self.assertEqual(len(births), 2)
+                self.assertTrue(seen)
+                self.assertTrue(all((root not in work) == primary for root, work in seen))
+                if should_stop:
+                    self.assertIsInstance(result, processes.Stalled, error)
+                else:
+                    self.assertEqual(result, 0, error)
+
+    def test_an_explicit_controller_without_workers_is_unobservable_not_stalled(self):
+        from vocaro_engineering import progress
+        with tempfile.TemporaryDirectory() as directory:
+            here = Path(directory)
+            status = here / "progress.json"
+            settings = {"seconds": 1, "action": "stop", "primaryControl": True}
+            self.assertEqual(processes.run([sys.executable, "-c", "import time; time.sleep(2)"],
+                cwd=directory, log_path=here / "run.log", progress_path=status,
+                timeout=stretched(10), stall=settings), 0)
+            recorded = json.loads(status.read_text())
+            self.assertGreater(recorded["samples"], 0)
+            self.assertEqual(recorded["unobservableSamples"], recorded["samples"])
+            self.assertIsNone(recorded["quietSeconds"])
+            self.assertEqual(recorded["state"], "exit-0")
+
     def test_a_timeout_stops_descendants_with_sigterm_then_sigkill_and_raises_timed_out_once_they_end(self):
         with tempfile.TemporaryDirectory() as directory:
             # The root stays until the timeout ends it; one descendant handles SIGTERM, one ignores it. The timeout
