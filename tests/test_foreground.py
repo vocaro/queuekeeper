@@ -256,9 +256,16 @@ class SlotTests(unittest.TestCase):
         def said(text):
             self.said.append(text)
             if "held by other run" in text: stopped.append(signal.SIGTERM)
-        with patch.object(processes, "requested", side_effect=lambda: stopped[0] if stopped else None), \
+        with patch.object(foreground, "time") as clock, \
+                patch.object(processes, "requested", side_effect=lambda: stopped[0] if stopped else None), \
                 patch.object(self.record, "reserve", wraps=self.record.reserve) as reserve, \
                 patch.object(voiceover_state, "preserved") as preserve:
+            # One held poll, then an expired deadline: cancellation must win on the next read.
+            # No scheduler pause changes the order, and the old loop still reaches its timeout.
+            clock.monotonic.return_value = 0
+            def after_poll(_seconds):
+                clock.monotonic.return_value = 1
+            clock.sleep.side_effect = after_poll
             with self.assertRaisesRegex(processes.Interrupted, "SIGTERM.*waiting for.*foreground"):
                 with self.slot(said=said, timeout=0.2): self.fail("canceled command started")
         reserve.assert_not_called()
