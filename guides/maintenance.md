@@ -427,6 +427,11 @@ The checkout itself is no such use: every Claude session in a worktree inside it
 `--project-config-root`, and the session's MCP servers and language servers start there, while a run
 from it, such as `python3 scripts/eng`, names a file below it
 ([vocaro-engineering#182](https://github.com/vocaro/vocaro-engineering/issues/182)).
+Nor is a program other than Python whose only tie is its working directory, such as a session's shell
+left in `src/python` (only Python loads code from there unnamed), or a signed queue
+launcher, which names the checkout's `src/python` in its arguments but only waits on the worker it
+started, which counts by its own (`Worker.stays`,
+[vocaro-engineering#384](https://github.com/vocaro/vocaro-engineering/issues/384)).
 A running `eng` keeps the modules it loaded at its start but reads six others when first used, and a
 lane that starts another `eng` reads the tree as it is then, so a run spanning the move could mix two
 toolkits. Otherwise the worker leaves the checkout as it is and its log says why, naming up to five

@@ -198,19 +198,21 @@ def users(processes, path, apart=()):
                                                *(token for token in SEPARATORS.split(process.args) if token.startswith("/"))])]
 
 
-def runners(processes, root, apart=()):
+def runners(processes, root, apart=(), placed=lambda process: True):
     """(process, how, path) for each process that may run code from root's own tree: its working directory, an open
     file or an argument is below root, not at root itself and not below any of apart, where an argument relative to
     its working directory counts when it names a file there, or a folder by a path with a slash. A process whose only tie is root itself, a
     session's project root passed as an argument or a helper it started there, runs nothing from the tree; a run
-    from root, such as `python3 scripts/eng`, names a file below it (vocaro-engineering#182)."""
+    from root, such as `python3 scripts/eng`, names a file below it (vocaro-engineering#182). A working directory
+    counts only for a process placed says may load code from it; its relative arguments still resolve there."""
     top = canonical(root)
     def below(value):
         return bool(value) and canonical(value) != top and within(value, root) \
             and not any(within(value, other) for other in apart)
     found = []
     for process in processes:
-        uses = [(process.cwd, "working directory")] + [(name, "open file") for name in process.paths]
+        uses = [(process.cwd, "working directory")] if placed(process) else []
+        uses += [(name, "open file") for name in process.paths]
         for token in SEPARATORS.split(process.args):
             if token.startswith("/"): uses.append((token, "argument"))
             elif token and not token.startswith("-") and process.cwd and within(process.cwd, root):

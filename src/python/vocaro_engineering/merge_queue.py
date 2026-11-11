@@ -2055,9 +2055,14 @@ def execute(command, env):
     os.execve(command[0], command, env)
 
 
-def parent_pid():
-    """This process's parent, for a test to replace: a worker under the signed launcher has it as its parent."""
-    return os.getppid()
+def loads_from_working_directory(process):
+    """Whether process may load toolkit code from its working directory without naming it: Python, which puts that
+    directory first on its import path for `-c`, `-m` and its prompt, or a process the census could not name. Any
+    other program there, such as a session's shell left in src/python or a tool a run started there (on 2026-11-11
+    zsh and idevicesyslog, vocaro-engineering#384), runs nothing of the tree but what an argument names, and what
+    it starts later reads one toolkit, the tree as it is then."""
+    names = [process.command, os.path.basename(process.args.split(" ")[0])]
+    return not any(names) or any(name.lower().startswith("python") for name in names)
 
 
 def signed_launcher(app):
@@ -2443,11 +2448,11 @@ class Worker:
         listed = text(shared, "worktree", "list", "--porcelain").splitlines()
         apart = [Path(line[len("worktree "):]) for line in listed[1:] if line.startswith("worktree ")]
         apart.append(Path(text(shared, "rev-parse", "--path-format=absolute", "--git-common-dir")))
-        try: users = disk.runners(disk.census(), shared, apart)
+        try: users = disk.runners(disk.census(), shared, apart, placed=loads_from_working_directory)
         except (OSError, RuntimeError, subprocess.SubprocessError) as error:
             return f"{UNKNOWN_USE}: {error}"
-        own = self.own_launcher(users)
-        users = [use for use in users if not (use[0].pid == own and use[1] == "argument")]
+        launchers = self.launchers(users)
+        users = [use for use in users if not (use[0].pid in launchers and use[1] == "argument")]
         if users:
             named = "; ".join(f"PID {process.pid} ({process.command or process.args.split(' ')[0] or '?'}), "
                               f"{how} {path}" for process, how, path in users[:SHOWN_USERS])
@@ -2456,17 +2461,19 @@ class Worker:
         return None
 
     @staticmethod
-    def own_launcher(users):
-        """The PID of this worker's own signed launcher among users, or None. The LaunchAgent runs the launcher with
-        the worker's command as its arguments, which name the shared checkout's src/python, and the launcher waits
-        on the worker as its parent while move_to replaces the worker with a command from a toolkit copy: by its
-        arguments alone the launcher would hold back the checkout its own worker means to follow, as it did on
-        2026-11-10 (vocaro-engineering#374). Only the worker's parent counts, and only when it is the launcher's
-        executable in an app that verifies as signed; any other process, another launcher included, still does."""
-        parent = parent_pid()
-        process = next((process for process, _, _ in users if process.pid == parent), None)
-        found = process and LAUNCHER_ARGUMENTS.match(process.args)
-        return parent if found and signed_launcher(found.group(1)) else None
+    def launchers(users):
+        """The PIDs of the signed queue launchers among users. The LaunchAgent runs the launcher with a worker's
+        command as its arguments, which name the shared checkout's src/python, and the launcher, a native program
+        (src/objc/QueueLauncher), only spawns that command once and waits on it: by its arguments alone it would hold
+        back the checkout, its own worker's included, as it did on 2026-11-10 and 2026-11-11 (vocaro-engineering#374,
+        #384). The worker it started counts by its own arguments while it runs from the checkout, until move_to
+        replaces it with a command from a toolkit copy. Only the launcher's executable in an app that verifies as
+        signed is passed over; any other process with such arguments still counts."""
+        found = {}
+        for process, _, _ in users:
+            match = LAUNCHER_ARGUMENTS.match(process.args)
+            if match: found.setdefault(match.group(1), []).append(process.pid)
+        return {pid for app, pids in found.items() if signed_launcher(app) for pid in pids}
 
     @staticmethod
     def unlanded(shared, head):

@@ -351,6 +351,11 @@ class WorktreeTests(Fixture):
         self.assertEqual(found[0][1:], ("argument", str(checkout / "scripts/eng")))
         self.assertEqual(found[1][1], "working directory")
         self.assertEqual(found[2][1], "open file")
+        # A working directory placed does not count leaves a process only its other ties (vocaro-engineering#384):
+        # 7 has none, while 6's relative argument still resolves there and 11 still names a folder by one.
+        placed = disk.runners(processes, checkout, apart=[nested], placed=lambda process: process.pid != 7)
+        self.assertEqual([process.pid for process, _, _ in placed], [6, 8, 9, 11])
+        self.assertEqual(placed[0][1:], ("argument", str(checkout / "scripts/eng")))
         # users, which keeps a checkout from being moved, still counts each use at its root.
         self.assertEqual([process.pid for process in disk.users(processes, checkout, apart=[nested])],
                          [1, 2, 3, 10, 6, 7, 8, 9, 11])
