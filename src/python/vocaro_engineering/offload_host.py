@@ -180,6 +180,13 @@ STOP_LOG, STOP_WAIT_SECONDS, STOP_SECONDS = "leftover-stops.jsonl", 5, 30
 # from measurement (vocaro-engineering#179). A line that would take it past HOLD_LOG_LIMIT bytes first makes it
 # the previous generation, as the admission log does, so the two stay within twice it.
 HOLD_LOG, PREVIOUS_HOLD_LOG, HOLD_LOG_LIMIT = "simulator-holds.jsonl", "simulator-holds.1.jsonl", 4 << 20
+# The log of listings (`listing`) that took SLOW_LISTING_SECONDS or more, beside the reap log, kept as HOLD_LOG is,
+# and how many processes one line names at most in each of its lists. A `ps -axww ... args=` listing of every
+# process took over a minute beside the Swift lanes at a gate's start on 2026-11-10, where it normally takes under
+# a second, and was not reproduced by load alone; each line records what it could have waited on
+# (vocaro-engineering#386).
+SLOW_LISTING_SECONDS, SLOW_LISTING_KEPT = 5, 40
+SLOW_LISTING_LOG, PREVIOUS_SLOW_LISTING_LOG, SLOW_LISTING_LIMIT = "slow-listings.jsonl", "slow-listings.1.jsonl", 1 << 20
 # Set on the reservation `eng simulator-pool take` makes, never a run's own (ALONE), naming the pool, so that
 # reap logs its release in HOLD_LOG.
 TAKEN = "takenFromPool"
@@ -1251,13 +1258,72 @@ def disk_writes(pid):
     return usage.logicalWrites
 
 
-def listing(command, timeout=60):
+def listing(command, timeout=60, clock=time.monotonic):
     """A command's standard output whatever its status, or None when it cannot run: lsof exits 1
-    when it finds nothing, or when a process it looked at has ended."""
+    when it finds nothing, or when a process it looked at has ended. One that takes SLOW_LISTING_SECONDS or
+    more, or outlasts its timeout after that long, is logged in SLOW_LISTING_LOG (log_slow_listing)."""
+    began, outcome, found = clock(), "ended", None
     try:
-        return subprocess.run(command, capture_output=True, text=True, timeout=timeout).stdout
+        found = subprocess.run(command, capture_output=True, text=True, timeout=timeout).stdout
+    except subprocess.TimeoutExpired:
+        outcome = "timed out"
     except (OSError, subprocess.SubprocessError):
         return None
+    took = clock() - began
+    if took >= SLOW_LISTING_SECONDS: log_slow_listing(command, took, outcome, timeout)
+    return found
+
+
+def elapsed(text):
+    """Seconds in a ps etime, [[DD-]HH:]MM:SS, or infinity for one it cannot read."""
+    days, _, rest = text.rpartition("-")
+    try:
+        seconds = 0
+        for part in rest.split(":"): seconds = seconds * 60 + int(part)
+        return seconds + int(days or 0) * 86400
+    except ValueError:
+        return float("inf")
+
+
+def log_slow_listing(command, took, outcome, timeout, directory=None):
+    """Append a line on one slow listing to SLOW_LISTING_LOG; True once written. Beside the command and how long
+    it took, it records what a slow `ps ... args=` could have waited on (vocaro-engineering#386): the load, the
+    memory pressure and swap, and from a listing that reads no process's arguments, how many processes there are,
+    those in uninterruptible wait (U), and the youngest by command name. It never raises: the listing's caller
+    goes on whatever happens here."""
+    try:
+        line = {"time": datetime.now(timezone.utc).isoformat(timespec="seconds"), "command": list(command),
+                "seconds": round(took, 2), "outcome": outcome, "timeout": timeout, "pid": os.getpid(),
+                "caller": " ".join(sys.argv[:3])[:200]}
+        with contextlib.suppress(OSError): line["load"] = [round(value, 1) for value in os.getloadavg()]
+        def quick(command):
+            try: return subprocess.run(command, capture_output=True, text=True, timeout=10).stdout.strip() or None
+            except (OSError, subprocess.SubprocessError): return None
+        line["pressure"] = quick(["sysctl", "-n", "kern.memorystatus_vm_pressure_level"])
+        line["swap"] = quick(["sysctl", "-n", "vm.swapusage"])
+        states = quick(["ps", "-A", "-o", "pid=,stat=,etime=,comm="])
+        if states is not None:
+            rows = [row for row in (text.split(None, 3) for text in states.splitlines())
+                    if len(row) == 4 and row[0].isdigit()]
+            line["processes"] = len(rows)
+            line["uninterruptible"] = [" ".join(row) for row in rows if "U" in row[1]][:SLOW_LISTING_KEPT]
+            names = {}
+            for row in rows:
+                if elapsed(row[2]) <= took + 5: names[Path(row[3]).name] = names.get(Path(row[3]).name, 0) + 1
+            line["startedDuring"] = dict(sorted(names.items(), key=lambda item: -item[1])[:SLOW_LISTING_KEPT])
+        path = (directory or admission_directory()) / SLOW_LISTING_LOG
+        data = (json.dumps(line) + "\n").encode()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with contextlib.suppress(FileNotFoundError):
+            size = path.stat().st_size
+            if size and size + len(data) > SLOW_LISTING_LIMIT:
+                path.replace(path.with_name(PREVIOUS_SLOW_LISTING_LOG))
+        descriptor = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NONBLOCK, 0o644)
+        try: os.write(descriptor, data)
+        finally: os.close(descriptor)
+        return True
+    except Exception:
+        return False
 
 
 def process_table(text):
