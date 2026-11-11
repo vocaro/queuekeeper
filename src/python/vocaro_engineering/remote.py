@@ -2916,7 +2916,9 @@ def simulators(command):
 
 # Where the system tools a command starts or uses as an interpreter live, the same on both Macs: a path under one of
 # these names no file of this Mac's alone (local_paths). /dev too, for /dev/null in a shell's redirection.
+# A root itself, spelled without its slash as PATH=/usr/bin:/bin spells it, is shared too (#379), though /binary is not.
 SHARED_PATHS = ("/usr/", "/bin/", "/sbin/", "/dev/", "/opt/homebrew/", "/Library/Developer/")
+SHARED_ROOTS = tuple(path.rstrip("/") for path in SHARED_PATHS)
 SHARED_PATTERNS = (re.compile(r"/Applications/Xcode[^/]*\.app(/|$)"),)
 # What separates paths within one word of a command: a shell's words in `sh -c '…'`, an option's value after = or :.
 PATH_SEPARATOR = re.compile(r"""[\s'"=:;&|()<>]+""")
@@ -2934,7 +2936,8 @@ def local_paths(command, top):
                 return f"it names {part}, under this Mac's home, which the second Mac's checkout does not hold"
             # A URL's //host/path, split at its scheme's colon, is no path.
             if not part.startswith("/") or part == "/" or part.startswith("//"): continue
-            if part.startswith(SHARED_PATHS) or any(pattern.match(part) for pattern in SHARED_PATTERNS): continue
+            if part.startswith(SHARED_PATHS) or part in SHARED_ROOTS: continue
+            if any(pattern.match(part) for pattern in SHARED_PATTERNS): continue
             found = shutil.which(Path(part).name)
             if found and os.path.realpath(found) == os.path.realpath(part): continue
             resolved = Path(os.path.realpath(part))

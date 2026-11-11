@@ -4474,6 +4474,11 @@ exec {shlex.quote(real)} "$@"
                             (["~/notes.txt"], "it names ~/notes.txt, under this Mac's home"),
                             (["--output=/tmp/out"], f"it names /tmp/out, {outside}"),
                             (["sh", "-c", "cat /tmp/in > out.txt"], f"it names /tmp/in, {outside}"),
+                            # A name that only begins like a shared root is no shared root (#379).
+                            (["/binary"], f"it names /binary, {outside}"),
+                            (["PATH=/usr/bin:/sbin-private"], f"it names /sbin-private, {outside}"),
+                            (["PATH=/bin:/opt/homebrew-old/bin"], f"it names /opt/homebrew-old/bin, {outside}"),
+                            (["PATH=/bin:/tmp/x"], f"it names /tmp/x, {outside}"),
                             # The checkout by a path that resolves to it, /var for /private/var.
                             ([str(self.project / "pkg")], f"it names this checkout's path {self.project / 'pkg'}")]:
             with self.subTest(words):
@@ -4482,8 +4487,14 @@ exec {shlex.quote(real)} "$@"
         which = shutil.which("git")
         controls = ["/usr/bin/true", "/bin/sh", "2>/dev/null", "/opt/homebrew/bin/python3",
                     "/Applications/Xcode-beta.app/Contents/Developer", "/Library/Developer/CommandLineTools",
-                    "pkg/README.md", "./pkg", "https://example.com/a/b", "--flag", *([which] if which else [])]
+                    "pkg/README.md", "./pkg", "https://example.com/a/b", "--flag", *([which] if which else []),
+                    # Each shared root bare as its trailing-slash spelling, as a PATH assignment names them (#379).
+                    "PATH=/usr/bin:/bin:/usr/sbin:/sbin", "/bin", "/sbin/", "/usr", "/dev", "/opt/homebrew",
+                    "/Library/Developer", "/Applications/Xcode.app"]
         self.assertIsNone(remote.local_paths(controls, top))
+        for root in remote.SHARED_PATHS:
+            with self.subTest(root=root):
+                self.assertIsNone(remote.local_paths([root, root.rstrip("/"), f"PATH={root.rstrip('/')}"], top))
         # End to end: a scratch path keeps it here, naming why, and the controls go to the second Mac.
         status, output, error = self.admit_in(self.project, "--", *probe, "/tmp/x")
         self.assertEqual((status, self.ran_in()), (0, self.project.resolve()), output + error)
@@ -4498,6 +4509,20 @@ exec {shlex.quote(real)} "$@"
         self.assertEqual(status, 0, output + error)
         self.assertIn("  never offered to the second Mac: 1, held ", output)
         self.assertIn(f"    {reason}: 1, held ", output)
+        # An explicit interpreter PATH that spells /bin and /sbin bare is offered to the second Mac (#379), and the
+        # same command with a look-alike root or --here stays here.
+        path = "PATH=/usr/bin:/bin:/usr/sbin:/sbin"
+        status, output, error = self.admit_in(self.project, "--", *probe, path)
+        self.assertEqual((status, self.ran_in()), (0, self.checkout(0).resolve()), output + error)
+        self.assertEqual(json.loads((self.project / ".build/engineering/remote/admit/source.json").read_text())["ranOn"],
+                         "second Mac")
+        status, output, error = self.admit_in(self.project, "--", *probe, "PATH=/usr/bin:/binary")
+        self.assertEqual((status, self.ran_in()), (0, self.project.resolve()), output + error)
+        self.assertIn(f"eng: running the command on this Mac: it names /binary, {outside}", error)
+        status, output, error = self.admit_in(self.project, "--here", "--", *probe, path)
+        self.assertEqual((status, self.ran_in()), (0, self.project.resolve()), output + error)
+        self.assertEqual(json.loads((self.project / ".build/engineering/admit/source.json").read_text())["hereBecause"],
+                         "eng admit --here")
         self.assertNotIn("  offered to the second Mac and declined:", output)
         status, output, error = self.admit_in(self.project, "--", *probe, "/usr/bin/true", "pkg/README.md")
         self.assertEqual((status, self.ran_in()), (0, self.checkout(0).resolve()), output + error)
