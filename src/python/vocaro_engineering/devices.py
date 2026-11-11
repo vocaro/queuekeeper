@@ -867,15 +867,25 @@ def git_object(word, root=None):
         return False
 
 
-def named(words, known=(), root=None):
+def named(words, known=(), root=None, *, commits=()):
     """The device identifiers words name, uppercased: every hardware UDID, and each of known that appears.
 
     Forty hex digits are an older device's UDID, a commit's whole SHA-1 or a code-signing identity's,
     so such a word that a signing identity's setting or option takes (SIGNING), or that the Git of
-    root's checkout knows as an object (git_object), names no device."""
-    text = " ".join(map(str, words)).upper()
-    found = {match.group() for match in NAMED_PHYSICAL.finditer(text) if len(match.group()) != 40 or not (
-        SIGNING.search(text, 0, match.start()) or git_object(match.group(), root))}
+    root's checkout knows as an object (git_object), names no device. Explicitly verified foreign
+    commits exempt only a whole argument, never an identifier in a device option or shell string.
+    Known devices remain devices even when their identifiers also name Git objects."""
+    words = [str(word) for word in words]
+    text = " ".join(words).upper()
+    commits = {commit.upper() for commit in commits}
+    # Retain a placeholder rather than deleting a word: deleting a signing identity's value
+    # could make its option appear to take the next argument instead. An option's value remains
+    # subject to the ordinary check; the declaration is for bare positional commit arguments.
+    scanned = " ".join("_" if word.upper() in commits and not (
+        index and words[index - 1].startswith("-") and words[index - 1] != "--") else word
+        for index, word in enumerate(words)).upper()
+    found = {match.group() for match in NAMED_PHYSICAL.finditer(scanned) if len(match.group()) != 40 or not (
+        SIGNING.search(scanned, 0, match.start()) or git_object(match.group(), root))}
     found.update(udid.upper() for udid in known if isinstance(udid, str) and udid and udid.upper() in text)
     return found
 
@@ -894,7 +904,8 @@ class BoundedRun:
     The bound is the reservations' remaining time, less what the run keeps for its termination
     and the session's restoration, and at most limit."""
 
-    def __init__(self, keys, owner, words, *, record=None, revision=None, limit=None, restoration=None, root=None):
+    def __init__(self, keys, owner, words, *, record=None, revision=None, limit=None, restoration=None, root=None,
+                 commits=()):
         keys = list(dict.fromkeys(keys))
         if not keys:
             raise ValueError("a bounded run names the device entries it uses")
@@ -918,7 +929,7 @@ class BoundedRun:
             self.revisions = {}
             self.devices, self.deadline = self._held(keys, entries, revision)
         held = set(self.devices.values())
-        for udid in sorted(named(words, [entry.get("device") for entry in entries.values()], root) - held):
+        for udid in sorted(named(words, [entry.get("device") for entry in entries.values()], root, commits=commits) - held):
             holders = [key for key, entry in entries.items() if str(entry.get("device") or "").upper() == udid]
             whose = f", {' and '.join(holders)}'s device," if holders else ""
             raise Refused(f"the command names {udid}{whose} but the run holds only "

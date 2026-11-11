@@ -1695,8 +1695,8 @@ class Lease(devices.BoundedRun):
     so the owner's lines never leave it, and offload_host.py, which imports nothing of the toolkit,
     runs no copy of the watch."""
 
-    def __init__(self, keys, owner, words, *, record, root, budget):
-        super().__init__(keys, owner, words, record=record, root=root)
+    def __init__(self, keys, owner, words, *, record, root, budget, commits=()):
+        super().__init__(keys, owner, words, record=record, root=root, commits=commits)
         self.window = {"devices": dict(self.devices), "until": self.deadline.isoformat(),
                        "cleanupSeconds": self.keep, "budgetSeconds": budget}
 
@@ -1745,7 +1745,7 @@ def named_devices(words, record=None):
             if devices.physical(udid) and udid in named}
 
 
-def lease(keys, owner, words, record=None, root=None, *, budget=None):
+def lease(keys, owner, words, record=None, root=None, *, budget=None, commits=()):
     """The reservations held here that a run on the second Mac carries, or None when it uses no physical
     device.
 
@@ -1754,7 +1754,8 @@ def lease(keys, owner, words, record=None, root=None, *, budget=None):
     them. The second Mac reaches the paired devices too, and its own record refuses them, so
     without a key a command that names any hardware UDID is refused, whether or not this record
     holds its device: a run on a device goes through a reservation. Forty hex digits that the Git
-    of root's checkout knows as an object, such as a commit's whole hash, name no device (devices.named)."""
+    of root's checkout knows as an object, such as a commit's whole hash, name no device (devices.named).
+    commits contains only hashes verified by commit_arguments; it exempts exact positional arguments."""
     record = record or devices.Record()
     if not keys:
         named = named_devices(words, record)
@@ -1763,14 +1764,14 @@ def lease(keys, owner, words, record=None, root=None, *, budget=None):
             raise devices.Refused(f"the command names {key}'s device {udid}, which no --device covers: reserve {key} "
                                   f"here and add --device {key}. Nothing was sent")
         # A device no entry here holds, which the second Mac may reach all the same.
-        for udid in sorted(devices.named(words, root=root)):
+        for udid in sorted(devices.named(words, root=root, commits=commits)):
             raise devices.Refused(f"the command names the hardware UDID {udid}, which no entry of this Mac's record "
                                   "holds and no --device covers: reserve its device here under a key and add "
                                   "--device KEY. Nothing was sent")
         return None
     if not owner:
         raise ValueError(f"name the session whose reservations --device carries: --device-owner, or {devices.OWNER}")
-    return Lease(keys, owner, words, record=record, root=root, budget=budget)
+    return Lease(keys, owner, words, record=record, root=root, budget=budget, commits=commits)
 
 
 def carrying(lease, root, host, work, name, send):
@@ -2269,6 +2270,26 @@ def not_run_if_busy(name, send):
         return BUSY
 
 
+def commit_arguments(declarations):
+    """Verify --git-commit REPOSITORY=SHA locally, before dispatch. Only commits qualify; no repository
+    path or exemption needs to reach the second Mac, whose admitted command keeps the original argv."""
+    commits = set()
+    for declaration in declarations:
+        repository, separator, commit = declaration.rpartition("=")
+        if not separator or not repository or not re.fullmatch(r"[0-9a-fA-F]{40}", commit):
+            raise ValueError("--git-commit needs REPOSITORY=SHA with a full 40-digit commit hash")
+        try:
+            result = subprocess.run(["git", "--no-replace-objects", "-C", repository, "cat-file", "-t", commit],
+                                    env=environment(),
+                                    capture_output=True, text=True, timeout=devices.OBJECT_TIMEOUT)
+        except (OSError, subprocess.SubprocessError) as error:
+            raise ValueError(f"--git-commit could not verify {commit} in {repository}: {error}") from error
+        if result.returncode or result.stdout.strip() != "commit":
+            raise ValueError(f"--git-commit {commit} is not a commit in {repository}")
+        commits.add(commit.upper())
+    return commits
+
+
 def main(root, config, args):
     if args.operation == "passed":
         receipt = passed(root, args.lane, args.commit)
@@ -2317,8 +2338,9 @@ def main(root, config, args):
         (["--foreground"] if args.foreground else []) + \
         [word for app in (getattr(args, "app", None) or []) for word in ("--app", app)] + \
         (["--time-limit", f"{args.time_limit:g}"] if args.time_limit is not None else [])
+    commits = commit_arguments(getattr(args, "git_commit", None) or [])
     held = lease(args.device or [], args.device_owner or devices.default_owner(), command, root=root,
-                 budget=args.time_limit)
+                 budget=args.time_limit, commits=commits)
     work = ["admit", *kind, "--", *command]
     sent = {}
     send = lambda: execute(root, config, host, work, lease=held, sent=sent, slot=slot, slot_wait=slot_wait)

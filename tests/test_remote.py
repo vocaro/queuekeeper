@@ -1190,6 +1190,55 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual(status, 0, error)
         self.assertIn(f"signed {IDENTITY} CODE_SIGN_IDENTITY={IDENTITY.lower()} codesign -f -s {IDENTITY}", output)
 
+    def test_a_verified_foreign_commit_argument_runs_without_a_device_reservation(self):
+        # A real commit in another repository, absent from the caller and from the second Mac's checkout.
+        elsewhere = git(self.toolkit, "rev-parse", "HEAD")
+        self.assertFalse(devices.git_object(elsewhere, self.project))
+        declaration = f"{self.toolkit}={elsewhere}"
+        status, output, error = self.eng(
+            "remote", "admit", "--git-commit", declaration, "--", sys.executable, "-c",
+            "import sys; print('foreign', sys.argv[1])", elsewhere)
+        self.assertEqual(status, 0, error)
+        self.assertIn(f"foreign {elsewhere}", output)
+        self.assertFalse(devices.git_object(elsewhere, self.checkout(0)))
+
+    def test_foreign_commit_declarations_preserve_hardware_checks_and_require_a_commit(self):
+        elsewhere = git(self.toolkit, "rev-parse", "HEAD")
+        declaration = f"{self.toolkit}={elsewhere}"
+        for word in [f"platform=iOS,id={elsewhere}", "ab12" * 10, PHONE]:
+            with self.subTest(word=word):
+                status, _output, error = self.eng(
+                    "remote", "admit", "--git-commit", declaration, "--", sys.executable, "-c", "pass", word)
+                self.assertEqual(status, 2)
+                self.assertIn("hardware UDID", error)
+                self.assertTrue(self.nothing_sent())
+        status, _output, error = self.eng(
+            "remote", "admit", "--git-commit", declaration, "--", "tool", "--device", elsewhere)
+        self.assertEqual(status, 2)
+        self.assertIn("hardware UDID", error)
+        self.assertTrue(self.nothing_sent())
+        # A known device stays a device, even when its identifier is also a real commit.
+        self.hold(device=elsewhere.upper())
+        status, _output, error = self.eng(
+            "remote", "admit", "--git-commit", declaration, "--", sys.executable, "-c", "pass", elsewhere)
+        self.assertEqual(status, 2)
+        self.assertIn("which no --device covers", error)
+        self.assertTrue(self.nothing_sent())
+        tree = git(self.toolkit, "rev-parse", "HEAD^{tree}")
+        # Replacement refs can make an arbitrary forty-digit identifier look like a commit.
+        # The declaration must verify the object itself, not a replacement for it.
+        forged = "ab12" * 10
+        git(self.toolkit, "replace", "-f", forged, elsewhere)
+        self.assertEqual(git(self.toolkit, "cat-file", "-t", forged), "commit")
+        for invalid in [str(self.toolkit), f"{self.toolkit}=HEAD", f"{self.project}={elsewhere}",
+                        f"{self.toolkit}={tree}", f"{self.toolkit}={'ab12' * 10}"]:
+            with self.subTest(invalid=invalid):
+                status, _output, error = self.eng(
+                    "remote", "admit", "--git-commit", invalid, "--", sys.executable, "-c", "pass", elsewhere)
+                self.assertEqual(status, 2)
+                self.assertIn("--git-commit", error)
+                self.assertTrue(self.nothing_sent())
+
     def test_recovering_a_run_sent_here_waits_for_what_on_the_second_mac_names_its_device(self):
         # Its own device, which no other test's processes name, nor another run's of this suite (#80).
         udid = f"00008730-{uuid.uuid4().hex[:16].upper()}"

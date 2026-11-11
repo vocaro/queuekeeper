@@ -2540,6 +2540,16 @@ python3 scripts/eng remote run --device iPhone LANE -- ARGUMENTS
   without it. `eng run` keeps a lane whose arguments name a physical device of this record on
   this Mac, and `eng admit` a command that names any hardware UDID.
 
+A dependency commit can be absent from the caller's Git object database. Declare it before the
+command with `eng remote admit --git-commit /path/to/dependency=FULL_SHA -- COMMAND FULL_SHA`.
+The repeatable option verifies the full 40-digit hash as a commit in that local repository before
+sending anything. Only an exact, separate positional command argument is exempt; `id=FULL_SHA`, a hash following
+an option, or a hash inside a shell command string still follows the device checks. A device known
+to the record always needs its reservation. The command receives the original hash unchanged;
+the dependency checkout path is used only for local verification and need not exist on the
+second Mac. A missing object, tree, tag object, invalid hash, or unreadable repository refuses
+the dispatch. Declare each foreign commit separately; this grants no exemption to other hashes.
+
 `eng doctor` reports both Macs' records under `deviceRecord`. It is an error for this Mac's record
 to defer physical devices, or for the second Mac's to hold one or to defer them to another Mac;
 a record there that defers them to no Mac yet is listed as unchecked until the next run.

@@ -1162,6 +1162,9 @@ def perform(argv, report):
         "test, as eng admit's")
     remote_admit.add_argument("--time-limit", type=float, metavar="SECONDS", help="seconds the command may run "
         f"there once admitted, as eng admit's (default {processes.DEFAULT_LIMIT})")
+    remote_admit.add_argument("--git-commit", action="append", metavar="REPOSITORY=SHA", help="verify a full "
+        "foreign commit hash in a local repository, so its exact positional argument names no hardware device "
+        "(repeatable); device options and known device identifiers still require reservations")
     remote_admit.add_argument("command", nargs=argparse.REMAINDER, help="the command and its arguments, after --")
     remote_passed = operations.add_parser("passed", help="exit 0 when the whole lane passed on the second Mac at "
         "exactly this commit; a snapshot's run never counts")
