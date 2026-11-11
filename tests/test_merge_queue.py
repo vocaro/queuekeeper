@@ -118,8 +118,10 @@ class Replaced(Exception):
 
 
 class Fixture(unittest.TestCase):
+    ROOT_PREFIX = "tmp"
+
     def setUp(self):
-        self.base = Path(tempfile.mkdtemp()).resolve()
+        self.base = Path(tempfile.mkdtemp(prefix=self.ROOT_PREFIX)).resolve()
         self.addCleanup(shutil.rmtree, self.base, ignore_errors=True)
         guard = patch.object(mq, "execute", never_exec)
         guard.start()
@@ -164,6 +166,8 @@ class Fixture(unittest.TestCase):
         (self.repo / "CLAUDE.md").write_text(f"{cli.CLAUDE_ENTRY}\n")
         (self.repo / "engineering.json").write_text(json.dumps({
             "schemaVersion": 1, "name": "fixture", "integration": "direct-main",
+            # Generated paths are opaque identities, including when embedded in fixture source.
+            "spelling": {"exemptPhrases": {str(self.base): "the generated root is an opaque fixture identity"}},
             "queue": {"carryOver": {"records/": "no lane reads it"}},
             "lanes": {"gate": {"command": ["python3", "lane.py", str(self.counter), str(self.status)]}}}))
         run(self.repo, "git", "add", ".")
@@ -5010,6 +5014,8 @@ class ToolkitsOwnWorker(Fixture):
     """The toolkit's own queue judging its main with the toolkit at origin/main, not the code its worker was started
     from (vocaro-engineering#177). The fixture's project is the toolkit: it holds the toolkit's Python, and the
     worker starts from a checkout of it at the first commit, as from the shared checkout before follow moves it."""
+    ROOT_PREFIX = "fixture_" + "oei" + "tre_"
+
     def setUp(self):
         super().setUp()
         shutil.copytree(ROOT / "src/python", self.repo / "src/python", ignore=shutil.ignore_patterns("__pycache__"))
@@ -5018,8 +5024,11 @@ class ToolkitsOwnWorker(Fixture):
         # Its own toolkit, as the toolkit's engineering.json names it, with the toolkit's spelling exemptions, which
         # its Python needs to pass the spelling check the queue runs before the gate.
         config = json.loads((self.repo / "engineering.json").read_text())
+        spelling = configuration.load(ROOT).get("spelling", {})
+        spelling = {**spelling, "exemptPhrases": {
+            **spelling.get("exemptPhrases", {}), **config["spelling"]["exemptPhrases"]}}
         (self.repo / "engineering.json").write_text(json.dumps(
-            {**config, "toolkit": {"path": "."}, "spelling": configuration.load(ROOT).get("spelling", {})}))
+            {**config, "toolkit": {"path": "."}, "spelling": spelling}))
         run(self.repo, "git", "add", "src", "policies", "engineering.json")
         run(self.repo, "git", "commit", "-qm", "Toolkit")
         run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
@@ -6316,6 +6325,8 @@ class LoadReadings(unittest.TestCase):
 class FlakyReruns(Fixture):
     """A failed eng unittest gate's failed tests rerun alone before a bisect, and a batch whose failed tests all pass
     alone and that reaches none of their files lands, with the flake recorded (owner's decision of 2026-11-07, #231)."""
+    # Every rerun scenario exercises an opaque root that would otherwise fail spelling first.
+    ROOT_PREFIX = "fixture_" + "oei" + "tre_"
     BUSY = ("cpu", "the CPU is 95% busy, at or above HEAVY_BUSY_LIMIT=75%")
     TEST = "test_flaky.Flaky.test_sometimes"
 
@@ -7892,23 +7903,7 @@ class GateResultsNamed(Fixture):
 
 
 class FailedGateEvidence(Fixture):
-    def setUp(self):
-        # Keep this prerequisite deterministic: a generated path can match a spelling rule (#378).
-        create, first = tempfile.mkdtemp, True
-
-        def generated_root(*args, **options):
-            nonlocal first
-            if first:
-                first = False
-                options["prefix"] = "fixture_" + "oei" + "tre_"
-            return create(*args, **options)
-
-        with patch.object(tempfile, "mkdtemp", side_effect=generated_root):
-            super().setUp()
-        config = self.config()
-        config.setdefault("spelling", {}).setdefault("exemptPhrases", {})[str(self.base)] = (
-            "the generated root is an opaque fixture identity")
-        self.publish(config, "Keep generated fixture paths out of spelling findings")
+    ROOT_PREFIX = "fixture_" + "oei" + "tre_"
 
     FIRST = "test_sample.Sample.test_first"
     SECOND = "test_sample.Sample.test_second"
