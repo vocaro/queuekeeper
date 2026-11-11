@@ -56,6 +56,7 @@ import shlex
 import shutil
 import signal
 import subprocess
+import stat
 import sys
 import tempfile
 import threading
@@ -3013,15 +3014,60 @@ def wait_state(path):
             "admitted": record.get("admitted") is True}
 
 
+def progress_state(path):
+    """A bounded snapshot of exact live reporter identities beside the lane's wait record."""
+    records = []
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+        with os.fdopen(fd, "rb") as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode): return []
+            data = stream.read(65537)
+        if len(data) > 65536: return []
+        source = json.loads(data)
+        namespace = source.get("progressRun") if isinstance(source, dict) else None
+        if not isinstance(namespace, str) or not re.fullmatch(r"[0-9a-f]{32}", namespace): return []
+        for index, candidate in enumerate((Path(str(path) + ".progress") / namespace).iterdir()):
+            if index >= 257 or len(records) >= 128: break
+            if candidate.suffix != ".json" or candidate.is_symlink(): continue
+            try:
+                fd = os.open(candidate, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+                with os.fdopen(fd, "rb") as stream:
+                    if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode): continue
+                    data = stream.read(65537)
+                if len(data) > 65536: continue
+                record = json.loads(data)
+                when = record.get("observedAt")
+                if record.get("phase") != "running" or not isinstance(when, (int, float)) or not 0 <= time.time() - when <= 15:
+                    continue
+                pid = record.get("reporter")
+                if type(pid) is int and pid > 0: records.append(record)
+            except (OSError, ValueError, AttributeError, subprocess.SubprocessError): pass
+    except (OSError, ValueError): pass
+    if not records: return []
+    try:
+        found = subprocess.run(["ps", "-p", ",".join(map(str, sorted({r["reporter"] for r in records}))),
+                                "-o", "pid=,lstart="], capture_output=True, text=True, timeout=1,
+                               stdin=subprocess.DEVNULL)
+        identities = {int(parts[0]): " ".join(parts[1:]) for line in found.stdout.splitlines()
+                      if len(parts := line.split()) == 6 and parts[0].isdigit()}
+        return [r for r in records if identities.get(r["reporter"]) == r.get("reporterStart")]
+    except (OSError, ValueError, subprocess.SubprocessError): return []
+
+
 def relay_wait(path, done, work):
     """Send the lane's wait record back as it changes, as `W` frames, and that a wait whose process is gone is over
     (lane_wait.relayed). work is whether this step is the lane's own: that the provision lane before it was admitted
     says nothing of the lane, so it does not clear a wait that goes on across offers. Nor does the step's own end: a
     run that declined leaves its wait, whose process is gone by then, and the dispatcher's next state replaces it."""
-    last = None
+    last, last_progress = None, []
     while True:
         finished = done.is_set()
         state = wait_state(path)
+        if work:
+            fresh_progress = [] if finished else progress_state(path)
+            if fresh_progress or last_progress:
+                state = {**(state or {}), "progress": fresh_progress}
+            last_progress = fresh_progress
         if state != last and not (finished and state is None):
             if state is None:
                 if last is not None and last.get("kind"): emit(b"W", b"null")
@@ -3216,7 +3262,10 @@ def main(plan):
                       checkout / plan["subdirectory"] if plan.get("subdirectory") else checkout))
         # The lane's wait record (lane_wait) is shared by provision and work.
         wait = checkout / plan["wait"] if plan.get("wait") else None
-        if wait is not None: environment["VOCARO_LANE_WAIT"] = str(wait)
+        if wait is not None:
+            environment["VOCARO_LANE_WAIT"] = str(wait)
+            environment["VOCARO_LANE_PROGRESS_RUN"] = os.urandom(16).hex()
+            wait.unlink(missing_ok=True)
         returns = plan.get("returns")
         if returns:
             back = checkout / returns["directory"], returns["paths"]

@@ -50,7 +50,7 @@ import threading
 import time
 import urllib.request
 
-from . import app_builds, budgets, disk, evidence, landing, lane_report, lane_wait, offload_host, parallel, processes, remote, \
+from . import app_builds, budgets, disk, evidence, landing, lane_progress, lane_report, lane_wait, offload_host, parallel, processes, remote, \
     resources
 from .config import DOCS, DOCS_FILES, DOCS_FOLDERS, IMPLICIT_DOCS, IMPLICIT_SPELLING, SPELLING, SPELLING_LIMIT, \
     TOOLKIT_ROOT, lane_to_run, load, parse, stays, unlocked_screen
@@ -1066,7 +1066,8 @@ class GateWatch:
         held_up = stuck({"waitingSince": since, "stranded": stranded})
         if held_up and not self.said_stuck: self.say(f"{self.lane}: {held_up}")
         self.said_stuck = bool(held_up)
-        self.queue.gate_note(self.role, mac=mac, waiting=waiting, waitingSince=since, stranded=stranded)
+        self.queue.gate_note(self.role, mac=mac, waiting=waiting, waitingSince=since, stranded=stranded,
+                             progress=lane_progress.current(lane_wait.path_of(self.checkout, self.lane), self.began))
 
     def every(self):
         while not self.stopped.wait(WATCH_POLL):
@@ -1576,6 +1577,9 @@ def round_lines(state, at=None):
         if gate.get("waiting"):
             line += f"\n    waiting: {gate['waiting']}"
             if gate.get("waitingSince"): line += f", for {ago(gate['waitingSince'], at)}"
+        for observation in gate.get("progress", []):
+            if lane_progress.valid(observation, gate.get("began"), at):
+                line += "\n    progress: " + lane_progress.words(observation)
         if stuck(gate, at): line += f"\n    {stuck(gate, at)}"
         if gate.get("log"): line += f"\n    log: {gate['log']}"
         lines.append(line)
@@ -1598,6 +1602,8 @@ def status(root, as_json=False, recent=5):
     # A worker that stopped leaves no round: what it wrote is not the queue's state.
     current = queue.round_state() if working else None
     for gate in (current or {}).get("gates", {}).values():
+        if "progress" in gate:
+            gate["progress"] = [record for record in gate["progress"] if lane_progress.valid(record, gate.get("began"))]
         if isinstance(gate.get("began"), (int, float)): gate["runningSeconds"] = round(time.time() - gate["began"])
         if stuck(gate): gate["stuck"] = stuck(gate)
     if as_json:

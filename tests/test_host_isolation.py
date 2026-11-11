@@ -147,7 +147,7 @@ class HostIsolationTests(unittest.TestCase):
         # On 2026-11-09 fixtures wrote into the real gate's results/, and its summary named a fixture's test as failed (#289).
         cli = host_isolation.cli
         names = (cli.parallel.RESULTS_VARIABLE, cli.stale_modules.ROOT_VARIABLE, cli.SELF_LANE, cli.app_registrations.RUN,
-                 cli.devices.WINDOW, cli.devices.OWNER, "VOCARO_ENGINEERING_ROOT")
+                 cli.devices.WINDOW, cli.devices.OWNER, "VOCARO_ENGINEERING_ROOT", "VOCARO_LANE_PROGRESS_RUN")
         source = str(Path(resources.__file__).resolve().parents[1])
         for name in names:
             for mode, imports, expected in (("isolated", "import host_isolation; ", "None"), ("control", "", "outer")):
