@@ -59,6 +59,7 @@ class Monitor:
         self.quiet, self.next, self.warned, self.last = Quiet(), 0, False, None
         self.run = f"{os.getpid()}-{time.time_ns()}"
         self.maximum, self.samples, self.unobservable = 0, 0, 0
+        self.write_error = None
 
     def observe(self, identities, excluded=(), force=False):
         now, wall = time.monotonic(), time.time()
@@ -85,7 +86,15 @@ class Monitor:
                      "lastProgressAt": None if quiet is None else wall - quiet,
                      "processes": [{"pid": pid, "start": start} for pid, start in sorted(work.items())],
                      "wait": "unknown"}
-        self.write()
+        if not self.publish():
+            # An optional observer must never turn its own I/O failure into a stop, or
+            # preserve a quiet interval that it could not record for review.
+            self.quiet.sample(now, wall, None)
+            if quiet is not None: self.unobservable += 1
+            self.last.update(state="unobservable", quietSeconds=None, lastProgressAt=None,
+                             unobservableSamples=self.unobservable)
+            self.warned = False
+            return None
         if not stalled:
             self.warned = False
             return None
@@ -101,10 +110,30 @@ class Monitor:
     def write(self):
         self.status.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.status.with_name(self.status.name + ".tmp-" + self.run)
-        temporary.write_text(json.dumps(self.last, indent=2) + "\n")
-        temporary.replace(self.status)
+        try:
+            temporary.write_text(json.dumps(self.last, indent=2) + "\n")
+            temporary.replace(self.status)
+        except OSError:
+            try: temporary.unlink()
+            except OSError: pass
+            raise
+
+    def publish(self):
+        try:
+            self.write()
+        except OSError as error:
+            detail = str(error)
+            if detail != self.write_error:
+                import sys
+                print(f"supervise: progress observations unavailable: {detail}; no stall stop requested",
+                      file=sys.stderr, flush=True)
+            self.write_error = detail
+            self.last["observationError"] = detail
+            return False
+        self.write_error = None
+        return True
 
     def finish(self, state, settled=True):
         if self.last is not None:
             self.last.update(phase="ended" if settled else "uncertain", state=state, finishedAt=time.time())
-            self.write()
+            self.publish()

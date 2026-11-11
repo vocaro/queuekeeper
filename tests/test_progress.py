@@ -119,8 +119,45 @@ class MonitorTests(unittest.TestCase):
                     self.assertIsNone(monitor.observe({1: "birth"}, force=True))
             self.assertEqual(monitor.last["state"], "observing")
 
+    def test_a_failed_status_write_resets_the_quiet_interval_before_monitoring_resumes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "run.log"
+            log.touch()
+            monitor = progress.Monitor({"seconds": 2, "action": "stop"}, log, None)
+            with patch.object(progress, "cpu", return_value={1: ("birth", 0)}), \
+                    patch.object(monitor, "write", side_effect=[None, OSError("unwritable"), None, None, None]), \
+                    contextlib.redirect_stderr(StringIO()) as error:
+                for moment in range(5):
+                    with patch.object(progress.time, "monotonic", return_value=moment), \
+                            patch.object(progress.time, "time", return_value=moment):
+                        detail = monitor.observe({1: "birth"})
+                    self.assertEqual(bool(detail), moment == 4)
+                self.assertEqual(monitor.last["quietSeconds"], 2)
+                self.assertEqual(monitor.last["unobservableSamples"], 1)
+                self.assertEqual(error.getvalue().count("progress observations unavailable"), 1)
+
 
 class LaneTests(unittest.TestCase):
+    def test_an_unwritable_observation_does_not_stop_the_command_or_change_its_result(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            release = root / "release"
+            script = ("from pathlib import Path\nimport sys,time\n"
+                      "print('ready',flush=True)\n"
+                      "while not Path(sys.argv[1]).exists(): time.sleep(.01)\nprint('done',flush=True)")
+            def unavailable():
+                release.touch()
+                raise OSError("status unavailable")
+            for action in ("report", "stop"):
+                release.unlink(missing_ok=True)
+                with self.subTest(action=action), patch.object(progress.Monitor, "write", side_effect=unavailable), \
+                        contextlib.redirect_stderr(StringIO()) as error:
+                    status = processes.run([sys.executable, "-c", script, str(release)], cwd=root,
+                        log_path=root / "run.log", timeout=stretched(30), stall={"seconds": 1, "action": action})
+                    self.assertEqual(status, 0)
+                    self.assertIn("done", (root / "run.log").read_text())
+                    self.assertIn("progress observations unavailable", error.getvalue())
+
     def test_stall_settings_need_a_leaf_and_explicit_measured_stop_reason(self):
         def parsed(settings, **options):
             return config.parse(json.dumps({"schemaVersion": 1, "name": "test", "lanes": {
