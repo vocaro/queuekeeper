@@ -257,8 +257,12 @@ CHAINED = ("During handling of the above exception, another exception occurred:"
 
 # `python3 -m unittest` with its first argument, the top-level directory, first on sys.path, and
 # its second, a JSON list of fnmatch patterns or null, as its loader's testNamePatterns: unlike
-# -k, a pattern is used as it is, so an escaped test id selects that test alone.
-SHARD = "import json, sys, unittest; sys.path.insert(0, sys.argv.pop(1)); " \
+# -k, a pattern is used as it is, so an escaped test id selects that test alone. It first puts SIGINT
+# and SIGQUIT back to Python's defaults, which a background job's shell ignores, so that a test run
+# behaves the same however eng was started; eng admit and eng run still pass on their caller's
+# (the owner's decision, 2026-11-11, vocaro-engineering#385).
+SHARD = "import json, signal, sys, unittest; signal.signal(signal.SIGINT, signal.default_int_handler); " \
+    "signal.signal(signal.SIGQUIT, signal.SIG_DFL); sys.path.insert(0, sys.argv.pop(1)); " \
     "unittest.defaultTestLoader.testNamePatterns = json.loads(sys.argv.pop(1)); " \
     "sys.argv[0] = 'python -m unittest'; unittest.main(module=None)"
 

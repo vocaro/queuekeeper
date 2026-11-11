@@ -4,6 +4,7 @@ from io import StringIO
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 import tempfile
@@ -92,6 +93,34 @@ class UnittestRunnerTests(unittest.TestCase):
         status, output = self.run_suite(root, "-j", "1", limit=1)
         self.assertEqual(status, 1, output)
         self.assertIn("right never appeared", output)
+
+    def test_a_test_process_has_sigint_and_sigquit_at_their_defaults_though_its_runner_ignores_them(self):
+        # A background job's shell ignores both, and a test that stops its child by SIGINT inherited that through
+        # eng unittest (vocaro/BreezEPUB#47); the owner chose to reset them in the test processes alone (#385).
+        root = self.suite(module("test_dispositions", """
+            import signal, subprocess
+            NAMES = {signal.SIG_IGN: "ignored", signal.SIG_DFL: "default", signal.default_int_handler: "python"}
+            PROBE = ("import signal; print(' '.join('ignored' if signal.getsignal(n) == signal.SIG_IGN else 'not'"
+                     " for n in (signal.SIGINT, signal.SIGQUIT)))")
+            class D(unittest.TestCase):
+                def test_record(self):
+                    child = subprocess.run([sys.executable, "-c", PROBE], capture_output=True, text=True).stdout.split()
+                    mine = [NAMES.get(signal.getsignal(n), "other") for n in (signal.SIGINT, signal.SIGQUIT)]
+                    (HERE / "dispositions").write_text(" ".join(mine + child))
+        """))
+        def ignoring():
+            for number in (signal.SIGINT, signal.SIGQUIT): signal.signal(number, signal.SIG_IGN)
+        environment = {"PATH": "/usr/bin:/bin"}
+        finished = subprocess.run([sys.executable, str(ENG), "unittest", "-s", str(root)], capture_output=True,
+                                  text=True, cwd=root, env=environment, preexec_fn=ignoring)
+        self.assertEqual(finished.returncode, 0, finished.stderr + finished.stdout)
+        # The test process has Python's own SIGINT handler and the default SIGQUIT, and its children both defaults.
+        self.assertEqual((root / "dispositions").read_text().split(), ["python", "default", "not", "not"])
+        # The negative control: run by unittest itself from the same runner, the test inherits both ignores.
+        finished = subprocess.run([sys.executable, "-m", "unittest", "test_dispositions"], capture_output=True,
+                                  text=True, cwd=root, env=environment, preexec_fn=ignoring)
+        self.assertEqual(finished.returncode, 0, finished.stderr)
+        self.assertEqual((root / "dispositions").read_text().split(), ["ignored", "ignored", "ignored", "ignored"])
 
     def test_a_suite_with_host_isolation_runs_no_module_that_skips_it(self):
         # The merge queue's full suite found a new module without the import (#209's capture_approvals); eng unittest,
