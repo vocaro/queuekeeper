@@ -1222,10 +1222,11 @@ def stopped(number, _frame):
     raise Stopped(number)
 
 
-def reap_reports(pool, project, *, dry_run, here):
+def reap_reports(pool, project, *, dry_run, here, stop_leftovers=True):
     """offload_host.reap's report from this Mac and, unless here, from the second Mac, each with where it
     ran. pool alone when it is named, otherwise every pool the project and the checkouts each Mac can
-    see name."""
+    see name. Without stop_leftovers, as for `eng doctor`, the second Mac only lists the leftover processes
+    it would stop (offload_host.stop_leftovers)."""
     # remote and disk import this module.
     from .. import disk, offload_host, remote
     if pool: pools = [pool]
@@ -1234,7 +1235,7 @@ def reap_reports(pool, project, *, dry_run, here):
     request = {"pools": pools, "dry_run": dry_run, "scan": not pool}
     reports = [(remote.HERE, offload_host.reap(remote.ROOT, **request))]
     host = None if here else remote.configured()
-    if host: reports.append((host, remote.reap_there(host, request)))
+    if host: reports.append((host, remote.reap_there(host, request, stop_leftovers)))
     return reports
 
 

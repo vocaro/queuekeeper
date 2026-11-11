@@ -2127,9 +2127,10 @@ from the slot's bundle executables after its claim: `offload_host.Launches`, sam
 `LAUNCH_SAMPLE_SECONDS` and once as each command ends, in `SLOT.launched.jsonl` beside the slot's
 lock, each line naming the process by PID, start and command line and the run by its PID and
 start. The cleanup that reaps stale pool simulators, before work is sent to the second Mac and in
-`eng simulator-pool reap` and `eng doctor` there, then runs `offload_host.stop_leftovers`, whose
-`proofs` lists every condition a process must meet; it stops nothing while the census could not
-check everything. It runs the census and every check again from fresh listings immediately before
+`eng simulator-pool reap` there, then runs `offload_host.stop_leftovers`; `eng doctor`, a diagnostic,
+runs it as a dry run, which signals nothing and lists each process it would stop (`would stop PID
+…`). Its `proofs` lists every condition a process must meet; it stops nothing while the census
+could not check everything. It runs the census and every check again from fresh listings immediately before
 the signal, sends SIGTERM alone, and logs each stop with why it qualified in
 `leftover-stops.jsonl` beside the admission log, before the signal and after it ends. Each leftover
 it keeps is said with the evidence that is missing (`did not stop PID …: …`), and stays for the

@@ -141,7 +141,8 @@ def fix_hosts(root, hosts):
         hosts = remote.compare_hosts()
         hosts.pop("runtimesDiffer", None)
     # The second Mac only when it answered the comparison: one away is no error, and is not waited for.
-    reaped = simulator_pool.reap_reports(None, root, dry_run=False, here="remote" not in hosts)
+    # A diagnostic stops no leftover process: it lists those reap would stop (vocaro-engineering#353).
+    reaped = simulator_pool.reap_reports(None, root, dry_run=False, here="remote" not in hosts, stop_leftovers=False)
     # With each held entry whose process is gone that reap could not release, and why, so that no leftover
     # waits unseen behind an empty leftovers (vocaro-engineering#156).
     hosts["reaped"] = [line for where, report in reaped

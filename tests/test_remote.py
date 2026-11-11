@@ -6675,7 +6675,7 @@ class DoctorFixTests(unittest.TestCase):
         self.assertNotIn("runtimesDiffer", fixed)
         # Its progress is on standard error, so standard output stays doctor's JSON.
         self.assertEqual((output, error), ("", "runtimes: progress\n"))
-        reap.assert_called_once_with(None, Path("/project"), dry_run=False, here=False)
+        reap.assert_called_once_with(None, Path("/project"), dry_run=False, here=False, stop_leftovers=False)
         self.assertEqual(len(fixed["reaped"]), 1)
         self.assertIn("on this Mac, stopped Example iPhone 1 (U), PID 7: stale", fixed["reaped"][0])
         self.assertEqual(fixed["deletedDefaults"], ["removed: U iPhone 17"])
@@ -6684,7 +6684,7 @@ class DoctorFixTests(unittest.TestCase):
         first = {"host": "fake", "errors": [], "unchecked": ["fake, which cannot be reached"]}
         fixed, calls, compare, reap, _, _ = self.fix(first)
         self.assertEqual((calls, compare.call_count), ([], 0))
-        reap.assert_called_once_with(None, Path("/project"), dry_run=False, here=True)
+        reap.assert_called_once_with(None, Path("/project"), dry_run=False, here=True, stop_leftovers=False)
         # Nor is its toolkit checkout updated.
         self.assertEqual(self.updates, [])
         self.assertNotIn("toolkitCheckout", fixed)

@@ -3044,9 +3044,11 @@ def answer(request):
     if "screen" in request: return screen()
     if "leftovers" in request or "device" in request:
         reaped = reap(request["leftovers"], **request["reap"]) if "reap" in request else None
-        # The routine cleanup there also stops what it proves an ended run left (stop_leftovers), before the census.
+        # The routine cleanup there also stops what it proves an ended run left (stop_leftovers), before the census;
+        # `eng doctor`, a diagnostic, asks only what it would stop (leftoverStops "list").
         if reaped is not None and "leftovers" in request:
-            reaped["processes"] = stop_leftovers(request["leftovers"], dry_run=bool(request["reap"].get("dry_run")))
+            reaped["processes"] = stop_leftovers(request["leftovers"], dry_run=bool(
+                request["reap"].get("dry_run") or request.get("leftoverStops") == "list"))
         # A census that fails says why: it must never stop the work it is printed before.
         try: found = leftovers(request["leftovers"]) if "leftovers" in request else device_users(request["device"])
         except Exception as error: found = {"error": f"{type(error).__name__}: {error}"}

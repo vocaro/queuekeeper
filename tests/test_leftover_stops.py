@@ -4,7 +4,9 @@ a process: every stop goes to a fake kill, and every fake PID lies above macOS's
 import json
 import os
 from pathlib import Path
+import shlex
 import signal
+import subprocess
 import sys
 import tempfile
 import time
@@ -12,6 +14,7 @@ import unittest
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 from vocaro_engineering import offload_host, remote
+from vocaro_engineering.simulators import pool as simulator_pool
 import host_isolation
 
 RUN, LEFTOVER, OTHER_RUN, SHELL, CHILD = 105000, 108000, 105500, 109000, 108100
@@ -237,6 +240,42 @@ class StopTests(Fixture):
         self.assertEqual([line["event"] for line in self.stops()], ["stopping", "failed"])
         said = "\n".join(remote.reap_lines("build-host", {"processes": report}, listing=False))
         self.assertIn(f"failed to stop PID {LEFTOVER}", said)
+
+
+class RequestTests(Fixture):
+    """The second Mac's answer to the requests `eng doctor` and `eng simulator-pool reap` send there
+    (simulators.pool.reap_reports), over the same fixture: the sent command is answered here with fakes."""
+
+    def reap_reports(self, **options):
+        real_stop, real_census, sent = offload_host.stop_leftovers, offload_host.leftovers, []
+
+        def answered(host, command, **_):
+            request = json.loads(shlex.split(command)[-1])
+            sent.append(request)
+            return subprocess.CompletedProcess([], 0, json.dumps(offload_host.answer(request)) + "\n", "")
+
+        with patch.object(remote, "configured", return_value="build-host"), patch.object(remote, "ssh", answered), \
+                patch.object(offload_host, "reap", return_value={"stopped": [], "problem": None}), \
+                patch.object(offload_host, "leftovers", side_effect=lambda root, listed=None, written=None:
+                             real_census(root, self.listed, written or (lambda pid: None))), \
+                patch.object(offload_host, "stop_leftovers", side_effect=lambda root, dry_run=False: real_stop(
+                    root, dry_run=dry_run, listed=self.listed, kill=self.kill, sleep=lambda _: None)):
+            reports = simulator_pool.reap_reports("Example", None, dry_run=False, here=False, **options)
+        return sent, dict(reports)["build-host"]["processes"]
+
+    def test_doctor_lists_what_reap_would_stop_and_signals_nothing(self):
+        # As cli.fix_hosts asks.
+        sent, report = self.reap_reports(stop_leftovers=False)
+        self.assertEqual(sent[0]["leftoverStops"], "list")
+        self.assertEqual((self.killed, report["stopped"], self.stops()), ([], [], []))
+        self.assertEqual([item["pid"] for item in report["eligible"]], [LEFTOVER])
+        said = "\n".join(remote.reap_lines("build-host", {"processes": report}, listing=False, held=True))
+        self.assertIn(f"on build-host, would stop PID {LEFTOVER}", said)
+        # The same fixture under reap is stopped.
+        sent, report = self.reap_reports()
+        self.assertNotIn("leftoverStops", sent[0])
+        self.assertEqual(self.killed, [(LEFTOVER, signal.SIGTERM)])
+        self.assertEqual([item["pid"] for item in report["stopped"]], [LEFTOVER])
 
 
 class LaunchesTests(Fixture):

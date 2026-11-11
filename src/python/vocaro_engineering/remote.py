@@ -3526,15 +3526,18 @@ def reap_request(root):
     return {"pools": [pool] if isinstance(pool, str) and pool else []}
 
 
-def census_command(advertise=None, reap=None, update=None):
+def census_command(advertise=None, reap=None, update=None, stop_leftovers=True):
     """The second Mac's command that prints offload_host.leftovers, the census of what runs left
     running there, as its last line; with advertise, paths of repositories relative to the home
     there, it has each name the commits its checkouts hold, and says which, and its Git's version
     (offload_host.advertise); with reap, offload_host.reap's arguments, it first shuts down the stale pool
-    simulators the census finds, and says which; with update, update_request's, it fast-forwards the second
-    Mac's own toolkit checkout when it can, and says what became of it (offload_host.update_toolkit)."""
+    simulators the census finds, and says which, and stops the leftovers it proves an ended run's, or with
+    stop_leftovers false only lists them (offload_host.stop_leftovers); with update, update_request's, it
+    fast-forwards the second Mac's own toolkit checkout when it can, and says what became of it
+    (offload_host.update_toolkit)."""
     request = {"leftovers": ROOT, **({"advertise": list(advertise)} if advertise else {}),
-               **({"reap": reap} if reap is not None else {}), **({"toolkitCheckout": update} if update else {})}
+               **({"reap": reap} if reap is not None else {}), **({"toolkitCheckout": update} if update else {}),
+               **({} if stop_leftovers else {"leftoverStops": "list"})}
     return shlex.join(["python3", "-c", Path(offload_host.__file__).read_text(), json.dumps(request)])
 
 
@@ -3604,12 +3607,13 @@ def leftover_census(host):
     return read_census(found)
 
 
-def reap_there(host, request):
-    """offload_host.reap's report from the second Mac, by the census's connection. A failure of any kind is
-    the report's problem: nothing there was stopped that it does not name."""
+def reap_there(host, request, stop_leftovers=True):
+    """offload_host.reap's report from the second Mac, by the census's connection, with stop_leftovers as
+    census_command takes it. A failure of any kind is the report's problem: nothing there was stopped that it
+    does not name."""
     empty = {"stopped": [], "failed": [], "skipped": [], "eligible": [], "kept": [], "dryRun": request.get("dry_run")}
     try:
-        found = ssh(host, census_command(reap=request), stdin=subprocess.DEVNULL, capture_output=True, text=True,
+        found = ssh(host, census_command(reap=request, stop_leftovers=stop_leftovers), stdin=subprocess.DEVNULL, capture_output=True, text=True,
                     timeout=CENSUS_TIMEOUT + offload_host.REAP_SECONDS + offload_host.STOP_SECONDS)
     except subprocess.TimeoutExpired:
         return {**empty, "problem": f"it did not answer in "
@@ -3648,7 +3652,8 @@ def reap_lines(where, report, listing=True, held=False):
               for item in found.get("failed", [])]
     lines += [f"on {where}, did not stop {named(item)}: {item['hold']}" for item in found.get("kept", [])]
     if found.get("problem"): lines.append(f"on {where}, stopped no leftover process: {found['problem']}")
-    if listing: lines += [f"on {where}, would stop {named(item)}: {item['reason']}" for item in found.get("eligible", [])]
+    # Only a dry run, or `eng doctor`'s listing, has any: said whatever the listing.
+    lines += [f"on {where}, would stop {named(item)}: {item['reason']}" for item in found.get("eligible", [])]
     # Before a dispatch, only an entry whose simulator this reap stopped; a listing names every one.
     stopped = {item["udid"] for item in report.get("stopped", [])}
     # One not yet due is named only by a listing: most are a take's, which its session still holds.

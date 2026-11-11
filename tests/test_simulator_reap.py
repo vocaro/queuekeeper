@@ -1035,7 +1035,8 @@ class ReapCommandTests(unittest.TestCase):
         status, output, local, far = self.run_command()
         request = {"pools": ["Example", "Pagepour"], "dry_run": False, "scan": True}
         local.assert_called_once_with(remote.ROOT, **request)
-        far.assert_called_once_with("fake", request)
+        # `eng simulator-pool reap` also stops the leftovers it proves an ended run's; doctor only lists them.
+        far.assert_called_once_with("fake", request, True)
         self.assertEqual(status, 0)
         self.assertIn("on this Mac, no stale pool simulator", output)
         self.assertIn("on fake, no stale pool simulator", output)
