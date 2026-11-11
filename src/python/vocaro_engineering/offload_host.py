@@ -35,7 +35,8 @@ SSH and who holds its mac-foreground, for `eng remote foreground`; given `{"pres
 CPU's busy share, the limit admission sets on it and its memory pressure, for the merge queue's settle wait;
 given `{"capacity": true}`, its spare capacity for heavy work, which `eng run` reads on both Macs
 before it chooses one (remote.spare); given `{"admissionLog": SINCE}`, its admission log's lines from
-SINCE, an epoch time, for `eng admissions usage`; given `{"screen": true}`, whether its console screen is locked, for
+SINCE, an epoch time, for `eng admissions usage`; given `{"admissionsNow": 1}`, who holds and who waits for its
+admission now, for `eng admissions now` (admissions_now); given `{"screen": true}`, whether its console screen is locked, for
 `eng host screen --remote` (screen).
 """
 import base64
@@ -1592,6 +1593,235 @@ def admission_log(since):
     return {"lines": found}
 
 
+# `eng admissions now` (vocaro-engineering#342): the folder beside the slot files where each waiting request keeps its
+# observation record, as resources.WAITS has it; the schema both write and read; how many records and how many bytes a
+# snapshot reads and sends at most; and how old a live waiter's sample may be before it is shown as stale.
+WAITS, NOW_SCHEMA, NOW_RECORDS, NOW_BYTES, NOW_STALE = "admission-waits", 1, 512, 512 << 10, 30
+
+
+def census(pids):
+    """{PID: process start with its spacing collapsed} for those of pids that run, from one bounded `ps`, or None when
+    ps cannot answer: an absent PID is proven absent only by an answer, never by a failure (admissions_now)."""
+    pids = sorted({pid for pid in pids if type(pid) is int and pid > 0})
+    if not pids: return {}
+    try:
+        found = subprocess.run(["ps", "-p", ",".join(map(str, pids)), "-o", "pid=,lstart="], capture_output=True,
+                               text=True, timeout=5, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError): return None
+    # ps exits 1 with nothing said when a PID it was asked about does not run; anything it says is a failure.
+    if found.returncode not in (0, 1) or found.stderr.strip(): return None
+    listed = {}
+    for line in found.stdout.splitlines():
+        parts = line.split()
+        if len(parts) > 1 and parts[0].isdigit(): listed[int(parts[0])] = " ".join(parts[1:])
+    return listed
+
+
+def process_state(record, listed):
+    """running, ended (its PID runs no more, or runs another process) or unknown (ps could not say)."""
+    if listed is None: return "unknown"
+    found = listed.get(record.get("pid"))
+    return "running" if found is not None and found == " ".join(str(record.get("start")).split()) else "ended"
+
+
+def read_json(path, limit=NOW_BYTES):
+    """A file's JSON without following a link or waiting on a FIFO, or raise OSError or ValueError."""
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0))
+    with os.fdopen(fd, "rb") as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode): raise ValueError(f"{path} is no regular file")
+        data = stream.read(limit + 1)
+    if len(data) > limit: raise ValueError(f"{path} is larger than {limit} bytes")
+    return json.loads(data)
+
+
+def slot_names(directory, count):
+    """The identity each of the first count slot files names as its last holder, None for a file that names none,
+    and absent for a slot never taken. Read without a lock: a name is who last took it, not that its lock is held."""
+    found = {}
+    for slot in range(count):
+        try: written = (directory / f"slot{slot}").read_text(errors="replace").split(" ", 2)
+        except FileNotFoundError: continue
+        except OSError: written = []
+        found[slot] = written[1] if len(written) > 1 and written[1] else None
+    return found
+
+
+def admissions_now(at=None):
+    """Who holds and who waits for heavy-work admission on this Mac now, for `eng admissions now` here and on the second
+    Mac (vocaro-engineering#342). It changes nothing: it reads the guard, the queue, the slot files' names and the
+    waiters' observation records as they stand, without any of admission's locks, and checks the processes they name
+    with one ps. What it cannot read is null with a reason and makes the reading partial, never empty: a host that
+    cannot be observed is never reported idle. state is observed, partial or unknown."""
+    at = time.time() if at is None else at
+    reasons = []
+    isolated = {name: os.environ[name] for name in ("HEAVY_SLOT_DIR", "SW_GATE_LOCK_FILE") if os.environ.get(name)}
+    guard = Path(os.environ.get("SW_GATE_LOCK_FILE", GATE_LOCK) + ".warm-push-guard")
+    reading = {"schemaVersion": NOW_SCHEMA, "mac": mac_name(), "observedAt": at, "state": "observed", "reasons": reasons,
+               "namespace": {"shared": not isolated, **isolated, "guard": str(guard)}, "limits": None, "slots": None,
+               "model": None, "holders": None, "unattributed": None, "waiters": None}
+    try: directory = slot_directory()
+    except RuntimeError as error:
+        return {**reading, "state": "unknown", "reasons": [str(error)]}
+    reading["namespace"]["slotDirectory"] = str(directory)
+    try:
+        found = limits()
+        slots, maximum = found["slots"], found["slotsMax"]
+        reading["limits"] = {"slots": slots, "slotsMax": maximum}
+    except ValueError as error:
+        reasons.append(str(error))
+        slots = maximum = None
+    # The guard: a missing one records no holder; one that cannot be read, or is not admission's, says nothing.
+    owners = None
+    try: state = read_json(guard)
+    except FileNotFoundError: owners = {}
+    except (OSError, ValueError) as error: reasons.append(f"the guard {guard} cannot be read: {error}")
+    else:
+        recorded = state.get("owners") if isinstance(state, dict) and state.get("vocaroEngineering") == 1 else None
+        if isinstance(recorded, dict) and all(isinstance(owner, dict) and type(owner.get("pid")) is int
+                                              and isinstance(owner.get("start"), str) for owner in recorded.values()):
+            owners = recorded
+        else: reasons.append(f"the guard {guard} is not in admission's format")
+    # The queue: every waiting request, in its order; a missing queue holds none.
+    queued = None
+    try: queue = read_json(directory / QUEUE)
+    except FileNotFoundError: queued = []
+    except (OSError, ValueError) as error: reasons.append(f"the queue {directory / QUEUE} cannot be read: {error}")
+    else:
+        waiters = queue.get("waiters") if isinstance(queue, dict) else None
+        if isinstance(waiters, list): queued = [waiter for waiter in waiters if isinstance(waiter, dict)]
+        else: reasons.append(f"the queue {directory / QUEUE} is not in admission's format")
+    # The waiters' own records, each the latest a waiting request wrote of its wait.
+    observed = {}
+    try: names = sorted(os.listdir(directory / WAITS))
+    except FileNotFoundError: names = []
+    except OSError as error:
+        names = []
+        reasons.append(f"the waiters' records in {directory / WAITS} cannot be listed: {error}")
+        observed = None
+    names = [name for name in names if name.endswith(".json") and not name.startswith(".")]
+    if len(names) > NOW_RECORDS:
+        reasons.append(f"{len(names)} waiters' records, of which only {NOW_RECORDS} were read")
+        names = names[:NOW_RECORDS]
+    unread = 0
+    for name in names:
+        try: record = read_json(directory / WAITS / name, 64 << 10)
+        except FileNotFoundError: continue  # its request stopped waiting as it was read
+        except (OSError, ValueError): record = None
+        if not (isinstance(record, dict) and record.get("schemaVersion") == NOW_SCHEMA and isinstance(record.get("identity"), str)
+                and type(record.get("pid")) is int and isinstance(record.get("start"), str)):
+            unread += 1
+            continue
+        if observed is not None: observed[record["identity"]] = record
+    if unread: reasons.append(f"{unread} waiters' record{'' if unread == 1 else 's'} could not be read")
+    # One ps for every process named.
+    pids = [owner["pid"] for owner in (owners or {}).values()]
+    pids += [waiter.get("pid") for waiter in queued or []] + [record["pid"] for record in (observed or {}).values()]
+    listed = census(pids)
+    if listed is None and pids: reasons.append("ps could not say which of the processes named still run")
+    # Slots: the guaranteed ones, then those beyond them up to HEAVY_SLOTS_MAX, each with the identity its file names.
+    count = maximum
+    if count is None:
+        # Without the limits, the slots are those whose files exist.
+        try: count = 1 + max((int(name[4:]) for name in os.listdir(directory) if re.fullmatch(r"slot\d+", name)), default=-1)
+        except OSError: count = 0
+    named = slot_names(directory, min(count, NOW_RECORDS))
+    try: model = (directory / "model").read_text(errors="replace").split(" ", 2)
+    except OSError: model = []
+    model_name = model[1] if len(model) > 1 else None
+    if owners is not None:
+        holders = []
+        for identity, owner in owners.items():
+            exclusive = owner.get("exclusive") is True
+            held = list(range(count)) if exclusive else sorted(slot for slot, name in named.items() if name == identity)
+            try: since = datetime.fromisoformat(owner["admitted"]).timestamp()
+            except (KeyError, TypeError, ValueError): since = None
+            process = process_state(owner, listed)
+            holders.append({"identity": identity, "label": str(owner.get("label") or "an unnamed owner")[:160],
+                            "pid": owner["pid"], "start": owner["start"], "admittedAt": since,
+                            "heldSeconds": None if since is None else round(max(0.0, at - since), 1),
+                            "exclusive": exclusive, "wholeHost": owner.get("wholeHost") is True,
+                            "model": owner.get("model") is True or exclusive,
+                            # Slots its files name; None for an entry that held a slot no file still names, such as one
+                            # an older toolkit wrote over, which admission counts but no reading can place.
+                            "slots": held if held or exclusive else None,
+                            "guaranteed": [slot for slot in held if slots is None or slot < slots],
+                            "extra": [slot for slot in held if slots is not None and slot >= slots],
+                            "process": process,
+                            # A dead or uncertain entry is stranded: admission counts it until recovery removes it.
+                            "stranded": owner.get("uncertain") is True or process == "ended"})
+        reading["holders"] = sorted(holders, key=lambda holder: holder["admittedAt"] or 0)
+        reading["slots"] = [{"slot": slot, "guaranteed": slots is None or slot < slots,
+                             "holder": named.get(slot) if named.get(slot) in owners else None,
+                             "file": slot in named} for slot in range(min(count, NOW_RECORDS))]
+        # A slot file that names no guard entry: its holder released it, or holds it outside admission's guard (an
+        # old slot API caller); its lock was not probed, since a reading takes no lock.
+        reading["unattributed"] = [slot for slot, name in sorted(named.items()) if name not in owners
+                                   and not any(owner.get("exclusive") is True for owner in owners.values())]
+        reading["model"] = {"holder": model_name if model_name in owners and (owners[model_name].get("model") is True
+                                                                             or owners[model_name].get("exclusive") is True)
+                            else next((identity for identity, owner in owners.items() if owner.get("exclusive") is True), None)}
+    if queued is not None and observed is not None:
+        waiting, position, seen = [], 0, set()
+        try: hold = float(os.environ.get("HEAVY_PLACE_SECONDS", str(PLACE_SECONDS)))
+        except ValueError: hold = PLACE_SECONDS
+        for waiter in queued:
+            identity = waiter.get("identity")
+            kind = "exclusive" if not (waiter.get("ordinary") or waiter.get("wholeHost")) else \
+                "wholeHost" if waiter.get("wholeHost") else "ordinary"
+            if kind != "ordinary": position += 1
+            record = observed.get(identity)
+            process = process_state(record or waiter, listed)
+            if process == "ended": continue
+            seen.add(identity)
+            waiting.append(waiter_reading(waiter, record, kind, position if kind != "ordinary" else None, process, at, hold))
+        for identity, record in observed.items():
+            if identity in seen: continue
+            process = process_state(record, listed)
+            if process == "ended": continue
+            waiting.append(waiter_reading({}, record, record.get("queueKind") or "ordinary", None, process, at, hold))
+        reading["waiters"] = sorted(waiting, key=lambda waiter: -(waiter["waitedSeconds"] or 0))
+    if reasons: reading["state"] = "partial"
+    return bounded(reading)
+
+
+def waiter_reading(waiter, record, kind, position, process, at, hold):
+    """One waiting request: from its queue record and its own observation record, either of which may be missing. A
+    queued request without a record is a place kept while its process is away, such as offering its work to the other
+    Mac, or one an older toolkit queued, which writes none; it says when it last asked and whether it still holds later
+    work back (HEAVY_PLACE_SECONDS), and no reason."""
+    number = lambda value: value if type(value) in (int, float) else None
+    record = record or {}
+    queued_at, sampled, waited = number(waiter.get("queuedAt") or record.get("queuedAt")), number(record.get("sampledAt")), \
+        number(record.get("waited"))
+    seen = number(waiter.get("seen"))
+    if queued_at is not None: total = max(0.0, at - queued_at)
+    elif waited is not None and sampled is not None: total = max(0.0, waited + at - sampled)
+    else: total = None
+    return {"identity": waiter.get("identity") or record.get("identity"), "request": record.get("request"), "kind": kind,
+            "model": record.get("model") is True, "label": str(waiter.get("label") or record.get("label") or "an unnamed request")[:160],
+            "pid": waiter.get("pid") if type(waiter.get("pid")) is int else record.get("pid"), "process": process,
+            "position": position, "queued": bool(waiter), "waitedSeconds": None if total is None else round(total, 1),
+            "refusal": record.get("refusal"), "reason": record.get("reason"),
+            "sampledSeconds": None if sampled is None else round(max(0.0, at - sampled), 1),
+            "stale": sampled is not None and at - sampled > NOW_STALE,
+            # A queued request with no record that asked lately is asking here, under a toolkit that writes no record or
+            # before its first refusal; one that has not is away, its place kept.
+            "away": not record and (seen is None or at - seen > NOW_STALE),
+            "lastAskedSeconds": None if seen is None else round(max(0.0, at - seen), 1),
+            "holdsBack": None if record or seen is None else at - seen < hold}
+
+
+def bounded(reading):
+    """The reading, cut to NOW_BYTES of JSON by leaving out the longest waits' and the oldest holders' tails, partial."""
+    if len(json.dumps(reading)) <= NOW_BYTES: return reading
+    for key in ("waiters", "holders", "slots"):
+        while reading.get(key) and len(json.dumps(reading)) > NOW_BYTES:
+            reading[key] = reading[key][:len(reading[key]) // 2]
+    reading["state"] = "partial"
+    reading["reasons"] = [*reading["reasons"], f"the reading was cut to {NOW_BYTES} bytes"]
+    return reading
+
+
 def unended():
     """(PID, when it was admitted, in seconds since the epoch) of each admission the admission log
     records without an end: one still held, or one SIGKILL ended."""
@@ -2558,6 +2788,9 @@ def answer(request):
                    {"before": time.time() - request["requestAge"]} if "requestAge" in request else {})
         return capacity(diagnostic=request["capacity"] == "diagnostic", **options)
     if "admissionLog" in request: return admission_log(request["admissionLog"])
+    if "admissionsNow" in request:
+        return admissions_now() if request["admissionsNow"] == NOW_SCHEMA else \
+            {"error": f"this Mac's toolkit reads admissionsNow version {NOW_SCHEMA}, not {request['admissionsNow']!r}"}
     if "screen" in request: return screen()
     if "leftovers" in request or "device" in request:
         reaped = reap(request["leftovers"], **request["reap"]) if "reap" in request else None
@@ -3325,7 +3558,7 @@ if __name__ == "__main__":
     if "keepUnlocked" in request: sys.exit(keep_unlocked(request["keepUnlocked"]))
     if "reattach" in request: sys.exit(reattach(request["reattach"]))
     if {"toolchain", "images", "deleteRuntime", "receive", "leftovers", "device", "keychain", "foreground",
-            "pressure", "capacity", "admissionLog", "screen", "toolkitCheckout"} & request.keys():
+            "pressure", "capacity", "admissionLog", "admissionsNow", "screen", "toolkitCheckout"} & request.keys():
         print(json.dumps(answer(request)))
     else:
         main(request)

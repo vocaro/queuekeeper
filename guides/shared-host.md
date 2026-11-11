@@ -496,6 +496,17 @@ python3 scripts/eng admissions <(ssh build-host \
   'cd "Library/Application Support/vocaro-engineering" && cat admissions.1.jsonl admissions.jsonl 2>/dev/null')
 ```
 
+### Who holds and who waits
+
+`python3 scripts/eng admissions now` shows admission as it stands on this Mac and the second Mac:
+each holder's slots, kind and hold time, and each waiter's wait and the reason it prints itself.
+It changes nothing. A Mac it cannot read in 10 seconds is unknown, never idle, and this Mac's reading
+stands beside it. `--json` gives the same; `--here` reads only this Mac, and is required under an
+isolated `HEAVY_SLOT_DIR` or `SW_GATE_LOCK_FILE`. What it reads, and what it marks partial, is in
+`offload_host.admissions_now`; each waiter's record is `resources.Admission._observe`
+([#342](https://github.com/vocaro/vocaro-engineering/issues/342)). It does not yet flag a wait as
+too long: the owner deferred that until there is history to calibrate it.
+
 ### Load the queue cannot see
 
 Admission reads the load before it admits and cannot account for work that never asks:

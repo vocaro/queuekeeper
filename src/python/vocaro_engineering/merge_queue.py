@@ -1066,7 +1066,8 @@ class GateWatch:
         held_up = stuck({"waitingSince": since, "stranded": stranded})
         if held_up and not self.said_stuck: self.say(f"{self.lane}: {held_up}")
         self.said_stuck = bool(held_up)
-        self.queue.gate_note(self.role, mac=mac, waiting=waiting, waitingSince=since, stranded=stranded,
+        self.queue.gate_note(self.role, mac=mac, waiting=waiting, waitingKind=record.get("kind") if waiting else None,
+                             waitingSince=since, stranded=stranded,
                              progress=lane_progress.current(lane_wait.path_of(self.checkout, self.lane), self.began))
 
     def every(self):
@@ -1673,18 +1674,37 @@ def doctor(root, as_json=False):
     """`eng queue doctor`: print diagnose's findings, or that the queue is healthy. 0 when it finds the queue healthy,
     1 when it finds anything."""
     findings, waiting, working = diagnose(root)
+    hints = admission_hints(root) if working else []
     if as_json:
-        print(json.dumps({"healthy": not findings, "waiting": len(waiting), "worker": working, "findings": findings},
-                         indent=2))
+        print(json.dumps({"healthy": not findings, "waiting": len(waiting), "worker": working, "findings": findings,
+                          "hints": hints}, indent=2))
         return 1 if findings else 0
     if not findings:
         print(f"eng queue doctor: healthy: {entries_word(len(waiting))} waiting, worker "
               f"{'running' if working else 'not needed'}, and no gate since the last verdict ran nothing")
+        for hint in hints: print(f"note: {hint}")
         return 0
     print(f"eng queue doctor: {len(findings)} finding{'' if len(findings) == 1 else 's'}, and it changed nothing:")
     for finding in findings:
         print(f"{finding['signal']}: {finding['diagnosis']}\n  next: {finding['remedy']}")
+    for hint in hints: print(f"note: {hint}")
     return 1
+
+
+def admission_hints(root, at=None):
+    """Where to look next for each running gate that waits for admission, from the round's account (GateWatch): a
+    pointer to `eng admissions now`, which shows who holds and who waits on each Mac (vocaro-engineering#342). Doctor
+    neither runs that report nor counts a wait as a finding: a gate waiting for admission is how a busy Mac looks."""
+    try: state = Queue(root).round_state() or {}
+    except Exception: return []  # noqa: BLE001 - a pointer never fails the doctor
+    hints = []
+    for role, gate in sorted((state.get("gates") or {}).items()):
+        if not isinstance(gate, dict) or gate.get("waitingKind") != lane_wait.ADMISSION: continue
+        since = gate.get("waitingSince")
+        waited = f" {ago(since, at)}" if isinstance(since, (int, float)) else ""
+        hints.append(f"the {role} gate's {gate.get('lane') or 'lane'} has waited{waited} for {gate.get('waiting')}; "
+                     "`python3 scripts/eng admissions now` shows who holds and who waits for admission on each Mac")
+    return hints
 
 
 def placement(root, name=None, as_json=False):

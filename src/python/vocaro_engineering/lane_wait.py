@@ -169,6 +169,22 @@ def current(path, since=None):
     return record
 
 
+def admission_warnings(root, at=None):
+    """eng doctor's pointer for each lane of this checkout waiting for admission now: to `eng admissions now`, which
+    shows who holds and who waits on each Mac (vocaro-engineering#342). Doctor neither runs that report nor fails on it."""
+    found = []
+    try: paths = sorted((Path(root) / ".build/engineering" / WAITS).glob("*.json"))
+    except OSError: return []
+    for path in paths:
+        record = current(path)
+        if not record or record.get("kind") != ADMISSION: continue
+        since = record.get("since")
+        waited = f" {int((at or time.time()) - since)}s" if isinstance(since, (int, float)) else ""
+        found.append(f"lane {path.stem} has waited{waited} for {words(record)}; `python3 scripts/eng admissions now` "
+                     "shows who holds and who waits for admission on each Mac")
+    return found
+
+
 def words(record):
     """What the lane waits for, in the words `eng queue status` shows, or None when it waits for nothing."""
     if not record or not record.get("kind"): return None

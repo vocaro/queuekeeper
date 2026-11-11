@@ -164,6 +164,8 @@ class Waits(Named):
             admission.refusal, admission.waiting = step
             return False
         admission._attempt, admission._count, admission._withdraw = attempt, lambda: None, lambda error: None
+        # Nor its observation record for `eng admissions now` (#342).
+        admission._observe, admission._unobserve = lambda: None, lambda: None
         self.addCleanup(resources._held.pop, "test", None)
         return admission
 

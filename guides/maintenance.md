@@ -1043,6 +1043,9 @@ gates and speculative stacks whose last lane no Mac admitted. Its signals:
   ([#287](https://github.com/vocaro/vocaro-engineering/issues/287)); **held**: the hold's reason.
 
 It exits 0 and says `healthy` when it finds none of these, and 1 otherwise; `--json` gives the same.
+A running gate that waits for admission is no finding; doctor adds a `note:` pointing to `eng admissions
+now` ([shared-host.md, Who holds and who waits](shared-host.md#who-holds-and-who-waits)), and so does
+`eng doctor` for a lane of its checkout.
 It changes nothing: no entry, no hold, no worker. The worker acts on a refused gate itself: it sends
 back the one entry that brings the refusal, and runs the doctor for the reason of the hold it makes
 when the same refusal comes again with no entry to blame (A gate `eng unittest` refused, above; owner's

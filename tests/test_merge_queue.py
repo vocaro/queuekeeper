@@ -1140,6 +1140,28 @@ class Doctor(UnittestGate):
         self.assertEqual(found["findings"], [])
         self.assertTrue(found["healthy"])
 
+    def test_a_gate_waiting_for_admission_points_to_eng_admissions_now_without_a_finding(self):
+        # vocaro-engineering#342: a pointer, not a report: doctor reads no admission and stays healthy.
+        self.commit("tests/test_new.py", "new", ISOLATED)
+        self.add("new")
+        queue = mq.Queue(self.repo)
+        queue.note(lambda state: state.setdefault("gates", {}).__setitem__("main", {
+            "lane": "gate", "waiting": "admission on this Mac: all 3 guaranteed slots are busy",
+            "waitingKind": "admission", "waitingSince": time.time() - 120}))
+        from vocaro_engineering import offload_host, remote
+        with patch.object(offload_host, "admissions_now", side_effect=AssertionError("read")), \
+                patch.object(remote, "admissions_there", side_effect=AssertionError("asked")):
+            status_, said, found = self.doctor()
+        self.assertEqual((status_, found["healthy"], found["findings"]), (0, True, []))
+        self.assertIn("eng queue doctor: healthy", said)
+        self.assertIn("note: the main gate's gate has waited 2m", said)
+        self.assertIn("`python3 scripts/eng admissions now`", found["hints"][0])
+        # The negative control: a gate waiting for something else, or with no worker, has no pointer.
+        queue.note(lambda state: state["gates"]["main"].update(waitingKind="screen"))
+        self.assertEqual(self.doctor()[2]["hints"], [])
+        queue.note(lambda state: state["gates"]["main"].update(waitingKind="admission"))
+        self.assertEqual(self.doctor(working=False)[2]["hints"], [])
+
     def test_gates_refused_before_running_name_the_entry_that_brings_the_refusal_and_change_nothing(self):
         self.commit("tests/test_new.py", "new", ISOLATED)
         self.commit("tests/test_forgot.py", "forgot", UNISOLATED)
@@ -7608,9 +7630,14 @@ class RoundAccount(Fixture):
         self.assertEqual(gate["waiting"], "the second Mac cannot be reached, and is asked again at the next offer: "
                                           "ssh: connect to host build-host port 22: No route to host")
         self.assertIsInstance(gate["waitingSince"], float)
+        # What it waits for by kind, which eng queue doctor's pointer to `eng admissions now` reads (#342).
+        self.assertEqual(gate["waitingKind"], mq.lane_wait.UNREACHABLE)
+        mq.lane_wait.waiting(mq.lane_wait.ADMISSION, "all 3 guaranteed slots are busy")
+        self.assertEqual(self.gate_after_look(queue, watch)["waitingKind"], mq.lane_wait.ADMISSION)
         mq.lane_wait.running()
         gate = self.gate_after_look(queue, watch)
-        self.assertEqual((gate["mac"], gate["waiting"], gate["waitingSince"]), ("this Mac", None, None))
+        self.assertEqual((gate["mac"], gate["waiting"], gate["waitingSince"], gate["waitingKind"]),
+                         ("this Mac", None, None, None))
         # A lane that a dispatch sent to the second Mac runs there.
         with patch.object(mq.remote, "dispatched", return_value="build-host"): watch.look()
         self.assertEqual(queue.round_state()["gates"]["batch"]["mac"], "the second Mac (build-host)")

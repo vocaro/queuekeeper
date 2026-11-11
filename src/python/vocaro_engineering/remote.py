@@ -3301,6 +3301,41 @@ def admission_log_there(host, since):
     return [entry for entry in map(resources.read_entry, answered["lines"]) if entry is not None]
 
 
+# Seconds `eng admissions now` gives the second Mac in all, connection included, and the most bytes it reads back.
+ADMISSIONS_BUDGET, ADMISSIONS_BYTES = 10, 1 << 20
+
+
+def admissions_there(host, budget=ADMISSIONS_BUDGET):
+    """Who holds and who waits for admission on the second Mac now, as offload_host.admissions_now reads it there, for
+    `eng admissions now` (vocaro-engineering#342). One noninteractive connection, bounded in all by budget seconds: no
+    search for a renamed Mac (ssh's rediscover), which could take longer, and nothing changed there. A second Mac that
+    cannot be reached in time raises Unreachable, and one whose answer is no reading Unavailable."""
+    script = shlex.join(["python3", "-c", Path(offload_host.__file__).read_text(),
+                         json.dumps({"admissionsNow": offload_host.NOW_SCHEMA})])
+    seconds = max(1, int(budget))
+    options = [f"ConnectTimeout={seconds}" if option.startswith("ConnectTimeout=") else option for option in SSH]
+    try:
+        found = subprocess.run([*options, *moved(host), host, login(script)], env=environment(), stdin=subprocess.DEVNULL,
+                               capture_output=True, text=True, timeout=budget)
+    except subprocess.TimeoutExpired:
+        raise Unreachable(f"{host} did not answer in {budget:g}s", "read it again once it is awake and on the network") from None
+    except OSError as error:
+        raise Unreachable(f"ssh to {host} could not start: {error}", "check ssh on this Mac") from None
+    if found.returncode == 255:
+        raise Unreachable(f"ssh could not reach {host}: {last_line(found.stderr) or 'it said nothing'}",
+                          "check that it is awake and on the network (guides/shared-host.md, Second Mac)")
+    if len(found.stdout) > ADMISSIONS_BYTES:
+        raise Unavailable(f"{host} sent {len(found.stdout)} bytes, more than a reading's {ADMISSIONS_BYTES}")
+    try: answered = json.loads(last_line(found.stdout) or "")
+    except (TypeError, ValueError): answered = None
+    if not (isinstance(answered, dict) and answered.get("schemaVersion") == offload_host.NOW_SCHEMA
+            and answered.get("state") in ("observed", "partial", "unknown") and isinstance(answered.get("reasons"), list)):
+        said = (answered or {}).get("error") if isinstance(answered, dict) else None
+        raise Unavailable(f"{host} did not report its admissions: "
+                          + (said or f"it answered {(last_line(found.stdout) or last_line(found.stderr) or 'nothing')[:200]!r}"))
+    return answered
+
+
 def screen_refusal(found, mac):
     """Why a Mac whose screen eng read as found (offload_host.screen) cannot take a lane that needs an unlocked
     screen, or None when its screen is unlocked. A reading that is missing or unknown refuses too: eng never

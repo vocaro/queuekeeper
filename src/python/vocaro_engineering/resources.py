@@ -619,6 +619,41 @@ def record_queue(queue, waiters):
     else: Path(queue).unlink(missing_ok=True)
 
 
+# Each waiting request's observation record, for `eng admissions now` (vocaro-engineering#342): a file of its own in this
+# folder beside the slot files, which only that request writes, from its first refusal until it stops waiting however
+# it stops. Nothing in admission reads it: it is no place in the queue, holds nothing back and orders nothing. A request
+# rewrites it at most every OBSERVE_SECONDS, and at most every SWEEP_SECONDS one request removes the records of waiters
+# proven dead (sweep_waits). offload_host.admissions_now reads them, as WAITS and NOW_SCHEMA there name them.
+WAITS, WAIT_SCHEMA, OBSERVE_SECONDS, SWEEP_SECONDS, SWEEP_LIMIT = "admission-waits", 1, 5, 60, 512
+
+
+def sweep_waits(folder):
+    """Remove the observation records of waiters whose process is proven to have ended: by a ps that answered, its PID
+    runs no more or runs another process. A record that cannot be read or whose process ps could not check is left.
+    One request does it at a time, under a lock it does not wait for, at most every SWEEP_SECONDS and over at most
+    SWEEP_LIMIT records; it touches nothing but those records."""
+    from . import offload_host
+    marker = folder / ".sweep"
+    with open(folder / ".sweep.lock", "a+") as lock:
+        try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError: return
+        with contextlib.suppress(FileNotFoundError):
+            if time.time() - marker.stat().st_mtime < SWEEP_SECONDS: return
+        marker.touch()
+        records = {}
+        for name in sorted(os.listdir(folder))[:SWEEP_LIMIT]:
+            if not name.endswith(".json") or name.startswith("."): continue
+            try: record = offload_host.read_json(folder / name, 64 << 10)
+            except (OSError, ValueError): continue
+            if isinstance(record, dict) and type(record.get("pid")) is int and isinstance(record.get("start"), str):
+                records[name] = record
+        listed = offload_host.census([record["pid"] for record in records.values()])
+        if listed is None: return
+        for name, record in records.items():
+            if offload_host.process_state(record, listed) == "ended":
+                with contextlib.suppress(OSError): (folder / name).unlink()
+
+
 REQUEST_STARTED = "VOCARO_ADMISSION_REQUEST_STARTED"
 _request_started = contextvars.ContextVar("admission_request_started", default=None)
 
@@ -762,6 +797,53 @@ class Admission:
         self.previous = None
         self.reused = False
         self.queued = False
+        # This request's observation record while it waits (WAITS), when it last wrote it by the monotonic clock, and
+        # whether writing it failed, which ends it for this request and changes nothing else.
+        self.wait_record = self.directory / WAITS / f"{self.identity}.json"
+        self.observed_at, self.unobserved, self.owner_start = None, False, None
+
+    def _observe(self):
+        """Publish what this waiting request waits for, for `eng admissions now`: at its first refusal, and then at most
+        every OBSERVE_SECONDS. Never a reason to change admission: a failure is said once and ends the record."""
+        now = time.monotonic()
+        if self.unobserved or (self.observed_at is not None and now - self.observed_at < OBSERVE_SECONDS): return
+        first = self.observed_at is None
+        self.observed_at = now
+        staged = None
+        try:
+            folder = self.wait_record.parent
+            folder.mkdir(mode=0o700, exist_ok=True)
+            if self.owner_start is None:
+                self.owner_start = process_start(os.getpid())
+                if self.owner_start is None: raise OSError("the waiting process's identity cannot be read")
+            waited = now - self.started
+            record = {"schemaVersion": WAIT_SCHEMA, "identity": self.queued_as, "request": self.identity,
+                      "pid": os.getpid(), "start": self.owner_start, "label": self.label[:LABEL_LIMIT],
+                      "queueKind": "exclusive" if self.exclusive else "wholeHost" if self.whole_host else "ordinary",
+                      "model": self.model, "queuedAt": self.ordered, "startedAt": time.time() - waited,
+                      "sampledAt": time.time(), "waited": round(waited, 3), "refusal": self.refusal,
+                      "reason": self.waiting}
+            with tempfile.NamedTemporaryFile("w", dir=folder, prefix=f".{self.identity}.", delete=False) as stream:
+                staged = Path(stream.name)
+                json.dump(record, stream)
+            staged.replace(self.wait_record)
+            staged = None
+            if first:
+                # Another waiter's crash is no failure of this record.
+                with contextlib.suppress(Exception): sweep_waits(folder)
+        except Exception as error:
+            self.unobserved = True
+            with contextlib.suppress(Exception):
+                print(f"heavy: what this request waits for was not recorded for `eng admissions now`: {error}",
+                      file=sys.stderr, flush=True)
+        finally:
+            if staged is not None:
+                with contextlib.suppress(OSError): staged.unlink()
+
+    def _unobserve(self):
+        """This request no longer waits, however its wait ended: its observation record goes."""
+        if self.observed_at is None: return
+        with contextlib.suppress(OSError): self.wait_record.unlink(missing_ok=True)
 
     def _recorded(self):
         """The published guard, whether or not its owners run, or None if it is unreadable or not in admission's
@@ -1189,6 +1271,7 @@ class Admission:
             while not self._attempt():
                 self._count()
                 lane_wait.waiting(lane_wait.ADMISSION, self.waiting, stranded=self.refusal == "stranded")
+                self._observe()
                 # Nothing is published yet but the request's place in the queue,
                 # so a stop or a timeout leaves nothing to release once it withdraws.
                 if requested() is not None:
@@ -1220,6 +1303,9 @@ class Admission:
                 # how a request fails: `eng run --if-free` tells a busy host by its TimeoutError.
                 if self.queued: raise
             raise
+        finally:
+            # Admitted, timed out, stopped or failed: it waits no more.
+            self._unobserve()
         _held[self.identity] = self
         lane_wait.running()
         print(f"heavy: slot {','.join(str(slot) for slot, _fd in self.descriptors)}"
@@ -1744,6 +1830,133 @@ def usage_main(argv=None, out=print):
             except (remote.Unreachable, remote.Unavailable, remote.Misconfigured) as error: entries = str(error)
         there = (f"second Mac ({host})", host, reading, entries)
     return usage(here, there, since, until, out)
+
+
+def unknown_host(name, role, why, state="unknown"):
+    """A host `eng admissions now` could not read: unknown, never idle; or notConfigured, a second Mac there is not."""
+    return {"name": name, "role": role, "state": state, "reasons": [why], "observedAt": None, "limits": None,
+            "slots": None, "model": None, "holders": None, "unattributed": None, "waiters": None}
+
+
+def admissions_now(here_only=False, read_here=None, read_there=None, configured=None):
+    """{"schemaVersion": 1, "hosts": [...]}: this Mac's reading (offload_host.admissions_now) and, unless here_only,
+    the second Mac's, asked once over ssh within remote.ADMISSIONS_BUDGET seconds. A Mac that cannot be read is
+    unknown with why, and this Mac's reading stands beside it."""
+    from vocaro_engineering import offload_host, remote
+    read_here = read_here or offload_host.admissions_now
+    read_there = read_there or remote.admissions_there
+    configured = configured or remote.configured
+    try: here = {"name": f"this Mac ({offload_host.mac_name()})", "role": "here", **read_here()}
+    except Exception as error:  # noqa: BLE001 - a reading that fails is unknown, never idle
+        here = unknown_host("this Mac", "here", f"its reading failed: {type(error).__name__}: {error}")
+    hosts = [here]
+    if not here_only:
+        started = time.monotonic()
+        try: host = configured()
+        except ValueError as error: hosts.append(unknown_host("second Mac", "second", str(error)))
+        else:
+            if host is None:
+                hosts.append(unknown_host("second Mac", "second", "no second Mac is configured", "notConfigured"))
+            else:
+                budget = max(1.0, remote.ADMISSIONS_BUDGET - (time.monotonic() - started))
+                try: hosts.append({"name": f"second Mac ({host})", "role": "second", **read_there(host, budget)})
+                except remote.Unavailable as error: hosts.append(unknown_host(f"second Mac ({host})", "second", str(error)))
+    return {"schemaVersion": 1, "hosts": hosts}
+
+
+def now_lines(reading, at=None):
+    """`eng admissions now` in words, host by host."""
+    lines = []
+    for host in reading["hosts"]:
+        state, reasons = host.get("state"), host.get("reasons") or []
+        if state in ("unknown", "notConfigured"):
+            lines.append(f"{host['name']}: {'unknown' if state == 'unknown' else 'not configured'}: {'; '.join(reasons)}")
+            continue
+        when = host.get("observedAt")
+        read = f", read at {datetime.fromtimestamp(when).strftime('%H:%M:%S')}" if isinstance(when, (int, float)) else ""
+        space = host.get("namespace") or {}
+        isolated = "" if space.get("shared", True) else \
+            f", isolated namespace {space.get('HEAVY_SLOT_DIR') or space.get('slotDirectory')}"
+        lines.append(f"{host['name']}{read}{isolated}" + (f": partial: {'; '.join(reasons)}" if state == "partial" else ""))
+        found, holders = host.get("limits"), host.get("holders")
+        slots = host.get("slots")
+        if found and slots is not None:
+            held = [slot for slot in slots if slot.get("holder")]
+            guaranteed = sum(1 for slot in held if slot["guaranteed"])
+            exclusive = any(holder["exclusive"] for holder in holders or [])
+            guaranteed = found["slots"] if exclusive else guaranteed
+            extra = found["slotsMax"] - found["slots"] if exclusive else len(held) - guaranteed
+            model = (host.get("model") or {}).get("holder")
+            owner = next((holder["label"] for holder in holders or [] if holder["identity"] == model), None)
+            lines.append(f"  slots: {guaranteed} of {found['slots']} guaranteed and {extra} of "
+                         f"{found['slotsMax'] - found['slots']} beyond them held; the model "
+                         + (f"held by {owner}" if owner else "free"))
+        if holders is None: lines.append("  holders: unknown")
+        elif not holders: lines.append("  holders: none")
+        else:
+            lines.append("  holders:")
+            for holder in holders:
+                kind = ("exclusive" if holder["exclusive"] else "whole-host" if holder["wholeHost"] else "heavy") \
+                    + (" with the model" if holder["model"] and not holder["exclusive"] else "")
+                if holder["exclusive"]: where = "every slot"
+                elif holder["slots"] is None: where = "a slot no file names"
+                else:
+                    where = ", ".join([f"slot {slot}" for slot in holder["guaranteed"]]
+                                      + [f"slot {slot} (beyond the guaranteed)" for slot in holder["extra"]]) or "no slot"
+                held = f"held {duration(holder['heldSeconds'])}" if holder.get("heldSeconds") is not None else "held for an unknown time"
+                status = ("; stranded: its process has ended, and admission counts it until it is recovered "
+                          "(`python3 scripts/eng admissions recover`)" if holder.get("stranded") and holder["process"] == "ended"
+                          else "; stranded: uncertain, counted until recovered" if holder.get("stranded")
+                          else "; its process could not be checked" if holder["process"] == "unknown" else "")
+                lines.append(f"    {holder['label']}: {kind}, {where}, PID {holder['pid']}, {held}{status}")
+        if host.get("unattributed"):
+            lines.append("  other slots: " + ", ".join(f"slot {slot}" for slot in host["unattributed"])
+                         + " (free, or held by work outside admission's guard: their locks are not probed)")
+        waiters = host.get("waiters")
+        if waiters is None: lines.append("  waiting: unknown")
+        elif not waiters: lines.append("  waiting: none")
+        else:
+            lines.append("  waiting:")
+            for waiter in waiters:
+                kind = {"exclusive": "exclusive", "wholeHost": "whole-host", "ordinary": "heavy"}.get(waiter["kind"], waiter["kind"])
+                if waiter.get("model"): kind += " with the model"
+                if waiter.get("position") is not None: kind += f", priority place {waiter['position']}"
+                waited = f"waited {duration(waiter['waitedSeconds'])}" if waiter.get("waitedSeconds") is not None \
+                    else "waited for an unknown time"
+                if waiter.get("away"):
+                    asked = waiter.get("lastAskedSeconds")
+                    why = ("place kept while away, last asked " + (f"{duration(asked)} ago" if asked is not None else "at an unknown time")
+                           + ("; it holds later work back" if waiter.get("holdsBack")
+                              else "; it no longer holds later work back" if waiter.get("holdsBack") is False else "")
+                           + "; no reason recorded")
+                elif not waiter.get("reason"):
+                    why = "asking, with no reason recorded (a toolkit older than its record, or before its first refusal)"
+                else:
+                    why = waiter["reason"]
+                    if waiter.get("stale"): why += f" (as of {duration(waiter['sampledSeconds'])} ago: stale)"
+                status = "; its process could not be checked" if waiter.get("process") == "unknown" else ""
+                lines.append(f"    {waiter['label']}: {kind}, PID {waiter['pid']}, {waited}: {why}{status}")
+    return lines
+
+
+def now_main(argv=None, out=print, read=None):
+    """eng admissions now: who holds and who waits for heavy-work admission on each Mac now (vocaro-engineering#342). 0
+    when every Mac asked about was read whole, 1 when one is partial or unknown, 2 for a mistaken command line."""
+    parser = argparse.ArgumentParser(prog="eng admissions now", description="Show who holds heavy-work admission on "
+        "this Mac and the second Mac now, and who waits for it, for how long and why, as each waiter says it. It changes "
+        "nothing. A Mac that cannot be read is unknown, never idle (guides/shared-host.md, Who holds and who waits).")
+    parser.add_argument("--json", action="store_true", help="print the readings as JSON")
+    parser.add_argument("--here", action="store_true", help="read this Mac only, in this process's namespace")
+    args = parser.parse_args(argv)
+    isolated = [name for name in ("HEAVY_SLOT_DIR", "SW_GATE_LOCK_FILE") if os.environ.get(name)]
+    if isolated and not args.here:
+        parser.error(f"{' and '.join(isolated)} name{'s' if len(isolated) == 1 else ''} an isolated namespace on this "
+                     "Mac alone: add --here to read it")
+    reading = (read or admissions_now)(here_only=args.here)
+    if args.json: out(json.dumps(reading, indent=2))
+    else:
+        for line in now_lines(reading): out(line)
+    return 0 if all(host.get("state") in ("observed", "notConfigured") for host in reading["hosts"]) else 1
 
 
 # What recovery tells a person to do about an entry it leaves.

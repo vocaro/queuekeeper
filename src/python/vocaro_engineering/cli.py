@@ -1093,14 +1093,16 @@ def perform(argv, report):
         "it runs in the current directory")
     logged = commands.add_parser("admissions", usage="%(prog)s [-h] [--since WHEN] [--until WHEN] [log ...]\n"
         "       %(prog)s recover [OWNER]\n       %(prog)s remove OWNER --why TEXT\n       %(prog)s limits\n"
-        "       %(prog)s usage [--since WHEN] [--until WHEN] [--there LOG ...]", help="summarize this host's heavy-work admission "
+        "       %(prog)s usage [--since WHEN] [--until WHEN] [--there LOG ...]\n       %(prog)s now [--json] [--here]",
+        help="summarize this host's heavy-work admission "
         "log: for each kind and label, the requests admitted and withdrawn, how long they waited and held, and how "
         "admissions ended; eng admissions recover lists the guard's dead or uncertain entries, and eng admissions "
         "recover OWNER removes that owner's once a census against its process record finds nothing it ran still "
         "running; eng admissions remove OWNER --why TEXT removes by hand one recovery cannot prove finished once "
         "nothing its owner may have started is found running; eng admissions limits prints the admission limits in force and where each comes from; eng "
         "admissions usage shows both Macs' capacity now, the share of the last 3 hours each spent at each count of "
-        "heavy jobs, and why this Mac's work ran here, never offered to the second Mac or declined by it",
+        "heavy jobs, and why this Mac's work ran here, never offered to the second Mac or declined by it; eng admissions "
+        "now shows who holds and who waits for admission on each Mac now, how long and why",
         description="Summarize the admission log, or, with recover, list the guard's dead or uncertain entries and "
         "recover one: its owner, named by PID or identity, has ended, and nothing of the commands its process "
         "record leaves unsettled still runs. A live owner's entry, an entry without a process record and a "
@@ -1263,6 +1265,7 @@ def perform(argv, report):
     if argv[first:first + 2] == ["admissions", "remove"]: return resources.remove_main(argv[first + 2:])
     if argv[first:first + 2] == ["admissions", "limits"]: return resources.limits_main(argv[first + 2:])
     if argv[first:first + 2] == ["admissions", "usage"]: return resources.usage_main(argv[first + 2:])
+    if argv[first:first + 2] == ["admissions", "now"]: return resources.now_main(argv[first + 2:])
     split = argv.index("--") if "--" in argv else len(argv)
     args = parser.parse_args(argv[:split])
     if args.action == "setup":
@@ -1357,6 +1360,7 @@ def perform(argv, report):
             warnings += agent_entry(root, config)
             from .waiting import doctor_warnings as fixed_wait_warnings  # #284
             warnings += fixed_wait_warnings(root)
+            warnings += lane_wait.admission_warnings(root)
             warnings += skills.warnings(named_checkout(TOOLKIT_ROOT))
             # A difference between the two Macs is an error; a second Mac that cannot be reached is unchecked.
             hosts = fix_hosts(root, remote.compare_hosts())

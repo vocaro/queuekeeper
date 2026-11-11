@@ -5415,6 +5415,63 @@ class AdmissionLogThereTests(unittest.TestCase):
                 remote.admission_log_there("build-host", since)
 
 
+class AdmissionsThereTests(unittest.TestCase):
+    """The second Mac's `eng admissions now` reading: one bounded ssh request, and unknown when it fails (#342)."""
+
+    def run_with(self, outcome):
+        calls = []
+        def run(command, **options):
+            calls.append((command, options))
+            if isinstance(outcome, BaseException): raise outcome
+            return outcome(command) if callable(outcome) else outcome
+        with patch.object(remote.subprocess, "run", side_effect=run), patch.object(remote, "rediscover") as searched:
+            try: return remote.admissions_there("build-host", budget=7), calls
+            finally: searched.assert_not_called()
+
+    def test_a_valid_reading_comes_back_from_one_bounded_request(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"HEAVY_SLOT_DIR": directory}):
+            reading = offload_host.answer({"admissionsNow": offload_host.NOW_SCHEMA})
+        self.assertEqual((reading["state"], reading["holders"], reading["waiters"]), ("observed", [], []))
+        def there(command):
+            # What runs there is offload_host itself, asked for its reading, in the login shell.
+            self.assertIn('{"admissionsNow": 1}', command[-1])
+            return subprocess.CompletedProcess(command, 0, stdout=json.dumps(reading) + "\n", stderr="")
+        found, calls = self.run_with(there)
+        self.assertEqual(found, reading)
+        (command, options), = calls
+        self.assertEqual(options["timeout"], 7)
+        self.assertIn("ConnectTimeout=7", command)
+        self.assertNotIn(f"ConnectTimeout={remote.CONNECT_TIMEOUT}", command)
+        self.assertIn("BatchMode=yes", command)
+        self.assertIn("build-host", command)
+        self.assertEqual(options["stdin"], subprocess.DEVNULL)
+
+    def test_unreachable_slow_and_malformed_second_macs_raise_unavailable(self):
+        reply = lambda code, out="", err="": lambda command: subprocess.CompletedProcess(command, code, stdout=out, stderr=err)
+        cases = [(subprocess.TimeoutExpired("ssh", 7), remote.Unreachable, "did not answer in 7s"),
+                 (reply(255, err="ssh: connect to host build-host port 22: Host is down"), remote.Unreachable, "Host is down"),
+                 (reply(0, out="not json"), remote.Unavailable, "did not report its admissions"),
+                 (reply(0, out=json.dumps({"schemaVersion": 2, "state": "observed", "reasons": []})), remote.Unavailable,
+                  "did not report"),
+                 (reply(0, out=json.dumps({"error": "this Mac's toolkit reads admissionsNow version 1"})),
+                  remote.Unavailable, "reads admissionsNow version"),
+                 (reply(0, out="x" * (remote.ADMISSIONS_BYTES + 1)), remote.Unavailable, "more than a reading's")]
+        for outcome, kind, words in cases:
+            with self.subTest(words=words), self.assertRaisesRegex(kind, words):
+                self.run_with(outcome)
+        # An older toolkit there answers the version it does not read with an error, which offload_host gives.
+        self.assertIn("error", offload_host.answer({"admissionsNow": 2}))
+
+    def test_this_macs_reading_stands_when_the_second_mac_is_unreachable(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"HEAVY_SLOT_DIR": directory}), \
+                patch.object(remote.subprocess, "run", side_effect=subprocess.TimeoutExpired("ssh", 7)):
+            found = resources.admissions_now(configured=lambda: "build-host")
+        here, there = found["hosts"]
+        self.assertEqual((here["role"], here["state"], here["waiters"]), ("here", "observed", []))
+        self.assertEqual((there["name"], there["state"], there["holders"], there["waiters"]),
+                         ("second Mac (build-host)", "unknown", None, None))
+
+
 class SimulatorPositionTests(unittest.TestCase):
     """admit --verify keeps a command here for a UUID only where a simulator goes (#142)."""
 
