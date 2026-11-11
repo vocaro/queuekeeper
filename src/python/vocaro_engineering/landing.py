@@ -6,7 +6,9 @@ When main holds a branch's work only as equal patches, a squash, a pull request 
 merge queue rebased past a conflict it settled by keeping both sides (resolved), the branch is
 the last ref to its own commits, and deleting it leaves them to git gc. Evidence names commits by
 their IDs, so such a ref stays while main's tree or the project's open issues cite one of its
-commits, while an open issue names the branch, or while either could not be read.
+commits, while an open issue names the branch, or while either could not be read. A citation in another
+repository is found only where the caller names that repository (landed.sh's --cite-repo): its open
+issues are then read the same way, and when they could not be read the ref stays too.
 
 Such a ref can go once a merge that brings no content puts its commits in main's history. Every
 commit the merge brings in then reaches main with its message, and GitHub acts on each closing
@@ -17,7 +19,7 @@ landed.sh adds what needs the network: a merged pull request, and the open issue
 `eng disk` never fetches and reads neither. landed.sh and retire.sh run this file as a script:
 
     python3 -I landing.py contained BASE TIP     (the method, for resolved with what it rests on)
-    python3 -I landing.py citations TIP --base REF [--base REF] [--branch NAME] [--issues]
+    python3 -I landing.py citations TIP --base REF [--base REF] [--branch NAME] [--issues [--issues-repo OWNER/NAME]...]
     python3 -I landing.py claims BASE TIP...
 
 It imports nothing from the toolkit, so it runs isolated from the checkout it examines, and it
@@ -38,8 +40,10 @@ WORD = re.compile(rf"(?<![0-9A-Za-z_]){CITATION}(?![0-9A-Za-z_])")
 ISSUE_LIMIT = 1000
 GH_TIMEOUT = 60
 # A file in which the sweep's first lookup leaves the open issues, or why they could not be read,
-# for every later one in the same sweep.
+# for every later one in the same sweep: the project's own, and under "repositories" each other one read.
 ISSUES_CACHE = "CLOSEOUT_ISSUES_CACHE"
+# Another repository whose open issues are read for citations, as gh --repo names it.
+REPOSITORY = re.compile(r"[\w.-]+/[\w.-]+")
 # A closing keyword GitHub acts on when a commit reaches the default branch: close, fix or resolve,
 # in any tense, before an issue here (#N), in another repository (owner/name#N) or its URL.
 CLAIM = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\s+"
@@ -239,37 +243,46 @@ def tree_citations(git, commits, trees):
     return found, grep.returncode in (0, 1)  # 1: no match
 
 
-def open_issues(cache=None):
-    """(the project's open issues with their comments, None), or (None, why gh could not list them)."""
+def open_issues(cache=None, repository=None):
+    """(the open issues with their comments, None), or (None, why gh could not list them), of the project, or of
+    repository (OWNER/NAME) when one is named."""
+    saved = {}
     if cache and os.path.exists(cache):
         with open(cache) as stored: saved = json.load(stored)
-        return saved.get("issues"), saved.get("unmeasured")
+        entry = saved.get("repositories", {}).get(repository) if repository else saved
+        if entry is not None and "issues" in entry: return entry.get("issues"), entry.get("unmeasured")
     issues, why = None, None
+    command = ["gh", "issue", "list", "--state", "open", "--limit", str(ISSUE_LIMIT), "--json", "number,url,body,comments"]
+    if repository: command += ["--repo", repository]
     try:
-        listed = subprocess.run(["gh", "issue", "list", "--state", "open", "--limit", str(ISSUE_LIMIT), "--json",
-                                 "number,url,body,comments"], capture_output=True, text=True, timeout=GH_TIMEOUT,
+        listed = subprocess.run(command, capture_output=True, text=True, timeout=GH_TIMEOUT,
                                 stdin=subprocess.DEVNULL,
                                 env={**os.environ, "GH_PROMPT_DISABLED": "1", "GH_NO_UPDATE_NOTIFIER": "1"})
         if listed.returncode:
             why = "gh issue list failed: " + (listed.stderr.strip().splitlines() or ["no message"])[0]
         else:
             issues = json.loads(listed.stdout)
-            if len(issues) >= ISSUE_LIMIT: issues, why = None, f"the project has {ISSUE_LIMIT} or more open issues"
+            if len(issues) >= ISSUE_LIMIT:
+                issues, why = None, f"{repository or 'the project'} has {ISSUE_LIMIT} or more open issues"
     except FileNotFoundError: why = "gh is not installed"
     except subprocess.TimeoutExpired: why = f"gh issue list took over {GH_TIMEOUT}s"
     except ValueError as error: why = f"gh issue list printed no issue list ({error})"
     if cache:
-        with open(cache, "w") as stored: json.dump({"issues": issues, "unmeasured": why}, stored)
+        if repository: saved.setdefault("repositories", {})[repository] = {"issues": issues, "unmeasured": why}
+        else: saved.update({"issues": issues, "unmeasured": why})
+        with open(cache, "w") as stored: json.dump(saved, stored)
     return issues, why
 
 
-def issue_citations(issues, commits, branch=None):
-    """({commit: [record]}, [record that names branch]) for the open issues and their comments."""
+def issue_citations(issues, commits, branch=None, repository=None):
+    """({commit: [record]}, [record that names branch]) for the open issues and their comments, of the project or,
+    named in each record, of repository."""
     named = re.compile(rf"(?<![\w./-]){re.escape(branch)}(?![\w/-]|\.\w)") if branch else None
     found, naming = {}, []
     for issue in issues:
-        records = [(f"issue #{issue['number']}", issue.get("body") or "")]
-        records += [(f"a comment on issue #{issue['number']} ({comment.get('url', '')})", comment.get("body") or "")
+        label = f"issue {repository or ''}#{issue['number']}"
+        records = [(label, issue.get("body") or "")]
+        records += [(f"a comment on {label} ({comment.get('url', '')})", comment.get("body") or "")
                     for comment in issue.get("comments") or []]
         for record, text in records:
             for commit in cites(text, commits): found.setdefault(commit, []).append(record)
@@ -282,10 +295,10 @@ def listed(records):
     return ", ".join(unique[:3]) + (f" and {len(unique) - 3} more" if len(unique) > 3 else "")
 
 
-def citations(git, tip, bases, branch=None, issues=False, cache=None):
+def citations(git, tip, bases, branch=None, issues=False, cache=None, repositories=()):
     """(report lines, retain) for the last ref to tip. retain says why the ref must stay, or is None
-    when nothing a base does not reach is cited, by main's tree or (with issues) the project's open
-    issues and their comments, and both could be read."""
+    when nothing a base does not reach is cited, by main's tree or (with issues) the open issues and
+    their comments of the project and of each other repository named, and all could be read."""
     commits = git("rev-list", tip, *(f"^{base}" for base in bases))
     if commits.returncode: return [], "the commits that main does not reach could not be listed"
     commits = commits.stdout.split()
@@ -296,11 +309,15 @@ def citations(git, tip, bases, branch=None, issues=False, cache=None):
     if not issues:
         unmeasured.append("the project's open issues were not read, with no remote or with --no-fetch")
     else:
-        open_now, why = open_issues(cache)
-        if open_now is None: unmeasured.append(f"the project's open issues could not be read: {why}")
-        else:
-            cited, naming = issue_citations(open_now, commits, branch)
+        for repository in [None, *dict.fromkeys(repositories)]:
+            open_now, why = open_issues(cache, repository)
+            if open_now is None:
+                unmeasured.append(f"the open issues of {repository} could not be read: {why}" if repository
+                                  else f"the project's open issues could not be read: {why}")
+                continue
+            cited, named = issue_citations(open_now, commits, branch, repository)
             for commit, records in cited.items(): found.setdefault(commit, []).extend(records)
+            naming += named
     lines = [f"unreached: {len(commits)} commit(s) that no base reaches"]
     lines += [f"cited: {commit[:12]} by {listed(found[commit])}" for commit in commits if commit in found]
     if naming: lines.append(f"cited: the branch {branch} by {listed(naming)}")
@@ -392,6 +409,12 @@ def claims(git, base, tips):
     return lines, refusals
 
 
+def repository(text):
+    """OWNER/NAME, as gh --repo takes it, for --issues-repo."""
+    if not REPOSITORY.fullmatch(text): raise argparse.ArgumentTypeError(f"{text!r} is not OWNER/NAME")
+    return text
+
+
 def main(argv):
     if argv[:1] == ["contained"] and len(argv) == 3:
         how, basis = proof(lambda *arguments: subprocess.run(["git", *arguments], capture_output=True, text=True),
@@ -404,10 +427,11 @@ def main(argv):
         parser.add_argument("--base", action="append", required=True)
         parser.add_argument("--branch")
         parser.add_argument("--issues", action="store_true")
+        parser.add_argument("--issues-repo", action="append", default=[], type=repository)
         arguments = parser.parse_args(argv[1:])
         lines, retain = citations(lambda *words: subprocess.run(["git", *words], capture_output=True, text=True),
                                   arguments.tip, arguments.base, arguments.branch, arguments.issues,
-                                  os.environ.get(ISSUES_CACHE))
+                                  os.environ.get(ISSUES_CACHE), arguments.issues_repo)
         for line in lines: print(line)
         if retain: print(f"retain: {retain}")
         return 0
@@ -418,7 +442,7 @@ def main(argv):
         for refusal in refusals: print(f"refuse: {refusal}")
         return 0
     print("usage: landing.py contained BASE TIP\n"
-          "       landing.py citations TIP --base REF [--base REF] [--branch NAME] [--issues]\n"
+          "       landing.py citations TIP --base REF [--base REF] [--branch NAME] [--issues [--issues-repo OWNER/NAME]...]\n"
           "       landing.py claims BASE TIP...", file=sys.stderr)
     return 2
 
