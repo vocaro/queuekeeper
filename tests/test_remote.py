@@ -4641,7 +4641,11 @@ exec {shlex.quote(real)} "$@"
                 (["--input=.build/issue-52/main/input.json"], top, ".build/issue-52/main/input.json"),
                 (["sh", "-c", "python3 .build/issue-52/main/stall_control.py > out.txt"], top,
                  ".build/issue-52/main/stall_control.py"),
-                (["../.build/issue-52/main/input.json"], top / "pkg", "../.build/issue-52/main/input.json")]:
+                (["../.build/issue-52/main/input.json"], top / "pkg", "../.build/issue-52/main/input.json"),
+                # A < redirection's file is input, and so is a file read beside a log the script writes.
+                (["sh", "-c", "swift test < .build/issue-52/main/input.json"], top, ".build/issue-52/main/input.json"),
+                (["sh", "-c", "swift test > .build/issue-52/main/test.log; cat .build/issue-52/main/input.json"], top,
+                 ".build/issue-52/main/input.json")]:
             with self.subTest(words):
                 self.assertEqual(remote.ignored_inputs(words, top, directory), f"it names {named}, {said}; a command "
                                  "that runs or reads one runs here")
@@ -4653,6 +4657,15 @@ exec {shlex.quote(real)} "$@"
                     "--derived-data", ".build/ios-derived", os.path.relpath(outside, top), str(outside), "python3",
                     "https://example.com/.build/x"]
         self.assertIsNone(remote.ignored_inputs(controls, top, top))
+        # A script's output targets, which an earlier run left behind, are no input: after a redirection, attached
+        # or not, or tee with its options.
+        log = ".build/issue-52/main/test.log"
+        (self.project / log).write_text("an earlier run's log\n")
+        for script in [f"swift test > {log} 2>&1", f"swift test >> {log}", f"swift test 2> {log}",
+                       f"swift test 2>>{log}", f"swift test &> {log}", f"swift test >| {log}", f"swift test >{log}",
+                       f"swift test 2>&1 | tee {log}", f"swift test | tee -a {log} .build/issue-52/main/input.json"]:
+            with self.subTest(script):
+                self.assertIsNone(remote.ignored_inputs(["sh", "-c", script], top, top))
         forced = self.project / ".build/tracked.txt"
         forced.write_text("tracked\n")
         subprocess.run(["git", "-C", str(top), "add", "-f", ".build/tracked.txt"], check=True, capture_output=True)

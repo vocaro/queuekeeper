@@ -914,8 +914,8 @@ this Mac's record, or any other path of this Mac's alone: an absolute path outsi
 such as a session's scratchpad, `/private/tmp`, `/tmp` or the toolkit's checkout, or one under `~`.
 A relative path to a file in the checkout that exists and Git ignores, such as a session's
 scratch script under `.build/issue-N/`, keeps it here too, since the commit sent lacks every
-ignored file; an ignored directory does not, being most often output the command makes itself
-(`remote.ignored_inputs`).
+ignored file; an ignored directory does not, being most often output the command makes itself, nor does a
+file a script writes after `>` or `tee`, such as its log (`remote.ignored_inputs`).
 The system tools a command starts or uses as an interpreter are on both Macs, so a path under
 `/usr`, `/bin`, `/sbin`, `/dev`, `/opt/homebrew`, `/Applications/Xcode*.app` or
 `/Library/Developer`, or one that is what `PATH` resolves its name to, keeps nothing here. It stays

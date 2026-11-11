@@ -2960,14 +2960,22 @@ def local_paths(command, top):
     return None
 
 
+# What a shell script writes rather than reads: the target of an output redirection (>, >>, 2>, &>, >|, attached or
+# not; 2>&1 names no file), and the files tee writes, with its options, up to the next operator.
+OUTPUT_REDIRECTION = re.compile(r"""(?:\d+|&)?>>?[|&]?\s*[^\s;&|()<>'"]*""")
+TEE_OUTPUTS = re.compile(r"""(?:^|(?<=[\s|;&(]))tee(?:\s+[^\s;&|()<>]+)*""")
+
+
 def ignored_inputs(command, top, directory):
     """Why the second Mac cannot run command as it runs here because a word names, relative to directory, a file
     in the checkout that exists now and Git ignores, such as a session's scratch script under .build (#390), or
     None. The commit sent leaves out every file Git ignores. A directory keeps nothing here: one Git ignores is most
     often build output the command makes there itself, such as DerivedData or a scratch path. A tracked file Git
-    would otherwise ignore is sent, and so goes there."""
+    would otherwise ignore is sent, and so goes there. A script's output targets, after a redirection or tee, are
+    no input: a log under .build that an earlier run wrote keeps nothing here; a < redirection's file is input."""
     top, directory, candidates = Path(top), Path(directory), {}
     for word in map(str, command):
+        word = TEE_OUTPUTS.sub(" ", OUTPUT_REDIRECTION.sub(" ", word))
         for part in PATH_SEPARATOR.split(word):
             # An absolute path or one under ~ is local_paths'; an option is no path.
             if not part or part.startswith(("/", "~", "-")): continue
