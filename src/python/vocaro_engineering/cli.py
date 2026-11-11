@@ -1456,8 +1456,8 @@ def perform(argv, report):
             # Every lane is admitted, a light one as heavy work, except a self lane, whose script admits its parts.
             resource = admission_of(lane)
             # A lane whose result depends on the screen has it read on the Mac that runs it, at its start and again
-            # when it ends unmeasured (vocaro-engineering#185). One that needs it unlocked waits for that, unless it
-            # is nested in an admission that placed it already.
+            # when it ends unmeasured (vocaro-engineering#185). A nested lane rechecks its own requirement:
+            # the outer admission may not have placed work for an unlocked screen (#366).
             needs = unlocked_screen(config["lanes"], args.lane)
             reads_screen = needs or any(config["lanes"][name].get("display") for name in (group or [args.lane]))
             policy_commit = refresh_policy(root) if resource != "self" else None
@@ -1560,7 +1560,6 @@ def perform(argv, report):
                                 receipt["hereBecause"] = offered.status
                                 fell_back(args.lane, offered)
                             reap_here(root, inherited)
-                            if reads_screen: receipt["screen"] = screen_reading()
                             scroll_bars_recorded(receipt, args.lane, inherited)
                             alerts = guarded_alerts(stack, args.lane, receipt, lane.get("apps", ())) \
                                 if lane.get("foreground") else None
@@ -1569,6 +1568,13 @@ def perform(argv, report):
                             if blocked is not None: return blocked
                             closed = window_closed(args.lane, waiting)
                             if closed is not None: return closed
+                            if reads_screen: receipt["screen"] = screen_reading()
+                            if inherited and needs and receipt["screen"]["state"] != "unlocked":
+                                print(f"eng: {args.lane} not run on {this_mac()}: "
+                                      f"{remote.screen_refusal(receipt['screen'], this_mac())}; "
+                                      "release the outer admission before waiting for an unlocked screen and retry",
+                                      file=sys.stderr, flush=True)
+                                return BUSY
                             result = execute(admission.interrupted)
                             # A failed build ran no test an alert could have disturbed.
                             if alerts is not None and not compile_failed(receipt): result = alerts.judged(result)
