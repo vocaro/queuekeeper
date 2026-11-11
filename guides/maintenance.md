@@ -945,7 +945,28 @@ The worker runs spelling, unless disabled, followed by the project's `docs` lane
 implicit `docs` lane (`python3 scripts/eng docs check`). Both run through ordinary lane admission
 and leave their logs and receipts. This includes this toolkit's guides and knowledge articles.
 Code, configuration, agent instructions, non-Markdown data, and documents under source or test
-folders retain the code gate. A mixed batch and a batch that changes nothing run every code lane.
+folders retain the code gate. A batch that changes nothing runs every code lane, and so does an
+entry whose own commits change a document and code.
+
+**A docs-only entry never rides a code gate** (owner's rule of 2026-11-11,
+vocaro-engineering#394). The worker classifies each waiting entry by the paths its own commits
+change, by `main`'s settings as above, and keeps docs-only entries out of code batches:
+
+- Queued beside code entries, the docs-only entries land first, in a round of their own on the
+  docs lanes; the code entries gate in the next round, without them.
+- While a code batch gates, a docs-only entry that waits lands beside the gate, in a checkout of
+  its own beside the worker's (suffix `-docs`), looked for every `STACK_POLL`. Only entries whose
+  every path a carry-over takes go there; when the code batch passes, its result carries over
+  the documents `main` gained (*Main moving under a passed batch*), and so does a gate stacked on
+  it. A docs-only entry is never stacked on a code gate.
+- A docs-only entry goes ahead of an older entry only when the two change no path in common, and
+  a docs entry left in line holds back every later entry that changes one of its paths, so no two
+  entries that change a path in common change order, and integration and conflict detection are
+  what they were. An entry put first by `eng land --front`, or landing with `--no-gate`, still
+  goes first; a docs entry does not go beside the gate while one waits.
+- A docs entry that fails its docs lanes ahead of older entries may need one of them, as a link
+  needs the file an older entry adds. It is not sent back: it records them as `waitsFor` and goes
+  back in line behind them, then lands, or fails and is sent back, on top of them.
 
 A project may replace the defaults on `main` with exact paths and validators:
 

@@ -180,6 +180,11 @@ STACK_POLL = 30
 # A busy Mac can stay busy over many polls. Wait four polls before reintegrating a declined stack (#348).
 STACK_ADMISSION_BACKOFF = 4 * STACK_POLL
 STACK_ADMISSION_DECLINED = "queue: no Mac admitted the last lane of this stacked gate"
+# A docs-only entry never rides a code gate (owner's rule of 2026-11-11, vocaro-engineering#394). Queued beside code
+# entries, it lands first in a round of docs entries alone (Worker.docs_ahead); while a code batch gates, it lands
+# beside the gate in a checkout of its own with this suffix (Worker.docs_beside), and the code batch's pass carries over
+# the documents main gained (Worker.carry). It goes ahead of an older entry only when the two change no path in common.
+DOCS_SUFFIX = "-docs"
 # What a gate's lanes return when `eng queue remove` took an entry it tests out of the queue, which stopped them by the
 # cancel a thrown-away stacked gate's lanes end with, here or on the second Mac, freeing their admission there: no
 # verdict on anything, and what is left of the batch gates again (Worker.gate, vocaro-engineering#247). The gate looks
@@ -542,6 +547,40 @@ def docs_lanes(config, changed):
         lanes = declared["lanes"]
     first = [SPELLING] if spelled(config, SPELLING) and SPELLING not in lanes else []
     return first + lanes
+
+
+def docs_first(entries, config, changed_by, blocked=(), carried=None, gating=()):
+    """The entries, oldest first, that land on the docs lanes ahead of the rest (vocaro-engineering#394): each one
+    queued, put first by no option of eng land, whose own commits change only docs paths (docs_lanes), no path that an
+    older entry staying in line changes, nor one of blocked, the paths of a batch gating now; and none of the entries it
+    waits for (its waitsFor, from a run of its docs lanes that failed ahead of them) still in entries or in gating, the
+    identifiers of that batch. carried, when
+    given, must take each of its paths, as a passed batch's carry-over does (carried_over). An entry left in line holds
+    back every later entry that changes one of its paths, so that two entries that change a path in common keep their
+    order, and integration and conflict detection stay what they were."""
+    held, taken = set(blocked), []
+    present = {entry["id"] for entry in entries} | set(gating)
+    for entry in entries:
+        paths = changed_by(entry)
+        if entry["state"] == QUEUED and not (entry.get("front") or entry.get("noGate")) \
+                and not present & set(entry.get("waitsFor", ())) and not paths & held \
+                and docs_lanes(config, sorted(paths)) and (carried is None or all(map(carried, paths))):
+            taken.append(entry)
+        else: held |= paths
+    return taken
+
+
+def without_docs(batch, config, changed_by):
+    """batch, a round's batch, less its docs-only entries, which land on the docs lanes in rounds of their own: up to
+    the first code entry that changes a path one of them does, which waits for them, so that no two entries that
+    change a path in common change order (vocaro-engineering#394)."""
+    kept, left = [], set()
+    for entry in batch:
+        paths = changed_by(entry)
+        if docs_lanes(config, sorted(paths)): left |= paths
+        elif paths & left: break
+        else: kept.append(entry)
+    return kept
 
 
 def offerable(config, lanes):
@@ -2126,6 +2165,7 @@ class Worker:
         self.lane_now = None  # (lane, began, where) of the lane the gate runs or ran last (gate)
         self.stacked = None  # a Stack whose batch below landed, which the next round adopts as its own (after_stack)
         self.pending = None  # the Stack started on this round's batch while it gates (watched)
+        self.jumped = {}  # by docs entry of a round of docs entries, the older entries it went ahead of (docs_ahead)
         self.stack_retry_after = 0  # monotonic time before which this round does not retry a declined stack
         self.gating = ()  # the IDs of the entries integrate last put on top, which the gate tests (Removal)
         self.withdrawn = []  # those of them that left the queue, which stopped the last gate (gate)
@@ -3120,6 +3160,14 @@ class Worker:
                  f"gating the other {len(applied) - 1} at once instead of bisecting")
         return entry, why
 
+    def own_paths(self, entry):
+        """The paths entry's own commits change, as changed_by reads them, from the project's checkout, which every
+        checkout of the queue shares its objects with and which is there before any round has made the queue's own.
+        An entry that records no commits changes nothing, and so is no docs-only entry (docs_lanes)."""
+        if not entry.get("commits"): return set()
+        return {path for path in text(self.queue.main_checkout, "log", "--no-walk", "--format=", "--name-only",
+                                      "--no-renames", *entry["commits"]).splitlines() if path}
+
     def changed_by(self, entry):
         """The paths entry's commits change, each by its name before and after a move."""
         return {path for path in text(self.checkout, "log", "--no-walk", "--format=", "--name-only", "--no-renames",
@@ -3285,6 +3333,8 @@ class Worker:
         if self.stacked: return self.adopted()
         if passed: return self.push_passed(passed)
         base = text(queue.main_checkout, "rev-parse", MAIN)
+        self.jumped = {}
+        if not self.alone: batch = self.docs_ahead(waiting, batch, base)
         applied = self.integrate(batch, base)
         if not applied:
             if not self.alone: self.limit, self.suspects = None, 0
@@ -3314,8 +3364,9 @@ class Worker:
                                        lambda: self.gate(lanes, round_name))
         self.prune()
         if not beside:
+            if self.back_in_line(applied, result): return True
             outcome = self.older(config, applied, base, head, docs, ungated, result, log, round_name)
-            self.after_stack(outcome, self)
+            self.after_stack(outcome, self, config)
             return True
         flakes = None
         if result and result not in NO_VERDICT and result != WITHDRAWN:
@@ -3328,6 +3379,106 @@ class Worker:
         if older_passes: beside.weigh(config, base, older_landed=outcome == LANDED)
         self.after_beside(beside, applied, outcome)
         return True
+
+    def docs_ahead(self, waiting, batch, base):
+        """This round's batch, once docs-only entries are kept out of code batches (vocaro-engineering#394): the
+        docs-only entries that can go ahead (docs_first), in a round of their own on the docs lanes, when batch holds
+        any other entry; else batch less the docs-only entries, which wait for a round of their own (without_docs),
+        unless a bisect is going on; else batch. A round of docs entries is alone, so that its outcome leaves a bisect
+        where it was, and jumped holds, by entry, the older entries each goes ahead of (back_in_line)."""
+        try: config = config_at(self.queue.main_checkout, base)
+        except ValueError: return batch
+        docs = docs_first(waiting, config, self.own_paths)
+        ids = {entry["id"] for entry in docs}
+        if docs and any(entry["id"] not in ids for entry in batch):
+            self.alone = True
+            for entry in docs:
+                older = waiting[:waiting.index(entry)]
+                self.jumped[entry["id"]] = [other["id"] for other in older if other["id"] not in ids]
+            rest = len(waiting) - len(docs)
+            self.say(f"{len(docs)} docs-only entr{'y' if len(docs) == 1 else 'ies'} land{'s' if len(docs) == 1 else ''} "
+                     f"first, on the docs lanes alone, never in a code batch; the other {rest} wait for the next round")
+            return docs
+        if self.limit: return batch
+        code = without_docs(batch, config, self.own_paths)
+        if code and len(code) < len(batch):
+            self.say(f"the {len(batch) - len(code)} docs-only entr{'y' if len(batch) - len(code) == 1 else 'ies'} "
+                     "of the batch wait for a round of their own on the docs lanes, behind an older entry that changes "
+                     "the same paths")
+            return code
+        return batch
+
+    def back_in_line(self, applied, result):
+        """Whether a round of docs entries that went ahead of older entries (jumped), and failed its docs lanes, was
+        queued again behind them: each such entry waits for those entries (waitsFor), since it may need one of them,
+        as a link needs the file an older entry adds. One that failed with no older entry behind it fails as any does."""
+        if not result or result in NO_VERDICT or result == WITHDRAWN: return False
+        behind = {entry["id"]: self.jumped.get(entry["id"]) for entry in applied if self.jumped.get(entry["id"])}
+        if not behind: return False
+        for entry in applied:
+            if entry["id"] in behind: self.queue.record(entry, waitsFor=behind[entry["id"]])
+        self.queue.mark(applied, QUEUED)
+        self.say(f"the docs lanes failed ahead of older entries: {', '.join(behind)} queued again behind them, on "
+                 "top of which they fail or land")
+        return True
+
+    def docs_beside(self, config, applied):
+        """Land the docs-only entries waiting behind applied, the batch gating now, beside its gate, on the docs lanes
+        in a checkout of their own (DOCS_SUFFIX): each one that docs_first takes with applied's paths blocked and
+        whose every path a passed batch carries over (carried_over), so that applied's pass then carries over what
+        they add to main (Worker.carry). None goes while an entry put first by eng land, or a batch that passed, waits
+        to go first. One whose docs lanes fail waits in line for applied and the older entries (waitsFor)."""
+        waiting = self.queue.waiting()
+        ids = {entry["id"] for entry in applied}
+        if not ids <= {entry["id"] for entry in waiting}: return
+        rest = [entry for entry in waiting if entry["id"] not in ids]
+        if any(entry.get("front") or entry.get("noGate") or entry["state"] == PASSED for entry in rest): return
+        gating = set().union(*(self.own_paths(entry) for entry in applied))
+        docs = docs_first(rest, config, self.own_paths, blocked=gating,
+                          carried=lambda path: carried_over(path, config, gating), gating=ids)
+        if not docs: return
+        runner = Beside(self, self.queue.home / f"{self.queue.main_checkout.name}{DOCS_SUFFIX}",
+                        "docs beside the gate")
+        runner.prepare()
+        reach(runner.checkout, *FETCH, say=runner.say, check=True)
+        base = text(runner.checkout, "rev-parse", MAIN)
+        landing_ = runner.integrate(docs, base)
+        if not landing_: return
+        head = runner.head()
+        main = config_at(self.queue.main_checkout, base)
+        lanes = docs_lanes(main, [path for path in text(runner.checkout, "diff", "--name-only", "--no-renames", base,
+                                                        head).splitlines() if path])
+        if not lanes: return
+        self.queue.mark(landing_, TESTING)
+        runner.say(f"{len(landing_)} docs-only entr{'y' if len(landing_) == 1 else 'ies'} at {head[:12]} on "
+                   f"{base[:12]}: running only {', '.join(lanes)}, beside the gate of {len(applied)}, no code lane")
+        result, log = runner.gate(lanes, f"{time.strftime('%Y%m%d-%H%M%S')}-{head[:8]}")
+        if not result:
+            current = [self.queue.read(entry["id"]) for entry in landing_]
+            if any(entry is None or entry["state"] not in WAITING for entry in current):
+                runner.say("an entry was removed during the run: queued again")
+            else:
+                runner.keep(landing_, base, head, lanes)
+                if runner.push(main, landing_, base, lanes): return
+            self.queue.mark(landing_, QUEUED)
+            return
+        if result in NO_VERDICT or result == WITHDRAWN:
+            runner.say(f"no verdict (exit {result}): queued again")
+            self.queue.mark(landing_, QUEUED)
+            return
+        for entry in landing_:
+            older = [other["id"] for other in waiting[:waiting.index(entry)]
+                     if other["id"] not in {each["id"] for each in landing_}]
+            self.queue.record(entry, waitsFor=older)
+        self.queue.mark(landing_, QUEUED)
+        runner.say(f"the docs lanes failed beside the gate, exit {result}: queued again behind the batch gating and "
+                   f"the older entries, on top of which they fail or land; see {log}")
+
+    def docs_between(self, config, entries, old, new):
+        """Whether new, a commit of main, differs from old only by documents the passed result of entries, gated on
+        old, carries over (carried_over), as docs entries landed beside its gate make it differ."""
+        files = set().union(*(self.own_paths(entry) for entry in entries))
+        return all(carried_over(path, config, files) for path in self.changed(old, new) if path)
 
     def begun(self, round_name, head, base, applied, beside=None, adopted=False):
         """Start the round's account (ROUND_FILE): its batch, and, while bisecting, how many entries the bisect
@@ -3470,18 +3621,21 @@ class Worker:
         thrown away, its entries queued again."""
         stacked, self.stacked = self.stacked, None
         base = text(self.queue.main_checkout, "rev-parse", MAIN)
-        if base != stacked.base:
-            stacked.drop(f"origin/main is {base[:12]}, not the tip {stacked.base[:12]} it was gated on")
-            return True
         try:
             config = config_at(self.queue.main_checkout, base)
             lanes = lanes_of(config)
         except ValueError as error:
             stacked.drop(f"main's configuration at {base[:12]} cannot be read: {error}")
             return True
+        # Docs entries that landed beside the gates since leave its result standing, which its push carries over.
+        if base != stacked.base and not self.docs_between(config, stacked.entries, stacked.base, base):
+            stacked.drop(f"origin/main is {base[:12]}, not the tip {stacked.base[:12]} it was gated on")
+            return True
         if lanes != stacked.lanes:
             stacked.drop(f"main at {base[:12]} names the lanes {', '.join(lanes)}, not those it ran")
             return True
+        # What the gate ran on, which the push carries over the documents main has gained since (Worker.carry).
+        base = stacked.base
         applied = [self.queue.read(entry["id"]) or entry for entry in stacked.entries]
         self.alone = False
         self.say(f"testing {len(applied)} entr{'y' if len(applied) == 1 else 'ies'} at {stacked.tip[:12]} on "
@@ -3496,7 +3650,7 @@ class Worker:
             return True
         outcome = self.older(config, applied, base, stacked.tip, None, None, result, log, stacked.name,
                              runner=stacked.runner)
-        self.after_stack(outcome, stacked.runner)
+        self.after_stack(outcome, stacked.runner, config)
         return True
 
     def watched(self, runner, config, lanes, base, head, applied, gate):
@@ -3507,11 +3661,19 @@ class Worker:
         self.stack_retry_after = 0
         stop, said = threading.Event(), set()
         def stacker():
-            while not stop.wait(STACK_POLL):
-                try: self.stack(runner, config, lanes, head, applied, stop, said)
-                except Exception as error:  # a stacked gate is a saving, never the round's verdict
-                    self.say(f"no gate stacked on {head[:12]}: {error}")
-                    return
+            docs, stacks = True, True
+            while (docs or stacks) and not stop.wait(STACK_POLL):
+                # Docs entries first, as they land on main and a stacked gate keeps its result over them (after_stack).
+                if docs:
+                    try: self.docs_beside(config, applied)
+                    except Exception as error:  # a landing beside the gate is a saving, never the round's verdict
+                        self.say(f"no docs entry lands beside the gate of {head[:12]}: {error}")
+                        docs = False
+                if stacks:
+                    try: self.stack(runner, config, lanes, head, applied, stop, said)
+                    except Exception as error:  # a stacked gate is a saving, never the round's verdict
+                        self.say(f"no gate stacked on {head[:12]}: {error}")
+                        stacks = False
         thread = threading.Thread(target=stacker, name="stacker", daemon=True)
         thread.start()
         try: return gate()
@@ -3539,6 +3701,9 @@ class Worker:
         fresh = [entry for entry in waiting if entry["id"] not in ids]
         if not fresh or any(entry.get("front") or entry.get("noGate") or entry["state"] != QUEUED for entry in fresh):
             return
+        # A docs-only entry lands beside the gate or in a round of its own, never on a stacked code gate (#394).
+        fresh = without_docs(fresh, config, self.own_paths)
+        if not fresh: return
         mac = self.admitted_mac(runner, lanes[-1])
         if mac is None: return
         excluded = None
@@ -3573,15 +3738,21 @@ class Worker:
         if not record or record.get("admitted") is not True or not lane_wait.alive(record.get("pid")): return None
         return record.get("mac")
 
-    def after_stack(self, outcome, runner):
+    def after_stack(self, outcome, runner, config=None):
         """Keep the pending Stack for the next round when the batch below it landed at exactly the tip it was
-        stacked on, and the queue goes on; else throw it away."""
+        stacked on, or at one that differs from it only by documents the stack's result carries over (docs_between),
+        which docs entries landed beside the gate added (docs_beside), and the queue goes on; else throw it away."""
         pending, self.pending = self.pending, None
         if pending is None: return
         if pending.done() and pending.void():
             pending.drop(pending.void())
         elif outcome == LANDED and runner.head() == pending.base and not self.queue.held():
             self.say(f"the gate stacked on {pending.base[:12]} goes on as the next round, as that is origin/main now")
+            self.stacked = pending
+        elif outcome == LANDED and config is not None and not self.queue.held() \
+                and self.docs_between(config, pending.entries, pending.base, runner.head()):
+            self.say(f"the gate stacked on {pending.base[:12]} goes on as the next round, as origin/main is that tip "
+                     "with documents its result carries over")
             self.stacked = pending
         else:
             pending.drop("the batch below it did not land at the tip it was stacked on")

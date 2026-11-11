@@ -3256,14 +3256,70 @@ class DocsOnly(Fixture):
         self.assertTrue(any("queue.docsOnly: running only spelling, docs" in words for words in said), said)
         self.assertIn("docs lanes only (spelling, docs): no gate of that commit", mq.describe(self.state(ids[0])))
 
-    def test_a_mixed_batch_runs_every_lane(self):
-        self.commit("doc/guide.md", "guide"); self.commit("code", "code")
-        ids = self.add("guide", "code")
+    def landed_order(self, *ids):
+        """The entries' landed commits, oldest on main first."""
+        run(self.repo, "git", "fetch", "-q", "origin")
+        history = run(self.repo, "git", "rev-list", "--reverse", "origin/main").split()
+        return sorted(ids, key=lambda identifier: history.index(self.state(identifier)["landedAs"]))
+
+    def test_a_docs_only_entry_queued_with_code_never_rides_the_code_gate(self):
+        """vocaro-engineering#394: queued behind and beside code entries, a docs-only entry lands first, on the docs
+        lanes alone, and the code entries gate without it. The old worker gated all three together, every lane."""
+        self.commit("code", "code"); self.commit("doc/guide.md", "guide"); self.commit("more", "more")
+        code, guide, more = self.add("code", "guide", "more")
+        said = []
+        with patch.object(mq.Worker, "say", lambda worker, words: said.append(words)): self.assertEqual(self.work(), 0)
+        self.assertEqual([self.state(i)["state"] for i in (code, guide, more)], ["landed"] * 3)
+        self.assertEqual((self.gates(), self.docs_runs()), (1, 1))
+        self.assertEqual(self.state(guide)["docsOnly"], ["spelling", "docs"])
+        self.assertNotIn("gatedOn", self.state(guide))
+        self.assertIn("docs lanes only (spelling, docs): no gate of that commit", mq.describe(self.state(guide)))
+        for identifier in (code, more):
+            self.assertNotIn("docsOnly", self.state(identifier))
+            self.assertIn("gatedOn", self.state(identifier))
+        self.assertEqual(self.landed_order(code, guide, more), [guide, code, more])
+        self.assertTrue(any("1 docs-only entry lands first, on the docs lanes alone" in words for words in said), said)
+
+    def test_one_entry_that_changes_docs_and_code_runs_every_lane(self):
+        """The control: an entry is docs-only by its own paths, and one that changes code beside a document gates."""
+        run(self.repo, "git", "checkout", "-q", "-B", "both", "origin/main")
+        (self.repo / "doc").mkdir(exist_ok=True)
+        (self.repo / "doc/guide.md").write_text("guide")
+        (self.repo / "code").write_text("code")
+        run(self.repo, "git", "add", "doc/guide.md", "code")
+        run(self.repo, "git", "commit", "-qm", "Both")
+        self.commit("README.md", "readme", "readme", start="origin/main")
+        both, readme = self.add("both", "readme")
         self.work()
-        self.assertEqual([self.state(i)["state"] for i in ids], ["landed"] * 2)
-        self.assertEqual((self.gates(), self.docs_runs()), (1, 0))
-        self.assertNotIn("docsOnly", self.state(ids[0]))
-        self.assertNotIn("docs lanes only", mq.describe(self.state(ids[0])))
+        self.assertEqual([self.state(i)["state"] for i in (both, readme)], ["landed"] * 2)
+        self.assertEqual((self.gates(), self.docs_runs()), (1, 1))
+        self.assertNotIn("docsOnly", self.state(both))
+        self.assertEqual(self.state(readme)["docsOnly"], ["spelling", "docs"])
+
+    def test_a_docs_entry_that_changes_a_path_an_older_entry_changes_waits_for_it(self):
+        """Order is kept where two entries change a path in common: the docs entry waits for the older code entry,
+        and then lands on the docs lanes in a round of its own, not in the code entry's gate."""
+        (self.repo / "doc").mkdir(exist_ok=True)
+        (self.repo / "doc/guide.md").write_text("one\ntwo\nthree\nfour\nfive\n")
+        run(self.repo, "git", "add", "doc/guide.md")
+        run(self.repo, "git", "commit", "-qm", "A guide")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        run(self.repo, "git", "checkout", "-q", "-B", "code", "origin/main")
+        (self.repo / "doc/guide.md").write_text("ONE\ntwo\nthree\nfour\nfive\n")
+        (self.repo / "code").write_text("code")
+        run(self.repo, "git", "add", "doc/guide.md", "code")
+        run(self.repo, "git", "commit", "-qm", "Code and its guide")
+        run(self.repo, "git", "checkout", "-q", "-B", "guide", "origin/main")
+        (self.repo / "doc/guide.md").write_text("one\ntwo\nthree\nfour\nFIVE\n")
+        run(self.repo, "git", "commit", "-qam", "The guide alone")
+        code, guide = self.add("code", "guide")
+        said = []
+        with patch.object(mq.Worker, "say", lambda worker, words: said.append(words)): self.work()
+        self.assertEqual([self.state(i)["state"] for i in (code, guide)], ["landed"] * 2)
+        self.assertEqual((self.gates(), self.docs_runs()), (1, 1))
+        self.assertEqual(self.landed_order(code, guide), [code, guide])
+        self.assertEqual(self.state(guide)["docsOnly"], ["spelling", "docs"])
+        self.assertTrue(any("wait for a round of their own on the docs lanes" in words for words in said), said)
 
     def test_an_undeclared_project_uses_the_default_docs_paths(self):
         self.publish(self.configured, "Declare nothing")
@@ -3387,6 +3443,55 @@ class DocsOnly(Fixture):
         self.assertEqual(declared["properties"]["lanes"]["items"]["not"], {"const": "gate"})
 
 
+class DocsFirst(unittest.TestCase):
+    """Which waiting entries go ahead on the docs lanes (mq.docs_first), and what a code batch keeps (mq.without_docs),
+    by each entry's own paths (vocaro-engineering#394)."""
+    PATHS = {"code": {"src/a.py"}, "guide": {"doc/guide.md"}, "readme": {"README.md"}, "both": {"doc/guide.md", "src/b.py"},
+             "shared": {"doc/shared.md"}, "pdf": {"doc/paper.pdf"}}
+
+    def entries(self, *names, **fields):
+        return [{"id": name, "state": "queued", **fields.get(name, {})} for name in names]
+
+    def first(self, *names, config=None, **options):
+        found = mq.docs_first(self.entries(*names, **options.pop("fields", {})), config or {},
+                              lambda entry: self.PATHS[entry["id"]], **options)
+        return [entry["id"] for entry in found]
+
+    def test_docs_entries_go_ahead_of_code_that_changes_none_of_their_paths(self):
+        self.assertEqual(self.first("code", "guide", "readme"), ["guide", "readme"])
+
+    def test_an_older_entry_that_changes_the_same_path_keeps_its_place(self):
+        self.PATHS = {**self.PATHS, "edit": {"doc/guide.md", "src/c.py"}}
+        self.assertEqual(self.first("edit", "guide", "readme"), ["readme"])
+        # A docs entry held back holds back the later one that changes its path too.
+        self.assertEqual(self.first("edit", "guide", "readme", "both"), ["readme"])
+
+    def test_an_entry_put_first_or_landing_ungated_or_testing_stays_in_line(self):
+        fields = {"guide": {"front": True}, "readme": {"noGate": True}, "shared": {"state": "testing"}}
+        self.assertEqual(self.first("guide", "readme", "shared", fields=fields), [])
+
+    def test_an_entry_waits_for_the_entries_its_docs_lanes_failed_ahead_of(self):
+        fields = {"guide": {"waitsFor": ["code"]}}
+        self.assertEqual(self.first("code", "guide", fields=fields), [])
+        self.assertEqual(self.first("guide", fields=fields), ["guide"])
+        # Nor does it go beside the gate of the entry it waits for.
+        self.assertEqual(self.first("guide", fields=fields, gating={"code"}), [])
+
+    def test_a_gating_batch_blocks_its_paths_and_a_carry_must_take_every_path(self):
+        self.assertEqual(self.first("guide", "readme", blocked={"README.md"}), ["guide"])
+        config = {"queue": {"docsOnly": {"paths": {"doc/": "prose and papers"}, "lanes": ["docs"]}}}
+        self.assertEqual(self.first("pdf", "guide", config=config), ["pdf", "guide"])
+        carried = lambda path: mq.carried_over(path, config, set())
+        self.assertEqual(self.first("pdf", "guide", config=config, carried=carried), ["guide"])
+
+    def test_a_code_batch_leaves_out_its_docs_entries_up_to_code_that_changes_their_paths(self):
+        changed_by = lambda entry: self.PATHS[entry["id"]]
+        kept = lambda *names: [entry["id"] for entry in mq.without_docs(self.entries(*names), {}, changed_by)]
+        self.assertEqual(kept("code", "guide", "readme"), ["code"])
+        self.assertEqual(kept("guide", "code", "both"), ["code"])
+        self.assertEqual(kept("code", "pdf"), ["code", "pdf"])
+
+
 class DocsCarryPolicy(unittest.TestCase):
     def test_known_inputs_override_carry_permissions_and_false_keeps_explicit_permissions(self):
         excluded = {"queue": {"docsOnly": {"paths": {"docs/": "prose unless excluded"}, "lanes": ["docs"],
@@ -3416,6 +3521,18 @@ class DefaultDocsOnly(Fixture):
         logs = list(mq.Queue(self.repo).logs.glob("*-docs.log"))
         self.assertTrue(logs)
         self.assertIn("Documentation checks passed", logs[-1].read_text())
+
+    def test_a_docs_entry_that_fails_ahead_of_older_code_waits_for_it_and_then_lands(self):
+        """A document that links to a file an older code entry adds fails its docs lanes ahead of it: it goes back in
+        line behind that entry, rather than being sent back, and then lands on the docs lanes on top of it."""
+        self.commit("tool.py", "tool", "print('a tool')\n")
+        self.commit("docs/guide.md", "guide", "[the tool](../tool.py)\n")
+        tool, guide = self.add("tool", "guide")
+        self.work()
+        self.assertEqual([self.state(i)["state"] for i in (tool, guide)], ["landed"] * 2)
+        self.assertEqual(self.state(guide)["waitsFor"], [tool])
+        self.assertEqual(self.state(guide)["docsOnly"], ["spelling", "docs"])
+        self.assertEqual(self.gates(), 1)
 
     def test_broken_links_in_the_default_docs_folder_are_rejected(self):
         self.commit("docs/guide.md", "guide", "[missing](missing.md)\n")
@@ -7380,6 +7497,46 @@ class Stacked(Fixture):
         self.assertEqual(run(self.repo, "git", "rev-parse", f"{b['landedAs']}^"), self.state(first)["landedAs"])
         self.assertEqual(b["gatedOn"], self.state(first)["landedAs"])
         self.assertLessEqual({"hold", "b"}, self.main_files())
+
+    def test_a_docs_entry_that_arrives_during_a_code_gate_lands_beside_it_on_the_docs_lanes(self):
+        """vocaro-engineering#394: a docs-only entry that arrives while a code batch gates lands beside the gate, on the
+        docs lanes, and the batch's pass carries over the document main gained. The old worker stacked it on the
+        batch's tip and gated it with every lane."""
+        self.commit("hold", "a"); self.commit("doc/guide.md", "guide", "# Guide\n")
+        [first] = self.add("a")
+        # The old worker's sign, a stacked gate starting, ends the wait too, so that it fails rather than waits.
+        log = self.worked("guide", lambda log: "docs beside the gate: pushed" in log or self.stacked_started(log))
+        guide = self.added("guide")
+        self.assertEqual((self.state(first)["state"], guide["state"]), ("landed", "landed"), log)
+        self.assertEqual(self.gates(), 1, log)
+        self.assertEqual(guide["docsOnly"], ["spelling", "docs"], log)
+        self.assertNotIn("gatedOn", guide)
+        self.assertNotIn("that arrived during the gate", log)
+        self.assertIn("carried the result over 1 file(s) on main: doc/guide.md", log)
+        # The document landed first, and the batch on top of it.
+        self.assertEqual(run(self.repo, "git", "rev-parse", f"{self.state(first)['landedAs']}^"), guide["landedAs"])
+        self.assertLessEqual({"hold", "doc"}, self.main_files())
+
+    def test_a_stacked_gate_goes_on_over_a_document_landed_beside_the_gate_below_it(self):
+        """A code entry stacked on the batch, and then a docs entry landed beside the gate: the batch carries its
+        result over the document, and so does the stacked gate, which lands with no gate of its own."""
+        self.commit("hold", "a"); self.commit("b", "b"); self.commit("doc/guide.md", "guide", "# Guide\n")
+        [first] = self.add("a")
+        added = []
+        def then(log):
+            if not self.stacked_started(log): return False
+            if not added:
+                with patch.object(mq, "check"): mq.add(self.repo, "guide")
+                added.append(True)
+            return "docs beside the gate: pushed" in log
+        log = self.worked("b", then)
+        b, guide = self.added("b"), self.added("guide")
+        self.assertEqual([self.state(first)["state"], b["state"], guide["state"]], ["landed"] * 3, log)
+        self.assertEqual(self.gates(), 2, log)
+        self.assertEqual(guide["docsOnly"], ["spelling", "docs"], log)
+        self.assertIn("as origin/main is that tip with documents its result carries over", log)
+        self.assertEqual(log.count("carried the result over 1 file(s) on main: doc/guide.md"), 2, log)
+        self.assertLessEqual({"hold", "b", "doc"}, self.main_files())
 
     def test_a_batch_that_fails_throws_away_the_gate_stacked_on_it(self):
         """The batch below fails: its stacked gate is canceled, and the entry gates again on main and lands."""
