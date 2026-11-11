@@ -2,10 +2,12 @@ import json
 import os
 from pathlib import Path
 import re
+import signal
 import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 from unittest.mock import patch
 
@@ -183,6 +185,40 @@ class HostIsolationTests(unittest.TestCase):
                 self.assertFalse(Path(outcomes["isolated"][key]).is_relative_to(host))
                 self.assertIn("vocaro-test-host-", outcomes["isolated"][key])
                 self.assertFalse(Path(outcomes["isolated"][key]).exists())
+
+
+class SignalDispositionTests(unittest.TestCase):
+    """default_signals, from a runner that ignores every stop signal, as a background job's shell or nohup can."""
+
+    # Says it is ready, then waits for the test's go, which only an ignored stop reaches.
+    CHILD = ("import os, sys, time\nfrom pathlib import Path\nhere = Path(sys.argv[1])\n(here / 'ready').touch()\n"
+             "began = time.monotonic()\n"
+             "while not (here / 'go').exists() and time.monotonic() - began < 120: time.sleep(0.01)")
+
+    def stopped(self, number, **options):
+        """The child's status after it is sent number and then told to go."""
+        with tempfile.TemporaryDirectory() as directory:
+            here = Path(directory)
+            child = subprocess.Popen([sys.executable, "-I", "-c", self.CHILD, directory], **options)
+            self.addCleanup(lambda: child.poll() is None and child.kill())
+            deadline = time.monotonic() + stretched(30)
+            while not (here / "ready").exists():
+                self.assertIsNone(child.poll(), "the child ended before it was ready")
+                self.assertLess(time.monotonic(), deadline, "the child was never ready")
+                time.sleep(0.01)
+            # An ignored signal is discarded when sent, so the go comes after it either way.
+            child.send_signal(number)
+            (here / "go").touch()
+            return child.wait(stretched(30))
+
+    def test_a_child_started_with_default_signals_is_stopped_though_its_runner_ignores_them(self):
+        for number in host_isolation.STOP_SIGNALS:
+            self.addCleanup(signal.signal, number, signal.signal(number, signal.SIG_IGN))
+        for number in host_isolation.STOP_SIGNALS:
+            with self.subTest(signal=number.name):
+                self.assertEqual(self.stopped(number, preexec_fn=host_isolation.default_signals), -number)
+                # The negative control: without it the child inherits the ignore and ends at the go.
+                self.assertEqual(self.stopped(number), 0)
 
 
 class StretchedTests(unittest.TestCase):

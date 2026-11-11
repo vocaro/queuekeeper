@@ -240,8 +240,10 @@ exec "$FAKE_SSH_REAL" "$@"
 # them to the file FAKE_PASSED names once the push ends. With FAKE_THROTTLE, it passes that many bytes
 # each 0.2 s, as a slow link would, after writing its PID and receive-pack's to FAKE_THROTTLED.
 # receive-pack runs in a session of its own, as on the second Mac, where a push that ends here closes
-# its input and sends it no signal.
-RELAY = """import os, subprocess, sys, time
+# its input and sends it no signal. A bounded push stops it by SIGTERM, so it starts with the stop signals at
+# their defaults, whatever the suite's runner ignores (vocaro-engineering#385).
+RELAY = """import os, signal, subprocess, sys, time
+for number in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP): signal.signal(number, signal.SIG_DFL)
 arguments = sys.argv[1:]
 while arguments[0].startswith("-"):
     arguments = arguments[2:] if arguments[0] in ("-o", "-p", "-i", "-l", "-F", "-J") else arguments[1:]
@@ -1616,7 +1618,7 @@ class RemoteTests(unittest.TestCase):
         log = Path(tempfile.mkstemp(dir=self.temp.name, suffix=".log")[1])
         with log.open("wb") as output:
             process = subprocess.Popen([sys.executable, str(self.toolkit / "bin/eng"), "--project", str(self.project),
-                                        *arguments], stdout=output, stderr=subprocess.STDOUT)
+                                        *arguments], stdout=output, stderr=subprocess.STDOUT, preexec_fn=host_isolation.default_signals)
 
         def stop():
             if process.poll() is None:
@@ -1911,7 +1913,7 @@ class RemoteTests(unittest.TestCase):
         # The send, checkout and provisioning can all be working long before the lane has a PID.
         progress = waiting.files(root / "repositories", self.checkout(0), results)
         with tempfile.TemporaryFile() as log:
-            dispatcher = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT)
+            dispatcher = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT, preexec_fn=host_isolation.default_signals)
             lane = None
             try:
                 def ready():
@@ -2153,7 +2155,8 @@ class RemoteTests(unittest.TestCase):
         connections = Path(self.temp.name) / "connections"
         with self.dropping(marker, FAKE_CONNECTIONS=str(connections)):
             dispatcher = subprocess.Popen([sys.executable, str(self.toolkit / "bin/eng"), "--project", str(self.project),
-                                           "remote", "run", "slow"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                                           "remote", "run", "slow"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                          preexec_fn=host_isolation.default_signals)
         lane = None
         try:
             deadline = time.monotonic() + stretched(60)
@@ -3020,7 +3023,7 @@ class RemoteTests(unittest.TestCase):
         markers = [self.checkout(0) / f".build/{lane}.pid" for lane in ("napper", "dozer")]
         for marker in markers: marker.unlink(missing_ok=True)
         command = [sys.executable, str(self.toolkit / "bin/eng"), "--project", str(self.project), "run", "stalled"]
-        dispatcher = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        dispatcher = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, preexec_fn=host_isolation.default_signals)
         try:
             # A bound for a busy host, not a measure: the markers end the wait.
             deadline = time.monotonic() + stretched(300)
@@ -3109,7 +3112,7 @@ class RemoteTests(unittest.TestCase):
         holds every guaranteed slot, or None, one heavy slot."""
         holder = subprocess.Popen([sys.executable, "-m", "vocaro_engineering.resources", *([kind] if kind else []),
                                    "--", sys.executable, "-c", "print('held', flush=True); import time; time.sleep(300)"],
-                                  stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, env={
+                                  stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, preexec_fn=host_isolation.default_signals, env={
                                       **os.environ, "PYTHONPATH": str(config.TOOLKIT_ROOT / "src/python"),
                                       "HEAVY_SLOT_DIR": os.environ[slots], "SW_GATE_LOCK_FILE": os.environ[gate]})
         try:
@@ -3239,7 +3242,8 @@ class RemoteTests(unittest.TestCase):
             try:
                 with self.busy_second_mac():
                     dispatcher = subprocess.Popen([sys.executable, str(self.toolkit / "bin/eng"), "--project",
-                                                   str(self.project), "run", "gate"], stdout=output, stderr=subprocess.STDOUT)
+                                                   str(self.project), "run", "gate"], stdout=output, stderr=subprocess.STDOUT,
+                                                  preexec_fn=host_isolation.default_signals)
                     deadline, found = time.monotonic() + stretched(120), None
                     while time.monotonic() < deadline and dispatcher.poll() is None:
                         found = remote.lane_wait.current(record)
@@ -5207,7 +5211,8 @@ exec {shlex.quote(real)} "$@"
         commit, marker = self.throttled()
         with self.relaying(FAKE_THROTTLE=str(32 << 10), FAKE_THROTTLED=str(marker)):
             dispatcher = subprocess.Popen([sys.executable, str(self.toolkit / "bin/eng"), "--project", str(self.project),
-                                           "remote", "run", "check"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                                           "remote", "run", "check"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                          preexec_fn=host_isolation.default_signals)
             try:
                 deadline = time.monotonic() + stretched(60)
                 while not marker.exists() and dispatcher.poll() is None and time.monotonic() < deadline:

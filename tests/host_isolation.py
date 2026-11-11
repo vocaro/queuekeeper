@@ -30,6 +30,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -75,6 +76,22 @@ def executable(path, text=None):
             raise AssertionError(f"{path}: {named} -n refuses the stand-in: {checked.stderr.strip()}")
     path.chmod(0o755)
     return path
+
+
+STOP_SIGNALS = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP, signal.SIGQUIT)
+
+
+def default_signals():
+    """Put each of STOP_SIGNALS back to its default. A test that stops a child it started by one of them passes
+    this as the child's preexec_fn (vocaro-engineering#385).
+
+    A child inherits every signal its runner ignores, and the runner is whatever started the suite: a background
+    job of a non-interactive shell ignores SIGINT and SIGQUIT, nohup ignores SIGHUP. Python installs no
+    KeyboardInterrupt for a SIGINT ignored at its start, and processes.forwarding_signals leaves an ignored signal
+    ignored, as it must for nohup. So the stop is dropped and the test fails or waits out its bound, as
+    vocaro/BreezEPUB#47 did in two gates. SignalDispositionTests in test_host_isolation runs a child from a
+    runner that ignores them, with this and without it."""
+    for number in STOP_SIGNALS: signal.signal(number, signal.SIG_DFL)
 
 
 ROOT = Path(tempfile.mkdtemp(prefix="vocaro-test-host-")).resolve()

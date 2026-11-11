@@ -155,7 +155,8 @@ exec /bin/ps "$@"
                     processes.supervise(command, cwd=base)
         """)
         with patch.dict(os.environ, STUB_HOLD=str(stretched(60))):  # it outlives the wait for its stop
-            run = subprocess.Popen([sys.executable, "-c", script], start_new_session=True, stderr=subprocess.DEVNULL)
+            run = subprocess.Popen([sys.executable, "-c", script], start_new_session=True, stderr=subprocess.DEVNULL,
+                                   preexec_fn=host_isolation.default_signals)
             self.addCleanup(run.wait)
             self.addCleanup(lambda: run.poll() is None and run.kill())
             self.wait_for(self.journals)

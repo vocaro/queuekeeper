@@ -19,9 +19,11 @@ import host_isolation
 from host_isolation import stretched
 
 # Starts each descendant in its own session, as Xcode starts DTServiceHub apart from xcodebuild's
-# group, and exits 3 once each is ready and the supervisor has seen it under this root.
+# group, and exits 3 once each is ready and the supervisor has seen it under this root. A stop reaches it and
+# its descendants by SIGTERM, so it starts them with the stop signals at their defaults (vocaro-engineering#385).
 ROOT = """
-import os, subprocess, sys, time
+import os, signal, subprocess, sys, time
+for number in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP): signal.signal(number, signal.SIG_DFL)
 from pathlib import Path
 here = Path(sys.argv[1])
 children = [subprocess.Popen([sys.executable, "-c", code, str(here)], start_new_session=True).pid for code in sys.argv[2:]]

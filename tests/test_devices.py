@@ -1266,7 +1266,8 @@ class BoundedRunTests(unittest.TestCase):
             [sys.executable, "-m", "vocaro_engineering.devices", "run", "iPad", "--owner", "session-a", "--",
              sys.executable, "-c", f"import sys, time; open(sys.argv[1], 'w').close(); time.sleep({stretched(60)})",
              str(started)],
-            env={**os.environ, "PYTHONPATH": str(SOURCE)}, stderr=subprocess.PIPE, text=True)
+            env={**os.environ, "PYTHONPATH": str(SOURCE)}, stderr=subprocess.PIPE, text=True,
+            preexec_fn=host_isolation.default_signals)
         self.addCleanup(launcher.kill)
         # The command can start before the launcher's record names it, so both are awaited.
         recorded = lambda: started.exists() and "ownedProcesses" in self.record.entry("iPad")

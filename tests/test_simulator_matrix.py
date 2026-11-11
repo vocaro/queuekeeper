@@ -981,7 +981,7 @@ class SimulatorMatrixTests(unittest.TestCase):
                    "--device", "iPhone-17-Pro", "--device", "iPad-Air-13-inch-M4", "--pool", "Project"]
         # Three devices never meet, so both runs wait until the stop.
         process = subprocess.Popen(command, cwd=self.root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                                   env={**self.environment, "FAKE_MEET": "3"})
+                                   env={**self.environment, "FAKE_MEET": "3"}, preexec_fn=host_isolation.default_signals)
         self.addCleanup(lambda: process.poll() is None and process.kill())
         deadline = time.monotonic() + stretched(60)
         while len(list(self.state.glob("testing-*"))) < 2:
