@@ -20,7 +20,7 @@ import subprocess
 import sys
 import time
 
-from . import devices, lane_wait, offload_host
+from . import devices, lane_wait, offload_host, processes
 from .voiceover import state as voiceover_state
 
 # Seconds between looks at the second Mac's mac-foreground entry while another run holds it.
@@ -66,8 +66,8 @@ def slot(purpose, *, timeout, expected=EXPECTED, record=None, poll=POLL, ready=N
 
     It refuses on any other Mac, and, before taking anything, on a second Mac that problems() finds not
     ready, which is a configuration problem for the owner. While another run holds the entry it waits,
-    up to timeout seconds, then raises TimeoutError; an orphaned or uncertain entry needs attended
-    recovery. Only after acquisition, the run captures and preserves the actual VoiceOver state.
+    up to timeout seconds, then raises TimeoutError; a stop raises processes.Interrupted before taking
+    the foreground. An orphaned or uncertain entry needs attended recovery. Only after acquisition, the run captures and preserves the actual VoiceOver state.
     A passive driver explicitly opts into voiceover.state.preserved(target=False) inside this lease.
     The entry records this process as its active run, so that the entry outlives a run that
     dies only as an orphan, and VOCARO_DEVICE_OWNER names it for the block. The release records the
@@ -84,6 +84,8 @@ def slot(purpose, *, timeout, expected=EXPECTED, record=None, poll=POLL, ready=N
     deadline, announced = time.monotonic() + timeout, None
     while True:
         entry = record.entry(devices.FOREGROUND)
+        if processes.requested() is not None:
+            raise processes.Interrupted(processes.requested(), "while waiting for the second Mac's foreground")
         state = devices.condition(entry) if entry is not None else "released"
         if state == "released":
             release_by = (datetime.now(timezone.utc) + timedelta(seconds=expected)).isoformat()

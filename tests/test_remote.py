@@ -1666,6 +1666,63 @@ class RemoteTests(unittest.TestCase):
         self.assertFalse(self.checkout(1).exists())
         self.assertFalse(self.checkout(0).exists())
 
+    def test_a_foreground_dispatch_can_be_canceled_while_waiting_without_touching_the_holder(self):
+        # Real dispatch, checkout and lease handling; only desktop/VoiceOver I/O is a stand-in.
+        source = self.toolkit / "src/python/vocaro_engineering"
+        waiter = Path(self.temp.name) / "foreground-waiter.pid"
+        with (source / "foreground.py").open("a") as fixture:
+            fixture.write("\ndef problems():\n    from pathlib import Path\n"
+                          f"    Path({str(waiter)!r}).write_text(str(os.getpid()))\n    return []\n"
+                          "front = lambda: None\n"
+                          "@contextlib.contextmanager\ndef fixture_preserved(*args, **kwargs):\n    yield\n"
+                          "voiceover_state.preserved = fixture_preserved\n")
+        with (source / "cli.py").open("a") as fixture:
+            fixture.write("\nguarded_alerts = lambda *args, **kwargs: None\n"
+                          "cleared_notifications = lambda *args, **kwargs: None\n")
+        commit_all(self.toolkit)
+        record = devices.Record(self.record_there)
+        record.defer(offload_host.mac_name())
+        marker = self.checkout(1) / ".build/foreground-command-started"
+        command = [sys.executable, "-c", "from pathlib import Path; "
+                   "Path('.build/foreground-command-started').touch()"]
+        # Cancellation is the regression. The same dispatch subsequently taking the released lease
+        # is the independent positive control; neither uses the real foreground on either Mac.
+        for cancel in (True, False):
+            with self.subTest(cancel=cancel):
+                old = record.entry(devices.FOREGROUND) or {}
+                held = record.reserve(devices.FOREGROUND, owner="other foreground run",
+                                      revision=old.get("revision", 0), purpose="fixture holder",
+                                      release_by=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat())
+                process, log = self.slot_dispatcher("remote", "admit", "--foreground", "--checkout-slot", "1",
+                                                    "--", *command)
+                self.await_condition(process, log, lambda: "waiting for the second Mac's foreground, held by "
+                                     "other foreground run" in log.read_text())
+                waiter_pid = int(waiter.read_text())
+                self.assertEqual(record.entry(devices.FOREGROUND), held)
+                self.assertFalse(marker.exists())
+                self.assertFalse(Path(os.environ["FAKE_GATE"] + ".warm-push-guard").exists())
+                if cancel:
+                    process.send_signal(signal.SIGTERM)
+                    self.assertEqual(process.wait(stretched(60)), -signal.SIGTERM, log.read_text())
+                    self.assertIn("asking fake to stop the run", log.read_text())
+                    self.assertTrue(self.slot_receipt("admit")["result"]["stopped"])
+                    self.assertEqual(record.entry(devices.FOREGROUND), held)
+                    self.assertFalse(marker.exists())
+                else:
+                    record.release(devices.FOREGROUND, owner="other foreground run", revision=held["revision"],
+                                   outcome="fixture done", restoration="fixture checked", frontmost="restored")
+                    self.assertEqual(process.wait(stretched(120)), 0, log.read_text())
+                    self.assertTrue(marker.exists())
+                    self.assertEqual(record.entry(devices.FOREGROUND)["state"], "released")
+                with self.assertRaises(ProcessLookupError): os.kill(waiter_pid, 0)
+                # The canceled waiter and the completed control both release their checkout.
+                lock = os.open(self.checkout(1).parents[1] / "1.lock", os.O_RDWR)
+                try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                finally: os.close(lock)
+                if cancel:
+                    record.release(devices.FOREGROUND, owner="other foreground run", revision=held["revision"],
+                                   outcome="fixture done", restoration="fixture checked", frontmost="restored")
+
     @patch.object(remote, "CHECKOUTS", 2)
     def test_work_on_the_second_mac_leaves_no_bytecode_in_its_checkout(self):
         # The project's .gitignore names no __pycache__, as many projects' do not.
