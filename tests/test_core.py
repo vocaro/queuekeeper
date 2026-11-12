@@ -20,6 +20,7 @@ import uuid
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 from queuekeeper import cli, config, lane_results, processes, resources
 from queuekeeper.apple import devices, foreground
+from queuekeeper.apple.simulators import pool as simulator_pool
 import host_isolation
 from host_isolation import stretched
 
@@ -308,8 +309,8 @@ class ConfigurationTests(unittest.TestCase):
                         "integration": "direct-main", "capabilities": capabilities,
                         **({"simulatorPool": "Example"} if "simulator-pool" in capabilities else {})}))
                     with patch.object(cli.shutil, "which", return_value="/usr/bin/true"), patch.object(cli, "source_identity", return_value={}), \
-                            patch.object(cli.simulator_pool, "simctl", side_effect=simctl), \
-                            patch.object(cli.simulator_pool, "default_devices", return_value=frozenset(defaults)), \
+                            patch.object(simulator_pool, "simctl", side_effect=simctl), \
+                            patch.object(simulator_pool, "default_devices", return_value=frozenset(defaults)), \
                             contextlib.redirect_stdout(StringIO()) as output:
                         self.assertEqual(cli.main(["--project", directory, "doctor"]), 0)
                     found = [w for w in json.loads(output.getvalue())["warnings"] if "default simulators" in w]
@@ -3950,8 +3951,8 @@ class LaneLabelTests(unittest.TestCase):
         def slot(purpose, **options):
             yield "owner"
             raise TimeoutError("the device record stayed locked for 30s; nothing was changed")
-        with patch.object(foreground, "slot", slot), patch.object(cli, "guarded_alerts", return_value=None), \
-                patch.object(cli, "cleared_notifications", return_value=None):
+        with patch.object(foreground, "slot", slot), patch.object(cli.extensions.LANE, "guarded_alerts", return_value=None), \
+                patch.object(cli.extensions.LANE, "cleared_notifications", return_value=None):
             status, error = self.run_lane(beta, "--here", "gate")
         self.assertEqual(status, 2, error)
         self.assertTrue(ran.exists())

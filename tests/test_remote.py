@@ -25,7 +25,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 from queuekeeper import budgets, cli, config, lane_results, merge_queue, offload_host, processes, remote, resources
-from queuekeeper.apple import device_notifications, devices, disk as apple_disk, doctor as apple_doctor
+from queuekeeper.apple import device_notifications, devices, disk as apple_disk, doctor as apple_doctor, leases
 from queuekeeper import disk as disk_module
 from queuekeeper import waiting
 import host_isolation
@@ -1453,14 +1453,14 @@ class RemoteTests(unittest.TestCase):
         # then, so no wait under load uses the bound up before it starts. The bound may pass while the dispatch
         # still sends, provisions or starts the command, a run that is no pass either (the next test); here the
         # dispatch sees it pass only once the command runs, so that what it stops is the command (#317).
-        begin, expired = remote.Lease.begin, remote.Lease.expired
+        begin, expired = leases.Lease.begin, leases.Lease.expired
         def beginning(lease, run):
             lease.keep = (lease.deadline - datetime.now(timezone.utc)).total_seconds() - 6
             return begin(lease, run)
         with patch.object(devices, "MINIMUM", 1), \
                 patch.object(devices, "TERMINATION", remaining - devices.RESTORATION - 6), \
-                patch.object(remote.Lease, "begin", beginning), \
-                patch.object(remote.Lease, "expired", lambda lease: marker.exists() and expired(lease)):
+                patch.object(leases.Lease, "begin", beginning), \
+                patch.object(leases.Lease, "expired", lambda lease: marker.exists() and expired(lease)):
             started = time.monotonic()
             status, output, error = self.qk("remote", "admit", *sleeper)
         # The run's few seconds are the behavior under test; only this ceiling on its stop stretches by load.
@@ -1819,9 +1819,9 @@ class RemoteTests(unittest.TestCase):
                           "front = lambda: None\n"
                           "@contextlib.contextmanager\ndef fixture_preserved(*args, **kwargs):\n    yield\n"
                           "voiceover_state.preserved = fixture_preserved\n")
-        with (source / "cli.py").open("a") as fixture:
-            fixture.write("\nguarded_alerts = lambda *args, **kwargs: None\n"
-                          "cleared_notifications = lambda *args, **kwargs: None\n")
+        with (source / "apple/lane.py").open("a") as fixture:
+            fixture.write("\nLane.guarded_alerts = lambda *args, **kwargs: None\n"
+                          "Lane.cleared_notifications = lambda *args, **kwargs: None\n")
         commit_all(self.toolkit)
         record = devices.Record(self.record_there)
         record.defer(offload_host.mac_name())
@@ -6725,7 +6725,7 @@ class DoctorFixTests(unittest.TestCase):
                 patch.object(remote, "update_there", side_effect=updating), \
                 patch.object(remote, "match_runtimes", side_effect=lambda host, check: calls.append((host, check)) or
                              print("runtimes: progress")) as match, \
-                patch.object(cli.simulator_pool, "reap_reports", return_value=[("this Mac", self.REPORT)]) as reap, \
+                patch.object(apple_doctor.simulator_pool, "reap_reports", return_value=[("this Mac", self.REPORT)]) as reap, \
                 patch.object(apple_doctor, "delete_defaults", return_value=["removed: U iPhone 17"]), \
                 contextlib.redirect_stdout(StringIO()) as output, contextlib.redirect_stderr(StringIO()) as error:
             fixed = host_isolation.FIX_HOSTS(Path("/project"), first)
@@ -6777,7 +6777,7 @@ class DoctorFixTests(unittest.TestCase):
 
     def test_every_test_gets_a_doctor_that_changes_neither_mac(self):
         self.assertIsNot(cli.fix_hosts, host_isolation.FIX_HOSTS)
-        with patch.object(remote, "match_runtimes") as match, patch.object(cli.simulator_pool, "reap_reports") as reap, \
+        with patch.object(remote, "match_runtimes") as match, patch.object(apple_doctor.simulator_pool, "reap_reports") as reap, \
                 patch.object(apple_doctor, "delete_defaults") as defaults:
             self.assertEqual(cli.fix_hosts(Path("/project"), {"errors": [], "runtimesDiffer": True}),
                              {"errors": [], "reaped": [], "deletedDefaults": []})

@@ -38,7 +38,7 @@ import tempfile
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 from queuekeeper import cli, offload_host, remote, resources, shims
 from queuekeeper import apple
-from queuekeeper.apple import crash_alerts, device_notifications, notification_center
+from queuekeeper.apple import app_registrations, crash_alerts, device_notifications, devices, notification_center
 
 # The suite runs with the Apple extension switched on, as the command does for every project.
 apple.register()
@@ -117,8 +117,8 @@ os.environ.pop("VOCARO_LANE_PROGRESS_RUN", None)
 # Nor does a lane a test runs write into what the enclosing lane set up for its own command: its results/, whose fixture
 # files then read as the gate's own failures and per-test results (vocaro-engineering#289), the checkout whose module
 # cache a stale build may clear, its self lane, app registrations, device window and owner, or the toolkit it dispatched.
-for variable in (cli.parallel.RESULTS_VARIABLE, shims.ROOT_VARIABLE, cli.SELF_LANE, cli.app_registrations.RUN,
-                 cli.devices.WINDOW, cli.devices.OWNER, "VOCARO_ENGINEERING_ROOT"):
+for variable in (cli.parallel.RESULTS_VARIABLE, shims.ROOT_VARIABLE, cli.SELF_LANE, app_registrations.RUN,
+                 devices.WINDOW, devices.OWNER, "VOCARO_ENGINEERING_ROOT"):
     os.environ.pop(variable, None)
 resources.GATE_LOCK = offload_host.GATE_LOCK = GATE
 # Nor does any reach the host's crash-report setting or its screen's alerts (#118): a foreground run a test

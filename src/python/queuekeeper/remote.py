@@ -65,11 +65,9 @@ import threading
 import time
 import uuid
 
-from . import disk, lane_results, lane_wait, offload_host, parallel, processes, resources, git_state
-from .apple import capture_approvals, devices, run_results
+from . import disk, extensions, lane_results, lane_wait, offload_host, parallel, processes, resources, git_state
 from .config import TOOLKIT_ROOT, unlocked_screen
 from .resources import BUSY, FREE_WAIT
-from .apple.simulators import pool as simulator_pool
 
 # The SSH destinations tried in turn when neither --host nor VOCARO_OFFLOAD_HOST names one: aliases the
 # owner defines in ~/.ssh/config, so no machine's name is written here. build-host, which the owner
@@ -1688,119 +1686,6 @@ class Frames:
         return kind
 
 
-class Lease(devices.BoundedRun):
-    """Physical devices a run on the second Mac uses, each reserved in this Mac's record by the session
-    that sends the run (guides/shared-host.md, Physical devices and the second Mac): a bounded run
-    whose command runs there.
-
-    The dispatch marks each entry's run active with its own process, whose end, by a stop, its death
-    or a dropped connection, ends the run there: a run whose dispatcher vanished is an orphan here.
-    The connection's ssh is recorded as the entry's own process, which release and recovery wait
-    for. Once the bound passes, the dispatch stops the run there as a stop does. It records the
-    run's outcome when it ends; releasing the device stays the session's. So such a run keeps no journal
-    there (offload_host.Journal): unlike any other, it does not go on after a dropped connection.
-
-    Its command is the dispatch, so that devices.watched_run watches each leased device's log from
-    this Mac while the dispatch lasts and sends it once more when a banner was presented (#192): the
-    relay runs here, the Mac whose record holds the reservation, silences and restores the device,
-    so the owner's lines never leave it, and offload_host.py, which imports nothing of the toolkit,
-    runs no copy of the watch."""
-
-    def __init__(self, keys, owner, words, *, record, root, budget, commits=()):
-        super().__init__(keys, owner, words, record=record, root=root, commits=commits)
-        self.window = {"devices": dict(self.devices), "until": self.deadline.isoformat(),
-                       "cleanupSeconds": self.keep, "budgetSeconds": budget}
-
-    def execute(self, send, *, run=None, watch=None, **_unused):
-        """send()'s status, the dispatch, with the run it makes recorded in each leased entry here, and what
-        watch, a watch of the devices' logs (device_notifications.Watch), saw during it as its
-        notificationWatch."""
-        self.timed_out = False
-        try:
-            self.begin({**(run or {}), "startedAt": devices.now()})
-        except BaseException:
-            if watch is not None: watch.stop()
-            raise
-        outcome = None
-        try:
-            try:
-                devices.report_window(self.window)
-                status = send()
-            finally:
-                if watch is not None: self.run = {**self.run, "notificationWatch": watch.stop()}
-            outcome = f"exit {status}"
-            return status
-        except BaseException as error:
-            outcome = f"{type(error).__name__}: {error}"
-            raise
-        finally:
-            if self.timed_out: outcome = f"stopped at its {self.run['boundSeconds']}s bound, then {outcome}"
-            self.finish(outcome)
-
-    def plan(self, mac):
-        return {"record": mac, **self.window}
-
-    def connected(self, pid):
-        try: self.own(pid)
-        except (devices.Refused, OSError, TimeoutError) as error:
-            print(f"remote: the device entries did not record the connection's process {pid}: {error}",
-                  file=sys.stderr, flush=True)
-
-
-def named_devices(words, record=None):
-    """{KEY: UDID} of the physical devices in this Mac's record that words name."""
-    named = " ".join(words).upper()
-    if not devices.PHYSICAL.search(named): return {}
-    entries = (record or devices.Record()).load()["devices"]
-    return {key: udid for key, entry in entries.items() for udid in [str(entry.get("device") or "").upper()]
-            if devices.physical(udid) and udid in named}
-
-
-def lease(keys, owner, words, record=None, root=None, *, budget=None, commits=()):
-    """The reservations held here that a run on the second Mac carries, or None when it uses no physical
-    device.
-
-    The keys are a bounded run's (devices.BoundedRun): owner holds each one's physical device here
-    with no run active, within the window the owner agreed, and every device the command names is one of
-    them. The second Mac reaches the paired devices too, and its own record refuses them, so
-    without a key a command that names any hardware UDID is refused, whether or not this record
-    holds its device: a run on a device goes through a reservation. Forty hex digits that the Git
-    of root's checkout knows as an object, such as a commit's whole hash, name no device (devices.named).
-    commits contains only hashes verified by commit_arguments; it exempts exact positional arguments."""
-    record = record or devices.Record()
-    if not keys:
-        named = named_devices(words, record)
-        if named:
-            key, udid = next(iter(named.items()))
-            raise devices.Refused(f"the command names {key}'s device {udid}, which no --device covers: reserve {key} "
-                                  f"here and add --device {key}. Nothing was sent")
-        # A device no entry here holds, which the second Mac may reach all the same.
-        for udid in sorted(devices.named(words, root=root, commits=commits)):
-            raise devices.Refused(f"the command names the hardware UDID {udid}, which no entry of this Mac's record "
-                                  "holds and no --device covers: reserve its device here under a key and add "
-                                  "--device KEY. Nothing was sent")
-        return None
-    if not owner:
-        raise ValueError(f"name the session whose reservations --device carries: --device-owner, or {devices.OWNER}")
-    return Lease(keys, owner, words, record=record, root=root, budget=budget, commits=commits)
-
-
-def carrying(lease, root, host, work, name, send):
-    """send()'s status, with the run it makes recorded in each leased device's entry here. The leased devices'
-    logs are watched while it runs, and a run a notification banner reached is sent once more, as `devices run`
-    does (devices.watched_run): send offers the same commits again then. A rerun that one reaches too, or no
-    time left for one, is unmeasured."""
-    if lease is None: return send()
-    said = lambda text: print(text, file=sys.stderr, flush=True)
-    try:
-        return devices.watched_run(lease, list(lease.devices), send, {
-            "host": host, "work": work, "results": str(Path(root) / ".build/engineering/remote" / name)}, said)
-    except devices.Unmeasured:
-        print(f"remote: the run is unmeasured; {' and '.join(lease.devices)} "
-              f"{'stays' if len(lease.devices) == 1 else 'stay'} reserved", file=sys.stderr)
-        return devices.UNMEASURED
-
-
 # What a lane run on the second Mac says while it runs (vocaro-engineering#320). On 2026-11-08 a working 27-minute
 # BreezEPUB run wrote nothing here, a session took it for a stalled one, and stopping it lost its iPad result. The
 # lines count for nothing: they go to this Mac's stderr, never into run.log or output.log, which stay what the second
@@ -1842,8 +1727,7 @@ def clock_line(config, lane, arguments=()):
     if words and re.fullmatch(r"python(?:3(?:\.\d+)?)?", Path(words[0]).name):
         words = words[1:]
     if len(words) >= 2 and Path(words[0]).name == "qk" and words[1] == "simulator-tests":
-        from .apple.simulators.matrix import default_test_allowance
-        allowance = default_test_allowance([*words[2:], *arguments])
+        allowance = extensions.DISPATCH.test_allowance([*words[2:], *arguments])
         if allowance is not None:
             limits += f" and the default test allowance is set to {allowance}s"
     return f"{lane}'s log is arriving: {limits}; a heartbeat every {PROGRESS_INTERVAL:g}s says whether the log has grown"
@@ -2233,7 +2117,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
         wrote = sorted({Path(path).parts[1] for path in files if len(Path(path).parts) > 2} & set(group))
         print(f"remote: {len(files)} file{'s' if len(files) != 1 else ''} the run wrote in its {RESULTS} came back in "
               f"{results / RESULTS}" + (f", from {', '.join(wrote)}" if wrote else ""), file=sys.stderr, flush=True)
-        run_results.report(results / RESULTS)
+        extensions.LANE.report_results(results / RESULTS)
     if members and result.get("stage") == "work":
         members = config["lanes"][lane]["parallel"]
         came = [member for member in members if f"lanes/{member}.log" in returned]
@@ -2302,7 +2186,7 @@ def commit_arguments(declarations):
         try:
             result = subprocess.run(["git", "--no-replace-objects", "-C", repository, "cat-file", "-t", commit],
                                     env=environment(),
-                                    capture_output=True, text=True, timeout=devices.OBJECT_TIMEOUT)
+                                    capture_output=True, text=True, timeout=OBJECT_TIMEOUT)
         except (OSError, subprocess.SubprocessError) as error:
             raise ValueError(f"--git-commit could not verify {commit} in {repository}: {error}") from error
         if result.returncode or result.stdout.strip() != "commit":
@@ -2336,7 +2220,7 @@ def main(root, config, args):
         work = ["run", "--here", *(["--serial"] if args.serial else []),
                 *(["--expect", str(args.expect)] if args.expect else []), args.lane, *(["--", *extra] if extra else [])]
         budget = lane.get("timeout") if "parallel" not in lane else None
-        held = lease(args.device or [], args.device_owner or devices.default_owner(), extra, root=root, budget=budget)
+        held = extensions.DISPATCH.lease(args.device or [], args.device_owner, extra, root=root, budget=budget)
         # A leased run sent again, after a notification reached it, offers the same commits (carrying).
         sent = {}
         send = lambda: execute(root, config, host, work, lane=args.lane, arguments=extra, expect=args.expect,
@@ -2345,7 +2229,7 @@ def main(root, config, args):
             sending = send
             send = lambda: not_run_if_busy(args.lane, sending)
         with processes.forwarding_signals():
-            return carrying(held, root, host, work, args.lane, lambda: offering_here(
+            return extensions.DISPATCH.carrying(held, root, host, work, args.lane, lambda: offering_here(
                 f"queuekeeper run --here {args.lane}", send) if lane.get("foreground") else send())
     # Without a leading --, argparse collected the command, and a later -- belongs to it.
     command = args.command + ([] if args.passed is None else ["--", *args.passed]) if args.command else args.passed
@@ -2360,8 +2244,8 @@ def main(root, config, args):
         [word for app in (getattr(args, "app", None) or []) for word in ("--app", app)] + \
         (["--time-limit", f"{args.time_limit:g}"] if args.time_limit is not None else [])
     commits = commit_arguments(getattr(args, "git_commit", None) or [])
-    held = lease(args.device or [], args.device_owner or devices.default_owner(), command, root=root,
-                 budget=args.time_limit, commits=commits)
+    held = extensions.DISPATCH.lease(args.device or [], args.device_owner, command, root=root,
+                                     budget=args.time_limit, commits=commits)
     work = ["admit", *kind, "--", *command]
     sent = {}
     send = lambda: execute(root, config, host, work, lease=held, sent=sent, slot=slot, slot_wait=slot_wait)
@@ -2369,7 +2253,7 @@ def main(root, config, args):
         sending = send
         send = lambda: not_run_if_busy("the command", sending)
     with processes.forwarding_signals():
-        return carrying(held, root, host, work, "admit", lambda: offering_here(
+        return extensions.DISPATCH.carrying(held, root, host, work, "admit", lambda: offering_here(
             "queuekeeper admit --foreground -- COMMAND", send) if args.foreground else send())
 
 
@@ -2418,7 +2302,7 @@ def foreground_report(host):
     print(f"{found.get('mac')}'s foreground: {holder}")
     for line in crash_dialog_report(found.get("crashDialogs"), entry): print(line)
     if "captureApprovals" in found:  # a second Mac whose toolkit predates them says nothing
-        for line in capture_approvals.report(found["captureApprovals"]): print(line)
+        for line in extensions.DISPATCH.capture_lines(found["captureApprovals"]): print(line)
     for problem, fix in found.get("problems", []):
         print(f"- {problem}: {fix}")
     if found.get("problems"):
@@ -2589,6 +2473,8 @@ def runtime_images(host, side, developer, clear=False):
 
 # What names runtime builds to keep: each returns {build: where}. The Apple extension adds its disk items' pins.
 PINNED_BUILDS = []
+# Seconds Git may take to say what kind of object a hash names.
+OBJECT_TIMEOUT = 10
 
 
 def runtime_pins():
@@ -2892,7 +2778,7 @@ def first(root, config, lane, arguments, expect, fallback=True, queue_gate=False
     work = ["run", "--here", "--if-free", *(["--expect", str(expect)] if expect else []), lane,
             *(["--", *arguments] if arguments else [])]
     # A run that names a physical device uses it here, or there only by `queuekeeper remote run --device`.
-    named = named_devices(arguments)
+    named = extensions.DISPATCH.reserved_devices(arguments)
     refused = (f"its arguments name the physical device of {', '.join(named)}, which the second Mac uses only under "
                "a reservation `queuekeeper remote run --device` carries from here") if named else None
     settings = config.get("lanes", {}).get(lane, {})
@@ -3032,7 +2918,7 @@ def first_command(root, config, command, kind):
         relative = directory.relative_to(top).as_posix()
     except ValueError:
         relative = None
-    refused, named = None, sorted(devices.named(command, root=top))
+    refused, named = None, sorted(extensions.DISPATCH.named_devices(command, top))
     if relative is None:
         refused = f"its directory {directory} is outside the checkout {top}"
     elif relative != "." and subprocess.run(["git", "-C", str(top), "check-ignore", "-q", relative], env=environment(),
@@ -3564,7 +3450,7 @@ def dispatch(root, name, since):
 def reap_request(root):
     """What a dispatch from root asks of offload_host.reap: the project's pool, besides those the second
     Mac's checkouts name."""
-    pool = simulator_pool.configured(root)
+    pool = extensions.DISPATCH.pool(root)
     return {"pools": [pool] if isinstance(pool, str) and pool else []}
 
 

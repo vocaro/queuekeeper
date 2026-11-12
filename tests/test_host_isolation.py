@@ -148,8 +148,8 @@ class HostIsolationTests(unittest.TestCase):
     def test_a_suite_run_inside_a_lane_drops_what_that_lane_set_for_its_own_command(self):
         # On 2026-11-09 fixtures wrote into the real gate's results/, and its summary named a fixture's test as failed (#289).
         cli = host_isolation.cli
-        names = (cli.parallel.RESULTS_VARIABLE, shims.ROOT_VARIABLE, cli.SELF_LANE, cli.app_registrations.RUN,
-                 cli.devices.WINDOW, cli.devices.OWNER, "VOCARO_ENGINEERING_ROOT", "VOCARO_LANE_PROGRESS_RUN")
+        names = (cli.parallel.RESULTS_VARIABLE, shims.ROOT_VARIABLE, cli.SELF_LANE, host_isolation.app_registrations.RUN,
+                 host_isolation.devices.WINDOW, host_isolation.devices.OWNER, "VOCARO_ENGINEERING_ROOT", "VOCARO_LANE_PROGRESS_RUN")
         source = str(Path(resources.__file__).resolve().parents[1])
         for name in names:
             for mode, imports, expected in (("isolated", "import host_isolation; ", "None"), ("control", "", "outer")):

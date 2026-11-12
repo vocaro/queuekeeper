@@ -50,8 +50,7 @@ import threading
 import time
 import urllib.request
 
-from .apple import app_builds
-from . import budgets, disk, lane_results, landing_proofs, lane_progress, lane_report, lane_wait, offload_host, parallel, processes, remote, \
+from . import budgets, disk, extensions, lane_results, landing_proofs, lane_progress, lane_report, lane_wait, offload_host, parallel, processes, remote, \
     resources
 from .config import DOCS, DOCS_FILES, DOCS_FOLDERS, IMPLICIT_DOCS, IMPLICIT_SPELLING, SPELLING, SPELLING_LIMIT, \
     TOOLKIT_ROOT, lane_to_run, load, parse, stays, unlocked_screen
@@ -2953,7 +2952,7 @@ class Worker:
 
     def keep_app(self, head):
         """Start keeping the app built at head, the gated commit just pushed, in the background, when head's
-        engineering.json keeps one after landing (app_builds.py): the round goes on while it builds, and a build
+        engineering.json keeps one after landing (extensions.AFTER_LANDING): the round goes on while it builds, and a build
         that fails leaves the build kept before it. A docs-only or ungated landing keeps none. Head's settings, not
         main's at the batch's base as the gate's: keeping a build gates nothing, and so the commit that first gives
         `app` keeps its build too (Pagepour's, 2026-11-06, kept none)."""
@@ -2962,14 +2961,14 @@ class Worker:
         except ValueError as error:
             self.say(f"keeping no app build of {head[:12]}: {error}")
             return
-        if not app_builds.after_landing(config): return
         log = self.queue.logs / f"app-keep-{head[:12]}.log"
-        try:
-            app_builds.spawn_keep(self.checkout, head, log, env=self.environment)
-        except OSError as error:
-            self.say(f"could not start keeping the app built at {head[:12]}: {error}")
-            return
-        self.say(f"keeping the app built at {head[:12]} in the background; see {log}")
+        for keep in extensions.AFTER_LANDING:
+            try:
+                started = keep(self.checkout, config, head, log, self.environment)
+            except OSError as error:
+                self.say(f"could not start keeping the app built at {head[:12]}: {error}")
+                continue
+            if started: self.say(f"keeping the app built at {head[:12]} in the background; see {log}")
 
     def landed(self, batch, base, head):
         """{entry id: (its last commit in base..head, how many of its commits that range holds)}, so that each entry

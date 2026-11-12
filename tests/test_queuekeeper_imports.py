@@ -4,12 +4,10 @@ The core, `queuekeeper` outside `queuekeeper.apple`, imports neither the toolkit
 (`vocaro_engineering`) nor the Apple extension. The extension may import the core, and never the
 toolkit.
 
-The code was extracted from the toolkit with its imports as they were, so today it breaks these
-rules in many places. `known_import_violations.txt`, beside this file, lists every one. The list
-only shrinks: a new violation fails, and so does a line whose violation is gone, until the line is
-deleted and its kind's number in CEILING lowered. When the list is empty, delete it and CEILING.
+The check also reads an import written for the toolkit's layout, such as `vocaro_engineering.remote` or a
+relative import of a module that is on the other side here, as the import it stands for.
 
-`python3 tests/test_queuekeeper_imports.py --report` prints what the source holds now, by kind."""
+`python3 tests/test_queuekeeper_imports.py --report` prints what it finds, by kind."""
 import ast
 from pathlib import Path
 import sys
@@ -18,7 +16,6 @@ import unittest
 import host_isolation  # noqa: F401 -- first, as every test module
 
 SOURCE = Path(__file__).resolve().parents[1] / "src/python"
-KNOWN = Path(__file__).resolve().with_name("known_import_violations.txt")
 CORE = "queuekeeper"
 APPLE = "queuekeeper.apple"
 TOOLKIT = "vocaro_engineering"
@@ -33,8 +30,6 @@ APPLE_TOOLKIT = "Apple imports toolkit"
 # names no module here, so its module does not import until the port rewrites it.
 OLD_NAME = "old name"
 KINDS = (CORE_TOOLKIT, CORE_APPLE, APPLE_TOOLKIT, OLD_NAME)
-# The most lines of each kind the list may hold. Lower a number as its kind shrinks; never raise it.
-CEILING = {CORE_TOOLKIT: 0, CORE_APPLE: 18, APPLE_TOOLKIT: 0, OLD_NAME: 0}
 
 
 def within(module, package):
@@ -198,11 +193,6 @@ def counts(lines):
     return {kind: sum(line.startswith(kind + ": ") for line in lines) for kind in KINDS}
 
 
-def known_lines():
-    if not KNOWN.exists(): return []
-    return [line for line in KNOWN.read_text().splitlines() if line and not line.startswith("#")]
-
-
 def summary(lines):
     return ", ".join(f"{count} {kind}" for kind, count in counts(lines).items())
 
@@ -213,21 +203,11 @@ class Packages(unittest.TestCase):
         self.assertIn(CORE, names)
         self.assertIn(APPLE, names)
 
-    def test_the_source_breaks_the_rules_only_where_the_list_says(self):
-        found, known = Layout.read(SOURCE).lines(), known_lines()
-        new = sorted(set(found) - set(known))
-        gone = sorted(set(known) - set(found))
-        self.assertEqual(new, [], "these imports break the rules and are not in the known list; "
-                                  "remove the imports, never add them to the list")
-        self.assertEqual(gone, [], f"these are fixed: delete their lines from {KNOWN.name} and lower CEILING")
-        self.assertEqual(known, sorted(set(known)), f"{KNOWN.name} is sorted and holds no line twice")
-
-    def test_the_list_only_shrinks(self):
-        held = counts(known_lines())
-        for kind in KINDS:
-            with self.subTest(kind=kind):
-                self.assertLessEqual(held[kind], CEILING[kind])
-                self.assertEqual(held[kind], CEILING[kind], "lower CEILING to what the list now holds")
+    def test_no_module_imports_what_it_may_not(self):
+        self.assertEqual(Layout.read(SOURCE).lines(), [])
+        found = [line for path, name, package in modules(SOURCE)
+                 for line in violations(path.read_text(), name, package)]
+        self.assertEqual(found, [])
 
 
 class Controls(unittest.TestCase):
