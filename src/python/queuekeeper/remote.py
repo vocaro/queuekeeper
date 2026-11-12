@@ -2385,7 +2385,11 @@ def verify_script(formulae, modules, developer=None):
              "python=$(command -v python3 || true)",
              'case "$python" in "$prefix"/*) echo "ok      python3 is $python, $(python3 --version 2>&1)" ;;',
              "    *) echo \"MISSING Homebrew's python3 first on the login shell's PATH (found ${python:-none})\"; fail=1 ;;",
-             "esac"]
+             "esac",
+             # Queuekeeper needs Python 3.14 or newer, on every Mac that runs it.
+             "if python3 -c 'import sys; sys.exit(sys.version_info < (3, 14))' >/dev/null 2>&1; then "
+             'echo "ok      python3 is 3.14 or newer"; '
+             'else echo "MISSING python3 3.14 or newer (found $(python3 --version 2>&1))"; fail=1; fi']
     # `brew info` follows an alias such as python to its formula, where `brew list` refuses it. The
     # system's Python reads its JSON, which Homebrew's may not yet be there to do.
     installed = "/usr/bin/python3 -c 'import json, sys; sys.exit(not json.load(sys.stdin)[\"formulae\"][0][\"installed\"])'"

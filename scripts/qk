@@ -7,6 +7,10 @@ import os
 from pathlib import Path
 import sys
 
+if sys.version_info < (3, 14):
+    print(f"queuekeeper: needs Python 3.14 or newer, and {sys.executable} is {sys.version.split()[0]}", file=sys.stderr)
+    raise SystemExit(2)
+
 root = Path(__file__).resolve().parents[1]
 named = os.environ.get("QUEUEKEEPER_ROOT")
 home = (root / named).resolve() if named else root if (root / "src/python/queuekeeper/cli.py").is_file() \
