@@ -49,7 +49,7 @@ class SlotTests(unittest.TestCase):
         self.said = []
         for patcher in (patch.dict(os.environ, {devices.OVERRIDE: str(self.record.path)}),
                         patch.object(foreground, "front", return_value="Finder (ASN:0x0-0x1:)"),
-                        # eng's guard always settles; short for offline fakes.
+                        # queuekeeper's guard always settles; short for offline fakes.
                         patch.object(voiceover_state, "SETTLE", 0.3)):
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -161,7 +161,7 @@ class SlotTests(unittest.TestCase):
             self.assertFalse(failed.exception.restored)
         entry = self.record.entry(devices.FOREGROUND)
         self.assertEqual(devices.condition(entry), "uncertain")
-        # The next run names the exact recovery command, not an `eng` subcommand.
+        # The next run names the exact recovery command, not an `queuekeeper` subcommand.
         with self.assertRaisesRegex(devices.Refused, re.escape(
                 "python3 -m queuekeeper.apple.devices recover mac-foreground --by SESSION "
                 f"--revision {entry['revision']} --verified WHAT")):
@@ -341,11 +341,11 @@ class ReadinessTests(unittest.TestCase):
     def test_eng_remote_foreground_reports_the_owner_fixes_and_the_holder(self):
         answers = [{"mac": "Second", "problems": [["the screen is locked", "unlock it"]], "voiceover": True,
                     "entry": None},
-                   {"mac": "Second", "problems": [], "entry": {"state": "reserved", "ownerChatID": "eng 7 on Second",
+                   {"mac": "Second", "problems": [], "entry": {"state": "reserved", "ownerChatID": "queuekeeper 7 on Second",
                                                                 "purpose": "P lane", "expectedReleaseBy": "later"}}]
         for answer, status, words in zip(answers, [remote.MISCONFIGURED, 0],
                                          ["no run holds it\n- the screen is locked: unlock it",
-                                          "eng 7 on Second holds it for P lane, expected release later\nReady"]):
+                                          "queuekeeper 7 on Second holds it for P lane, expected release later\nReady"]):
             with self.subTest(status), patch.object(remote, "ask", return_value=answer), \
                  contextlib.redirect_stdout(StringIO()) as output:
                 self.assertEqual(remote.foreground_report("build-host"), status)
@@ -374,7 +374,7 @@ class RoutingTests(unittest.TestCase):
                         patch.object(cli, "source_identity", return_value={}),
                         patch.object(cli, "refresh_policy", return_value=None),
                         patch.object(voiceover_state, "_read", return_value=False),
-                        # eng's guard around a foreground run always settles, for a stretched SETTLE. VoiceOver is
+                        # queuekeeper's guard around a foreground run always settles, for a stretched SETTLE. VoiceOver is
                         # a fake here that never changes, so no settle can show a late key: the real 5 s, stretched
                         # by load, held each run 40 to 120 s on a loaded host, and 0.3 s still 7 s at the stretch cap.
                         patch.object(voiceover_state, "SETTLE", 0.05),
@@ -383,18 +383,18 @@ class RoutingTests(unittest.TestCase):
             self.addCleanup(patcher.stop)
         os.environ.pop(devices.OWNER, None)
 
-    def eng(self, *arguments):
+    def qk(self, *arguments):
         with contextlib.redirect_stderr(StringIO()) as error, contextlib.redirect_stdout(StringIO()):
             return cli.main(["--project", str(self.project), *arguments]), error.getvalue()
 
     def test_a_foreground_lane_goes_to_the_second_mac_and_never_falls_back_to_this_mac(self):
         sent = []
         with patch.object(remote, "foreground_lane", side_effect=lambda *a: sent.append(a) or 0):
-            self.assertEqual(self.eng("run", "voiceover-mac", "--", "steps=x")[0], 0)
-            self.assertEqual(self.eng("run", "--offload-only", "voiceover-mac")[0], 0)
+            self.assertEqual(self.qk("run", "voiceover-mac", "--", "steps=x")[0], 0)
+            self.assertEqual(self.qk("run", "--offload-only", "voiceover-mac")[0], 0)
         self.assertEqual([a[2:4] for a in sent], [("voiceover-mac", ["steps=x"]), ("voiceover-mac", [])])
         # With no second Mac to send it to, it stops and says how this Mac's foreground is used instead.
-        status, error = self.eng("run", "voiceover-mac")
+        status, error = self.qk("run", "voiceover-mac")
         self.assertEqual(status, 2)
         self.assertIn("no second Mac is configured", error)
         self.assertIn("window the owner agrees first", error)
@@ -409,11 +409,11 @@ class RoutingTests(unittest.TestCase):
         with patch.object(remote, "configured", return_value="build-host"), \
                 patch.object(remote, "named_host", return_value="build-host"), \
                 patch.object(remote, "execute", side_effect=away):
-            ran = {"lane": self.eng("run", "voiceover-mac"), "remote lane": self.eng("remote", "run", "voiceover-mac"),
-                   "admit": self.eng("remote", "admit", "--foreground", "--", "true")}
-            plain = {"lane": self.eng("remote", "run", "plain"), "admit": self.eng("remote", "admit", "--", "true")}
-        for name, here in (("lane", "eng run --here voiceover-mac"), ("remote lane", "eng run --here voiceover-mac"),
-                           ("admit", "eng admit --foreground -- COMMAND")):
+            ran = {"lane": self.qk("run", "voiceover-mac"), "remote lane": self.qk("remote", "run", "voiceover-mac"),
+                   "admit": self.qk("remote", "admit", "--foreground", "--", "true")}
+            plain = {"lane": self.qk("remote", "run", "plain"), "admit": self.qk("remote", "admit", "--", "true")}
+        for name, here in (("lane", "queuekeeper run --here voiceover-mac"), ("remote lane", "queuekeeper run --here voiceover-mac"),
+                           ("admit", "queuekeeper admit --foreground -- COMMAND")):
             with self.subTest(name):
                 status, error = ran[name]
                 self.assertEqual(status, 2)
@@ -433,7 +433,7 @@ class RoutingTests(unittest.TestCase):
         with patch.object(remote, "configured", return_value="build-host"), \
                 patch.object(remote, "named_host", return_value="build-host"), \
                 patch.object(remote, "execute", side_effect=stop):
-            status, error = self.eng("remote", "admit", "--foreground", "--", "true")
+            status, error = self.qk("remote", "admit", "--foreground", "--", "true")
         self.assertEqual(status, 2)
         self.assertIn("could not run the toolkit", error)
         self.assertNotIn("window", error)
@@ -450,14 +450,14 @@ class RoutingTests(unittest.TestCase):
             graces.append(options.get("kill_after"))
             return real(command, **options)
         with patch.object(foreground, "problems", return_value=[]), patch.object(cli.processes, "run", side_effect=run):
-            self.assertEqual(self.eng("run", "--here", "voiceover-mac")[0], 0)
-            self.assertEqual(self.eng("run", "--here", "plain")[0], 0)
+            self.assertEqual(self.qk("run", "--here", "voiceover-mac")[0], 0)
+            self.assertEqual(self.qk("run", "--here", "plain")[0], 0)
         self.assertEqual(graces, [processes.FOREGROUND_KILL_AFTER, processes.KILL_AFTER])
 
     def test_on_this_mac_a_foreground_lane_runs_here_only_within_the_owner_window(self):
-        self.assertIn("name the session", self.eng("run", "--here", "voiceover-mac")[1])
+        self.assertIn("name the session", self.qk("run", "--here", "voiceover-mac")[1])
         with patch.dict(os.environ, {devices.OWNER: "session-a"}):
-            status, error = self.eng("run", "--here", "voiceover-mac")
+            status, error = self.qk("run", "--here", "voiceover-mac")
         self.assertEqual(status, 2)
         self.assertIn(f"nobody holds {devices.FOREGROUND}", error)
         self.assertFalse(self.during.exists())
@@ -465,31 +465,31 @@ class RoutingTests(unittest.TestCase):
         self.record.reserve(devices.FOREGROUND, owner="session-a", revision=0, purpose="approved VoiceOver",
                             release_by=later(30))
         with patch.dict(os.environ, {devices.OWNER: "session-a"}):
-            self.assertEqual(self.eng("run", "--here", "voiceover-mac")[0], 0)
+            self.assertEqual(self.qk("run", "--here", "voiceover-mac")[0], 0)
         self.assertEqual(json.loads(self.during.read_text())["owner"], "session-a")
 
     def test_on_the_second_mac_eng_holds_its_foreground_for_the_lane_and_for_admit(self):
         self.record.defer(SECOND)
         with patch.object(foreground, "problems", return_value=[]):
-            status, error = self.eng("run", "--here", "voiceover-mac")
+            status, error = self.qk("run", "--here", "voiceover-mac")
         self.assertEqual(status, 0, error)
         during = json.loads(self.during.read_text())
         self.assertEqual(during["entry"]["ownerChatID"], during["owner"])
         self.assertNotIn("approval", during["entry"])
         self.assertTrue(during["entry"]["activeRun"])
         self.assertEqual(self.record.entry(devices.FOREGROUND)["state"], "released")
-        # eng admit --foreground holds it the same way; --verify never sends foreground work.
+        # queuekeeper admit --foreground holds it the same way; --verify never sends foreground work.
         self.during.unlink()
         with patch.object(foreground, "problems", return_value=[]):
-            status, error = self.eng("admit", "--foreground", "--", *self.lanes["voiceover-mac"]["command"])
+            status, error = self.qk("admit", "--foreground", "--", *self.lanes["voiceover-mac"]["command"])
         self.assertEqual(status, 0, error)
         self.assertTrue(json.loads(self.during.read_text())["entry"]["activeRun"])
         self.assertIn("--verify never sends foreground work",
-                      self.eng("admit", "--foreground", "--verify", "--", "true")[1])
+                      self.qk("admit", "--foreground", "--verify", "--", "true")[1])
         # A second Mac that is not ready stops the lane before it takes anything.
         self.during.unlink()
         with patch.object(foreground, "problems", return_value=[("the screen is locked", "unlock it")]):
-            status, error = self.eng("run", "--here", "voiceover-mac")
+            status, error = self.qk("run", "--here", "voiceover-mac")
         self.assertEqual(status, 2)
         self.assertIn("the screen is locked: unlock it", error)
         self.assertFalse(self.during.exists())

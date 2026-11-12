@@ -1,4 +1,4 @@
-"""The summary that ends every `eng run` (vocaro-engineering#274).
+"""The summary that ends every `queuekeeper run` (vocaro-engineering#274).
 
 A lane's outcome used to be one `remote:` line in the middle of its output, and its counts and failing tests lay only
 in a file. Each run now ends with its verdict, its passed, failed, skipped and unmeasured tests, each failing test
@@ -7,8 +7,8 @@ log and results here (ran_here), or the dispatch that started after it began (re
 run's. Passed, failed, skipped and unmeasured stay apart, a lane is passed only when it ran and returned 0, and a lane
 whose log counts no test says so rather than printing zeros.
 
-The lines go to stderr with eng's other notes, after stdout is flushed, so that they are last however the two are
-joined. They begin `eng run LANE:` or are indented, and quote no line of a test's own, since a lane's log is read
+The lines go to stderr with queuekeeper's other notes, after stdout is flushed, so that they are last however the two are
+joined. They begin `queuekeeper run LANE:` or are indented, and quote no line of a test's own, since a lane's log is read
 again by what runs it: the merge queue's log, lane_results.counted and failure_records read none of them as a result. The
 second Mac's own run prints none: the Mac that sent it prints the summary from what came back.
 """
@@ -119,10 +119,10 @@ def before_tests(text):
     """The last line of a failed run's log that says what failed, when the log shows that no test started: it counts
     no test, names no failing or unmeasured test, and has no line in which a test, suite or session started or a
     process crashed (STARTED). None when a test may have run, or when no line says what failed, as a run whose tests
-    crashed before printing counts can leave neither (vocaro-engineering#393). eng's own lines are not quoted."""
+    crashed before printing counts can leave neither (vocaro-engineering#393). queuekeeper's own lines are not quoted."""
     if lane_results.counted(text) is not None or lane_results.unmeasured_tests(text) or failing(text) or STARTED.search(text):
         return None
-    errors = [line.strip() for line in ERROR_LINE.findall(text) if not line.startswith("eng:")]
+    errors = [line.strip() for line in ERROR_LINE.findall(text) if not line.startswith("queuekeeper:")]
     return errors[-1][:QUOTED] if errors else None
 
 
@@ -183,7 +183,7 @@ def combined(parts, status):
 
 
 class Report:
-    """One `eng run`'s summary, inert until a lane run begins."""
+    """One `queuekeeper run`'s summary, inert until a lane run begins."""
 
     def __init__(self):
         self.lane = self.root = self.group = self.here = self.why = None
@@ -224,20 +224,20 @@ class Report:
         elif directory is None: verdict = "not run"
         else: verdict = "passed" if status == 0 else "failed"
         ending = f" (exit {status})" if isinstance(status, int) and status else ""
-        # One line when nothing ran: the refusal or reason eng printed just before it says the rest.
-        if directory is None: return [f"eng run {self.lane}: {verdict}{ending}; no tests ran"]
-        lines = [f"eng run {self.lane}: {verdict}{ending}, {where}"]
+        # One line when nothing ran: the refusal or reason queuekeeper printed just before it says the rest.
+        if directory is None: return [f"queuekeeper run {self.lane}: {verdict}{ending}; no tests ran"]
+        lines = [f"queuekeeper run {self.lane}: {verdict}{ending}, {where}"]
         why = self.why or (str(error) if error is not None else None)
         if self.group is None: logs = {self.lane: directory / "run.log"}
         else: logs = {name: directory / "lanes" / f"{name}.log" for name in self.group}
         texts = {name: path.read_text(errors="replace") if path.is_file() else "" for name, path in logs.items()}
         kept = records(directory / "results")
         joined = "\n".join(texts.values())
-        # eng run's status for a lane that stopped before its tests, which a command can also exit with itself.
+        # queuekeeper run's status for a lane that stopped before its tests, which a command can also exit with itself.
         quoted = before_tests(joined) if verdict == "failed" and status == lane_results.BEFORE_TESTS and self.group is None \
             and not kept else None
         if quoted is not None:
-            lines[0] = f"eng run {self.lane}: failed before any test ran{ending}, {where}"
+            lines[0] = f"queuekeeper run {self.lane}: failed before any test ran{ending}, {where}"
             lines.append(f"  tests: none ran; the last error in its log: {quoted}")
         elif self.complete:
             parts = {name: counts(text) for name, text in texts.items()}
@@ -270,7 +270,7 @@ class Report:
         try:
             lines = self.lines(status, error)
         except Exception as failure:
-            lines = [f"eng run {self.lane}: exit {status}; its summary could not be made: {type(failure).__name__}: {failure}"]
+            lines = [f"queuekeeper run {self.lane}: exit {status}; its summary could not be made: {type(failure).__name__}: {failure}"]
         # A closed stream, as when a reader of the output has gone, must not turn the lane's status into a traceback.
         with contextlib.suppress(OSError, ValueError):
             sys.stdout.flush()

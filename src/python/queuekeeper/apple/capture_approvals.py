@@ -8,7 +8,7 @@ prompt. Signature and CDHash do not enter into it (second Mac, macOS 27.2 26B123
 guides/second-mac-foreground.md, Screen recording for commands started over SSH).
 
 So a test runner that captures through ScreenCaptureKit launches from one path per host, outside the checkout slots
-(stage and rebind below), and `eng remote foreground` lists when that path's approval, and the SSH command
+(stage and rebind below), and `queuekeeper remote foreground` lists when that path's approval, and the SSH command
 host's, lapse. Nothing here writes the approvals: editing that plist is not a supported mechanism.
 """
 from datetime import datetime, timezone
@@ -62,7 +62,7 @@ def stage(built, stable, running):
 
 
 def report(found, now=None):
-    """What `eng remote foreground` says of these approvals: a line for each, lapsed or not. They are the owner's
+    """What `queuekeeper remote foreground` says of these approvals: a line for each, lapsed or not. They are the owner's
     to renew, at the prompt, about once a month (owner's decision, 2026-11-06), and never stop admission."""
     if found is None:
         return ["- its direct screen-capture approvals cannot be read (replayd's ScreenCaptureApprovals.plist)"]

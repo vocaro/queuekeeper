@@ -912,7 +912,7 @@ class PoolTests(unittest.TestCase):
         self.assertEqual(self.boot_failure_line(lines),
                          "Project Duo 1: BOOT FAILED: `simctl boot` exited 60: An error was encountered "
                          "(domain=NSPOSIXErrorDomain, code=60): launchd failed to respond.")
-        self.assertIn("eng simulator-pool: Project Duo 1 did not finish booting (status 60)", lines)
+        self.assertIn("queuekeeper simulator-pool: Project Duo 1 did not finish booting (status 60)", lines)
         self.assertFalse([call for call in self.simctl.calls if call[0] == "bootstatus"])
         self.assertEqual(devices.Record(self.path).entry("Project Duo 1")["run"],
                          "The boot ended with status 60 before Simulator tests")
@@ -923,7 +923,7 @@ class PoolTests(unittest.TestCase):
         self.assertEqual(self.boot_failure_line(lines),
                          "Project Duo 1: BOOT FAILED: `simctl bootstatus -b` exited 60: "
                          "Unable to boot (domain=com.apple.SimError, code=60)")
-        self.assertIn("eng simulator-pool: Project Duo 1 did not finish booting (status 60)", lines)
+        self.assertIn("queuekeeper simulator-pool: Project Duo 1 did not finish booting (status 60)", lines)
 
     def test_a_bootstatus_past_its_limit_is_named_and_stays_unmeasured(self):
         code, lines = self.failed_take("bootstatus", 124, "timed out after 600 s")
@@ -1489,7 +1489,7 @@ class PoolTests(unittest.TestCase):
         self.assertEqual(command("template", "--device", "iPhone-Duo", "--runtime", "iOS-27-1")[0], 0)
         self.assertEqual(len(warm.calls), 2)
     def command(self, warm, *arguments):
-        """`eng simulator-pool` over the fake simctl with warm standing in for template.warm."""
+        """`queuekeeper simulator-pool` over the fake simctl with warm standing in for template.warm."""
         out, err = StringIO(), StringIO()
         with mock.patch.object(simulator_pool, "simctl", self.simctl), \
                 mock.patch.object(simulator_pool.warmed, "warm", warm), redirect_stdout(out), redirect_stderr(err):
@@ -1720,7 +1720,7 @@ class PoolTests(unittest.TestCase):
         lease = pool.take(DUO, RUNTIME, purpose="Tests")
         # Warmed within the take, VoiceOver spoke, the voices did not settle: kept, but the member is erased.
         self.assertEqual((lease.reset, self.simctl.origin(free), len(warm.calls)), (None, "erased", 1))
-        hint = "refresh it with `eng simulator-pool template --device iPhone-Duo --runtime iOS-27-1 --refresh`"
+        hint = "refresh it with `queuekeeper simulator-pool template --device iPhone-Duo --runtime iOS-27-1 --refresh`"
         why = devices.Record(self.path).entry("Project Duo 1")["erasedBecause"]
         self.assertIn("its voices did not settle: the first use gave no answer: no answer in 300 s within the take's limits; "
                       + hint, why)
@@ -1754,7 +1754,7 @@ class PoolTests(unittest.TestCase):
         status, output, error = self.command(warm, "template", "--device", "iPhone-Duo", "--runtime", "iOS-27-1", "--refresh")
         self.assertEqual(status, 0, error)
         self.assertEqual((len(warm.calls), self.simctl.deleted()), (3, [old, new]))
-        self.assertIn(f"REPLACED the template {template} ({new}): eng simulator-pool template --refresh asked for a new one",
+        self.assertIn(f"REPLACED the template {template} ({new}): queuekeeper simulator-pool template --refresh asked for a new one",
                       error)
         self.assertEqual(devices.Record(self.path).entry(template)["state"], "released")
 

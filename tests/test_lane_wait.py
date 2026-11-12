@@ -1,5 +1,5 @@
-"""What a lane waits for, as eng run records it: each kind of wait, its clearing, and its coming back from the second
-Mac (lane_wait, offload_host.relay_wait). tests/test_merge_queue.py's RoundAccount reads it as `eng queue status` does."""
+"""What a lane waits for, as queuekeeper run records it: each kind of wait, its clearing, and its coming back from the second
+Mac (lane_wait, offload_host.relay_wait). tests/test_merge_queue.py's RoundAccount reads it as `queuekeeper queue status` does."""
 import contextlib
 from io import StringIO
 import json
@@ -20,7 +20,7 @@ import host_isolation
 
 
 class Named(unittest.TestCase):
-    """A test with a lane's record named, as eng run names it."""
+    """A test with a lane's record named, as queuekeeper run names it."""
 
     def setUp(self):
         folder = tempfile.TemporaryDirectory()
@@ -165,7 +165,7 @@ class Waits(Named):
             admission.refusal, admission.waiting = step
             return False
         admission._attempt, admission._count, admission._withdraw = attempt, lambda: None, lambda error: None
-        # Nor its observation record for `eng admissions now` (#342).
+        # Nor its observation record for `queuekeeper admissions now` (#342).
         admission._observe, admission._unobserve = lambda: None, lambda: None
         self.addCleanup(resources._held.pop, "test", None)
         return admission
@@ -214,7 +214,7 @@ class Waits(Named):
         self.assertFalse(self.path.exists())
 
     def offer(self):
-        offered = remote.Offer("gate", "`eng run --here gate`", lambda host, sent: 0)
+        offered = remote.Offer("gate", "`queuekeeper run --here gate`", lambda host, sent: 0)
         offered.host, offered.busy = "fake", "the second Mac is busy: fake did not take it"
         return offered
 

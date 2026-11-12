@@ -10,7 +10,7 @@ import subprocess
 import sys
 import time
 
-from . import __version__, budgets, disk, extensions, git_state, lane_coverage, lane_report, lane_results, lane_wait, merge_queue, offload_host, \
+from . import __version__, budgets, disk, docs, extensions, git_state, lane_coverage, lane_report, lane_results, lane_wait, merge_queue, offload_host, \
     parallel, processes, remote, resources, shims, spelling
 from .apple import app_builds, app_registrations, crash_alerts, device_pass, devices, foreground, keychain, notification_center, \
     run_results, xctest_shards
@@ -48,7 +48,7 @@ def fix_hosts(root, hosts):
 
 
 def split_warnings(root, config):
-    """The gate over its budget and main past its release commit limit, as eng land warns after its result,
+    """The gate over its budget and main past its release commit limit, as queuekeeper land warns after its result,
     in a project with a Git repository (budgets.py)."""
     try:
         common = subprocess.run(["git", "-C", str(root), "rev-parse", "--path-format=absolute", "--git-common-dir"],
@@ -91,7 +91,7 @@ def compile_first(lane, root, directory, receipt, limit, env, on_stop, kill_afte
     swift has the stale-module rebuild the lane's own has (shims.py). Returns (status, seconds left): the
     status of a failed build with None, its output staying in run.log, or None with what remains of limit for the
     lane's command, which shares the lane's one timeout. The step's output moves to compile.log once it has passed, so
-    that run.log holds only the tests eng reads. A build that fails never reads as unmeasured, whatever status it
+    that run.log holds only the tests queuekeeper reads. A build that fails never reads as unmeasured, whatever status it
     exited with; one that reaches the limit raises TimedOut, which is. A lane without the step has its whole limit."""
     compiled = directory / "compile.log"
     compiled.unlink(missing_ok=True)
@@ -109,13 +109,13 @@ def compile_first(lane, root, directory, receipt, limit, env, on_stop, kill_afte
         return None, max(limit - seconds, 1)
     step.update(outcome="failed", log=log.name)
     with log.open("a") as file:
-        print(f"eng: the build failed: compileFirst exited {status}, and no test ran", file=file)
-    print(f"eng: the build failed: compileFirst exited {status}, and no test ran; its log is {log}", file=sys.stderr, flush=True)
+        print(f"queuekeeper: the build failed: compileFirst exited {status}, and no test ran", file=file)
+    print(f"queuekeeper: the build failed: compileFirst exited {status}, and no test ran; its log is {log}", file=sys.stderr, flush=True)
     return (1 if status == lane_results.UNMEASURED else status), None
 
 
 def conclude(directory, receipt, status, **fields):
-    """Record a completed run's verdict, the status eng run returns, beside its command's exit
+    """Record a completed run's verdict, the status queuekeeper run returns, beside its command's exit
     status: passed only for 0, so a zero exit that ran too few tests is failed."""
     outcome = "passed" if status == 0 else "unmeasured" if status == lane_results.UNMEASURED else \
         "build-failed" if compile_failed(receipt) else "failed"
@@ -134,7 +134,7 @@ def judge(lane, result, log, extra=(), expect=None):
     if repeats is not None and measured and lane_results.series_reported(log) != repeats:
         # The command ignored --repeat, or stopped before its series ended: however it ended, the series did not happen.
         cause = f"--repeat {repeats} was asked for, and the lane's log reports no series of {repeats} runs"
-        print(f"eng: unmeasured: {cause}", file=sys.stderr)
+        print(f"queuekeeper: unmeasured: {cause}", file=sys.stderr)
         return lane_results.UNMEASURED, [cause]
     if measured and (lane.get("minimumTests") or expect):
         # Arguments such as a filter select part of the lane, which must still run a test.
@@ -145,17 +145,17 @@ def judge(lane, result, log, extra=(), expect=None):
             # Such as a corpus test canceled for a variable this lane's command does not set on its Mac
             # (vocaro-engineering#285). The lines give each test's reason: the cause an unmeasured run records.
             not_run = [str(error), *lane_results.canceled_tests(log)]
-            print("eng: unmeasured:", *not_run, sep="\n", file=sys.stderr)
+            print("queuekeeper: unmeasured:", *not_run, sep="\n", file=sys.stderr)
         except ValueError as error:
             # An unmeasured part may not have run at all, so the run stays unmeasured. A test the
             # host left unmeasured ran nothing, so it can also be what leaves a run short.
             if result == 0 and not lane_results.unmeasured_tests(log): raise
-            print(f"eng: {error}", file=sys.stderr)
+            print(f"queuekeeper: {error}", file=sys.stderr)
     unmeasured = lane_results.unmeasured_tests(log) if measured else []
     if unmeasured or not_run or result == lane_results.UNMEASURED:
         # A skip or cancellation leaves the command's own status at 0, and unmeasured is never green.
         if unmeasured:
-            print(f"eng: unmeasured: {len(unmeasured)} test(s) reported unmeasured:", *unmeasured,
+            print(f"queuekeeper: unmeasured: {len(unmeasured)} test(s) reported unmeasured:", *unmeasured,
                   sep="\n", file=sys.stderr)
         return lane_results.UNMEASURED, list(dict.fromkeys([*not_run, *unmeasured]))
     return result, []
@@ -181,7 +181,7 @@ def awake(lane, extra=()):
 def lane_label(root, config, lane):
     """A lane run's admission label: its project's name, a space and the lane, such as `EPUBLib gate`,
     so that two projects' lanes of one name stay apart in waiting messages, the guard and the admission
-    log (#51). A space, as in the labels callers pass, such as `warm push REV`, and in an `eng admit`
+    log (#51). A space, as in the labels callers pass, such as `warm push REV`, and in an `queuekeeper admit`
     command line; no configured project name or lane has one, and a colon would read as one more field
     after the `: ` that waiting messages put before a label. The name is engineering.json's, else the
     checkout's; a linked worktree's directory is named for its session, so it takes its main checkout's."""
@@ -200,7 +200,7 @@ def placement(reason):
 
 
 def admission_placement(offered, reason):
-    """What a run's admission line says of its placement, which `eng admissions usage` counts: whether eng offered it
+    """What a run's admission line says of its placement, which `queuekeeper admissions usage` counts: whether queuekeeper offered it
     to the second Mac first (offered) and why it runs here (because), or the Mac that sent it (remote.DISPATCHER)."""
     sender = os.environ.get(remote.DISPATCHER)
     if sender: return {"dispatchedFrom": sender}
@@ -210,7 +210,7 @@ def admission_placement(offered, reason):
 
 
 def this_mac():
-    """The Mac this eng runs on, as messages name it: `this Mac (NAME)`, or `the second Mac (NAME)` for work the
+    """The Mac this queuekeeper runs on, as messages name it: `this Mac (NAME)`, or `the second Mac (NAME)` for work the
     second Mac runs for the Mac that sent it (remote.DISPATCHER), so that a log never leaves the Mac to be guessed
     (vocaro-engineering#185)."""
     return f"{'the second Mac' if os.environ.get(remote.DISPATCHER) else 'this Mac'} ({offload_host.mac_name()})"
@@ -225,7 +225,7 @@ SCREEN_LOCKED = re.compile(r"(?i)\bscreen is locked\b")
 def screen_reading(stream=None):
     """This Mac's screen, read now (offload_host.screen) and said in one line naming the Mac (this_mac)."""
     found = offload_host.screen()
-    print(f"eng: {offload_host.screen_line(found, this_mac())}", file=stream or sys.stderr, flush=True)
+    print(f"queuekeeper: {offload_host.screen_line(found, this_mac())}", file=stream or sys.stderr, flush=True)
     return found
 
 
@@ -236,7 +236,7 @@ def scroll_bars_recorded(receipt, lane, inherited):
     though each still records the reading."""
     found = receipt["scrollBars"] = offload_host.scroll_bars()
     if inherited or os.environ.get(SELF_LANE) or (lane == "provision" and os.environ.get(remote.DISPATCHER)): return
-    print(f"eng: {offload_host.scroll_bars_line(found, this_mac())}", file=sys.stderr, flush=True)
+    print(f"queuekeeper: {offload_host.scroll_bars_line(found, this_mac())}", file=sys.stderr, flush=True)
 
 
 def screen_wait(name, seconds, said):
@@ -250,7 +250,7 @@ def screen_wait(name, seconds, said):
         refused, key = remote.screen_refusal(found, this_mac()), (found["state"], found.get("reason"))
         lane_wait.waiting(lane_wait.SCREEN, refused)
         if not said or said[-1] != key:
-            print(f"eng: {name} waits: {refused}", file=sys.stderr, flush=True)
+            print(f"queuekeeper: {name} waits: {refused}", file=sys.stderr, flush=True)
             said.append(key)
         left = deadline - time.monotonic()
         if left <= 0: return refused
@@ -271,7 +271,7 @@ def admitted_here(stack, name, label, timeout, offered=None, once=False, exclusi
     refused, said = [], []
     place = resources.Place()
     if offered is not None: place.started = getattr(offered, "started", place.started)
-    # Its own place is no request queued ahead of it when eng reads this Mac's capacity for it (#186).
+    # Its own place is no request queued ahead of it when queuekeeper reads this Mac's capacity for it (#186).
     if offered is not None: offered.place = place
 
     def admit(seconds):
@@ -283,7 +283,7 @@ def admitted_here(stack, name, label, timeout, offered=None, once=False, exclusi
                 return None
             seconds = max(seconds - (time.monotonic() - began), 0)
         try:
-            # eng admit and eng run start every command they admit through processes.supervise (#315).
+            # queuekeeper admit and queuekeeper run start every command they admit through processes.supervise (#315).
             return stack.enter_context(resources.Admission(label, exclusive=exclusive, timeout=seconds, model=model,
                                                            whole_host=whole_host, place=place, placement=placement,
                                                            supervised=True))
@@ -295,14 +295,14 @@ def admitted_here(stack, name, label, timeout, offered=None, once=False, exclusi
         if offered is not None and offered.busy is not None:
             return remote.overflow(offered, admit, timeout, once, refused)
         # A wait that runs out is BUSY, as with once: nothing ran, which the merge queue counts as no verdict.
-        # Raised, TimeoutError is an OSError, which eng run reports as its own error, exit 2 (#268).
+        # Raised, TimeoutError is an OSError, which queuekeeper run reports as its own error, exit 2 (#268).
         admission = admit(min(FREE_WAIT, timeout) if once else timeout)
         if admission is None:
-            print(f"eng: {name} not run on {this_mac()}: {refused[-1]}", file=sys.stderr)
+            print(f"queuekeeper: {name} not run on {this_mac()}: {refused[-1]}", file=sys.stderr)
             return BUSY
         return admission
     except resources.AdmissionRecordError as error:
-        print(f"eng: {name} not run on {this_mac()}: {error}", file=sys.stderr)
+        print(f"queuekeeper: {name} not run on {this_mac()}: {error}", file=sys.stderr)
         return BUSY
     finally:
         # Admitted, admission took the place out of the queue; otherwise the work no longer waits here.
@@ -312,12 +312,12 @@ def admitted_here(stack, name, label, timeout, offered=None, once=False, exclusi
 def foreground_held(stack, name, label, timeout, **options):
     """None once the second Mac's foreground is held for the work label names, entered in stack; or BUSY, after saying
     so, when the wait for it ran out, as admitted_here's does (#297). Nothing ran, and the TimeoutError raised, an
-    OSError, would be eng's own error, exit 2, which the merge queue counts as a failure. Only entering is caught: a
+    OSError, would be queuekeeper's own error, exit 2, which the merge queue counts as a failure. Only entering is caught: a
     release that fails once the work has run does not make the work not run."""
     try:
         stack.enter_context(foreground.slot(label, timeout=timeout, **options))
     except TimeoutError as error:
-        print(f"eng: {name} not run on {this_mac()}: {error}", file=sys.stderr)
+        print(f"queuekeeper: {name} not run on {this_mac()}: {error}", file=sys.stderr)
         return BUSY
     return None
 
@@ -328,7 +328,7 @@ def window_wait(name, window, label, *, keys=None, budget=None, fallback=None):
     if window is None: return None
     measured = resources.measured_seconds(label, devices=keys) if label is not None else None
     waiting = devices.WindowWait(window, measured, budget=fallback if measured is None and budget is None else budget)
-    if waiting.left() > 0: print(f"eng: {name} waits for admission at most until {waiting.latest.isoformat()}: {waiting}",
+    if waiting.left() > 0: print(f"queuekeeper: {name} waits for admission at most until {waiting.latest.isoformat()}: {waiting}",
                                  file=sys.stderr, flush=True)
     return waiting
 
@@ -337,14 +337,14 @@ def window_closed(name, waiting):
     """Refuse an estimated run that can no longer fit. An unestimated diagnostic can try an immediate
     admission and then meets the device runner's own bound."""
     if waiting is None or waiting.estimate is None or waiting.left() > 0: return None
-    print(f"eng: {name} not run on {this_mac()}: {waiting}. No device result was recorded", file=sys.stderr, flush=True)
+    print(f"queuekeeper: {name} not run on {this_mac()}: {waiting}. No device result was recorded", file=sys.stderr, flush=True)
     return BUSY
 
 
 def not_admitted(name, waiting, status):
     """status, the end of a wait for admission, after saying that the device window is what cut it short."""
     if waiting is not None and waiting.limited and status == BUSY:
-        print(f"eng: {name} stopped waiting: {waiting}. No device result was recorded", file=sys.stderr, flush=True)
+        print(f"queuekeeper: {name} stopped waiting: {waiting}. No device result was recorded", file=sys.stderr, flush=True)
     return status
 
 
@@ -352,13 +352,13 @@ def fell_back(name, offered):
     """Say in one line, before the run starts, that work offered to the second Mac runs on this Mac, and why, so
     that the second Mac's lines a declined offer left above are not read as the run's (vocaro-engineering#185)."""
     above = "; the second Mac's lines above are from the offer it did not take" if offered.sent else ""
-    print(f"eng: {name} runs on {this_mac()}, not the second Mac: {offered.status}{above}", file=sys.stderr, flush=True)
+    print(f"queuekeeper: {name} runs on {this_mac()}, not the second Mac: {offered.status}{above}", file=sys.stderr, flush=True)
 
 
 def unmeasured_screen(name, receipt):
     """Read the screen again once a lane whose result depends on it ends unmeasured, and say on which Mac, so
     that the verdict and the hold it leads to name the Mac whose screen was read (vocaro-engineering#185)."""
-    print(f"eng: {name} unmeasured on {this_mac()}", file=sys.stderr, flush=True)
+    print(f"queuekeeper: {name} unmeasured on {this_mac()}", file=sys.stderr, flush=True)
     receipt["screenAfter"] = screen_reading()
 
 
@@ -366,7 +366,7 @@ SCREEN_STATUS = {"unlocked": 0, "locked": 1, "unknown": 2}
 
 
 def host_screen(args):
-    """`eng host screen [--remote]`: one line, or the reading as JSON, saying whether this Mac's or the second
+    """`queuekeeper host screen [--remote]`: one line, or the reading as JSON, saying whether this Mac's or the second
     Mac's console screen is locked (offload_host.screen), exiting 0 unlocked, 1 locked and 2 unknown. The
     second Mac is read over SSH by the same code, so either Mac's answer is read, never assumed."""
     if args.host and not args.remote: raise ValueError("--host names the second Mac that --remote reads")
@@ -410,7 +410,7 @@ def reap_here(root, inherited):
     # offload_host.reap never raises; it says what it could not read or do in its report's problem.
     report = offload_host.reap(remote.ROOT, **remote.reap_request(root))
     lines = remote.reap_lines(remote.HERE, report, listing=False)
-    for line in lines: print(f"eng: {line}", file=sys.stderr, flush=True)
+    for line in lines: print(f"queuekeeper: {line}", file=sys.stderr, flush=True)
     return lines
 
 
@@ -421,7 +421,7 @@ def admitted_tree(root, name, offered, receipt):
     while the tree is still that commit's (remote.changed_since), and receipt's sent names that commit."""
     changed = remote.changed_since(root, offered)
     if changed is not None:
-        print(f"eng: {name} not run on this Mac: {changed}\neng: restore the tree that was sent, or run it again to "
+        print(f"queuekeeper: {name} not run on this Mac: {changed}\nqueuekeeper: restore the tree that was sent, or run it again to "
               "send the tree as it is now", file=sys.stderr, flush=True)
         return 2
     receipt["project"] = source_identity(root)
@@ -430,7 +430,7 @@ def admitted_tree(root, name, offered, receipt):
 
 
 def from_sent(stack, root, sent, moved, receipt):
-    """(checkout, toolkit) of the worktrees from which `eng admit` runs its command on this Mac, entered in stack,
+    """(checkout, toolkit) of the worktrees from which `queuekeeper admit` runs its command on this Mac, entered in stack,
     after recording them in receipt; or 2 after saying why not. A command this Mac takes after sending the second
     Mac a commit runs from that commit once the tree here is no longer that commit's (remote.moved_trees), in a
     temporary worktree at it, as the second Mac runs it, rather than from the changed tree or not at all: the
@@ -443,11 +443,11 @@ def from_sent(stack, root, sent, moved, receipt):
         checkout, toolkit = stack.enter_context(remote.sent_tree(
             root, sent, any(what.startswith("toolkit") for _checkout, _commit, what, _changes in moved)))
     except (OSError, RuntimeError) as error:
-        print(f"eng: the command not run on this Mac: {why}\neng: and no worktree of what was sent could be made "
+        print(f"queuekeeper: the command not run on this Mac: {why}\nqueuekeeper: and no worktree of what was sent could be made "
               f"here: {error}", file=sys.stderr, flush=True)
         return 2
-    print(f"eng: the command runs on this Mac from what was sent, {sent['commit'][:12]}, in a temporary worktree, "
-          f"{checkout}, since {why}\neng: the session's tree stays as it is, and the worktree goes when the command "
+    print(f"queuekeeper: the command runs on this Mac from what was sent, {sent['commit'][:12]}, in a temporary worktree, "
+          f"{checkout}, since {why}\nqueuekeeper: the session's tree stays as it is, and the worktree goes when the command "
           "ends", file=sys.stderr, flush=True)
     receipt["project"] = source_identity(checkout)
     receipt["sent"] = sent["commit"]
@@ -475,25 +475,25 @@ def provision_sent(root, config, checkout, toolkit, variables, limit, on_stop=No
                             "provision"], cwd=checkout, log_path=log, timeout=limit, env=variables,
                             on_stop=on_stop)
     if status:
-        print(f"eng: the command not run: the provision lane exited {status} in the worktree of what was sent; its "
+        print(f"queuekeeper: the command not run: the provision lane exited {status} in the worktree of what was sent; its "
               f"log is {log}", file=sys.stderr, flush=True)
     return status
 
 
 def guarded_alerts(stack, purpose, receipt, apps=()):
     """Foreground work's crash_alerts.Run, with crash-report dialogs off and the screen's crash-report alerts
-    cleared until the stack closes; or UNMEASURED, with nothing run, when an alert eng cannot clear is over the
+    cleared until the stack closes; or UNMEASURED, with nothing run, when an alert queuekeeper cannot clear is over the
     screen (crash_alerts.py). apps names the app under test, as a crash-report alert names its process."""
     try:
         return stack.enter_context(crash_alerts.guarded(purpose, receipt=receipt, apps=apps))
     except crash_alerts.Blocked as error:
-        print(f"eng: unmeasured: {error}; nothing ran ({crash_alerts.GUIDE}, Crash-report alerts)", file=sys.stderr)
+        print(f"queuekeeper: unmeasured: {error}; nothing ran ({crash_alerts.GUIDE}, Crash-report alerts)", file=sys.stderr)
         receipt["outcome"] = "unmeasured"
         return lane_results.UNMEASURED
 
 
 def cleared_notifications(receipt):
-    """None once no Notification Center window is over the second Mac's screen, eng having closed the
+    """None once no Notification Center window is over the second Mac's screen, queuekeeper having closed the
     notifications of any that was, under the foreground the run holds; or UNMEASURED, with nothing run, naming
     a window it could not clear (notification_center.py). The receipt says what was found and closed, never
     what a notification said."""
@@ -501,7 +501,7 @@ def cleared_notifications(receipt):
         receipt["notificationCenter"] = notification_center.dismiss()
         return None
     except (notification_center.Blocked, devices.Refused) as error:
-        print(f"eng: unmeasured: {error}; nothing ran ({notification_center.GUIDE}, {notification_center.SECTION})",
+        print(f"queuekeeper: unmeasured: {error}; nothing ran ({notification_center.GUIDE}, {notification_center.SECTION})",
               file=sys.stderr)
         receipt["notificationCenter"] = {"left": str(error)}
         receipt["outcome"] = "unmeasured"
@@ -509,9 +509,9 @@ def cleared_notifications(receipt):
 
 
 def here_because(args, inherited):
-    """Why `eng admit` runs its command on this Mac without offering it to the second Mac, or None to offer it there
+    """Why `queuekeeper admit` runs its command on this Mac without offering it to the second Mac, or None to offer it there
     first, as a lane is (the owner's decision, 2026-11-07; guides/shared-host.md, Which Mac runs a lane)."""
-    if args.here: return "eng admit --here"
+    if args.here: return "queuekeeper admit --here"
     # Work the second Mac runs for the Mac that sent it runs there, where it was sent.
     if os.environ.get(remote.DISPATCHER): return "sent here by the Mac that dispatched it"
     # Foreground work holds the foreground of the Mac it runs on (foreground.py).
@@ -523,7 +523,7 @@ def here_because(args, inherited):
     return None
 
 
-# Set by eng run for the command of a self lane, to the lane's name: each `eng admit` its script runs stays on the
+# Set by queuekeeper run for the command of a self lane, to the lane's name: each `queuekeeper admit` its script runs stays on the
 # Mac where the lane runs, since one part builds what the next runs (config.unadmitted).
 SELF_LANE = "VOCARO_SELF_LANE"
 
@@ -548,20 +548,20 @@ def admit(root, args, config=None, *, device_window=None):
     # self lane's parts keep it here (guides/shared-host.md, Which Mac runs a lane).
     # Without a leading --, argparse collected the command, and a later -- belongs to it.
     command = args.command + ([] if args.passed is None else ["--", *args.passed]) if args.command else args.passed
-    if not command: raise ValueError("Name the command: eng admit [--exclusive | --model] [--here] -- COMMAND")
+    if not command: raise ValueError("Name the command: queuekeeper admit [--exclusive | --model] [--here] -- COMMAND")
     if args.time_limit <= 0: raise ValueError("--time-limit needs a positive number of seconds")
     config = config if config is not None else load(root)
     kind = ["--exclusive"] if args.exclusive else ["--model"] if args.model else []
     # Only a limit of its own goes to the second Mac, whose toolkit may not take the option.
     if args.time_limit != processes.DEFAULT_LIMIT: kind += ["--time-limit", f"{args.time_limit:g}"]
-    # Foreground work holds the foreground of the Mac it runs on: the second Mac's, which eng takes for it, or this
-    # Mac's, which the session holds within the owner's window. eng remote admit --foreground sends it there.
+    # Foreground work holds the foreground of the Mac it runs on: the second Mac's, which queuekeeper takes for it, or this
+    # Mac's, which the session holds within the owner's window. queuekeeper remote admit --foreground sends it there.
     second = args.foreground and foreground.second_mac()
     if args.foreground and args.verify:
         raise ValueError("--verify never sends foreground work: send it to the second Mac with "
-                         "eng remote admit --foreground -- COMMAND")
+                         "queuekeeper remote admit --foreground -- COMMAND")
     if args.app and not args.foreground:
-        raise ValueError("--app names the app under test of foreground work, whose crash-report alerts eng clears: "
+        raise ValueError("--app names the app under test of foreground work, whose crash-report alerts queuekeeper clears: "
                          "add --foreground")
     if args.foreground and not second: devices.require_foreground(os.environ.get(devices.OWNER))
     # Nested work runs inside the admission it inherits, here.
@@ -612,7 +612,7 @@ def admit(root, args, config=None, *, device_window=None):
                 alerts = guarded_alerts(alert_stack, " ".join(command), receipt, args.app or ()) \
                     if args.foreground else None
                 if isinstance(alerts, int): return alerts
-                # The second Mac's Notification Center windows, under the foreground eng holds there (#204).
+                # The second Mac's Notification Center windows, under the foreground queuekeeper holds there (#204).
                 blocked = cleared_notifications(receipt) if second else None
                 if blocked is not None: return blocked
                 for prepare in extensions.PREPARE_LANE: prepare(root, config)
@@ -640,7 +640,7 @@ def admit(root, args, config=None, *, device_window=None):
             return record(root / ".build/engineering/admit", receipt, work)
         except processes.TimedOut as error:
             # A backstop for a hang that a busy host can also reach, so the command is unmeasured.
-            print(f"eng: unmeasured: {error}", file=sys.stderr)
+            print(f"queuekeeper: unmeasured: {error}", file=sys.stderr)
             return lane_results.UNMEASURED
 
 
@@ -669,7 +669,7 @@ def perform(argv, report):
         "lane [-- ARGUMENTS ...]",
         help="run a configured lane, admitting a heavy or exclusive one, on whichever Mac has spare capacity for "
         "it now, the second Mac first, and on this Mac while the second Mac has none or cannot be reached, unless "
-        "the lane says why it stays on this Mac: eng run LANE [-- ARGUMENTS], which appends the arguments, such as "
+        "the lane says why it stays on this Mac: queuekeeper run LANE [-- ARGUMENTS], which appends the arguments, such as "
         "a test filter, to the lane's command")
     run.add_argument("--expect", type=int, metavar="N", help="require exactly N executed tests: N selected with "
         "some skipped or canceled is unmeasured, exit 3, and any other count fails; without it, a run with arguments needs at least one in place of the lane's minimumTests")
@@ -690,7 +690,7 @@ def perform(argv, report):
     run.add_argument("--unlocked-screen", action="store_true", help="place the lane only on a Mac whose screen reads "
         "unlocked, and wait for one, as \"unlockedScreen\": true does: the merge queue's next run of a lane whose "
         "run a locked screen left without a verdict (guides/maintenance.md, A run with no verdict)")
-    run.add_argument("--repeat", type=int, metavar="N", help="run a lane of eng simulator-tests N times, on one build, "
+    run.add_argument("--repeat", type=int, metavar="N", help="run a lane of queuekeeper simulator-tests N times, on one build, "
         "each run on a member taken from the pool afresh, and report each run's outcome, test counts and one-minute "
         "load (guides/simulator-testing.md, Repeating a test to show a fix works). Its receipt is not a pass of the "
         "whole lane")
@@ -703,30 +703,30 @@ def perform(argv, report):
     run.add_argument("lane")
     # Listed for help only: main passes everything after these to their own parsers.
     commands.add_parser("simulator-tests", help="build a scheme's tests once and run them on several members of the "
-        "project's simulator pool side by side: eng simulator-tests --scheme S --runtime R --device T --device T; "
+        "project's simulator pool side by side: queuekeeper simulator-tests --scheme S --runtime R --device T --device T; "
         "-h for the rest")
     commands.add_parser("device-pass", help="a release's physical-device pass, as a release lane's command: run "
         "COMMAND once on each paired device named, in turn, under its reservation, taking the iPad in turn and "
-        "using an iPhone the session reserved within the owner's window: eng device-pass --device iPad --device "
+        "using an iPhone the session reserved within the owner's window: queuekeeper device-pass --device iPad --device "
         "iPhone -- COMMAND; -h for the rest (guides/releasing.md, The device pass)")
-    app_builds.add_arguments(commands.add_parser("app", help="run the last good build of the project's app: eng app "
-        "run opens the newest kept Mac build, and eng app run --iphone or --ipad installs and launches the device "
-        "build on that paired device, building origin/main first when the kept build is older; eng app keep builds "
-        "and keeps one, as the merge queue does after each gated landing; eng app status lists them "
+    app_builds.add_arguments(commands.add_parser("app", help="run the last good build of the project's app: queuekeeper app "
+        "run opens the newest kept Mac build, and queuekeeper app run --iphone or --ipad installs and launches the device "
+        "build on that paired device, building origin/main first when the kept build is older; queuekeeper app keep builds "
+        "and keeps one, as the merge queue does after each gated landing; queuekeeper app status lists them "
         "(guides/app-builds.md)"))
     commands.add_parser("simulator-pool", help="list, take, release, prune, reap or check members of the project's "
-        "simulator pool under device-record reservations: eng simulator-pool list|take|release|prune|reap|check; "
+        "simulator pool under device-record reservations: queuekeeper simulator-pool list|take|release|prune|reap|check; "
         "-h for the rest")
     commands.add_parser("results", help="keep a test run's per-test outcomes and seconds in the lane's results/ and "
-        "print them, for a script that runs xcodebuild itself: eng results keep; -h for the rest")
+        "print them, for a script that runs xcodebuild itself: queuekeeper results keep; -h for the rest")
     commands.add_parser("unittest", help="run a unittest suite's modules in processes of their own, side by side: "
-        "eng unittest [-s START] [-p PATTERN] [-j JOBS] [-k PATTERN] [-v] [NAME ...]; eng unittest -h for the rest")
+        "queuekeeper unittest [-s START] [-p PATTERN] [-j JOBS] [-k PATTERN] [-v] [NAME ...]; queuekeeper unittest -h for the rest")
     commands.add_parser("xctest", help="build a Swift package's tests once and run its XCTest classes in xctest "
-        "processes of their own, side by side, each reporting its skips: eng xctest [-j JOBS] [--filter REGEX]; "
-        "eng xctest -h for the rest")
+        "processes of their own, side by side, each reporting its skips: queuekeeper xctest [-j JOBS] [--filter REGEX]; "
+        "queuekeeper xctest -h for the rest")
     admission =commands.add_parser("admit", help="run any other heavy command (a build, swift test, xcodebuild "
         "test, a simulator run, a gate suite) through heavy-work admission on whichever Mac has spare capacity for "
-        "it, the second Mac first, as eng run places a lane: eng admit -- COMMAND; what it changes in the "
+        "it, the second Mac first, as queuekeeper run places a lane: queuekeeper admit -- COMMAND; what it changes in the "
         "checkout's files that Git does not ignore comes back and is applied here, while its build products stay "
         "on the Mac that ran it. Add --here for a command whose products this session uses here afterwards, "
         "--model for a generative-model run, and --exclusive only for work that needs the host to itself")
@@ -738,11 +738,11 @@ def perform(argv, report):
                       "model run holds at a time: on-device generation, on this Mac or in a simulator, another local "
                       "generative model on the GPU, or Core ML whose compute units include the GPU")
     admission.add_argument("--foreground", action="store_true", help="the command takes the screen, keyboard, "
-        "pointer, focus or speech, as Mac VoiceOver and Mac UI tests do: on the second Mac eng holds its foreground for "
+        "pointer, focus or speech, as Mac VoiceOver and Mac UI tests do: on the second Mac queuekeeper holds its foreground for "
         "the command, waiting while another run holds it; on this Mac the session must hold mac-foreground within "
         "the owner's window (guides/shared-host.md, Attended Mac sessions)")
     admission.add_argument("--app", action="append", metavar="NAME", help="with --foreground, the app under test, "
-        "as a crash-report alert names its process; repeat for each. A failed run during which eng cleared such an "
+        "as a crash-report alert names its process; repeat for each. A failed run during which queuekeeper cleared such an "
         "alert for another process, one that stood longer than one look, is unmeasured; one for NAME stays failed "
         "(guides/second-mac-foreground.md, Crash-report alerts)")
     placed = admission.add_mutually_exclusive_group()
@@ -756,7 +756,7 @@ def perform(argv, report):
         f"cannot be reached. What it changed there in files Git does not ignore is applied here; exit {remote.UNAPPLIED} "
         "says it could not be, and names the patch kept")
     # The default since the owner's decision of 2026-11-07, still accepted from callers that pass it.
-    placed.add_argument("--verify", action="store_true", help="what eng admit does without --here: offer the "
+    placed.add_argument("--verify", action="store_true", help="what queuekeeper admit does without --here: offer the "
         "command to the second Mac first")
     admission.add_argument("--if-free", action="store_true", help=f"run only if heavy-work admission admits the "
         f"command within {FREE_WAIT}s, on the second Mac or here; otherwise exit {BUSY} without running it")
@@ -771,12 +771,12 @@ def perform(argv, report):
         "       %(prog)s usage [--since WHEN] [--until WHEN] [--there LOG ...]\n       %(prog)s now [--json] [--here]",
         help="summarize this host's heavy-work admission "
         "log: for each kind and label, the requests admitted and withdrawn, how long they waited and held, and how "
-        "admissions ended; eng admissions recover lists the guard's dead or uncertain entries, and eng admissions "
+        "admissions ended; queuekeeper admissions recover lists the guard's dead or uncertain entries, and queuekeeper admissions "
         "recover OWNER removes that owner's once a census against its process record finds nothing it ran still "
-        "running; eng admissions remove OWNER --why TEXT removes by hand one recovery cannot prove finished once "
-        "nothing its owner may have started is found running; eng admissions limits prints the admission limits in force and where each comes from; eng "
+        "running; queuekeeper admissions remove OWNER --why TEXT removes by hand one recovery cannot prove finished once "
+        "nothing its owner may have started is found running; queuekeeper admissions limits prints the admission limits in force and where each comes from; queuekeeper "
         "admissions usage shows both Macs' capacity now, the share of the last 3 hours each spent at each count of "
-        "heavy jobs, and why this Mac's work ran here, never offered to the second Mac or declined by it; eng admissions "
+        "heavy jobs, and why this Mac's work ran here, never offered to the second Mac or declined by it; queuekeeper admissions "
         "now shows who holds and who waits for admission on each Mac now, how long and why",
         description="Summarize the admission log, or, with recover, list the guard's dead or uncertain entries and "
         "recover one: its owner, named by PID or identity, has ended, and nothing of the commands its process "
@@ -789,8 +789,8 @@ def perform(argv, report):
     logged.add_argument("logs", nargs="*", type=Path, metavar="log", help="a copy of a log, such as the second Mac's, "
                         "to read instead of this host's; name the previous generation first")
     distant = commands.add_parser("remote", help="run a lane or other heavy command on the owner's second Mac over "
-        "SSH: eng remote run LANE [-- ARGUMENTS] or eng remote admit [--foreground] -- COMMAND; eng remote passed "
-        "LANE says whether the whole lane passed there at a commit; eng remote foreground says whether its "
+        "SSH: queuekeeper remote run LANE [-- ARGUMENTS] or queuekeeper remote admit [--foreground] -- COMMAND; queuekeeper remote passed "
+        "LANE says whether the whole lane passed there at a commit; queuekeeper remote foreground says whether its "
         "foreground is ready")
     operations = distant.add_subparsers(dest="operation", required=True)
     remote_run = operations.add_parser("run", usage="%(prog)s [-h] [--host HOST] [--serial] [--expect N] "
@@ -801,7 +801,7 @@ def perform(argv, report):
         "root, at HEAD or at a snapshot commit of uncommitted work")
     remote_setup = operations.add_parser("setup", help="install on the second Mac, with Homebrew, the tools "
         f"every project's gates use ({', '.join(remote.SETUP_FORMULAE)}) and the formulae named, then check them as "
-        "eng remote sees the second Mac; Homebrew itself the owner installs")
+        "queuekeeper remote sees the second Mac; Homebrew itself the owner installs")
     remote_setup.add_argument("formulae", nargs="*", metavar="formula", help="a further Homebrew formula to install")
     remote_setup.add_argument("--import", dest="imports", action="append", metavar="MODULE",
                               help="check that the second Mac's python3 imports MODULE (repeatable)")
@@ -810,7 +810,7 @@ def perform(argv, report):
         "Mac VoiceOver and Mac UI tests, started over SSH, each with the owner's fix, and which run holds its "
         f"foreground; exit 0 when it lacks nothing, {remote.MISCONFIGURED} otherwise")
     remote_setup.add_argument("--runtimes", action="store_true", help="instead, give this Mac and the second Mac the "
-        "same simulator runtimes of the Xcode at this Mac's developer directory, as eng doctor does: a runtime only "
+        "same simulator runtimes of the Xcode at this Mac's developer directory, as queuekeeper doctor does: a runtime only "
         "one Mac has is deleted there when no simulator but Xcode's defaults uses it, and otherwise its disk image "
         "is copied over SSH to the Mac that lacks it; it exits 0 only when both list the same")
     for choice in (remote_run, remote_admit, remote_setup, remote_foreground):
@@ -840,9 +840,9 @@ def perform(argv, report):
     remote_admit.add_argument("--foreground", action="store_true", help="hold the second Mac's foreground for the "
         "command, as Mac VoiceOver and Mac UI tests need, waiting while another run holds it")
     remote_admit.add_argument("--app", action="append", metavar="NAME", help="with --foreground, the app under "
-        "test, as eng admit's")
+        "test, as queuekeeper admit's")
     remote_admit.add_argument("--time-limit", type=float, metavar="SECONDS", help="seconds the command may run "
-        f"there once admitted, as eng admit's (default {processes.DEFAULT_LIMIT})")
+        f"there once admitted, as queuekeeper admit's (default {processes.DEFAULT_LIMIT})")
     remote_admit.add_argument("--git-commit", action="append", metavar="REPOSITORY=SHA", help="verify a full "
         "foreign commit hash in a local repository, so its exact positional argument names no hardware device "
         "(repeatable); device options and known device identifiers still require reservations")
@@ -853,7 +853,7 @@ def perform(argv, report):
     remote_passed.add_argument("--commit", default="HEAD")
     remote_prune = operations.add_parser("prune-results", help="remove the lane results kept by commit beside the "
         f"receipts in the repository's Git directory that the rule reclaims, which {remote.KEPT_RESULTS_RULE}; "
-        "eng disk lists them")
+        "queuekeeper disk lists them")
     remote_prune.add_argument("checkout", nargs="?", type=Path, help="a checkout of the repository (default: the project's)")
     remote_prune.add_argument("--dry-run", action="store_true", help="list them; remove nothing")
     merge_queue.add_arguments(commands.add_parser("queue", help="land finished commits through the repository's one "
@@ -861,15 +861,19 @@ def perform(argv, report):
         "(guides/maintenance.md, The merge queue)"))
     merge_queue.land_arguments(commands.add_parser("land", help="land a finished commit through the merge queue of this "
         "repository, or with --repo of another, and return at once: the queue gates it on origin/main and pushes it"))
+    documentation = commands.add_parser("docs", help="check the project's Markdown: each link's file, anchor and "
+        "source line exists; exit 1 on any that does not")
+    documentation.add_argument("operation", choices=["check"])
+    documentation.add_argument("paths", nargs="*")
     spell = commands.add_parser("spelling", help="find British spellings in the project's text, identifiers "
         "included, and file names; exit 1 on any, 2 when nothing was checked")
     spell.add_argument("paths", nargs="*", help="files or directories; untracked files under them are read too")
     disk.add_arguments(commands.add_parser("disk", help="inventory reclaimable disk space; changes nothing without --delete"))
     keychain.add_arguments(commands.add_parser("keychain", help="before the owner unlocks a keychain, say which Mac's "
         "keychain the work needs and print commands that run only there (recover); keep the second Mac's login "
-        "keychain unlocked for every eng remote run (keep-unlocked); where the automation runs, check the keychain, "
+        "keychain unlocked for every queuekeeper remote run (keep-unlocked); where the automation runs, check the keychain, "
         "the signing identity and signing with it, without a prompt (check)"))
-    hosts = commands.add_parser("host", help="read a Mac's state as eng reads it")
+    hosts = commands.add_parser("host", help="read a Mac's state as queuekeeper reads it")
     reads = hosts.add_subparsers(dest="operation", required=True)
     screen = reads.add_parser("screen", help="say whether a Mac's console screen is locked, from both keys the "
         "IORegistry holds and the console user, and exit 0 unlocked, 1 locked or 2 unknown")
@@ -914,7 +918,7 @@ def perform(argv, report):
     if args.action in HOST_COMMANDS:
         for started in extensions.HOST_COMMAND: started()
     root = args.project.resolve()
-    # A foreground run whose eng died left crash-report dialogs off; the next eng command puts them back.
+    # A foreground run whose queuekeeper died left crash-report dialogs off; the next queuekeeper command puts them back.
     crash_alerts.recover()
     try:
         # The inventory, the skill links and the admission log cover the whole host, so they need no project
@@ -931,7 +935,7 @@ def perform(argv, report):
         # which for its worker is a main checkout that may lag.
         if args.action == "land": return merge_queue.land(root, args, Path.cwd())
         if args.action == "queue": return merge_queue.main(root, args)
-        # The store is the repository's, named by any checkout of it, and eng disk runs this for every project.
+        # The store is the repository's, named by any checkout of it, and queuekeeper disk runs this for every project.
         if args.action == "remote" and args.operation == "prune-results":
             return remote.prune_results_main(args.checkout or root, args.dry_run)
         config = load(root)
@@ -948,11 +952,11 @@ def perform(argv, report):
                                if "command" in lane and "timeout" not in lane)
             if unbounded:
                 warnings.append(f"{len(unbounded)} lane(s) declare no timeout and are stopped, unmeasured, after "
-                                f"eng's default {processes.DEFAULT_LIMIT}s: {', '.join(unbounded)}; give each a timeout "
+                                f"queuekeeper's default {processes.DEFAULT_LIMIT}s: {', '.join(unbounded)}; give each a timeout "
                                 "chosen from its measured time (guides/parallel-tests.md, Bound every run)")
             if config.get("lanes") and "gate" not in config["lanes"] and not config.get("queue", {}).get("lanes") \
                     and config.get("integration", "direct-main") == "direct-main":
-                warnings.append("no lane is named gate, which eng land and eng release run: name the lane holding "
+                warnings.append("no lane is named gate, which queuekeeper land runs: name the lane holding "
                                 "what a commit must pass before it lands gate (guides/adoption.md, Lane names)")
             warnings += budgets.doctor_warnings(config)
             warnings += self_lane_warnings(root, config)
@@ -972,6 +976,10 @@ def perform(argv, report):
             return int(bool(missing or hosts["errors"]))
         elif args.action == "admit": return admit(root, args, config, device_window=device_window)
         elif args.action == "remote": return remote.main(root, config, args)
+        elif args.action == "docs":
+            failures = docs.check(root, args.paths or None)
+            print("\n".join(failures) if failures else "Documentation checks passed")
+            return int(bool(failures))
         elif args.action == "spelling": return spelling.check(root, config, args.paths)
         elif args.action == "run":
             report.begin(root, args.lane)
@@ -985,7 +993,7 @@ def perform(argv, report):
                 # Placed from here on as a lane that says "unlockedScreen": true is, on whichever Mac runs it
                 # (vocaro-engineering#293). A self lane runs where it starts, and its script places its parts.
                 if unadmitted(lane):
-                    print(f"eng: {args.lane} runs where it starts, as a self lane, so --unlocked-screen does not place "
+                    print(f"queuekeeper: {args.lane} runs where it starts, as a self lane, so --unlocked-screen does not place "
                           "it", file=sys.stderr, flush=True)
                 else: lane["unlockedScreen"] = True
             if args.repeat is not None and args.repeat < 1:
@@ -995,12 +1003,12 @@ def perform(argv, report):
             series = [] if args.repeat is None else ["--repeat", str(args.repeat), *(["--erase"] if args.erase else []),
                                                      *(["--template"] if args.template else []),
                                                      *[word for test in args.only for word in ("--only", test)]]
-            # Lane arguments, so that eng simulator-tests finds them on whichever Mac runs the lane.
+            # Lane arguments, so that queuekeeper simulator-tests finds them on whichever Mac runs the lane.
             extra = [*series, *(args.passed or [])]
             # A series' lane runs N times inside its one admission, within N times its limit (guides/simulator-testing.md).
             limit = parallel.lane_timeout(lane, extra)
             lane_wait.begin(root, args.lane)
-            # A foreground lane takes a Mac's screen. The second Mac's is eng's to take for the run, below; this
+            # A foreground lane takes a Mac's screen. The second Mac's is queuekeeper's to take for the run, below; this
             # Mac's, only the session holding mac-foreground within the owner's window runs it on, with --here.
             # Otherwise it goes to the second Mac and waits there for its foreground, never falling back to this
             # Mac (foreground.py).
@@ -1057,7 +1065,7 @@ def perform(argv, report):
             if whole and receipt["project"].get("workingChangesSHA256") != remote.CLEAN:
                 # vocaro-engineering#197: nothing said so until eng release stopped for it.
                 why = remote.uncounted(root, args.lane)
-                if why: print(f"eng: {why}", file=sys.stderr, flush=True)
+                if why: print(f"queuekeeper: {why}", file=sys.stderr, flush=True)
             def concluded(status, **fields):
                 # The verdict in this checkout, and kept by commit for every worktree (vocaro-engineering#198).
                 conclude(directory, receipt, status, **fields)
@@ -1159,7 +1167,7 @@ def perform(argv, report):
                             if closed is not None: return closed
                             if reads_screen: receipt["screen"] = screen_reading()
                             if inherited and needs and receipt["screen"]["state"] != "unlocked":
-                                print(f"eng: {args.lane} not run on {this_mac()}: "
+                                print(f"queuekeeper: {args.lane} not run on {this_mac()}: "
                                       f"{remote.screen_refusal(receipt['screen'], this_mac())}; "
                                       "release the outer admission before waiting for an unlocked screen and retry",
                                       file=sys.stderr, flush=True)
@@ -1170,7 +1178,7 @@ def perform(argv, report):
             except processes.TimedOut as error:
                 # The lane's timeout is its backstop, so a run a busy host slowed past it is
                 # unmeasured (guides/measurement.md). Its log is incomplete and counts nothing.
-                print(f"eng: unmeasured: {error}", file=sys.stderr)
+                print(f"queuekeeper: unmeasured: {error}", file=sys.stderr)
                 report.explain(error, complete=False)
                 return lane_results.UNMEASURED
             # A group's lanes were each judged by their own logs.
@@ -1202,11 +1210,11 @@ def perform(argv, report):
             return status
         return 0
     except (remote.Lost, extensions.Unavailable) as error:
-        print(f"eng: {error}", file=sys.stderr)
+        print(f"queuekeeper: {error}", file=sys.stderr)
         report.explain(error)
         return lane_results.UNMEASURED
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
-        print(f"eng: {error}", file=sys.stderr)
+        print(f"queuekeeper: {error}", file=sys.stderr)
         report.explain(error)
         return 2
     finally:

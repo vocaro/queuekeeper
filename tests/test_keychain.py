@@ -303,7 +303,7 @@ class RecoverTests(unittest.TestCase):
                       shlex.join(["python3", "scripts/qk", "remote", "admit", "--", "python3", "scripts/qk", "keychain",
                                   "check", "--keychain", LOGIN, "--identity", NAME]),
                       # An unlock in a Terminal does not reach a run, so it says what does.
-                      "never an eng remote run", "`python3 scripts/qk keychain keep-unlocked`"]:
+                      "never an queuekeeper remote run", "`python3 scripts/qk keychain keep-unlocked`"]:
             self.assertIn(words, said)
 
     def test_on_the_second_mac_it_gives_the_local_command_and_never_the_alias(self):
@@ -315,7 +315,7 @@ class RecoverTests(unittest.TestCase):
         self.assertIn(f"This Mac: {SECOND}, in a session of kind ssh", said)
         self.assertNotIn("ssh -t", said)
         self.assertNotIn("build-host", said)
-        self.assertIn(f"from {WORKSTATION}, as eng remote runs work on {SECOND}", said)
+        self.assertIn(f"from {WORKSTATION}, as queuekeeper remote runs work on {SECOND}", said)
 
     def test_a_wrong_host_or_an_alias_this_mac_does_not_define_is_refused_before_anything_is_asked(self):
         for here, seen, target in [(SECOND, view("build-host", "build-host", True, WORKSTATION), None),
@@ -480,7 +480,7 @@ class Unlocks:
 
 
 class KeepUnlockedTests(unittest.TestCase):
-    """The second Mac's login keychain, which the owner keeps unlocked for eng remote's runs: each run
+    """The second Mac's login keychain, which the owner keeps unlocked for queuekeeper remote's runs: each run
     unlocks it in its own session with the password keep-unlocked kept."""
 
     def setUp(self):
@@ -646,7 +646,7 @@ class KeepUnlockedTests(unittest.TestCase):
         present = {"mac": SECOND, "home": HOME, "path": LOGIN, "exists": True, "keychains": [LOGIN]}
         status, said, commands, requests = self.from_mac(SECOND, SECOND_VIEW, local=present)
         self.assertEqual((status, commands, requests), (0, [], [{"root": remote.ROOT, "mac": SECOND}]), said)
-        self.assertIn(f"from {WORKSTATION}, as eng remote runs work on {SECOND}", said)
+        self.assertIn(f"from {WORKSTATION}, as queuekeeper remote runs work on {SECOND}", said)
 
     def test_a_wrong_host_or_an_alias_this_mac_does_not_define_is_refused_before_anything_is_asked(self):
         # The last: an alias that reaches the workstation itself, which is no second Mac.

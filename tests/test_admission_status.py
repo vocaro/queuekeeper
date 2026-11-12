@@ -1,4 +1,4 @@
-"""`eng admissions now`: who holds and who waits for admission on each Mac, read without changing anything (#342)."""
+"""`queuekeeper admissions now`: who holds and who waits for admission on each Mac, read without changing anything (#342)."""
 import contextlib
 from datetime import datetime, timezone
 import fcntl
@@ -107,7 +107,7 @@ class HoldersTests(Namespace):
         # An entry no slot file names, as an older toolkit's may be, holds a slot no reading can place.
         self.assertIsNone(found["Old"]["slots"])
         self.assertEqual(reading["unattributed"], [2])
-        self.assertIn("eng admissions recover", "\n".join(resources.now_lines({"hosts": [{"name": "this Mac", **reading}]})))
+        self.assertIn("qk admissions recover", "\n".join(resources.now_lines({"hosts": [{"name": "this Mac", **reading}]})))
 
     def test_an_unreadable_guard_or_queue_or_process_check_is_partial_never_idle(self):
         self.directory.mkdir(parents=True)
@@ -275,7 +275,7 @@ class WaiterTests(Namespace):
                 with resources.Admission("Theta", timeout=0): pass
             for fd in held: os.close(fd)
             with resources.Admission("Theta", timeout=0): pass
-        self.assertEqual(said.getvalue().count("was not recorded for `eng admissions now`"), 1)
+        self.assertEqual(said.getvalue().count("was not recorded for `queuekeeper admissions now`"), 1)
 
 
 class OriginTests(Namespace):

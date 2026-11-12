@@ -9,10 +9,10 @@ Nothing documented sets a device's Focus from the Mac. Xcode 27's `devicectl` (6
 biometrics, StandBy and VoiceOver, and reads no Focus; its `notification` commands post Darwin notifications, not
 user ones. The notification-settings configuration profile payload needs a supervised device, which the owner's
 are not. So the owner keeps two shortcuts on each device, made once by hand (guides/device-testing.md,
-Notifications during a run), and eng runs them by opening Shortcuts with a `shortcuts://run-shortcut` URL through
+Notifications during a run), and queuekeeper runs them by opening Shortcuts with a `shortcuts://run-shortcut` URL through
 `devicectl device process launch --payload-url`: SILENCE turns Do Not Disturb on when no Focus is on and leaves a
 marker, and RESTORE turns it off only when that marker is there, so it puts back what was there before and does
-nothing twice. The Mac reads no device's Focus, so eng never confirms the silencing: it records that it asked and
+nothing twice. The Mac reads no device's Focus, so queuekeeper never confirms the silencing: it records that it asked and
 how devicectl answered. devices.py records each step in the reservation entry and runs RESTORE at release or at
 attended recovery.
 
@@ -23,7 +23,7 @@ be how the device is reached, into a temporary directory only this account can r
 lines are scanned for SpringBoard presenting a banner and deleted unread otherwise; nothing from them is printed
 or recorded except how many presentations there were and the device's clock at the first, because what they
 say is the owner's. A run that saw one is unmeasured, and devices.py runs it once more. A run sent to the second
-Mac with `eng remote --device` is watched the same way from the Mac that sends it, which holds its reservation
+Mac with `queuekeeper remote --device` is watched the same way from the Mac that sends it, which holds its reservation
 (remote.Lease, vocaro-engineering#192), every leased device at once (Together).
 """
 import os
@@ -82,10 +82,10 @@ def trigger(udid, name):
 
 
 def ask(key):
-    """What a session asks the owner, in the message that agrees the window, when eng cannot silence key."""
+    """What a session asks the owner, in the message that agrees the window, when queuekeeper cannot silence key."""
     return (f"ask the owner, in the same message as the window, to turn on Do Not Disturb on the {key} for the run "
             f"and to say when it is on; record it with `devices notifications by-owner {key}`. Making the "
-            f"{SILENCE!r} and {RESTORE!r} shortcuts on the {key} once lets eng do it ({GUIDE})")
+            f"{SILENCE!r} and {RESTORE!r} shortcuts on the {key} once lets queuekeeper do it ({GUIDE})")
 
 
 # The relay of a device's log, from libimobiledevice, which guides/device-testing.md already uses to read the

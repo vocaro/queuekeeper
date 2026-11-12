@@ -69,7 +69,7 @@ class DetectionTests(Project):
         self.assertIn("tool.py:3: British spelling 'LABELLED' -> labeled", lines)
         self.assertIn("doc/guide.md:3: British spelling 'licence' -> license", lines)
         self.assertTrue(lines[-1].startswith(
-            "eng spelling: FAIL — 4 British spelling(s) in 4 text file(s) and 6 file name(s)"))
+            "queuekeeper spelling: FAIL — 4 British spelling(s) in 4 text file(s) and 6 file name(s)"))
 
     def test_american_text_and_names_others_chose_pass(self):
         self.write({"Sources/Unit.swift": "// Unity's MonoBehaviour; Apple's Task.isCancelled\n"
@@ -82,7 +82,7 @@ class DetectionTests(Project):
                     "logo.png": b"\x89PNG\r\n\x1a\n\0colour"})
         status, lines = self.check()
         self.assertEqual(status, 0, lines)
-        self.assertTrue(lines[-1].startswith("eng spelling: PASS — 5 text file(s) and 7 file name(s)"))
+        self.assertTrue(lines[-1].startswith("queuekeeper spelling: PASS — 5 text file(s) and 7 file name(s)"))
 
     def test_file_and_directory_names_each_fail(self):
         self.write({"Docs/colour-chart.png": b"\x89PNG\r\n\x1a\n\0",
@@ -97,7 +97,7 @@ class DetectionTests(Project):
             "centre/: British spelling in file name 'centre' -> center",
             "fixtures/grey_ramp.json: British spelling in file name 'grey' -> gray"])
         self.assertTrue(lines[-1].startswith(
-            "eng spelling: FAIL — 4 British spelling(s) in 5 text file(s) and 10 file name(s)"))
+            "queuekeeper spelling: FAIL — 4 British spelling(s) in 5 text file(s) and 10 file name(s)"))
 
     def test_names_others_chose_pass(self):
         self.write({"LICENCE": "MIT\n", "Unity/MonoBehaviour.cs": "class Tool {}\n",
@@ -282,7 +282,7 @@ class ControlTests(Project):
         with patch.object(spelling, "american_for", return_value=None):
             status, lines = self.check()
         self.assertEqual(status, 1)
-        self.assertIn("eng spelling: CONTROL FAILED — 'colour' was not flagged", lines)
+        self.assertIn("queuekeeper spelling: CONTROL FAILED — 'colour' was not flagged", lines)
         self.assertNotIn("a.md", "\n".join(lines))
 
     def test_a_detector_that_flags_american_words_fails(self):
@@ -299,7 +299,7 @@ class ControlTests(Project):
             with broken:
                 status, lines = self.check()
             self.assertEqual(status, 1)
-            self.assertIn("eng spelling: CONTROL FAILED — file name 'centre/README.md' was not flagged",
+            self.assertIn("queuekeeper spelling: CONTROL FAILED — file name 'centre/README.md' was not flagged",
                           lines)
             self.assertNotIn("colour.md", "\n".join(lines))
             self.assertNotIn("CONTROL FAILED — '", "\n".join(lines))   # the word controls held

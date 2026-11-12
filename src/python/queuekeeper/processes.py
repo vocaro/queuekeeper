@@ -31,13 +31,13 @@ XCODE_PROGRAM = re.compile(r"[^\s'\"]*/Xcode[^/\s'\"]*\.app/Contents/(?!Develope
 FOREGROUND_KILL_AFTER = 120
 # Seconds a stopped command's processes have after SIGKILL before the run is uncertain.
 KILL_WAIT = 5
-# Seconds eng lets a lane or an `eng admit` command run that declares no limit of its own, so that no run
+# Seconds queuekeeper lets a lane or an `queuekeeper admit` command run that declares no limit of its own, so that no run
 # waits forever on a hang: BreezEPUB's tests waited on a thumbnail request from 08:13 on 2026-10-31 with
 # none. More than twice the longest admission the log held from 2026-10-27 to 2026-10-31, 53 min of
 # Pagepour's tests; a lane that runs longer says so with its own timeout.
 DEFAULT_LIMIT = 7200
 # Seconds beyond KILL_AFTER that SIGKILL waits while a live admission owner is among the processes,
-# as a nested eng admit in a self lane's script is: it stops its own command, with a KILL_AFTER
+# as a nested queuekeeper admit in a self lane's script is: it stops its own command, with a KILL_AFTER
 # and KILL_WAIT of its own, then settles its guard entry, which SIGKILL would strand. It also
 # bounds an owner that never settles.
 SETTLE_WAIT = 30
@@ -177,7 +177,7 @@ def held_locks(environment):
     entry's owner.
 
     A token can reach a process without its descriptors, as a plain subprocess call starts its
-    child, and its numbers then name nothing or another file; `eng unittest` started each module's
+    child, and its numbers then name nothing or another file; `queuekeeper unittest` started each module's
     process so until it passed these on too. Passed on, a closed one stopped a lane from starting
     with EBADF, and an open one gave the command that file (#70). The command keeps the token, so a
     nested admission in it refuses the token rather than taking a slot.
@@ -225,7 +225,7 @@ class Stalled(TimedOut):
 
 def default_background_signals():
     """Put back the default for each of BACKGROUND_IGNORED this process ignores, so that the commands it starts do
-    not inherit how it was launched: a merge-queue worker that `eng land &` started passes SIG_IGN for SIGINT to every
+    not inherit how it was launched: a merge-queue worker that `queuekeeper land &` started passes SIG_IGN for SIGINT to every
     gate lane, and a test that sends its helper SIGINT then fails. Only from the main thread, as signal requires;
     a handler someone installed stays."""
     if threading.current_thread() is not threading.main_thread(): return
@@ -327,7 +327,7 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
     Inside an admission this process holds, the admission's process record gets the command before
     it starts, then its root, each process and each process group or session at the first sample
     that sees it, when each group or session is found without the command or used again, and a
-    confirmed end, so that `eng admissions recover` can run this census once this process has gone.
+    confirmed end, so that `queuekeeper admissions recover` can run this census once this process has gone.
     """
     if requested() is not None:
         raise Interrupted(requested(), "before its command started")

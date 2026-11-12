@@ -4,14 +4,14 @@ An app that quits unexpectedly raises a "quit unexpectedly" alert in UserNotific
 screen over the windows a foreground UI run clicks, so its clicks reach the alert and the run fails, as EPUBLib's
 toolbar runs did on the second Mac on 2026-11-02 (macOS 27.2 26B123). The owner wants these alerts on between
 runs, so a foreground run turns them off for itself alone: it keeps com.apple.CrashReporter's DialogType from
-before the run in a record, sets it to none, and puts that exact value back however the run ends. A run whose eng
-died keeps its record, and the next eng command on that Mac puts the value back (recover). Before the run takes
-the screen and while it runs, eng dismisses any crash-report alert with Ignore or OK, never Reopen or Report, and
+before the run in a record, sets it to none, and puts that exact value back however the run ends. A run whose queuekeeper
+died keeps its record, and the next queuekeeper command on that Mac puts the value back (recover). Before the run takes
+the screen and while it runs, queuekeeper dismisses any crash-report alert with Ignore or OK, never Reopen or Report, and
 leaves every other system alert alone: a password, permission or keychain prompt is the owner's. One it cannot
 clear before the run leaves the run unmeasured with nothing run; one met during a run that then fails leaves that
 run unmeasured too, never failed. One it cleared during a run that then fails leaves it unmeasured when the alert
 stood longer than one look and was for a process other than the app under test; a crash of the app under test,
-or of a process eng cannot name, stays a failure (owner's decision, 2026-11-07, vocaro-engineering#226). The
+or of a process queuekeeper cannot name, stays a failure (owner's decision, 2026-11-07, vocaro-engineering#226). The
 receipt keeps each cleared alert's process, start and how long it stood (guides/second-mac-foreground.md,
 Crash-report alerts).
 """
@@ -119,7 +119,7 @@ end tell"""
 
 
 class Blocked(Exception):
-    """System alerts that eng cannot clear are over the screen, so the run cannot be measured."""
+    """System alerts that queuekeeper cannot clear are over the screen, so the run cannot be measured."""
 
 
 def describe(alert):
@@ -134,7 +134,7 @@ def owners(alert):
 
 
 def dismissal(alert):
-    """The button that dismisses alert, when it is a crash report eng may dismiss, or None."""
+    """The button that dismisses alert, when it is a crash report queuekeeper may dismiss, or None."""
     if owners(alert) or alert["app"] not in ("UserNotificationCenter", "Problem Reporter", "CrashReporter"):
         return None
     if not any(CRASH.search(text) for text in alert["texts"]): return None
@@ -158,7 +158,7 @@ def clear(said, windows=None, pressed=None):
         if not press(target, button):
             missed.append(target)
             continue
-        said(f"eng: dismissed a crash-report alert with {button}: {describe(target)}")
+        said(f"queuekeeper: dismissed a crash-report alert with {button}: {describe(target)}")
         if pressed is not None: pressed(target)
         cleared.append(target)
     return cleared, windows()
@@ -182,12 +182,12 @@ def stamp(when):
 
 
 def stopping(left):
-    """Why left, the system alerts eng could not clear, stop a run."""
+    """Why left, the system alerts queuekeeper could not clear, stop a run."""
     named = "; ".join(describe(alert) for alert in left)
     if any(owners(alert) for alert in left):
         return (f"a password, permission or keychain prompt is over the screen, which is the owner's to answer and "
-                f"eng never touches: {named}")
-    return f"a system alert eng cannot dismiss is over the screen: {named}"
+                f"queuekeeper never touches: {named}")
+    return f"a system alert queuekeeper cannot dismiss is over the screen: {named}"
 
 
 def record_path():
@@ -201,30 +201,30 @@ def restore(kept, said):
     change(before)
     if offload_host.crash_dialog(run) == before:
         record_path().unlink(missing_ok=True)
-        said(f"eng: put back crash-report dialogs: {DOMAIN} {KEY} is {before or 'unset'} again")
+        said(f"queuekeeper: put back crash-report dialogs: {DOMAIN} {KEY} is {before or 'unset'} again")
         return True
-    said(f"eng: could not put back {DOMAIN} {KEY} {before or 'unset'}; the next eng command on this Mac tries again "
+    said(f"queuekeeper: could not put back {DOMAIN} {KEY} {before or 'unset'}; the next queuekeeper command on this Mac tries again "
          f"from {record_path()}")
     return False
 
 
 def recover(said=None):
-    """At eng's start: put back the DialogType value a foreground run kept whose eng no longer runs. A run that
+    """At queuekeeper's start: put back the DialogType value a foreground run kept whose queuekeeper no longer runs. A run that
     still runs keeps its own."""
     path = record_path()
     if not path.exists(): return
     said = said or (lambda text: print(text, file=sys.stderr, flush=True))
     try: kept = json.loads(path.read_text())
     except (OSError, ValueError) as error:
-        said(f"eng: {path} cannot be read, so crash-report dialogs may still be off: {error}")
+        said(f"queuekeeper: {path} cannot be read, so crash-report dialogs may still be off: {error}")
         return
     if kept.get("start") is not None and resources.process_start(kept.get("pid")) == kept["start"]: return
-    said(f"eng: {kept.get('owner', 'a foreground run')}, which no longer runs, left crash-report dialogs off")
+    said(f"queuekeeper: {kept.get('owner', 'a foreground run')}, which no longer runs, left crash-report dialogs off")
     restore(kept, said)
 
 
 class Run:
-    """What a guarded run met: crash-report alerts cleared, each with when eng first saw it and when its press
+    """What a guarded run met: crash-report alerts cleared, each with when queuekeeper first saw it and when its press
     returned, and system alerts left over the screen. apps names the app under test, as a crash alert names its
     process; running is set once the run has started, so that an alert cleared before it is told apart. A look
     that cannot read the alerts is followed by the next, WATCH s later, as any other (#225); looks counts the
@@ -270,10 +270,10 @@ class Run:
             self.looks["failed" if left is None else "read"] += 1
             # Said once as looks start failing and once as one reads them again, however many fail between.
             if left is None and not self.failing:
-                self.said(f"eng: the screen's system alerts cannot be read (System Events needs accessibility, or did "
-                          f"not answer), so none is cleared now; eng looks again every {self.watch:g} s")
+                self.said(f"queuekeeper: the screen's system alerts cannot be read (System Events needs accessibility, or did "
+                          f"not answer), so none is cleared now; queuekeeper looks again every {self.watch:g} s")
             elif left is not None and self.failing:
-                self.said("eng: the screen's system alerts can be read again")
+                self.said("queuekeeper: the screen's system alerts can be read again")
             self.failing = left is None
             for alert in cleared:
                 self.cleared.append({"alert": alert, "since": self.seen.pop(key(alert), started),
@@ -284,7 +284,7 @@ class Run:
                 self.seen = {name: since for name, since in self.seen.items() if name in standing}
             for alert in left or []:
                 if alert not in self.left:
-                    self.said(f"eng: a system alert stays over the screen: {describe(alert)}")
+                    self.said(f"queuekeeper: a system alert stays over the screen: {describe(alert)}")
                     self.left.append(alert)
         return left
 
@@ -292,17 +292,17 @@ class Run:
         return process is not None and any(process.casefold() == name.casefold() for name in self.apps)
 
     def verdict(self, entry):
-        """(excuses, why): whether a crash-report alert eng cleared during a failed run makes the run unmeasured,
+        """(excuses, why): whether a crash-report alert queuekeeper cleared during a failed run makes the run unmeasured,
         and why or why not. It does when the alert stood longer than one look and was for a process other than
-        the app under test (owner's decision, 2026-11-07, #226); one whose process eng cannot name, or a run that
+        the app under test (owner's decision, 2026-11-07, #226); one whose process queuekeeper cannot name, or a run that
         names no app under test, counts as the app under test's."""
         process, stood = crashed(entry["alert"]), entry["at"] - entry["since"]
         standing = f"stood {stood:.1f} s from {stamp(entry['since'])}"
         if process is None:
-            return False, f"names no process eng can read, so eng counts it as the app under test's; it {standing}"
+            return False, f"names no process queuekeeper can read, so queuekeeper counts it as the app under test's; it {standing}"
         if not self.apps:
-            return False, (f"was for {process}, and the run names no app under test (a lane's \"apps\", or eng admit "
-                           f"--app), so eng counts it as the app under test's; it {standing}")
+            return False, (f"was for {process}, and the run names no app under test (a lane's \"apps\", or queuekeeper admit "
+                           f"--app), so queuekeeper counts it as the app under test's; it {standing}")
         if self.is_app_under_test(process):
             return False, f"was for {process}, the app under test, whose crash is the run's failure; it {standing}"
         if stood <= ONE_LOOK:
@@ -311,8 +311,8 @@ class Run:
                       f"than one look ({ONE_LOOK} s)")
 
     def judged(self, status):
-        """status, or UNMEASURED for a run that did not pass while a system alert eng could not clear was over
-        the screen, at a look during the run or one as it ended, or after eng cleared during it a crash-report
+        """status, or UNMEASURED for a run that did not pass while a system alert queuekeeper could not clear was over
+        the screen, at a look during the run or one as it ended, or after queuekeeper cleared during it a crash-report
         alert for a process other than the app under test that stood longer than one look: its clicks may have
         gone to the alert. A crash report cleared during the run for the app under test preserves the failure
         even when another alert could make the run unmeasured."""
@@ -321,22 +321,22 @@ class Run:
         cleared_during_run = [entry for entry in self.cleared if entry["during"]]
         app_crashed = any(self.is_app_under_test(crashed(entry["alert"])) for entry in cleared_during_run)
         if self.left and not app_crashed:
-            print(f"eng: unmeasured: the run ended with status {status} while {stopping(self.left)}", file=sys.stderr,
+            print(f"queuekeeper: unmeasured: the run ended with status {status} while {stopping(self.left)}", file=sys.stderr,
                   flush=True)
             return lane_results.UNMEASURED
         judged = [(entry, *self.verdict(entry)) for entry in cleared_during_run]
         excusing = [(entry, why) for entry, excuses, why in judged if excuses and not app_crashed]
         for entry, why in excusing:
-            print(f"eng: unmeasured: the run ended with status {status} after eng cleared a crash-report alert during "
+            print(f"queuekeeper: unmeasured: the run ended with status {status} after queuekeeper cleared a crash-report alert during "
                   f"it that {why}, so its clicks may have gone to the alert: {describe(entry['alert'])}",
                   file=sys.stderr, flush=True)
         if excusing: return lane_results.UNMEASURED
         for entry, _excuses, why in judged:
-            print(f"eng: the run's status {status} stands: the crash-report alert eng cleared during it {why}: "
+            print(f"queuekeeper: the run's status {status} stands: the crash-report alert queuekeeper cleared during it {why}: "
                   f"{describe(entry['alert'])}", file=sys.stderr, flush=True)
         if not self.looks["read"] and not self.looks["glanced"]:
-            print(f"eng: the run's status {status} stands, though no look during it could read the screen's system "
-                  "alerts, so eng cannot say whether one took its clicks", file=sys.stderr, flush=True)
+            print(f"queuekeeper: the run's status {status} stands, though no look during it could read the screen's system "
+                  "alerts, so queuekeeper cannot say whether one took its clicks", file=sys.stderr, flush=True)
         return status
 
     def summary(self):
@@ -354,7 +354,7 @@ def guarded(purpose, *, said=None, receipt=None, windows=None, watch=None, apps=
 
     It raises Blocked, with nothing run, when a system alert it cannot clear is over the screen before the
     run. The block's Run judges the run's status. However the block ends, DialogType's value from before it is
-    put back, and the record that keeps it stays only when that fails, for the next eng command."""
+    put back, and the record that keeps it stays only when that fails, for the next queuekeeper command."""
     said = said or (lambda text: print(text, file=sys.stderr, flush=True))
     watch = WATCH if watch is None else watch
     recover(said)
@@ -362,7 +362,7 @@ def guarded(purpose, *, said=None, receipt=None, windows=None, watch=None, apps=
     path = record_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     # The record first, so that a run that dies after the change leaves what puts it back.
-    kept = {"before": before, "owner": f"eng {os.getpid()} for {purpose}", "pid": os.getpid(),
+    kept = {"before": before, "owner": f"queuekeeper {os.getpid()} for {purpose}", "pid": os.getpid(),
             "start": resources.process_start(os.getpid()), "at": datetime.now(timezone.utc).isoformat()}
     path.write_text(json.dumps(kept))
     state = Run(said, windows, apps, watch)
@@ -373,8 +373,8 @@ def guarded(purpose, *, said=None, receipt=None, windows=None, watch=None, apps=
     watcher = None
     try:
         if before != OFF:
-            if change(OFF): said(f"eng: crash-report dialogs off for the run: {DOMAIN} {KEY} was {before or 'unset'}")
-            else: said(f"eng: could not turn crash-report dialogs off ({DOMAIN} {KEY}); alerts are cleared instead")
+            if change(OFF): said(f"queuekeeper: crash-report dialogs off for the run: {DOMAIN} {KEY} was {before or 'unset'}")
+            else: said(f"queuekeeper: could not turn crash-report dialogs off ({DOMAIN} {KEY}); alerts are cleared instead")
         left = state.look(full=True)
         if left: raise Blocked(stopping(left))
         # What a look clears from here on, it clears during the run.
@@ -405,10 +405,10 @@ def main(argv=None):
     said = lambda text: print(text, file=sys.stderr, flush=True)
     _cleared, left = clear(said)
     if left is None:
-        said("eng: the screen's system alerts cannot be read (System Events needs accessibility)")
+        said("queuekeeper: the screen's system alerts cannot be read (System Events needs accessibility)")
         return 1
     if left:
-        said(f"eng: unmeasured: {stopping(left)}")
+        said(f"queuekeeper: unmeasured: {stopping(left)}")
         return lane_results.UNMEASURED
     return 0
 

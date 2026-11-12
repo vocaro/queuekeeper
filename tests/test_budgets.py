@@ -1,5 +1,5 @@
 """The warnings that keep the split between the landing and the release gate (vocaro-engineering#135): the gate
-over its time budget, main past its release commit limit, and eng doctor's gate without a budget or with a device."""
+over its time budget, main past its release commit limit, and queuekeeper doctor's gate without a budget or with a device."""
 import argparse
 import contextlib
 import io
@@ -191,7 +191,7 @@ class DoctorChecks(unittest.TestCase):
             with patch.dict(os.environ, {"VOCARO_OFFLOAD_HOST": "none"}), \
                     patch.object(cli.shutil, "which", return_value="/usr/bin/true"), \
                     patch.object(cli, "source_identity", return_value={}), \
-                    patch.object(cli.skills, "warnings", return_value=[]), contextlib.redirect_stdout(io.StringIO()) as output:
+                    contextlib.redirect_stdout(io.StringIO()) as output:
                 self.assertEqual(cli.main(["--project", directory, "doctor"]), 0)
             warnings = json.loads(output.getvalue())["warnings"]
             self.assertTrue(any("gate has no budgetMinutes" in warning for warning in warnings), warnings)
@@ -199,7 +199,7 @@ class DoctorChecks(unittest.TestCase):
 
 
 class Landing(Fixture):
-    """The worker records each landed entry's gate run, and eng land warns after its result."""
+    """The worker records each landed entry's gate run, and queuekeeper land warns after its result."""
 
     def setUp(self):
         super().setUp()

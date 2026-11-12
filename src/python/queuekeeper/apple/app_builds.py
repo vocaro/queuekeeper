@@ -1,8 +1,8 @@
-"""The last good build of a project's app, kept on this Mac and run from there: `eng app run|keep|status`.
+"""The last good build of a project's app, kept on this Mac and run from there: `queuekeeper app run|keep|status`.
 
 A gate builds the app, but as a test build in the queue checkout's DerivedData, which the next batch replaces,
 sometimes on the second Mac, and never for a physical device. So the merge queue, once it has pushed a gated
-batch, starts `eng app keep --after-landing` in the background (merge_queue.Worker.keep_app), which builds the
+batch, starts `queuekeeper app keep --after-landing` in the background (merge_queue.Worker.keep_app), which builds the
 pushed commit as an ordinary build and keeps the product here. "Good" is a commit that landed through the gate
 and then built: a build that fails keeps nothing, and the build kept before it stays the one that runs.
 
@@ -28,9 +28,9 @@ session and the queue share one store, outside every checkout and outside Xcode'
     apps/NAME/logs/            each build's log
     apps/NAME/lock             held by a keep while it builds, so that one build at a time uses source and derived
 
-A build runs through `eng admit --here`, on this Mac, since its product is this Mac's. `eng app run` opens the newest kept Mac
+A build runs through `queuekeeper admit --here`, on this Mac, since its product is this Mac's. `queuekeeper app run` opens the newest kept Mac
 build, or with --iphone or --ipad installs the newest kept device build on that paired device and launches it,
-under the device's reservation as `eng device-pass` takes one: in turn, first come first served, or under a
+under the device's reservation as `queuekeeper device-pass` takes one: in turn, first come first served, or under a
 reservation the session holds. It checks no approval: a session runs it on the owner's iPhone only when he has
 agreed, which is between the session and the owner (owner's decision, 2026-11-06). Before
 it runs one, it builds origin/main when the newest kept build is older, unless --no-build, and runs the newest
@@ -64,7 +64,7 @@ KEPT = 2
 MAIN = "refs/remotes/origin/main"
 FETCH = ["fetch", "--no-tags", "origin", f"refs/heads/main:{MAIN}"]
 # What locks the store's source worktree, so that no sweep removes it (disk.worktree keeps a locked worktree).
-SOURCE_REASON = "eng app's source checkout for kept app builds (app_builds.py)"
+SOURCE_REASON = "queuekeeper app's source checkout for kept app builds (app_builds.py)"
 DESTINATIONS = {"mac": "generic/platform=macOS", "ios": "generic/platform=iOS"}
 # The folder under Build/Products that holds each platform's product, after the configuration's name.
 PRODUCT_SUFFIX = {"mac": "", "ios": "-iphoneos"}
@@ -81,18 +81,18 @@ INSTALL_LIMIT = 600
 LAUNCH_LIMIT = 120
 # Minutes a device reservation for an install and launch lasts.
 DEVICE_MINUTES = 20
-# Seconds `eng app run` waits for a keep under way before it gives up on a fresh build.
+# Seconds `queuekeeper app run` waits for a keep under way before it gives up on a fresh build.
 LOCK_WAIT = 3 * 3600
 # Seconds an app asked to quit has to end.
 QUIT_WAIT = 30
 
 
 class Failed(RuntimeError):
-    """What `eng app` could not do, said to the person who ran it."""
+    """What `queuekeeper app` could not do, said to the person who ran it."""
 
 
 def say(text):
-    print(f"eng app: {text}", file=sys.stderr, flush=True)
+    print(f"queuekeeper app: {text}", file=sys.stderr, flush=True)
 
 
 def store_root():
@@ -214,7 +214,7 @@ def ensure_source(root, store):
     """The store's source worktree, made from root's repository the first time and locked."""
     if (store.source / ".git").exists(): return store.source
     if store.source.exists():
-        raise Failed(f"{store.source} exists but is no worktree; move it aside to let eng app make its own there")
+        raise Failed(f"{store.source} exists but is no worktree; move it aside to let queuekeeper app make its own there")
     store.source.parent.mkdir(parents=True, exist_ok=True)
     git(repository(root), "worktree", "add", "--detach", "--lock", "--reason", SOURCE_REASON, str(store.source), "HEAD")
     return store.source
@@ -319,7 +319,7 @@ def info(path):
 
 def build(root, store, config, platform, commit, *, admit=None):
     """Build platform's app at commit in the store's source worktree and keep it; the kept build. Run with the
-    store's lock held. admit runs the build under admission: by default the source checkout's `eng admit`."""
+    store's lock held. admit runs the build under admission: by default the source checkout's `queuekeeper admit`."""
     source = ensure_source(root, store)
     checkout(source, commit)
     config = load(source)
@@ -343,7 +343,7 @@ def build(root, store, config, platform, commit, *, admit=None):
     derived = store.derived(platform)
     command = build_command(app, platform, derived)
     say(f"building {platform} at {commit[:12]}; log {log}")
-    # --here: the build's product is this Mac's, kept in the store and run here (eng admit offers a command to the
+    # --here: the build's product is this Mac's, kept in the store and run here (queuekeeper admit offers a command to the
     # second Mac first otherwise).
     admit = admit or (lambda words: [sys.executable, str(source / "scripts/qk"), "admit", "--here", "--time-limit",
                                      str(BUILD_LIMIT), "--", *words])
@@ -408,7 +408,7 @@ def current(root, config, platform, *, store, build_missing=True, admit=None, wa
     with store.locked(wait, waiting=lambda: say("waiting for the keep under way")):
         newest = next(iter(store.kept(platform)), None)
         if not build_missing:
-            if newest is None: raise Failed(f"no {platform} build is kept yet: run `eng app keep`")
+            if newest is None: raise Failed(f"no {platform} build is kept yet: run `queuekeeper app keep`")
             return newest
         source = ensure_source(root, store)
         fetch(source)
@@ -449,7 +449,7 @@ def open_on_mac(kept, *, replace=False, run=subprocess.run, sleep=time.sleep):
               if os.path.realpath(path) != os.path.realpath(app)}
     if others and not replace:
         raise Failed(f"{bundle} already runs from " + ", ".join(sorted(set(others.values()))) + ", which may be a "
-                     "gate's or a session's test run: quit it, or give --replace to have eng app quit it")
+                     "gate's or a session's test run: quit it, or give --replace to have queuekeeper app quit it")
     if others:
         say(f"quitting {bundle}, which runs from {', '.join(sorted(set(others.values())))}")
         run(["osascript", "-e", f'tell application id "{bundle}" to quit'], capture_output=True, text=True)
@@ -500,7 +500,7 @@ def install_and_launch(udid, app, bundle, run=subprocess.run, sleep=time.sleep):
 
 def run_on_device(kept, key, *, owner, wait=device_pass.WAIT, record=None, pass_run=device_pass.run):
     """Install and launch the kept device build on key's device under its reservation; the exit status."""
-    parts, code = pass_run([key], device_command(kept), owner=owner, purpose=f"eng app run of {Path(kept['app']).name}",
+    parts, code = pass_run([key], device_command(kept), owner=owner, purpose=f"queuekeeper app run of {Path(kept['app']).name}",
                            minutes=DEVICE_MINUTES, wait=wait, launched=[kept["bundle"]],
                            apps_quit="left running on the device for the owner to use", record=record,
                            said=say, results=None)
@@ -511,11 +511,11 @@ def run_on_device(kept, key, *, owner, wait=device_pass.WAIT, record=None, pass_
 
 
 def owner_of(given):
-    return given or devices.default_owner() or f"eng app ({getpass.getuser()})"
+    return given or devices.default_owner() or f"queuekeeper app ({getpass.getuser()})"
 
 
 def describe(store, config, root):
-    """Each platform's kept builds and how far each is behind origin/main, for `eng app status`."""
+    """Each platform's kept builds and how far each is behind origin/main, for `queuekeeper app status`."""
     lines = [f"{config['name']}: {store.path}" + (" (a keep is building now)" if store.busy() else "")]
     source = store.source if (store.source / ".git").exists() else root
     for platform in platforms(config):
@@ -531,7 +531,7 @@ def describe(store, config, root):
 
 
 def spawn_keep(checkout, commit, log, env=None):
-    """Start `eng app keep --after-landing --commit COMMIT` from checkout in the background, writing to log, for
+    """Start `queuekeeper app keep --after-landing --commit COMMIT` from checkout in the background, writing to log, for
     the merge queue after a push; it outlives the worker's round and holds none of its locks."""
     log = Path(log)
     log.parent.mkdir(parents=True, exist_ok=True)
@@ -584,7 +584,7 @@ def behind_main(root):
     except (OSError, ValueError, subprocess.TimeoutExpired):
         return ""
     return (f" at this checkout, which is {behind} commit(s) behind origin/main, whose engineering.json does: "
-            f"update the checkout, or run eng app from a worktree at origin/main")
+            f"update the checkout, or run queuekeeper app from a worktree at origin/main")
 
 
 def execute(root, args, config=None):
@@ -627,7 +627,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(prog="python3 -m queuekeeper.apple.app_builds")
     add_arguments(parser)
     args = parser.parse_args(argv)
-    if args.operation != "device": parser.error("run `eng app` from the project instead")
+    if args.operation != "device": parser.error("run `queuekeeper app` from the project instead")
     return execute(None, args)
 
 

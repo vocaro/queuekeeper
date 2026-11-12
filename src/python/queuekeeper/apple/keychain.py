@@ -1,6 +1,6 @@
 """Keychains on the right Mac: recovery, the second Mac's kept unlocked, and a check of key use where it runs.
 
-`eng keychain recover` is for the owner, and unlocks nothing. It says which Mac it runs on and
+`queuekeeper keychain recover` is for the owner, and unlocks nothing. It says which Mac it runs on and
 which Mac's keychain the work needs (host_context.locate), checks that the exact keychain file is
 there, and prints commands to copy: each runs only on the Mac it names, as `scutil --get
 LocalHostName` reads it, and otherwise says where it is and stops. The command that goes through
@@ -8,14 +8,14 @@ an SSH alias is printed only on the Mac whose ~/.ssh/config defines the alias, a
 itself only the local command is. `security unlock-keychain` then asks for the password in the
 owner's own Terminal, and nothing of the toolkit reads it, stores it or passes it on.
 
-`eng keychain keep-unlocked` is the owner's too, once, for the second Mac, whose keychain the owner
+`queuekeeper keychain keep-unlocked` is the owner's too, once, for the second Mac, whose keychain the owner
 keeps unlocked for its automation (the owner's decision, 2026-10-30). An unlock reaches only the
-session that made it, and each eng remote run is an SSH login of its own, so every run unlocks the
+session that made it, and each queuekeeper remote run is an SSH login of its own, so every run unlocks the
 login keychain itself (offload_host.unlock_for_run), with the password this command asks for once, at
 the second Mac's own prompt, and keeps there readable only by its account.
 
-`eng keychain check` runs where the automation that uses the key runs, such as on the second Mac
-through `eng remote admit`. It records the session it ran in, the keychain's status, whether the
+`queuekeeper keychain check` runs where the automation that uses the key runs, such as on the second Mac
+through `queuekeeper remote admit`. It records the session it ran in, the keychain's status, whether the
 signing identity is there and whether signing with it succeeded, each separately, since an
 unlocked keychain and a listed identity do not show that the key can be used. It runs nothing
 that could show a dialog: only in a session without graphic access, as an SSH login is, does it
@@ -75,7 +75,7 @@ def unlock_commands(here, location, path):
 
 
 def check_commands(location, path, identity, sender=None):
-    """The post-check's commands: in the automation's context on the second Mac, through eng remote
+    """The post-check's commands: in the automation's context on the second Mac, through queuekeeper remote
     from the Mac that sends work there, and in a shell on the target, which checks that shell's
     session only. sender names the Mac that sends work to the target when the target is this Mac."""
     check = ["python3", "scripts/qk", "keychain", "check", "--keychain", path,
@@ -83,9 +83,9 @@ def check_commands(location, path, identity, sender=None):
     through = shlex.join(["python3", "scripts/qk", "remote", "admit", "--", *check])
     lines = []
     if location.where == "second Mac":
-        lines.append((f"from this Mac, as eng remote runs work on {location.mac}", through))
+        lines.append((f"from this Mac, as queuekeeper remote runs work on {location.mac}", through))
     elif sender:
-        lines.append((f"from {sender}, as eng remote runs work on {location.mac}", through))
+        lines.append((f"from {sender}, as queuekeeper remote runs work on {location.mac}", through))
     lines.append((f"in a shell on {location.mac}, for that shell's session only", shlex.join(check)))
     return lines
 
@@ -154,7 +154,7 @@ def recover(path=DEFAULT, target=None, identity=None, out=print, ask=None):
     for where, command in check_commands(location, exact, identity, sender):
         out(f"  {where}:\n    {command}")
     if location.where == "second Mac" or sender:
-        out(f"An unlock in a Terminal reaches that Terminal's session only, never an eng remote run. For every run on "
+        out(f"An unlock in a Terminal reaches that Terminal's session only, never an queuekeeper remote run. For every run on "
             f"{location.mac} to unlock its login keychain itself, run `python3 scripts/qk keychain keep-unlocked` "
             "once instead.")
     return 0
@@ -171,8 +171,8 @@ def keep_command(location):
 
 
 def keep_unlocked(identity=None, out=print, ask=None, interact=None, keep=None):
-    """eng keychain keep-unlocked, the owner's, once: on the second Mac, ask for its login password at
-    the second Mac's own prompt in this Terminal, keep it there for each eng remote run to unlock the
+    """queuekeeper keychain keep-unlocked, the owner's, once: on the second Mac, ask for its login password at
+    the second Mac's own prompt in this Terminal, keep it there for each queuekeeper remote run to unlock the
     login keychain in its own session, and stop that keychain locking on a timer or on sleep
     (offload_host.keep_unlocked). From the Mac that sends work there it goes through the alias with
     `ssh -t`; on the second Mac it runs in this process. Exit as offload_host.keep_unlocked does, or 2
@@ -184,7 +184,7 @@ def keep_unlocked(identity=None, out=print, ask=None, interact=None, keep=None):
     if location is None: return 2
     if location.where == "here" and not view["deferredTo"]:
         # The owner's decision covers the second Mac only, which holds no sensitive data.
-        out(f"Refused: {here} is not a second Mac, as its device record would say once eng remote has sent work "
+        out(f"Refused: {here} is not a second Mac, as its device record would say once queuekeeper remote has sent work "
             "to it: only the second Mac's login password is kept. Nothing was asked for or changed.")
         return 2
     if location.where == "second Mac":
@@ -264,12 +264,12 @@ def note(session):
     kind = session["kind"]
     if kind == "ssh":
         return ("an SSH login: no graphic access, so Security refuses interaction here rather than showing a dialog. "
-                "These results hold for this kind of session, such as eng remote's runs; an unlock or a signing in a GUI "
+                "These results hold for this kind of session, such as queuekeeper remote's runs; an unlock or a signing in a GUI "
                 "session does not establish them, nor do they establish a GUI session's")
     if kind == "background":
         return "a session without graphic access, not flagged remote: nothing here can show a dialog"
     return (f"a session with graphic access ({kind}), where a keychain operation can show a dialog, so nothing that "
-            "could raise one ran: run the check where the automation runs, such as through eng remote admit")
+            "could raise one ran: run the check where the automation runs, such as through queuekeeper remote admit")
 
 
 def check(path=DEFAULT, identity=None, timeout=CHECK_TIMEOUT, run=subprocess.run, session=None):
@@ -307,7 +307,7 @@ def check(path=DEFAULT, identity=None, timeout=CHECK_TIMEOUT, run=subprocess.run
 
 
 def execute(args, out=print):
-    """eng keychain recover, keep-unlocked or check."""
+    """queuekeeper keychain recover, keep-unlocked or check."""
     if args.operation == "recover":
         return recover(args.keychain, args.target, args.identity, out)
     if args.operation == "keep-unlocked":
@@ -323,10 +323,10 @@ def add_arguments(parser):
         "keychain file is there, and print the commands that unlock it, to copy into your own Terminal: each runs "
         "only on the Mac it names. It unlocks nothing and reads no password")
     recover_parser.add_argument("--target", metavar="MAC", help="the Mac whose keychain the work needs, by its "
-        "LocalHostName (default: the second Mac, as eng remote reaches it from this Mac)")
+        "LocalHostName (default: the second Mac, as queuekeeper remote reaches it from this Mac)")
     recover_parser.add_argument("--identity", help="the signing identity the check is to use; only printed")
     keep_parser = operations.add_parser("keep-unlocked", help="once, on the second Mac: ask for its login password "
-        "at its own prompt in this Terminal, keep it there, readable only by its account, for every eng remote run to "
+        "at its own prompt in this Terminal, keep it there, readable only by its account, for every queuekeeper remote run to "
         "unlock the login keychain in its own session, and stop that keychain locking on a timer or on sleep")
     keep_parser.add_argument("--identity", help="the signing identity the check is to use; only printed")
     check_parser = operations.add_parser("check", help="where the automation runs, record the session, the "

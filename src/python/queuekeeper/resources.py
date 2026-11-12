@@ -38,7 +38,7 @@ run beside them. One model workload per machine is a limit of the hardware: two 
 driving one Mac's on-device model both stalled. Exclusive work holds the model with the host.
 
 Each admission appends a line to the host's admission log, and its end another, so that an audit
-can count admissions, waits and holds instead of guessing (#46); `eng admissions` summarizes it.
+can count admissions, waits and holds instead of guessing (#46); `queuekeeper admissions` summarizes it.
 A request that waited says why, which an audit could only infer from the holders logged beside it
 (#49): how many of its attempts each kind of refusal refused, and the busy share, load and memory pressure
 read; the load is kept for audits beside the busy share, though it no longer refuses.
@@ -47,9 +47,9 @@ Its waiting message names the limit that refused it and the limit's value, besid
 Beside its guard entry, each admission keeps a process record: what supervision in the owner's
 process, the toolkit's or a caller's own, saw of each command, its processes with their starts and
 the process groups and sessions they used, appended at each sample that sees something new. Once
-the owner has ended, `eng admissions recover` runs the end-of-run census against that record and
+the owner has ended, `queuekeeper admissions recover` runs the end-of-run census against that record and
 removes the entry only when nothing of an unsettled command still runs (#61). An entry without a
-record is left for a check by hand, and `eng admissions remove`, which no allow rule matches, removes it once nothing
+record is left for a check by hand, and `queuekeeper admissions remove`, which no allow rule matches, removes it once nothing
 its owner may have started is found running. Admission writes the record's first line as it adds the entry, so that an
 owner killed before its first command leaves a record too, and recovery then checks the owner's process group for
 what it started (#315). Admission runs the same recovery itself on each dead or uncertain
@@ -81,7 +81,7 @@ import uuid
 from . import lane_wait
 
 TOKEN = "VOCARO_RESOURCE_TOKEN"
-# `eng run --if-free` waits this many seconds for admission, then exits with BUSY (EX_TEMPFAIL)
+# `queuekeeper run --if-free` waits this many seconds for admission, then exits with BUSY (EX_TEMPFAIL)
 # without running: how the second Mac says it cannot take a lane now.
 FREE_WAIT, BUSY = 5, 75
 # The admission log and its previous generation. A line that would take the log past LOG_LIMIT
@@ -102,7 +102,7 @@ def process_start(pid):
     """When pid started, as `ps -o lstart=` prints it, or None when no such process runs.
 
     A process in an app's sandbox, such as an XCTest runner checking the foreground reservation that
-    eng holds on the second Mac, may not start ps; the kernel's record gives it the same text."""
+    queuekeeper holds on the second Mac, may not start ps; the kernel's record gives it the same text."""
     try:
         result = subprocess.run(["ps", "-p", str(pid), "-o", "lstart="], capture_output=True, text=True)
     except OSError:
@@ -175,9 +175,9 @@ def clean_origin(found):
 
 
 def work_origin(directory=None):
-    """Where the work asking for admission comes from, for `eng admissions now` to name beside its label, which for a
+    """Where the work asking for admission comes from, for `queuekeeper admissions now` to name beside its label, which for a
     plain command is only the command (vocaro-engineering#342): the repository (its main checkout's directory name),
-    the branch, the worktree's path, the agent session that ran eng, and the Mac it ran on. Work the second Mac runs for
+    the branch, the worktree's path, the agent session that ran queuekeeper, and the Mac it ran on. Work the second Mac runs for
     another Mac takes the sender's (ORIGIN). Each field it cannot read is left out; it never raises."""
     try:
         sent = clean_origin(json.loads(os.environ[ORIGIN])) if os.environ.get(ORIGIN) else None
@@ -535,15 +535,15 @@ def busy_limit():
 
 
 def limits_main(argv=None, out=print):
-    """eng admissions limits: the admission limits in force for a process started like this one, and their sources."""
-    parser = argparse.ArgumentParser(prog="eng admissions limits", description="Print the heavy-work admission "
+    """queuekeeper admissions limits: the admission limits in force for a process started like this one, and their sources."""
+    parser = argparse.ArgumentParser(prog="queuekeeper admissions limits", description="Print the heavy-work admission "
         "limits in force here and where each comes from: its environment variable, the host's limits file or the "
         "default (guides/shared-host.md, Heavy-work admission).")
     parser.parse_args(argv)
     try:
         found = limits()
     except ValueError as error:
-        print(f"eng: {error}", file=sys.stderr)
+        print(f"queuekeeper: {error}", file=sys.stderr)
         return 2
     out(f"{os.cpu_count() or 1} cores; limits file {limits_path()}")
     for key, (value, source) in found.items():
@@ -661,7 +661,7 @@ def record_queue(queue, waiters):
     else: Path(queue).unlink(missing_ok=True)
 
 
-# Each waiting request's observation record, for `eng admissions now` (vocaro-engineering#342): a file of its own in this
+# Each waiting request's observation record, for `queuekeeper admissions now` (vocaro-engineering#342): a file of its own in this
 # folder beside the slot files, which only that request writes, from its first refusal until it stops waiting however
 # it stops. Nothing in admission reads it: it is no place in the queue, holds nothing back and orders nothing. A request
 # rewrites it at most every OBSERVE_SECONDS, and at most every SWEEP_SECONDS one request removes the records of waiters
@@ -766,14 +766,14 @@ class Admission:
     def __init__(self, label, exclusive=False, timeout=5400, model=False, whole_host=False, place=None, placement=None,
                  supervised=False):
         self.label, self.exclusive, self.timeout = label, exclusive, timeout
-        # Whether this process starts every command of the admission through processes.supervise, as eng admit, eng run
+        # Whether this process starts every command of the admission through processes.supervise, as queuekeeper admit, queuekeeper run
         # and the resource CLI do, so that supervision records each before it starts it: then an entry whose record
         # names no command ended before its first, and recovery checks its owner's process group instead (#315). A
         # caller that runs its own commands, which may record none, leaves it False.
         self.supervised = supervised
-        # Why the work is asking this Mac, for its admitted and withdrawn lines, or None: whether eng offered it to
+        # Why the work is asking this Mac, for its admitted and withdrawn lines, or None: whether queuekeeper offered it to
         # the second Mac first and why it is here (offered, because), or the Mac that sent it (dispatchedFrom).
-        # `eng admissions usage` counts it.
+        # `queuekeeper admissions usage` counts it.
         self.placement = placement
         # Exclusive work holds the host, the model with it.
         self.model = model or exclusive
@@ -782,7 +782,7 @@ class Admission:
         # them. Exclusive work holds every slot already (vocaro-engineering#168).
         self.whole_host = bool(whole_host) and not exclusive
         self.kind = "exclusive" if exclusive else "model" if model else "heavy"
-        # Where the work comes from, which its guard entry and wait record carry for `eng admissions now`.
+        # Where the work comes from, which its guard entry and wait record carry for `queuekeeper admissions now`.
         self.origin = work_origin()
         # When the request began to wait, and when it was admitted, by the monotonic clock.
         self.started, self.admitted = time.monotonic(), None
@@ -847,7 +847,7 @@ class Admission:
         self.observed_at, self.unobserved, self.owner_start = None, False, None
 
     def _observe(self):
-        """Publish what this waiting request waits for, for `eng admissions now`: at its first refusal, and then at most
+        """Publish what this waiting request waits for, for `queuekeeper admissions now`: at its first refusal, and then at most
         every OBSERVE_SECONDS. Never a reason to change admission: a failure is said once and ends the record."""
         now = time.monotonic()
         if self.unobserved or (self.observed_at is not None and now - self.observed_at < OBSERVE_SECONDS): return
@@ -878,7 +878,7 @@ class Admission:
         except Exception as error:
             self.unobserved = True
             with contextlib.suppress(Exception):
-                print(f"heavy: what this request waits for was not recorded for `eng admissions now`: {error}",
+                print(f"heavy: what this request waits for was not recorded for `queuekeeper admissions now`: {error}",
                       file=sys.stderr, flush=True)
         finally:
             if staged is not None:
@@ -902,7 +902,7 @@ class Admission:
         """The published guard, or None, with the refusal naming why, when it is unreadable or not in admission's
         format. A guard admission cannot read is never overwritten: whatever wrote it may still run what it records.
 
-        Each dead or uncertain entry is recovered here, as `eng admissions recover` would recover it, so that a
+        Each dead or uncertain entry is recovered here, as `queuekeeper admissions recover` would recover it, so that a
         stranded entry whose commands have all ended no longer holds every session's heavy work until a person
         removes it. An entry recovery leaves is checked again after HEAVY_RECOVER_SECONDS. Until then it stays in
         self.stranded, and the attempt counts it as the slots it held (#89)."""
@@ -1163,7 +1163,7 @@ class Admission:
             try:
                 held, unverified = self._holding()
             except OSError as error:
-                # A request that stops waiting fails as it would have: `eng run --if-free` tells a busy host by it.
+                # A request that stops waiting fails as it would have: `queuekeeper run --if-free` tells a busy host by it.
                 unverified = [f"the locks, unread: {error}"]
         if self.refusal in ("guard", "stranded") or unverified:
             busy = f"; busy with no running admission named: {', '.join(unverified)}" if unverified else ""
@@ -1345,7 +1345,7 @@ class Admission:
                 self._withdraw(error)
             except Exception:
                 # A queued request that cannot leave the queue says so. The log alone never changes
-                # how a request fails: `eng run --if-free` tells a busy host by its TimeoutError.
+                # how a request fails: `queuekeeper run --if-free` tells a busy host by its TimeoutError.
                 if self.queued: raise
             raise
         finally:
@@ -1665,20 +1665,20 @@ def report(paths=None, since=None, until=None, out=print):
     return 0
 
 
-# `eng admissions usage`: whether the second Mac is being used, and why work is on this Mac, read from both Macs'
+# `queuekeeper admissions usage`: whether the second Mac is being used, and why work is on this Mac, read from both Macs'
 # capacity and admission logs rather than from the sound of a fan (guides/shared-host.md, Which Mac runs a lane).
 USAGE_WINDOW = 3 * 3600
 # An admission with no end logged that began longer than this before the window's end is taken as one whose process
 # died unrecorded, and counts as running no longer: lanes' time limits are 2 h by default (processes.DEFAULT_LIMIT).
 UNENDED_SECONDS = 12 * 3600
-# Why work that eng never offered to the second Mac runs here, as cli's placement reasons say it, by the category
-# usage counts it under. Until the owner's decision of 2026-11-07, eng admit without --verify ran here, and log lines
+# Why work that queuekeeper never offered to the second Mac runs here, as cli's placement reasons say it, by the category
+# usage counts it under. Until the owner's decision of 2026-11-07, queuekeeper admit without --verify ran here, and log lines
 # from then still say so; it goes to the second Mac first now, unless one of cli.here_because's reasons keeps it here.
-NOT_OFFERED = [("eng admit runs here without --verify", "eng admit without --verify"),
-               ("eng admit --here", "eng admit --here"),
+NOT_OFFERED = [("queuekeeper admit runs here without --verify", "queuekeeper admit without --verify"),
+               ("queuekeeper admit --here", "queuekeeper admit --here"),
                ("a part of the self lane ", "a self lane's part"),
                ("foreground work runs on the Mac", "foreground work"),
-               ("--here", "eng run --here"), ("--serial", "eng run --serial"),
+               ("--here", "queuekeeper run --here"), ("--serial", "queuekeeper run --serial"),
                ("the lane says: ", "a lane that stays on this Mac"), ("its lane ", "a lane that stays on this Mac"),
                ("nested in the admission it inherits", "nested in an admission it inherits")]
 # Older admissions marked local path exclusions as offered. Recognize the exact diagnostics written by
@@ -1782,7 +1782,7 @@ def placement_lines(entries, since, until):
         counted[2][admitted["label"]] += max(held, 0)
     heads = {"never": "never offered to the second Mac", "declined": "offered to the second Mac and declined",
              "sent": "sent here by another Mac", "unrecorded": "placement unrecorded (an older toolkit's line, or a "
-             "caller's own admission, such as eng admit's before it logged placement)"}
+             "caller's own admission, such as queuekeeper admit's before it logged placement)"}
     out = []
     for group in ["never", "declined", "sent", "unrecorded"]:
         if group not in groups: continue
@@ -1846,9 +1846,9 @@ def usage(here, there, since, until, out=print):
 
 
 def usage_main(argv=None, out=print):
-    """eng admissions usage: whether the second Mac is being used, and why work is on this Mac."""
+    """queuekeeper admissions usage: whether the second Mac is being used, and why work is on this Mac."""
     from queuekeeper import offload_host, remote
-    parser = argparse.ArgumentParser(prog="eng admissions usage", description="Show both Macs' capacity now, side by "
+    parser = argparse.ArgumentParser(prog="queuekeeper admissions usage", description="Show both Macs' capacity now, side by "
         "side, with whether each has spare capacity for a heavy and for a whole-host lane; the share of the period "
         "each Mac spent at each count of admitted heavy jobs; and why this Mac's admissions ran here: never offered "
         "to the second Mac, and why, or offered and declined, and why (guides/shared-host.md, Which Mac runs a lane).")
@@ -1878,7 +1878,7 @@ def usage_main(argv=None, out=print):
 
 
 def unknown_host(name, role, why, state="unknown"):
-    """A host `eng admissions now` could not read: unknown, never idle; or notConfigured, a second Mac there is not."""
+    """A host `queuekeeper admissions now` could not read: unknown, never idle; or notConfigured, a second Mac there is not."""
     return {"name": name, "role": role, "state": state, "reasons": [why], "observedAt": None, "limits": None,
             "slots": None, "model": None, "holders": None, "unattributed": None, "waiters": None}
 
@@ -1910,7 +1910,7 @@ def admissions_now(here_only=False, read_here=None, read_there=None, configured=
 
 
 def now_lines(reading, at=None):
-    """`eng admissions now` in words, host by host."""
+    """`queuekeeper admissions now` in words, host by host."""
     lines = []
     for host in reading["hosts"]:
         state, reasons = host.get("state"), host.get("reasons") or []
@@ -1984,9 +1984,9 @@ def now_lines(reading, at=None):
 
 
 def now_main(argv=None, out=print, read=None):
-    """eng admissions now: who holds and who waits for heavy-work admission on each Mac now (vocaro-engineering#342). 0
+    """queuekeeper admissions now: who holds and who waits for heavy-work admission on each Mac now (vocaro-engineering#342). 0
     when every Mac asked about was read whole, 1 when one is partial or unknown, 2 for a mistaken command line."""
-    parser = argparse.ArgumentParser(prog="eng admissions now", description="Show who holds heavy-work admission on "
+    parser = argparse.ArgumentParser(prog="queuekeeper admissions now", description="Show who holds heavy-work admission on "
         "this Mac and the second Mac now, and who waits for it, for how long and why, as each waiter says it. It changes "
         "nothing. A Mac that cannot be read is unknown, never idle (guides/shared-host.md, Who holds and who waits).")
     parser.add_argument("--json", action="store_true", help="print the readings as JSON")
@@ -2006,7 +2006,7 @@ def now_main(argv=None, out=print, read=None):
 # What recovery tells a person to do about an entry it leaves.
 BY_HAND = ("check by hand that nothing its owner started still runs, then remove its entry with `python3 scripts/qk "
            "admissions remove OWNER --why TEXT` (guides/shared-host.md, Lock reclamation)")
-# Why recovery leaves an entry it cannot prove finished, as reclaim says it: the entries `eng admissions remove` may
+# Why recovery leaves an entry it cannot prove finished, as reclaim says it: the entries `queuekeeper admissions remove` may
 # remove once a person has checked them, unlike one whose owner or a process it names still runs.
 UNRECORDED, UNVOUCHED = "it has no process record", "its process record cannot vouch for every command"
 
@@ -2173,7 +2173,7 @@ def recover(owner=None, out=print):
     as admission refuses it: one whose owners are not all entries in admission's format among them (#72).
     """
     def shown(entry):
-        """An entry's label on one line: an eng admit label is its command line, which can span several."""
+        """An entry's label on one line: an queuekeeper admit label is its command line, which can span several."""
         return " ".join(entry["label"].split())[:LABEL_LIMIT]
 
     with locked_guard(out) as opened:
@@ -2300,7 +2300,7 @@ def remaining(path, entry):
     with no birth cutoff; and what the owner started before its first command (owner_survivors), in its recorded
     group or session, or, without an admission line, in a group or session the owner led. Without a record, an
     owner that led neither, as one a shell started in the shell's own group, leaves nothing here to check: that is
-    the check by hand `eng admissions remove` asks for (#315)."""
+    the check by hand `queuekeeper admissions remove` asks for (#315)."""
     from queuekeeper.processes import snapshot, survivors
     admission, processes, spaces = None, set(), set()
     if path is not None and path.is_file():
@@ -2343,7 +2343,7 @@ def remove(owner, why, out=print):
     deleted, and a `recovered` line logged, as recovery logs one, marked `byHand`, with why recovery left it
     (`unproven`) and the person's reason (`why`). Returns 0 when it removed or recovered the entry, and 1 otherwise.
 
-    It is a command of its own, not an option of `eng admissions recover`, so that this repository's allow rule for
+    It is a command of its own, not an option of `queuekeeper admissions recover`, so that this repository's allow rule for
     recovery, which removes only provably finished entries, does not match it: an agent's auto mode asks before it
     removes an entry nothing proves finished (owner's decision, 2026-11-08, #315)."""
     if not why.strip():
@@ -2390,16 +2390,16 @@ def remove(owner, why, out=print):
 
 
 def remove_main(argv=None):
-    """eng admissions remove OWNER --why TEXT: remove by hand an entry recovery cannot prove finished."""
-    parser = argparse.ArgumentParser(prog="eng admissions remove", description="Remove by hand a guard entry that "
+    """queuekeeper admissions remove OWNER --why TEXT: remove by hand an entry recovery cannot prove finished."""
+    parser = argparse.ArgumentParser(prog="queuekeeper admissions remove", description="Remove by hand a guard entry that "
         "recovery cannot prove finished, its process record missing or unable to vouch for every command, once you "
         "have checked that nothing its owner started still runs. Recovery runs first: an entry it can prove finished "
         "is recovered, and one whose owner or a process it names still runs stays. Then it checks what of the process "
         "record can be read, and the owner's process group or session, and leaves the entry while anything there "
-        "runs. The admission log records the removal and why. It exits 1 when it removes nothing. Unlike `eng "
+        "runs. The admission log records the removal and why. It exits 1 when it removes nothing. Unlike `queuekeeper "
         "admissions recover`, it is deliberately outside this repository's allow rule for recovery "
         "(guides/shared-host.md, Lock reclamation).")
-    parser.add_argument("owner", metavar="OWNER", help="the PID or identity of the entry's owner, as `eng admissions "
+    parser.add_argument("owner", metavar="OWNER", help="the PID or identity of the entry's owner, as `queuekeeper admissions "
                         "recover` lists it")
     parser.add_argument("--why", required=True, metavar="TEXT", help="what you checked that shows nothing its owner "
                         "started still runs; the admission log keeps it")
@@ -2407,13 +2407,13 @@ def remove_main(argv=None):
     try:
         return remove(args.owner, args.why)
     except (OSError, RuntimeError, subprocess.SubprocessError) as error:
-        print(f"eng: {error}", file=sys.stderr)
+        print(f"queuekeeper: {error}", file=sys.stderr)
         return 2
 
 
 def recover_main(argv=None):
-    """eng admissions recover [OWNER]: the guard's dead or uncertain entries, or the recovery of one."""
-    parser = argparse.ArgumentParser(prog="eng admissions recover", description="List the guard's dead or uncertain "
+    """queuekeeper admissions recover [OWNER]: the guard's dead or uncertain entries, or the recovery of one."""
+    parser = argparse.ArgumentParser(prog="queuekeeper admissions recover", description="List the guard's dead or uncertain "
         "entries, or recover one: remove that entry alone, and the guard with its last one, once its owner has ended "
         "and a census against its process record finds nothing of its commands still running. It exits 1 when it "
         "removes nothing, and leaves a live owner's entry, an entry without a process record and a guard that is "
@@ -2424,7 +2424,7 @@ def recover_main(argv=None):
     try:
         return recover(args.owner)
     except (OSError, RuntimeError, subprocess.SubprocessError) as error:
-        print(f"eng: {error}", file=sys.stderr)
+        print(f"queuekeeper: {error}", file=sys.stderr)
         return 2
 
 

@@ -183,7 +183,7 @@ def fixed_waits(root):
 
 
 def doctor_warnings(root):
-    """eng doctor's warning for fixed wall-clock waits in a project's tests (#284)."""
+    """queuekeeper doctor's warning for fixed wall-clock waits in a project's tests (#284)."""
     found = fixed_waits(root)
     if not found:
         return []

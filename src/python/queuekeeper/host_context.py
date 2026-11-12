@@ -81,7 +81,7 @@ def second_mac():
     """This Mac's view of the second Mac, without connecting: the SSH destination the canonical
     resolver names here (remote.configured), what `ssh -G` resolves it to, whether that destination
     is one of the toolkit's aliases that this Mac's ~/.ssh/config leaves undefined, and the Mac this
-    Mac's device record defers physical devices to, which every eng remote run sets on the second
+    Mac's device record defers physical devices to, which every queuekeeper remote run sets on the second
     Mac's record and so marks this Mac as that Mac's second Mac."""
     destination = remote.configured()
     hostname = (remote.ssh_settings(destination).get("hostname") or destination) if destination else None

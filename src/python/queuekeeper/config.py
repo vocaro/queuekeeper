@@ -41,7 +41,7 @@ def device_keys(name, lane):
 
 def lane_devices(lane):
     """The device-record entries a lane's run uses (vocaro-engineering#292): its "devices", for a project's script
-    that calls device_pass.run, or each --device of an `eng device-pass` command, up to that command's own --, which
+    that calls device_pass.run, or each --device of an `queuekeeper device-pass` command, up to that command's own --, which
     the words of the command it runs follow. Any other lane uses none."""
     if lane.get("devices"): return list(lane["devices"])
     command = lane.get("command") or []
@@ -174,7 +174,7 @@ def stall(name, lane):
 
 
 def test_lanes(declared):
-    """What eng doctor's lane coverage (lane_coverage.py, #289) cannot work out for itself: skip, the test paths kept as
+    """What queuekeeper doctor's lane coverage (lane_coverage.py, #289) cannot work out for itself: skip, the test paths kept as
     records, each with its reason, and selects, for a lane whose command it cannot read, the paths the lane's tests
     are under, none for a lane that runs no test."""
     if not isinstance(declared, dict) or set(declared) - {"skip", "selects"}:
@@ -206,8 +206,8 @@ def compile_first(name, lane):
 # first (the owner's decision, 2026-11-07, vocaro-engineering#200): heavy, one slot of heavy-work admission, which a
 # lane that gives no resource takes too; light, which once ran unadmitted where it started, now means heavy, so
 # that the engineering.json files that give it keep loading; exclusive, the host to itself; and self, a lane whose
-# script admits each of its parts itself, such as a calibration that builds under `eng admit` and then times under
-# `eng admit --exclusive`, which an admission of its own would refuse, so eng run runs it where it starts, unadmitted
+# script admits each of its parts itself, such as a calibration that builds under `queuekeeper admit` and then times under
+# `queuekeeper admit --exclusive`, which an admission of its own would refuse, so queuekeeper run runs it where it starts, unadmitted
 # (guides/shared-host.md, Heavy-work admission).
 RESOURCES = ["light", "heavy", "exclusive", "self"]
 # How heavily a lane's admission holds its Mac, so that a group's is at least each of its lanes'.
@@ -222,13 +222,13 @@ def resource_of(name, lane):
     return "heavy" if resource == "light" else resource
 
 
-# A call of eng admit, as a shell script or a command's own words write it (`scripts/qk admit`), or as a
-# Python list of a command's words does (`[*eng, "admit", ...]`).
-ADMIT_CALL = re.compile(r"""\beng\b["' ,\])]*admit\b|["']admit["']""")
+# A call of queuekeeper admit, as a shell script or a command's own words write it (`scripts/qk admit`), or as a
+# Python list of a command's words does (`[*queuekeeper, "admit", ...]`).
+ADMIT_CALL = re.compile(r"""\b(?:qk|queuekeeper)\b["' ,\])]*admit\b|["']admit["']""")
 
 
 def self_lane_warnings(root, config):
-    """eng doctor's warning for each self lane whose command neither calls eng admit in its own words nor runs
+    """queuekeeper doctor's warning for each self lane whose command neither calls queuekeeper admit in its own words nor runs
     a file of the checkout that does: a self lane runs unadmitted, trusted to admit each of its parts, and one
     that admits none runs its work outside admission (owner's decision, 2026-11-07, vocaro-engineering#200).
     The check reads the text and cannot prove that every part is admitted; it catches a lane that admits nothing."""
@@ -247,15 +247,15 @@ def self_lane_warnings(root, config):
         if any(ADMIT_CALL.search(text) for text in texts): continue
         ran = f"the file it runs, {', '.join(path.relative_to(root).as_posix() for path in files)}," if files \
             else "any file of the checkout it runs"
-        warnings.append(f"{name} is a self lane, which eng runs unadmitted, trusting it to admit each of its parts, "
-                        f"but neither its command nor {ran} calls eng admit, so its work runs outside admission: "
-                        "give it \"resource\": \"heavy\", or admit each part with eng admit (guides/shared-host.md)")
+        warnings.append(f"{name} is a self lane, which queuekeeper runs unadmitted, trusting it to admit each of its parts, "
+                        f"but neither its command nor {ran} calls queuekeeper admit, so its work runs outside admission: "
+                        "give it \"resource\": \"heavy\", or admit each part with queuekeeper admit (guides/shared-host.md)")
     return warnings
 
 
 def display_lane_warnings(config):
-    """eng doctor's warning for each "display": true lane that does not say "unlockedScreen": "display" wakes the
-    display and keeps it on, behind a lock too, but unlocks nothing, so eng may place the lane on a Mac whose screen
+    """queuekeeper doctor's warning for each "display": true lane that does not say "unlockedScreen": "display" wakes the
+    display and keeps it on, behind a lock too, but unlocks nothing, so queuekeeper may place the lane on a Mac whose screen
     is locked, where a test that reports a lock as unmeasured gives no verdict, and the merge queue sends its gate
     there again until it holds (vocaro-engineering#293). A lane whose tests measure behind a lock says
     "unlockedScreen": false, which settles the question; only a lane that leaves it out is warned of."""
@@ -267,7 +267,7 @@ def display_lane_warnings(config):
                         and name in (other.get("parallel") or []) and not other.get("unlockedScreen"))
         also = f", and so does each group that runs it, {', '.join(groups)}," if groups else ""
         warnings.append(f"{name} says \"display\": true, which wakes the display but does not unlock the screen, and "
-                        "does not say \"unlockedScreen\", so eng may place it on a Mac whose screen is locked, where a "
+                        "does not say \"unlockedScreen\", so queuekeeper may place it on a Mac whose screen is locked, where a "
                         "test that reports a lock as unmeasured gives no verdict: if its tests need an unlocked "
                         f"screen, it needs \"unlockedScreen\": true{also} and if they measure behind a lock, say "
                         "\"unlockedScreen\": false (guides/shared-host.md, Which Mac runs a lane)")
@@ -275,22 +275,22 @@ def display_lane_warnings(config):
 
 
 def unadmitted(lane):
-    """Whether eng runs the lane, or group, without admission of its own: a self lane, whose script admits each of
+    """Whether queuekeeper runs the lane, or group, without admission of its own: a self lane, whose script admits each of
     its parts."""
     return lane.get("resource") == "self"
 
 
 def admission(lane):
-    """The admission eng run takes for the lane, or group: heavy, exclusive, or self for none."""
+    """The admission queuekeeper run takes for the lane, or group: heavy, exclusive, or self for none."""
     return resource_of("the lane", lane)
-# The platforms `eng app` builds an app for, and whether each is kept after every gated landing unless the
+# The platforms `queuekeeper app` builds an app for, and whether each is kept after every gated landing unless the
 # project says otherwise: the Mac build is, so that the newest landed app opens at once; a device build is
 # made when a device asks for it (app_builds.py).
 APP_PLATFORMS = {"mac": True, "ios": False}
 
 
 def app(declared):
-    """The app `eng app` keeps and runs (app_builds.py, guides/app-builds.md)."""
+    """The app `queuekeeper app` keeps and runs (app_builds.py, guides/app-builds.md)."""
     if not isinstance(declared, dict) or set(declared) - {"project", "workspace", "directory", "configuration",
                                                           "prepare", *APP_PLATFORMS}:
         raise ValueError("app supports only project or workspace, directory, configuration, prepare, mac and ios")
@@ -335,7 +335,7 @@ LANDING_FIRST = ["spelling", "provision"]
 SPELLING = "spelling"
 # The toolkit's spelling check, the spelling lane of a project that has none: the queue runs it before the gate, on an
 # ungated landing and before a docs-only batch's lanes, unless main's queue.spelling is false, so that a British spelling
-# fails in a minute, not after a full gate and a bisect (vocaro-engineering, 2026-11-07). eng run admits and places it
+# fails in a minute, not after a full gate and a bisect (vocaro-engineering, 2026-11-07). queuekeeper run admits and places it
 # as any lane (lane_to_run).
 IMPLICIT_SPELLING = ["python3", "scripts/qk", SPELLING]
 DOCS = "docs"
@@ -343,7 +343,7 @@ IMPLICIT_DOCS = ["python3", "scripts/qk", "docs", "check"]
 # Conventional prose only; configuration, agent policy, source and test fixtures keep their code gates.
 DOCS_FILES = {"README.md", "CONTRIBUTING.md", "CHANGELOG.md"}
 DOCS_FOLDERS = ("doc/", "docs/", "guides/", "knowledge/")
-# Seconds the spelling check may run, as that lane and before eng land queues an entry (vocaro-engineering#283).
+# Seconds the spelling check may run, as that lane and before queuekeeper land queues an entry (vocaro-engineering#283).
 SPELLING_LIMIT = 300
 
 
@@ -372,7 +372,7 @@ def landing_lanes(lanes, queue):
 def release(declared, lanes=None, queue=None):
     """The release gate's settings: lanes, the release checks each a lane of its own, which eng release
     requires a pass of at the release commit, and maxCommits, the checkpoint's limit (guides/releasing.md,
-    Two gates and Checkpoints). A name in lanes that is no lane is eng doctor's warning, not an error.
+    Two gates and Checkpoints). A name in lanes that is no lane is queuekeeper doctor's warning, not an error.
     A release lane that a landing also runs is an error: a release check runs once, on the release
     commit, and no change waits for one to land."""
     if not isinstance(declared, dict) or set(declared) - {"lanes", "maxCommits"}:
@@ -393,7 +393,7 @@ def release(declared, lanes=None, queue=None):
 
 
 def budget(name, lane):
-    """budgetMinutes, the gate's time budget, from its measured time, past which eng land and eng doctor warn
+    """budgetMinutes, the gate's time budget, from its measured time, past which queuekeeper land and queuekeeper doctor warn
     (guides/releasing.md, Keeping the split). Only the gate lane has one."""
     if not isinstance(lane, dict) or "budgetMinutes" not in lane: return
     if name != "gate":
@@ -498,7 +498,7 @@ def whole_host_lane(lanes, name):
 
 def apps(name, lane):
     """A foreground lane's "apps" names the app under test, as a crash-report alert names the process that quit,
-    such as "EPUBLib": a failed run during which eng cleared an alert for any other process, one that stood longer
+    such as "EPUBLib": a failed run during which queuekeeper cleared an alert for any other process, one that stood longer
     than one look, is unmeasured, while one for these stays failed (crash_alerts.py, vocaro-engineering#226)."""
     if "apps" not in lane: return
     names = lane["apps"]
@@ -507,16 +507,16 @@ def apps(name, lane):
         raise ValueError(f"{name}.apps names the app under test, as a crash-report alert names its process: a list "
                          "of nonempty names")
     if not lane.get("foreground"):
-        raise ValueError(f"{name}.apps needs a foreground lane: eng clears crash-report alerts only during one")
+        raise ValueError(f"{name}.apps needs a foreground lane: queuekeeper clears crash-report alerts only during one")
 
 
 def screen(name, lane):
     """A lane that needs an unlocked console screen, "unlockedScreen": true, such as a Mac suite whose tests read
-    their own window through the accessibility API, which a lock hides, runs only on a Mac whose screen eng reads
+    their own window through the accessibility API, which a lock hides, runs only on a Mac whose screen queuekeeper reads
     as unlocked when it places the lane, and otherwise waits for one, instead of running unmeasured
     (vocaro-engineering#185; guides/shared-host.md, Which Mac runs a lane). A self lane is not placed."""
     if lane.get("unlockedScreen") and unadmitted(lane):
-        raise ValueError(f"{name}.unlockedScreen needs an admitted lane: eng places only an admitted lane on a Mac, "
+        raise ValueError(f"{name}.unlockedScreen needs an admitted lane: queuekeeper places only an admitted lane on a Mac, "
                          "and a self lane runs where it starts")
 
 
@@ -527,7 +527,7 @@ def unlocked_screen(lanes, name):
 
 
 def lane_to_run(config, name):
-    """The lane eng run runs as name, or None when there is no such lane: the one config has, or, for spelling and docs in a
+    """The lane queuekeeper run runs as name, or None when there is no such lane: the one config has, or, for spelling and docs in a
     project with no such lane, the toolkit's check, added to config's lanes so that the run treats it as any other,
     which is how the merge queue's gate runs it (owner's decision, 2026-11-09, vocaro-engineering#305). queue.spelling
     says only whether the queue asks for it, and main's says that, so a batch's own setting cannot leave a lane unknown."""
@@ -564,7 +564,7 @@ def model(name, lane):
 def whole_host(name, lane):
     """A whole-host lane, "wholeHost": true, is a Mac's work: a gate that runs the project's suites side by
     side. It takes every guaranteed slot of the Mac it runs on, so that a second such lane never runs
-    beside it there, and eng sends it to the Mac that has them all free, while a lighter heavy lane still
+    beside it there, and queuekeeper sends it to the Mac that has them all free, while a lighter heavy lane still
     shares (vocaro-engineering#168; guides/shared-host.md, Which Mac runs a lane). A self lane is not
     admitted, and exclusive admission holds the host already."""
     if lane.get("wholeHost") and admission(lane) != "heavy":

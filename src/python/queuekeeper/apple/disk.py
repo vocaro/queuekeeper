@@ -19,7 +19,7 @@ from .simulators import pool as simulator_pool
 
 CATEGORIES = {"simulator": "Simulators", "runtime": "Simulator runtimes", "derived-data": "Xcode DerivedData",
               "swiftpm-cache": "SwiftPM shared cache",
-              "app-builds": "Kept app builds and their build caches (eng app)"}
+              "app-builds": "Kept app builds and their build caches (queuekeeper app)"}
 # A runtime no device uses is removed once it has gone unused this long, as a pool member is pruned: a
 # lane may make its devices on it next.
 RUNTIME_IDLE_DAYS = 14
@@ -32,7 +32,7 @@ UNBUILT = frozenset({"Logs", "SourcePackages", "TestResults"})
 # A Build folder that holds nothing but ProfileData holds a test run's coverage data, not build products:
 # xcodebuild test-without-building without -derivedDataPath leaves one per run (vocaro-engineering#158).
 COVERAGE_ONLY = frozenset({"ProfileData"})
-# eng app's store of kept builds under the account's home (app_builds.store_root).
+# queuekeeper app's store of kept builds under the account's home (app_builds.store_root).
 APP_STORE = "Library/Application Support/vocaro-engineering/apps"
 
 
@@ -103,7 +103,7 @@ def last_used(device, directory, now):
 
 def prune_command(pool, udid):
     """Pruning reserves the member, checks it again and records the deletion (guides/simulator-testing.md)."""
-    return ["python3", str(TOOLKIT_ROOT / "bin/qk"), "simulator-pool", "--pool", pool, "--owner", "eng disk",
+    return ["python3", str(TOOLKIT_ROOT / "bin/qk"), "simulator-pool", "--pool", pool, "--owner", "queuekeeper disk",
             "prune", udid]
 
 
@@ -205,7 +205,7 @@ def simulators(host, usage, sizes):
 
 
 def runtimes_there(second):
-    """The second Mac's runtime images, read as `eng remote setup --runtimes` reads them, each with its build and
+    """The second Mac's runtime images, read as `queuekeeper remote setup --runtimes` reads them, each with its build and
     the simulators on its runtime identifier there (users); {"error": why} when they cannot be read, and None
     without a second Mac."""
     if not second: return None
@@ -223,27 +223,27 @@ def runtimes_there(second):
 
 def across(host, item, build):
     """A runtime candidate as the second Mac's copy of it leaves it. The two Macs keep the same runtimes
-    (vocaro-engineering#123): `eng remote setup --runtimes` deletes a runtime only one Mac lists from that Mac
+    (vocaro-engineering#123): `queuekeeper remote setup --runtimes` deletes a runtime only one Mac lists from that Mac
     when no simulator on its identifier uses it there, and copies it to the other Mac otherwise. So a build
     removed here while the second Mac's copy counts as used would only be copied back."""
     if not host.offload_host or item.status != CANDIDATE: return item
     there, second = host.remote_runtimes or {"error": "not read"}, host.offload_host
     def kept(why): return Item(item.category, item.path, KEPT, f"{item.reason}; but {why}", item.size, None, item.idle)
     if "error" in there:
-        return kept(f"{second}'s runtimes could not be read ({there['error']}), so whether `eng remote setup "
+        return kept(f"{second}'s runtimes could not be read ({there['error']}), so whether `queuekeeper remote setup "
                     "--runtimes` would copy it back is unknown")
     copies = [image for image in there["images"] if isinstance(image, dict) and image.get("build") == build]
     if not copies:
         item.reason += f"; {second} holds no copy, so removing it here also leaves the two Macs alike"
     elif any(image.get("users") is None for image in copies):
-        return kept(f"{second} holds a copy whose simulators could not be listed, so whether `eng remote setup "
+        return kept(f"{second} holds a copy whose simulators could not be listed, so whether `queuekeeper remote setup "
                     "--runtimes` would copy it back is unknown")
     elif any(image["users"] for image in copies):
         users = max(len(image["users"]) for image in copies)
         return kept(f"{second} holds a copy, which the {users} simulators on its identifier there count as used, so "
-                    f"`eng remote setup --runtimes` would copy it back here; it can go once {second}'s copy can")
+                    f"`queuekeeper remote setup --runtimes` would copy it back here; it can go once {second}'s copy can")
     else:
-        item.reason += (f"; {second} holds a copy no simulator uses there, which `eng remote setup --runtimes` then "
+        item.reason += (f"; {second} holds a copy no simulator uses there, which `queuekeeper remote setup --runtimes` then "
                         "deletes, leaving the two Macs alike")
     return item
 
@@ -392,14 +392,14 @@ def derived_data(host, usage, sizes):
 
 
 def app_builds(host, usage, sizes):
-    """eng app's store (app_builds.py): each project's kept builds, which stay, being what `eng app run` opens, and
+    """queuekeeper app's store (app_builds.py): each project's kept builds, which stay, being what `queuekeeper app run` opens, and
     its DerivedData for each platform, which only makes the next keep incremental and goes once idle."""
     root = host.home / APP_STORE
     if not root.is_dir(): return []
     items = []
     for project in sorted(child for child in root.iterdir() if child.is_dir() and not child.is_symlink()):
         if (project / "kept").is_dir():
-            items.append(Item("app-builds", str(project / "kept"), KEPT, "the last good builds `eng app run` opens, "
+            items.append(Item("app-builds", str(project / "kept"), KEPT, "the last good builds `queuekeeper app run` opens, "
                               "the newest two of each platform", sizes.of(project / "kept")))
         derived = project / "derived"
         if derived.is_dir() and kept_apps.Store(project.name, root).busy():
@@ -407,7 +407,7 @@ def app_builds(host, usage, sizes):
             items += [Item("app-builds", str(child), KEPT, "a keep is building with it now", sizes.of(child))
                       for child in sorted(derived.iterdir()) if child.is_dir() and not child.is_symlink()]
         elif derived.is_dir():
-            items += [cache_item(host, usage, sizes, "app-builds", child, "eng app's build cache, which the next keep "
+            items += [cache_item(host, usage, sizes, "app-builds", child, "queuekeeper app's build cache, which the next keep "
                                  "builds again in full") for child in sorted(derived.iterdir())
                       if child.is_dir() and not child.is_symlink()]
     return items
@@ -435,7 +435,7 @@ class Host(disk.Host):
     pools: frozenset = frozenset()
     matches: dict = None  # `simctl runtime match list -j`: the runtime build chosen for each SDK
     pinned: dict = field(default_factory=dict)  # runtime builds something else names, each with where
-    # The second Mac's runtime images as `eng remote setup --runtimes` reads them (remote.runtime_images), or
+    # The second Mac's runtime images as `queuekeeper remote setup --runtimes` reads them (remote.runtime_images), or
     # {"error": why} when they cannot be read; None without a second Mac.
     remote_runtimes: dict = None
 
@@ -468,8 +468,13 @@ def prime(host):
             (host.home / "Library/Caches/org.swift.swiftpm", 2)]
 
 
+def pins():
+    """What remote reads of pinned_builds, looked up when it asks."""
+    return pinned_builds()
+
+
 def register():
     """Add these items to `qk disk`."""
     from .. import remote  # remote imports the core's disk
     disk.extend(CATEGORIES, items, prime, Host)
-    if pinned_builds not in remote.PINNED_BUILDS: remote.PINNED_BUILDS.append(pinned_builds)
+    if pins not in remote.PINNED_BUILDS: remote.PINNED_BUILDS.append(pins)

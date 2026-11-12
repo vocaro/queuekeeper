@@ -3,7 +3,7 @@
 Xcode registers a Mac app when it builds it, and macOS registers one when it launches, and neither
 is undone. On 2026-10-31 the second Mac had 22 registered builds of one app, whose Quick Look
 extensions shared their bundle identifiers and version, and the system ran an old copy's extension
-instead of the build under test. So every outermost `eng run` and `eng admit` (around_run) watches
+instead of the build under test. So every outermost `queuekeeper run` and `queuekeeper admit` (around_run) watches
 its descendants for `xcodebuild -derivedDataPath FOLDER` and, however it ends, runs `lsregister -u`
 on each Mac app under those folders and `pluginkit -r` on each `Contents/PlugIns/*.appex` of it.
 
@@ -357,7 +357,7 @@ def nested():
 def around_run(commands, cwd):
     """Around a run's commands, each an argv: sweep what earlier runs left, follow what this run builds, and
     unregister it when the block ends, however it ends. A problem here is said and never changes the run's result."""
-    say = lambda text: print(f"eng: {text}", file=sys.stderr, flush=True)
+    say = lambda text: print(f"queuekeeper: {text}", file=sys.stderr, flush=True)
     watch, tally = None, Tally(say)
     try:
         if not nested():

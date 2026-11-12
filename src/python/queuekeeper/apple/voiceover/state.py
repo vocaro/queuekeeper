@@ -302,7 +302,7 @@ def _restore(lease, original, reader, toggle, *, settle, attempts=None):
 
 def set_enabled(desired, owner=None, *, record=None):
     """Choose a known state inside this process's preserved() scope for failure restoration.
-    The outer eng process is a separate guard; it does not share a child driver's context.
+    The outer queuekeeper process is a separate guard; it does not share a child driver's context.
     """
     _set(_lease(owner, record), desired, _read, _toggle)
 
@@ -314,11 +314,11 @@ def preserved(owner=None, *, target=None, record=None, read_state=None, toggle=N
     target=None preserves existing clients' initial on/off behavior. target=False is the
     explicit quiet-test opt-in. Dependencies are injectable for offline contract tests.
     settle=None watches the restored state hold for a stretched SETTLE only after this scope's own failed
-    transition; settle=True always does, as eng's guard around a child driver must: a child killed between its
+    transition; settle=True always does, as queuekeeper's guard around a child driver must: a child killed between its
     failed toggle and its own restoration tells the parent nothing, and its late key may still arrive.
     An initial read failure acted on nothing and may release cleanly. A failed transition,
     unreadable final state or lost ownership retains uncertainty for attended recovery.
-    Existing eng/driver signal handlers keep ownership; otherwise stop_signals handles stops.
+    Existing queuekeeper/driver signal handlers keep ownership; otherwise stop_signals handles stops.
     """
     if target is not None and type(target) is not bool: raise ValueError("VoiceOver target must be on or off")
     lease = _lease(owner, record)

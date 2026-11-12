@@ -344,15 +344,15 @@ def check(root, config, paths=(), out=print):
     failures = controls()
     if failures:
         for failure in failures:
-            out(f"eng spelling: CONTROL FAILED — {failure}")
-        out("eng spelling: FAIL — the detector itself is wrong; no file result can be trusted")
+            out(f"queuekeeper spelling: CONTROL FAILED — {failure}")
+        out("queuekeeper spelling: FAIL — the detector itself is wrong; no file result can be trusted")
         return 1
     rules = Rules(config.get("spelling"))
     named = []
     for path in paths:
         relative = os.path.relpath(Path(path).resolve(), root)
         if relative == ".." or relative.startswith("../"):
-            out(f"eng spelling: {path} is outside {root}; nothing was checked.")
+            out(f"queuekeeper spelling: {path} is outside {root}; nothing was checked.")
             return 2
         named.append(relative)
     untracked = ["--others", "--exclude-standard"] if named else []
@@ -360,7 +360,7 @@ def check(root, config, paths=(), out=print):
         listed = subprocess.run(["git", "-C", str(root), "ls-files", "-z", "--cached", *untracked,
                                  "--", *named], check=True, capture_output=True, timeout=60)
     except (OSError, subprocess.SubprocessError) as error:
-        out(f"eng spelling: cannot list tracked files ({error}); nothing was checked.")
+        out(f"queuekeeper spelling: cannot list tracked files ({error}); nothing was checked.")
         return 2
     this = Path(__file__).resolve()
     tracked = sorted({f for f in os.fsdecode(listed.stdout).split("\0") if f})
@@ -368,7 +368,7 @@ def check(root, config, paths=(), out=print):
     files = [f for f in tracked if not rules.skips(f) and os.path.splitext(f)[1].lower() not in BINARY
              and (root / f).is_file() and (root / f).resolve() != this]
     if named and not names:
-        out(f"eng spelling: no files under {' '.join(paths)}; nothing was checked.")
+        out(f"queuekeeper spelling: no files under {' '.join(paths)}; nothing was checked.")
         return 2
     found = 0
     for name, sub, american in british_names(names, rules):
@@ -382,10 +382,10 @@ def check(root, config, paths=(), out=print):
             out(f"{f}:{line}: British spelling '{sub}' -> {american}")
             found += 1
     if found:
-        out(f"eng spelling: FAIL — {found} British spelling(s) in {len(files)} text file(s) and "
+        out(f"queuekeeper spelling: FAIL — {found} British spelling(s) in {len(files)} text file(s) and "
             f"{len(names)} file name(s). Spell them the American way (agents/core.md, Writing).")
         return 1
-    out(f"eng spelling: PASS — {len(files)} text file(s) and {len(names)} file name(s), identifiers "
+    out(f"queuekeeper spelling: PASS — {len(files)} text file(s) and {len(names)} file name(s), identifiers "
         f"split at their word boundaries, {len(BRITISH_SAMPLES)}/{len(AMERICAN_SAMPLES)} British/"
         f"American word and {len(BRITISH_PATHS)}/{len(AMERICAN_PATHS)} file name controls held")
     return 0

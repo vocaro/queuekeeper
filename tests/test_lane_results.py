@@ -80,7 +80,7 @@ class LaneResultTests(unittest.TestCase):
                 lane_results.require_tests(text, expected=3)
 
 
-    # Tests selected as `eng run --expect 2 LANE -- --filter ...` selects them, in Swift 6.4's lines.
+    # Tests selected as `queuekeeper run --expect 2 LANE -- --filter ...` selects them, in Swift 6.4's lines.
     CANCELED = '-> Test %s() was cancelled after 0.001 seconds: "Set CORPUS for the admitted corpus."\n'
 
     TWO_CANCELED = CANCELED % "a" + CANCELED % "b" + "Test run with 2 tests in 1 suite passed after 0.001 seconds.\n"

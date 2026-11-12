@@ -3,7 +3,7 @@
 Every test module imports this first, and test_host_isolation fails one that does not. Importing it
 points HEAVY_SLOT_DIR and SW_GATE_LOCK_FILE at a directory private to this process, whatever they
 named before, so that a test which admits work without redirecting them, by `cli.main([... "run"
-...])`, `eng admit` or a subprocess that inherits the environment, admits it there. An entry a
+...])`, `queuekeeper admit` or a subprocess that inherits the environment, admits it there. An entry a
 test leaves has no process record, so recovery leaves it, and in the host's guard it blocked
 every session's heavy work until it was removed by hand (2026-10-31). The guard's default path is
 redirected too, for a test that clears the environment. A test that needs another namespace still
@@ -17,13 +17,13 @@ Every lane is admitted and offered to the second Mac first, so VOCARO_OFFLOAD_HO
 test runs, in this process or a child, reaches the real second Mac through the ssh alias. A test of the
 second Mac names its fake one, or clears the variable to read the alias, itself.
 
-`eng doctor` also fixes both Macs itself: it evens out their runtimes, deleting or copying them, and
+`queuekeeper doctor` also fixes both Macs itself: it evens out their runtimes, deleting or copying them, and
 shuts down stale pool simulators (cli.fix_hosts). Most doctor tests compare this Mac with the real
 second Mac, so cli.fix_hosts is replaced here by one that changes nothing; a test of the fixes calls
 FIX_HOSTS, the real one, against fakes. A heavy run here reaps this Mac first (cli.reap_here); VOCARO_REAP_BEFORE_RUN
 is set to off, so no run a test makes does.
 
-VOCARO_EVIDENCE_RETRY is set to off, so no eng a test runs offloads this Mac's evidence archives.
+VOCARO_EVIDENCE_RETRY is set to off, so no queuekeeper a test runs offloads this Mac's evidence archives.
 """
 import atexit
 import json
@@ -37,7 +37,11 @@ import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 from queuekeeper import cli, offload_host, remote, resources, shims
+from queuekeeper import apple
 from queuekeeper.apple import crash_alerts, device_notifications, notification_center
+
+# The suite runs with the Apple extension switched on, as the command does for every project.
+apple.register()
 from queuekeeper.waiting import stretched  # noqa: F401 -- the tests' bound on a stall, re-exported
 
 
@@ -107,7 +111,7 @@ os.environ.pop(remote.GATE_HOSTS, None)
 # receipt a test writes say it ran there; a test of a dispatch sets them itself.
 for variable in (remote.DISPATCHER, "VOCARO_DEVICE_LEASE"): os.environ.pop(variable, None)
 # The gate is a lane, so its suite inherits the name of the gate's own wait record: a lane a test runs would report its
-# waits there, into what `eng queue status` says of the gate, and never into its project's record (vocaro-engineering#335).
+# waits there, into what `queuekeeper queue status` says of the gate, and never into its project's record (vocaro-engineering#335).
 os.environ.pop(remote.lane_wait.VARIABLE, None)
 os.environ.pop("VOCARO_LANE_PROGRESS_RUN", None)
 # Nor does a lane a test runs write into what the enclosing lane set up for its own command: its results/, whose fixture
@@ -148,7 +152,7 @@ FIX_HOSTS = cli.fix_hosts
 RESPONSIBLE_FOR = remote.responsible_for
 remote.responsible_for = lambda pid: None
 
-# Nor does any eng a test runs, in this process or a child, start the evidence offload's background retry,
+# Nor does any queuekeeper a test runs, in this process or a child, start the evidence offload's background retry,
 # which would offer this Mac's real evidence archives to the real second Mac (vocaro-engineering#157). A test
 # of retry_soon clears it.
 os.environ["VOCARO_EVIDENCE_RETRY"] = "off"

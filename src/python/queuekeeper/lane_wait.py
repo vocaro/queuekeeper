@@ -1,6 +1,6 @@
-"""What a lane waits for now, in a small record beside its results, for `eng queue status` to read (#309).
+"""What a lane waits for now, in a small record beside its results, for `queuekeeper queue status` to read (#309).
 
-`eng run` names the record, .build/engineering/.waits/LANE.json, in VARIABLE for itself and everything it starts, and
+`queuekeeper run` names the record, .build/engineering/.waits/LANE.json, in VARIABLE for itself and everything it starts, and
 removes it when it ends. A lane on the second Mac has its own there, which offload_host sends back as it changes, as
 `W` frames that the dispatcher writes to the lane's record here (relayed), so that the one file says it on either Mac.
 The queue reads the record and no printed line: rewording what a wait prints changes nothing in status.
@@ -16,7 +16,7 @@ from pathlib import Path
 import time
 import uuid
 
-# Set by the outermost `eng run` for itself and all it starts, and by offload_host for the run it starts.
+# Set by the outermost `queuekeeper run` for itself and all it starts, and by offload_host for the run it starts.
 VARIABLE = "VOCARO_LANE_WAIT"
 WAITS = ".waits"
 HERE = "this Mac"
@@ -26,7 +26,7 @@ ADMISSION, SCREEN, FOREGROUND = "admission", "screen", "foreground"
 # Why a lane waits for this Mac instead of the second Mac; said beside the admission wait that follows it.
 UNREACHABLE, ALONE, OVERFLOW = "unreachable", "alone", "overflow"
 OFFERS = (UNREACHABLE, ALONE, OVERFLOW)
-# What `eng queue status` says after "waiting: ". Each wait's words live here and nowhere in the queue.
+# What `queuekeeper queue status` says after "waiting: ". Each wait's words live here and nowhere in the queue.
 WORDS = {ADMISSION: "admission on {mac}: {reason}",
          SCREEN: "an unlocked screen: {reason}",
          FOREGROUND: "the second Mac's foreground, {reason}",
@@ -170,7 +170,7 @@ def current(path, since=None):
 
 
 def admission_warnings(root, at=None):
-    """eng doctor's pointer for each lane of this checkout waiting for admission now: to `eng admissions now`, which
+    """queuekeeper doctor's pointer for each lane of this checkout waiting for admission now: to `queuekeeper admissions now`, which
     shows who holds and who waits on each Mac (vocaro-engineering#342). Doctor neither runs that report nor fails on it."""
     found = []
     try: paths = sorted((Path(root) / ".build/engineering" / WAITS).glob("*.json"))
@@ -186,7 +186,7 @@ def admission_warnings(root, at=None):
 
 
 def words(record):
-    """What the lane waits for, in the words `eng queue status` shows, or None when it waits for nothing."""
+    """What the lane waits for, in the words `queuekeeper queue status` shows, or None when it waits for nothing."""
     if not record or not record.get("kind"): return None
     said = WORDS[record["kind"]].format(mac=record.get("mac") or HERE, reason=record.get("reason"))
     offer = record.get("offer")

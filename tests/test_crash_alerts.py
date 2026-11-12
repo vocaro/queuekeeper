@@ -168,7 +168,7 @@ class GuardTests(HostTest):
 
     def test_a_run_whose_eng_died_leaves_its_record_and_the_next_eng_puts_the_value_back(self):
         self.host = Host(crash_alerts.OFF)
-        self.record.write_text(json.dumps({"before": "basic", "owner": "eng 1 for Project ui-mac", "pid": 999999,
+        self.record.write_text(json.dumps({"before": "basic", "owner": "queuekeeper 1 for Project ui-mac", "pid": 999999,
                                            "start": "Mon Nov  2 09:00:00 2026"}))
         # A run that still runs keeps its own.
         with patch.object(crash_alerts.resources, "process_start", return_value="Mon Nov  2 09:00:00 2026"):
@@ -179,8 +179,8 @@ class GuardTests(HostTest):
             crash_alerts.recover(self.said.append)
         self.assertEqual(self.host.value, "basic")
         self.assertFalse(self.record.exists())
-        self.assertIn("eng: eng 1 for Project ui-mac, which no longer runs, left crash-report dialogs off", self.said)
-        # eng's start does it, whatever the command.
+        self.assertIn("queuekeeper: queuekeeper 1 for Project ui-mac, which no longer runs, left crash-report dialogs off", self.said)
+        # queuekeeper's start does it, whatever the command.
         self.record.write_text(json.dumps({"before": None, "pid": 999999, "start": "earlier"}))
         self.host.value = crash_alerts.OFF
         with patch.object(crash_alerts.resources, "process_start", return_value=None), \
@@ -215,8 +215,8 @@ class GuardTests(HostTest):
         self.assertEqual(len(receipt["crashAlerts"]["cleared"]), 1)
 
     def test_an_alert_eng_may_not_clear_stops_the_run_unmeasured_before_it_starts(self):
-        for alert, words in ((PASSWORD, "owner's to answer and eng never touches"), (ACCESS, "owner's to answer"),
-                             (REOPEN_ONLY, "a system alert eng cannot dismiss")):
+        for alert, words in ((PASSWORD, "owner's to answer and queuekeeper never touches"), (ACCESS, "owner's to answer"),
+                             (REOPEN_ONLY, "a system alert queuekeeper cannot dismiss")):
             with self.subTest(alert["texts"][0]):
                 self.host = Host("basic", [alert])
                 ran = []
@@ -265,7 +265,7 @@ class WatchTests(HostTest):
             while not self.host.pressed and time.monotonic() < deadline: threading.Event().wait(0.01)
         self.assertEqual(self.host.pressed, [("UserNotificationCenter", "Ignore")])
         self.assertEqual(sum("system alerts cannot be read" in line for line in self.said), 1)
-        self.assertIn("eng looks again every 0.02 s", next(line for line in self.said if "cannot be read" in line))
+        self.assertIn("queuekeeper looks again every 0.02 s", next(line for line in self.said if "cannot be read" in line))
         self.assertEqual(sum("system alerts can be read again" in line for line in self.said), 1)
         self.assertEqual(run.summary()["looks"]["failed"], 1)
         self.assertGreaterEqual(run.summary()["looks"]["read"], 1)
@@ -279,7 +279,7 @@ class WatchTests(HostTest):
         self.assertEqual(run.looks, {"read": 0, "failed": 4, "glanced": 0})
         with contextlib.redirect_stderr(StringIO()) as error:
             self.assertEqual(run.judged(5), 5)
-        self.assertIn("eng: the run's status 5 stands, though no look during it could read the screen's system alerts",
+        self.assertIn("queuekeeper: the run's status 5 stands, though no look during it could read the screen's system alerts",
                       error.getvalue())
         # A run whose looks read the screen says nothing of it.
         self.host = Host("basic")
@@ -346,7 +346,7 @@ START = 1794026804.0
 
 
 class ClearedAlertTests(HostTest):
-    """A failed run during which eng cleared a crash-report alert (owner's decision, 2026-11-07, #226)."""
+    """A failed run during which queuekeeper cleared a crash-report alert (owner's decision, 2026-11-07, #226)."""
 
     def judged(self, alert, stood, apps=("EPUBLib",), status=65, during=True):
         """The status a run judges after one look cleared alert, whose press took stood seconds; the error
@@ -378,7 +378,7 @@ class ClearedAlertTests(HostTest):
     def test_another_process_s_alert_that_stood_longer_than_one_look_makes_a_failure_unmeasured(self):
         status, error, summary = self.judged(OTHER, 17)
         self.assertEqual(status, lane_results.UNMEASURED)
-        self.assertIn("eng: unmeasured: the run ended with status 65 after eng cleared a crash-report alert during it "
+        self.assertIn("queuekeeper: unmeasured: the run ended with status 65 after queuekeeper cleared a crash-report alert during it "
                       "that was for Crasher944, not the app under test (EPUBLib), and stood 17.0 s from "
                       "2026-11-07T04:46:44+00:00, longer than one look (2 s)", error)
         self.assertIn("UserNotificationCenter's window at x 734, y 201, 260×250", error)
@@ -396,12 +396,12 @@ class ClearedAlertTests(HostTest):
                 (OTHER, crash_alerts.ONE_LOOK, ("EPUBLib",), "within one look"),
                 (UNDER_TEST, 30, ("EPUBLib",), "was for EPUBLib, the app under test, whose crash is the run's failure"),
                 (UNDER_TEST, 30, ("epublib",), "the app under test"),
-                (NAMELESS, 30, ("EPUBLib",), "names no process eng can read, so eng counts it as the app under test's"),
+                (NAMELESS, 30, ("EPUBLib",), "names no process queuekeeper can read, so queuekeeper counts it as the app under test's"),
                 (OTHER, 30, (), "the run names no app under test")):
             with self.subTest(alert=alert["texts"][0], stood=stood, apps=apps):
                 status, error, summary = self.judged(alert, stood, apps)
                 self.assertEqual(status, 65, error)
-                self.assertIn("eng: the run's status 65 stands: the crash-report alert eng cleared during it ", error)
+                self.assertIn("queuekeeper: the run's status 65 stands: the crash-report alert queuekeeper cleared during it ", error)
                 self.assertIn(why, error)
                 self.assertNotIn("unmeasured", error)
                 self.assertEqual(summary["cleared"][0]["stoodSeconds"], round(stood, 1))
@@ -465,7 +465,7 @@ class LaneTests(HostTest):
                         patch.object(cli, "source_identity", return_value={}),
                         patch.object(cli, "refresh_policy", return_value=None),
                         patch.object(voiceover_state, "_read", return_value=False),
-                        # eng's guard around a foreground run always settles, for a stretched SETTLE. VoiceOver is
+                        # queuekeeper's guard around a foreground run always settles, for a stretched SETTLE. VoiceOver is
                         # a fake here that never changes, so no settle can show a late key: the real 5 s, stretched
                         # by load, held each run 40 to 120 s on a loaded host, and 0.3 s still 7 s at the stretch cap.
                         patch.object(voiceover_state, "SETTLE", 0.05),
@@ -475,13 +475,13 @@ class LaneTests(HostTest):
             self.addCleanup(patcher.stop)
         os.environ.pop(devices.OWNER, None)
 
-    def eng(self, *arguments):
+    def qk(self, *arguments):
         with contextlib.redirect_stderr(StringIO()) as error, contextlib.redirect_stdout(StringIO()):
             return cli.main(["--project", str(self.project), *arguments]), error.getvalue()
 
     def test_a_foreground_lane_clears_a_crash_report_and_passes_with_dialogs_put_back(self):
         self.host.alerts = [CRASH]
-        status, error = self.eng("run", "--here", "ui-mac")
+        status, error = self.qk("run", "--here", "ui-mac")
         self.assertEqual(status, 0, error)
         self.assertIn("dismissed a crash-report alert with Ignore", error)
         self.assertEqual((self.host.value, self.host.changes), ("basic", [crash_alerts.OFF, "basic"]))
@@ -489,7 +489,7 @@ class LaneTests(HostTest):
         self.assertEqual(receipt["crashAlerts"]["dialogTypeBefore"], "basic")
         self.assertTrue(receipt["crashAlerts"]["restored"])
         # A failing lane fails, and dialogs are back.
-        self.assertEqual(self.eng("run", "--here", "broken-mac")[0], 1)
+        self.assertEqual(self.qk("run", "--here", "broken-mac")[0], 1)
         self.assertEqual(self.host.value, "basic")
 
     def test_an_owner_prompt_leaves_a_lane_and_admit_unmeasured_with_nothing_run(self):
@@ -497,7 +497,7 @@ class LaneTests(HostTest):
         for arguments in (("run", "--here", "ui-mac"),
                           ("admit", "--foreground", "--", sys.executable, "-c", f"open({str(self.ran)!r}, 'a')")):
             with self.subTest(arguments[0]):
-                status, error = self.eng(*arguments)
+                status, error = self.qk(*arguments)
                 self.assertEqual(status, lane_results.UNMEASURED, error)
                 self.assertIn("password, permission or keychain prompt", error)
                 self.assertIn("SecurityAgent's window at x 600, y 300, 400×220", error)
@@ -515,14 +515,14 @@ class LaneTests(HostTest):
             self.host.alerts = [REOPEN_ONLY]
             return left
         with patch.object(crash_alerts.Run, "look", look):
-            status, error = self.eng("run", "--here", "broken-mac")
+            status, error = self.qk("run", "--here", "broken-mac")
             self.assertEqual(status, lane_results.UNMEASURED, error)
-            self.assertIn("ended with status 1 while a system alert eng cannot dismiss", error)
+            self.assertIn("ended with status 1 while a system alert queuekeeper cannot dismiss", error)
             receipt = json.loads((self.project / ".build/engineering/broken-mac/source.json").read_text())
             self.assertEqual(receipt["outcome"], "unmeasured")
             # A lane that passes under it passed.
             self.host.alerts = []
-            self.assertEqual(self.eng("run", "--here", "ui-mac")[0], 0)
+            self.assertEqual(self.qk("run", "--here", "ui-mac")[0], 0)
         self.assertTrue(self.ran.exists())
 
     def test_a_lane_that_fails_after_eng_cleared_another_process_s_long_alert_is_unmeasured(self):
@@ -542,7 +542,7 @@ class LaneTests(HostTest):
                     patch.object(crash_alerts.Run, "look", lambda run, alert=alert, **options: look(run, alert,
                                                                                                      **options)):
                 self.host.alerts = []
-                status, error = self.eng("run", "--here", lane)
+                status, error = self.qk("run", "--here", lane)
                 self.assertEqual(status, outcome, error)
                 receipt = json.loads((self.project / f".build/engineering/{lane}/source.json").read_text())
                 cleared = receipt["crashAlerts"]["cleared"]
@@ -550,10 +550,10 @@ class LaneTests(HostTest):
                                  [(crash_alerts.crashed(alert), 17.0, True)])
                 self.assertEqual(receipt["crashAlerts"]["appsUnderTest"], ["EPUBLib"] if lane == "tested-mac" else [])
                 if outcome == lane_results.UNMEASURED:
-                    self.assertIn("after eng cleared a crash-report alert during it that was for Crasher944", error)
+                    self.assertIn("after queuekeeper cleared a crash-report alert during it that was for Crasher944", error)
                     self.assertEqual(receipt["outcome"], "unmeasured")
                 else:
-                    self.assertIn("eng: the run's status 1 stands", error)
+                    self.assertIn("queuekeeper: the run's status 1 stands", error)
 
     def test_a_lanes_apps_are_names_of_a_foreground_lane(self):
         from queuekeeper import config
@@ -587,7 +587,7 @@ class LaneTests(HostTest):
         failing = [sys.executable, "-c", "raise SystemExit(4)"]
         with patch.object(crash_alerts, "clock", lambda: now[0]), patch.object(crash_alerts, "press", press), \
                 patch.object(crash_alerts.Run, "look", look):
-            status, error = self.eng("admit", "--foreground", "--app", "EPUBLib", "--", *failing)
+            status, error = self.qk("admit", "--foreground", "--app", "EPUBLib", "--", *failing)
             self.assertEqual(status, lane_results.UNMEASURED, error)
             self.assertIn("not the app under test (EPUBLib)", error)
             receipt = json.loads((self.project / ".build/engineering/admit/source.json").read_text())
@@ -596,14 +596,14 @@ class LaneTests(HostTest):
                 "start": "2026-11-07T04:46:44+00:00", "stoodSeconds": 17.0, "duringRun": True
             }])
             self.assertTrue(receipt["crashAlerts"]["restored"])
-            status, error = self.eng("admit", "--foreground", "--app", "Crasher944", "--", *failing)
+            status, error = self.qk("admit", "--foreground", "--app", "Crasher944", "--", *failing)
             self.assertEqual(status, 4, error)
-        self.assertEqual(self.eng("admit", "--app", "EPUBLib", "--", "true")[0], 2)
+        self.assertEqual(self.qk("admit", "--app", "EPUBLib", "--", "true")[0], 2)
         sent = []
         with patch.object(remote, "execute", side_effect=lambda root, config, host, work, **options:
                           sent.append(work) or 0), \
                 patch.object(remote, "offering_here", side_effect=lambda here, send: send()):
-            self.assertEqual(self.eng("remote", "admit", "--foreground", "--app", "EPUBLib", "--app", "EPUBLibUITests",
+            self.assertEqual(self.qk("remote", "admit", "--foreground", "--app", "EPUBLib", "--app", "EPUBLibUITests",
                                       "--", "true")[0], 0)
         self.assertEqual(sent, [["admit", "--foreground", "--app", "EPUBLib", "--app", "EPUBLibUITests", "--", "true"]])
 
@@ -624,7 +624,7 @@ class ReportTests(unittest.TestCase):
         said = self.report({"value": "none", "record": {"before": "basic"}, "alerts": []})
         self.assertIn("puts back com.apple.CrashReporter DialogType basic", said)
         # While a run holds the foreground, dialogs off are that run's.
-        held = {"state": "held", "ownerChatID": "eng 5 on Medias-MacBook-Pro-4", "purpose": "ui-mac"}
+        held = {"state": "held", "ownerChatID": "queuekeeper 5 on Medias-MacBook-Pro-4", "purpose": "ui-mac"}
         self.assertNotIn("crash-report", self.report({"value": "none", "record": {"before": "basic"}, "alerts": []},
                                                      held))
         self.assertIn("cannot be read", self.report({"value": "basic", "record": None, "alerts": None}))

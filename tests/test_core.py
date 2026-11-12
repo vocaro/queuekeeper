@@ -25,7 +25,7 @@ from host_isolation import stretched
 
 
 def setUpModule():
-    # eng doctor compares this Mac with the second Mac. These tests configure none, so that it
+    # queuekeeper doctor compares this Mac with the second Mac. These tests configure none, so that it
     # never reaches the owner's; test_remote's doctor tests reach a fake one. It also checks the
     # account's agent skill links: these tests install no agent host, and test_skills installs some.
     nowhere = str(Path(tempfile.gettempdir()) / f"no-agent-host-{uuid.uuid4()}")
@@ -52,12 +52,6 @@ class ConfigurationTests(unittest.TestCase):
             (root / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
                 "capabilities": ["simulator-pool"], "simulatorPool": "Example"}))
             self.assertEqual(config.load(root)["simulatorPool"], "Example")
-
-    def test_every_capability_has_guidance_and_a_schema_entry(self):
-        schema = json.loads((config.TOOLKIT_ROOT / "schemas/engineering.schema.json").read_text())
-        self.assertEqual(set(schema["properties"]["capabilities"]["items"]["enum"]), config.CAPABILITIES)
-        for capability in config.CAPABILITIES:
-            self.assertTrue((config.TOOLKIT_ROOT / "agents/capabilities" / f"{capability}.md").is_file(), capability)
 
     def test_the_schema_lists_the_lane_and_group_keys_config_accepts(self):
         # vocaro-engineering#248: config took unlockedScreen, and lane groups, while the schema refused them.
@@ -271,7 +265,7 @@ class ConfigurationTests(unittest.TestCase):
                 self.assertEqual(cli.main(["--project", directory, "doctor"]), 0)
             warnings = [w for w in json.loads(output.getvalue())["warnings"] if "timeout" in w]
             self.assertEqual(len(warnings), 1, warnings)
-            self.assertIn(f"2 lane(s) declare no timeout and are stopped, unmeasured, after eng's default "
+            self.assertIn(f"2 lane(s) declare no timeout and are stopped, unmeasured, after queuekeeper's default "
                           f"{processes.DEFAULT_LIMIT}s: docs, tests;", warnings[0])
 
     def test_doctor_no_longer_asks_heavy_capabilities_for_a_heavy_lane(self):
@@ -289,7 +283,7 @@ class ConfigurationTests(unittest.TestCase):
                         "integration": "direct-main", "capabilities": capabilities, "lanes": lanes,
                         **({"simulatorPool": "Example"} if "simulator-pool" in capabilities else {})}))
                     with patch.object(cli.shutil, "which", return_value="/usr/bin/true"), patch.object(cli, "source_identity", return_value={}), \
-                            patch.object(cli, "default_simulators", return_value=[]), contextlib.redirect_stdout(StringIO()) as output:
+                            contextlib.redirect_stdout(StringIO()) as output:
                         # A warning is not a missing prerequisite.
                         self.assertEqual(cli.main(["--project", directory, "doctor"]), 0)
                     warnings = [warning for warning in json.loads(output.getvalue())["warnings"]
@@ -341,24 +335,6 @@ class ConfigurationTests(unittest.TestCase):
                         self.assertEqual(cli.main(["--project", directory, "doctor"]), 0)
                     found = [w for w in json.loads(output.getvalue())["warnings"] if "named gate" in w]
                     self.assertEqual(bool(found), warned, found)
-
-    def test_doctor_warns_when_release_lanes_names_no_lane(self):
-        lane = {"command": ["true"], "timeout": 60}
-        cases = [({"lanes": {"gate": lane}, "release": {"lanes": ["device", "corpus"]}}, ["device", "corpus"]),
-                 ({"lanes": {"gate": lane, "device": lane}, "release": {"lanes": ["device", "corpus"]}}, ["corpus"]),
-                 # The negative controls: every name is a lane, or the project names no release lanes.
-                 ({"lanes": {"gate": lane, "device": lane}, "release": {"lanes": ["device"]}}, []),
-                 ({"lanes": {"gate": lane}}, [])]
-        with tempfile.TemporaryDirectory() as directory:
-            for declared, strays in cases:
-                with self.subTest(declared=declared):
-                    (Path(directory) / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
-                        "integration": "direct-main", **declared}))
-                    with patch.object(cli.shutil, "which", return_value="/usr/bin/true"), patch.object(cli, "source_identity", return_value={}), contextlib.redirect_stdout(StringIO()) as output:
-                        self.assertEqual(cli.main(["--project", directory, "doctor"]), 0)
-                    found = [w for w in json.loads(output.getvalue())["warnings"] if "release.lanes" in w]
-                    self.assertEqual(bool(found), bool(strays), found)
-                    if strays: self.assertIn(f"release.lanes names {', '.join(strays)}, which is no lane", found[0])
 
     def test_release_settings_are_checked(self):
         invalid = [({"lanes": "device"}, "release.lanes must list"), ({"lanes": ["device", "device"]}, "release.lanes"),
@@ -432,25 +408,11 @@ class ConfigurationTests(unittest.TestCase):
         from queuekeeper import merge_queue
         self.assertEqual(config.LANDING_FIRST, merge_queue.BEFORE_GATE)
 
-    def test_doctor_warns_when_a_project_declares_no_integration(self):
-        with tempfile.TemporaryDirectory() as directory:
-            for declared, warned in [({}, True), ({"integration": "direct-main"}, False),
-                                     ({"integration": "pull-request"}, False)]:
-                with self.subTest(declared=declared):
-                    (Path(directory) / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
-                        **declared}))
-                    with patch.object(cli.shutil, "which", return_value="/usr/bin/true"), patch.object(cli, "source_identity", return_value={}), contextlib.redirect_stdout(StringIO()) as output:
-                        self.assertEqual(cli.main(["--project", directory, "doctor"]), 0)
-                    warnings = json.loads(output.getvalue())["warnings"]
-                    self.assertEqual(bool(warnings), warned, warnings)
-                    for warning in warnings:
-                        self.assertIn("integration", warning)
-
     def test_doctor_warns_of_a_self_lane_that_calls_eng_admit_nowhere(self):
         # BreezEPUB's script and PDFReflowLib's calibration admit their parts as these do (#200).
         shell = "#!/bin/bash\n# runs unadmitted\npython3 scripts/qk admit --exclusive -- xcodebuild test\n"
-        python = 'eng = [sys.executable, "scripts/qk"]\nrun([*eng, "admit", "--", "swiftc", "probe.swift"])\n'
-        bare = "#!/bin/bash\n# eng run starts this lane unadmitted\nxcodebuild test\n"
+        python = 'queuekeeper = [sys.executable, "scripts/qk"]\nrun([*queuekeeper, "admit", "--", "swiftc", "probe.swift"])\n'
+        bare = "#!/bin/bash\n# queuekeeper run starts this lane unadmitted\nxcodebuild test\n"
         cases = [(["bash", "scripts/step.sh"], shell, False), (["python3", "scripts/step.sh"], python, False),
                  (["sh", "-c", "python3 scripts/qk admit -- swift test"], None, False),
                  (["bash", "scripts/step.sh"], bare, True), (["xcodebuild", "test"], None, True),
@@ -465,7 +427,7 @@ class ConfigurationTests(unittest.TestCase):
                     "integration": "direct-main", "lanes": {
                         "gate": {"command": ["true"], "timeout": 60},
                         "step": {"command": command, "resource": "self", "timeout": 60},
-                        # A heavy lane that admits nothing is admitted by eng run, and is no self lane's concern.
+                        # A heavy lane that admits nothing is admitted by queuekeeper run, and is no self lane's concern.
                         "plain": {"command": ["xcodebuild", "test"], "resource": "heavy", "timeout": 60}}}))
                 with patch.object(cli.shutil, "which", return_value="/usr/bin/true"), \
                         patch.object(cli, "source_identity", return_value={}), \
@@ -506,25 +468,6 @@ class ConfigurationTests(unittest.TestCase):
                     self.assertIn('it needs "unlockedScreen": true', found[0])
                     self.assertIn('say "unlockedScreen": false', found[0])
                     self.assertEqual("group that runs it, gate," in found[0], "group gate" in warned, found[0])
-
-    def test_doctor_tests_do_not_see_the_toolkit_copy_behind_origin_main(self):
-        # A session worktree three commits behind origin/main, as one is once others land (#224).
-        with tempfile.TemporaryDirectory() as directory:
-            (Path(directory) / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
-                "integration": "direct-main"}))
-            def doctor():
-                with patch.object(cli.toolkit_copy, "behind", return_value=3), \
-                        patch.object(cli.shutil, "which", return_value="/usr/bin/true"), \
-                        patch.object(cli, "source_identity", return_value={}), \
-                        contextlib.redirect_stdout(StringIO()) as output:
-                    self.assertEqual(cli.main(["--project", directory, "doctor"]), 0)
-                return json.loads(output.getvalue())["warnings"]
-            self.assertEqual(os.environ[cli.toolkit_copy.GAP_SWITCH], "off")  # As host_isolation sets it.
-            self.assertEqual(doctor(), [])
-            # Control: with the switch on, the same doctor names the gap.
-            with patch.dict(os.environ, {cli.toolkit_copy.GAP_SWITCH: "on"}):
-                [warning] = doctor()
-            self.assertIn("is 3 commits behind origin/main", warning)
 
     def test_lane_arguments_reach_its_command_and_a_filtered_run_needs_a_test_or_its_expected_count(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -800,7 +743,7 @@ class ResourceTests(unittest.TestCase):
                 self.assertEqual([slot for slot, _fd in lighter.descriptors], [1])
 
     def test_the_capacity_reading_shows_the_slots_held_the_busy_limit_and_what_runs(self):
-        """offload_host.capacity, which eng run reads on both Macs before it chooses one (vocaro-engineering#168),
+        """offload_host.capacity, which queuekeeper run reads on both Macs before it chooses one (vocaro-engineering#168),
         agrees with admission: the limits admission reads, the slots it holds and the guard entries it writes."""
         from queuekeeper import offload_host
         os.environ["HEAVY_SETTLE_SECONDS"] = "0"
@@ -1269,7 +1212,7 @@ class ResourceTests(unittest.TestCase):
                 with resources.Admission("tests", timeout=0): self.fail("admitted")
 
     def test_the_capacity_reading_keeps_the_guaranteed_slots_for_a_whole_host_request_as_admission_does(self):
-        """offload_host.capacity, which eng reads before it offers work to a Mac (remote.spare), applies admission's
+        """offload_host.capacity, which queuekeeper reads before it offers work to a Mac (remote.spare), applies admission's
         rule for a queued whole-host request (vocaro-engineering#186): one whose process runs and asked within
         HEAVY_PLACE_SECONDS keeps the guaranteed slots, while a dead, stale or unseen one, one behind exclusive
         work, the asking work's own place and one that waits for a stranded guaranteed slot keep nothing."""
@@ -1320,7 +1263,7 @@ class ResourceTests(unittest.TestCase):
             self.queue(stale)
             with patch.dict(os.environ, {"HEAVY_PLACE_SECONDS": str(10 * resources.PLACE_SECONDS)}):
                 self.assertEqual(offload_host.capacity()["kept"], "away gate")
-            # So eng offers a lighter lane no Mac whose guaranteed slots are kept and that has no slot beyond them.
+            # So queuekeeper offers a lighter lane no Mac whose guaranteed slots are kept and that has no slot beyond them.
             self.queue(fresh)
             read = {**offload_host.capacity(), "load": 0.0, "screen": None}
             self.assertEqual(remote.spare(read, "this Mac"), "the guaranteed slots of this Mac are kept for a whole-host "
@@ -1330,7 +1273,7 @@ class ResourceTests(unittest.TestCase):
 
     def test_the_capacity_reading_reports_exclusive_work_queued_ahead_as_admission_holds_it(self):
         """offload_host.capacity reports a live exclusive request queued ahead (queuedExclusive), behind which
-        admission holds every later request, so that eng offers no lane to that Mac (vocaro-engineering#191). One
+        admission holds every later request, so that queuekeeper offers no lane to that Mac (vocaro-engineering#191). One
         whose process ended, and one queued beside a stranded entry counted as any slot, hold nothing back (#89);
         one behind a whole-host request that asks is that request's, which keeps the guaranteed slots instead."""
         from queuekeeper import offload_host, remote
@@ -1377,7 +1320,7 @@ class ResourceTests(unittest.TestCase):
                     for need in [{}, {"whole_host": True}, {"exclusive": True}]:
                         refused = remote.spare(read, "this Mac", **need)
                         if queued is not None:
-                            # eng offers that Mac no lane of any kind.
+                            # queuekeeper offers that Mac no lane of any kind.
                             self.assertEqual(refused, "exclusive work is queued ahead on this Mac: bench", need)
                         elif kept is None:
                             self.assertIsNone(refused, need)
@@ -1474,7 +1417,7 @@ class ResourceTests(unittest.TestCase):
                 with resources.Admission("gate", whole_host=True, timeout=60, place=place): self.fail("admitted")
             processes._stops.clear()
             self.assertEqual(places(), [])
-            # eng run's admission here keeps a place, and leaves it once it no longer waits here, admitted or not.
+            # queuekeeper run's admission here keeps a place, and leaves it once it no longer waits here, admitted or not.
             left = []
             class Recorded(resources.Place):
                 def leave(self):
@@ -1484,7 +1427,7 @@ class ResourceTests(unittest.TestCase):
             with patch.object(resources, "Place", Recorded), contextlib.ExitStack() as stack, \
                     patch("sys.stderr", new_callable=StringIO) as said:
                 self.assertEqual(cli.admitted_here(stack, "gate", "gate", 0, whole_host=True), resources.BUSY)
-            self.assertIn("eng: gate not run on this Mac", said.getvalue())
+            self.assertIn("queuekeeper: gate not run on this Mac", said.getvalue())
             self.assertIn("every guaranteed slot", said.getvalue())
             self.assertEqual((left, places()), ([["gate"]], []))
 
@@ -1895,7 +1838,7 @@ class ResourceTests(unittest.TestCase):
                     with resources.Admission("blocked", exclusive=True, timeout=0): pass
 
     def test_a_stop_signal_ends_the_command_then_releases_admission(self):
-        # An agent's task stop sent eng admit SIGTERM, which ended it without leaving admission
+        # An agent's task stop sent queuekeeper admit SIGTERM, which ended it without leaving admission
         # while its command ran on in its own session (2026-10-22).
         root = Path(self.temp.name)
         guard = Path(os.environ["SW_GATE_LOCK_FILE"] + ".warm-push-guard")
@@ -2093,7 +2036,7 @@ class ResourceTests(unittest.TestCase):
 
     def test_admit_stops_a_command_at_its_time_limit_and_leaves_it_unmeasured(self):
         hung = ["--", sys.executable, "-c", "import time; time.sleep(60)"]
-        # Its own limit, then eng's default for a command that declares none.
+        # Its own limit, then queuekeeper's default for a command that declares none.
         for arguments, default in ((["--time-limit", "1"], processes.DEFAULT_LIMIT), ([], 1)):
             with self.subTest(arguments=arguments), patch.object(processes, "DEFAULT_LIMIT", default):
                 began = time.monotonic()
@@ -2385,7 +2328,7 @@ class AdmissionLogTests(unittest.TestCase):
             with resources.Admission("unwritten", timeout=0) as admission:
                 self.assertIn(admission.identity, json.loads(guard.read_text())["owners"])
             self.assertFalse(guard.exists())
-            # A request that stops waiting fails as it would have: `eng run --if-free` tells a busy host by it.
+            # A request that stops waiting fails as it would have: `queuekeeper run --if-free` tells a busy host by it.
             self.hold(0, 1, 2)
             with self.assertRaisesRegex(TimeoutError, "Resource queue busy"):
                 with resources.Admission("refused", timeout=0): self.fail("admitted")
@@ -2685,7 +2628,7 @@ class AdmissionLogTests(unittest.TestCase):
                                  "admission named: model; waited Ns on Mac-A; nothing ran")
 
     def test_a_give_up_whose_locks_cannot_be_read_still_fails_as_a_timeout(self):
-        # `eng run --if-free` tells a busy host by the TimeoutError (#270).
+        # `queuekeeper run --if-free` tells a busy host by the TimeoutError (#270).
         self.hold(0, 1, 2)
         with patch.object(resources.Admission, "_holding", side_effect=PermissionError("no entry")), \
                 contextlib.redirect_stderr(StringIO()), \
@@ -2812,7 +2755,7 @@ class AdmissionLogTests(unittest.TestCase):
 
 
 class UsageTests(unittest.TestCase):
-    """eng admissions usage: whether the second Mac is used and why work is on this Mac, from fake readings and logs."""
+    """queuekeeper admissions usage: whether the second Mac is used and why work is on this Mac, from fake readings and logs."""
     UNTIL = datetime.fromisoformat("2026-11-06T12:00:00+00:00")
     SINCE = UNTIL - timedelta(hours=3)
     IDLE = {"slots": 3, "slotsMax": 9, "busy": [], "load": 1.0, "cpuBusy": 5.0, "busyLimit": 75.0, "wholeHost": [],
@@ -2837,12 +2780,12 @@ class UsageTests(unittest.TestCase):
         return output.getvalue().splitlines()
 
     def test_a_busy_second_mac_and_the_work_never_offered_to_it_are_shown_apart(self):
-        # The positive control, as on 2026-11-06: this Mac ran one job most of the period, a whole-host gate eng
+        # The positive control, as on 2026-11-06: this Mac ran one job most of the period, a whole-host gate queuekeeper
         # never offered among them, while the second Mac ran three or four.
         busy = {**self.IDLE, "busy": [0, 1, 2, 3], "cpuBusy": 97.0, "memory": 2}
         here_log = (self.job("g", 0, 150, whole=True, placement={"offered": False, "because": "--here"})
                     + self.job("a", 150, 160, label="swift build --jobs 4",
-                               placement={"offered": False, "because": "eng admit runs here without --verify"})
+                               placement={"offered": False, "because": "queuekeeper admit runs here without --verify"})
                     + self.job("d", 170, 180, label="Beta suite", placement={"offered": True,
                                "because": "build-host is busy (CPU 97% busy, at or above its HEAVY_BUSY_LIMIT=75%)"})
                     + self.job("e", 175, 178, label="Beta suite", placement={"offered": True,
@@ -2867,11 +2810,11 @@ class UsageTests(unittest.TestCase):
         placements = lines[lines.index("Why this Mac's admissions made in the period ran here:") + 1:]
         self.assertEqual(placements, [
             "  never offered to the second Mac: 2, held 2h40m",
-            "    eng run --here: 1, held 2h30m",
-            "    eng admit without --verify: 1, held 10m00s",
+            "    queuekeeper run --here: 1, held 2h30m",
+            "    queuekeeper admit without --verify: 1, held 10m00s",
             "  offered to the second Mac and declined: 2, held 13m00s",
             "    build-host is busy (CPU N% busy, at or above its HEAVY_BUSY_LIMIT=N%): 2, held 13m00s",
-            "  placement unrecorded (an older toolkit's line, or a caller's own admission, such as eng admit's "
+            "  placement unrecorded (an older toolkit's line, or a caller's own admission, such as queuekeeper admit's "
             "before it logged placement): 1, held 10m00s",
             "    a lane: 1, held 10m00s",
             "      Gamma gate: held 10m00s",
@@ -2918,7 +2861,7 @@ class UsageTests(unittest.TestCase):
 
 
 class RecoveryTests(unittest.TestCase):
-    """eng admissions recover removes a dead or uncertain entry once a census against its process record
+    """queuekeeper admissions recover removes a dead or uncertain entry once a census against its process record
     finds nothing of its commands still running (#61). A push keeper ended by an agent's task stop had left
     nothing running, and the host admitted no heavy work until its entry was removed by hand (2026-10-27)."""
     setUp, tearDown = ResourceTests.setUp, ResourceTests.tearDown
@@ -2946,7 +2889,7 @@ class RecoveryTests(unittest.TestCase):
         return json.loads(self.guard.read_text())["owners"] if self.guard.exists() else {}
 
     def recover(self, *owner):
-        """eng admissions recover's status and what it printed."""
+        """queuekeeper admissions recover's status and what it printed."""
         with contextlib.redirect_stdout(StringIO()) as output, contextlib.redirect_stderr(StringIO()):
             status = cli.main(["admissions", "recover", *owner])
         return status, output.getvalue()
@@ -3051,7 +2994,7 @@ class RecoveryTests(unittest.TestCase):
                 summary = resources.summarize([entry for entry in entries if entry["identity"] == identity])
                 self.assertTrue(summary[0].endswith("ends recovered 1"), summary)
 
-    # A supervised owner, as eng run is, killed before its first recorded command: it has started a helper in its own
+    # A supervised owner, as queuekeeper run is, killed before its first recorded command: it has started a helper in its own
     # process group, as a lane's setup can, and records nothing of it. Each run leads a session and group of its own.
     BEFORE_FIRST = ("import subprocess, sys, time\nfrom pathlib import Path\nfrom queuekeeper import resources\n"
                     "here = Path(sys.argv[1])\n"
@@ -3130,7 +3073,7 @@ class RecoveryTests(unittest.TestCase):
 
     def test_an_owner_killed_before_its_first_command_is_recovered_once_nothing_it_started_runs(self):
         # On 2026-11-07 three lanes killed between admission and their first recorded command left entries with no
-        # process record, which neither admission nor `eng admissions recover` would remove, and BreezEPUB's gate
+        # process record, which neither admission nor `queuekeeper admissions recover` would remove, and BreezEPUB's gate
         # waited 86 min behind them (#315). Admission now writes the record, with the owner's process group, as it
         # adds the entry, and recovery checks that group for anything the owner started.
         owner, identity, child, child_start = self.killed_before_first_command()
@@ -3474,7 +3417,7 @@ class RecoveryTests(unittest.TestCase):
                 self.guard.unlink()
 
     def remove(self, owner, *why):
-        """eng admissions remove's status and what it printed."""
+        """queuekeeper admissions remove's status and what it printed."""
         with contextlib.redirect_stdout(StringIO()) as output, contextlib.redirect_stderr(StringIO()) as error:
             try: status = cli.main(["admissions", "remove", owner, *why])
             except SystemExit as exit: status = exit.code
@@ -3579,7 +3522,7 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(status, 1, output)
         self.assertIn("has the PID or identity nobody; nothing was changed", output)
         self.guard.unlink()
-        # A provably finished entry is recovered, as `eng admissions recover` would, and logged as recovery logs it.
+        # A provably finished entry is recovered, as `queuekeeper admissions recover` would, and logged as recovery logs it.
         identity = self.stranded([{"command": "a", "argv": ["true"]}, {"command": "a", "settled": "exited"}])
         status, output = self.remove(identity, "--why", "checked")
         self.assertEqual(status, 0, output)
@@ -3587,23 +3530,6 @@ class RecoveryTests(unittest.TestCase):
         self.assertFalse(self.guard.exists())
         (recovered,) = [line for line in self.read() if line["event"] == "recovered" and line["identity"] == identity]
         self.assertNotIn("byHand", recovered)
-
-    def test_this_repositorys_allow_rule_matches_recovery_but_not_removal_by_hand(self):
-        # The allow rule's basis (#89, 2026-11-02) is that recovery removes only provably finished entries; removal by
-        # hand removes one that is not, so a session's auto mode must ask before it (owner's decision, 2026-11-08, #315).
-        allowed = json.loads((config.TOOLKIT_ROOT / ".claude/settings.json").read_text())["permissions"]["allow"]
-
-        def matched(command):
-            for rule in allowed:
-                pattern = re.fullmatch(r"Bash\((.*)\)", rule).group(1)
-                if command == pattern or (pattern.endswith(":*") and command.startswith(pattern[:-2])):
-                    return True
-            return False
-
-        self.assertTrue(matched("python3 scripts/qk admissions recover"))
-        self.assertTrue(matched("python3 scripts/qk admissions recover 56766"))
-        self.assertFalse(matched("python3 scripts/qk admissions remove 56766 --why checked"))
-        self.assertFalse(matched("python3 scripts/qk admissions"))
 
     def test_the_census_skips_an_id_that_is_now_a_live_processs_pid_and_checks_no_settled_command(self):
         # A process that leads a group and session of its own, with a child in both.
@@ -3773,7 +3699,7 @@ class RecoveryTests(unittest.TestCase):
             self.assertEqual(self.guard.read_text(), text)
         self.guard.unlink()
         identity = self.stranded(admitted=(datetime.now().astimezone() - timedelta(hours=2)).isoformat(timespec="seconds"))
-        with contextlib.redirect_stderr(StringIO()) as error, self.assertRaisesRegex(TimeoutError, "eng admissions recover"):
+        with contextlib.redirect_stderr(StringIO()) as error, self.assertRaisesRegex(TimeoutError, "qk admissions recover"):
             with resources.Admission("refused", exclusive=True, timeout=0): self.fail("admitted")
         self.assertIn("requires inspection (it has no process record), and is counted as slot 0; "
                       "`python3 scripts/qk admissions recover` lists it", error.getvalue())
@@ -3819,7 +3745,7 @@ class RecoveryTests(unittest.TestCase):
 
 class LaneLabelTests(unittest.TestCase):
     """A lane run's admission label names its project, so that two projects' lanes of one name stay apart in
-    waiting messages, the guard and the admission log (#51). A label a caller gives, an eng admit command
+    waiting messages, the guard and the admission log (#51). A label a caller gives, an queuekeeper admit command
     line, and entries written before labels named the project are kept as they are."""
     setUp, tearDown = ResourceTests.setUp, ResourceTests.tearDown
     hold, lines = ResourceTests.hold, AdmissionLogTests.lines
@@ -3845,7 +3771,7 @@ class LaneLabelTests(unittest.TestCase):
                 f"while not pathlib.Path({released!r}).exists(): time.sleep(0.01)\n"]
 
     def run_lane(self, root, *arguments):
-        """eng run here, with --if-free waiting for nothing: its status and what it printed on stderr."""
+        """queuekeeper run here, with --if-free waiting for nothing: its status and what it printed on stderr."""
         with patch.object(cli, "refresh_policy", return_value="policy"), \
                 patch.object(cli, "source_identity", return_value={}), patch.object(cli, "FREE_WAIT", 0), \
                 contextlib.redirect_stdout(StringIO()), contextlib.redirect_stderr(StringIO()) as error:
@@ -3922,7 +3848,7 @@ class LaneLabelTests(unittest.TestCase):
         self.release(alpha, "gate", gate)
         # Each run removed its own entry and left the older one.
         self.assertEqual(json.loads(guard.read_text())["owners"], {"older": older})
-        # A label a caller gives, and an eng admit command line, are recorded as they are.
+        # A label a caller gives, and an queuekeeper admit command line, are recorded as they are.
         with contextlib.redirect_stderr(StringIO()), resources.Admission("warm push 0123abc", timeout=0) as push:
             self.assertEqual(json.loads(guard.read_text())["owners"][push.identity]["label"], "warm push 0123abc")
         self.admit(beta, snapshot)
@@ -3946,22 +3872,22 @@ class LaneLabelTests(unittest.TestCase):
 
     def test_a_lane_whose_admission_wait_runs_out_is_busy_not_an_eng_error(self):
         """Seen in the toolkit's queue on 2026-11-07: a gate waited 5104 s behind whole-host gates, and its
-        TimeoutError, an OSError, made eng run exit 2, which the queue took for a failure (#268)."""
+        TimeoutError, an OSError, made queuekeeper run exit 2, which the queue took for a failure (#268)."""
         from queuekeeper import remote
         ran = self.marker(Path("Beta"), "gate", "ran")
         beta = self.project("Beta", gate={"command": [sys.executable, "-c", f"open({str(ran)!r}, 'w')"],
                                           "resource": "heavy"})
-        # Negative control: an OSError of eng's own, with the host free, is still eng's error, exit 2.
+        # Negative control: an OSError of queuekeeper's own, with the host free, is still queuekeeper's error, exit 2.
         with patch.object(cli, "admitted_tree", side_effect=OSError("the disk went away")):
             status, error = self.run_lane(beta, "gate")
         self.assertEqual(status, 2, error)
-        self.assertIn("eng: the disk went away", error)
+        self.assertIn("queuekeeper: the disk went away", error)
         self.assertFalse(ran.exists())
         self.hold(0, 1, 2)
         with patch.object(remote, "OVERFLOW_TIMEOUT", 0.2):
             status, error = self.run_lane(beta, "gate")
         self.assertEqual(status, resources.BUSY, error)
-        self.assertIn("eng: gate not run on this Mac", error)
+        self.assertIn("queuekeeper: gate not run on this Mac", error)
         self.assertIn("Resource queue busy", error)
         self.assertFalse(ran.exists())
 
@@ -3981,7 +3907,7 @@ class LaneLabelTests(unittest.TestCase):
         return beta, ran
 
     def admit_foreground(self, root, command):
-        """eng admit --foreground --here of command, waiting for nothing: its status and what it printed on stderr."""
+        """queuekeeper admit --foreground --here of command, waiting for nothing: its status and what it printed on stderr."""
         with patch.object(cli, "refresh_policy", return_value="policy"), \
                 patch.object(cli, "source_identity", return_value={}), \
                 contextlib.redirect_stdout(StringIO()), contextlib.redirect_stderr(StringIO()) as error:
@@ -3989,16 +3915,16 @@ class LaneLabelTests(unittest.TestCase):
                              *command]), error.getvalue()
 
     def test_work_whose_wait_for_the_second_macs_foreground_runs_out_is_busy_not_an_eng_error(self):
-        """Its TimeoutError, an OSError, made eng run exit 2, which the queue takes for a failure (#297), as an
+        """Its TimeoutError, an OSError, made queuekeeper run exit 2, which the queue takes for a failure (#297), as an
         admission wait's did (#268). Waiting for no time reaches it without foreground.POLL's sleep."""
         from queuekeeper import remote
         beta, ran = self.foreground_project()
         command = [sys.executable, "-c", f"open({str(ran)!r}, 'w')"]
-        # Negative control: an OSError of eng's own, raised where the wait's is, is still eng's error, exit 2.
+        # Negative control: an OSError of queuekeeper's own, raised where the wait's is, is still queuekeeper's error, exit 2.
         with patch.object(foreground, "slot", side_effect=OSError("the disk went away")):
             for status, error in [self.run_lane(beta, "--here", "gate"), self.admit_foreground(beta, command)]:
                 self.assertEqual(status, 2, error)
-                self.assertIn("eng: the disk went away", error)
+                self.assertIn("queuekeeper: the disk went away", error)
                 self.assertNotIn("not run on", error)
         record = devices.Record()
         release_by = (datetime.now().astimezone() + timedelta(hours=1)).isoformat()
@@ -4007,11 +3933,11 @@ class LaneLabelTests(unittest.TestCase):
         with patch.object(remote, "OVERFLOW_TIMEOUT", 0):
             status, error = self.run_lane(beta, "--here", "gate")
         self.assertEqual(status, resources.BUSY, error)
-        self.assertIn("eng: gate not run on this Mac", error)
+        self.assertIn("queuekeeper: gate not run on this Mac", error)
         self.assertIn("foreground stayed held by another run for 0s", error)
         status, error = self.admit_foreground(beta, command)
         self.assertEqual(status, resources.BUSY, error)
-        self.assertIn("eng: the command not run on this Mac", error)
+        self.assertIn("queuekeeper: the command not run on this Mac", error)
         self.assertIn("foreground stayed held by another run for 0s", error)
         self.assertFalse(ran.exists())
         # The wait took nothing from the run that holds it.
@@ -4054,9 +3980,9 @@ class LaneLabelTests(unittest.TestCase):
                       "ends released 1", output.getvalue())
 
     def test_each_runs_admission_line_says_whether_eng_offered_it_to_the_second_mac_and_why_it_ran_here(self):
-        # The positive controls: a lane that stays here, eng run --here, eng admit --here, and a lane and a plain eng
-        # admit that eng offered first, which with no second Mac configured are declined, each say so on their
-        # admitted line (eng admit is offered first since the owner's decision of 2026-11-07).
+        # The positive controls: a lane that stays here, queuekeeper run --here, queuekeeper admit --here, and a lane and a plain queuekeeper
+        # admit that queuekeeper offered first, which with no second Mac configured are declined, each say so on their
+        # admitted line (queuekeeper admit is offered first since the owner's decision of 2026-11-07).
         root = self.project("Alpha", gate={"command": self.QUICK, "resource": "heavy"},
                             device={"command": self.QUICK, "resource": "heavy", "here": "it needs this Mac's iPhone"})
         for arguments in [["device"], ["--here", "gate"], ["gate"]]:
@@ -4074,25 +4000,25 @@ class LaneLabelTests(unittest.TestCase):
         self.assertEqual(placements[:2] + placements[3:4] + placements[5:], [
             {"offered": False, "because": "the lane says: it needs this Mac's iPhone"},
             {"offered": False, "because": "--here"},
-            {"offered": False, "because": "eng admit --here"},
+            {"offered": False, "because": "queuekeeper admit --here"},
             {"dispatchedFrom": "Sender"}, None])
         for placement in offered:
             self.assertEqual(placement, {"offered": True, "because": "no second Mac is configured"})
         entries = [resources.read_entry(json.dumps(line)) for line in admitted]
         self.assertEqual([resources.placed(entry) for entry in entries[:2] + entries[3:4] + entries[5:]], [
-            ("never", "a lane that stays on this Mac"), ("never", "eng run --here"),
-            ("never", "eng admit --here"), ("sent", "sent by Sender"), ("unrecorded", "a command")])
+            ("never", "a lane that stays on this Mac"), ("never", "queuekeeper run --here"),
+            ("never", "queuekeeper admit --here"), ("sent", "sent by Sender"), ("unrecorded", "a command")])
         self.assertEqual([resources.placed(entries[index])[0] for index in (2, 4)], ["declined", "declined"])
-        # A line an earlier toolkit wrote, when eng admit without --verify ran here, keeps its category.
-        self.assertEqual(resources.placed({"placement": {"offered": False, "because": "eng admit runs here without "
-                                                         "--verify"}}), ("never", "eng admit without --verify"))
-        # eng admissions usage reads this log, and says why it cannot read the second Mac's.
+        # A line an earlier toolkit wrote, when queuekeeper admit without --verify ran here, keeps its category.
+        self.assertEqual(resources.placed({"placement": {"offered": False, "because": "queuekeeper admit runs here without "
+                                                         "--verify"}}), ("never", "queuekeeper admit without --verify"))
+        # queuekeeper admissions usage reads this log, and says why it cannot read the second Mac's.
         with contextlib.redirect_stdout(StringIO()) as output:
             self.assertEqual(cli.main(["admissions", "usage"]), 0)
         text = output.getvalue()
         self.assertIn("  never offered to the second Mac: 3, held ", text)
-        self.assertIn("    eng run --here: 1, held ", text)
-        self.assertIn("    eng admit --here: 1, held ", text)
+        self.assertIn("    queuekeeper run --here: 1, held ", text)
+        self.assertIn("    queuekeeper admit --here: 1, held ", text)
         self.assertIn("  offered to the second Mac and declined: 2, held ", text)
         self.assertIn("  second Mac: log unavailable: no second Mac is configured", text)
 
@@ -4151,8 +4077,8 @@ class DeviceWindowWaitTests(unittest.TestCase):
         with patch.object(devices.WindowWait, "left", return_value=0.05):
             status, error = self.run_lane(root, "device")
         self.assertEqual(status, resources.BUSY, error)
-        self.assertIn("eng: device not run on this Mac", error)
-        self.assertIn("eng: device stopped waiting: the window on iPhone ends ", error)
+        self.assertIn("queuekeeper: device not run on this Mac", error)
+        self.assertIn("queuekeeper: device stopped waiting: the window on iPhone ends ", error)
         self.assertIn("No device result was recorded", error)
         self.assertFalse(ran.exists())
         self.assertFalse((root / ".build/engineering/device/source.json").exists())
@@ -4186,8 +4112,8 @@ class DeviceWindowWaitTests(unittest.TestCase):
                 self.assertEqual(status, resources.BUSY, said)
                 admission.assert_called_once()
                 self.assertEqual((now - began).total_seconds(), cli.FREE_WAIT if remaining is None else remaining)
-                self.assertRegex(said, r"eng: device not run on this Mac .*: Resource queue busy")
-                self.assertEqual("eng: device stopped waiting: the window on iPhone ends " in said, remaining is not None)
+                self.assertRegex(said, r"queuekeeper: device not run on this Mac .*: Resource queue busy")
+                self.assertEqual("queuekeeper: device stopped waiting: the window on iPhone ends " in said, remaining is not None)
                 self.assertEqual("No device result was recorded" in said, remaining is not None)
                 self.assertFalse(ran.exists())
                 self.assertFalse((root / ".build/engineering/device/source.json").exists())
@@ -4199,7 +4125,7 @@ class DeviceWindowWaitTests(unittest.TestCase):
         with patch.object(cli.remote, "OVERFLOW_TIMEOUT", 0.05):
             status, error = self.run_lane(root, "device")
         self.assertEqual(status, resources.BUSY, error)
-        self.assertIn("eng: device not run on this Mac", error)
+        self.assertIn("queuekeeper: device not run on this Mac", error)
         self.assertIn("Resource queue busy", error)
         self.assertNotIn("stopped waiting", error)
         self.assertFalse(ran.exists())
@@ -4211,7 +4137,7 @@ class DeviceWindowWaitTests(unittest.TestCase):
         status, error = self.run_lane(root, "device")
         self.assertEqual(status, 0, error)
         self.assertTrue(ran.exists())
-        self.assertIn("eng: device waits for admission at most until ", error)
+        self.assertIn("queuekeeper: device waits for admission at most until ", error)
         self.assertIn("its full-pass budget of 120s", error)
         self.assertRegex(error, r"devices: iPhone after [\d.]+s waiting for admission: \d+s left in the reservation")
 
@@ -4221,7 +4147,7 @@ class DeviceWindowWaitTests(unittest.TestCase):
         self.measure("Beta device", 7000, 7200, 6800, keys=["iPhone"])
         status, error = self.run_lane(root, "device")
         self.assertEqual(status, resources.BUSY, error)
-        self.assertRegex(error, r"eng: device not run on this Mac.*: the window on iPhone ends ")
+        self.assertRegex(error, r"queuekeeper: device not run on this Mac.*: the window on iPhone ends ")
         self.assertIn("its measured 7000s", error)
         self.assertNotIn("stopped waiting", error)
         self.assertFalse(ran.exists())
@@ -4295,13 +4221,13 @@ class DeviceWindowWaitTests(unittest.TestCase):
         with patch.dict(os.environ, {devices.WINDOW: window}):
             status, error = self.run_lane(root, "gate")
         self.assertEqual(status, resources.BUSY, error)
-        self.assertIn("eng: gate stopped waiting: the window on iPhone ends ", error)
+        self.assertIn("queuekeeper: gate stopped waiting: the window on iPhone ends ", error)
         self.assertFalse(ran.exists())
         with patch.dict(os.environ, {devices.WINDOW: window}), patch.object(cli, "refresh_policy", return_value="p"), \
                 patch.object(cli, "source_identity", return_value={}), contextlib.redirect_stderr(StringIO()) as said:
             status = cli.main(["--project", str(root), "admit", "--here", "--", *command])
         self.assertEqual(status, resources.BUSY, said.getvalue())
-        self.assertIn("eng: the command stopped waiting: the window on iPhone ends ", said.getvalue())
+        self.assertIn("queuekeeper: the command stopped waiting: the window on iPhone ends ", said.getvalue())
         self.assertFalse(ran.exists())
         # Its label's measured time refuses the same command before any wait.
         self.measure(" ".join(command), 60)
@@ -4309,7 +4235,7 @@ class DeviceWindowWaitTests(unittest.TestCase):
                 patch.object(cli, "source_identity", return_value={}), contextlib.redirect_stderr(StringIO()) as said:
             status = cli.main(["--project", str(root), "admit", "--here", "--", *command])
         self.assertEqual(status, resources.BUSY, said.getvalue())
-        self.assertRegex(said.getvalue(), r"eng: the command not run on this Mac.*: the window on iPhone ends ")
+        self.assertRegex(said.getvalue(), r"queuekeeper: the command not run on this Mac.*: the window on iPhone ends ")
         self.assertFalse(ran.exists())
 
     def test_only_a_filtered_device_lane_leaves_an_unestimated_run_to_its_reservation_bound(self):

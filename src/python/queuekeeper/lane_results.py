@@ -114,7 +114,7 @@ BEFORE_TESTS = 4
 # SKIPPED tests/test_x.py::test_y[1] - Skipped: Unmeasured: ... (pytest 8.4.2, with and without
 # pytest-xdist 3.8.0, November 2026). Its -v lines truncate the reason, and under xdist omit it.
 UNMEASURED_TEST = re.compile(r"^.*:\d+: -\[[^\]\n]+\] : Test skipped - Unmeasured: .*$"
-                             # eng simulator-tests' line for one a result bundle records: DEVICE: -[TEST] : ...
+                             # queuekeeper simulator-tests' line for one a result bundle records: DEVICE: -[TEST] : ...
                              r"|^\S+: -\[[^\]\n]+\] : Test skipped - Unmeasured: .*$"
                              r"|^\S+ Test .* was cancelled after [^:\n]*: \"Unmeasured: .*\"$"
                              r"|^.* \.\.\. skipped 'Unmeasured: .*'$"
@@ -127,7 +127,7 @@ SERIES = re.compile(r"^Repeat series: asked (\d+) repeats?\b", re.M)
 
 
 def repeats_asked(arguments):
-    """N of a `--repeat N` among a lane's arguments, the series eng run asked for; None when none was asked for, and 0
+    """N of a `--repeat N` among a lane's arguments, the series queuekeeper run asked for; None when none was asked for, and 0
     when N is no count, which a run reads as a series of none."""
     arguments = list(arguments)
     if "--repeat" not in arguments: return None
@@ -136,7 +136,7 @@ def repeats_asked(arguments):
 
 
 def series_reported(text):
-    """How many repeats a log's series says were asked for, from eng simulator-tests' summary, or None when the log
+    """How many repeats a log's series says were asked for, from queuekeeper simulator-tests' summary, or None when the log
     reports no series: a command that ignored --repeat ran it once at most, whatever its status says."""
     found = SERIES.findall(text)
     return int(found[-1]) if found else None

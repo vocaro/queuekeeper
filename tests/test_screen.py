@@ -183,7 +183,7 @@ class ScrollBarTests(unittest.TestCase):
             receipt = {}
             said(receipt, "gate", False)
             self.assertEqual(receipt["scrollBars"], recording)
-            self.assertEqual(error.getvalue(), "eng: scroll bars: legacy (AppleShowScrollBars unset, pointing devices: USB "
+            self.assertEqual(error.getvalue(), "queuekeeper: scroll bars: legacy (AppleShowScrollBars unset, pointing devices: USB "
                                                "Mouse) on this Mac (m) at 03:18:00\n")
             # The negative controls: work nested in an admission or a self lane, and a dispatch's provision lane.
             error.truncate(0), error.seek(0)
@@ -227,7 +227,7 @@ class PlacementTests(unittest.TestCase):
                 self.assertIsNone(remote.spare(self.capacity(state), "the second Mac", whole_host=True))
 
     def offer(self, screen):
-        offered = remote.Offer("gate", "`eng run --here gate`", lambda host, sent: 0, whole_host=True, screen=screen)
+        offered = remote.Offer("gate", "`queuekeeper run --here gate`", lambda host, sent: 0, whole_host=True, screen=screen)
         offered.host = "fake"
         return offered
 
@@ -296,9 +296,9 @@ class AdmissionTests(unittest.TestCase):
         status, error = self.admit(True)
         self.assertEqual(status, resources.BUSY)
         self.assertEqual(self.admitted, [])
-        self.assertIn("eng: gate waits: the lane needs an unlocked screen, and this Mac (Trevors-MacBook-Pro-715)'s is "
+        self.assertIn("queuekeeper: gate waits: the lane needs an unlocked screen, and this Mac (Trevors-MacBook-Pro-715)'s is "
                       "locked", error)
-        self.assertIn("eng: gate not run on this Mac (Trevors-MacBook-Pro-715): the lane needs an unlocked screen", error)
+        self.assertIn("queuekeeper: gate not run on this Mac (Trevors-MacBook-Pro-715): the lane needs an unlocked screen", error)
         # Without --if-free it waits out its time for an unlocked screen, then declines, still running nothing.
         status, error = self.admit(True, once=False, timeout=0.05)
         self.assertEqual((status, self.admitted), (resources.BUSY, []))
@@ -323,7 +323,7 @@ class AdmissionTests(unittest.TestCase):
         with patch.dict(os.environ, {remote.DISPATCHER: "Trevors-MacBook-Pro-715"}):
             status, error = self.admit(True)
         self.assertEqual(status, resources.BUSY)
-        self.assertIn("eng: gate not run on the second Mac (Trevors-MacBook-Pro-715)", error)
+        self.assertIn("queuekeeper: gate not run on the second Mac (Trevors-MacBook-Pro-715)", error)
 
 
 class InheritedAdmissionTests(unittest.TestCase):
@@ -391,13 +391,13 @@ class MessageTests(unittest.TestCase):
         self.addCleanup(names.stop)
 
     def test_a_fallback_says_in_one_line_that_the_run_is_on_this_mac_and_why(self):
-        offered = remote.Offer("gate", "`eng run --here gate`", lambda host, sent: 0)
+        offered = remote.Offer("gate", "`queuekeeper run --here gate`", lambda host, sent: 0)
         offered.status = "the second Mac is busy: build-host did not take it: its heavy-work queue cannot take the lane now"
         offered.sent = {"commit": "0b1d0b3b9329"}
         with patch.dict(os.environ), patch("sys.stderr", new_callable=StringIO) as error:
             os.environ.pop(remote.DISPATCHER, None)
             cli.fell_back("gate", offered)
-        self.assertEqual(error.getvalue(), "eng: gate runs on this Mac (Trevors-MacBook-Pro-715), not the second Mac: the "
+        self.assertEqual(error.getvalue(), "queuekeeper: gate runs on this Mac (Trevors-MacBook-Pro-715), not the second Mac: the "
                          "second Mac is busy: build-host did not take it: its heavy-work queue cannot take the lane now; "
                          "the second Mac's lines above are from the offer it did not take\n")
 
@@ -408,19 +408,19 @@ class MessageTests(unittest.TestCase):
             os.environ.pop(remote.DISPATCHER, None)
             cli.unmeasured_screen("gate", receipt)
         self.assertEqual(error.getvalue().splitlines(), [
-            "eng: gate unmeasured on this Mac (Trevors-MacBook-Pro-715)",
-            "eng: screen: locked (console user trevorharmon, CGSSessionScreenIsLocked yes, IOConsoleLocked no) on this "
+            "queuekeeper: gate unmeasured on this Mac (Trevors-MacBook-Pro-715)",
+            "queuekeeper: screen: locked (console user trevorharmon, CGSSessionScreenIsLocked yes, IOConsoleLocked no) on this "
             "Mac (Trevors-MacBook-Pro-715) at 03:18:00"])
         self.assertEqual(receipt["screenAfter"]["state"], "locked")
 
     def test_a_hold_for_an_unmeasured_run_quotes_the_last_screen_reading(self):
         with tempfile.TemporaryDirectory() as directory:
             log = Path(directory) / "gate.log"
-            log.write_text("eng: screen: unlocked (console user trevorharmon, CGSSessionScreenIsLocked absent, "
+            log.write_text("queuekeeper: screen: unlocked (console user trevorharmon, CGSSessionScreenIsLocked absent, "
                            "IOConsoleLocked no) on this Mac (Trevors-MacBook-Pro-715) at 01:39:20\n"
                            "Test case 'ReaderTests/scroll()' Unmeasured: the screen is locked; the accessibility "
                            "service hides the test window\n"
-                           "eng: screen: locked (console user trevorharmon, CGSSessionScreenIsLocked yes, "
+                           "queuekeeper: screen: locked (console user trevorharmon, CGSSessionScreenIsLocked yes, "
                            "IOConsoleLocked no) on this Mac (Trevors-MacBook-Pro-715) at 01:58:02\n")
             worker = Namespace(timed_out=None)
             with patch.object(mq.lane_results, "unmeasured_tests", return_value=["Test case 'ReaderTests/scroll()' "
@@ -432,7 +432,7 @@ class MessageTests(unittest.TestCase):
 
 
 class CommandTests(unittest.TestCase):
-    """`eng host screen [--remote]`."""
+    """`queuekeeper host screen [--remote]`."""
 
     def run_command(self, *arguments):
         with patch("sys.stdout", new_callable=StringIO) as out, patch.object(offload_host, "mac_name",

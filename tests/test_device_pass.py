@@ -1,4 +1,4 @@
-"""The release's device pass as a lane, `eng device-pass` (vocaro-engineering#148)."""
+"""The release's device pass as a lane, `queuekeeper device-pass` (vocaro-engineering#148)."""
 import contextlib
 from io import StringIO
 import json
@@ -220,7 +220,7 @@ class DevicePass(Fixture):
         self.assertEqual(len(self.ran()), 1)
 
 
-# The device pass as a lane's command in a subprocess, with the device's log watch replaced, as eng run runs it.
+# The device pass as a lane's command in a subprocess, with the device's log watch replaced, as queuekeeper run runs it.
 LANE = ("import sys; sys.path.insert(0, {source!r}); from queuekeeper.apple import device_notifications, device_pass; "
         "device_notifications.run = lambda command: (0, ''); "
         "device_notifications.watch = lambda udid: type('W', (), {{'stop': lambda self: "

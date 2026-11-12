@@ -89,7 +89,7 @@ class HostTest(unittest.TestCase):
 
     @contextlib.contextmanager
     def held(self):
-        """The second Mac's foreground, held as eng holds it for a run."""
+        """The second Mac's foreground, held as queuekeeper holds it for a run."""
         with foreground.slot("Project ui-mac", timeout=1, record=self.record, ready=lambda: [],
                              said=lambda text: None) as owner:
             yield owner
@@ -155,7 +155,7 @@ class DismissTests(HostTest):
         self.assertEqual(report["found"], ["Notification Center's window 29 (pid 754, layer 23) at x 0, y 0, 1728×1117"])
         self.assertEqual(report["closed"], ["banner at x 1380, y 40, 340×72 in window 29",
                                             "alert at x 1380, y 120, 340×96 in window 29"])
-        self.assertIn("eng: closed a Notification Center banner at x 1380, y 40, 340×72", self.said[0])
+        self.assertIn("queuekeeper: closed a Notification Center banner at x 1380, y 40, 340×72", self.said[0])
         # Only Close: never AXPress, which opens a notification, nor Clear All.
         for command in self.host.pressed:
             self.assertIn('label_ is "Close"', command[-1])
@@ -176,10 +176,10 @@ class DismissTests(HostTest):
         with self.assertRaisesRegex(devices.Refused, "name the session whose mac-foreground"):
             self.dismiss()
         with self.assertRaisesRegex(devices.Refused, "nobody holds mac-foreground"):
-            self.dismiss(owner="eng 1 on the second Mac")
+            self.dismiss(owner="queuekeeper 1 on the second Mac")
         # Another run's lease is not this one's.
         with self.held():
-            with self.assertRaisesRegex(devices.Refused, "held by eng"):
+            with self.assertRaisesRegex(devices.Refused, "held by queuekeeper"):
                 self.dismiss(owner="another session")
         # Nor on a Mac that is not the second Mac, the owner's workstation.
         workstation = devices.Record(self.root / "workstation.json")
@@ -195,7 +195,7 @@ class DismissTests(HostTest):
                 self.dismiss()
         self.assertIn("Notification Center's window 29 (pid 754, layer 23) at x 0, y 0, 1728×1117", str(caught.exception))
         # The banner went; the window did not, and nothing else is there to close.
-        self.assertIn("something eng may not close (no notification)", str(caught.exception))
+        self.assertIn("something queuekeeper may not close (no notification)", str(caught.exception))
         # A window whose notification will not close is named as well.
         self.host.notifications, self.host.closes = [BANNER], False
         with self.held():
@@ -267,13 +267,13 @@ class LaneTests(HostTest):
             patcher.start()
             self.addCleanup(patcher.stop)
 
-    def eng(self, *arguments):
+    def qk(self, *arguments):
         with contextlib.redirect_stderr(StringIO()) as error, contextlib.redirect_stdout(StringIO()):
             return cli.main(["--project", str(self.project), *arguments]), error.getvalue()
 
     def test_a_foreground_lane_closes_a_notification_and_then_runs(self):
         self.host.windows, self.host.notifications = [WINDOW, {**WINDOW, "number": 50, "layer": 0}], [BANNER]
-        status, error = self.eng("run", "--here", "ui-mac")
+        status, error = self.qk("run", "--here", "ui-mac")
         self.assertEqual(status, 0, error)
         self.assertTrue(self.ran.exists())
         self.assertIn("closed a Notification Center banner", error)
@@ -288,7 +288,7 @@ class LaneTests(HostTest):
         for arguments in (("run", "--here", "ui-mac"),
                           ("admit", "--foreground", "--", sys.executable, "-c", f"open({str(self.ran)!r}, 'a')")):
             with self.subTest(arguments[0]):
-                status, error = self.eng(*arguments)
+                status, error = self.qk(*arguments)
                 self.assertEqual(status, lane_results.UNMEASURED, error)
                 self.assertIn("Notification Center's window 29 (pid 754, layer 23)", error)
                 self.assertIn("nothing ran", error)
@@ -298,7 +298,7 @@ class LaneTests(HostTest):
         self.assertEqual(self.host.pressed, [])
 
     def test_no_window_runs_as_before(self):
-        status, error = self.eng("run", "--here", "ui-mac")
+        status, error = self.qk("run", "--here", "ui-mac")
         self.assertEqual(status, 0, error)
         self.assertEqual(self.host.pressed, [])
         receipt = json.loads((self.project / ".build/engineering/ui-mac/source.json").read_text())
@@ -306,12 +306,12 @@ class LaneTests(HostTest):
 
     def test_eng_host_notifications_lists_and_dismisses_only_under_the_lease(self):
         self.host.windows, self.host.notifications = [WINDOW], [BANNER]
-        self.assertEqual(self.eng("host", "notifications")[0], lane_results.UNMEASURED)
-        status, error = self.eng("host", "notifications", "--dismiss")
+        self.assertEqual(self.qk("host", "notifications")[0], lane_results.UNMEASURED)
+        status, error = self.qk("host", "notifications", "--dismiss")
         self.assertEqual(status, 1, error)
         self.assertEqual(self.host.pressed, [])
         with self.held():
-            self.assertEqual(self.eng("host", "notifications", "--dismiss")[0], 0)
+            self.assertEqual(self.qk("host", "notifications", "--dismiss")[0], 0)
         self.assertEqual(self.host.closed, [BANNER["kind"]])
 
 

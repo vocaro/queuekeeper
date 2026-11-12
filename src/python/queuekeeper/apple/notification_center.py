@@ -6,7 +6,7 @@ two exclusive foreground admissions, seven looks over 60 s among them with Finde
 BreezEPUB benchmark from launching until the owner closed it by hand (BreezEPUB#15). Crash-report alerts are
 UserNotificationCenter's and crash_alerts.py's (#118); this module is about NotificationCenter's own window.
 
-eng finds the window by the window list, which needs no permission: an on-screen window at layer 23 whose owner
+queuekeeper finds the window by the window list, which needs no permission: an on-screen window at layer 23 whose owner
 process runs NotificationCenter.app's executable. Only inside the second Mac's foreground lease, held by the run
 VOCARO_DEVICE_OWNER names, it closes each notification the window presents with that notification's own Close
 action through the accessibility API, the action its close button performs, and then looks at the window list
@@ -31,10 +31,10 @@ from .. import lane_results, offload_host
 EXECUTABLE = "/System/Library/CoreServices/NotificationCenter.app/Contents/MacOS/NotificationCenter"
 LAYER = 23
 # The accessibility subroles of a notification Notification Center presents, a banner or an alert. A stack of
-# them (…Stack) closes only with Clear All, which eng never uses.
+# them (…Stack) closes only with Clear All, which queuekeeper never uses.
 SUBROLES = ("AXNotificationCenterBanner", "AXNotificationCenterAlert")
 CLOSE = "Close"
-# Seconds eng looks for the window to leave the screen after closing its notifications, and between looks;
+# Seconds queuekeeper looks for the window to leave the screen after closing its notifications, and between looks;
 # rounds of closing, each for notifications that showed after the last round's.
 GONE = 5
 STEP = 0.5
@@ -160,7 +160,7 @@ return "gone\""""
 
 
 class Blocked(Exception):
-    """A Notification Center window eng cannot clear is over the screen, so the run cannot be measured."""
+    """A Notification Center window queuekeeper cannot clear is over the screen, so the run cannot be measured."""
 
 
 def label(action):
@@ -231,7 +231,7 @@ def closable(notification):
 
 
 def shown(notification):
-    """A notification's kind and frame, which is all eng says of one."""
+    """A notification's kind and frame, which is all queuekeeper says of one."""
     x, y, width, height = notification["frame"]
     return f"{notification['kind'].removeprefix('AXNotificationCenter').lower() or 'element'} at x {x}, y {y}, {width}×{height}"
 
@@ -245,11 +245,11 @@ def close(pid, notification):
 
 def lease(owner=None, record=None):
     """Refuse, with devices.Refused, unless this is the second Mac and owner, by default VOCARO_DEVICE_OWNER,
-    holds its mac-foreground lease: eng closes the owner's notifications only on a Mac nobody works at, and only
+    holds its mac-foreground lease: queuekeeper closes the owner's notifications only on a Mac nobody works at, and only
     for the run that holds its screen."""
     record = record or devices.Record()
     if not foreground.second_mac(record):
-        raise devices.Refused("eng closes Notification Center's notifications only on the second Mac, under the "
+        raise devices.Refused("queuekeeper closes Notification Center's notifications only on the second Mac, under the "
                               f"foreground lease a run holds there; this Mac's are the owner's ({GUIDE}, {SECTION})")
     devices.require_foreground(owner if owner is not None else os.environ.get(devices.OWNER), record)
 
@@ -275,14 +275,14 @@ def dismiss(said=None, *, owner=None, record=None, wait=GONE):
     said = said or (lambda text: print(text, file=sys.stderr, flush=True))
     found = windows()
     if found is None:
-        raise Blocked("the window list cannot be read, so eng cannot tell whether a Notification Center window is "
+        raise Blocked("the window list cannot be read, so queuekeeper cannot tell whether a Notification Center window is "
                       "over the screen")
     report = {"found": [describe(window) for window in found], "closed": []}
     if not found: return report
     lease(owner, record)
     if not trusted():
         raise Blocked(f"{describe(found[0])} is over the screen, and this process is not trusted for accessibility "
-                      "(AXIsProcessTrusted is false), so eng cannot close its notifications; the grant is the "
+                      "(AXIsProcessTrusted is false), so queuekeeper cannot close its notifications; the grant is the "
                       f"owner's ({GUIDE}, Setting up the second Mac's foreground)")
     for window in found:
         for _ in range(ROUNDS):
@@ -291,25 +291,25 @@ def dismiss(said=None, *, owner=None, record=None, wait=GONE):
                 raise Blocked(f"{describe(window)} is over the screen, and System Events cannot read its notifications")
             if any(owners(notification) for notification in presented):
                 raise Blocked(f"{describe(window)} presents a notification that asks for a password, permission or "
-                              "access, which is the owner's to answer and eng never touches")
+                              "access, which is the owner's to answer and queuekeeper never touches")
             targets = [notification for notification in presented if closable(notification)]
             # Anything else in the window, such as a stack, or the open panel's history and widgets, means it is
-            # not only banners and alerts over the screen: eng closes nothing then, so no history entry goes.
+            # not only banners and alerts over the screen: queuekeeper closes nothing then, so no history entry goes.
             others = [notification for notification in presented if not closable(notification)]
             if not targets or others:
                 kinds = ", ".join(shown(notification) for notification in others or presented) or "no notification"
-                raise Blocked(f"{describe(window)} is over the screen with something eng may not close ({kinds}); "
-                              "eng closes only banners and alerts with their own Close action, and only when the "
+                raise Blocked(f"{describe(window)} is over the screen with something queuekeeper may not close ({kinds}); "
+                              "queuekeeper closes only banners and alerts with their own Close action, and only when the "
                               "window presents nothing else, never Clear All")
             for notification in targets:
                 if not close(window["pid"], notification):
                     raise Blocked(f"{describe(window)}: System Events did not close its {shown(notification)}")
-                said(f"eng: closed a Notification Center {shown(notification)} in {describe(window)}")
+                said(f"queuekeeper: closed a Notification Center {shown(notification)} in {describe(window)}")
                 report["closed"].append(f"{shown(notification)} in window {window['number']}")
             left = gone(window["number"], wait)
             if left is None:
                 raise Blocked(f"the window list cannot be read after closing {describe(window)}'s notifications, so "
-                              "eng cannot confirm it gone")
+                              "queuekeeper cannot confirm it gone")
             if left: break
         else:
             raise Blocked(f"{describe(window)} stays on the screen after {ROUNDS} rounds of closing its notifications")
@@ -329,7 +329,7 @@ def main(argv=None):
     if argv == ["list"]:
         found = windows()
         if found is None:
-            said("eng: the window list cannot be read")
+            said("queuekeeper: the window list cannot be read")
             return 1
         for window in found: print(describe(window))
         if not found: print("no Notification Center window is over the screen")
@@ -337,12 +337,12 @@ def main(argv=None):
     try:
         report = dismiss(said)
     except devices.Refused as error:
-        said(f"eng: {error}")
+        said(f"queuekeeper: {error}")
         return 1
     except Blocked as error:
-        said(f"eng: unmeasured: {error} ({GUIDE}, {SECTION})")
+        said(f"queuekeeper: unmeasured: {error} ({GUIDE}, {SECTION})")
         return lane_results.UNMEASURED
-    if not report["found"]: said("eng: no Notification Center window is over the screen")
+    if not report["found"]: said("queuekeeper: no Notification Center window is over the screen")
     return 0
 
 

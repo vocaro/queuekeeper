@@ -1,4 +1,4 @@
-"""`eng simulator-pool reap` (offload_host.reap) over fake ps, lsof and simctl listings of a Mac whose home
+"""`queuekeeper simulator-pool reap` (offload_host.reap) over fake ps, lsof and simctl listings of a Mac whose home
 is a temporary directory, with its own device record, admission guard and log. No test runs simctl."""
 import contextlib
 from contextlib import redirect_stdout
@@ -465,7 +465,7 @@ class ReapTests(unittest.TestCase):
         self.assertFalse(self.log.exists())
 
     def test_a_take_that_its_session_still_holds_is_never_released_early(self):
-        # `eng simulator-pool take` records no ALONE: its session holds the member by its word between commands.
+        # `queuekeeper simulator-pool take` records no ALONE: its session holds the member by its word between commands.
         before = self.early(**{offload_host.ALONE: None})
         self.assertHeldEarly(self.reap(), "does not record that only its holder held it", before)
 
@@ -577,7 +577,7 @@ class ReapTests(unittest.TestCase):
             self.guard.write_text(json.dumps({"vocaroEngineering": 1, "owners": {"a" * 32: {
                 "pid": 106100, "start": self.table[106100][2], "label": "swift test"}}}))
         cases = (
-            ("a take's reservation", {offload_host.ALONE: None, "purpose": "eng simulator-pool take"}, None,
+            ("a take's reservation", {offload_host.ALONE: None, "purpose": "queuekeeper simulator-pool take"}, None,
              "not due for release"),
             ("one not marked held only while its holder runs", {offload_host.ALONE: False}, None, "not due for release"),
             # Its expected release, not yet passed, still holds it: the process that would end that runs.
@@ -785,7 +785,7 @@ class ReapTests(unittest.TestCase):
     # Condition 2: left over.
 
     def test_a_live_admission_that_holds_it_keeps_it_out_of_the_census(self):
-        self.process(HOLDER, 100900, "python3 eng simulator-tests")
+        self.process(HOLDER, 100900, "python3 queuekeeper simulator-tests")
         self.guard.write_text(json.dumps({"vocaroEngineering": 1, "owners": {"a" * 32: {
             "pid": HOLDER, "start": self.table[HOLDER][2]}}}))
         self.reserve(holderProcess={"pid": HOLDER, "start": self.table[HOLDER][2]})
@@ -876,7 +876,7 @@ class ReapTests(unittest.TestCase):
     # The second check.
 
     def taken(self):
-        self.process(HOLDER, 100900, "python3 eng simulator-pool take")
+        self.process(HOLDER, 100900, "python3 queuekeeper simulator-pool take")
         self.reserve(holderProcess={"pid": HOLDER, "start": self.table[HOLDER][2]})
 
     def test_a_device_taken_between_the_two_checks_is_not_stopped(self):
@@ -1036,7 +1036,7 @@ class ReapCommandTests(unittest.TestCase):
         status, output, local, far = self.run_command()
         request = {"pools": ["Example", "Pagepour"], "dry_run": False, "scan": True}
         local.assert_called_once_with(remote.ROOT, **request)
-        # `eng simulator-pool reap` also stops the leftovers it proves an ended run's; doctor only lists them.
+        # `queuekeeper simulator-pool reap` also stops the leftovers it proves an ended run's; doctor only lists them.
         far.assert_called_once_with("fake", request, True)
         self.assertEqual(status, 0)
         self.assertIn("on this Mac, no stale pool simulator", output)
@@ -1099,7 +1099,7 @@ class ReapBeforeRunTests(unittest.TestCase):
         self.calls.append(((root, request), (self.project / "ran").exists()))
         return self.report
 
-    def eng(self, *arguments, report=None):
+    def qk(self, *arguments, report=None):
         self.report = report or ReapCommandTests.EMPTY
         with patch.object(offload_host, "reap", side_effect=self.reaped), \
                 patch.object(cli, "source_identity", return_value={}), \
@@ -1109,17 +1109,17 @@ class ReapBeforeRunTests(unittest.TestCase):
             return cli.main(["--project", str(self.project), *arguments]), error.getvalue()
 
     def test_a_heavy_lane_run_here_reaps_this_mac_first_and_says_what_it_released(self):
-        status, error = self.eng("run", "--here", "heavy", report=self.RELEASED)
+        status, error = self.qk("run", "--here", "heavy", report=self.RELEASED)
         self.assertEqual(status, 0, error)
         # The project's pool, as a dispatch asks of the second Mac (remote.reap_request), before the lane ran: its
         # own admission, entered before the reap, does not count as one it inherited.
         self.assertEqual(self.calls, [((remote.ROOT, {"pools": ["Example"]}), False)])
         self.assertTrue((self.project / "ran").exists())
-        self.assertIn(f"eng: on {remote.HERE}, released {NAME} ({UDID}), held for owner session-gone", error)
+        self.assertIn(f"queuekeeper: on {remote.HERE}, released {NAME} ({UDID}), held for owner session-gone", error)
 
     def test_a_command_eng_admit_runs_here_reaps_this_mac_first(self):
-        # --here, since plain eng admit offers the command to the second Mac first, and says so when it runs here.
-        status, error = self.eng("admit", "--here", "--", sys.executable, "-c", "open('ran', 'a').write('ran')")
+        # --here, since plain queuekeeper admit offers the command to the second Mac first, and says so when it runs here.
+        status, error = self.qk("admit", "--here", "--", sys.executable, "-c", "open('ran', 'a').write('ran')")
         self.assertEqual(status, 0, error)
         self.assertEqual(self.calls, [((remote.ROOT, {"pools": ["Example"]}), False)])
         self.assertTrue((self.project / "ran").exists())
@@ -1127,9 +1127,9 @@ class ReapBeforeRunTests(unittest.TestCase):
         self.assertNotIn(f"on {remote.HERE}", error)
 
     def test_a_reaps_problem_is_said_and_the_work_runs_all_the_same(self):
-        status, error = self.eng("run", "--here", "heavy", report={**ReapCommandTests.EMPTY, "problem": "broken"})
+        status, error = self.qk("run", "--here", "heavy", report={**ReapCommandTests.EMPTY, "problem": "broken"})
         self.assertEqual(status, 0, error)
-        self.assertIn(f"eng: on {remote.HERE}, stopped no further simulator: broken", error)
+        self.assertIn(f"queuekeeper: on {remote.HERE}, stopped no further simulator: broken", error)
         self.assertTrue((self.project / "ran").exists())
 
     def test_self_dispatched_switched_off_and_nested_work_does_not_reap(self):
@@ -1141,7 +1141,7 @@ class ReapBeforeRunTests(unittest.TestCase):
         for name, (variables, arguments) in cases.items():
             with self.subTest(name), patch.dict(os.environ, variables):
                 (self.project / "ran").unlink(missing_ok=True)
-                status, error = self.eng(*arguments)
+                status, error = self.qk(*arguments)
                 self.assertEqual(status, 0, error)
                 self.assertTrue((self.project / "ran").exists())
                 self.assertEqual(self.calls, [])
@@ -1158,7 +1158,7 @@ class ReapBeforeRunTests(unittest.TestCase):
 
 class ReapSwitchTests(unittest.TestCase):
     def test_tests_run_with_the_reap_before_a_run_turned_off(self):
-        # host_isolation's setting, which a child eng that a test starts inherits.
+        # host_isolation's setting, which a child queuekeeper that a test starts inherits.
         self.assertEqual(os.environ.get(cli.REAP_SWITCH), "off")
 
 

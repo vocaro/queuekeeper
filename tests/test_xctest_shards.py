@@ -164,7 +164,7 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(status, 0, output)
         # As a lane counts the log: each process's totals once, the Swift Testing run's too.
         self.assertEqual(lane_results.counted(output), (6, 1))
-        self.assertIn("eng xctest: 6 tests (1 skipped) in 5 processes, 2 at a time", output)
+        self.assertIn("queuekeeper xctest: 6 tests (1 skipped) in 5 processes, 2 at a time", output)
         xctest = [call for call in self.calls() if call[0] == "xcrun"]
         selectors = sorted(s for call in xctest for s in call[1].split(","))
         self.assertEqual(selectors, ["Alpha.DoublingTests", "Alpha.SkippingTests", "Beta.FailingTests", "Beta.ZeroTests"])
@@ -219,7 +219,7 @@ class RunnerTests(unittest.TestCase):
         status, output = self.run_eng("--skip-build", FAKE_FAIL="1")
         self.assertEqual(status, 1)
         self.assertIn("planted failure", output)
-        self.assertRegex(output, r"eng xctest: .*FAILED: shard \d+ of \d+, Beta")
+        self.assertRegex(output, r"queuekeeper xctest: .*FAILED: shard \d+ of \d+, Beta")
 
     def test_a_process_past_its_timeout_is_stopped_and_leaves_the_run_unmeasured(self):
         # Fixed: the 5 s limit is the behavior under test. A sibling shard that load held past it would be left
@@ -227,7 +227,7 @@ class RunnerTests(unittest.TestCase):
         status, output = self.run_eng("--skip-build", "--timeout", "5", FAKE_HANG="Beta")
         self.assertEqual(status, lane_results.UNMEASURED, output)
         self.assertRegex(output, r"== shard \d+ of \d+, Beta .*: timed out after 5s")
-        self.assertRegex(output, r"eng xctest: .*UNMEASURED: shard \d+ of \d+, Beta .*\(timed out after 5s\)")
+        self.assertRegex(output, r"queuekeeper xctest: .*UNMEASURED: shard \d+ of \d+, Beta .*\(timed out after 5s\)")
         self.assertNotIn("FAILED", output)
 
     def test_a_process_that_runs_fewer_tests_than_it_was_given_fails(self):
@@ -375,7 +375,7 @@ class SwiftTestingTimesTests(unittest.TestCase):
             self.assertIsNotNone(finished.utcoffset())
             self.assertGreaterEqual(entry["seconds"], 0.05)
             self.assertAlmostEqual((finished - started[entry["test"]]).total_seconds(), entry["seconds"], delta=0.01)
-        self.assertRegex(output, r"eng xctest: 4 Swift Testing tests' start and finish times in .*swift-testing-times")
+        self.assertRegex(output, r"queuekeeper xctest: 4 Swift Testing tests' start and finish times in .*swift-testing-times")
 
     def test_a_test_whose_process_times_out_keeps_its_start(self):
         status, output = self.run_eng("--skip-build", "--split-swift-testing", "--filter", "SuiteB", "--timeout", "5",

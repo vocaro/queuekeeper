@@ -95,7 +95,7 @@ exec /bin/ps "$@"
         return sorted((self.slots / registrations.JOURNALS).glob("*.json"))
 
     def run_command(self, command, **options):
-        """Run one command as eng does; its status, or the exception that ended it."""
+        """Run one command as queuekeeper does; its status, or the exception that ended it."""
         stderr = StringIO()
         with redirect_stderr(stderr):
             try:
@@ -331,7 +331,7 @@ exec /bin/ps "$@"
         # As when ps outlasts its bound: nothing is unregistered while what holds a folder is unknown.
         with patch.object(registrations.offload_host, "listing", return_value=None):
             self.assertEqual(self.run_command(self.build_command()), 0)
-        self.assertEqual(self.said, "eng: unregistered nothing: the processes could not be listed; the next run tries again\n")
+        self.assertEqual(self.said, "queuekeeper: unregistered nothing: the processes could not be listed; the next run tries again\n")
         self.assertEqual(self.calls(), [])
         self.assertEqual(len(self.journals()), 1)
         self.owners_gone()

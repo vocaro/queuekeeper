@@ -1,4 +1,4 @@
-"""The last good build of a project's app, kept and run: `eng app` (app_builds.py)."""
+"""The last good build of a project's app, kept and run: `queuekeeper app` (app_builds.py)."""
 import contextlib
 from io import StringIO
 import json
@@ -19,7 +19,7 @@ from queuekeeper.apple import disk as apple_disk
 from queuekeeper.apple import app_builds, device_pass
 
 BUNDLE = "com.example.demo"
-# A stand-in for `eng admit -- xcodebuild ...`: it makes the product xcodebuild would, Demo.app with its Info.plist,
+# A stand-in for `queuekeeper admit -- xcodebuild ...`: it makes the product xcodebuild would, Demo.app with its Info.plist,
 # in the -derivedDataPath it was given, or exits 65 as a failed build does when FAIL names a file that exists,
 # printing what the file holds.
 BUILDER = f"""
@@ -444,7 +444,7 @@ class Devices(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         root = Path(temp.name)
         (root / "engineering.json").write_text(json.dumps(project({"project": "A.xcodeproj", "mac": {"scheme": "A"}})))
-        # The owner's decision of 2026-11-06: the device's reservation records no approval, so eng app takes none.
+        # The owner's decision of 2026-11-06: the device's reservation records no approval, so queuekeeper app takes none.
         with contextlib.redirect_stderr(StringIO()), self.assertRaises(SystemExit):
             cli.main(["--project", str(root), "app", "run", "--iphone", "--approved-by", "owner"])
         self.assertEqual(cli.main(["--project", str(root), "app", "run", "--ipad"]), 2)
@@ -503,15 +503,15 @@ class Disk(unittest.TestCase):
         old = time.time() - 3 * 86400
         for path in (store / "derived/mac", store / "kept/mac/abc/Demo.app"): os.utime(path, (old, old))
         host = SimpleNamespace(home=home, now=time.time(), min_idle=86400)
-        items = disk.app_builds(host, disk.Usage([]), disk.Sizes(measure=False))
+        items = apple_disk.app_builds(host, disk.Usage([]), disk.Sizes(measure=False))
         self.assertEqual([(Path(item.path).relative_to(store).as_posix(), item.status) for item in items],
                          [("kept", disk.KEPT), ("derived/mac", disk.CANDIDATE)])
         # A keep under way holds the store's lock, which keeps its cache: a build's arguments name a path with a
         # space in it, Application Support, that no census of arguments reads whole.
         with app_builds.Store("Demo", home / apple_disk.APP_STORE).locked():
-            [_, cache] = disk.app_builds(host, disk.Usage([]), disk.Sizes(measure=False))
+            [_, cache] = apple_disk.app_builds(host, disk.Usage([]), disk.Sizes(measure=False))
         self.assertEqual((cache.status, cache.reason), (disk.KEPT, "a keep is building with it now"))
-        self.assertEqual(disk.app_builds(SimpleNamespace(home=home / "none"), None, None), [])
+        self.assertEqual(apple_disk.app_builds(SimpleNamespace(home=home / "none"), None, None), [])
 
 
 if __name__ == "__main__":

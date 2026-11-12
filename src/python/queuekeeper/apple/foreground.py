@@ -1,13 +1,13 @@
-"""A Mac's foreground for one run: the second Mac's taken by eng, this Mac's only within the owner's window.
+"""A Mac's foreground for one run: the second Mac's taken by queuekeeper, this Mac's only within the owner's window.
 
 The second Mac is used only for file serving and build hosting, not as a workstation, so a run takes
 its whole foreground, screen, keyboard, pointer, focus and speech, without asking the owner (owner's
-decisions, 2026-10-30 and 2026-11-06, vocaro-engineering#207). eng takes it for a run as admission takes
+decisions, 2026-10-30 and 2026-11-06, vocaro-engineering#207). queuekeeper takes it for a run as admission takes
 a slot: it waits while another run holds the second Mac's mac-foreground entry, reserves the entry,
 which records no approval, runs the work with
 VOCARO_DEVICE_OWNER naming the reservation, so that drivers' `devices check` passes, and releases it.
 This Mac is the owner's workstation. Its foreground needs a window the owner agreed beforehand, which
-the session reserves itself (guides/shared-host.md, Attended Mac sessions), and eng never sends
+the session reserves itself (guides/shared-host.md, Attended Mac sessions), and queuekeeper never sends
 foreground work to it.
 
 A Mac's device record that defers physical devices to another Mac's is the second Mac's: every run
@@ -76,12 +76,12 @@ def slot(purpose, *, timeout, expected=EXPECTED, record=None, poll=POLL, ready=N
     record = record or devices.Record()
     said = said or (lambda text: print(text, file=sys.stderr, flush=True))
     if not second_mac(record):
-        raise devices.Refused("eng takes the foreground only on the second Mac; this Mac's needs a window the owner "
+        raise devices.Refused("queuekeeper takes the foreground only on the second Mac; this Mac's needs a window the owner "
                               "agreed beforehand, which the session reserves as mac-foreground itself "
                               "(guides/shared-host.md, Attended Mac sessions)")
     found = (ready or problems)()
     if found: raise refusal(found)
-    owner = f"eng {os.getpid()} on {offload_host.mac_name()}"
+    owner = f"queuekeeper {os.getpid()} on {offload_host.mac_name()}"
     deadline, announced = time.monotonic() + timeout, None
     while True:
         entry = record.entry(devices.FOREGROUND)
@@ -105,7 +105,7 @@ def slot(purpose, *, timeout, expected=EXPECTED, record=None, poll=POLL, ready=N
         lane_wait.waiting(lane_wait.FOREGROUND, f"held by {holder} for {entry.get('purpose')}, expected release "
                           f"{entry.get('expectedReleaseBy')}")
         if holder != announced:
-            said(f"eng: waiting for the second Mac's foreground, held by {holder} for {entry.get('purpose')}, "
+            said(f"queuekeeper: waiting for the second Mac's foreground, held by {holder} for {entry.get('purpose')}, "
                  f"expected release {entry.get('expectedReleaseBy')}")
             announced = holder
         if time.monotonic() >= deadline:
@@ -115,7 +115,7 @@ def slot(purpose, *, timeout, expected=EXPECTED, record=None, poll=POLL, ready=N
                           hostProcessIdentifier=os.getpid())
     identity = voiceover_state._Lease._identity(entry)
     before = front()
-    said(f"eng: holding the second Mac's foreground as {owner} for {purpose}; {before or 'no application'} is in front")
+    said(f"queuekeeper: holding the second Mac's foreground as {owner} for {purpose}; {before or 'no application'} is in front")
     previous = os.environ.get(devices.OWNER)
     os.environ[devices.OWNER] = owner
     outcome = "ended by an exception"
@@ -138,7 +138,7 @@ def slot(purpose, *, timeout, expected=EXPECTED, record=None, poll=POLL, ready=N
         same_lease = current is not None and current.get("ownerChatID") == owner \
             and voiceover_state._Lease._identity(current) == identity
         if uncertain or not same_lease or devices.condition(current) in ("orphan", "uncertain", "released"):
-            said("eng: foreground retained: VoiceOver restoration or owned-process state is unverified")
+            said("queuekeeper: foreground retained: VoiceOver restoration or owned-process state is unverified")
         else:
             entry = record.update(devices.FOREGROUND, owner=owner, revision=current["revision"], activeRun=False)
             restored = before is not None and before == after
@@ -146,7 +146,7 @@ def slot(purpose, *, timeout, expected=EXPECTED, record=None, poll=POLL, ready=N
                            restoration=f"in front before the run: {before or 'unread'}; after it: {after or 'unread'}; "
                                        "VoiceOver was preserved by the lease guard, or untouched after an initial read refusal",
                            frontmost="restored" if restored else "not-ours")
-            said(f"eng: released the second Mac's foreground; {after or 'no application'} is in front")
+            said(f"queuekeeper: released the second Mac's foreground; {after or 'no application'} is in front")
 
 
 def main(argv=None):

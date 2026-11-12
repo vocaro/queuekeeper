@@ -25,7 +25,7 @@ import time
 
 from .. import lane_results, parallel, processes
 
-# Processes at a time unless --jobs says otherwise, as eng unittest's.
+# Processes at a time unless --jobs says otherwise, as queuekeeper unittest's.
 DEFAULT_JOBS = parallel.DEFAULT_JOBS
 # Shards per process: enough that a shard's misjudged length evens out, few enough that the
 # bundle's load in each shard costs little.
@@ -38,7 +38,7 @@ CASE = re.compile(r"^Test Case '-\[(\S+) (\S+)\]' (?:passed|failed|skipped) \((\
 SUITE = re.compile(r"Suite (\S+|\"[^\"]*\") (?:passed|failed) after (\d+(?:\.\d+)?) seconds", re.M)
 # Each Swift Testing test's wall-clock start and finish, from its process's event stream, which records an
 # event as it happens whatever order the processes' output is printed in (vocaro-engineering#367). In the
-# lane's results/ when eng run gives it one, so it comes back and is kept by commit with them (#218);
+# lane's results/ when queuekeeper run gives it one, so it comes back and is kept by commit with them (#218);
 # otherwise in the first package's .build/engineering/xctest/.
 TEST_TIMES = "xctest/swift-testing-times.json"
 LOCAL_TEST_TIMES = ".build/engineering/xctest/swift-testing-times-{configuration}.json"
@@ -162,7 +162,7 @@ def test_times(events, shard, timed_out=False):
 
 def keep_test_times(found, directory, configuration):
     """Write found, every process's test_times, where TEST_TIMES says, and return its path or None. A second
-    eng xctest in one lane writes beside the first, never over it."""
+    queuekeeper xctest in one lane writes beside the first, never over it."""
     results = os.environ.get(parallel.RESULTS_VARIABLE)
     path = Path(results) / TEST_TIMES if results else directory / LOCAL_TEST_TIMES.format(configuration=configuration)
     candidate, number = path, 1
@@ -176,7 +176,7 @@ def keep_test_times(found, directory, configuration):
         candidate.parent.mkdir(parents=True, exist_ok=True)
         candidate.write_text(json.dumps({"tests": ordered}, indent=1) + "\n")
     except OSError as error:
-        print(f"eng xctest: Swift Testing's test times were not kept: {error}", flush=True)
+        print(f"queuekeeper xctest: Swift Testing's test times were not kept: {error}", flush=True)
         return None
     return candidate
 
@@ -282,7 +282,7 @@ def planned(directory, options, filters, jobs, timings, label, split=False):
 
 
 def main(argv):
-    parser = argparse.ArgumentParser(prog="eng xctest", description="Build Swift packages' tests once and run their "
+    parser = argparse.ArgumentParser(prog="queuekeeper xctest", description="Build Swift packages' tests once and run their "
         "XCTest classes in xctest processes of their own, JOBS at a time, and their Swift Testing tests beside them.")
     parser.add_argument("-C", "--package-path", action="append", default=[],
                         help="a package to test (default: this directory); repeat for several, which build in turn "
@@ -321,18 +321,18 @@ def main(argv):
                                  *(["--jobs", str(args.build_jobs)] if args.build_jobs else []))
             status = subprocess.run(command, cwd=cwd).returncode
             if status != 0:
-                print(f"eng xctest: {label}the build exited {status}", flush=True)
+                print(f"queuekeeper xctest: {label}the build exited {status}", flush=True)
                 return status
         timings = directory / TIMINGS.format(configuration=args.configuration)
         try: planned_work, recorded[directory] = planned(directory, options, args.filter, args.jobs, timings, label,
                                                          args.split_swift_testing)
         except (RuntimeError, subprocess.CalledProcessError) as error:
-            print(f"eng xctest: {error}", flush=True)
+            print(f"queuekeeper xctest: {error}", flush=True)
             return 1
         work.extend((name, command, expected, estimate, directory, units)
                     for name, command, expected, estimate, units in planned_work)
     if not work:
-        print(f"eng xctest: no tests in {', '.join(map(str, directories))} match {' or '.join(args.filter)}", flush=True)
+        print(f"queuekeeper xctest: no tests in {', '.join(map(str, directories))} match {' or '.join(args.filter)}", flush=True)
         return parallel.NO_TESTS
     # Each package's Swift Testing run first, then every package's shards together, longest first.
     work.sort(key=lambda entry: (entry[3] is not None, -(entry[3] or 0)))
@@ -371,18 +371,18 @@ def main(argv):
             timings.parent.mkdir(parents=True, exist_ok=True)
             timings.write_text(json.dumps(kept, indent=1, sort_keys=True) + "\n")
         except OSError as error:
-            print(f"eng xctest: the classes' times were not kept: {error}", flush=True)
+            print(f"queuekeeper xctest: the classes' times were not kept: {error}", flush=True)
     found = [entry for result in results for entry in result["times"]]
     if found:
         kept = keep_test_times(found, directories[0], args.configuration)
-        if kept: print(f"eng xctest: {len(found)} Swift Testing tests' start and finish times in {kept}", flush=True)
+        if kept: print(f"queuekeeper xctest: {len(found)} Swift Testing tests' start and finish times in {kept}", flush=True)
     # A test the host decided skips with a reason that begins "Unmeasured:"; its process still passes.
     decided = lane_results.unmeasured_tests("\n".join(result["output"] for result in results))
     if decided: unmeasured.append(f"{len(decided)} tests the host decided, listed below")
     total = sum(result["ran"] for result in results)
     skipped = sum(result["skipped"] for result in results)
     # Not XCTest's or Swift Testing's own total: the processes' lines already count every test once.
-    print(f"eng xctest: {total} tests ({skipped} skipped) in {len(results)} processes, {args.jobs} at a time, "
+    print(f"queuekeeper xctest: {total} tests ({skipped} skipped) in {len(results)} processes, {args.jobs} at a time, "
           f"{time.monotonic() - began:.1f}s: " + parallel.verdict(failed, unmeasured), flush=True)
     if decided and not failed: print("\n".join(decided), flush=True)
     return 1 if failed else lane_results.UNMEASURED if unmeasured else 0

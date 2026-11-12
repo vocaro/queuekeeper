@@ -649,9 +649,9 @@ class DeviceRecordTests(unittest.TestCase):
         self.assertIn("its window has ended; foreground actions are refused", output)
 
     def test_on_the_second_mac_a_foreground_run_may_outlast_its_expected_release(self):
-        # The second Mac is not a workstation: eng reserves its foreground per run and no window binds it.
+        # The second Mac is not a workstation: queuekeeper reserves its foreground per run and no window binds it.
         self.assertTrue(self.record.defer("workstation"))
-        self.assertIn(f"{devices.FOREGROUND}: free; eng reserves it for each run", self.cli("status")[1])
+        self.assertIn(f"{devices.FOREGROUND}: free; queuekeeper reserves it for each run", self.cli("status")[1])
         self.foreground()
         with patch.object(devices, "datetime", Later):
             self.assertEqual(devices.require_foreground("session-a")["ownerChatID"], "session-a")
@@ -696,7 +696,7 @@ class DeviceRecordTests(unittest.TestCase):
 
     @unittest.skipUnless(Path(SANDBOX_EXEC).exists(), "no sandbox-exec to deny ps with")
     def test_a_sandboxed_runner_that_may_not_start_ps_still_checks_an_active_runs_foreground(self):
-        # As eng holds the second Mac's foreground: the entry's active run is a live process. A
+        # As queuekeeper holds the second Mac's foreground: the entry's active run is a live process. A
         # sandboxed XCTest runner then checks it, and its sandbox refuses to start ps.
         entry = self.foreground()
         child = live()
@@ -768,9 +768,9 @@ class DeviceRecordTests(unittest.TestCase):
                  patch.object(cli, "source_identity", return_value={}), \
                  patch.object(cli, "refresh_policy", return_value=None), contextlib.redirect_stderr(StringIO()) as error:
                 return cli.main(["--project", str(project), "run", "--here", "ui"]), error.getvalue()
-        self.assertEqual(run("session-a"), (2, f"eng: nobody holds {devices.FOREGROUND}; before foreground work, "
+        self.assertEqual(run("session-a"), (2, f"queuekeeper: nobody holds {devices.FOREGROUND}; before foreground work, "
                                                "agree a window with the owner and reserve it until the window ends\n"
-                                               "eng run ui: not run (exit 2); no tests ran\n"))
+                                               "queuekeeper run ui: not run (exit 2); no tests ran\n"))
         self.foreground()
         for owner in ["session-b", None]:
             with self.subTest(owner=owner):
@@ -1423,7 +1423,7 @@ class NotificationTests(unittest.TestCase):
         self.assertEqual(json.loads(output)["entry"]["state"], "released")
 
     def test_an_app_the_session_launched_still_needs_its_word_at_release(self):
-        """Negative controls: beside the app eng opened, and the same app when the session says it launched it."""
+        """Negative controls: beside the app queuekeeper opened, and the same app when the session says it launched it."""
         self.first()
         self.setup()
         entry, _error = self.take()

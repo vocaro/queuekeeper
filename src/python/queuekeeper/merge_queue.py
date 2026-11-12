@@ -1,11 +1,11 @@
-"""A local merge queue for a direct-main repository: `eng queue add`, and a session moves on.
+"""A local merge queue for a direct-main repository: `queuekeeper queue add`, and a session moves on.
 
 One worker per repository takes everything waiting, cherry-picks it onto origin/main in a checkout
 of its own, runs the project's queue lanes there once, and pushes on a pass. When the lanes fail on
 a batch it halves the batch until it finds the commit to send back, landing the rest, with each bisect's two halves
 gated at once, the newer on the second Mac when it can start them (Beside), and the entries that arrive during a
 gate gated stacked on its tip on the other Mac, landing once it has (Stack, vocaro-engineering#241); first, when the lane is
-eng unittest, it reruns the failed tests alone, and a batch whose failed tests all pass alone and that changes none
+queuekeeper unittest, it reruns the failed tests alone, and a batch whose failed tests all pass alone and that changes none
 of the files they import lands, with the flakes recorded (vocaro-engineering#231), and a batch whose real failures
 all point at one entry, by a path their output names or a file they import, sends that entry back and gates the
 rest at once instead of bisecting (Worker.blame). Only a lane's
@@ -14,7 +14,7 @@ until queue.noVerdictRuns runs in a row (3 by default) have given none, and then
 owner (a run a locked screen voided is not counted, and its lane runs next only on a Mac whose screen reads
 unlocked, until LOCKED_SCREEN_RUNS such runs in a row hold the queue for a session, vocaro-engineering#293), with every commit still waiting (guides/maintenance.md, The merge queue). A batch whose lanes
 passed is recorded as passed before its push, so a hold the push meets keeps that verdict, and
-`eng queue resume` pushes the commit that passed instead of gating it again. Each round the worker moves to
+`queuekeeper queue resume` pushes the commit that passed instead of gating it again. Each round the worker moves to
 the toolkit at origin/main, starting itself again from its copy, so that it judges main with the toolkit the
 lanes run rather than the code it was started from (vocaro-engineering#173). A hold says whom it is for: the
 owner only for a cause nobody else can fix; a session for every other, which resumes the queue itself once the
@@ -25,7 +25,7 @@ each waiting commit, so a branch that moves or goes takes nothing with it:
 
     <common>/eng-queue/entries/ID.json   one commit range and its state
     <common>/eng-queue/logs/             what each round's lanes printed
-    <common>/eng-queue/hold              why the queue stopped, until `eng queue resume`
+    <common>/eng-queue/hold              why the queue stopped, until `queuekeeper queue resume`
     refs/eng-queue/ID                    the range's tip, until it lands or is removed
     ../vocaro-queue/NAME/NAME            the worker's checkout, in a folder beside the main checkouts
     ../vocaro-queue/NAME/TOOLKIT         its copy of the toolkit, which ../TOOLKIT names from the checkout
@@ -79,7 +79,7 @@ NO_VERDICT = {lane_results.UNMEASURED, resources.BUSY, remote.MISCONFIGURED, rem
 UNRUN = {resources.BUSY, remote.MISCONFIGURED, remote.LOST_ACCESS}
 # Whom a hold is for, in its reason's first words (worded): the owner only for a cause nobody else can fix, a
 # misconfigured shared host, a refused push or credentials; a session for every other, and the session that deals
-# with the cause, or finds it gone, clears it with `eng queue resume` itself, never asking the owner (owner's
+# with the cause, or finds it gone, clears it with `queuekeeper queue resume` itself, never asking the owner (owner's
 # decision, 2026-11-04, vocaro-engineering#173). CLEARS, a cause that clears by itself, is tried again first (run).
 OWNER, SESSION, CLEARS = "owner", "session", "clears"
 # Seconds a whole lane may take with its wait for admission: a lane's own limit is 2 h by default
@@ -103,8 +103,8 @@ SETTLE_LIMIT = 3600
 SETTLE_POLL = 15
 # Seconds between the wait's lines in the worker's log while the host stays busy.
 SETTLE_REPORT = 600
-# eng's reading of a Mac's screen in a lane's log (cli.screen_reading, offload_host.screen_line).
-SCREEN_LINE = re.compile(r"^eng: (screen: .*)$", re.MULTILINE)
+# queuekeeper's reading of a Mac's screen in a lane's log (cli.screen_reading, offload_host.screen_line).
+SCREEN_LINE = re.compile(r"^queuekeeper: (screen: .*)$", re.MULTILINE)
 # The most of an unmeasured test's line a hold's reason quotes.
 UNMEASURED_SHOWN = 300
 # Times main may move past a passed batch, in carried-over steps, before the batch is gated again.
@@ -157,9 +157,9 @@ MOVED = "moved"
 # Seconds the toolkit at origin/main has to import what a worker runs before a worker moves to it (starts).
 STARTS_LIMIT = 120
 BEFORE_GATE = ["spelling", "provision"]
-# How many of a failed run's last lines eng land's refusal quotes (spelled_before_queued, vocaro-engineering#283).
+# How many of a failed run's last lines queuekeeper land's refusal quotes (spelled_before_queued, vocaro-engineering#283).
 SPELLING_SHOWN = 40
-# eng land's emergency options, in every repository, by the entry field each sets: an entry tested next as a batch
+# queuekeeper land's emergency options, in every repository, by the entry field each sets: an entry tested next as a batch
 # of its own, and one landed alone on the spelling lane without the gate, whose written reason --why gives (owner's
 # decision, 2026-11-04, vocaro-engineering#163). Neither is routine.
 OPTIONS = {"front": "--front", "noGate": "--no-gate"}
@@ -187,33 +187,33 @@ STACK_ADMISSION_DECLINED = "queue: no Mac admitted the last lane of this stacked
 # beside the gate in a checkout of its own with this suffix (Worker.docs_beside), and the code batch's pass carries over
 # the documents main gained (Worker.carry). It goes ahead of an older entry only when the two change no path in common.
 DOCS_SUFFIX = "-docs"
-# What a gate's lanes return when `eng queue remove` took an entry it tests out of the queue, which stopped them by the
+# What a gate's lanes return when `queuekeeper queue remove` took an entry it tests out of the queue, which stopped them by the
 # cancel a thrown-away stacked gate's lanes end with, here or on the second Mac, freeing their admission there: no
 # verdict on anything, and what is left of the batch gates again (Worker.gate, vocaro-engineering#247). The gate looks
-# for such a removal this often, and records it on the entries it tests, for `eng queue remove` to say (stopping).
+# for such a removal this often, and records it on the entries it tests, for `queuekeeper queue remove` to say (stopping).
 WITHDRAWN = "withdrawn"
 REMOVAL_POLL = 5
-# A failed eng unittest gate's failed tests are each rerun alone on the batch's commit this many times before a
+# A failed queuekeeper unittest gate's failed tests are each rerun alone on the batch's commit this many times before a
 # bisect, and any rerun's failure makes the failure real; a gate that failed more tests than RERUN_MOST bisects at
 # once, as that is no flake (Worker.rerun, owner's decision of 2026-11-07, vocaro-engineering#231).
 RERUNS = 3
 RERUN_MOST = 5
 # The trailer a landing whose gate failed only flaky tests adds to its tip, one per test (Worker.mark_flaky).
 FLAKY = "Flaky-test"
-# What eng unittest prints last (parallel.unittest_main), each failed process in its verdict as `NAME (RESULT)`,
+# What queuekeeper unittest prints last (parallel.unittest_main), each failed process in its verdict as `NAME (RESULT)`,
 # each process's output under `== NAME: RESULT (N tests, S s)`, and unittest's line for each failed test.
-UNITTEST_SUMMARY = re.compile(r"^eng unittest: \d+ tests \(\d+ skipped\) in \d+ processes, \d+ at a time, "
+UNITTEST_SUMMARY = re.compile(r"^queuekeeper unittest: \d+ tests \(\d+ skipped\) in \d+ processes, \d+ at a time, "
                               r"[\d.]+s: (.*)$", re.M)
-# What eng unittest prints when it refuses a suite before running anything (parallel.refusals).
-REFUSAL = re.compile(r"^eng unittest: .*; nothing ran$", re.M)
-# How many of the newest gate logs `eng queue doctor` reads back to the last that gave a verdict, and how many of
+# What queuekeeper unittest prints when it refuses a suite before running anything (parallel.refusals).
+REFUSAL = re.compile(r"^queuekeeper unittest: .*; nothing ran$", re.M)
+# How many of the newest gate logs `queuekeeper queue doctor` reads back to the last that gave a verdict, and how many of
 # them in a row with no verdict make a finding (doctor).
 DOCTOR_LOGS = 12
 DOCTOR_NO_VERDICTS = 2
 FAILED_SHARD = re.compile(r"(\S+) \(((?:[^()]|\([^()]*\))*)\)")
 SHARD_HEADER = re.compile(r"^== (\S+): .* \(\d+ tests, [\d.]+s\)$", re.M)
 FAILED_TEST = re.compile(r"^(?:FAIL|ERROR): (\S+) \(([^()\s]+)\)", re.M)
-# The options of eng unittest a rerun keeps, and those it drops, each with its value: it names its own test and
+# The options of queuekeeper unittest a rerun keeps, and those it drops, each with its value: it names its own test and
 # runs one process at a time.
 RERUN_KEPT = {"-s", "--start-directory", "-p", "--pattern", "-t", "--top-level-directory", "--split", "--batch-size",
               "--timeout"}
@@ -225,7 +225,7 @@ BUSY_SAMPLE = 60
 # How many failed tests, and changed files, a rejection names (Worker.touched_words).
 REJECTION_SHOWN = 5
 GH_ENV = {"GH_PROMPT_DISABLED": "1", "GH_NO_UPDATE_NOTIFIER": "1"}
-# The worker's account of the round it runs, in eng-queue, which `eng queue status` shows so that nobody has to read
+# The worker's account of the round it runs, in eng-queue, which `queuekeeper queue status` shows so that nobody has to read
 # worker.log to learn why entries wait: the bisect's halves, each gate's lane, Mac and start, and what each waits for
 # (Queue.note, GateWatch). Each running gate's wait record (lane_wait) is read for that this often.
 ROUND_FILE = "round.json"
@@ -245,9 +245,9 @@ GIT_TIMEOUT = 600
 # vocaro-engineering#104). The folders beside the main checkout it replaces, NAME-queue and NAME-queue-toolkit,
 # move there once nothing uses them.
 QUEUES = "vocaro-queue"
-# What locks eng land's scratch worktrees while its trial integration (trial) or its replay of a branch's own
+# What locks queuekeeper land's scratch worktrees while its trial integration (trial) or its replay of a branch's own
 # commits (linear) lasts, so that no sweep takes them.
-TRIAL_REASON = "eng land's trial integration of a new entry, removed when it ends"
+TRIAL_REASON = "queuekeeper land's trial integration of a new entry, removed when it ends"
 # The file whose conflicts the queue may settle, by its name in any directory and in any case.
 CHANGELOG = "changelog.md"
 HEADING = re.compile(rb"#{1,6}\s")
@@ -328,9 +328,9 @@ class NoLocalNetwork(Exception):
 
 
 class Refused(ValueError):
-    """An entry eng land queued nothing of, since the round's integration of it does not apply (check). eng land and
-    `eng queue add` exit 1 for it, as `eng land --wait` does for an entry that came back. waits_for names the entries
-    ahead that it conflicts with alone, not with origin/main, which `eng land --wait` waits for before it checks again
+    """An entry queuekeeper land queued nothing of, since the round's integration of it does not apply (check). queuekeeper land and
+    `queuekeeper queue add` exit 1 for it, as `queuekeeper land --wait` does for an entry that came back. waits_for names the entries
+    ahead that it conflicts with alone, not with origin/main, which `queuekeeper land --wait` waits for before it checks again
     (vocaro-engineering#302); it is empty for any other refusal."""
     def __init__(self, words, waits_for=()):
         super().__init__(words)
@@ -338,15 +338,15 @@ class Refused(ValueError):
 
 
 def worded(kind, cause):
-    """A hold's reason: whom it is for, in its first words, then its cause, then who runs `eng queue resume`. A hold
+    """A hold's reason: whom it is for, in its first words, then its cause, then who runs `queuekeeper queue resume`. A hold
     is for the owner only when nobody else can fix its cause; every other is a session's, and the session that deals
     with the cause, or finds it gone, resumes the queue itself and says so, never asking the owner, whose standing
     instruction is that landings keep moving without him (2026-11-04, vocaro-engineering#173)."""
     if kind == OWNER:
         return (f"for the owner, since nobody else can fix it: {cause}; once it is fixed, any session that finds the "
-                "cause gone runs `eng queue resume` and says so")
+                "cause gone runs `queuekeeper queue resume` and says so")
     return (f"for a session, not the owner: {cause}; the session that fixes it, or any session that finds it gone, "
-            "runs `eng queue resume` itself and says so")
+            "runs `queuekeeper queue resume` itself and says so")
 
 
 def failure(done, arguments, tries=1):
@@ -517,11 +517,11 @@ def ungated_lanes(config):
 
 
 def ahead(front, no_gate, why):
-    """The entry fields eng land's options set, or a refusal: --no-gate needs a written reason, --why, which the
+    """The entry fields queuekeeper land's options set, or a refusal: --no-gate needs a written reason, --why, which the
     landing records everywhere it says it skipped the gate; --front takes one too, but needs none."""
     if no_gate and not (why and why.strip()):
-        raise ValueError("--no-gate needs a written reason: `eng land --no-gate --why TEXT`, which the entry, the log, "
-                         "the landed commit's trailer and `eng queue status` record (guides/maintenance.md, Landing "
+        raise ValueError("--no-gate needs a written reason: `queuekeeper land --no-gate --why TEXT`, which the entry, the log, "
+                         "the landed commit's trailer and `queuekeeper queue status` record (guides/maintenance.md, Landing "
                          "ahead of the queue)")
     if why and not (front or no_gate): raise ValueError("--why is the reason for --front or --no-gate")
     flags = {name: True for name, wanted in (("front", front), ("noGate", no_gate)) if wanted}
@@ -553,7 +553,7 @@ def docs_lanes(config, changed):
 
 def docs_first(entries, config, changed_by, blocked=(), carried=None, gating=()):
     """The entries, oldest first, that land on the docs lanes ahead of the rest (vocaro-engineering#394): each one
-    queued, put first by no option of eng land, whose own commits change only docs paths (docs_lanes), no path that an
+    queued, put first by no option of queuekeeper land, whose own commits change only docs paths (docs_lanes), no path that an
     older entry staying in line changes, nor one of blocked, the paths of a batch gating now; and none of the entries it
     waits for (its waitsFor, from a run of its docs lanes that failed ahead of them) still in entries or in gating, the
     identifiers of that batch. carried, when
@@ -589,7 +589,7 @@ def offerable(config, lanes):
     """Why one of lanes runs only on this Mac, as its configuration says (config.stays), so that a bisect's newer half
     cannot gate on the second Mac beside the older half (Beside); None when every one can go there."""
     for lane in lanes:
-        # eng run places the toolkit's spelling lane as it does any lane that says no `here`, so it holds no half back.
+        # queuekeeper run places the toolkit's spelling lane as it does any lane that says no `here`, so it holds no half back.
         if lane == SPELLING and implicit_spelling(config): continue
         if lane == DOCS and DOCS not in config.get("lanes", {}): continue
         why = stays(config.get("lanes", {}), lane) if lane in config.get("lanes", {}) else "it is no configured lane"
@@ -611,7 +611,7 @@ def carried_over(path, config, batch_files):
 
 
 def carry_checks(config, moved, base):
-    """The commands a carry-over over moved must pass on the rebased tree: `eng docs check` when a document
+    """The commands a carry-over over moved must pass on the rebased tree: `queuekeeper docs check` when a document
     moved, then each of queue.carryOverChecks whose paths include a moved file, or that has none. {base} in
     a command is the commit the result passed on, so a check that compares with origin/main, which the
     batch now sits on, can read what main's new commits added."""
@@ -623,10 +623,10 @@ def carry_checks(config, moved, base):
 
 
 def rerun_command(command):
-    """The command, without its test, that reruns one test of a lane whose command is eng unittest
+    """The command, without its test, that reruns one test of a lane whose command is queuekeeper unittest
     (vocaro-engineering#231): the lane's command through `unittest`, its selection and shard options, one
-    process at a time and verbose. None for a lane that is not eng unittest, as a project's own lane, or one with an
-    option the rerun cannot carry, which then bisects as before; a group's eng unittest lane is unittest_member's."""
+    process at a time and verbose. None for a lane that is not queuekeeper unittest, as a project's own lane, or one with an
+    option the rerun cannot carry, which then bisects as before; a group's queuekeeper unittest lane is unittest_member's."""
     if not isinstance(command, list) or not all(isinstance(word, str) for word in command): return None
     at = next((index for index, word in enumerate(command[:-1])
                if Path(word).name == "qk" and command[index + 1] == "unittest"), None)
@@ -650,7 +650,7 @@ def rerun_command(command):
 
 
 def suite_of(command):
-    """(start directory, patterns or None) of a lane whose command is eng unittest, by the options rerun_command keeps,
+    """(start directory, patterns or None) of a lane whose command is queuekeeper unittest, by the options rerun_command keeps,
     or None for any other lane."""
     words = rerun_command(command)
     if words is None: return None
@@ -668,7 +668,7 @@ def suite_of(command):
 
 
 def unittest_member(lanes, lane):
-    """The lane whose command would be eng unittest for lane: lane itself, or the one such lane of the group lane
+    """The lane whose command would be queuekeeper unittest for lane: lane itself, or the one such lane of the group lane
     names, as the toolkit's own gate has (#289). None for a group with none or several, or a lane that is no lane."""
     settings = lanes.get(lane)
     if not isinstance(settings, dict): return None
@@ -678,7 +678,7 @@ def unittest_member(lanes, lane):
 
 
 def unittest_lanes(config):
-    """{lane: (start, patterns)} of config's queue lanes (lanes_of) whose command is eng unittest, or that are a group
+    """{lane: (start, patterns)} of config's queue lanes (lanes_of) whose command is queuekeeper unittest, or that are a group
     holding one such lane."""
     lanes, found = config.get("lanes", {}), {}
     for lane in lanes_of(config):
@@ -689,7 +689,7 @@ def unittest_lanes(config):
 
 
 def suite_tree(root, commit, start, patterns, into):
-    """Write the files at the top of commit's start directory that eng unittest's checks before a run read
+    """Write the files at the top of commit's start directory that queuekeeper unittest's checks before a run read
     (parallel.refusals), its Python files and those patterns match, into into. False when commit has no such
     directory."""
     relative = os.path.normpath(start)
@@ -699,7 +699,7 @@ def suite_tree(root, commit, start, patterns, into):
     for record in listed.stdout.split("\0"):
         meta, _, name = record.partition("\t")
         fields = meta.split()
-        # A file, not a directory, a submodule or a symbolic link, which eng unittest's checks would follow.
+        # A file, not a directory, a submodule or a symbolic link, which queuekeeper unittest's checks would follow.
         if not name or len(fields) != 3 or fields[0] not in ("100644", "100755"): continue
         if name.endswith(".py") or any(fnmatch.fnmatchcase(name, pattern) for pattern in patterns or ["test*.py"]):
             names[name] = fields[2]
@@ -719,7 +719,7 @@ def suite_tree(root, commit, start, patterns, into):
 
 
 def prerun(root, commit, config):
-    """The lines eng unittest would refuse each of config's eng unittest lanes with on commit's tree before running
+    """The lines queuekeeper unittest would refuse each of config's queuekeeper unittest lanes with on commit's tree before running
     anything (parallel.refusals), once each, each suite's directory named under root, as a gate in a checkout of
     root's repository would print them: a gate they refuse runs nothing, in seconds, and gives no failed test to blame
     (vocaro-engineering#290)."""
@@ -745,12 +745,12 @@ def refused_alone(root, tip, config):
 
 
 def checked_before_running(root, tip, config):
-    """Refuse tip, queuing nothing, when eng unittest would refuse a gate holding it before running anything: a
+    """Refuse tip, queuing nothing, when queuekeeper unittest would refuse a gate holding it before running anything: a
     module that does not import host_isolation, or does not parse. These checks take seconds, where the gate they
     refuse costs a round, and a bisect blind, since it names no failed test (vocaro-engineering#290)."""
     own = refused_alone(root, tip, config)
     if own:
-        raise Refused(f"{tip[:12]} is not queued: eng unittest would refuse every gate holding it before running "
+        raise Refused(f"{tip[:12]} is not queued: queuekeeper unittest would refuse every gate holding it before running "
                       "anything:\n  " + "\n  ".join(own) + "\nFix that and land it again (guides/maintenance.md, The "
                       "merge queue, Checked before it is queued)")
 
@@ -784,7 +784,7 @@ def spelling_run(queue, root, commit):
         command = IMPLICIT_SPELLING if SPELLING not in lanes else lane.get("command") if isinstance(lane, dict) else None
         if not (isinstance(command, list) and command) or (SPELLING in lanes and any(
                 lane.get(key) for key in ("foreground", "display", "unlockedScreen", "parallel", "wholeHost", "model"))):
-            return None, ["the project's spelling lane is not one command that eng land can run here"], None
+            return None, ["the project's spelling lane is not one command that queuekeeper land can run here"], None
         env = environment()
         if not os.environ.get(TOOLKIT_VARIABLE):
             # A project's launcher finds the toolkit beside its own checkout, which a scratch worktree has not: this
@@ -840,16 +840,16 @@ def spelled_before_queued(root, queue, tip, config):
 
 
 def failed_tests(log):
-    """(the ids of the tests an eng unittest lane's log reports failed, None), or (None, why it reports none it
+    """(the ids of the tests an queuekeeper unittest lane's log reports failed, None), or (None, why it reports none it
     can rerun): its last summary must say FAILED, with nothing UNMEASURED, and each failed process's output must
     name at least one failed test, none of them a module that did not load, and none ran other than it was given."""
     summaries = UNITTEST_SUMMARY.findall(log)
-    if not summaries: return None, "its log has no eng unittest summary"
+    if not summaries: return None, "its log has no queuekeeper unittest summary"
     verdict = summaries[-1]
-    if "UNMEASURED: " in verdict: return None, "eng unittest also left tests unmeasured"
-    if not verdict.startswith("FAILED: "): return None, f"eng unittest's verdict is {verdict}"
+    if "UNMEASURED: " in verdict: return None, "queuekeeper unittest also left tests unmeasured"
+    if not verdict.startswith("FAILED: "): return None, f"queuekeeper unittest's verdict is {verdict}"
     shards = FAILED_SHARD.findall(verdict[len("FAILED: "):])
-    if not shards: return None, f"eng unittest's verdict names no process: {verdict}"
+    if not shards: return None, f"queuekeeper unittest's verdict names no process: {verdict}"
     headers = list(SHARD_HEADER.finditer(log))
     outputs = {}
     for number, header in enumerate(headers):
@@ -1072,7 +1072,7 @@ HERE_MAC = lane_wait.HERE
 
 
 def stuck(gate, at=None):
-    """What `eng queue status` and the worker log say of a gate held up by dead guard entries, or None: its wait,
+    """What `queuekeeper queue status` and the worker log say of a gate held up by dead guard entries, or None: its wait,
     since waitingSince, names a dead or uncertain entry and has lasted STUCK_SECONDS (#315)."""
     since = gate.get("waitingSince")
     if not isinstance(since, (int, float)) or not gate.get("stranded") or (at or time.time()) - since < STUCK_SECONDS:
@@ -1254,7 +1254,7 @@ class Queue:
         with self.worker() as free: return not free
 
     def command(self, toolkit, *, if_waiting=False):
-        """What runs this repository's worker on the toolkit at toolkit: `eng queue run` for the main checkout, from
+        """What runs this repository's worker on the toolkit at toolkit: `queuekeeper queue run` for the main checkout, from
         that toolkit's Python, as start starts one and as a worker starts itself again on a newer toolkit
         (Worker.move_to)."""
         script = ("import sys; sys.path.insert(0, sys.argv[1]); from queuekeeper.cli import main; "
@@ -1314,12 +1314,12 @@ class Queue:
             started = subprocess.Popen(self.command(TOOLKIT_ROOT), cwd=self.main_checkout, stdin=subprocess.DEVNULL,
                                        stdout=log, stderr=subprocess.STDOUT, env=environment(), start_new_session=True)
             # It is meant to outlive this process, which must not wait for it, but one that ends first
-            # stays a zombie child until reaped: a long-lived caller, `eng land --wait` or a test run, sees it.
+            # stays a zombie child until reaped: a long-lived caller, `queuekeeper land --wait` or a test run, sees it.
             threading.Thread(target=started.wait, daemon=True).start()
 
 
 def repository(root, named):
-    """The repository `eng land --repo` names: a path, or the name of a project beside this one's
+    """The repository `queuekeeper land --repo` names: a path, or the name of a project beside this one's
     main checkout, as a session fixing a dependency names it."""
     candidates = [Path(named).expanduser(), Queue(root).main_checkout.parent / named]
     for path in candidates:
@@ -1330,7 +1330,7 @@ def repository(root, named):
 
 
 def land(root, args, directory=None):
-    """`eng land`: add to this repository's queue or, with --repo, another's, whose own queue, lanes and
+    """`queuekeeper land`: add to this repository's queue or, with --repo, another's, whose own queue, lanes and
     worker take it exactly as they take that repository's own sessions' commits. With another
     repository's main checkout HEAD would be whatever it has checked out, so the commit is named.
     directory, the command's current directory, must be in this repository unless --repo names one:
@@ -1338,14 +1338,14 @@ def land(root, args, directory=None):
     here would queue that project's HEAD, or report it landed (vocaro-engineering#210)."""
     elsewhere = None if args.repo or directory is None else other_repository(root, directory)
     if elsewhere is not None:
-        print(f"eng: this eng lands {root}, but the current directory is in {elsewhere}: run that "
+        print(f"queuekeeper: this queuekeeper lands {root}, but the current directory is in {elsewhere}: run that "
               "checkout's own scripts/qk land, or name the commit with --repo", file=sys.stderr)
         return 1
     target = root
     if args.repo:
         target = repository(root, args.repo)
         if args.reference is None:
-            raise ValueError(f"--repo lands a commit you name: `eng land --repo {args.repo} BRANCH`, since HEAD "
+            raise ValueError(f"--repo lands a commit you name: `queuekeeper land --repo {args.repo} BRANCH`, since HEAD "
                              "there is another session's")
     deadline = time.monotonic() + args.limit
     while True:
@@ -1355,11 +1355,11 @@ def land(root, args, directory=None):
                              why=getattr(args, "why", None))
             break
         except Refused as error:
-            print(f"eng: {error}", file=sys.stderr)
+            print(f"queuekeeper: {error}", file=sys.stderr)
             if not args.wait or not error.waits_for: return 1
             # Refused for entries ahead alone: wait for them, then check again against the whole queue, which may
             # name an entry queued meanwhile (vocaro-engineering#302).
-            print(f"eng land --wait: waits for {', '.join(error.waits_for)}, then checks again against the whole "
+            print(f"queuekeeper land --wait: waits for {', '.join(error.waits_for)}, then checks again against the whole "
                   "queue", file=sys.stderr, flush=True)
             waited = wait_for(target, error.waits_for, max(0.0, deadline - time.monotonic()))
             if waited == resources.BUSY: return waited
@@ -1381,7 +1381,7 @@ def other_repository(root, directory):
 
 
 def warn(root):
-    """After eng land's result, the gate over its budget and main past its release commit limit, by main's
+    """After queuekeeper land's result, the gate over its budget and main past its release commit limit, by main's
     settings (budgets.py)."""
     # While this command waited, main may have landed settings validated by a newer toolkit.
     # The advisory checks read their own fields, so the waiter's schema must not reject main.
@@ -1405,7 +1405,7 @@ def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False
     entry's ID, or None when there is nothing to queue. Whether it may be queued is what a round would
     find: origin/main's settings, and origin/main's lanes or, until it has any, the commit's, and the round's
     integration of it after the entries ahead of it, which a conflict refuses before it is queued (check). front and
-    no_gate, eng land's emergency options --front and --no-gate, and why, the reason --why gives (ahead), go
+    no_gate, queuekeeper land's emergency options --front and --no-gate, and why, the reason --why gives (ahead), go
     in the entry; an entry already queued with the same tip takes them."""
     flags = ahead(front, no_gate, why)
     queue = Queue(root)
@@ -1455,7 +1455,7 @@ def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False
     # A negated closing claim closes its issue on landing, whatever a gate finds (#286): refused before anything else.
     claims_before_queued(root, base, tip)
     # What a round would find, before anything is queued or replaced: a refused entry leaves the queue as it was. First
-    # eng unittest's own checks before a run, which a gate holding it would fail in seconds and bisect blind (#290).
+    # queuekeeper unittest's own checks before a run, which a gate holding it would fail in seconds and bisect blind (#290).
     checked_before_running(root, tip, gating)
     check(root, queue, {"id": "new", "tip": tip, "commits": commits},
           [] if front else round_order([entry for entry in waiting if entry not in replaced]), front)
@@ -1502,7 +1502,7 @@ def check(root, queue, entry, ahead, front):
 
 
 def asked_for(name):
-    """What an entry's option, a name of OPTIONS, does, for eng land's lines and `eng queue status`."""
+    """What an entry's option, a name of OPTIONS, does, for queuekeeper land's lines and `queuekeeper queue status`."""
     return ("is tested next, ahead of everything waiting, as a batch of its own" if name == "front" else
             "lands alone on the spelling lane, without the gate, and is recorded as ungated")
 
@@ -1513,7 +1513,7 @@ def because(entry):
 
 
 def promote(queue, entry, flags):
-    """Give a queued entry the options flags holds, as eng land does an entry already holding its tip. A batch in its
+    """Give a queued entry the options flags holds, as queuekeeper land does an entry already holding its tip. A batch in its
     gate, or one that passed, finishes as it is, so for one of those the options change nothing."""
     with queue.locked():
         current = queue.read(entry["id"])
@@ -1601,7 +1601,7 @@ def entries_word(count):
 
 
 def round_lines(state, at=None):
-    """What `eng queue status` says of the worker's round from its account (ROUND_FILE): whether it bisects and how
+    """What `queuekeeper queue status` says of the worker's round from its account (ROUND_FILE): whether it bisects and how
     far, each running gate's lane, Mac and time, what each gate and the round wait for, and any stacked gate."""
     lines = []
     if state.get("round"):
@@ -1655,7 +1655,7 @@ def status(root, as_json=False, recent=5):
                           "ungated": [entry["id"] for entry in ungated]}, indent=2))
         return 0
     print(f"worker: {'running' if working else 'none'}" + (f"; held {why}" if why else ""))
-    if waiting and not working and not why: print("waiting with no worker: `eng queue resume` starts one")
+    if waiting and not working and not why: print("waiting with no worker: `queuekeeper queue resume` starts one")
     for line in round_lines(current or {}): print(line)
     for entry in ungated:
         print(f"ungated on main: {entry['id']} landed {entry['landedAs'][:12]} without the gate, which the next gate "
@@ -1665,16 +1665,16 @@ def status(root, as_json=False, recent=5):
 
 
 def refused_modules(line):
-    """The test modules a refusal of eng unittest's names (parallel.refusals), by file name, whatever checkout it
+    """The test modules a refusal of queuekeeper unittest's names (parallel.refusals), by file name, whatever checkout it
     was printed in."""
-    said = line.removeprefix("eng unittest: ")
+    said = line.removeprefix("queuekeeper unittest: ")
     for ending in (" must import ", " does not parse "):
         if ending in said: return set(said.split(ending, 1)[0].split(", "))
     return set()
 
 
 def refusal_key(line):
-    """A refusal of eng unittest's without the directories its paths name, so that the same refusal printed in two
+    """A refusal of queuekeeper unittest's without the directories its paths name, so that the same refusal printed in two
     checkouts, as a bisect's two halves print it, is one (Worker.older)."""
     return re.sub(r"\S*/", "", line)
 
@@ -1692,8 +1692,8 @@ def patch_of(root, entry):
 
 
 def gate_logs(queue, lanes, working):
-    """The logs of the newest DOCTOR_LOGS gates of lanes, eng unittest lanes, newest first, back to the last that gave
-    a verdict, OK or FAILED: [(name, the refusal it printed or None, its eng unittest verdict or None)]. Leave out
+    """The logs of the newest DOCTOR_LOGS gates of lanes, queuekeeper unittest lanes, newest first, back to the last that gave
+    a verdict, OK or FAILED: [(name, the refusal it printed or None, its queuekeeper unittest verdict or None)]. Leave out
     gates still running and stacked gates whose last lane no Mac admitted."""
     running = {gate.get("log") for gate in (queue.round_state() or {}).get("gates", {}).values()} if working else set()
     logs = []
@@ -1714,7 +1714,7 @@ def gate_logs(queue, lanes, working):
 
 
 def doctor(root, as_json=False):
-    """`eng queue doctor`: print diagnose's findings, or that the queue is healthy. 0 when it finds the queue healthy,
+    """`queuekeeper queue doctor`: print diagnose's findings, or that the queue is healthy. 0 when it finds the queue healthy,
     1 when it finds anything."""
     findings, waiting, working = diagnose(root)
     hints = admission_hints(root) if working else []
@@ -1723,11 +1723,11 @@ def doctor(root, as_json=False):
                           "hints": hints}, indent=2))
         return 1 if findings else 0
     if not findings:
-        print(f"eng queue doctor: healthy: {entries_word(len(waiting))} waiting, worker "
+        print(f"queuekeeper queue doctor: healthy: {entries_word(len(waiting))} waiting, worker "
               f"{'running' if working else 'not needed'}, and no gate since the last verdict ran nothing")
         for hint in hints: print(f"note: {hint}")
         return 0
-    print(f"eng queue doctor: {len(findings)} finding{'' if len(findings) == 1 else 's'}, and it changed nothing:")
+    print(f"queuekeeper queue doctor: {len(findings)} finding{'' if len(findings) == 1 else 's'}, and it changed nothing:")
     for finding in findings:
         print(f"{finding['signal']}: {finding['diagnosis']}\n  next: {finding['remedy']}")
     for hint in hints: print(f"note: {hint}")
@@ -1736,7 +1736,7 @@ def doctor(root, as_json=False):
 
 def admission_hints(root, at=None):
     """Where to look next for each running gate that waits for admission, from the round's account (GateWatch): a
-    pointer to `eng admissions now`, which shows who holds and who waits on each Mac (vocaro-engineering#342). Doctor
+    pointer to `queuekeeper admissions now`, which shows who holds and who waits on each Mac (vocaro-engineering#342). Doctor
     neither runs that report nor counts a wait as a finding: a gate waiting for admission is how a busy Mac looks."""
     try: state = Queue(root).round_state() or {}
     except Exception: return []  # noqa: BLE001 - a pointer never fails the doctor
@@ -1813,9 +1813,9 @@ def placement(root, name=None, as_json=False):
 def diagnose(root):
     """(findings, the waiting entries, whether a worker runs): read the queue's entries, its hold, its worker and its
     newest gate logs for the signs of a queue that is stuck rather than testing, and say for each what it means and
-    what would heal it (vocaro-engineering#290): a hold; entries waiting with no worker (#287); gates that eng unittest
+    what would heal it (vocaro-engineering#290): a hold; entries waiting with no worker (#287); gates that queuekeeper unittest
     refused before running anything, which give no failed test to rerun (#280), with the entry that brings the
-    refusal; gates in a row with no verdict (#253, #268, #282); a waiting entry that eng unittest would refuse; and an
+    refusal; gates in a row with no verdict (#253, #268, #282); a waiting entry that queuekeeper unittest would refuse; and an
     entry that came back unchanged after the same change failed or was removed. It changes nothing, neither entries
     nor the hold. The worker acts on a refusal itself (Worker.blame_refusal, Worker.refused_again) and puts this
     diagnosis in the hold it makes when it cannot blame one entry."""
@@ -1829,16 +1829,16 @@ def diagnose(root):
         findings.append({"signal": signal, "diagnosis": diagnosis, "remedy": remedy})
 
     if held:
-        found("held", f"the queue is held {held}", "deal with the cause the hold names, then run `eng queue resume`, "
+        found("held", f"the queue is held {held}", "deal with the cause the hold names, then run `queuekeeper queue resume`, "
               "unless the hold says it is for the owner")
     elif waiting and not working:
         found("no worker", f"{entries_word(len(waiting))} wait and no worker runs, so nothing gates them "
-              "(vocaro-engineering#287)", "`eng queue resume` starts one")
+              "(vocaro-engineering#287)", "`queuekeeper queue resume` starts one")
     try: suites = unittest_lanes(config := config_at(root, MAIN))
     except ValueError as error:
         suites = {}
         found("configuration", f"origin/main's queue lanes cannot be read: {error}", "fix engineering.json on main")
-    # Each waiting entry whose tree alone eng unittest refuses, as eng land now refuses before queuing: one queued
+    # Each waiting entry whose tree alone queuekeeper unittest refuses, as queuekeeper land now refuses before queuing: one queued
     # before that check, or by a toolkit without it.
     refusing = {}
     for entry in waiting if suites else []:
@@ -1852,13 +1852,13 @@ def diagnose(root):
         same = [name for name, said, _ in gates if said and refused_modules(said) == refused_modules(line)]
         culprits = [identifier for identifier, own in refusing.items()
                     if any(refused_modules(said) & refused_modules(line) for said in own)]
-        diagnosis = (f"{len(same)} gate{'' if len(same) == 1 else 's'} since the last verdict ran nothing, as eng "
+        diagnosis = (f"{len(same)} gate{'' if len(same) == 1 else 's'} since the last verdict ran nothing, as queuekeeper "
                      f"unittest refused {'it' if len(same) == 1 else 'them'} before running anything: {line} (logs: "
                      f"{', '.join(same)}). A refusal is no test failure, so no rerun can confirm one, and a bisect "
                      "through it is blind (vocaro-engineering#280)")
         if len(culprits) == 1:
             remedy = (f"{culprits[0]} brings it, as its tree alone is refused so: the worker sends it back by itself "
-                      "from the next gate that holds it (vocaro-engineering#290), or take it out now with `eng queue "
+                      "from the next gate that holds it (vocaro-engineering#290), or take it out now with `queuekeeper queue "
                       f"remove {culprits[0]}`, and fix it in its session")
         elif culprits:
             remedy = (f"{', '.join(culprits)} each bring a module it names, so none is the one cause: fix each, or "
@@ -1870,13 +1870,13 @@ def diagnose(root):
     blank = [name for name, said, _ in gates if not said]
     if len(blank) >= DOCTOR_NO_VERDICTS:
         found("no verdict", f"{len(blank)} gates since the last verdict gave none, each leaving tests unmeasured or "
-              f"printing no eng unittest summary: {', '.join(blank)} (vocaro-engineering#253, #268, #282)",
+              f"printing no queuekeeper unittest summary: {', '.join(blank)} (vocaro-engineering#253, #268, #282)",
               f"the worker runs it again up to queue.noVerdictRuns times and then holds; read {blank[0]} for the "
               "cause: a lane that reached its limit, or a second Mac out of reach")
     for identifier, own in refusing.items():
-        found("refused before running", f"eng unittest refuses {identifier}'s tree before running anything: "
+        found("refused before running", f"queuekeeper unittest refuses {identifier}'s tree before running anything: "
               + "; ".join(own) + ". Every gate holding it runs nothing",
-              f"take it out with `eng queue remove {identifier}`, fix it and land it again, which now checks this")
+              f"take it out with `queuekeeper queue remove {identifier}`, fix it and land it again, which now checks this")
     # An entry that came back as it was, after the same change from the same branch failed or was taken out.
     gone = [entry for entry in entries if entry["state"] in (FAILED, REMOVED)]
     patches = {}
@@ -1892,7 +1892,7 @@ def diagnose(root):
                       f"{'failed' if other['state'] == FAILED else 'was taken out'}"
                       + (f": {other['why']}" if other.get("why") else ""),
                       "unless that cause was outside the change, it comes back the same way: take it out with "
-                      f"`eng queue remove {entry['id']}` and fix it first")
+                      f"`queuekeeper queue remove {entry['id']}` and fix it first")
                 break
     return findings, waiting, working
 
@@ -1958,7 +1958,7 @@ def failed_lane_excerpt(lane_log, dispatch_output, lane, swift_assertions=()):
         # Do not repeat the report's inferred failed test names: for a group they can come from a nested fixture.
         rows = dispatch_output.splitlines()
         report = next((index for index in reversed(range(len(rows)))
-                       if rows[index].startswith(f"eng run {lane}: failed")), None)
+                       if rows[index].startswith(f"queuekeeper run {lane}: failed")), None)
         lines = []
         if report is not None:
             lines.append(rows[report])
@@ -2009,11 +2009,11 @@ def wait(root, identifier, limit=WAIT_LIMIT):
 
 
 def wait_for(root, identifiers, limit=WAIT_LIMIT):
-    """`eng queue wait ID ID ...`, as an eng land refusal names it: return once none of the entries is queued, in its
+    """`queuekeeper queue wait ID ID ...`, as an queuekeeper land refusal names it: return once none of the entries is queued, in its
     gate or passed, so that one a `--front` entry sends back to queued keeps the wait going, saying where each ended
     and what is worth doing next: 0 each landed, so rebase; 1 one came back, so the commit it conflicted with may
     apply as it is; 75 while the queue is held or the limit passes with one still waiting (vocaro-engineering#304).
-    `eng queue wait` with one ID is `wait`'s, which follows an entry of your own; eng land --wait waits here."""
+    `queuekeeper queue wait` with one ID is `wait`'s, which follows an entry of your own; queuekeeper land --wait waits here."""
     identifiers = list(dict.fromkeys(identifiers))
     queue = Queue(root)
     unknown = [identifier for identifier in identifiers if queue.read(identifier) is None]
@@ -2027,10 +2027,10 @@ def wait_for(root, identifiers, limit=WAIT_LIMIT):
             for entry in entries: print(describe(entry))
             back = [entry["id"] for entry in entries if entry["state"] != LANDED]
             if not back:
-                print("all landed: rebase onto origin/main, then `eng land` again")
+                print("all landed: rebase onto origin/main, then `queuekeeper land` again")
                 return 0
             print(f"{', '.join(back)} came back, so a commit that conflicted with {'them' if len(back) > 1 else 'it'} "
-                  "may apply as it is: `eng land` again checks again")
+                  "may apply as it is: `queuekeeper land` again checks again")
             return 1
         said = ", ".join(f"{entry['id']} ({entry['state']})" for entry in waiting)
         why = queue.held()
@@ -2114,7 +2114,7 @@ def carried():
 
 class Removal:
     """The cancel a gate's lanes run with (processes.run): set once cancel is, or once one of the entries ids that the
-    gate tests has left the queue, as `eng queue remove` or a branch added again takes it out, which it looks for at
+    gate tests has left the queue, as `queuekeeper queue remove` or a branch added again takes it out, which it looks for at
     most every REMOVAL_POLL seconds. gone names those entries (vocaro-engineering#247)."""
     def __init__(self, queue, ids, cancel=None):
         self.queue, self.ids, self.cancel = queue, tuple(ids), cancel
@@ -2149,7 +2149,7 @@ class Worker:
         # The lanes whose next run goes only to a Mac whose screen reads unlocked, since a locked screen left their
         # last run without a verdict (screen_locked, vocaro-engineering#293).
         self.unlocked = set(progress.get("unlocked", ())) if progress else set()
-        self.sent_unlocked = False  # whether the gate's last lane went as eng run --unlocked-screen (gate)
+        self.sent_unlocked = False  # whether the gate's last lane went as queuekeeper run --unlocked-screen (gate)
         self.code = running()  # the commit this worker's code came from, which toolkit compares with the copy's
         self.rounds = 0  # the rounds this worker has finished, which run reads to count its tries
         self.deferred = None  # why follow last left the shared checkout behind for a run from it, or None
@@ -2159,12 +2159,12 @@ class Worker:
         self.ran_on = None  # the second Mac that ran the last lane the gate ran, or None (gate)
         self.environment = environment()  # what the lanes, the hook and the carry-over checks run in
         self.measured = None  # the passing gate run of the last round, which its landed entries record
-        self.alone = False  # whether this round's batch is one entry an option of eng land put on its own (choose)
+        self.alone = False  # whether this round's batch is one entry an option of queuekeeper land put on its own (choose)
         self.failed_lane = None  # the lane whose failure the last gate returned, or None (gate)
         self.failed_load = None  # load_words for that lane, or None (gate)
         self.group_failed = []  # the lanes of the last group lane that did not pass (read_group)
         self.confirmed = None  # the failed tests the last rerun confirmed, which blame reads (rerun)
-        self.refused = None  # (lane, line, config) of the last gate eng unittest refused before running, for blame (rerun)
+        self.refused = None  # (lane, line, config) of the last gate queuekeeper unittest refused before running, for blame (rerun)
         self.unblamed = None  # {"key", "line"} of that refusal when blame found no one entry that brings it (blame)
         # {refusal_key: which gate} of the refusals that blamed no entry in the gates just before this one, the
         # previous gate's or a bisect's newer half beside it, which the same refusal again holds (older, Beside.weigh).
@@ -2272,7 +2272,7 @@ class Worker:
         """A locked worktree of repository at path. One an earlier worker kept at old moves there, with the
         ignored inputs its lanes provisioned, when no process uses it: this worker holds the queue, so no gate
         of its own runs there, and a process that does, a lane an earlier worker left running among them, keeps
-        it where it is. Then path is made afresh, and old stays, locked as retired, for `eng disk` to list."""
+        it where it is. Then path is made afresh, and old stays, locked as retired, for `queuekeeper disk` to list."""
         listed = text(repository, "worktree", "list", "--porcelain").splitlines()
         if f"worktree {path}" in listed: return
         if path.exists():
@@ -2282,7 +2282,7 @@ class Worker:
             why = self.move(repository, old, path)
             if why is None: return
             self.say(f"{old} stays where it is, {why}: making {path} afresh and leaving {old} for removal")
-            # Relocked as retired, so that `eng disk` can show the owner that nothing needs it.
+            # Relocked as retired, so that `queuekeeper disk` can show the owner that nothing needs it.
             git(repository, "worktree", "unlock", str(old), hooks=False)
             git(repository, "worktree", "lock", "--reason", f"{disk.RETIRED}: replaced by {path}", str(old), hooks=False)
         git(repository, "worktree", "add", "--detach", "--lock", "--reason", reason, str(path), MAIN, hooks=False,
@@ -2401,7 +2401,7 @@ class Worker:
 
     def follow(self, quiet=False):
         """After a landing in the toolkit's own queue, fast-forward the shared checkout, the toolkit's main
-        checkout, which every session's eng and the next worker read, to origin/main. Only when it is on main,
+        checkout, which every session's queuekeeper and the next worker read, to origin/main. Only when it is on main,
         clean, holds no commit of its own (one landed through the queue, whose change origin/main holds under another
         SHA, is not), is behind, and no process started from it still runs there, since
         such a run would mix two toolkits (owner's decision, vocaro-engineering#104). Otherwise it is left as it
@@ -2496,7 +2496,7 @@ class Worker:
         origin/main as the last round fetched it, so the worker's own code cannot change under them. It looks once
         first, since a worker that moved to a newer toolkit after a landing (move_to) has not followed itself. The
         log says the deferral when it begins, when what holds the checkout changes and when it ends, not each try,
-        and the round's account says what the worker waits for, which `eng queue status` shows."""
+        and the round's account says what the worker waits for, which `queuekeeper queue status` shows."""
         if self.queue.held() or not self.toolkits_own(): return
         shared = self.queue.main_checkout
         self.follow(quiet=True)
@@ -2564,7 +2564,7 @@ class Worker:
         (vocaro-engineering#247). When no entry ahead changes a file in conflict, HEAD's files are origin/main's, so
         origin/main; when some do and origin/main holds those files as commit's parent did, those entries alone, by
         ID; otherwise origin/main and every entry ahead. only_ahead holds those entries in the second case alone, the
-        ones `eng land --wait` waits for (vocaro-engineering#302)."""
+        ones `queuekeeper land --wait` waits for (vocaro-engineering#302)."""
         self.only_ahead = []
         if not ahead:
             return f"{commit[:12]} conflicts with origin/main, in {files}: rebase onto origin/main and add it again"
@@ -2619,7 +2619,7 @@ class Worker:
     def integrate(self, batch, base, below=()):
         """The entries of batch that are now on top of base, in order; the rest are settled (left_out). below holds
         the entries that base already holds on top of origin/main, as for a stacked gate (Stack), which a conflict
-        names as it does those of batch ahead of it. eng land's trial of a new entry runs this same code in a scratch
+        names as it does those of batch ahead of it. queuekeeper land's trial of a new entry runs this same code in a scratch
         checkout, settling nothing (Trial)."""
         self.reset(base)
         self.gating = ()
@@ -2651,10 +2651,10 @@ class Worker:
         """(status of the first of lanes that did not pass or 0, its log). ran_on is the second Mac that ran
         that lane, by its dispatch's record (remote.dispatched), or None when it ran here or nowhere. A pass of
         the gate lane leaves its wall time and the parts its log reports in self.measured, for the gate's
-        budget (budgets.py). where is eng run's placement option for each lane, HERE or BESIDE while a bisect's
-        halves run at once (Beside), and none otherwise, so that eng run chooses. A set cancel ends the lane as its
+        budget (budgets.py). where is queuekeeper run's placement option for each lane, HERE or BESIDE while a bisect's
+        halves run at once (Beside), and none otherwise, so that queuekeeper run chooses. A set cancel ends the lane as its
         limit would (processes.Canceled), for a stacked gate thrown away (Stack). So does an entry it tests that leaves
-        the queue, as `eng queue remove` takes it out, and the gate then returns WITHDRAWN, with self.withdrawn naming
+        the queue, as `queuekeeper queue remove` takes it out, and the gate then returns WITHDRAWN, with self.withdrawn naming
         those entries (Removal, vocaro-engineering#247). lane_now is (the lane running, when it began, where), by which
         a gate stacked on this one goes to another Mac (Worker.admitted_mac)."""
         log, self.ran_on, self.measured, self.timed_out, self.ran_where = None, None, None, None, ""
@@ -2687,10 +2687,10 @@ class Worker:
                                 "last run without a verdict")
             command = ["python3", "scripts/qk", "run", *where, *screen, lane]
             if lane == SPELLING and not self.has_lane(lane):
-                self.say(f"{lane}: the project has no spelling lane, so eng run runs the toolkit's: "
+                self.say(f"{lane}: the project has no spelling lane, so queuekeeper run runs the toolkit's: "
                          f"{shlex.join(IMPLICIT_SPELLING)}")
             if lane == DOCS and not self.has_lane(lane):
-                self.say(f"{lane}: the project has no docs lane, so eng run runs the toolkit's: "
+                self.say(f"{lane}: the project has no docs lane, so queuekeeper run runs the toolkit's: "
                          f"{shlex.join(IMPLICIT_DOCS)}")
             watch = GateWatch(self, lane, began, log).start()
             try:
@@ -2720,7 +2720,7 @@ class Worker:
             # It ran, unless no Mac admitted it or a host's configuration stopped it: it is placed as before next.
             if status_ not in UNRUN: self.unlocked.discard(lane)
             ran, self.ran_on = remote.dispatch(self.checkout, lane, began)
-            # What the lane printed: here in its own file; on the second Mac in its dispatch's run.log, whose eng
+            # What the lane printed: here in its own file; on the second Mac in its dispatch's run.log, whose queuekeeper
             # unittest summary names the failed tests that rerun reruns alone.
             printed = lane_log if ran is None else ran / "run.log"
             remote_failure = ran is not None and status_ and status_ not in NO_VERDICT
@@ -2761,8 +2761,8 @@ class Worker:
         return 0, log
 
     def read_group(self, lane, folder, log, *, include_swift=False):
-        """For a lane that is a group, whose own output gives only the end of a failed lane's log: add its eng unittest
-        lane's whole log to log, which rerun and `eng queue doctor` read as any eng unittest gate's, and note in
+        """For a lane that is a group, whose own output gives only the end of a failed lane's log: add its queuekeeper unittest
+        lane's whole log to log, which rerun and `queuekeeper queue doctor` read as any queuekeeper unittest gate's, and note in
         self.group_failed the lanes in folder, its lanes' logs and receipts, that did not pass (#289).
         Return the unittest member's log (empty if unavailable, None for a single lane) and the distinct Swift
         Testing assertions from failed members when requested."""
@@ -2788,13 +2788,13 @@ class Worker:
         return member_log, list(dict.fromkeys(assertions))
 
     def has_lane(self, lane):
-        """Whether the checkout's own engineering.json, which eng run reads, configures lane: where it does not, eng run
+        """Whether the checkout's own engineering.json, which queuekeeper run reads, configures lane: where it does not, queuekeeper run
         runs the toolkit's spelling check as that lane (lane_to_run)."""
         try: return lane in load(self.checkout).get("lanes", {})
         except (OSError, ValueError): return False
 
     def placed(self, lane, began):
-        """Where the lane ran, for the log, which eng run chose by both Macs' capacity (vocaro-engineering#168):
+        """Where the lane ran, for the log, which queuekeeper run chose by both Macs' capacity (vocaro-engineering#168):
         on the second Mac, by its dispatch's record, or on this Mac, with why, by the receipt the run wrote here
         since began (cli.placement); nothing when neither says."""
         if self.ran_on: return f" on {self.ran_on}"
@@ -2822,7 +2822,7 @@ class Worker:
         return f" on this Mac ({said.get('mac') or 'unnamed'})"
 
     def results_named(self, lane, ran, began):
-        """The line that says where a passing lane's per-test results are, for its log and `eng land --wait`, naming
+        """The line that says where a passing lane's per-test results are, for its log and `queuekeeper land --wait`, naming
         them and copying none (vocaro-engineering#266); ran is the lane's dispatch, or None when it ran here. Results
         the second Mac wrote came back with its dispatch, so they are on this Mac; a dispatch that sent none back is
         said to have, and a lane run here that wrote none says nothing, as before."""
@@ -2832,7 +2832,7 @@ class Worker:
             if not kept:
                 return f"{lane} per-test results: none: the second Mac ({self.ran_on}) sent none back to {folder}, on this Mac"
             return (f"{lane} per-test results: {kept} in {folder}, on this Mac, sent back by the second Mac ({self.ran_on}); "
-                    f"eng keeps the newest {remote.DISPATCHES_KEPT} dispatches of a lane")
+                    f"queuekeeper keeps the newest {remote.DISPATCHES_KEPT} dispatches of a lane")
         folder = self.checkout / ".build/engineering" / lane / "results"
         try:
             if folder.stat().st_mtime < int(began): return None  # an earlier run's
@@ -2891,7 +2891,7 @@ class Worker:
         An ungated landing, whose lanes ungated names, runs the hook unless those lanes cover it, which the gate's then
         do and it skips; its entry records ungated, and its tip carries the UNGATED trailer, again after a carry-over.
         A landing whose gate failed only flaky tests (rerun) carries a FLAKY trailer for each, again after a carry-over.
-        Any other landing records gatedOn, the base its gate ran on, by which `eng queue status` knows that a gate on
+        Any other landing records gatedOn, the base its gate ran on, by which `queuekeeper queue status` knows that a gate on
         main has passed over an earlier ungated landing (covered)."""
         head = self.head()
         gated_on = base
@@ -3042,7 +3042,7 @@ class Worker:
 
     def rerun(self, config, applied, base, head, log, round_name):
         """The flakes a batch whose gate failed lands with, or None to bisect it as before (owner's decision of
-        2026-11-07, vocaro-engineering#231). When the failed lane is eng unittest and its log names the failed tests,
+        2026-11-07, vocaro-engineering#231). When the failed lane is queuekeeper unittest and its log names the failed tests,
         the worker waits for this Mac, where they run, to settle as for a retry, and reruns each alone on head up to
         RERUNS times. A rerun that fails makes the failure real. When every rerun passes, each test is a flake,
         recorded in the entries and on the tracker (hardening), and the batch lands only when none of its commits
@@ -3068,7 +3068,7 @@ class Worker:
         if tests is None and refusals and not UNITTEST_SUMMARY.findall(said):
             # A refusal is no test failure, and the same tree gives it again: blame reads it, with no rerun (#290).
             self.refused = (lane, refusals[-1], config)
-            self.say(f"{lane} ran nothing, as eng unittest refused it before running anything, which no rerun would "
+            self.say(f"{lane} ran nothing, as queuekeeper unittest refused it before running anything, which no rerun would "
                      f"change: {refusals[-1]}")
             return None
         if tests is None:
@@ -3146,9 +3146,9 @@ class Worker:
     def blame(self, applied):
         """(the one entry of applied that every failed test the last rerun confirmed reaches, why), to send back while
         the rest gate again at once, sparing the bisect's gates; or None to bisect. A test reaches an entry whose
-        commits change a path its failing rerun's output names, as `eng spelling`'s `PATH:LINE:` lines do, or a file
+        commits change a path its failing rerun's output names, as `queuekeeper spelling`'s `PATH:LINE:` lines do, or a file
         its module is or imports (imported_files). Any doubt bisects: no confirmed failure, a module the worker cannot
-        find, a test that reaches no entry or several, or tests that reach different entries. A gate eng unittest
+        find, a test that reaches no entry or several, or tests that reach different entries. A gate queuekeeper unittest
         refused before running anything is blamed by its refusal instead (blame_refusal)."""
         confirmed, self.confirmed = self.confirmed, None
         refused, self.refused, self.unblamed = self.refused, None, None
@@ -3205,12 +3205,12 @@ class Worker:
                                       *entry["commits"]).splitlines() if path}
 
     def blame_refusal(self, applied, lane, line, config):
-        """(the one entry of applied that brings line, eng unittest's refusal of lane's gate before it ran anything,
+        """(the one entry of applied that brings line, queuekeeper unittest's refusal of lane's gate before it ran anything,
         why), to send back while the rest gate again at once; or None, with unblamed set, to bisect (owner's decision
         of 2026-11-08, vocaro-engineering#290). A refusal is no test failure: the same tree gives it again, so no rerun
         confirms it. An entry brings it when its tree alone gives a refusal naming one of its modules (refused_alone),
         or its commits change one of them in the suite's directory (#280). Any doubt bisects: a refusal that names
-        no module, no entry or several that bring it, or a tree eng unittest's checks cannot read."""
+        no module, no entry or several that bring it, or a tree queuekeeper unittest's checks cannot read."""
         modules = refused_modules(line)
         suite = unittest_lanes(config).get(lane)
         folder = os.path.normpath(suite[0]) if suite else None
@@ -3218,7 +3218,7 @@ class Worker:
         for entry in applied if modules else []:
             try: own = refused_alone(self.queue.main_checkout, entry["tip"], config)
             except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:
-                doubt = f"eng unittest's checks cannot read {entry['id']}'s tree: {error}"
+                doubt = f"queuekeeper unittest's checks cannot read {entry['id']}'s tree: {error}"
                 break
             alone = any(refused_modules(said) & modules for said in own)
             named = sorted(path for path in self.changed_by(entry)
@@ -3234,11 +3234,11 @@ class Worker:
                 because = (f"{'no entry' if not reached else f'{len(reached)} entries'} of the batch's {len(applied)} "
                            + ("bring it" if len(reached) > 1 else "brings it")
                            + (f" ({'; '.join(f'{key}: {why}' for key, why in reached.items())})" if reached else ""))
-            self.say(f"eng unittest refused {lane} before running anything, and {because}, so no commit is blamed")
+            self.say(f"queuekeeper unittest refused {lane} before running anything, and {because}, so no commit is blamed")
             return None
         [(identifier, reason)] = reached.items()
         entry = next(entry for entry in applied if entry["id"] == identifier)
-        why = (f"eng unittest refused {lane} before running anything, which no rerun would change, and only "
+        why = (f"queuekeeper unittest refused {lane} before running anything, which no rerun would change, and only "
                f"{identifier} brings the refusal, as {reason}: {line}")
         rest = len(applied) - 1
         self.say(f"blaming {identifier} ({entry.get('subject') or entry['tip'][:12]}): {why}; sending it back"
@@ -3255,7 +3255,7 @@ class Worker:
         more = len(tests) - REJECTION_SHOWN
         named = ", ".join(tests[:REJECTION_SHOWN]) + (f" and {more} more" if more > 0 else "")
         command = rerun_command(config.get("lanes", {}).get(self.failed_lane, {}).get("command"))
-        if command is None: return f"{named} failed, but {self.failed_lane} is no eng unittest suite to find them in, {unknown}"
+        if command is None: return f"{named} failed, but {self.failed_lane} is no queuekeeper unittest suite to find them in, {unknown}"
         if not entry.get("commits"): return f"{named} failed, but this entry records no commits, {unknown}"
         changed, top = self.changed_by(entry), self.suite_top(command)
         modules, reached, lost = {}, set(), []
@@ -3296,7 +3296,7 @@ class Worker:
         self.queue.mark([other for other in applied if other["id"] != entry["id"]], QUEUED)
 
     def suite_top(self, command):
-        """The top-level directory of the suite command runs, as eng unittest takes it: -t, else -s, else the checkout."""
+        """The top-level directory of the suite command runs, as queuekeeper unittest takes it: -t, else -s, else the checkout."""
         found = {}
         for index, word in enumerate(command):
             name, equals, value = word.partition("=")
@@ -3336,8 +3336,8 @@ class Worker:
 
     def choose(self, waiting):
         """This round's batch of waiting, oldest first. A batch that passed comes first, to push. Then the oldest
-        entry eng land --front put first, alone; then the oldest entries, as many as a bisect allows, up to the first
-        one eng land --no-gate lands alone, or that entry alone when it is the oldest. alone says whether the batch is
+        entry queuekeeper land --front put first, alone; then the oldest entries, as many as a bisect allows, up to the first
+        one queuekeeper land --no-gate lands alone, or that entry alone when it is the oldest. alone says whether the batch is
         one entry an option put on its own, whose outcome leaves a bisect where it was."""
         batch = waiting[:self.limit] if self.limit else waiting
         self.alone = False
@@ -3374,7 +3374,7 @@ class Worker:
         config = self.settings(base, head)
         queue.mark(applied, TESTING)
         self.say(f"testing {len(applied)} entr{'y' if len(applied) == 1 else 'ies'} at {head[:12]} on {base[:12]}"
-                 + (" at the front of the queue, as eng land --front asked" if applied[0].get("front") else ""))
+                 + (" at the front of the queue, as queuekeeper land --front asked" if applied[0].get("front") else ""))
         ungated = self.ungated(applied, config)
         # Without renames, so that a file moved into a docs path also names the path it left.
         docs = None if ungated else docs_lanes(config, [path for path in text(
@@ -3463,7 +3463,7 @@ class Worker:
         """Land the docs-only entries waiting behind applied, the batch gating now, beside its gate, on the docs lanes
         in a checkout of their own (DOCS_SUFFIX): each one that docs_first takes with applied's paths blocked and
         whose every path a passed batch carries over (carried_over), so that applied's pass then carries over what
-        they add to main (Worker.carry). None goes while an entry put first by eng land, or a batch that passed, waits
+        they add to main (Worker.carry). None goes while an entry put first by queuekeeper land, or a batch that passed, waits
         to go first. One whose docs lanes fail waits in line for applied and the older entries (waitsFor)."""
         waiting = self.queue.waiting()
         ids = {entry["id"] for entry in applied}
@@ -3632,11 +3632,11 @@ class Worker:
                 f"{LOCKED_SCREEN_RUNS} hold the queue")
 
     def refused_again(self, applied, line, other, log):
-        """Hold the queue for a session, applied queued again, when eng unittest refused this gate before running
+        """Hold the queue for a session, applied queued again, when queuekeeper unittest refused this gate before running
         anything as it refused other, the gate before it or a bisect's half beside it, and no one entry brings the
         refusal: a bisect would only send back, one by one, entries the refusal does not name, while the cause, on
         origin/main or in how entries combine, stays (owner's decision of 2026-11-08, vocaro-engineering#290). The
-        hold's reason, which `eng queue status` and the worker log show, carries `eng queue doctor`'s diagnosis."""
+        hold's reason, which `queuekeeper queue status` and the worker log show, carries `queuekeeper queue doctor`'s diagnosis."""
         self.queue.mark(applied, QUEUED)
         if not self.alone: self.limit, self.suspects = None, 0
         try:
@@ -3645,9 +3645,9 @@ class Worker:
                                   for finding in findings) or "healthy"
         except Exception as error:  # the diagnosis explains the hold, and never stops it
             diagnosis = f"it could not run: {error}"
-        self.queue.hold(worded(SESSION, f"eng unittest refused this gate and {other} before running anything, the "
+        self.queue.hold(worded(SESSION, f"queuekeeper unittest refused this gate and {other} before running anything, the "
                                         f"same way, and no one entry of the batch brings the refusal, so a bisect "
-                                        f"would only send back entries it does not name: {line}; see {log}; eng queue "
+                                        f"would only send back entries it does not name: {line}; see {log}; queuekeeper queue "
                                         f"doctor: {diagnosis}"))
         return QUEUED
 
@@ -3724,7 +3724,7 @@ class Worker:
         """Start self.pending, the waiting entries not in applied, the batch at head, gated stacked on head, when
         there are any and none is pending: away from the Mac running the primary's final lane (admitted_mac), in the
         other checkout. One that gave no verdict or stopped when an entry left the queue is thrown away. An admission
-        decline delays the next attempt. An entry eng land put first or lands without the gate goes first on main.
+        decline delays the next attempt. An entry queuekeeper land put first or lands without the gate goes first on main.
         A batch with a withdrawn entry does not start a stack, as its own gate stops (Worker.gate, #247)."""
         if self.pending is not None:
             if not self.pending.done(): return
@@ -3806,7 +3806,7 @@ class Worker:
     def beside(self, waiting, batch, base, config, docs, ungated):
         """The Beside that gates a bisect's newer half while batch, its older half, gates here, or None to gate batch
         alone, as before: no bisect is going on, batch is an entry an option put on its own, a docs-only or ungated
-        round, a newer entry an option of eng land marked, a lane that runs only here (offerable), or a newer entry
+        round, a newer entry an option of queuekeeper land marked, a lane that runs only here (offerable), or a newer entry
         that does not apply to origin/main without the older half, which waits for it (vocaro-engineering#241)."""
         if self.alone or docs or ungated or not self.limit or self.suspects <= len(batch): return None
         rest = waiting[len(batch):self.suspects]
@@ -3848,10 +3848,10 @@ class Worker:
 
     def ungated(self, applied, config):
         """What an ungated landing of applied records, the reason --why gave and the lanes it runs, when it is one
-        entry eng land --no-gate put on its own; else None."""
+        entry queuekeeper land --no-gate put on its own; else None."""
         if not (self.alone and applied[0].get("noGate")): return None
         ungated = {"why": applied[0].get("aheadWhy") or "no reason was recorded", "lanes": ungated_lanes(config)}
-        self.say(f"{applied[0]['id']} lands without the gate, as eng land --no-gate asked, because {ungated['why']}: "
+        self.say(f"{applied[0]['id']} lands without the gate, as queuekeeper land --no-gate asked, because {ungated['why']}: "
                  f"running only {', '.join(ungated['lanes']) or 'no lane'}; the next gate on main covers it")
         return ungated
 
@@ -3860,7 +3860,7 @@ class Worker:
         commits main already has, stays. The commit keeps its author, message and patch, by which Closeout finds its
         branch landed."""
         if self.head() == base: return base
-        words = (f"eng land --no-gate ran {', '.join(ungated['lanes']) or 'no lane'} and the pre-push checks, not the "
+        words = (f"queuekeeper land --no-gate ran {', '.join(ungated['lanes']) or 'no lane'} and the pre-push checks, not the "
                  f"gate, because {ungated['why']}; the next gate on main covers it")
         git(self.checkout, "commit", "--amend", "--no-verify", "--no-edit", "--allow-empty", "--trailer",
             f"{UNGATED}: {words}", hooks=False, check=True)
@@ -3879,7 +3879,7 @@ class Worker:
                 error = self.receipt_error()
                 return f"unmeasured: {shortened(error)}" if error else "unmeasured, with no test its log names"
             first = shortened(found[0])
-            # The run's last reading of its screen, which eng writes for a lane whose result depends on it.
+            # The run's last reading of its screen, which queuekeeper writes for a lane whose result depends on it.
             screens = SCREEN_LINE.findall(said)
             return (f"unmeasured: {len(found)} test{'' if len(found) == 1 else 's'}, the first {first}"
                     + (f"; the last reading {screens[-1].strip()}" if screens else ""))
@@ -3911,7 +3911,7 @@ class Worker:
     def screen_locked(self, result, log):
         """(the lane, the screen reading) when the lane at which the last gate stopped with result, which gave no
         verdict, ran behind a locked screen; otherwise None. The last reading decides: the receipt's screenAfter,
-        which eng writes when a lane that depends on the screen ends unmeasured, else the log's last `screen:`
+        which queuekeeper writes when a lane that depends on the screen ends unmeasured, else the log's last `screen:`
         line. A dispatch's receipt holds the lane's own, and so that reading, under result. No admission and a
         host's configuration ran nothing, and count as before (#185, #293)."""
         if result in UNRUN or not self.lane_now: return None
@@ -3941,7 +3941,7 @@ class Worker:
 
     def began_unlocked(self, lane, log, config):
         """Whether the gate's last run of lane read an unlocked screen at its start: by its placement, or by the first
-        `screen:` line in its log, for a lane eng reads the screen for without placing it there (a display lane)."""
+        `screen:` line in its log, for a lane queuekeeper reads the screen for without placing it there (a display lane)."""
         if self.needs_unlocked(lane, config): return True
         try: said = log.read_text(errors="replace") if log else ""
         except OSError: said = ""
@@ -3974,7 +3974,7 @@ class Worker:
 
     def keep(self, batch, base, head, docs, ungated=None, flakes=None):
         """Record a batch's pass before its push. A hold the push meets, a refusal or a remote out of reach, then
-        leaves the batch passed rather than queued, and `eng queue resume` pushes head instead of gating the same
+        leaves the batch passed rather than queued, and `queuekeeper queue resume` pushes head instead of gating the same
         tree again (vocaro-engineering#150): EPUBLib's queue spent an hour of the second Mac doing that."""
         verdict = {"head": head, "base": base, "batch": [entry["id"] for entry in batch], "at": time.time()}
         if docs: verdict["docsOnly"] = docs
@@ -4234,7 +4234,7 @@ class Stack:
         return None
 
     def stale(self, waiting):
-        """Why the next round cannot adopt it, or None: an entry gone from the queue, or one eng land put first or
+        """Why the next round cannot adopt it, or None: an entry gone from the queue, or one queuekeeper land put first or
         lands without the gate, or a batch that passed waiting for its push, all of which go first."""
         ids = {entry["id"] for entry in waiting}
         gone = [entry["id"] for entry in self.entries if entry["id"] not in ids]
@@ -4267,7 +4267,7 @@ class Stack:
 
 
 class Trial(Worker):
-    """eng land's trial integration of a new entry (trial): the worker's own integrate, pick and changelog
+    """queuekeeper land's trial integration of a new entry (trial): the worker's own integrate, pick and changelog
     resolution, so that the trial and the round cannot disagree on what conflicts, in a scratch checkout, settling,
     recording and saying nothing."""
     def __init__(self, queue, checkout):
@@ -4315,7 +4315,7 @@ def conflict_hunks(checkout, conflicted):
 
 def round_order(entries):
     """Waiting entries in the order rounds put them on main (Worker.choose): a batch that passed, then a batch in
-    its gate, then those eng land --front put first, then the rest, each oldest first."""
+    its gate, then those queuekeeper land --front put first, then the rest, each oldest first."""
     rank = {PASSED: 0, TESTING: 1, QUEUED: 2}
     return sorted(entries, key=lambda entry: (rank.get(entry["state"], 2), not entry.get("front"),
                                               entry["submitted"], entry["id"]))
@@ -4389,7 +4389,7 @@ MERGED_IN_LISTED = 10
 
 
 def merge_refusal(root, merges, tip):
-    """Why eng land queues nothing for a branch with merges, which linear could not replay. A merge that brings in
+    """Why queuekeeper land queues nothing for a branch with merges, which linear could not replay. A merge that brings in
     commits origin/main lacks is another branch's work, which rebasing the branch's own commits would drop, so the
     refusal names those commits and the two ways to carry them (vocaro-engineering#262). Any other merge, as one
     whose replay conflicts, has only the branch's own commits to move."""
@@ -4411,7 +4411,7 @@ def merge_refusal(root, merges, tip):
 
 
 def tried(found, base, front, elapsed):
-    """What eng land says of a trial that let its entry through, line by line."""
+    """What queuekeeper land says of a trial that let its entry through, line by line."""
     after = f" after {', '.join(found['against'])}" if found["against"] else ""
     lines = [f"checked in {elapsed:.1f}s: it applies onto origin/main at {base[:12]}{after}"
              + (", alone, as --front tests it" if front else "") + ", as a round would integrate it now"]
@@ -4422,7 +4422,7 @@ def tried(found, base, front, elapsed):
 
 
 def refusal(tip, found, base, root):
-    """Why eng land queues nothing: the trial's conflict, with what it was checked against, its hunks, and the command
+    """Why queuekeeper land queues nothing: the trial's conflict, with what it was checked against, its hunks, and the command
     that waits for the entries ahead that change the files in conflict (vocaro-engineering#304)."""
     checked_ = f"origin/main at {base[:12]}" + (f" and, in order, {', '.join(found['against'])}" if found["against"]
                                                 else "")
@@ -4435,14 +4435,14 @@ def refusal(tip, found, base, root):
             ", ".join(found["left"])
     if found["hunks"]:
         words += f"; its lines in conflict: {', '.join(found['hunks'])}"
-    words += (". An entry ahead that comes back may let it apply: `eng queue status` says, and `eng land` again "
+    words += (". An entry ahead that comes back may let it apply: `queuekeeper queue status` says, and `queuekeeper land` again "
               "checks again (guides/maintenance.md, The merge queue)")
     if found["touching"]:
         many = len(found["touching"]) > 1
         words += (f". To be told when {'they leave' if many else 'it leaves'} the queue, run as a background command: "
                   f"python3 {shlex.quote(str(root))}/scripts/qk queue wait {' '.join(found['touching'])}, which says "
-                  f"whether {'they all' if many else 'it'} landed, so rebase, or came back, so `eng land` may apply it "
-                  "as it is" + (f"; `eng land --wait` waits for {'them' if many else 'it'} itself and checks again"
+                  f"whether {'they all' if many else 'it'} landed, so rebase, or came back, so `queuekeeper land` may apply it "
+                  "as it is" + (f"; `queuekeeper land --wait` waits for {'them' if many else 'it'} itself and checks again"
                                 if found["waits"] else ""))
     return words
 
@@ -4453,7 +4453,7 @@ def run(root, *, if_waiting=False):
     reason says whom it is for (worded). A cause that clears by itself, a remote out of reach past its backoff,
     runs the round again after each of CLEARING_WAITS first, this process staying the worker through the wait,
     and holds for a session only when the last try fails too."""
-    # Its gate lanes inherit its signal dispositions, which must not depend on whether `eng land` ran as `&`.
+    # Its gate lanes inherit its signal dispositions, which must not depend on whether `queuekeeper land` ran as `&`.
     processes.default_background_signals()
     queue = Queue(root)
     progress, tries = carried(), 0
@@ -4475,11 +4475,11 @@ def run(root, *, if_waiting=False):
                     worker.drain()
                     worker.catch_up()
             except NoLocalNetwork as lost:
-                # Holding nothing: the next `eng land`, `eng queue wait` or `eng queue resume` starts a worker of its
+                # Holding nothing: the next `queuekeeper land`, `queuekeeper queue wait` or `queuekeeper queue resume` starts a worker of its
                 # session's, and a hold would wait for a session to resume it instead.
                 queue.mark([entry for entry in queue.all() if entry["state"] == TESTING], QUEUED)
                 worker.say(f"exits, holding nothing, since this worker cannot reach the second Mac: {lost}; the next "
-                           "`eng land`, `eng queue wait` or `eng queue resume` from a live session starts another")
+                           "`queuekeeper land`, `queuekeeper queue wait` or `queuekeeper queue resume` from a live session starts another")
                 return 0
             except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
                 queue.mark([entry for entry in queue.all() if entry["state"] == TESTING], QUEUED)
@@ -4532,12 +4532,12 @@ def land_arguments(parser):
                         "still waiting at the limit. Refused for entries ahead alone, it waits for them and checks "
                         "again")
     parser.add_argument("--limit", type=float, default=WAIT_LIMIT, metavar="SECONDS")
-    parser.add_argument("--note", help="what the entry is, for `eng queue status`")
+    parser.add_argument("--note", help="what the entry is, for `queuekeeper queue status`")
     options(parser)
 
 
 def options(parser):
-    """eng land's emergency options, in every repository, which `eng queue add` takes too (guides/maintenance.md,
+    """queuekeeper land's emergency options, in every repository, which `queuekeeper queue add` takes too (guides/maintenance.md,
     Landing ahead of the queue)."""
     parser.add_argument("--front", action="store_true", help="for an emergency, such as an important fix stuck behind "
                         "queued changes: test it next, ahead of everything waiting, as a batch of its own, once a gate "
@@ -4547,14 +4547,14 @@ def options(parser):
                         "the pre-push hook, without the gate, and record it as ungated, which the next gate on main "
                         "covers. Needs --why; tell the owner you used it and why. With --front it lands at once")
     parser.add_argument("--why", metavar="TEXT", help="the reason for --front or --no-gate, which --no-gate requires: "
-                        "the entry, the log, the landed commit's trailer and `eng queue status` record it")
+                        "the entry, the log, the landed commit's trailer and `queuekeeper queue status` record it")
 
 
 def add_arguments(parser):
     operations = parser.add_subparsers(dest="operation", required=True)
     adding = operations.add_parser("add", help="queue the commits a ref has and origin/main lacks, and return at once")
     adding.add_argument("reference", nargs="?", default="HEAD")
-    adding.add_argument("--note", help="what the entry is, for `eng queue status`")
+    adding.add_argument("--note", help="what the entry is, for `queuekeeper queue status`")
     options(adding)
     state = operations.add_parser("status", help="say what is waiting, what is running, what came back and, when the "
                                   "queue is held, why and for whom")
@@ -4567,7 +4567,7 @@ def add_arguments(parser):
     placing.add_argument("lane", nargs="?", help="lane on origin/main (default: the first configured gate lane)")
     placing.add_argument("--json", action="store_true")
     following = operations.add_parser("wait", help="follow an entry to its result, or several, such as the entries an "
-                                       "eng land conflict names, until none waits: 0 landed, or each did, 1 came back, "
+                                       "queuekeeper land conflict names, until none waits: 0 landed, or each did, 1 came back, "
                                        "or one did, 75 held or still waiting at the limit")
     following.add_argument("id", nargs="+")
     following.add_argument("--limit", type=float, default=WAIT_LIMIT, metavar="SECONDS")
@@ -4585,7 +4585,7 @@ def main(root, args):
     if args.operation == "add":
         try: add(root, args.reference, args.note, front=args.front, no_gate=args.no_gate, why=args.why)
         except Refused as error:
-            print(f"eng: {error}", file=sys.stderr)
+            print(f"queuekeeper: {error}", file=sys.stderr)
             return 1
         return 0
     if args.operation == "status": return status(root, args.json)

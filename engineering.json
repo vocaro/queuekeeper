@@ -3,6 +3,8 @@
   "name": "queuekeeper",
   "toolkit": {"path": "../vocaro-engineering"},
   "integration": "direct-main",
+  "capabilities": ["simulator-pool"],
+  "simulatorPool": "Queuekeeper",
   "lanes": {
     "gate": {
       "command": ["python3", "scripts/qk", "unittest", "-s", "tests", "--split", "class", "--batch-size", "4", "--jobs", "8", "-v"],

@@ -1,6 +1,6 @@
 """Build a scheme's tests once and run them on several members of the project's simulator pool side by side.
 
-    eng simulator-tests --scheme SCHEME --runtime iOS-27-0 --device iPhone-17-Pro \\
+    queuekeeper simulator-tests --scheme SCHEME --runtime iOS-27-0 --device iPhone-17-Pro \\
         --device iPad-Air-13-inch-M4 [--pool NAME] [--build-jobs 4] [--forward-env PREFIX] \\
         [-- TEST-ARGUMENTS such as -only-testing:T/C]
 
@@ -45,13 +45,13 @@ Under a lane, whose command finds its results/ in ENG_RESULTS_DIR, each test run
 also keeps there, in simulator-tests/, the lines of its log that give each test's and suite's outcome and
 seconds, KIND.log, and its result bundle's summary and each class's or suite's seconds, KIND.json: they
 come back from the second Mac with the lane's dispatch, and are kept by commit beside its receipt, where
-the logs folder's are overwritten by the next run (vocaro-engineering#218). `eng results keep` writes the
+the logs folder's are overwritten by the next run (vocaro-engineering#218). `queuekeeper results keep` writes the
 same two files for a script that runs xcodebuild itself (vocaro-engineering#260).
 
 With --repeat N the tests are built once and run N times, each run on a member of each device's kind taken from the
 pool afresh, by the same take, and so the same reset, as any other run: erased with --erase, a copy of the warmed
 template with --template, which leaves a run unmeasured when the pool could only erase. The options may follow the
---, so that `eng run LANE --repeat N` reaches this through the arguments a lane appends, on either Mac; --only TEST
+--, so that `queuekeeper run LANE --repeat N` reaches this through the arguments a lane appends, on either Mac; --only TEST
 then replaces the lane's own selection. Each run keeps its own outcome, test counts and one-minute load at its start
 and end, printed one line each, added up on the "Repeat series:" line and kept in series.json. Any failed run fails
 the series, and a run that did not happen is unmeasured, never passed (guides/simulator-testing.md, Repeating a test
@@ -88,7 +88,7 @@ TEST_ALLOWANCE = 600
 # derived data whose removal let the next build pass (vocaro/vocaro-engineering#85).
 STALE_MODULE = "has been modified since the module file"
 # What the toolkit's build-tool wrapper says when it has rebuilt already (its stale_modules.NOTICE).
-STALE_NOTICE = "eng: STALE MODULES"
+STALE_NOTICE = "queuekeeper: STALE MODULES"
 EXPLICIT_MODULES = "Build/Intermediates.noindex/SwiftExplicitPrecompiledModules"
 
 
@@ -117,7 +117,7 @@ def default_test_allowance(argv):
 
 def parse(argv, *, parser_factory=argparse.ArgumentParser):
     split = argv.index("--") if "--" in argv else len(argv)
-    parser = parser_factory(prog="eng simulator-tests", description=__doc__.split("\n\n")[0])
+    parser = parser_factory(prog="queuekeeper simulator-tests", description=__doc__.split("\n\n")[0])
     parser.add_argument("-C", "--directory", type=Path, help="run in this directory, as for a package's scheme, "
                         "which xcodebuild finds in its working directory; other paths are relative to it")
     parser.add_argument("--scheme", required=True)
@@ -183,7 +183,7 @@ def parse(argv, *, parser_factory=argparse.ArgumentParser):
                         "TEST_RUNNER_ + its name, unless that is already set; repeat for each prefix")
     args, unknown = parser.parse_known_args(argv[:split])
     if unknown:
-        # eng run LANE -- ARGUMENTS appends them to the lane's command, which reach the tests only
+        # queuekeeper run LANE -- ARGUMENTS appends them to the lane's command, which reach the tests only
         # when that command ends with --.
         parser.error(f"unrecognized arguments: {' '.join(unknown)}. Test arguments such as -only-testing go after "
                      "--, so a lane whose command runs simulator-tests ends with \"--\"")
@@ -212,11 +212,11 @@ def parse(argv, *, parser_factory=argparse.ArgumentParser):
 
 def series_options(args, parser_factory):
     """Move a series' options, from a `--repeat` among the test arguments, onto args, and leave the rest as test
-    arguments. They come there from `eng run LANE --repeat N`, which appends them to the lane's command, after its --,
+    arguments. They come there from `queuekeeper run LANE --repeat N`, which appends them to the lane's command, after its --,
     and which reach this on either Mac as a lane's other arguments do. Their reset replaces the lane's own."""
     if "--repeat" not in args.passed: return
     at = args.passed.index("--repeat")
-    parser = parser_factory(prog="eng simulator-tests", add_help=False, allow_abbrev=False)
+    parser = parser_factory(prog="queuekeeper simulator-tests", add_help=False, allow_abbrev=False)
     parser.add_argument("--repeat", type=int)
     fresh = parser.add_mutually_exclusive_group()
     fresh.add_argument("--erase", action="store_true")
@@ -349,7 +349,7 @@ def test_cases(record, activity_timings=None):
     return found
 
 
-def kept(kind, log, record, status, seconds, results=None, unread=None, by="eng simulator-tests", *, cases=None):
+def kept(kind, log, record, status, seconds, results=None, unread=None, by="queuekeeper simulator-tests", *, cases=None):
     """Keep what a reader cites of one test run in its lane's results/, KEPT/KIND.log and KIND.json, and
     return that folder, or None outside a lane (no RESULTS_VARIABLE): the log's lines that give each test's
     and suite's outcome and seconds (RESULT_LINE), and the result bundle's summary, as xcresulttool prints
@@ -377,7 +377,7 @@ def kept(kind, log, record, status, seconds, results=None, unread=None, by="eng 
             "tests": tests, "bundleUnread": unread or (UNREAD if tests is None else None if tests else NO_CASES)},
             indent=1) + "\n")
     except OSError as error:
-        print(f"eng simulator-tests: {kind}'s results were not kept in {folder}: {error}", file=sys.stderr, flush=True)
+        print(f"queuekeeper simulator-tests: {kind}'s results were not kept in {folder}: {error}", file=sys.stderr, flush=True)
         return None
     return folder
 
@@ -521,7 +521,7 @@ class Run:
         stale = self.logs / "build-stale-modules.log"
         stale.unlink(missing_ok=True)
         text = log.read_text(errors="replace")
-        # Under eng run, the xcodebuild wrapper has removed the stale modules and rebuilt once already (#267).
+        # Under queuekeeper run, the xcodebuild wrapper has removed the stale modules and rebuilt once already (#267).
         if status != 0 and STALE_MODULE in text and STALE_NOTICE not in text:
             # Reused derived data can outlive a dependency change, and only the modules are out of date.
             # One rebuild, not a loop: a second occurrence is a failure the cache does not explain.
@@ -772,7 +772,7 @@ def folders_held(folders, say):
                 fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 holder = path.read_text(errors="replace").strip() or "it has not said which"
-                say(f"WAIT: another eng simulator-tests run holds {folder} ({holder}); waiting for it to end")
+                say(f"WAIT: another queuekeeper simulator-tests run holds {folder} ({holder}); waiting for it to end")
                 waited = time.monotonic()
                 fcntl.flock(descriptor, fcntl.LOCK_EX)
                 say(f"HELD {folder} after waiting {round(time.monotonic() - waited)}s")
@@ -793,7 +793,7 @@ def taken(pool, run, kind, runtime, purpose, keep_state=False, erase=False, labe
         yield lease
     finally:
         status = run.results.get(label or kind)
-        pool.release(lease, outcome=f"eng simulator-tests: {outcome(status) if status is not None else 'stopped'}")
+        pool.release(lease, outcome=f"queuekeeper simulator-tests: {outcome(status) if status is not None else 'stopped'}")
 
 
 # What a run's console says of its failures when no result bundle does.
@@ -858,7 +858,7 @@ def asked_reset(args):
 
 
 def series_line(summary):
-    """The series' summary line, which eng run reads (lane_results.SERIES) and a lane's log keeps."""
+    """The series' summary line, which queuekeeper run reads (lane_results.SERIES) and a lane's log keeps."""
     runs, tests = summary["runs"], summary["tests"]
     uncounted = summary["runsWithoutTestCounts"]
     return (f"Repeat series: asked {summary['asked']} repeat{'' if summary['asked'] == 1 else 's'} "
@@ -879,7 +879,7 @@ def keep_series(run, record):
             (folder / SERIES_RECORD).write_text(text)
             run.say(f"SERIES RECORD {folder / SERIES_RECORD}")
         except OSError as error:
-            print(f"eng simulator-tests: the series record was not kept in {folder}: {error}", file=sys.stderr, flush=True)
+            print(f"queuekeeper simulator-tests: the series record was not kept in {folder}: {error}", file=sys.stderr, flush=True)
 
 
 def series(run, pool, args, kinds):
@@ -887,7 +887,7 @@ def series(run, pool, args, kinds):
     built once, on the first round's destination. Each run's outcome stands apart, a run that could not take its
     member, or that the series stopped before, counts unmeasured, and a failed build ends the series there. Returns
     the series' status, and reports it however the series ended."""
-    purpose = f"eng simulator-tests {args.scheme}, repeat series"
+    purpose = f"queuekeeper simulator-tests {args.scheme}, repeat series"
     asked = [(number, kind, f"{kind}-run{number}") for number in range(1, args.repeat + 1) for kind in kinds]
     members, built = {}, None
     def take_and_test(number):
@@ -952,7 +952,7 @@ def main(argv, project=None):
     name = args.pool or simulator_pool.running(project)
     if args.directory is not None: os.chdir(args.directory)
     if not name:
-        print("eng simulator-tests: name the simulator pool with --pool, or in engineering.json's simulatorPool",
+        print("queuekeeper simulator-tests: name the simulator pool with --pool, or in engineering.json's simulatorPool",
               file=sys.stderr)
         return 2
     run = Run(args)
@@ -978,7 +978,7 @@ def main(argv, project=None):
                 return status
             devices = []
             for kind in kinds:
-                purpose = f"eng simulator-tests {args.scheme}" + (", build only" if args.build_only else "")
+                purpose = f"queuekeeper simulator-tests {args.scheme}" + (", build only" if args.build_only else "")
                 for number in range(1 if args.build_only else args.shards or 1):
                     device = stack.enter_context(taken(pool, run, kind, args.runtime, purpose,
                                                        args.keep_state or args.build_only, args.erase))
@@ -1005,7 +1005,7 @@ def main(argv, project=None):
                 uncertain = [error for error in errors if not isinstance(error, processes.Interrupted)]
                 raise uncertain[0] if uncertain else errors[0]
     except (OSError, ValueError, RuntimeError, TimeoutError) as error:
-        print(f"eng simulator-tests: {error}", file=sys.stderr)
+        print(f"queuekeeper simulator-tests: {error}", file=sys.stderr)
         return 1
     status = combined([run.results.get(kind, 1) for kind in kinds])
     print(f"Simulator tests (wall-clock {round(time.monotonic() - started)}s, "

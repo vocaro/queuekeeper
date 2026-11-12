@@ -23,7 +23,7 @@ BANNER_STOP = 123
 # 10 s, and VoiceOver moved to a new one in two of EPUBLib's seven sessions there, two of the three at 600 points
 # (2026-10-30). The owner keeps SIP there and has such sessions run again (owner's decision, 2026-10-30).
 BANNER_ATTEMPTS = 3
-# The signals a stop sends: eng's, when the dispatching Mac's connection ends or the session asks, is SIGTERM,
+# The signals a stop sends: queuekeeper's, when the dispatching Mac's connection ends or the session asks, is SIGTERM,
 # then SIGKILL processes.FOREGROUND_KILL_AFTER seconds later for a foreground run.
 STOP_SIGNALS = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
 

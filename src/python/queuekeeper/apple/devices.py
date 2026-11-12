@@ -11,7 +11,7 @@ record fresh, refuses unless the entry is still at the revision the caller read,
 file whole. The lock covers one change, never a reservation, and the kernel drops it with its
 process. Like a heavy-work guard, an entry is never released by a deadline or a vanished process:
 an active run whose recorded process is gone is an orphan, kept for attended recovery. The one
-exception is a simulator pool's reservation that `eng simulator-pool reap` proves dead, every process
+exception is a simulator pool's reservation that `queuekeeper simulator-pool reap` proves dead, every process
 it records gone and its simulator shut down, which reap releases as a recovery by reap: once its
 expected release has passed, or before then when only its holder held it (ALONE) and nothing accounts
 for its owner, no live admission or other process naming the owner or the device (offload_host.release_dead;
@@ -22,7 +22,7 @@ device and, like a physical device's, records no approval (owner's decision, 202
 vocaro-engineering#207): the record schedules it, one holder at a time, and its expected release
 is its window. On this Mac, the owner's workstation, a session agrees the window with the owner
 first and reserves it for that window; foreground actions are refused once the expected release
-has passed. The second Mac is not a workstation: eng reserves its entry for each run without
+has passed. The second Mac is not a workstation: queuekeeper reserves its entry for each run without
 asking (foreground.slot), and a run there may outlast its expected release. Foreground drivers
 call require_foreground before acting; release waits for the processes the session recorded as
 its own, and says whether the previous frontmost app was restored.
@@ -30,7 +30,7 @@ its own, and says whether the previous frontmost app was restored.
 Each Mac's simulators are its own, but a paired iPhone or iPad is reachable from both Macs, so a
 physical device is reserved in one record only: the Mac that sends runs to the second Mac. The
 second Mac's record defers physical devices to that Mac and refuses to reserve one. A run there
-uses one under a reservation held in the sending Mac's record, which `eng remote --device` carries.
+uses one under a reservation held in the sending Mac's record, which `queuekeeper remote --device` carries.
 
 A physical device's reservation records no approval (owner's decision, 2026-11-06): the record schedules
 the devices, first come first served, one holder at a time, and a session that reserves one has the
@@ -40,7 +40,7 @@ expected release is its window, and a bounded run stops before it.
 A bounded run (`devices run KEY -- COMMAND`, BoundedRun) runs one command on physical devices the
 session holds, refusing a command that names any other device, and
 stops it before the reservation ends, keeping time for its termination and the session's
-restoration. It records the run in the entry and never releases the device. `eng remote --device`
+restoration. It records the run in the entry and never releases the device. `queuekeeper remote --device`
 bounds a run on the second Mac the same way, and there a bounded run takes its reservation from the lease.
 
 `devices take KEY` takes a paired device in turn: it joins the device's queue, waits while another
@@ -55,7 +55,7 @@ runs the owner's silencing shortcut on it, once he has recorded making it there 
 and releasing or recovering the entry runs the restoring one. The entry's `notifications` records each step.
 The Mac reads no device's Focus, so the silencing is never confirmed, and a run without it says so
 (device_notifications). `devices run` watches the device's log while its command runs, and a run a notification
-reached as a banner is unmeasured and run once more; so does `eng remote --device`, from the sending Mac (#192).
+reached as a banner is unmeasured and run once more; so does `queuekeeper remote --device`, from the sending Mac (#192).
 """
 import argparse
 import contextlib
@@ -123,7 +123,7 @@ QUEUES = "queues"
 # The owner's word that he made the notification shortcuts on a paired device, by its entry's key, kept
 # beside the entries with the device it names (device_notifications).
 SETUP = "notificationSetup"
-# What the entry's notifications record says of a run's silencing that let it start protected: eng ran the
+# What the entry's notifications record says of a run's silencing that let it start protected: queuekeeper ran the
 # owner's shortcut, or the owner turned Do Not Disturb on himself.
 SILENCED = ("requested", "owner")
 # Seconds between looks at an entry while `take` waits for it.
@@ -137,7 +137,7 @@ OWNER = "VOCARO_DEVICE_OWNER"
 # member's simulator as that run's (offload_host.leftovers).
 HOLDER = "holderProcess"
 # Set beside HOLDER when that process alone holds the reservation, as a run's pool records it and
-# `eng simulator-pool take` never does: reap may release such an entry before its expected release once
+# `queuekeeper simulator-pool take` never does: reap may release such an entry before its expected release once
 # its processes are gone and nothing accounts for its owner (offload_host.ALONE; vocaro-engineering#156).
 ALONE = offload_host.ALONE
 # How a foreground release left the frontmost app: restored, or no longer the session's to restore.
@@ -188,7 +188,7 @@ def physical(udid):
 
 def deferred_refusal(mac, key):
     return Refused(f"physical devices are reserved in {mac}'s device record, not this one: reserve {key} there and "
-                   f"send the run here with `eng remote run|admit --device {key}`. Nothing was changed")
+                   f"send the run here with `queuekeeper remote run|admit --device {key}`. Nothing was changed")
 
 
 def approval_refusal(key):
@@ -598,7 +598,7 @@ class Record:
                 entry["ownedProcesses"] = [*current.get("ownedProcesses", []), *owned]
             if launched:
                 entry["launchedApps"] = list(dict.fromkeys([*current.get("launchedApps", []), *launched]))
-                # An app the session says it launched is the session's to account for, even one eng opened too.
+                # An app the session says it launched is the session's to account for, even one queuekeeper opened too.
                 said = entry.get("notifications") or {}
                 if set(launched) & set(said.get("opened", [])):
                     entry["notifications"] = {**said, "opened": [app for app in said["opened"] if app not in launched]}
@@ -607,8 +607,8 @@ class Record:
 
     def notifications(self, key, *, owner, revision, value, launched=()):
         """Record in the caller's own entry what was done to the owner's notifications on its device: value's
-        fields join the entry's notifications. launched adds apps eng opened there, as update's does, and notes them
-        as eng's, which a release does not ask the session about (vocaro-engineering#292)."""
+        fields join the entry's notifications. launched adds apps queuekeeper opened there, as update's does, and notes them
+        as queuekeeper's, which a release does not ask the session about (vocaro-engineering#292)."""
         json.dumps(value)
 
         def change(current, _record):
@@ -836,7 +836,7 @@ def require_foreground(owner, record=None):
 
     Drivers call it before acting, on either Mac. On this Mac the window is the reservation's expected
     release, which the session agreed with the owner. On the second Mac, whose record defers physical
-    devices, eng holds the entry for the run and names it in VOCARO_DEVICE_OWNER (foreground.slot), and
+    devices, queuekeeper holds the entry for the run and names it in VOCARO_DEVICE_OWNER (foreground.slot), and
     the run may outlast its expected release."""
     if not owner:
         raise Refused(f"name the session whose {FOREGROUND} reservation covers this work (--owner or {OWNER})")
@@ -844,7 +844,7 @@ def require_foreground(owner, record=None):
     entry = value["devices"].get(FOREGROUND)
     state = condition(entry) if entry is not None else "released"
     if state == "released":
-        raise Refused(f"nobody holds {FOREGROUND}; " + ("eng reserves it for each run" if value.get(DEFERRED) else
+        raise Refused(f"nobody holds {FOREGROUND}; " + ("queuekeeper reserves it for each run" if value.get(DEFERRED) else
                       "before foreground work, agree a window with the owner and reserve it until the window ends"))
     if entry.get("ownerChatID") != owner:
         raise Refused(f"{FOREGROUND} is held by {entry.get('ownerChatID')} for {entry.get('purpose')}, expected "
@@ -980,7 +980,7 @@ class BoundedRun:
         missing = [key for key in keys if key not in carried]
         if missing:
             raise Refused(f"the run's lease carries {', '.join(carried) or 'no device'}, not {', '.join(missing)}: "
-                          f"send the run from {mac} with `eng remote run|admit --device {missing[0]}`. Nothing ran")
+                          f"send the run from {mac} with `queuekeeper remote run|admit --device {missing[0]}`. Nothing ran")
         if deadline is None:
             raise Refused("the run's lease names no end for its reservations. Nothing ran")
         return {key: carried[key] for key in keys}, deadline
@@ -1259,7 +1259,7 @@ def status(record):
     # The owner's screen first, held or free, so a session about to take it sees who has it.
     foreground = value["devices"].get(FOREGROUND)
     print(_describe(FOREGROUND, foreground, window=not value.get(DEFERRED)) if foreground is not None else
-          f"{FOREGROUND}: free; " + ("eng reserves it for each run" if value.get(DEFERRED) else
+          f"{FOREGROUND}: free; " + ("queuekeeper reserves it for each run" if value.get(DEFERRED) else
                                      "agree a window with the owner, then reserve it until the window ends"))
     for key, entry in value["devices"].items():
         if key != FOREGROUND: print(_describe(key, entry, waiting(value, key)))
