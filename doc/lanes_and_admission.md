@@ -20,7 +20,7 @@ statement of what it needs from the machine:
 }
 ```
 
-`queuekeeper run LANE` runs one, for an agent as for the queue.
+`qk run LANE` runs one, for an agent as for the queue.
 
 - **Receipts.** Each run leaves a log and a receipt that records the commit, the command, the exit
   status, the outcome, the Mac it ran on and how long it waited.
@@ -35,7 +35,7 @@ statement of what it needs from the machine:
 ## Admission
 
 Ten agents that each start a build at the same moment make every build slow and every timing test
-meaningless. Every lane, and any command run through `queuekeeper admit -- COMMAND`, therefore asks
+meaningless. Every lane, and any command run through `qk admit -- COMMAND`, therefore asks
 the Mac for a slot first, in one first-come, first-served queue for the whole machine.
 
 - Three slots are always available. Further slots, up to half the cores, open one at a time while
@@ -43,7 +43,7 @@ the Mac for a slot first, in one first-come, first-served queue for the whole ma
 - A lane can ask for the whole host, for work that starts its own parallel jobs, or for exclusive
   use, for timing measurements. One lane at a time may use an on-device model or the GPU.
 - A waiting lane says what it is waiting for and behind whom, and repeats it every five minutes.
-- `queuekeeper admissions now` shows who holds slots and who is waiting on every Mac. An admission
+- `qk admissions now` shows who holds slots and who is waiting on every Mac. An admission
   log records every wait and hold.
 
 Admission cannot preempt running work, and it cannot see work that never asks, such as an editor's
@@ -58,7 +58,7 @@ load is never hidden. An entry whose owner has provably finished is recovered au
 
 ## Checking a project's setup
 
-`queuekeeper doctor` checks a project's lanes, such as a lane with no timeout or a test that no lane
+`qk doctor` checks a project's lanes, such as a lane with no timeout or a test that no lane
 runs, and every Mac's setup.
 
 See also [The merge queue](merge_queue.md) and [The build farm](build_farm.md).
