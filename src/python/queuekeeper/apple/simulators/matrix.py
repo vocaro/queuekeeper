@@ -75,6 +75,7 @@ import uuid
 
 from ... import lane_results, processes, resources
 from ...parallel import RESULTS_VARIABLE, TAIL, combined, outcome
+from .. import stale_modules
 from . import pool as simulator_pool, speech
 from .pool import DEVICE_TYPE, RUNTIME, qualified
 
@@ -86,9 +87,9 @@ BOOT_COMMAND = 120
 TEST_ALLOWANCE = 600
 # What clang says of an explicit module built before a dependency changed a header, and the folder of
 # derived data whose removal let the next build pass (vocaro/vocaro-engineering#85).
-STALE_MODULE = "has been modified since the module file"
-# What the toolkit's build-tool wrapper says when it has rebuilt already (its stale_modules.NOTICE).
-STALE_NOTICE = "queuekeeper: STALE MODULES"
+STALE_MODULE = stale_modules.STALE_MODULE
+# What the build-tool wrapper says when it has rebuilt already.
+STALE_NOTICE = stale_modules.NOTICE
 EXPLICIT_MODULES = "Build/Intermediates.noindex/SwiftExplicitPrecompiledModules"
 
 
