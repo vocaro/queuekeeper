@@ -16,3 +16,6 @@ qk = "queuekeeper.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src/python"]
+
+[tool.setuptools.package-data]
+queuekeeper = ["visibility/dashboard/static/*", "visibility/dashboard/panels/*.js"]

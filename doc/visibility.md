@@ -14,7 +14,7 @@ the queue.
 | `queuekeeper visibility` | The switch that turns features on and off | Built |
 | `watch` feature | A live status view in the terminal | Built |
 | `notify` feature | Banners, a command hook and webhooks | Built |
-| `dashboard` feature | A read-only web page on this Mac | Planned |
+| `dashboard` feature | A read-only web page on this Mac | Built |
 
 ## The event journal
 
@@ -177,18 +177,62 @@ What to expect:
 A rule is an entry in `rules.py`; a channel is a module of its own in `notify/channels/`, with a
 `ready(config)` and a `send(notice, config)`. Adding either changes no other file.
 
+## The dashboard feature
+
+`queuekeeper serve` serves a read-only web page of the queue at `http://localhost:8750/`.
+
+```sh
+queuekeeper visibility enable dashboard
+queuekeeper serve --open           # serve, and open the page in the browser
+queuekeeper serve --port 9000
+queuekeeper serve ../other-project # show another repository too
+```
+
+| Tab | What it shows |
+|---|---|
+| Home | What the queue is doing in one line, three numbers for the day, and a line from each other tab that has something to say, what needs you first |
+| Queue | The round's gates, every entry waiting, and the last twenty settled, with why each came back |
+| Farm | Each Mac's admission slots, what holds them and what waits, for every project |
+| Logs | The queue's logs, newest first, and one of them followed as it is written |
+| History | The day's totals and the journal's last two hundred events |
+
+The page asks for its tab's data every two seconds, so it follows the queue without being
+reloaded.
+
+**Repositories.** The page shows the repository `queuekeeper serve` was started in, those given on
+its command line, and every repository whose queue has journaled an event while the feature was
+on. With more than one, a picker in the header switches between them, and its first entry lists
+them all with a line each. Each repository's pages have addresses of their own, such as
+`/r/NAME/queue`. The Farm tab is the same for every repository, since admission is a Mac's and not
+a project's.
+
+**What it cannot do.** The server reads and never writes: it answers no request but GET, and the
+page has no button that changes the queue. Removing an entry or clearing a hold stays on the
+command line.
+
+**Who can read it.** The server binds `127.0.0.1`, so only this Mac reaches it, and it answers
+only a request that asks for this Mac by name, so a page on another site cannot read the queue
+through your browser. `--bind ADDRESS` serves another address, and warns that every machine able
+to reach it can then read the queue and its logs: there is no sign-in.
+
+**Panels.** Each tab is a panel: `panels/NAME.py`, with a `TITLE`, an `ORDER` and a
+`data(repository, query)`, and `panels/NAME.js`, which draws what `data` returns. A `summary`
+function gives the panel a line on Home. A panel is found by its name, so adding one changes no
+other file, and one that fails shows its fault in its own tab while the others go on.
+
+**Limits.**
+
+- The Farm tab shows admission slots, holders and waiters. It does not show CPU load, memory
+  pressure or screen lock.
+- A server started where macOS denies local-network access, such as from some background
+  launchers, shows the second Mac as unreachable. One started from a terminal reads it.
+- The page polls. A change shows within two seconds, not at once.
+
 ## Writing a feature
 
 A feature is a module `queuekeeper/visibility/NAME.py`, or a package `queuekeeper/visibility/NAME/`,
 with a docstring whose first line says what it does and a `register()` function. `register()` runs
 only while the feature is on, and adds the feature's commands as an extension does. To read the
 queue, a feature calls `events.read`, `events.follow` and `merge_queue.snapshot`.
-
-## Planned features
-
-- **`dashboard`**: `queuekeeper serve`, a read-only web page served on this Mac alone. Home says
-  what the queue is doing and whether it needs its owner; Queue, Farm, Logs and History hold the
-  detail. Each tab is a panel in a file of its own, and a header picker switches between
-  repositories.
 
 See also [The merge queue](merge_queue.md) and [The agent interface](agent_interface.md).
