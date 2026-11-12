@@ -1364,6 +1364,16 @@ The worker reads that as no verdict and exits as it does before a round, without
 `queue.noVerdictRuns`. Only the `queuekeeper run` a queue worker starts for a gate's lane does this: a session's own `queuekeeper run`
 keeps its fallback, as does a second Mac that is only away (vocaro-engineering#300).
 
+### Extension folders beside a project
+
+A project's extension may load from a folder beside the project, named in `queuekeeper.json` as
+`{"module": NAME, "path": "../FOLDER/..."}`. The second Mac is not sent that folder. Each dispatch links
+the second Mac's own `~/Development/FOLDER` beside the dispatched checkout, so the extension runs as that
+Mac holds it, and the connection that prepares the dispatch fast-forwards that checkout to the commit
+this Mac's checkout of it names as `origin/main`, under the conditions below for the second Mac's own
+toolkit checkout. On this Mac, a project whose `main` sets `"queue": {"followLandings": true}` has its
+main checkout fast-forwarded after each landing in the same way, for a checkout other projects read.
+
 ### The second Mac's own toolkit checkout
 
 The second Mac has a toolkit checkout of its own at `~/Development/queuekeeper`. No dispatched

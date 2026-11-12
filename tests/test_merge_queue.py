@@ -8512,5 +8512,20 @@ OFFERED = (mq.HERE, mq.BESIDE)
 OFFERABLE = mq.offerable
 
 
+class FollowsTests(unittest.TestCase):
+    def test_the_toolkits_own_queue_and_a_project_whose_main_says_so_follow_their_landings(self):
+        worker = object.__new__(mq.Worker)
+        worker.queue = SimpleNamespace(main_checkout="checkout")
+        with patch.object(mq.Worker, "toolkits_own", return_value=True), \
+                patch.object(mq, "config_at", side_effect=AssertionError("its own queue reads no configuration")):
+            self.assertTrue(worker.follows())
+        with patch.object(mq.Worker, "toolkits_own", return_value=False):
+            for config, follows in [({"queue": {"followLandings": True}}, True), ({"queue": {}}, False), ({}, False)]:
+                with self.subTest(config), patch.object(mq, "config_at", return_value=config):
+                    self.assertIs(worker.follows(), follows)
+            with patch.object(mq, "config_at", side_effect=ValueError("no configuration on main")):
+                self.assertFalse(worker.follows())
+
+
 if __name__ == "__main__":
     unittest.main()

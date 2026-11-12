@@ -55,6 +55,17 @@ class ConfigurationTests(unittest.TestCase):
             # A linked worktree's extensions are found from its main checkout, and a project that names none, or a
             # folder with no project, gets the default.
             self.assertEqual(config.extensions_of(root, root / "main")[1][1], str((root / "main/../kit/src/python").resolve()))
+            # A queue may follow its landings, and says so only with true.
+            for value, accepted in [(True, True), (False, False), ("yes", False)]:
+                (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
+                    "lanes": {"gate": {"command": ["true"]}}, "queue": {"followLandings": value},
+                    "extensions": ["queuekeeper.apple", {"module": "kit.hooks", "path": "../kit/src/python"}]}))
+                with self.subTest(followLandings=value):
+                    if accepted: self.assertIs(config.load(root)["queue"]["followLandings"], True)
+                    else:
+                        with self.assertRaises(ValueError): config.load(root)
+            (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example", "simulatorPool": "Example",
+                "extensions": ["queuekeeper.apple", {"module": "kit.hooks", "path": "../kit/src/python"}]}))
             # The folders beside the project that its extensions load from, which the second Mac links (sibling_folders).
             self.assertEqual(config.sibling_folders(root), ["kit"])
             self.assertEqual(config.sibling_folders(root / "none"), [])

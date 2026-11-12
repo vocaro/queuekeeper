@@ -425,6 +425,10 @@
           "type": "integer",
           "minimum": 1
         },
+        "followLandings": {
+          "description": "true has the queue fast-forward the project's main checkout to origin/main after each landing, when it is on main, clean and nothing runs from it: for a checkout other projects read, such as the folder an extension loads from. Read from main (guides/maintenance.md, The merge queue)",
+          "const": true
+        },
         "spelling": {
           "description": "false stops the queue running the toolkit's spelling check, queuekeeper spelling, before the gate, on an ungated landing and before a docs-only batch's lanes in a project with no spelling lane; a project's own spelling lane runs either way. Read from main (guides/maintenance.md, The merge queue)",
           "const": false

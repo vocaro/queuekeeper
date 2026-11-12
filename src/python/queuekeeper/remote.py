@@ -1915,7 +1915,8 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
         attempt, moment = asleep(), time.monotonic()
         # It also fast-forwards the second Mac's own toolkit checkout when it can, which no run there uses
         # (vocaro-engineering#203): bounded, and nothing of it stops the work.
-        census = census_command(repositories, reap_request(root), update=update_request())
+        census = census_command(repositories, reap_request(root), update=update_request(),
+                                siblings=sibling_requests(root))
         prepared = ssh(host, f"{prepare} || exit $?\n{census} || true",
                        stdin=subprocess.DEVNULL, capture_output=True, text=True)
         preparation["seconds"]["connection"] = round(time.monotonic() - moment, 3)
@@ -1933,6 +1934,9 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
         answered = final_object(prepared)
         updated, _ = toolkit_line(host, answered.get("toolkitCheckout"))
         if updated: print(f"remote: {updated}", file=sys.stderr, flush=True)
+        for found in answered.get("siblingCheckouts") or []:
+            updated, _ = toolkit_line(host, found)
+            if updated: print(f"remote: {updated}", file=sys.stderr, flush=True)
         advertised = answered.get("advertised") if isinstance(answered.get("advertised"), dict) else {}
         preparation["git"]["there"] = answered.get("git")
         moment = time.monotonic()
@@ -3460,7 +3464,7 @@ def reap_request(root):
     return {"pools": [pool] if isinstance(pool, str) and pool else []}
 
 
-def census_command(advertise=None, reap=None, update=None, stop_leftovers=True):
+def census_command(advertise=None, reap=None, update=None, stop_leftovers=True, siblings=None):
     """The second Mac's command that prints offload_host.leftovers, the census of what runs left
     running there, as its last line; with advertise, paths of repositories relative to the home
     there, it has each name the commits its checkouts hold, and says which, and its Git's version
@@ -3468,9 +3472,11 @@ def census_command(advertise=None, reap=None, update=None, stop_leftovers=True):
     simulators the census finds, and says which, and stops the leftovers it proves an ended run's, or with
     stop_leftovers false only lists them (offload_host.stop_leftovers); with update, update_request's, it
     fast-forwards the second Mac's own toolkit checkout when it can, and says what became of it
-    (offload_host.update_toolkit)."""
+    (offload_host.update_toolkit); with siblings, sibling_requests', it does the same for each folder a project's
+    extensions load from, which that Mac links beside a dispatched checkout."""
     request = {"leftovers": ROOT, **({"advertise": list(advertise)} if advertise else {}),
                **({"reap": reap} if reap is not None else {}), **({"toolkitCheckout": update} if update else {}),
+               **({"siblingCheckouts": siblings} if siblings else {}),
                **({} if stop_leftovers else {"leftoverStops": "list"})}
     return shlex.join(["python3", "-c", Path(offload_host.__file__).read_text(), json.dumps(request)])
 
@@ -3486,12 +3492,27 @@ def update_request(want=True):
     return request
 
 
+def sibling_requests(root):
+    """What a connection asks of offload_host.update_toolkit for each folder beside the project that its
+    extensions load from (config.sibling_folders): the second Mac's own ~/Development/NAME, and the commit this Mac's
+    checkout of it names as origin/main, which spares the fetch there when that checkout holds it already."""
+    requests = []
+    for name in sibling_folders(root):
+        request = {"path": f"Development/{name}", "root": ROOT}
+        here = (git_state.main_checkout(root) or Path(root)).resolve().parent / name
+        try: request["want"] = git(here, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main^{commit}")
+        except (RuntimeError, OSError, subprocess.SubprocessError): pass
+        requests.append(request)
+    return requests
+
+
 def toolkit_line(host, found):
     """What is said of offload_host.update_toolkit's answer from host, and whether it is the owner's to decide:
     (None, False) for a checkout already current, or one another connection is updating; (line, False) for one
     it updated; (line, True) for one it left as it is, or could not update, and why."""
     if not isinstance(found, dict) or found.get("state") in ("current", "busy"): return None, False
-    where = f"{host}'s toolkit checkout ~/{found.get('path') or offload_host.TOOLKIT_CHECKOUT}"
+    path = found.get("path") or offload_host.TOOLKIT_CHECKOUT
+    where = f"{host}'s {'toolkit ' * (path == offload_host.TOOLKIT_CHECKOUT)}checkout ~/{path}"
     if found.get("state") == "updated":
         count = found.get("behind")
         return (f"updated {where} from {str(found.get('head'))[:12]} to {str(found.get('to'))[:12]}, "

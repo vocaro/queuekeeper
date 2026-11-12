@@ -417,9 +417,12 @@ def merge_queue(queue, lanes):
     many runs in a row may give no verdict before the queue holds, and spelling, false for a project whose queue
     runs no spelling check of the toolkit's in place of a spelling lane (guides/maintenance.md, The merge queue)."""
     if not isinstance(queue, dict) or set(queue) - {"lanes", "carryOver", "carryOverChecks", "hookCoveredBy", "docsOnly",
-                                                    "noVerdictRuns", "spelling"}:
-        raise ValueError("queue supports only lanes, carryOver, carryOverChecks, hookCoveredBy, docsOnly, noVerdictRuns "
-                         "and spelling")
+                                                    "noVerdictRuns", "spelling", "followLandings"}:
+        raise ValueError("queue supports only lanes, carryOver, carryOverChecks, hookCoveredBy, docsOnly, noVerdictRuns, "
+                         "spelling and followLandings")
+    if "followLandings" in queue and queue["followLandings"] is not True:
+        raise ValueError("queue.followLandings can only be true, which has the queue fast-forward the project's main "
+                         "checkout after each landing, for a checkout other projects read, such as an extension's")
     if "spelling" in queue and queue["spelling"] is not False:
         raise ValueError("queue.spelling can only be false, which stops the queue running the toolkit's spelling check "
                          "for a project with no spelling lane; true is the default")

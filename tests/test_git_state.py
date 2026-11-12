@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 import host_isolation  # noqa: F401 -- first, as every test module
-from queuekeeper import git_state, offload_host
+from queuekeeper import git_state, offload_host, remote
 
 
 class Fixture(unittest.TestCase):
@@ -70,6 +70,19 @@ class MainCheckoutTests(Fixture):
         placed = self.root / "slot/project"
         self.git(self.origin, "worktree", "add", "-q", "--detach", str(placed), "main")
         self.assertIsNone(git_state.main_checkout(placed))
+
+
+class SiblingRequestTests(Fixture):
+    def test_each_extension_folder_is_asked_to_follow_what_this_macs_checkout_of_it_calls_origin_main(self):
+        project = self.root / "project"
+        project.mkdir()
+        (project / "queuekeeper.json").write_text(
+            '{"extensions": ["queuekeeper.apple", {"module": "kit.hooks", "path": "../checkout/src/python"},'
+            ' {"module": "absent.hooks", "path": "../absent/src"}]}')
+        main = self.git(self.checkout, "rev-parse", "refs/remotes/origin/main")
+        self.assertEqual(remote.sibling_requests(project),
+                         [{"path": "Development/checkout", "root": remote.ROOT, "want": main},
+                          {"path": "Development/absent", "root": remote.ROOT}])
 
 
 class SiblingLinkTests(unittest.TestCase):

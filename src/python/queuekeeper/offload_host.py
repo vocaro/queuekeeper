@@ -3123,6 +3123,9 @@ def answer(request):
             found.update(git=output(["git", "--version"]),
                          advertised={path: advertise(Path.home() / path) for path in request["advertise"]})
         if request.get("toolkitCheckout"): found["toolkitCheckout"] = guarded_update(request["toolkitCheckout"])
+        # The folders a project's extensions load from, which a dispatch links beside its checkout (link_siblings).
+        if request.get("siblingCheckouts"):
+            found["siblingCheckouts"] = [guarded_update(each) for each in request["siblingCheckouts"]]
         return found
     if "toolkitCheckout" in request: return {"toolkitCheckout": guarded_update(request["toolkitCheckout"])}
     if "deleteRuntime" in request:

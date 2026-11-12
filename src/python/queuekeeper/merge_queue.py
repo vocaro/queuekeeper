@@ -2433,8 +2433,16 @@ class Worker:
         return common.returncode == 0 and common.stdout.strip() == \
             text(self.queue.main_checkout, "rev-parse", "--path-format=absolute", "--git-common-dir")
 
+    def follows(self):
+        """Whether this queue fast-forwards its main checkout after a landing: the toolkit's own, which every
+        session's queuekeeper reads, and a project whose main says so (queue.followLandings), such as one whose
+        checkout holds an extension other projects load."""
+        if self.toolkits_own(): return True
+        try: return config_at(self.queue.main_checkout, MAIN).get("queue", {}).get("followLandings") is True
+        except ValueError: return False
+
     def follow(self, quiet=False):
-        """After a landing in the toolkit's own queue, fast-forward the shared checkout, the toolkit's main
+        """After a landing in a queue that follows (follows), the toolkit's own among them, fast-forward the shared checkout, the toolkit's main
         checkout, which every session's queuekeeper and the next worker read, to origin/main. Only when it is on main,
         clean, holds no commit of its own (one landed through the queue, whose change origin/main holds under another
         SHA, is not), is behind, and no process started from it still runs there, since
@@ -2531,7 +2539,7 @@ class Worker:
         first, since a worker that moved to a newer toolkit after a landing (move_to) has not followed itself. The
         log says the deferral when it begins, when what holds the checkout changes and when it ends, not each try,
         and the round's account says what the worker waits for, which `queuekeeper queue status` shows."""
-        if self.queue.held() or not self.toolkits_own(): return
+        if self.queue.held() or not self.follows(): return
         shared = self.queue.main_checkout
         self.follow(quiet=True)
         deadline = None if FOLLOW_LIMIT is None else time.monotonic() + FOLLOW_LIMIT
@@ -3020,7 +3028,7 @@ class Worker:
                                       **({"gate": self.measured} if self.measured and not docs else {}),
                                       **({} if docs or ungated else {"gatedOn": gated_on}))
                 if not docs and not ungated: self.keep_app(head)
-                if self.toolkits_own(): self.follow()
+                if self.follows(): self.follow()
                 return True
             said = pushed.stderr.strip()
             if "rejected" in said and ("fetch first" in said or "non-fast-forward" in said): continue
