@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 import host_isolation  # noqa: F401 -- first, as every test module
-from queuekeeper import git_state
+from queuekeeper import git_state, offload_host
 
 
 class Fixture(unittest.TestCase):
@@ -56,6 +56,40 @@ class GitTests(Fixture):
         with patch.dict(os.environ, {"GIT_DIR": str(other / ".git"), "GIT_WORK_TREE": str(other)}):
             self.assertNotIn("GIT_DIR", git_state.environment())
             self.assertEqual(git_state.git(self.checkout, "symbolic-ref", "--short", "HEAD"), "main")
+
+
+class MainCheckoutTests(Fixture):
+    def test_a_linked_worktree_names_its_main_checkout_and_the_main_checkout_none(self):
+        linked = self.root / "linked"
+        self.git(self.checkout, "worktree", "add", "-q", "--detach", str(linked))
+        self.assertEqual(git_state.main_checkout(linked), self.checkout)
+        self.assertIsNone(git_state.main_checkout(self.checkout))
+
+    def test_a_worktree_of_a_bare_repository_has_no_main_checkout(self):
+        # As a dispatched checkout on the second Mac is: its repository's parent holds no project.
+        placed = self.root / "slot/project"
+        self.git(self.origin, "worktree", "add", "-q", "--detach", str(placed), "main")
+        self.assertIsNone(git_state.main_checkout(placed))
+
+
+class SiblingLinkTests(unittest.TestCase):
+    def test_the_second_mac_links_its_own_checkout_of_each_extension_folder_beside_a_dispatched_checkout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory).resolve()
+            slot, kit = home / "build-host/checkouts/Example/0", home / "Development/kit"
+            (slot / "Example").mkdir(parents=True)
+            (kit / "src/python").mkdir(parents=True)
+            # What an earlier layout left under the name goes: a placed copy that is no longer sent.
+            (slot / "kit/old").mkdir(parents=True)
+            said = []
+            with patch.object(Path, "home", return_value=home), patch.object(offload_host, "say", said.append):
+                offload_host.link_siblings(slot, ["kit", "absent"])
+                offload_host.link_siblings(slot, ["kit", "absent"])  # again, with the link in place
+            self.assertTrue((slot / "kit").is_symlink())
+            self.assertEqual((slot / "kit").resolve(), kit)
+            self.assertFalse((slot / "absent").exists())
+            self.assertEqual(sum("has no" in line and "absent" in line for line in said), 2)
+            self.assertEqual(sum("is this Mac's" in line for line in said), 1)
 
 
 class BehindTests(Fixture):

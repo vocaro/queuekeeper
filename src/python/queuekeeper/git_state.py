@@ -66,4 +66,6 @@ def main_checkout(root):
         common = private / (private / "commondir").read_text().strip()
     except OSError:  # a submodule's .git file names a repository of its own
         return None
-    return common.resolve().parent
+    # A worktree of a bare repository, such as a dispatched checkout on the second Mac, has no main checkout.
+    common = common.resolve()
+    return common.parent if common.name == ".git" else None

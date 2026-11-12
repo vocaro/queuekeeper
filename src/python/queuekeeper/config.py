@@ -32,6 +32,20 @@ def extensions_of(root, base=None):
             if isinstance(entry, dict) else (entry, None) for entry in declared]
 
 
+def sibling_folders(root):
+    """The folders beside the project at root that its extensions load from: NAME for each folder "../NAME/...".
+    The second Mac is not sent them; it links its own checkout of each beside a dispatched checkout
+    (offload_host.link_siblings)."""
+    try: declared = extensions(json.loads((Path(root) / FILE).read_text()).get("extensions", []))
+    except (OSError, ValueError, AttributeError): return []
+    names = []
+    for entry in declared:
+        parts = Path(entry.get("path") or "").parts if isinstance(entry, dict) else ()
+        if len(parts) > 1 and parts[0] == ".." and parts[1] not in ("..", ".") and parts[1] not in names:
+            names.append(parts[1])
+    return names
+
+
 def load(root):
     return parse((Path(root).resolve() / FILE).read_text())
 

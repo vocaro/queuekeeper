@@ -66,7 +66,7 @@ import time
 import uuid
 
 from . import disk, extensions, lane_results, lane_wait, offload_host, parallel, processes, resources, git_state
-from .config import TOOLKIT_ROOT, unlocked_screen
+from .config import TOOLKIT_ROOT, sibling_folders, unlocked_screen
 from .resources import BUSY, FREE_WAIT
 
 # The SSH destinations tried in turn when neither --host nor QUEUEKEEPER_OFFLOAD_HOST names one: aliases the
@@ -1860,6 +1860,8 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     members = group_files(config, lane)
     returns = [*(members or []), RESULTS] if lane is not None else [CHANGES] if changes else None
     plan = {"root": ROOT, "checkouts": CHECKOUTS, "project": project, "toolkit": kit, "work": work,
+            # The folders beside the project its extensions load from, which the second Mac links to its own.
+            "siblings": sibling_folders(root),
             "decline": decline, "busy": BUSY,
             "unlockedScreen": lane is not None and unlocked_screen(config.get("lanes", {}), lane),
             "provision": "provision" in config.get("lanes", {}) and lane != "provision",

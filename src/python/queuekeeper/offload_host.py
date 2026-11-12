@@ -3301,6 +3301,24 @@ def local_url(url):
     return ":" not in url.split("/", 1)[0]
 
 
+def link_siblings(slot, names):
+    """Put beside a dispatched checkout, in its slot, the folders its project's extensions load from, which the
+    sending Mac names (config.sibling_folders): each a link to this Mac's own checkout of that name in ~/Development, which is not
+    sent and so runs as this Mac holds it. Whatever an earlier layout left under the name goes first. A name this
+    Mac has no checkout of is said and left out, and the extension then fails to load, naming it."""
+    for name in names:
+        source, link = Path.home() / "Development" / name, Path(slot) / name
+        if not source.is_dir():
+            say(f"this Mac has no {source} for the project's extension to load from")
+            continue
+        if link.is_symlink():
+            if link.resolve() == source.resolve(): continue
+            link.unlink()
+        elif link.exists(): shutil.rmtree(link)
+        link.symlink_to(source, target_is_directory=True)
+        say(f"{link} is this Mac's {source}")
+
+
 def place(repository, checkout, commit, ref, origin=None):
     """Check commit out, detached, in a persistent worktree whose ignored inputs and builds stay.
 
@@ -3799,6 +3817,7 @@ def main(plan):
         if toolkit is not None:
             kit = base / str(index) / toolkit["directory"]
             place(root / toolkit["repository"], kit, toolkit["commit"], toolkit["ref"], toolkit.get("origin"))
+        link_siblings(base / str(index), plan.get("siblings", []))
         timed("place", began)
         result.update(checkout=str(checkout), slot=index)
         say(f"{checkout} at {project['commit'][:12]}")

@@ -55,6 +55,9 @@ class ConfigurationTests(unittest.TestCase):
             # A linked worktree's extensions are found from its main checkout, and a project that names none, or a
             # folder with no project, gets the default.
             self.assertEqual(config.extensions_of(root, root / "main")[1][1], str((root / "main/../kit/src/python").resolve()))
+            # The folders beside the project that its extensions load from, which the second Mac links (sibling_folders).
+            self.assertEqual(config.sibling_folders(root), ["kit"])
+            self.assertEqual(config.sibling_folders(root / "none"), [])
             (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example"}))
             self.assertEqual(config.extensions_of(root), [("queuekeeper.apple", None)])
             self.assertEqual(config.extensions_of(root / "none"), [("queuekeeper.apple", None)])
