@@ -7,9 +7,9 @@ runs on that developer's own machines instead of in the cloud. Agents hand it co
 them, tests each batch once on whichever machine has room, and pushes to `main` only what passed.
 
 What sets it apart is its plugins, which know how to build and test software that needs local tools
-and real hardware. The Apple plugin manages simulators, physical devices and Xcode test runs. A
-plugin for video game engines is coming soon. Without a plugin, Queuekeeper is one more merge queue
-among many.
+and real hardware. The Apple plugin manages simulators, physical devices and Xcode test runs. The
+Unity plugin, which is new and partial, runs a Unity editor unattended. Without a plugin,
+Queuekeeper is one more merge queue among many.
 
 <p align="center">
   <img src="assets/overview.svg" alt="You direct several AI agents. They send commits to Queuekeeper and get verdicts back. Queuekeeper, made of the merge queue, admission and placement, and plugins, builds and tests on your build farm of Macs, simulators and devices, and pushes what passed to main." width="100%">
@@ -142,6 +142,14 @@ qk serve --open
 
 See [Visibility](doc/visibility.md) for details.
 
+## The Unity plugin
+
+The [Unity plugin](src/python/queuekeeper/unity/README.md) is the start of a plugin for game
+engines. It picks the editor a project pins, clears a project lock nothing holds, stops an orphaned
+licensing helper, ends a batch run that has gone silent, and runs a project's tests. A project
+switches it on by listing `queuekeeper.unity` in its `extensions`. Its README lists what is not
+built yet.
+
 ## Documentation
 
 - [Getting started](doc/getting_started.md)
@@ -159,9 +167,9 @@ See [Visibility](doc/visibility.md) for details.
 - **One user so far.** Queuekeeper was extracted from its author's private tooling. Expect rough
   edges, and defaults that suit one person's setup.
 - **macOS only**, for the queue and for every build host.
-- **One platform plugin.** Only the Apple plugin exists, with the Mac desktop plugin it builds on. The
-  video game plugin is not written yet, and there is no Android plugin. The core runs any command as a lane, so those builds can be queued, but
-  nothing manages emulators, devices or editors for them.
+- **Few platform plugins.** The Apple plugin is the complete one, with the Mac desktop plugin it
+  builds on. The Unity plugin is partial, and there is no Android plugin. The core runs any command
+  as a lane, so those builds can be queued, but nothing manages emulators or devices for them.
 - **No pull requests.** Queuekeeper lands directly on `main` and refuses a project set up for pull
   requests. There is no review step.
 - **Flake detection covers Python test lanes only.** Failures in other lanes are bisected.

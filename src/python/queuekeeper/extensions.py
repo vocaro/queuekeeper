@@ -206,6 +206,9 @@ def reads_screen(lane):
     return any(added.reads_screen and lane.get(key) for key, added in LANE_KEYS.items())
 
 
+# key -> check(value): the top-level keys extensions add to queuekeeper.json. check raises ValueError, naming the key,
+# when the project's value is not one it takes. The key is still listed in schemas/queuekeeper.schema.json.
+CONFIG_KEYS = {}
 # name -> (help, main(arguments, project)): commands an extension adds that parse their own arguments.
 COMMANDS = {}
 # name -> (help, add_arguments(parser), execute(root, args, config), whether it reads the project's configuration):

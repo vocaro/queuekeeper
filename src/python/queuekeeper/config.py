@@ -60,6 +60,8 @@ LANE_KEYS = frozenset({"command", "resource", "minimumTests", "timeout", "foregr
 # The lane keys above that an extension shipped here adds (hooks.LANE_KEYS), by its module: a project that uses one
 # without the extension is told which to switch on.
 EXTENSION_LANE_KEYS = {"display": "queuekeeper.mac_desktop"}
+# The top-level keys an extension shipped here adds (hooks.CONFIG_KEYS), by its module, refused the same way.
+EXTENSION_CONFIG_KEYS = {"unity": "queuekeeper.unity"}
 GROUP_KEYS = frozenset({"parallel", "jobs", "resource", "here", "model", "budgetMinutes", "wholeHost", "unlockedScreen"})
 
 
@@ -96,8 +98,8 @@ def parse(source):
         raise ValueError("queuekeeper.json requires schemaVersion 1")
     allowed = {"schemaVersion", "name", "extensions", "lanes", "integration", "repository", "spelling", "simulatorPool",
                "queue", "release", "app", "testLanes"}
-    if set(value) - allowed:
-        raise ValueError(f"Unknown configuration keys: {sorted(set(value) - allowed)}")
+    if set(value) - allowed - set(EXTENSION_CONFIG_KEYS):
+        raise ValueError(f"Unknown configuration keys: {sorted(set(value) - allowed - set(EXTENSION_CONFIG_KEYS))}")
     if not isinstance(value.get("name"), str) or not value["name"]:
         raise ValueError("Project name must be a nonempty string")
     declared = extensions(value.get("extensions", list(EXTENSIONS)))
@@ -105,6 +107,12 @@ def parse(source):
     # lanes are checked, whichever command reads the configuration. One in a folder of the project's is the
     # command's to load (cli.perform), which knows the folder.
     hooks.load([named for named in declared if isinstance(named, str) and named.startswith(__package__ + ".")])
+    for key, module in EXTENSION_CONFIG_KEYS.items():
+        if key not in value: continue
+        if key not in hooks.CONFIG_KEYS:
+            raise ValueError(f"{key} is the {module} extension's key, and the project does not switch that extension "
+                             f"on: list {module} in extensions")
+        hooks.CONFIG_KEYS[key](value[key])
     if value.get("integration", "direct-main") not in {"direct-main", "pull-request"}:
         raise ValueError("Unknown integration policy")
     pool = value.get("simulatorPool")
