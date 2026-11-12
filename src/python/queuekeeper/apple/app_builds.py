@@ -53,8 +53,9 @@ import sys
 import tempfile
 import time
 
-from . import device_pass, devices, processes
-from .config import APP_PLATFORMS, DEFAULT_TOOLKIT, TOOLKIT_ROOT, load
+from . import device_pass, devices
+from .. import processes
+from ..config import APP_PLATFORMS, DEFAULT_TOOLKIT, TOOLKIT_ROOT, load
 
 # Names an isolated store for tests; sessions use the default.
 OVERRIDE = "VOCARO_APP_STORE"
@@ -464,7 +465,7 @@ def open_on_mac(kept, *, replace=False, run=subprocess.run, sleep=time.sleep):
 
 def device_command(kept):
     """The command a device pass runs to install the kept build on {udid} and launch it."""
-    return ["env", f"PYTHONPATH={TOOLKIT_ROOT / 'src/python'}", sys.executable, "-m", "vocaro_engineering.app_builds",
+    return ["env", f"PYTHONPATH={TOOLKIT_ROOT / 'src/python'}", sys.executable, "-m", "queuekeeper.apple.app_builds",
             "device", "--udid", "{udid}", "--bundle", kept["bundle"], kept["app"]]
 
 
@@ -623,7 +624,7 @@ def execute(root, args, config=None):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(prog="python3 -m vocaro_engineering.app_builds")
+    parser = argparse.ArgumentParser(prog="python3 -m queuekeeper.apple.app_builds")
     add_arguments(parser)
     args = parser.parse_args(argv)
     if args.operation != "device": parser.error("run `eng app` from the project instead")

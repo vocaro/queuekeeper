@@ -36,8 +36,9 @@ import sys
 import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
-from vocaro_engineering import cli, crash_alerts, device_notifications, notification_center, offload_host, remote, resources
-from vocaro_engineering.waiting import stretched  # noqa: F401 -- the tests' bound on a stall, re-exported
+from queuekeeper import cli, offload_host, remote, resources
+from queuekeeper.apple import crash_alerts, device_notifications, notification_center
+from queuekeeper.waiting import stretched  # noqa: F401 -- the tests' bound on a stall, re-exported
 
 
 def executable(path, text=None):

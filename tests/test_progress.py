@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import host_isolation
 from host_isolation import stretched
-from vocaro_engineering import cli, config, evidence, parallel, processes, progress, resources
+from queuekeeper import cli, config, evidence, parallel, processes, progress, resources
 
 
 class QuietTests(unittest.TestCase):

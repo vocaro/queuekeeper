@@ -18,7 +18,7 @@ from unittest.mock import patch
 import host_isolation
 from host_isolation import stretched
 
-from vocaro_engineering import config, offload_host, processes, remote, resources
+from queuekeeper import config, offload_host, processes, remote, resources
 
 
 def tree(root):
@@ -244,7 +244,7 @@ class WaiterTests(Namespace):
     def test_a_crashed_waiter_is_not_waiting_and_a_later_waiter_sweeps_its_record(self):
         held = self.hold_slots()
         self.addCleanup(lambda: [os.close(fd) for fd in held])
-        script = ("from vocaro_engineering import resources\n"
+        script = ("from queuekeeper import resources\n"
                   f"with resources.Admission('Crashed', timeout={stretched(60)}): pass\n")
         environment = {**os.environ, "PYTHONPATH": str(config.TOOLKIT_ROOT / "src/python")}
         crashed = subprocess.Popen([sys.executable, "-c", script], env=environment, stderr=subprocess.PIPE)
@@ -427,7 +427,7 @@ class CommandTests(unittest.TestCase):
         self.assertEqual((broken["hosts"][0]["state"], broken["hosts"][0]["holders"]), ("unknown", None))
 
     def test_eng_doctor_points_a_lane_waiting_for_admission_to_the_report(self):
-        from vocaro_engineering import lane_wait
+        from queuekeeper import lane_wait
         with tempfile.TemporaryDirectory() as root:
             folder = Path(root) / ".build/engineering" / lane_wait.WAITS
             folder.mkdir(parents=True)

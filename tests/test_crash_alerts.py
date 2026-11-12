@@ -14,8 +14,9 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 import host_isolation
 from host_isolation import stretched
-from vocaro_engineering import cli, crash_alerts, devices, evidence, foreground, offload_host, remote
-from vocaro_engineering.voiceover import state as voiceover_state
+from queuekeeper import cli, evidence, offload_host, remote
+from queuekeeper.apple import crash_alerts, devices, foreground
+from queuekeeper.apple.voiceover import state as voiceover_state
 
 SECOND = "Trevors-MacBook-Pro-715"
 CRASH = {"app": "UserNotificationCenter", "frame": [734, 201, 260, 250],
@@ -555,7 +556,7 @@ class LaneTests(HostTest):
                     self.assertIn("eng: the run's status 1 stands", error)
 
     def test_a_lanes_apps_are_names_of_a_foreground_lane(self):
-        from vocaro_engineering import config
+        from queuekeeper import config
         command = {"command": ["true"], "resource": "heavy", "foreground": True}
         for lane, words in (({**command, "apps": []}, "apps names the app under test"),
                             ({**command, "apps": ["EPUBLib", ""]}, "apps names the app under test"),

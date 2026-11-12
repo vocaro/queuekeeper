@@ -14,7 +14,8 @@ from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src/python"))
-from vocaro_engineering import cli, foreground, lane_wait, offload_host, remote, resources
+from queuekeeper import cli, lane_wait, offload_host, remote, resources
+from queuekeeper.apple import foreground
 import host_isolation
 
 

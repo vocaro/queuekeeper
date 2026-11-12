@@ -15,9 +15,10 @@ from unittest import mock
 import uuid
 from xml.parsers.expat import ExpatError
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
-from vocaro_engineering import devices, evidence, offload_host, resources
+from queuekeeper import evidence, offload_host, resources
+from queuekeeper.apple import devices
 import host_isolation
-from vocaro_engineering.simulators import pool as simulator_pool
+from queuekeeper.apple.simulators import pool as simulator_pool
 
 IPHONE = "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro"
 DUO = "com.apple.CoreSimulator.SimDeviceType.iPhone-Duo"

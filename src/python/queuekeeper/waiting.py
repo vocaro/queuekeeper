@@ -191,7 +191,7 @@ def doctor_warnings(root):
     more = f" and {len(found) - SHOWN} more" if len(found) > SHOWN else ""
     return [f"{len(found)} test line(s) bound a wait by fixed wall-clock time, a `monotonic() + N` deadline or a "
             f"`timeout=` of {FIXED_LEAST} s or more, which a busy host can use up while the work still progresses: "
-            f"{shown}{more}. Wait on the state the test checks with vocaro_engineering.waiting.wait_until and a "
+            f"{shown}{more}. Wait on the state the test checks with queuekeeper.waiting.wait_until and a "
             "progress probe, or stretch the bound with waiting.stretched; a bound that is the behavior under test, "
             f"or a cleanup's grace period, says so with `# {EXEMPT} REASON` "
             "(guides/app-testing.md, Waits bound stalls)"]

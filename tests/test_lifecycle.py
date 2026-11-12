@@ -3,7 +3,7 @@ import sys
 import unittest
 import uuid
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
-from vocaro_engineering.simulators.lifecycle import reserved
+from queuekeeper.apple.simulators.lifecycle import reserved
 import host_isolation
 
 

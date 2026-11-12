@@ -14,7 +14,7 @@ import unittest
 from unittest.mock import call, patch
 SOURCE = Path(__file__).resolve().parents[1] / "src/python"
 sys.path.insert(0, str(SOURCE))
-from vocaro_engineering import processes, resources
+from queuekeeper import processes, resources
 import host_isolation
 from host_isolation import stretched
 
@@ -149,7 +149,7 @@ while not (here / "due").exists() and time.monotonic() - began < 120: time.sleep
 UNOBSERVING = """
 import sys, time
 from pathlib import Path
-from vocaro_engineering import processes, resources
+from queuekeeper import processes, resources
 here, real = Path(sys.argv[1]), processes.snapshot
 def unobserved():
     while not (here / "command").exists(): time.sleep(0.01)
@@ -511,7 +511,7 @@ class ProcessTests(unittest.TestCase):
             self.assertFalse(ran.exists())
 
     def test_a_stall_stops_the_owned_tree_but_leaves_an_unrelated_process_alive(self):
-        from vocaro_engineering import progress
+        from queuekeeper import progress
         with tempfile.TemporaryDirectory() as directory:
             here = Path(directory)
             log = here / "lane.log"
@@ -543,7 +543,7 @@ class ProcessTests(unittest.TestCase):
                               cwd=directory, log_path=Path(directory)/"run.log", timeout=0.1)
 
     def test_only_an_explicit_primary_controller_can_exclude_its_cpu(self):
-        from vocaro_engineering import progress
+        from queuekeeper import progress
         # CPU is deterministic; real owned processes still exercise root identity, stop,
         # descendant cleanup and the final verdict. The primary's polling advances CPU,
         # while a working descendant must keep the entire command alive under either policy.
@@ -577,7 +577,7 @@ class ProcessTests(unittest.TestCase):
                     self.assertEqual(result, 0, error)
 
     def test_an_explicit_controller_without_workers_is_unobservable_not_stalled(self):
-        from vocaro_engineering import progress
+        from queuekeeper import progress
         with tempfile.TemporaryDirectory() as directory:
             here = Path(directory)
             status = here / "progress.json"
@@ -883,7 +883,7 @@ class NestedAdmissionTests(unittest.TestCase):
         environment = {name: value for name, value in os.environ.items() if name != "VOCARO_RESOURCE_TOKEN"}
         environment.update(PYTHONPATH=str(SOURCE), HEAVY_SLOT_DIR=str(here / "slots"), SW_GATE_LOCK_FILE=str(here / "gate"))
         nested = [sys.executable, "-c", SLOW_TO_END, str(here), how]
-        admission = ([sys.executable, "-m", "vocaro_engineering.resources", "--", *nested] if how == "ends"
+        admission = ([sys.executable, "-m", "queuekeeper.resources", "--", *nested] if how == "ends"
                      else [sys.executable, "-c", UNOBSERVING, str(here), "--", *nested])
         command = [sys.executable, "-c", LANE, str(here), *admission] if lane else admission
         real, begun, births, roles, error = processes.snapshot, time.monotonic(), {}, {}, StringIO()
@@ -964,10 +964,10 @@ except OSError: print("closed")
 REUSES = """
 import sys
 from pathlib import Path
-from vocaro_engineering import processes, resources
+from queuekeeper import processes, resources
 print("child", resources.inherited(), flush=True)
 log = Path(sys.argv[1]) / "grandchild.log"
-status = processes.run([sys.executable, "-c", "from vocaro_engineering import resources; print('grandchild', resources.inherited())"],
+status = processes.run([sys.executable, "-c", "from queuekeeper import resources; print('grandchild', resources.inherited())"],
                        cwd=sys.argv[1], log_path=log)
 print(log.read_text(), end="")
 raise SystemExit(status)

@@ -73,14 +73,15 @@ import sys
 import tempfile
 import time
 
-from . import device_notifications, offload_host, processes
-from .evidence import UNMEASURED
-from .resources import process_start
+from . import device_notifications
+from .. import offload_host, processes
+from ..evidence import UNMEASURED
+from ..resources import process_start
 
 SCHEMA = 1
 OVERRIDE = "VOCARO_DEVICE_RECORD"
 ABOUT = ("Device reservations on this Mac. Change entries only through "
-         "`python3 -m vocaro_engineering.devices` (vocaro-engineering guides/shared-host.md).")
+         "`python3 -m queuekeeper.apple.devices` (vocaro-engineering guides/shared-host.md).")
 # Earlier ad hoc records. Status names one whose current bytes were never imported.
 LEGACY = "/private/tmp/*device-handoff*.json"
 UDID = re.compile(r"[0-9A-F]{8}(?:-[0-9A-F]{4,16}){1,4}|[0-9A-F]{40}")
@@ -734,7 +735,7 @@ class Record:
         if unchecked:
             return {"host": host, "unchecked": unchecked}
         if users is None:
-            from .remote import device_users as users
+            from ..remote import device_users as users
         since = moment(run.get("startedAt"))
         try:
             still = users(host, current["device"].upper(), since.timestamp() if since else None)
@@ -859,7 +860,7 @@ def require_foreground(owner, record=None):
 def git_object(word, root=None):
     """Whether the Git of root's checkout, by default the current directory's, knows word as an object.
     A device's UDID never is one; Git that cannot answer in time knows nothing."""
-    from .remote import environment
+    from ..remote import environment
     try:
         return subprocess.run(["git", "cat-file", "-e", word], cwd=root, capture_output=True, env=environment(),
                               timeout=OBJECT_TIMEOUT).returncode == 0
@@ -1299,7 +1300,7 @@ def _report(key, entry):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(prog="python3 -m vocaro_engineering.devices",
+    parser = argparse.ArgumentParser(prog="python3 -m queuekeeper.apple.devices",
                                      description="Read or change the shared device handoff record, or run a "
                                      "bounded command on a physical device it reserves.")
     commands = parser.add_subparsers(dest="action", required=True)

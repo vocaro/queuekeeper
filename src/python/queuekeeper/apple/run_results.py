@@ -25,8 +25,8 @@ from pathlib import Path
 import re
 import sys
 
-from . import evidence
-from .parallel import RESULTS_VARIABLE
+from .. import evidence
+from ..parallel import RESULTS_VARIABLE
 from .simulators import matrix
 
 # The order of a run's totals.

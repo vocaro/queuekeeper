@@ -18,10 +18,11 @@ from unittest.mock import patch
 
 SOURCE = Path(__file__).resolve().parents[1] / "src/python"
 sys.path.insert(0, str(SOURCE))
-from vocaro_engineering import cli, device_notifications, devices, resources
+from queuekeeper import cli, resources
+from queuekeeper.apple import device_notifications, devices
 import host_isolation
 from host_isolation import stretched
-from vocaro_engineering.resources import process_start
+from queuekeeper.resources import process_start
 
 # Well-formed, invented identifiers: hardware UDIDs and a simulator UUID.
 PHONE = "00008130-001A2C3E0C38001C"
@@ -38,7 +39,7 @@ WRITER = r"""
 import contextlib, sys, time
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
-from vocaro_engineering import devices
+from queuekeeper.apple import devices
 path, key, ready, count, mode, release_by, window, wait = sys.argv[2:10]
 record = devices.Record(path, timeout=float(wait))
 if mode == "unlocked":
@@ -325,8 +326,8 @@ class DeviceRecordTests(unittest.TestCase):
         self.assertIn("without its PID", recovered["run"]["uncertainty"])
 
     def test_foreground_finally_retains_explicit_unknown_launch_uncertainty(self):
-        from vocaro_engineering import foreground
-        from vocaro_engineering.voiceover import state
+        from queuekeeper.apple import foreground
+        from queuekeeper.apple.voiceover import state
         with patch.object(foreground, "second_mac", return_value=True), \
              patch.object(foreground, "front", return_value="owned control"), \
              patch.object(foreground.offload_host, "mac_name", return_value="test Mac"):
@@ -575,7 +576,7 @@ class DeviceRecordTests(unittest.TestCase):
         output = self.cli("status")[1]
         self.assertIn(f"Recoverable: Pool iPhone 1 stays held for owner session-a, though its process {gone.pid} is gone",
                       output)
-        self.assertIn("python3 -m vocaro_engineering.devices recover 'Pool iPhone 1' --by SESSION "
+        self.assertIn("python3 -m queuekeeper.apple.devices recover 'Pool iPhone 1' --by SESSION "
                       f"--revision {entry['revision']} --verified 'WHAT YOU CHECKED'", output)
         self.assertEqual(self.path.read_bytes(), before, "status changes nothing")
 
@@ -703,7 +704,7 @@ class DeviceRecordTests(unittest.TestCase):
         self.addCleanup(child.kill)
         self.record.update(devices.FOREGROUND, owner="session-a", revision=entry["revision"], state="testing",
                            activeRun=True, hostProcessIdentifier=child.pid)
-        check = ("import subprocess\nfrom vocaro_engineering import devices\n"
+        check = ("import subprocess\nfrom queuekeeper.apple import devices\n"
                  "try:\n    subprocess.run(['ps', '-p', '1'], capture_output=True)\n    print('ps ran')\n"
                  "except PermissionError:\n    print('ps refused')\n"
                  "try:\n    print(devices.require_foreground('session-a')['state'])\n"
@@ -1056,7 +1057,7 @@ class BoundedRunTests(unittest.TestCase):
         # Recovery trusts ownedProcesses to know what still runs, so a command nothing records must not run.
         self.hold()
         started = self.root / "root"
-        script = ("import os, signal, sys; from vocaro_engineering import devices\n"
+        script = ("import os, signal, sys; from queuekeeper.apple import devices\n"
                   "def own(_bounded, pid):\n"
                   f"    open({str(started)!r}, 'w').write(str(pid)); os.kill(os.getpid(), signal.SIGKILL)\n"
                   "devices.BoundedRun.own = own\n"
@@ -1263,7 +1264,7 @@ class BoundedRunTests(unittest.TestCase):
         self.hold()
         started = self.root / "started"
         launcher = subprocess.Popen(
-            [sys.executable, "-m", "vocaro_engineering.devices", "run", "iPad", "--owner", "session-a", "--",
+            [sys.executable, "-m", "queuekeeper.apple.devices", "run", "iPad", "--owner", "session-a", "--",
              sys.executable, "-c", f"import sys, time; open(sys.argv[1], 'w').close(); time.sleep({stretched(60)})",
              str(started)],
             env={**os.environ, "PYTHONPATH": str(SOURCE)}, stderr=subprocess.PIPE, text=True,
@@ -1884,7 +1885,7 @@ class NotificationWatchTests(unittest.TestCase):
 
     def test_a_relay_whose_starter_dies_ends_and_deletes_what_it_relayed(self):
         script = (f"import sys, time; sys.path.insert(0, {str(Path(__file__).resolve().parents[1] / 'src/python')!r})\n"
-                  "from vocaro_engineering import device_notifications as d\n"
+                  "from queuekeeper.apple import device_notifications as d\n"
                   f"d.relay = lambda udid, network: [sys.executable, '-c', 'import time; time.sleep({stretched(60)})']\n"
                   "d.shutil.which = lambda name: '/usr/bin/true'\n"
                   "watch = d.Watch(sys.argv[1])\n"

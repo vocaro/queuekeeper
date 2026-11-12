@@ -13,8 +13,9 @@ import unittest
 from unittest import mock
 import uuid
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
-from vocaro_engineering import devices, evidence, stale_modules
-from vocaro_engineering.simulators import matrix
+from queuekeeper import evidence, stale_modules
+from queuekeeper.apple import devices
+from queuekeeper.apple.simulators import matrix
 import host_isolation
 from host_isolation import stretched
 
@@ -305,7 +306,7 @@ class SimulatorMatrixTests(unittest.TestCase):
                 sys.argv = sys.argv[2:]
                 eng = Path(sys.argv[0])
                 sys.path.insert(0, str(eng.parents[1] / "src/python"))
-                from vocaro_engineering import processes
+                from queuekeeper import processes
                 supervise = processes.supervise
 
                 def wait_for_boot(command, **options):
@@ -469,7 +470,7 @@ class SimulatorMatrixTests(unittest.TestCase):
         self.assertIsNone(evidence.series_reported(output))
 
     def test_a_run_that_could_not_take_a_member_is_unmeasured_and_the_series_goes_on(self):
-        from vocaro_engineering.simulators.pool import Lease
+        from queuekeeper.apple.simulators.pool import Lease
         leases = [Lease("Project iPhone 1", "U1", 1), RuntimeError("no member could be taken"), Lease("Project iPhone 1", "U1", 2)]
         taken = []
         class Pool:
@@ -1240,7 +1241,7 @@ class SimulatorMatrixTests(unittest.TestCase):
         status, output = self.run_matrix("--shards", "2", FAKE_TESTS=json.dumps(self.SHARDED), FAKE_BUNDLE="1")
         self.assertEqual(status, 0, output)
         self.assertFalse(list(self.root.rglob("iPhone-17-Pro-1.json")), output)
-        from vocaro_engineering.simulators import matrix
+        from queuekeeper.apple.simulators import matrix
         with mock.patch.dict(os.environ, clear=True):
             self.assertIsNone(matrix.kept("iPhone-17-Pro-1", self.root / "absent.log", None, 0, 1))
         results = self.root / "lane-results"

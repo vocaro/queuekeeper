@@ -16,9 +16,10 @@ import unittest
 import unittest.mock
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
-from vocaro_engineering import cli, devices, offload_host, remote, resources
+from queuekeeper import cli, offload_host, remote, resources
+from queuekeeper.apple import devices
 import host_isolation
-from vocaro_engineering.simulators import pool as simulator_pool
+from queuekeeper.apple.simulators import pool as simulator_pool
 
 UDID = "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE"
 OTHER = "11111111-2222-4333-8444-555555555555"
@@ -153,7 +154,7 @@ class ReapTests(unittest.TestCase):
         self.assertEqual([item["key"] for item in report["recoverable"]], [key], report)
         self.assertEqual(report["released"], [], report)
         if hold: self.assertRegex(report["recoverable"][0]["hold"], hold)
-        command = (f"python3 -m vocaro_engineering.devices recover '{key}' --by SESSION --revision 7 "
+        command = (f"python3 -m queuekeeper.apple.devices recover '{key}' --by SESSION --revision 7 "
                    "--verified 'WHAT YOU CHECKED'")
         line = next(line for line in remote.reap_lines(remote.HERE, report) if "stays held" in line)
         self.assertIn("owner session", line)
@@ -569,7 +570,7 @@ class ReapTests(unittest.TestCase):
             entry = json.loads(self.record.read_text())
             entry["devices"][NAME]["holderProcess"]["start"] = ago(600)
             self.record.write_text(json.dumps(entry))
-            self.process(HOLDER, 1, "python3 -m vocaro_engineering.simulators.matrix", start=ago(600))
+            self.process(HOLDER, 1, "python3 -m queuekeeper.apple.simulators.matrix", start=ago(600))
         def live_admission():
             self.process(106100, 100900, "python3 scripts/eng admit -- swift test")
             self.environments[106100] = f"PATH=/usr/bin CLAUDE_CODE_SESSION_ID={self.OWNER}"
@@ -700,7 +701,7 @@ class ReapTests(unittest.TestCase):
     def test_a_template_whose_warm_up_still_runs_is_kept(self):
         # Pool.template reserves the template in the warming process's name, its holder, before it boots it.
         self.template()
-        self.process(HOLDER, 100900, "python3 -m vocaro_engineering.simulators.pool template --device iPhone-Duo "
+        self.process(HOLDER, 100900, "python3 -m queuekeeper.apple.simulators.pool template --device iPhone-Duo "
                                   "--runtime iOS-27-2")
         self.reserve(TEMPLATE, holderProcess={"pid": HOLDER, "start": self.table[HOLDER][2]}, expectedReleaseBy=self.DUE)
         self.assertKept(self.reap(), f"its reservation {TEMPLATE.replace('(', '[(]').replace(')', '[)]')} is live: "
@@ -1027,7 +1028,7 @@ class ReapCommandTests(unittest.TestCase):
             with patch.object(offload_host, "reap", return_value=here or self.EMPTY) as local, \
                     patch.object(remote, "reap_there", return_value=there or self.EMPTY) as far, \
                     patch.object(remote, "configured", return_value=host), \
-                    patch("vocaro_engineering.disk.pools", return_value=frozenset({"Pagepour"})), redirect_stdout(output):
+                    patch("queuekeeper.disk.pools", return_value=frozenset({"Pagepour"})), redirect_stdout(output):
                 status = simulator_pool.main(["reap", *arguments], project)
         return status, output.getvalue(), local, far
 

@@ -15,10 +15,11 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
-from vocaro_engineering import cli, config, devices, foreground, offload_host, processes, remote
+from queuekeeper import cli, config, offload_host, processes, remote
+from queuekeeper.apple import devices, foreground
 import host_isolation
 from host_isolation import stretched
-from vocaro_engineering.voiceover import state as voiceover_state
+from queuekeeper.apple.voiceover import state as voiceover_state
 
 
 class Later(datetime):
@@ -162,7 +163,7 @@ class SlotTests(unittest.TestCase):
         self.assertEqual(devices.condition(entry), "uncertain")
         # The next run names the exact recovery command, not an `eng` subcommand.
         with self.assertRaisesRegex(devices.Refused, re.escape(
-                "python3 -m vocaro_engineering.devices recover mac-foreground --by SESSION "
+                "python3 -m queuekeeper.apple.devices recover mac-foreground --by SESSION "
                 f"--revision {entry['revision']} --verified WHAT")):
             with self.slot(): self.fail("ran over an uncertain foreground")
 
@@ -438,7 +439,7 @@ class RoutingTests(unittest.TestCase):
         self.assertNotIn("window", error)
 
     def test_a_foreground_lane_gets_the_longer_grace_before_sigkill_and_another_lane_does_not(self):
-        from vocaro_engineering import processes
+        from queuekeeper import processes
         self.record.defer(SECOND)
         self.lanes["plain"] = {"command": [sys.executable, "-c", "print('Ran 1 tests')"], "resource": "heavy"}
         (self.project / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Project",

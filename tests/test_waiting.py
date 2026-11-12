@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 import host_isolation  # noqa: F401 -- isolates this module's host state as every test module's
-from vocaro_engineering import waiting
+from queuekeeper import waiting
 
 WORKS = "import sys, time\nend = time.monotonic() + float(sys.argv[2])\nwhile time.monotonic() < end: pass\n"
 

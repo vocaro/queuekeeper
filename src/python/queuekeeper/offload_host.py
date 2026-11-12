@@ -2535,7 +2535,7 @@ def recoverable(entries, table, early=False):
         found.append({"key": key, "device": entry.get("device"), "owner": entry.get("ownerChatID"),
                       "due": entry.get("expectedReleaseBy"), "pids": [item[0] for item in identities(recorded)],
                       "revision": entry.get("revision", 0), **({"early": True} if early else {}),
-                      "command": f"python3 -m vocaro_engineering.devices recover {shlex.quote(key)} --by SESSION "
+                      "command": f"python3 -m queuekeeper.apple.devices recover {shlex.quote(key)} --by SESSION "
                                  f"--revision {entry.get('revision', 0)} --verified 'WHAT YOU CHECKED'"})
     return found
 
@@ -3518,7 +3518,7 @@ def defer_devices(kit, mac):
     this one then refuses to reserve it. A record that defers them to another Mac, or holds one,
     is a configuration problem for the owner, so the work does not start."""
     try:
-        deferred = subprocess.run([sys.executable, "-m", "vocaro_engineering.devices", "defer", mac], capture_output=True,
+        deferred = subprocess.run([sys.executable, "-m", "queuekeeper.apple.devices", "defer", mac], capture_output=True,
                                   text=True, env={**os.environ, "PYTHONPATH": str(kit / "src/python"), **NO_BYTECODE},
                                   timeout=60)
     except subprocess.TimeoutExpired:

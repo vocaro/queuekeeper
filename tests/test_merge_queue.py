@@ -24,7 +24,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src/python"))
-from vocaro_engineering import cli, config as configuration, landing, merge_queue as mq, offload_host
+from queuekeeper import cli, config as configuration, landing, merge_queue as mq, offload_host
 # What eng land runs before it queues, which Fixture leaves out but SpelledBeforeQueued puts back.
 SPELLED_BEFORE_QUEUED = mq.spelled_before_queued
 import host_isolation
@@ -1148,7 +1148,7 @@ class Doctor(UnittestGate):
         queue.note(lambda state: state.setdefault("gates", {}).__setitem__("main", {
             "lane": "gate", "waiting": "admission on this Mac: all 3 guaranteed slots are busy",
             "waitingKind": "admission", "waitingSince": time.time() - 120}))
-        from vocaro_engineering import offload_host, remote
+        from queuekeeper import offload_host, remote
         with patch.object(offload_host, "admissions_now", side_effect=AssertionError("read")), \
                 patch.object(remote, "admissions_there", side_effect=AssertionError("asked")):
             status_, said, found = self.doctor()
@@ -2729,7 +2729,7 @@ class SecondMacReading(unittest.TestCase):
                     mq.remote.pressure_there("fake-mac")
 
     def test_the_reading_there_uses_admissions_limit(self):
-        from vocaro_engineering import offload_host, resources
+        from queuekeeper import offload_host, resources
         with patch.dict(os.environ, {"HEAVY_BUSY_LIMIT": "50"}), patch.object(offload_host, "cpu_busy", return_value=30.0):
             read = offload_host.pressure()
             self.assertEqual((read["busyLimit"], read["cpuBusy"]), (resources.busy_limit(), 30.0))
@@ -2740,7 +2740,7 @@ class SecondMacReading(unittest.TestCase):
         with patch.dict(os.environ, {"HEAVY_BUSY_LIMIT": "x"}):
             self.assertIn("error", offload_host.pressure())
         # Answered as a request, not taken for a plan to run.
-        done = subprocess.run([sys.executable, str(ROOT / "src/python/vocaro_engineering/offload_host.py"),
+        done = subprocess.run([sys.executable, str(ROOT / "src/python/queuekeeper/offload_host.py"),
                                json.dumps({"pressure": True})], capture_output=True, text=True, timeout=stretched(60))
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual(set(json.loads(done.stdout.splitlines()[-1])), {"load", "cpuBusy", "busyLimit", "memory"})
@@ -4842,7 +4842,7 @@ class ToolkitCopy(Fixture):
 
     def code_of(self, checkout):
         """A toolkit checkout's config module, loaded apart from this process's."""
-        source = checkout / "src/python/vocaro_engineering/config.py"
+        source = checkout / "src/python/queuekeeper/config.py"
         spec = importlib.util.spec_from_file_location(f"config_of_{len(self.moves)}", source)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
@@ -4871,7 +4871,7 @@ class ToolkitCopy(Fixture):
         self.assertEqual(status, 0)
         self.assertEqual(self.state(identifier)["state"], "landed")
         self.assertEqual(self.seen.read_text().split("\n"), [str(self.copy), landed, ""])
-        cache = self.bytecode / self.copy.relative_to(self.copy.anchor) / "src/python/vocaro_engineering"
+        cache = self.bytecode / self.copy.relative_to(self.copy.anchor) / "src/python/queuekeeper"
         self.assertTrue(any(cache.glob("cli.*.pyc")))
         self.assertEqual(run(self.kit, "git", "rev-parse", "HEAD"), behind)
         # And so does the worker itself, once, from the copy (vocaro-engineering#173).
@@ -4895,10 +4895,10 @@ class ToolkitCopy(Fixture):
         """A landed toolkit commit whose config module accepts the lane key that this toolkit's own refuses."""
         other = self.base / f"other-knows-{key}"
         run(self.base, "git", "clone", "-q", str(self.kit_origin), str(other))
-        source = other / "src/python/vocaro_engineering/config.py"
+        source = other / "src/python/queuekeeper/config.py"
         edited = accepting_lane_key(source.read_text(), key)
         source.write_text(edited)
-        run(other, "git", "add", "src/python/vocaro_engineering/config.py")
+        run(other, "git", "add", "src/python/queuekeeper/config.py")
         run(other, "git", "commit", "-qm", f"Accept {key}")
         run(other, "git", "push", "-q", "origin", "HEAD:main")
         return run(other, "git", "rev-parse", "HEAD")
@@ -4975,7 +4975,7 @@ class ToolkitCopy(Fixture):
         self.assertEqual(self.gates(), 3)
 
     def test_a_dirty_shared_checkout_neither_reaches_a_gate_nor_is_touched(self):
-        edited = self.kit / "src/python/vocaro_engineering/cli.py"
+        edited = self.kit / "src/python/queuekeeper/cli.py"
         edited.write_text(edited.read_text() + "\nraise SystemExit(1)  # a session's edit\n")
         (self.kit / "untracked").write_text("x")
         identifier, status = self.gate_once("a")
@@ -4988,7 +4988,7 @@ class ToolkitCopy(Fixture):
     def test_the_copy_follows_origin_and_loses_what_was_left_in_it(self):
         self.gate_once("a")
         (self.copy / "left").write_text("x")
-        (self.copy / "src/python/vocaro_engineering/project.py").write_text("raise SystemExit(1)\n")
+        (self.copy / "src/python/queuekeeper/project.py").write_text("raise SystemExit(1)\n")
         landed = self.advance_origin("later")
         self.gate_once("b")
         self.assertEqual(self.seen.read_text().split("\n"), [str(self.copy), landed, ""])
@@ -5144,7 +5144,7 @@ class ToolkitCopy(Fixture):
         behind = run(self.kit, "git", "rev-parse", "HEAD")
         other = self.base / "other-broken"
         run(self.base, "git", "clone", "-q", str(self.kit_origin), str(other))
-        source = other / "src/python/vocaro_engineering/merge_queue.py"
+        source = other / "src/python/queuekeeper/merge_queue.py"
         source.write_text(source.read_text() + "\ndef broken(:\n")
         run(other, "git", "commit", "-qam", "Break the worker")
         broken = run(other, "git", "rev-parse", "HEAD")
@@ -5215,7 +5215,7 @@ class ToolkitsOwnWorker(Fixture):
 
     def code_of(self, checkout):
         """A toolkit checkout's config module, loaded apart from this process's."""
-        source = checkout / "src/python/vocaro_engineering/config.py"
+        source = checkout / "src/python/queuekeeper/config.py"
         spec = importlib.util.spec_from_file_location(f"own_config_{len(self.moves)}_{checkout.name}", source)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
@@ -5227,7 +5227,7 @@ class ToolkitsOwnWorker(Fixture):
         run(self.repo, "git", "fetch", "-q", "origin")
         run(self.repo, "git", "checkout", "-q", "-B", branch, "origin/main")
         name = "config.py" if key else "merge_queue.py"
-        source = self.repo / "src/python/vocaro_engineering" / name
+        source = self.repo / "src/python/queuekeeper" / name
         original = source.read_text()
         edited = accepting_lane_key(original, key) if key else edit(original)
         self.assertNotEqual(edited, original)

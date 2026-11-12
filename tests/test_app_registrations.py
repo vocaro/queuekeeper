@@ -17,7 +17,8 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 import host_isolation
 from host_isolation import stretched
-from vocaro_engineering import app_registrations as registrations, cli, processes
+from queuekeeper import cli, processes
+from queuekeeper.apple import app_registrations as registrations
 
 SOURCE = Path(__file__).resolve().parents[1] / "src/python"
 
@@ -128,7 +129,7 @@ exec /bin/ps "$@"
             import subprocess, sys, time
             sys.path.insert(0, {str(SOURCE)!r})
             from pathlib import Path
-            from vocaro_engineering import app_registrations as r, processes
+            from queuekeeper import processes; from queuekeeper.apple import app_registrations as r
             r.LSREGISTER, r.PLUGINKIT = {str(self.lsregister)!r}, {str(self.pluginkit)!r}
             command, base, log = {self.build_command()!r}, Path({str(self.base)!r}), Path({str(self.log)!r})
         """) + textwrap.dedent(body)

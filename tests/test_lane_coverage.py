@@ -10,8 +10,8 @@ import unittest
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 import host_isolation  # noqa: F401 -- isolates this module's host state as every test module's
-from vocaro_engineering import cli, config, lane_coverage
-from vocaro_engineering.lane_coverage import COULD_NOT_TELL, EVERY_TEST_HAS_A_LANE, NO_TESTS_FOUND, TESTS_WITHOUT_A_LANE
+from queuekeeper import cli, config, lane_coverage
+from queuekeeper.lane_coverage import COULD_NOT_TELL, EVERY_TEST_HAS_A_LANE, NO_TESTS_FOUND, TESTS_WITHOUT_A_LANE
 
 MANIFEST = 'let package = Package(name: "P", targets: [.testTarget(name: "PTests")])\n'
 XCTEST = "import XCTest\nfinal class {name}: XCTestCase {{\n    func testIt() {{ }}\n}}\n"

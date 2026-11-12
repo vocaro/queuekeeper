@@ -13,8 +13,9 @@ import unittest
 from unittest.mock import patch
 SOURCE = Path(__file__).resolve().parents[1] / "src/python"
 sys.path.insert(0, str(SOURCE))
-from vocaro_engineering import cli, evidence, failure_records, merge_queue, parallel, resources
-from vocaro_engineering.parallel import SPLITS
+from queuekeeper import cli, evidence, merge_queue, parallel, resources
+from vocaro_engineering import failure_records
+from queuekeeper.parallel import SPLITS
 import host_isolation
 from host_isolation import stretched
 
@@ -630,7 +631,7 @@ class UnittestRunnerTests(unittest.TestCase):
 # inode or None for none, and whether it inherits an admission: True, False or why it is refused.
 PROBE = textwrap.dedent("""
     import json, os, pathlib, unittest
-    from vocaro_engineering import resources
+    from queuekeeper import resources
 
     class Probe(unittest.TestCase):
         def test_probe(self):

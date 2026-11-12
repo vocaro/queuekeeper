@@ -35,8 +35,8 @@ import threading
 import time
 import uuid
 
-from . import offload_host
-from .resources import process_start
+from .. import offload_host
+from ..resources import process_start
 
 LSREGISTER = ("/System/Library/Frameworks/CoreServices.framework/Versions/Current/Frameworks/"
               "LaunchServices.framework/Versions/Current/Support/lsregister")

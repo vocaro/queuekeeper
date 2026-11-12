@@ -12,8 +12,8 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
-from vocaro_engineering import offload_host, resources
-from vocaro_engineering.parallel import unisolated
+from queuekeeper import offload_host, resources
+from queuekeeper.parallel import unisolated
 import host_isolation
 from host_isolation import stretched
 
@@ -27,7 +27,7 @@ PROBE = """
 import json, os, sys
 sys.path.insert(0, sys.argv[1])
 if sys.argv[2] == "isolated": import host_isolation
-from vocaro_engineering import resources
+from queuekeeper import resources
 with resources.Admission("forgot to redirect", timeout=0) as admission:
     print(json.dumps({"guard": str(admission.guard), "slots": str(admission.directory),
                       "held": admission.guard.exists()}))
@@ -73,7 +73,7 @@ class HostIsolationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             forgot, isolated, nested = (Path(directory) / name for name in ("test_forgot.py", "test_isolated.py",
                                                                             "test_nested.py"))
-            forgot.write_text("import unittest\nfrom vocaro_engineering import cli\n")
+            forgot.write_text("import unittest\nfrom queuekeeper import cli\n")
             isolated.write_text("import unittest\nimport host_isolation\n")
             nested.write_text("def setUpModule():\n    import host_isolation\n")
             self.assertEqual(unisolated([forgot, isolated, nested]), ["test_forgot.py", "test_nested.py"])

@@ -8,7 +8,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src/python"))
-from vocaro_engineering.simulators import duo_pose
+from queuekeeper.apple.simulators import duo_pose
 import host_isolation
 from host_isolation import stretched
 
@@ -61,7 +61,7 @@ class DuoPoseTests(unittest.TestCase):
         self.kit = base / "vocaro-engineering"
         (self.kit / "scripts").mkdir(parents=True)
         shutil.copy2(ROOT / "scripts/duo-pose", self.kit / "scripts/duo-pose")
-        shutil.copytree(ROOT / "src/python/vocaro_engineering", self.kit / "src/python/vocaro_engineering",
+        shutil.copytree(ROOT / "src/python/queuekeeper", self.kit / "src/python/queuekeeper",
                         ignore=shutil.ignore_patterns("__pycache__"))
         self.source = self.kit / "src/objc/Simulator/duo-pose-helper.c"
         self.source.parent.mkdir(parents=True)

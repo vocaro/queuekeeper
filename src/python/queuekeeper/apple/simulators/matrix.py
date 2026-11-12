@@ -73,8 +73,8 @@ import time
 from types import SimpleNamespace
 import uuid
 
-from .. import evidence, processes, resources, stale_modules
-from ..parallel import RESULTS_VARIABLE, TAIL, combined, outcome
+from ... import evidence, processes, resources, stale_modules
+from ...parallel import RESULTS_VARIABLE, TAIL, combined, outcome
 from . import pool as simulator_pool, speech
 from .pool import DEVICE_TYPE, RUNTIME, qualified
 

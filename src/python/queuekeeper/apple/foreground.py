@@ -20,7 +20,8 @@ import subprocess
 import sys
 import time
 
-from . import devices, lane_wait, offload_host, processes
+from . import devices
+from .. import lane_wait, offload_host, processes
 from .voiceover import state as voiceover_state
 
 # Seconds between looks at the second Mac's mac-foreground entry while another run holds it.
@@ -98,7 +99,7 @@ def slot(purpose, *, timeout, expected=EXPECTED, record=None, poll=POLL, ready=N
         if state in ("orphan", "uncertain"):
             raise devices.Refused(f"the second Mac's {devices.FOREGROUND} is {state}, held by {entry.get('ownerChatID')} "
                                   f"for {entry.get('purpose')}; it needs attended recovery first, on the second Mac: "
-                                  f"`python3 -m vocaro_engineering.devices recover {devices.FOREGROUND} --by SESSION "
+                                  f"`python3 -m queuekeeper.apple.devices recover {devices.FOREGROUND} --by SESSION "
                                   f"--revision {entry.get('revision')} --verified WHAT` ({GUIDE})")
         holder = entry.get("ownerChatID")
         lane_wait.waiting(lane_wait.FOREGROUND, f"held by {holder} for {entry.get('purpose')}, expected release "
@@ -149,11 +150,11 @@ def slot(purpose, *, timeout, expected=EXPECTED, record=None, poll=POLL, ready=N
 
 
 def main(argv=None):
-    """`python3 -m vocaro_engineering.foreground check`: what this Mac lacks for foreground work started over
+    """`python3 -m queuekeeper.apple.foreground check`: what this Mac lacks for foreground work started over
     SSH, each with the owner's fix; exit 0 when nothing."""
     argv = sys.argv[1:] if argv is None else argv
     if argv != ["check"]:
-        print("usage: python3 -m vocaro_engineering.foreground check", file=sys.stderr)
+        print("usage: python3 -m queuekeeper.apple.foreground check", file=sys.stderr)
         return 2
     found = problems()
     for problem, fix in found: print(f"{problem}: {fix}")

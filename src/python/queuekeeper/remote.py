@@ -65,10 +65,11 @@ import threading
 import time
 import uuid
 
-from . import capture_approvals, devices, disk, evidence, lane_wait, offload_host, parallel, processes, resources, run_results, toolkit_copy
+from . import disk, evidence, lane_wait, offload_host, parallel, processes, resources, toolkit_copy
+from .apple import capture_approvals, devices, run_results
 from .config import TOOLKIT_ROOT, unlocked_screen
 from .resources import BUSY, FREE_WAIT
-from .simulators import pool as simulator_pool
+from .apple.simulators import pool as simulator_pool
 
 # The SSH destinations tried in turn when neither --host nor VOCARO_OFFLOAD_HOST names one: aliases the
 # owner defines in ~/.ssh/config, so no machine's name is written here. build-host, which the owner
@@ -1841,7 +1842,7 @@ def clock_line(config, lane, arguments=()):
     if words and re.fullmatch(r"python(?:3(?:\.\d+)?)?", Path(words[0]).name):
         words = words[1:]
     if len(words) >= 2 and Path(words[0]).name == "eng" and words[1] == "simulator-tests":
-        from .simulators.matrix import default_test_allowance
+        from .apple.simulators.matrix import default_test_allowance
         allowance = default_test_allowance([*words[2:], *arguments])
         if allowance is not None:
             limits += f" and the default test allowance is set to {allowance}s"

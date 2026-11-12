@@ -42,8 +42,9 @@ import time
 import uuid
 from xml.parsers.expat import ExpatError
 
-from .. import devices as device_record, evidence, offload_host
-from ..resources import process_start
+from .. import devices as device_record
+from ... import evidence, offload_host
+from ...resources import process_start
 from . import lifecycle, speech, template as warmed
 
 # How long a member other than its kind's lowest-numbered must be unused, and its record entry released, before
@@ -1228,7 +1229,7 @@ def reap_reports(pool, project, *, dry_run, here, stop_leftovers=True):
     see name. Without stop_leftovers, as for `eng doctor`, the second Mac only lists the leftover processes
     it would stop (offload_host.stop_leftovers)."""
     # remote and disk import this module.
-    from .. import disk, offload_host, remote
+    from ... import disk, offload_host, remote
     if pool: pools = [pool]
     else:
         pools = sorted({*disk.pools(Path.home() / "Development"), *filter(None, [configured(project or Path.cwd())])})
@@ -1241,7 +1242,7 @@ def reap_reports(pool, project, *, dry_run, here, stop_leftovers=True):
 
 def reap_command(pool, project, *, dry_run, here):
     """`eng simulator-pool reap`: reap_reports, said. It exits 1 when anything failed."""
-    from .. import remote
+    from ... import remote
     reports = reap_reports(pool, project, dry_run=dry_run, here=here)
     for where, report in reports:
         lines = remote.reap_lines(where, report)

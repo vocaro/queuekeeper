@@ -8,7 +8,7 @@ import unittest
 from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 import host_isolation  # noqa: F401
-from vocaro_engineering.simulators import template
+from queuekeeper.apple.simulators import template
 
 UDID = "2BBC94CE-0D99-4A08-9763-269B5711AC97"
 RUNTIME = "com.apple.CoreSimulator.SimRuntime.iOS-27-2"

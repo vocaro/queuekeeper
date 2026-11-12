@@ -166,7 +166,7 @@ def commands(pids):
 
 def owners(identities, environment):
     """Those of these {PID: start} processes that the environment's admission guard records as owners."""
-    from vocaro_engineering.resources import guard_owners
+    from queuekeeper.resources import guard_owners
     recorded = guard_owners(environment)
     return sorted(pid for pid, start in identities.items() if (pid, " ".join(start.split())) in recorded)
 
@@ -333,7 +333,7 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
         raise Interrupted(requested(), "before its command started")
     environment = dict(os.environ) if env is None else env
     descriptors = held_locks(environment)
-    from vocaro_engineering.resources import holding
+    from queuekeeper.resources import holding
     admission, key = holding(environment), uuid.uuid4().hex
 
     def note(**observed):

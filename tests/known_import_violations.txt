@@ -67,37 +67,3 @@ core imports toolkit: queuekeeper.parallel -> vocaro_engineering.failure_records
 core imports toolkit: queuekeeper.parallel -> vocaro_engineering.stale_modules
 core imports toolkit: queuekeeper.remote -> vocaro_engineering.evidence
 core imports toolkit: queuekeeper.remote -> vocaro_engineering.toolkit_copy
-old name: queuekeeper.apple.app_builds -> queuekeeper.config
-old name: queuekeeper.apple.app_builds -> queuekeeper.processes
-old name: queuekeeper.apple.app_registrations -> queuekeeper.offload_host
-old name: queuekeeper.apple.app_registrations -> queuekeeper.resources
-old name: queuekeeper.apple.capture_approvals -> queuekeeper.offload_host
-old name: queuekeeper.apple.crash_alerts -> queuekeeper.offload_host
-old name: queuekeeper.apple.crash_alerts -> queuekeeper.resources
-old name: queuekeeper.apple.device_pass -> queuekeeper.parallel
-old name: queuekeeper.apple.device_pass -> queuekeeper.processes
-old name: queuekeeper.apple.devices -> queuekeeper.offload_host
-old name: queuekeeper.apple.devices -> queuekeeper.processes
-old name: queuekeeper.apple.devices -> queuekeeper.remote
-old name: queuekeeper.apple.devices -> queuekeeper.resources
-old name: queuekeeper.apple.foreground -> queuekeeper.lane_wait
-old name: queuekeeper.apple.foreground -> queuekeeper.offload_host
-old name: queuekeeper.apple.foreground -> queuekeeper.processes
-old name: queuekeeper.apple.keychain -> queuekeeper.offload_host
-old name: queuekeeper.apple.keychain -> queuekeeper.remote
-old name: queuekeeper.apple.notification_center -> queuekeeper.offload_host
-old name: queuekeeper.apple.run_results -> queuekeeper.parallel
-old name: queuekeeper.apple.simulators.matrix -> queuekeeper.parallel
-old name: queuekeeper.apple.simulators.matrix -> queuekeeper.processes
-old name: queuekeeper.apple.simulators.matrix -> queuekeeper.resources
-old name: queuekeeper.apple.simulators.pool -> queuekeeper.disk
-old name: queuekeeper.apple.simulators.pool -> queuekeeper.offload_host
-old name: queuekeeper.apple.simulators.pool -> queuekeeper.remote
-old name: queuekeeper.apple.simulators.pool -> queuekeeper.resources
-old name: queuekeeper.apple.xctest_shards -> queuekeeper.parallel
-old name: queuekeeper.apple.xctest_shards -> queuekeeper.processes
-old name: queuekeeper.processes -> queuekeeper.resources
-old name: queuekeeper.resources -> queuekeeper.offload_host
-old name: queuekeeper.resources -> queuekeeper.processes
-old name: queuekeeper.resources -> queuekeeper.remote
-old name: queuekeeper.resources -> queuekeeper.resources

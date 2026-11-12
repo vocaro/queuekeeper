@@ -10,9 +10,10 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
-from vocaro_engineering import devices, foreground, processes
+from queuekeeper import processes
+from queuekeeper.apple import devices, foreground
 import host_isolation
-from vocaro_engineering.voiceover import guard, state
+from queuekeeper.apple.voiceover import guard, state
 
 
 def idle(test):

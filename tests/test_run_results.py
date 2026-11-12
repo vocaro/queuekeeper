@@ -11,8 +11,9 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
-from vocaro_engineering import cli, evidence, parallel, run_results
-from vocaro_engineering.simulators import matrix
+from queuekeeper import cli, evidence, parallel
+from queuekeeper.apple import run_results
+from queuekeeper.apple.simulators import matrix
 import host_isolation
 
 ENG = Path(__file__).resolve().parents[1] / "scripts/eng"

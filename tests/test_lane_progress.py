@@ -12,7 +12,7 @@ from unittest.mock import Mock, patch
 
 import host_isolation
 
-from vocaro_engineering import lane_progress, lane_wait, merge_queue, offload_host, progress, remote, resources
+from queuekeeper import lane_progress, lane_wait, merge_queue, offload_host, progress, remote, resources
 
 
 class LiveProgress(unittest.TestCase):

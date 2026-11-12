@@ -302,7 +302,7 @@ def append_log(entry):
 def ending(kind):
     """How an admission ended, from the type of the exception that ended it, if any. Every end but an
     uncertain one releases the owner's guard entry."""
-    from vocaro_engineering.processes import Interrupted, NotStarted, TimedOut
+    from queuekeeper.processes import Interrupted, NotStarted, TimedOut
     if kind is None:
         return "released"
     for failure, outcome in [(NotStarted, "not-started"), (Interrupted, "stopped"), (TimedOut, "timed-out")]:
@@ -1033,7 +1033,7 @@ class Admission:
 
     def _withdraw(self, error):
         """Log that this request stopped waiting without admission, and take it out of the queue if it is there."""
-        from vocaro_engineering.processes import Interrupted
+        from queuekeeper.processes import Interrupted
         outcome = ("stopped" if isinstance(error, (Interrupted, KeyboardInterrupt))
                    else "timed-out" if isinstance(error, TimeoutError) else "failed")
         with (self.directory / "coordination.lock").open("a+") as bridge:
@@ -1309,7 +1309,7 @@ class Admission:
         if inherited(self.exclusive, self.model):
             self.reused = True
             return self
-        from vocaro_engineering.processes import Interrupted, requested
+        from queuekeeper.processes import Interrupted, requested
         started = self.started = time.monotonic()
         reported, said_progress, progress_at, progress_next = None, None, 0, 0
         try:
@@ -1802,7 +1802,7 @@ def capacity_lines(readings):
     """Both Macs' capacity side by side, readings being (column name, the name remote.spare's verdict gives the Mac,
     reading or why it is unavailable), with remote.spare's
     verdict for an ordinary heavy lane and for a whole-host lane on each."""
-    from vocaro_engineering import remote
+    from queuekeeper import remote
     def cells(name, short, reading):
         if isinstance(reading, str) or "error" in reading:
             why = reading if isinstance(reading, str) else reading["error"]
@@ -1847,7 +1847,7 @@ def usage(here, there, since, until, out=print):
 
 def usage_main(argv=None, out=print):
     """eng admissions usage: whether the second Mac is being used, and why work is on this Mac."""
-    from vocaro_engineering import offload_host, remote
+    from queuekeeper import offload_host, remote
     parser = argparse.ArgumentParser(prog="eng admissions usage", description="Show both Macs' capacity now, side by "
         "side, with whether each has spare capacity for a heavy and for a whole-host lane; the share of the period "
         "each Mac spent at each count of admitted heavy jobs; and why this Mac's admissions ran here: never offered "
@@ -1887,7 +1887,7 @@ def admissions_now(here_only=False, read_here=None, read_there=None, configured=
     """{"schemaVersion": 1, "hosts": [...]}: this Mac's reading (offload_host.admissions_now) and, unless here_only,
     the second Mac's, asked once over ssh within remote.ADMISSIONS_BUDGET seconds. A Mac that cannot be read is
     unknown with why, and this Mac's reading stands beside it."""
-    from vocaro_engineering import offload_host, remote
+    from queuekeeper import offload_host, remote
     read_here = read_here or offload_host.admissions_now
     read_there = read_there or remote.admissions_there
     configured = configured or remote.configured
@@ -2060,7 +2060,7 @@ def owner_survivors(admission):
 
     It errs toward keeping the entry: work started after the owner by a sibling in the same group, such as another
     lane its shell started beside it, keeps it too until that work ends (#315)."""
-    from vocaro_engineering.processes import birth_time, session, snapshot
+    from queuekeeper.processes import birth_time, session, snapshot
     pid, start = admission["owner"]
     group, sid = admission["group"], admission["session"]
     spaces = {group} | ({sid} if sid == group else set())
@@ -2097,7 +2097,7 @@ def census(path):
     live process's PID (#26) or a process born after the last recorded close of the space (#244).
     A command the record settled was confirmed ended by its own supervision.
     """
-    from vocaro_engineering.processes import snapshot, survivors
+    from queuekeeper.processes import snapshot, survivors
     commands, admission = {}, None
     with path.open("rb") as stream:
         for number, text in enumerate(stream, 1):
@@ -2301,7 +2301,7 @@ def remaining(path, entry):
     group or session, or, without an admission line, in a group or session the owner led. Without a record, an
     owner that led neither, as one a shell started in the shell's own group, leaves nothing here to check: that is
     the check by hand `eng admissions remove` asks for (#315)."""
-    from vocaro_engineering.processes import snapshot, survivors
+    from queuekeeper.processes import snapshot, survivors
     admission, processes, spaces = None, set(), set()
     if path is not None and path.is_file():
         with path.open("rb") as stream:
@@ -2440,7 +2440,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
     if not command: parser.error("a command is required")
-    from vocaro_engineering.processes import forwarding_signals, supervise
+    from queuekeeper.processes import forwarding_signals, supervise
     try:
         with forwarding_signals(), Admission(" ".join(command), args.exclusive, args.timeout, args.model,
                                              args.whole_host, supervised=True) as admission:
@@ -2459,5 +2459,5 @@ def json_descriptors():
 if __name__ == "__main__":
     # The module as supervision imports it, not this copy run as __main__, so that supervision finds the
     # admission this process holds and writes its process record.
-    from vocaro_engineering import resources
+    from queuekeeper import resources
     raise SystemExit(resources.main())

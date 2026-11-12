@@ -14,7 +14,9 @@ from unittest.mock import patch
 import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
-from vocaro_engineering import cli, devices, disk, evidence_offload, landing
+from queuekeeper import cli, disk, landing
+from queuekeeper.apple import devices
+from vocaro_engineering import evidence_offload
 import host_isolation
 
 LATER = time.time() + 10 * 86400  # every fixture looks idle from here
@@ -621,7 +623,7 @@ class SimulatorTests(Fixture):
         self.assertNotIn("build-host", items["beta"].reason)
 
     def test_the_second_macs_runtimes_are_read_as_eng_remote_reads_them(self):
-        from vocaro_engineering import remote
+        from queuekeeper import remote
         self.assertIsNone(disk.runtimes_there(None))
         with patch.object(remote, "developer_directory", return_value="/X.app"), \
                 patch.object(remote, "runtime_images", return_value={"images": [{"build": "B", "users": []}]}) as read:
@@ -1228,7 +1230,7 @@ class KeptResultsTests(Fixture):
     """Lane results kept by commit beside the receipts in a repository's Git directory (#218)."""
     def setUp(self):
         super().setUp()
-        from vocaro_engineering import remote
+        from queuekeeper import remote
         self.remote, self.store, self.now = remote, self.main / ".git/vocaro-engineering/remote", time.time()
 
     def kept(self, commit, days, lane="gate"):

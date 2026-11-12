@@ -23,7 +23,8 @@ import re
 import sys
 import time
 
-from . import crash_alerts, devices, evidence, foreground, offload_host
+from . import crash_alerts, devices, foreground
+from .. import evidence, offload_host
 
 # The process whose windows these are, by its executable, which the window list's owner name (on macOS 27.2,
 # "Notification Center", with a space) does not establish alone; and the layer its notifications show at.
@@ -316,13 +317,13 @@ def dismiss(said=None, *, owner=None, record=None, wait=GONE):
 
 
 def main(argv=None):
-    """`python3 -m vocaro_engineering.notification_center list|check`: list says which Notification Center windows
+    """`python3 -m queuekeeper.apple.notification_center list|check`: list says which Notification Center windows
     are over this Mac's screen, exiting 0 when none is and evidence.UNMEASURED when one is; check, under the
     second Mac's foreground lease the caller holds, closes their notifications as a run does before it starts,
     exiting 0 once none is left, evidence.UNMEASURED naming one it could not clear, and 1 without a lease."""
     argv = sys.argv[1:] if argv is None else argv
     if argv not in (["list"], ["check"]):
-        print("usage: python3 -m vocaro_engineering.notification_center list|check", file=sys.stderr)
+        print("usage: python3 -m queuekeeper.apple.notification_center list|check", file=sys.stderr)
         return 2
     said = lambda text: print(text, file=sys.stderr, flush=True)
     if argv == ["list"]:

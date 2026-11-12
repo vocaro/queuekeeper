@@ -23,7 +23,7 @@ import subprocess
 import tempfile
 import time
 
-from . import evidence, parallel, processes
+from .. import evidence, parallel, processes
 
 # Processes at a time unless --jobs says otherwise, as eng unittest's.
 DEFAULT_JOBS = parallel.DEFAULT_JOBS

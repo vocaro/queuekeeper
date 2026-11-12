@@ -50,7 +50,8 @@ import threading
 import time
 import urllib.request
 
-from . import app_builds, budgets, disk, evidence, landing, lane_progress, lane_report, lane_wait, offload_host, parallel, processes, remote, \
+from .apple import app_builds
+from . import budgets, disk, evidence, landing, lane_progress, lane_report, lane_wait, offload_host, parallel, processes, remote, \
     resources
 from .config import DOCS, DOCS_FILES, DOCS_FOLDERS, IMPLICIT_DOCS, IMPLICIT_SPELLING, SPELLING, SPELLING_LIMIT, \
     TOOLKIT_ROOT, lane_to_run, load, parse, stays, unlocked_screen
@@ -1256,7 +1257,7 @@ class Queue:
         """What runs this repository's worker on the toolkit at toolkit: `eng queue run` for the main checkout, from
         that toolkit's Python, as start starts one and as a worker starts itself again on a newer toolkit
         (Worker.move_to)."""
-        script = ("import sys; sys.path.insert(0, sys.argv[1]); from vocaro_engineering.cli import main; "
+        script = ("import sys; sys.path.insert(0, sys.argv[1]); from queuekeeper.cli import main; "
                   "sys.exit(main(['--project', sys.argv[2], 'queue', 'run', *sys.argv[3:]]))")
         return [sys.executable, "-c", script, str(Path(toolkit) / "src/python"), str(self.main_checkout),
                 *(["--if-waiting"] if if_waiting else [])]
@@ -2090,7 +2091,7 @@ def starts(toolkit, commit):
         if unpacked.returncode:
             return f"its files could not be unpacked: {unpacked.stderr.decode(errors='replace').strip() or 'no output'}"
         script = ("import sys; sys.path.insert(0, sys.argv[1]); "
-                  "import vocaro_engineering.cli, vocaro_engineering.merge_queue")
+                  "import queuekeeper.cli, queuekeeper.merge_queue")
         try:
             tried = subprocess.run([sys.executable, "-c", script, str(Path(folder) / "src/python")], cwd=folder,
                                    capture_output=True, text=True, stdin=subprocess.DEVNULL, env=environment(),

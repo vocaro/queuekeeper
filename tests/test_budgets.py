@@ -16,7 +16,8 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src/python"))
-from vocaro_engineering import budgets, cli, config as configuration, merge_queue as mq, release
+from queuekeeper import budgets, cli, config as configuration, merge_queue as mq
+from vocaro_engineering import release
 import host_isolation  # noqa: F401
 from test_merge_queue import Fixture, run
 

@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 import host_isolation  # noqa: F401  Keeps every test out of the host's heavy-work admission.
-from vocaro_engineering import cli, config, merge_queue as mq, offload_host, remote, resources
+from queuekeeper import cli, config, merge_queue as mq, offload_host, remote, resources
 
 SCREENS = Path(__file__).resolve().parent / "fixtures/ScreenState"
 # offload_host.screen itself, which some tests replace with readings it gives.

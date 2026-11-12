@@ -1,6 +1,6 @@
 """A simulator addressed by its canonical UDID, never by a name or `booted`.
 
-Members of a project's pool are taken, created and released by vocaro_engineering.simulators.pool;
+Members of a project's pool are taken, created and released by queuekeeper.apple.simulators.pool;
 this module only drives a device already held.
 """
 import subprocess

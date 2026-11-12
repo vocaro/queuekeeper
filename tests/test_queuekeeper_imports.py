@@ -39,7 +39,7 @@ OLD_NAME = "old name"
 BORROWED = {"queuekeeper.evidence", "queuekeeper.landing", "queuekeeper.stale_modules", "queuekeeper.toolkit_copy"}
 KINDS = (CORE_TOOLKIT, CORE_APPLE, APPLE_TOOLKIT, OLD_NAME)
 # The most lines of each kind the list may hold. Lower a number as its kind shrinks; never raise it.
-CEILING = {CORE_TOOLKIT: 30, CORE_APPLE: 21, APPLE_TOOLKIT: 14, OLD_NAME: 34}
+CEILING = {CORE_TOOLKIT: 30, CORE_APPLE: 21, APPLE_TOOLKIT: 14, OLD_NAME: 0}
 
 
 def within(module, package):
@@ -148,8 +148,12 @@ class Layout:
         return cls({name: (path.read_text(), package) for path, name, package in modules(root)
                     if name not in BORROWED})
 
-    def old_name(self, module):
-        return next((old for old, name in self.old.items() if name == module), module)
+    @staticmethod
+    def in_toolkit(name):
+        """The toolkit's name for what `name` would be here: every module there sat in one package."""
+        if within(name, TOOLKIT): return name
+        inner = name[len(APPLE) + 1:] if within(name, APPLE) else name[len(CORE) + 1:]
+        return TOOLKIT + ("." + inner if inner else "")
 
     def named(self, name, known):
         """What `name` means when `known` maps names to modules: (the module, None), when it names a
@@ -172,18 +176,16 @@ class Layout:
         writes under a toolkit name."""
         source, package = self.sources[module]
         apple = within(module, APPLE)
-        old_module = self.old_name(module)
         found = set()
         for _line, level, base, names in statements(source):
             here = absolute(level, base, module, package)
-            there = absolute(level, base, old_module, package)
             for suffix in [f".{name}" for name in names] or [""]:
                 target, missing = self.named(here + suffix, self.new)
                 stale = False
                 if target is None and (missing or within(here, TOOLKIT)):
-                    # Not a module here: read it as the toolkit's layout would.
+                    # Not a module here: it is one the toolkit kept, or one here under its toolkit name.
                     stale = True
-                    target, missing = self.named(there + suffix, self.old)
+                    target, missing = self.named(self.in_toolkit(here + suffix), self.old)
                 if target is None and missing is None: continue  # The library, or another project.
                 if target is None:
                     found.add((APPLE_TOOLKIT if apple else CORE_TOOLKIT, missing))

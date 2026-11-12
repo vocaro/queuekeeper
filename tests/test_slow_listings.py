@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from vocaro_engineering import offload_host
+from queuekeeper import offload_host
 
 STATES = """    1 Ss   16:30:41 /sbin/launchd
   501 U       00:03 /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swift-frontend

@@ -13,8 +13,8 @@ import time
 import unittest
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
-from vocaro_engineering import offload_host, remote
-from vocaro_engineering.simulators import pool as simulator_pool
+from queuekeeper import offload_host, remote
+from queuekeeper.apple.simulators import pool as simulator_pool
 import host_isolation
 
 RUN, LEFTOVER, OTHER_RUN, SHELL, CHILD = 105000, 108000, 105500, 109000, 108100

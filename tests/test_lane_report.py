@@ -13,7 +13,8 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 import host_isolation  # noqa: F401 (keeps the tests off the real hosts)
 from host_isolation import stretched
-from vocaro_engineering import cli, evidence, failure_records, lane_report, merge_queue
+from queuekeeper import cli, evidence, lane_report, merge_queue
+from vocaro_engineering import failure_records
 
 SOURCE = Path(__file__).resolve().parents[1] / "src/python"
 RULE = "=" * 70
@@ -394,7 +395,7 @@ class Policy(unittest.TestCase):
             sys.path.insert(0, {str(SOURCE)!r})
             from pathlib import Path
             from unittest.mock import patch
-            from vocaro_engineering import cli
+            from queuekeeper import cli
             with patch.object(cli.subprocess, "run"), patch.object(cli.subprocess, "check_output",
                                                                    side_effect=["abc\\n", "THE POLICY\\n"]):
                 cli.refresh_policy(Path("."))

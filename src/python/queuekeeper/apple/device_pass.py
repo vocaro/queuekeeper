@@ -33,9 +33,10 @@ import os
 from pathlib import Path
 import sys
 
-from . import devices, processes
-from .evidence import UNMEASURED
-from .parallel import RESULTS_VARIABLE
+from . import devices
+from .. import processes
+from ..evidence import UNMEASURED
+from ..parallel import RESULTS_VARIABLE
 
 PASSED, FAILED, NOT_RUN, UNMEASURED_PART = "passed", "failed", "not run", "unmeasured"
 # The variables the command finds its device in.

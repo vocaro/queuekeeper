@@ -11,8 +11,9 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 import host_isolation
-from vocaro_engineering import cli, devices, evidence, foreground, notification_center
-from vocaro_engineering.voiceover import state as voiceover_state
+from queuekeeper import cli, evidence
+from queuekeeper.apple import devices, foreground, notification_center
+from queuekeeper.apple.voiceover import state as voiceover_state
 
 SECOND = "Trevors-MacBook-Pro-715"
 CENTER, OTHER = 754, 12136

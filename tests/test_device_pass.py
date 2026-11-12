@@ -10,7 +10,9 @@ import unittest
 from unittest.mock import patch
 
 import host_isolation  # noqa: F401  (first: keeps every test out of the host's admission)
-from vocaro_engineering import budgets, cli, device_notifications, device_pass, devices, release
+from queuekeeper import budgets, cli
+from queuekeeper.apple import device_notifications, device_pass, devices
+from vocaro_engineering import release
 from test_devices import BANNER, Devicectl, PHONE, TABLET, Watches, approval, later, scratch
 
 SOURCE = Path(__file__).resolve().parents[1] / "src/python"
@@ -220,7 +222,7 @@ class DevicePass(Fixture):
 
 
 # The device pass as a lane's command in a subprocess, with the device's log watch replaced, as eng run runs it.
-LANE = ("import sys; sys.path.insert(0, {source!r}); from vocaro_engineering import device_notifications, device_pass; "
+LANE = ("import sys; sys.path.insert(0, {source!r}); from queuekeeper.apple import device_notifications, device_pass; "
         "device_notifications.run = lambda command: (0, ''); "
         "device_notifications.watch = lambda udid: type('W', (), {{'stop': lambda self: "
         "{{'watched': True, 'presented': 0}}}})(); raise SystemExit(device_pass.main(sys.argv[1:]))")

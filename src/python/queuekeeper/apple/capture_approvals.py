@@ -18,7 +18,7 @@ import shutil
 import subprocess
 
 # The second Mac reads them with its system Python, before the toolkit is checked out there.
-from .offload_host import CAPTURE_RUNNERS as RUNNERS, screen_capture_approvals as lapses
+from ..offload_host import CAPTURE_RUNNERS as RUNNERS, screen_capture_approvals as lapses
 
 
 def stable_runner_path(project, bundle, home=None):

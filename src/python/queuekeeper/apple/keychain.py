@@ -31,7 +31,7 @@ import shutil
 import subprocess
 import tempfile
 
-from . import evidence, host_context, offload_host, remote
+from .. import evidence, host_context, offload_host, remote
 
 DEFAULT = "~/Library/Keychains/login.keychain-db"
 # Seconds each of the check's commands, and the question to the second Mac, may take.

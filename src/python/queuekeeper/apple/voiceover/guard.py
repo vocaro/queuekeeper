@@ -2,7 +2,7 @@
 (guides/second-mac-foreground.md): a session run again when VoiceOver moved to XCTest's Automation Running
 banner, which that Mac cannot unload, and a stop that restores VoiceOver before anything else.
 
-    from vocaro_engineering.voiceover.guard import (BANNER_STOP, BannerNamed, Stopped, check_banner,
+    from queuekeeper.apple.voiceover.guard import (BANNER_STOP, BannerNamed, Stopped, check_banner,
                                                     run_again, stop_signals)
 
 A driver calls check_banner with what VoiceOver has said before each step, exits BANNER_STOP when it raises

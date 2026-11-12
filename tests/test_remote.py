@@ -24,9 +24,11 @@ import uuid
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
-from vocaro_engineering import budgets, cli, config, device_notifications, devices, evidence, merge_queue, offload_host, processes, release, remote, resources
-from vocaro_engineering import disk as disk_module
-from vocaro_engineering import waiting
+from queuekeeper import budgets, cli, config, evidence, merge_queue, offload_host, processes, remote, resources
+from queuekeeper.apple import device_notifications, devices
+from vocaro_engineering import release
+from queuekeeper import disk as disk_module
+from queuekeeper import waiting
 import host_isolation
 from host_isolation import stretched
 
@@ -275,7 +277,7 @@ sys.exit(status)
 BARRIER_DRIVER = """import os, sys, time
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
-from vocaro_engineering import cli, remote
+from queuekeeper import cli, remote
 removing = remote.shutil.rmtree
 def rmtree(path, *arguments, **options):
     removing(path, *arguments, **options)
@@ -692,7 +694,7 @@ class RemoteTests(unittest.TestCase):
 
     def test_a_dispatch_keeps_its_age_for_admission_without_backdating_child_requests(self):
         command = ("import os,sys,time; sys.path.insert(0, os.environ['VOCARO_ENGINEERING_ROOT']+'/src/python'); "
-                   "from vocaro_engineering import resources; "
+                   "from queuekeeper import resources; "
                    "print('transport-age-absent:', resources.REQUEST_STARTED not in os.environ); "
                    "print('fresh-child-priority:', time.time()-resources.request_started()<30); print('Ran 1 tests')")
         settings = json.loads((self.project / "engineering.json").read_text())
@@ -1084,7 +1086,7 @@ class RemoteTests(unittest.TestCase):
         udid = PHONE.replace("C", "D")
         helper = ("import os, runpy, sys; sys.path.insert(0, os.path.join(os.environ['VOCARO_ENGINEERING_ROOT'], "
                   f"'src/python')); sys.argv[-1] = {udid[:9]!r} + {udid[9:]!r}; "
-                  "runpy.run_module('vocaro_engineering.devices', run_name='__main__')")
+                  "runpy.run_module('queuekeeper.apple.devices', run_name='__main__')")
         status, output, _error = self.eng("remote", "admit", "--", sys.executable, "-c", helper,
             "reserve", "iPhone", "--owner", "there", "--revision", "0", "--purpose", "p",
             "--release-by", "2099-01-01T00:00:00Z", "--device", "UDID")
@@ -1490,7 +1492,7 @@ class RemoteTests(unittest.TestCase):
     def test_a_bounded_run_on_the_second_mac_takes_its_reservation_from_the_lease(self):
         self.hold()
         helper = ("import os, runpy, sys; sys.path.insert(0, os.path.join(os.environ['VOCARO_ENGINEERING_ROOT'], "
-                  "'src/python')); runpy.run_module('vocaro_engineering.devices', run_name='__main__')")
+                  "'src/python')); runpy.run_module('queuekeeper.apple.devices', run_name='__main__')")
         launch = [sys.executable, "-c", helper, "run"]
         # The checkout there knows the commit's whole hash too, so it names no device there either.
         ran = [sys.executable, "-c", "print('ran there')", self.commit]
@@ -1811,7 +1813,7 @@ class RemoteTests(unittest.TestCase):
 
     def test_a_foreground_dispatch_can_be_canceled_while_waiting_without_touching_the_holder(self):
         # Real dispatch, checkout and lease handling; only desktop/VoiceOver I/O is a stand-in.
-        source = self.toolkit / "src/python/vocaro_engineering"
+        source = self.toolkit / "src/python/queuekeeper"
         waiter = Path(self.temp.name) / "foreground-waiter.pid"
         with (source / "foreground.py").open("a") as fixture:
             fixture.write("\ndef problems():\n    from pathlib import Path\n"
@@ -2964,7 +2966,7 @@ class RemoteTests(unittest.TestCase):
     def test_a_stalled_direct_or_group_lane_returns_unmeasured_and_retains_its_observations(self):
         # The real ps sampler has its own independent control. Here deterministic samples isolate
         # remote config forwarding, stopping, admission settlement and copying back typed results.
-        sampler = self.toolkit / "src/python/vocaro_engineering/progress.py"
+        sampler = self.toolkit / "src/python/queuekeeper/progress.py"
         with sampler.open("a") as output:
             output.write("\ndef cpu(identities):\n    return {pid: (start, 0) for pid, start in identities.items()} "
                          "if identities else None\n")
@@ -3060,7 +3062,7 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual(len(kept["returned"]), 4)
         # The negative control: a toolkit without the copy-back leaves the lanes' files in the second
         # Mac's checkout. The dispatcher runs the toolkit's commit, so the change is committed.
-        source = self.toolkit / "src/python/vocaro_engineering/remote.py"
+        source = self.toolkit / "src/python/queuekeeper/remote.py"
         text = source.read_text()
         source.write_text(text.replace("def group_files(config, lane):\n",
                                        "def group_files(config, lane):\n    return None\n", 1))
@@ -3110,7 +3112,7 @@ class RemoteTests(unittest.TestCase):
         """Work admitted in a Mac's queue while the block runs: the second Mac's, or with HEAVY_SLOT_DIR and
         SW_GATE_LOCK_FILE this Mac's. Exclusive work, which holds every slot, unless kind is --whole-host, which
         holds every guaranteed slot, or None, one heavy slot."""
-        holder = subprocess.Popen([sys.executable, "-m", "vocaro_engineering.resources", *([kind] if kind else []),
+        holder = subprocess.Popen([sys.executable, "-m", "queuekeeper.resources", *([kind] if kind else []),
                                    "--", sys.executable, "-c", "print('held', flush=True); import time; time.sleep(300)"],
                                   stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, preexec_fn=host_isolation.default_signals, env={
                                       **os.environ, "PYTHONPATH": str(config.TOOLKIT_ROOT / "src/python"),
@@ -3127,7 +3129,7 @@ class RemoteTests(unittest.TestCase):
         """Give the toolkit the fake second Mac receives an --if-free wait no test outlasts, so that the wait ends when
         the test ends what holds that Mac, not at FREE_WAIT (#335). The fake gets the text, so nothing patched in this
         process reaches it. A limit no longer found fails the test here, rather than leaving it fixed unnoticed."""
-        path = self.toolkit / "src/python/vocaro_engineering/resources.py"
+        path = self.toolkit / "src/python/queuekeeper/resources.py"
         source, fixed = path.read_text(), f"FREE_WAIT, BUSY = {remote.FREE_WAIT}, {remote.BUSY}"
         self.assertIn(fixed, source)
         path.write_text(source.replace(fixed, f"FREE_WAIT, BUSY = 3600, {remote.BUSY}"))
@@ -4831,7 +4833,7 @@ exec {shlex.quote(real)} "$@"
             "import runpy, sys\n"
             "sys.argv = sys.argv[1:]\n"
             "sys.path.insert(0, str(Path(sys.argv[0]).resolve().parents[1] / 'src/python'))\n"
-            "from vocaro_engineering import remote\n"
+            "from queuekeeper import remote\n"
             "remote.FREE_WAIT = 1\n"
             "runpy.run_path(sys.argv[0], run_name='__main__')"
         )

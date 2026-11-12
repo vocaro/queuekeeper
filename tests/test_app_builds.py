@@ -14,7 +14,8 @@ import unittest
 from unittest.mock import patch
 
 import host_isolation  # noqa: F401  (first: keeps every test out of the host's admission)
-from vocaro_engineering import app_builds, cli, config, device_pass, disk, merge_queue, toolkit_copy
+from queuekeeper import cli, config, disk, merge_queue, toolkit_copy
+from queuekeeper.apple import app_builds, device_pass
 
 BUNDLE = "com.example.demo"
 # A stand-in for `eng admit -- xcodebuild ...`: it makes the product xcodebuild would, Demo.app with its Info.plist,
