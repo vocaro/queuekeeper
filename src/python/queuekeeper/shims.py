@@ -1,8 +1,8 @@
 """The environment of a lane's command, with the build-tool wrappers first on its PATH.
 
-Copied unchanged from the toolkit's stale_modules.py (vocaro/vocaro-engineering#403). The wrappers themselves,
-`bin/shims/xcodebuild` and `bin/shims/swift`, and the rebuild they make when a module cache is stale, are not
-here yet (PORTING.md): until they are, SHIMS names a folder that does not exist, and a lane's own tools run."""
+The wrappers themselves, `bin/shims/xcodebuild` and `bin/shims/swift`, and the rebuild they make when a module
+cache is stale, are not here yet (vocaro/vocaro-engineering#403): until they are, SHIMS names a folder that does
+not exist, and a lane's own tools run."""
 import os
 from pathlib import Path
 

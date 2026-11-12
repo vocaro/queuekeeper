@@ -1,7 +1,6 @@
 """What a lane's run reports: its exit statuses, and the tests its log counts as run, skipped and unmeasured.
 
-The core owns this vocabulary, and the toolkit's `evidence` imports it (decision H of
-vocaro/vocaro-engineering#403). It reads unittest, pytest, XCTest and Swift Testing logs."""
+It reads unittest, pytest, XCTest and Swift Testing logs."""
 import re
 
 

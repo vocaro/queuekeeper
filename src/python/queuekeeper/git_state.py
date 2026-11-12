@@ -1,7 +1,4 @@
-"""What Git says of a checkout: how far it is behind origin/main, and its worktrees.
-
-Copied unchanged from the toolkit's toolkit_copy.py, which keeps the rest: which copy of the toolkit
-`scripts/eng` runs (vocaro/vocaro-engineering#403)."""
+"""What Git says of a checkout: how far it is behind origin/main, and its worktrees."""
 import os
 import subprocess
 

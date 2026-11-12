@@ -1,12 +1,9 @@
 """The proofs that a commit's work is in a base branch, against throwaway repositories.
 
-These cases came with the proofs from the toolkit's test_closeout.py (LandingTests and ResolvedTests).
-There, most went through Closeout's landed.sh, which stays in the toolkit; here each calls
-`landing_proofs.proof` on the same repositories. The cases for a negated closing claim, and for the
-merges a branch brings in, are in test_merge_queue.py.
+The cases for a negated closing claim, and for the merges a branch brings in, are in test_merge_queue.py.
 
 This module does not import `host_isolation` yet, as every test module does: that helper does not
-import until `cli` and `disk` are split (PORTING.md). It runs git in a temporary folder only."""
+import until `cli` is split (vocaro/vocaro-engineering#403). It runs git in a temporary folder only."""
 import os
 from pathlib import Path
 import shutil

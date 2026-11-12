@@ -1,9 +1,9 @@
 """Whether a commit's work is in a base branch, and whether a commit message denies a closing claim: the
 proofs the merge queue uses.
 
-These are copied unchanged from the toolkit's landing.py, which keeps them for Closeout and `eng disk`
-(vocaro/vocaro-engineering#403). The two must agree: a commit the queue lands past a conflict, by keeping both
-sides, reads as landed by the `resolved` method in the toolkit's landed.sh."""
+The vocaro-engineering toolkit holds the same proofs in its landing.py, for Closeout and `eng disk`, and the two
+must agree: a commit the queue lands past a conflict, by keeping both sides, reads as landed by the `resolved`
+method in the toolkit's landed.sh (vocaro/vocaro-engineering#403)."""
 import re
 
 ANCESTOR, PATCH_EQUIVALENT, CONTENT_MERGED, RESOLVED = "ancestor", "patch-equivalent", "content-merged", "resolved"

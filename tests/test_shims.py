@@ -1,10 +1,7 @@
 """The environment that puts the build-tool wrappers first on a lane's PATH.
 
-This case came from the toolkit's test_stale_modules.py (Environment) with `environment`. The cases for the
-wrappers themselves stay there with them.
-
 This module does not import `host_isolation` yet, as every test module does: that helper does not
-import until `cli` and `disk` are split (PORTING.md). It reads no host state."""
+import until `cli` is split (vocaro/vocaro-engineering#403). It reads no host state."""
 import os
 from pathlib import Path
 import sys

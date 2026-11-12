@@ -1,10 +1,7 @@
 """What git_state reads of a checkout, against throwaway repositories.
 
-The toolkit tests these functions only through `scripts/eng`'s choice of a toolkit copy and `eng doctor`, which
-stay there, so these cases are new: they hold what `budgets` and `remote` use.
-
 This module does not import `host_isolation` yet, as every test module does: that helper does not
-import until `cli` and `disk` are split (PORTING.md). It runs git in a temporary folder only."""
+import until `cli` is split (vocaro/vocaro-engineering#403). It runs git in a temporary folder only."""
 import os
 from pathlib import Path
 import shutil

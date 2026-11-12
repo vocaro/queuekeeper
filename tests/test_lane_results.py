@@ -1,9 +1,7 @@
 """The lane-result vocabulary: the tests a log counts as run, skipped and unmeasured.
 
-These cases came from the toolkit's test_core.py (EvidenceTests) with the vocabulary.
-
 This module does not import `host_isolation` yet, as every test module does: that helper does not
-import until `cli` and `disk` are split (PORTING.md). It reads text only."""
+import until `cli` is split (vocaro/vocaro-engineering#403). It reads text only."""
 from pathlib import Path
 import sys
 import unittest
