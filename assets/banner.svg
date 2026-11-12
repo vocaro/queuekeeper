@@ -1,0 +1,172 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 400" role="img" aria-labelledby="t d">
+  <title id="t">Queuekeeper</title>
+  <desc id="d">A long line of commits files into the open doorway of a moonlit crypt. Only a few come out the other side, glowing green.</desc>
+
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0b0e15"/>
+      <stop offset="0.75" stop-color="#171d2b"/>
+      <stop offset="1" stop-color="#1d2536"/>
+    </linearGradient>
+    <linearGradient id="stone" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4a5266"/>
+      <stop offset="1" stop-color="#2b3142"/>
+    </linearGradient>
+    <linearGradient id="stoneDark" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#363d4f"/>
+      <stop offset="1" stop-color="#222838"/>
+    </linearGradient>
+    <radialGradient id="spill" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#7dea8a" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#7dea8a" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="moonHalo" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#dfe8c8" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="#dfe8c8" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="queueIn" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#8b93a7" stop-opacity="0"/>
+      <stop offset="0.25" stop-color="#8b93a7" stop-opacity="1"/>
+      <stop offset="1" stop-color="#8b93a7" stop-opacity="1"/>
+    </linearGradient>
+    <linearGradient id="queueOut" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#7dea8a" stop-opacity="1"/>
+      <stop offset="0.7" stop-color="#7dea8a" stop-opacity="1"/>
+      <stop offset="1" stop-color="#7dea8a" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="blur" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="14"/>
+    </filter>
+    <radialGradient id="halo" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#7dea8a" stop-opacity="0.6"/>
+      <stop offset="0.45" stop-color="#7dea8a" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#7dea8a" stop-opacity="0"/>
+    </radialGradient>
+    <clipPath id="frame"><rect width="1280" height="400" rx="18"/></clipPath>
+    <style>
+      .ghost { animation: bob 5s ease-in-out infinite; }
+      .flicker { animation: flicker 4s ease-in-out infinite; }
+      @keyframes bob { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-7px); } }
+      @keyframes flicker { 0%,100% { opacity: 1; } 45% { opacity: .82; } 55% { opacity: .95; } 70% { opacity: .78; } }
+      @media (prefers-reduced-motion: reduce) { .ghost, .flicker { animation: none; } }
+    </style>
+    <linearGradient id="doorGlow" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0" stop-color="#7dea8a" stop-opacity="0.55"/>
+      <stop offset="0.7" stop-color="#7dea8a" stop-opacity="0.08"/>
+      <stop offset="1" stop-color="#7dea8a" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="ghostFade" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#e6ecf6" stop-opacity="0.85"/>
+      <stop offset="0.55" stop-color="#e6ecf6" stop-opacity="0.6"/>
+      <stop offset="1" stop-color="#e6ecf6" stop-opacity="0.05"/>
+    </linearGradient>
+  </defs>
+
+  <g clip-path="url(#frame)">
+    <!-- night -->
+    <rect width="1280" height="400" fill="url(#sky)"/>
+    <g fill="#cfd6e6">
+      <circle cx="96" cy="48" r="1.2" opacity=".7"/>
+      <circle cx="248" cy="30" r="1" opacity=".5"/>
+      <circle cx="402" cy="58" r="1.3" opacity=".6"/>
+      <circle cx="560" cy="26" r="1" opacity=".5"/>
+      <circle cx="702" cy="62" r="1.2" opacity=".6"/>
+      <circle cx="806" cy="34" r="1" opacity=".5"/>
+      <circle cx="1046" cy="40" r="1.2" opacity=".6"/>
+      <circle cx="1238" cy="150" r="1" opacity=".5"/>
+    </g>
+
+    <!-- moon -->
+    <circle cx="1200" cy="84" r="92" fill="url(#moonHalo)"/>
+    <circle cx="1200" cy="84" r="36" fill="#e4ebcf"/>
+    <circle cx="1188" cy="74" r="7" fill="#cdd6b4" opacity=".7"/>
+    <circle cx="1212" cy="96" r="4.5" fill="#cdd6b4" opacity=".7"/>
+    <circle cx="1210" cy="70" r="3" fill="#cdd6b4" opacity=".6"/>
+
+    <!-- ground -->
+    <rect y="300" width="1280" height="100" fill="#0e121b"/>
+    <ellipse cx="1020" cy="318" rx="150" ry="24" fill="url(#spill)" opacity="0.55" class="flicker"/>
+
+    <!-- wordmark -->
+    <text transform="translate(56 215.4) scale(1 1.71)" font-family="Georgia, 'Times New Roman', serif" font-size="104" font-weight="700" fill="#7dea8a" textLength="832" lengthAdjust="spacingAndGlyphs">QUEUEKEEPER</text>
+
+    <!-- the queue going in -->
+    <rect x="0" y="298.5" width="930" height="3" fill="url(#queueIn)"/>
+    <g fill="#141926" stroke="#8b93a7" stroke-width="3">
+      <circle cx="76" cy="300" r="8" opacity=".25"/>
+      <circle cx="124" cy="300" r="8" opacity=".4"/>
+      <circle cx="172" cy="300" r="8" opacity=".55"/>
+      <circle cx="220" cy="300" r="8" opacity=".7"/>
+      <circle cx="268" cy="300" r="8" opacity=".85"/>
+      <circle cx="316" cy="300" r="8"/>
+      <circle cx="364" cy="300" r="8"/>
+      <circle cx="412" cy="300" r="8"/>
+      <circle cx="460" cy="300" r="8"/>
+      <circle cx="508" cy="300" r="8"/>
+      <circle cx="556" cy="300" r="8"/>
+      <circle cx="604" cy="300" r="8"/>
+      <circle cx="652" cy="300" r="8"/>
+      <circle cx="700" cy="300" r="8"/>
+      <circle cx="748" cy="300" r="8"/>
+      <circle cx="898" cy="300" r="8"/>
+    </g>
+
+    <!-- the ones that didn't survive -->
+    <g transform="translate(60 0)">
+      <path d="M738 300v-34a20 20 0 0 1 40 0v34z" fill="url(#stoneDark)" stroke="#161a26" stroke-width="2"/>
+      <circle cx="758" cy="270" r="7" fill="none" stroke="#7b8296" stroke-width="2"/>
+      <path d="M754.5 266.5l7 7m0-7l-7 7" stroke="#7b8296" stroke-width="2" stroke-linecap="round"/>
+      <path d="M790 300v-22a14 14 0 0 1 28 0v22z" fill="url(#stoneDark)" stroke="#161a26" stroke-width="2"/>
+      <circle cx="804" cy="281" r="5" fill="none" stroke="#7b8296" stroke-width="1.8"/>
+      <path d="M801.5 278.5l5 5m0-5l-5 5" stroke="#7b8296" stroke-width="1.8" stroke-linecap="round"/>
+    </g>
+
+    <!-- the crypt -->
+    <g transform="translate(60 0)">
+      <rect x="868" y="158" width="184" height="142" fill="url(#stone)"/>
+      <path d="M868 190h184M868 226h184M868 262h184" stroke="#222838" stroke-width="1.5" opacity=".6"/>
+      <rect x="856" y="146" width="208" height="14" fill="#565f75"/>
+      <path d="M848 146L960 92l112 54z" fill="#3d4558"/>
+      <path d="M872 140L960 100l88 40z" fill="#2b3142"/>
+      <circle cx="960" cy="126" r="7" fill="#2b3142" stroke="#8b93a7" stroke-width="2.5"/>
+      <rect x="878" y="160" width="18" height="140" fill="#5a6379"/>
+      <rect x="1024" y="160" width="18" height="140" fill="#5a6379"/>
+      <rect x="874" y="160" width="26" height="8" fill="#6a748c"/>
+      <rect x="1020" y="160" width="26" height="8" fill="#6a748c"/>
+      <rect x="850" y="294" width="220" height="8" fill="#565f75"/>
+
+      <!-- open doorway -->
+      <path d="M932 294V222a28 28 0 0 1 56 0v72z" fill="#090c12"/>
+      <path d="M932 294V222a28 28 0 0 1 56 0v72z" fill="url(#doorGlow)" class="flicker"/>
+      <path d="M926 294V222a34 34 0 0 1 68 0v72" fill="none" stroke="#6a748c" stroke-width="5"/>
+      <path d="M932 294V222a28 28 0 0 1 56 0v72z" fill="none" stroke="#1b2130" stroke-width="2"/>
+    </g>
+
+    <!-- the ones that made it out alive -->
+    <rect x="1130" y="298.5" width="150" height="3" fill="url(#queueOut)"/>
+    <circle cx="1168" cy="300" r="24" fill="url(#halo)"/>
+    <circle cx="1234" cy="300" r="24" fill="url(#halo)"/>
+    <circle cx="1168" cy="300" r="10" fill="#7dea8a"/>
+    <circle cx="1234" cy="300" r="10" fill="#7dea8a"/>
+    <g fill="none" stroke="#0e2a17" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M1163 300.500l3.500 3.500 6.500-7"/>
+      <path d="M1229 300.500l3.500 3.500 6.500-7"/>
+    </g>
+
+<!-- a ghost: the failure that vanishes when you look again -->
+    <g transform="translate(1196 232)">
+      <g class="ghost">
+        <path d="M0-14C9-14 14-7 14 1c0 11-6 17-12 23-4 4-10 6-17 5 5-3 7-7 6-12-4-5-5-11-5-17C-14-8-9-14 0-14z" fill="url(#ghostFade)"/>
+        <ellipse cx="-3.500" cy="-3" rx="1.800" ry="2.800" fill="#171d2b" opacity=".8"/>
+        <ellipse cx="5" cy="-3" rx="1.800" ry="2.800" fill="#171d2b" opacity=".8"/>
+      </g>
+    </g>
+
+    <!-- mist -->
+    <g filter="url(#blur)" fill="#aab6d0" opacity=".13">
+      <ellipse cx="260" cy="338" rx="300" ry="20"/>
+      <ellipse cx="760" cy="350" rx="260" ry="18"/>
+      <ellipse cx="1180" cy="340" rx="220" ry="18"/>
+    </g>
+  </g>
+</svg>
