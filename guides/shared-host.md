@@ -8,26 +8,26 @@ universal behavior on later operating systems or in a different application.
 
 On the shared host, builds, `swift test`, `xcodebuild test`, gate suites, corpus lanes and
 conversions run through heavy-work admission: one host-wide resource namespace with bounded
-concurrency. Run a configured lane with `python3 scripts/eng run LANE`; a lane whose `resource`
+concurrency. Run a configured lane with `python3 scripts/qk run LANE`; a lane whose `resource`
 is `heavy`, `light` or unset takes one slot, an `exclusive` one the host, and a `self` lane runs
 directly, since its script admits each of its parts. Every lane waits its turn, first come, first
 served: a short check, such as docs or spelling, waits for a slot like any other lane (the owner's
 decision, 2026-11-07, [vocaro-engineering#200](https://github.com/vocaro/vocaro-engineering/issues/200)).
-That includes the merge queue's spelling check in a project with no `spelling` lane, which `eng run spelling`
+That includes the merge queue's spelling check in a project with no `spelling` lane, which `queuekeeper run spelling`
 runs as a lane of the toolkit's (the owner's decision, 2026-11-09,
 [vocaro-engineering#305](https://github.com/vocaro/vocaro-engineering/issues/305)).
 `light` once ran unadmitted where it started, and loads now as `heavy`, so a project may drop it
 or the whole `resource` key. Arguments after `--`,
-as in `eng run test -- --filter SUITE`, are appended to the lane's command. `--expect N` requires
+as in `queuekeeper run test -- --filter SUITE`, are appended to the lane's command. `--expect N` requires
 exactly N executed tests: a run that selected those N and left some skipped or canceled exits 3,
 unmeasured, and any other count fails. A session's environment does not travel to the second Mac,
 so a test that needs a variable, such as a corpus path, runs there only in a lane whose command
 sets it, as a gate's script does
 ([vocaro-engineering#285](https://github.com/vocaro/vocaro-engineering/issues/285)). Run any other
-heavy command with `eng admit`:
+heavy command with `queuekeeper admit`:
 
 ```sh
-python3 scripts/eng admit -- \
+python3 scripts/qk admit -- \
   xcodebuild test -scheme SCHEME -destination "platform=iOS Simulator,id=UDID"
 ```
 
@@ -37,33 +37,33 @@ ML whose compute units include the GPU takes it too ([model admission](#model-ad
 lane says so with `"model": true` beside
 `"resource": "heavy"`. Add `--exclusive` only for work that needs the host to itself: a
 whole-machine or wall-clock measurement, a model run that is timed or compared with a baseline
-among them ([long-running measurements](#long-running-measurements)). Only the timed part of a
-run is exclusive: build, install and set up first under `eng admit --here`, beside other sessions'
-work, then admit the timed run alone with `eng admit --here --exclusive`, as a separate command, such
+among them ([long-running measurements](https://github.com/vocaro/vocaro-engineering/blob/main/guides/shared-host.md#long-running-measurements)). Only the timed part of a
+run is exclusive: build, install and set up first under `queuekeeper admit --here`, beside other sessions'
+work, then admit the timed run alone with `queuekeeper admit --here --exclusive`, as a separate command, such
 as `xcodebuild build-for-testing` and then `test-without-building`. Both take `--here`: each
-`eng admit` chooses its Mac on its own, the second Mac first, so without it the build and the
+`queuekeeper admit` chooses its Mac on its own, the second Mac first, so without it the build and the
 timed run of what it built can land on different Macs (a `self` lane's parts stay together
 without it). Setup, recovery and a functional
 run whose seconds are not meant as figures are heavy work. An exclusive request inside heavy
 admission is refused, so a lane whose run needs both is `self`, and its script admits each part,
 as BreezEPUB's `book-opening` and PDFReflowLib's `memory-platform-calibration` do; a lane group can
 be neither `self` nor run a `self` lane, since its one admission would hold the script's own.
-eng runs a `self` lane unadmitted and trusts its script, so `eng doctor` warns of one whose command
-neither calls `eng admit` in its own words nor runs a file of the checkout that does: such a lane
+queuekeeper runs a `self` lane unadmitted and trusts its script, so `queuekeeper doctor` warns of one whose command
+neither calls `queuekeeper admit` in its own words nor runs a file of the checkout that does: such a lane
 would run its work outside admission. The check reads text, so it catches a lane that admits
 nothing, not one that admits some parts and runs others directly.
 A gate suite is heavy work, never exclusive: one that runs the project's suites side by side says
 `"wholeHost": true`, which keeps every other heavy job off its Mac while it runs
 ([heavy-work admission](#heavy-work-admission)).
 `--timeout` bounds the wait for admission. The command runs in the current directory with
-its output on the terminal. Like a heavy lane, `eng admit` first refreshes the operating policy,
+its output on the terminal. Like a heavy lane, `queuekeeper admit` first refreshes the operating policy,
 printing it to standard error, and records the command's receipt in
-`.build/engineering/admit/source.json`. It needs no `PYTHONPATH` and works from a session
-worktree ([locating the toolkit](adoption.md#locating-the-toolkit-from-a-worktree)). A toolkit
+`.build/queuekeeper/admit/source.json`. It needs no `PYTHONPATH` and works from a session
+worktree ([locating the toolkit](https://github.com/vocaro/vocaro-engineering/blob/main/guides/adoption.md#locating-the-toolkit-from-a-worktree)). A toolkit
 clone older than `admit` reaches the same queue through the resource CLI:
 
 ```sh
-PYTHONPATH="$VOCARO_ENGINEERING_ROOT/src/python" python3 -m vocaro_engineering.resources -- COMMAND
+PYTHONPATH="$QUEUEKEEPER_ROOT/src/python" python3 -m vocaro_engineering.resources -- COMMAND
 ```
 
 Public project documentation may show plain commands for outside contributors on their own
@@ -83,14 +83,14 @@ session with a fixed wall-clock budget expired when a second suite took the core
 gate that means "the host was busy" teaches people to rerun rather than read a failure. The
 defect was the test's, not the host's. A gate's limits tolerate a busy host: a time limit leaves
 out the seconds the work waited for a core
-([core-wait time](measurement.md#cpu-scheduling-and-core-wait-time)), and a ceiling that memory
+([core-wait time](https://github.com/vocaro/vocaro-engineering/blob/main/guides/measurement.md#cpu-scheduling-and-core-wait-time)), and a ceiling that memory
 pressure spoiled is unmeasured, not failed
-([unmeasured ceilings](measurement.md#host-pressure-and-unmeasured-ceilings)). Such a gate is
+([unmeasured ceilings](https://github.com/vocaro/vocaro-engineering/blob/main/guides/measurement.md#host-pressure-and-unmeasured-ceilings)). Such a gate is
 heavy work like any other; one whose tests still assume a quiet host stays exclusive until they
 are fixed. A test that a busy host decided reports itself unmeasured, and its lane exits 3
-([honest outcome states](evidence.md#honest-outcome-states)). Admission counts a gate as one job
+([honest outcome states](https://github.com/vocaro/vocaro-engineering/blob/main/guides/evidence.md#honest-outcome-states)). Admission counts a gate as one job
 however many workers it starts, so bound its build and test parallelism
-([parallel tests](parallel-tests.md#bound-what-runs-at-once)).
+([parallel tests](https://github.com/vocaro/vocaro-engineering/blob/main/guides/parallel-tests.md#bound-what-runs-at-once)).
 
 `--jobs` does not bound every thread a build or test starts. A debug `swift test --jobs 2` is
 bounded: its compiler frontends are build-system tasks, and samples every 2 s found no more than
@@ -136,7 +136,7 @@ beyond the guaranteed ones (`it waits behind a whole-host lane holding the host:
 gate`): a gate's load dips between its phases, and on 2026-11-05 MathMLLayout's gate squeezed in
 beside PDFReflowLib's on such a dip, whose memory pressure then left that gate unmeasured after
 1,116 s (the owner's decision, 2026-11-05,
-[vocaro-engineering#196](https://github.com/vocaro/vocaro-engineering/issues/196)). eng sends
+[vocaro-engineering#196](https://github.com/vocaro/vocaro-engineering/issues/196)). queuekeeper sends
 each lane to the Mac that has the slots it needs ([which Mac runs a lane](#which-mac-runs-a-lane)).
 Nested work reuses its inherited admission, whole-host or not.
 
@@ -155,7 +155,7 @@ offered to both, to share where admission allows, only when neither has capacity
 ([which Mac runs a lane](#which-mac-runs-a-lane)).
 
 A host's own limits go in its limits file, `admission-limits.json` beside the admission log
-(`~/Library/Application Support/vocaro-engineering/`; an isolated HEAVY_SLOT_DIR namespace keeps
+(`~/Library/Application Support/queuekeeper/`; an isolated HEAVY_SLOT_DIR namespace keeps
 its own there), which every process on that host reads. Its keys are `slots`, `slotsMax`,
 `busyLimit` and `settleSeconds`, for the four limits above; each is a number, or
 `{"perCore": F}` for F times the CPU count, which for a slot count is rounded down and at least
@@ -164,11 +164,11 @@ its own there), which every process on that host reads. Its keys are `slots`, `s
 85% busy; `busyLimit` is a percentage, and a share of the cores means nothing for it. The former
 `loadLimit` is now an unknown key. A file admission cannot read, with an unknown key or a value of
 the wrong kind, refuses every request on that host with an error naming the file: its owner
-fixes it rather than eng guessing the limits. Since 2026-11-07 the owner wants the second Mac
+fixes it rather than queuekeeper guessing the limits. Since 2026-11-07 the owner wants the second Mac
 loaded as much as possible and this Mac a little less, so the second Mac's file sets the higher
 `slotsMax` and `busyLimit`; the measurement #49 describes may still revise them. The files live
 on each Mac, outside the repository, so this guide does not copy their values:
-`eng admissions usage` shows both Macs' limits as they stand, and `eng admissions limits` one
+`queuekeeper admissions usage` shows both Macs' limits as they stand, and `queuekeeper admissions limits` one
 Mac's with where each comes from.
 
 To load a Mac more, raise its `slotsMax` and `busyLimit`, not its `slots`. A whole-host lane needs
@@ -180,14 +180,14 @@ gates on that Mac is acceptable.
 So a key a toolkit adds to the file is a breaking change for every copy older than it: such a copy
 refuses all its heavy work on that host as misconfigured. Write a new key to a host's file only once
 nothing on that host runs an older copy: work started before the key landed has ended, no
-`VOCARO_ENGINEERING_ROOT` names an older copy, and no session worktree of the toolkit that runs its
+`QUEUEKEEPER_ROOT` names an older copy, and no session worktree of the toolkit that runs its
 own code is behind the landing. The shared checkouts move to `origin/main` by themselves. `busyLimit`,
 which replaced `loadLimit` on 2026-11-06 (vocaro-engineering#200), was the first such key.
 
 A limit's environment variable overrides the file for the process it is set in. Each process
 reads its own environment, so set one for every session or for none: an exclusive job holds only
 the slots below its own maximum, and a caller with a higher one can take slots above it.
-`python3 scripts/eng admissions limits` prints the limits a process started like it would use,
+`python3 scripts/qk admissions limits` prints the limits a process started like it would use,
 and where each comes from. Waiting messages name a limit by its variable whatever set it.
 
 All requests record their arrival in `exclusive-queue.json` in the slot directory. An older
@@ -197,7 +197,7 @@ it needs drain. A whole-host request similarly keeps the guaranteed slots for it
 running finish normally. Each request still needs its own resources: admission order does not
 create a free checkout, unlock a screen, or release a model lock.
 
-`eng run` and `eng admit` retain one place across local waits between remote offers, for every
+`queuekeeper run` and `queuekeeper admit` retain one place across local waits between remote offers, for every
 request kind. A remote dispatch carries elapsed request age, which the receiving Mac translates
 to its own clock. A declined offer releases its checkout and queue record; a later offer restores
 the original age when a checkout is available. After the first reply, retries carry the same
@@ -227,7 +227,7 @@ and the gate could wait out its 5,400 s
 HEAVY_SLOTS_MAX equals HEAVY_SLOTS, or the host shows no spare capacity, the heavy work waits
 for the whole-host lane as it would for exclusive work. A whole-host request holds anything back
 only while its process keeps asking: one that last asked more than HEAVY_PLACE_SECONDS (180) ago
-holds nothing back, though it keeps its place. That is how `eng run` keeps a lane's
+holds nothing back, though it keeps its place. That is how `queuekeeper run` keeps a lane's
 place across its waits on this Mac while it also offers the lane to the second Mac
 ([which Mac runs a lane](#which-mac-runs-a-lane)): the place stays between waits, so the lane
 does not rejoin behind requests that came meanwhile, and it holds nothing back once the offer has
@@ -235,8 +235,8 @@ kept it away that long, as when the second Mac took the lane and runs it. It lea
 it no longer waits here, admitted or not. How long an offer takes, and so whether 180 s covers
 every gap between two waits, is unmeasured.
 
-Nested work reuses its inherited admission. Admission exports `VOCARO_RESOURCE_TOKEN` and keeps
-its lock descriptors open across exec. A nested `eng run`, resource CLI call or project gate
+Nested work reuses its inherited admission. Admission exports `QUEUEKEEPER_RESOURCE_TOKEN` and keeps
+its lock descriptors open across exec. A nested `queuekeeper run`, resource CLI call or project gate
 validates the inherited descriptors against their lock files, the owner's nonce, its guard
 entry and its process start time, then runs inside the outer admission without taking a slot,
 and without waiting behind a queued exclusive request, which waits for the outer job to end.
@@ -246,11 +246,11 @@ that needs the whole machine asks for exclusive admission.
 
 The toolkit's process supervisor passes a command only those of the token's descriptors that its
 own process holds, each open on the lock file the token names, which names the owner.
-`eng unittest` passes each module's process the same descriptors and no others, so a nested
+`queuekeeper unittest` passes each module's process the same descriptors and no others, so a nested
 admission in a test reuses the run's admission, as it does under `python3 -m unittest discover`.
 A process started without them, as a plain `subprocess` call starts its child, keeps the token but
 not the admission. A nested admission there is refused rather than given a slot, and the
-supervisor and `eng unittest` pass on none of the numbers the token names: there each is closed,
+supervisor and `queuekeeper unittest` pass on none of the numbers the token names: there each is closed,
 which would stop the command from starting with EBADF, or open on another file, which the command
 would get.
 
@@ -276,7 +276,7 @@ value, beside what the attempt read, so that a wait says which limit to look at:
 | `stranded` | another reason above, then `; the guard entry of LABEL, PID 4242, is dead and requires inspection (it has no process record), and is counted as slot 1; …`, `uncertain` for an entry marked so, with why [recovery](#lock-reclamation) left it in parentheses (`its owner still runs`, `it has no process record`, `its process record cannot vouch for every command` or `2 of its processes still run: PID 4250, 4251`) and what it is counted as (`slots 0, 1, 2 and the model` for exclusive work); a model request's reason is `the on-device model, one run at a time, is counted as held` |
 | `guard` | `the guard PATH is unreadable or not in admission's format and requires inspection; …` |
 
-In both rows `…` names `python3 scripts/eng admissions recover`.
+In both rows `…` names `python3 scripts/qk admissions recover`.
 
 Each kind is the one the [admission log](#admission-log) records for the refusal. After its
 timeout (5,400 s by default) admission fails without reclaiming any lock, naming the same reason,
@@ -285,12 +285,12 @@ queue, unless it keeps its place across waits. Behind work known to be running i
 `Resource queue busy on MAC: REASON; held by LABEL (slot0, slot1); waited Ns; nothing ran`, which
 is an ordinary wait. It says `Resource queue busy or an orphan requires inspection (REASON); no lock was reclaimed; …; waited Ns on MAC; nothing ran` only for what no
 running admission vouches for: a `guard` or `stranded` reason, or a slot or the model that is busy
-while its file names no running admission. When neither Mac admits the work, `eng run` and
-`eng admit` give the second Mac's reason and this Mac's last wait
+while its file names no running admission. When neither Mac admits the work, `queuekeeper run` and
+`queuekeeper admit` give the second Mac's reason and this Mac's last wait
 ([vocaro-engineering#270](https://github.com/vocaro/vocaro-engineering/issues/270)). A script that runs several jobs at once leaves at least one of the guaranteed
 HEAVY_SLOTS for other sessions.
 
-Admission recovers each dead or uncertain entry it meets, as `eng admissions recover OWNER`
+Admission recovers each dead or uncertain entry it meets, as `queuekeeper admissions recover OWNER`
 would: it removes one once its owner has ended and a census against its process record finds
 nothing it ran still running ([lock reclamation](#lock-reclamation)). An entry recovery leaves,
 stranded, is never removed: it counts as the slots it held until it is recovered, so that only
@@ -304,16 +304,16 @@ whole-host request none while one is counted as a guaranteed slot; once it is re
 queue's order applies again. Work admitted beside a stranded entry prints `heavy:
 admitted beside a stranded entry: …` with the entry, its slots and the recover command, and its
 log line names them ([admission log](#admission-log)). Admission checks the entry again every
-HEAVY_RECOVER_SECONDS (60). `python3 scripts/eng admissions recover` lists those entries.
+HEAVY_RECOVER_SECONDS (60). `python3 scripts/qk admissions recover` lists those entries.
 This repository's `.claude/settings.json` allows agents to run it, with or without an owner, so
 that one can clear such an entry once its processes end; the command refuses any entry that is
 not provably finished (owner's decision, 2026-11-02). Other projects' settings do not carry the
 rule, and need not: every project's heavy work is admitted by this toolkit, whose admission
 recovers each provably finished entry itself, an owner killed before its first command among them,
 at its next attempt and every HEAVY_RECOVER_SECONDS after, so no session has to run the command to
-free one (vocaro-engineering#315). What recovery leaves needs a person's look, and `eng queue
+free one (vocaro-engineering#315). What recovery leaves needs a person's look, and `queuekeeper queue
 status` says when a gate is stuck behind it ([the merge queue](maintenance.md#the-merge-queue)).
-An entry it leaves because nothing proves it finished is removed by hand with `eng admissions
+An entry it leaves because nothing proves it finished is removed by hand with `queuekeeper admissions
 remove`, which no allow rule matches ([lock reclamation](#lock-reclamation)).
 
 The rule: a disappeared owner's children may still be running, and they keep what its entry
@@ -323,11 +323,11 @@ whole host, so a stranded entry refused every session's heavy work on it until i
 ([vocaro-engineering#89](https://github.com/vocaro/vocaro-engineering/issues/89)).
 
 A request's label names it in waiting messages, the guard and the [admission log](#admission-log).
-A lane run's label is its project's name, from engineering.json, a space and the lane, such as
+A lane run's label is its project's name, from queuekeeper.json, a space and the lane, such as
 `EPUBLib gate`, so that the `gate` lanes of several projects, or the `tests` lanes of
 BackgroundTaskLib and FileHandoffLib, stay apart. A request waiting behind EPUBLib's gate prints
 `heavy: waiting (0s): it waits behind exclusive work queued ahead of it: EPUBLib gate`. An
-`eng admit` request's label is its command line, and a caller that admits its own work names it,
+`queuekeeper admit` request's label is its command line, and a caller that admits its own work names it,
 as StudyWright's push keeper does with `warm push REV`. A toolkit older than October 27, 2026
 labels a lane run with the lane alone, as in `gate`; its guard entries, queued requests and log
 lines are read as they are.
@@ -348,7 +348,7 @@ merely because it is busy.
 A generative-model run takes one heavy slot and the host's model lock, an `flock` on `model` in
 the slot directory: both at once under the coordination lock, or neither. Two model runs exclude
 each other while builds and tests take the other slots: one model workload per machine is a
-limit of the hardware ([long-running measurements](#long-running-measurements)), and exclusive
+limit of the hardware ([long-running measurements](https://github.com/vocaro/vocaro-engineering/blob/main/guides/shared-host.md#long-running-measurements)), and exclusive
 admission of the whole host would hold every build and test back for the length of a run that
 only the model needs to wait for. A model request waits behind a queued exclusive request, as a
 heavy one does; while another run holds the model, it waits with the reason that the on-device
@@ -364,13 +364,13 @@ holds the model already, a lane is one or the other. A lane group runs its lanes
 admission, so a group that runs a model lane needs `"model": true` or an exclusive resource
 itself, and a group that runs two or more needs `"jobs": 1`: its one model lock cannot keep its
 own lanes from driving the model at once
-([lane groups](parallel-tests.md#suites-side-by-side)).
+([lane groups](https://github.com/vocaro/vocaro-engineering/blob/main/guides/parallel-tests.md#suites-side-by-side)).
 
 Core ML whose compute units include the GPU (`.all`, `.cpuAndGPU`) takes the model lock too; only
 Core ML pinned off the GPU (`.cpuAndNeuralEngine`, `.cpuOnly`) does not need it. A Core ML
 embedder on all compute units shared the GPU path with on-device generation and returned
 silently wrong vectors beside it; pinned off the GPU it returned correct ones
-([embedding correctness](../knowledge/ml/embedding-correctness.md)). A model run that is timed or
+([embedding correctness](https://github.com/vocaro/vocaro-engineering/blob/main/knowledge/ml/embedding-correctness.md)). A model run that is timed or
 compared with a baseline stays exclusive, because it measures the CPU as well. Not measured:
 whether heavy work beside on-device generation slows it or changes its output. During
 generation `TGOnDeviceInferenceProviderService` and `modelmanagerd` burn CPU, and builds beside
@@ -387,10 +387,10 @@ writes nothing, nor does nested work that reuses its inherited admission. Each l
 under the coordination lock that admission and release hold, so the lines are in the order slots
 were taken and given back.
 
-The log is `~/Library/Application Support/vocaro-engineering/admissions.jsonl`, in the account's
+The log is `~/Library/Application Support/queuekeeper/admissions.jsonl`, in the account's
 durable state, because an audit looks back weeks and files in the slot directory are the
 temporary-file cleaner's after three idle days
-([scratch and result directories](#scratch-and-result-directories)). A HEAVY_SLOT_DIR namespace
+([scratch and result directories](https://github.com/vocaro/vocaro-engineering/blob/main/guides/shared-host.md#scratch-and-result-directories)). A HEAVY_SLOT_DIR namespace
 keeps its own log beside its slots. A line that would take the log past 8 MiB first makes it
 `admissions.1.jsonl`, replacing the previous generation, so the two together stay within 16 MiB;
 at two lines of 200 to 550 bytes, each holds 8,000 to 20,000 admissions. Each Mac keeps its own
@@ -404,7 +404,7 @@ A line holds:
   `pid`: the admitting process.
 - `kind`: `heavy`, `model` or `exclusive`; `label`: the request's label, as waiting messages name
   it, up to 160 characters: `EPUBLib gate` for EPUBLib's `gate` lane, the command line for
-  `eng admit`, or the label a caller gives, such as `warm push REV`.
+  `queuekeeper admit`, or the label a caller gives, such as `warm push REV`.
 - `slots`: the slot numbers held, on `admitted` and `ended` lines.
 - `waited`: seconds from the request to its admission or withdrawal, on `admitted` and `withdrawn`
   lines; `held`: seconds from admission to its end, on `ended` lines.
@@ -442,8 +442,8 @@ A line holds:
   `not-started`; `stopped` or `timed-out` when a stop or the command's timeout saw it and every
   observed descendant end; or `uncertain` when the guard entry was kept for inspection
   ([lock reclamation](#lock-reclamation)). On a `withdrawn` line: `timed-out`, which includes
-  `eng run --if-free` declining; `stopped`; or `failed`.
-- On a `recovered` line, which `eng admissions recover`, `eng admissions remove` or admission
+  `queuekeeper run --if-free` declining; `stopped`; or `failed`.
+- On a `recovered` line, which `queuekeeper admissions recover`, `queuekeeper admissions remove` or admission
   itself writes when it removes an entry: `pid` is the entry's owner; `uncertain`, whether the
   entry was marked so; `commands`, `processes` and `spaces`, how many unsettled commands, recorded
   processes and process groups or sessions its census checked, all 0 for a removal by hand;
@@ -467,10 +467,10 @@ refusals, from when admission waited while a gate held StudyWright's former host
 ([vocaro-engineering#25](https://github.com/vocaro/vocaro-engineering/issues/25)); they are read
 and counted as any other kind.
 
-`eng admissions` summarizes the log over a period:
+`queuekeeper admissions` summarizes the log over a period:
 
 ```sh
-python3 scripts/eng admissions --since 2026-10-20 --until 2026-10-27
+python3 scripts/qk admissions --since 2026-10-20 --until 2026-10-27
 ```
 
 It prints the times of the log's first and last lines, then, for each kind and each label within
@@ -492,18 +492,18 @@ volume cut short, are counted and skipped. Two projects' lanes of one name are c
 `gate`. To summarize the second Mac's log, pass a copy, the previous generation first:
 
 ```sh
-python3 scripts/eng admissions <(ssh build-host \
-  'cd "Library/Application Support/vocaro-engineering" && cat admissions.1.jsonl admissions.jsonl 2>/dev/null')
+python3 scripts/qk admissions <(ssh build-host \
+  'cd "Library/Application Support/queuekeeper" && cat admissions.1.jsonl admissions.jsonl 2>/dev/null')
 ```
 
 ### Who holds and who waits
 
-`python3 scripts/eng admissions now` shows admission as it stands on this Mac and the second Mac:
+`python3 scripts/qk admissions now` shows admission as it stands on this Mac and the second Mac:
 each holder's slots, kind and hold time, and each waiter's wait and the reason it prints itself,
 with where each one's work comes from: its repository, branch, worktree, agent session and Mac
 (`resources.work_origin`), the sender's for work the second Mac runs for this one. It changes nothing. A Mac it cannot read in 10 seconds is unknown, never idle, and this Mac's reading
 stands beside it. `--json` gives the same; `--here` reads only this Mac, and is required under an
-isolated `HEAVY_SLOT_DIR` or `SW_GATE_LOCK_FILE`. What it reads, and what it marks partial, is in
+isolated `HEAVY_SLOT_DIR` or `QUEUEKEEPER_GATE_LOCK_FILE`. What it reads, and what it marks partial, is in
 `offload_host.admissions_now`; each waiter's record is `resources.Admission._observe`
 ([#342](https://github.com/vocaro/vocaro-engineering/issues/342)). It does not yet flag a wait as
 too long: the owner deferred that until there is history to calibrate it.
@@ -530,40 +530,40 @@ one, and a session never asks the owner which Mac to use (the owner's decision, 
 [vocaro-engineering#168](https://github.com/vocaro/vocaro-engineering/issues/168)). This Mac is the
 owner's workstation, busy with work the queue never sees, while the second Mac is otherwise idle
 and has more memory and disk; its screen stays the owner's, which is a separate rule
-([attended Mac sessions](#attended-mac-sessions)). eng, not the session, chooses the Mac;
+([attended Mac sessions](#attended-mac-sessions)). queuekeeper, not the session, chooses the Mac;
 configuration calls sending work there offloading it. The second Mac runs work under its own heavy-work
 admission: each host's queue sees that host's load, so the second Mac is no private slot pool.
-`eng remote` reaches it by the SSH alias `build-host`, or `second-mac`; `--host` or
-`VOCARO_OFFLOAD_HOST` names another destination. Until 2026-10-28 the second Mac was the build
-host. Records made until then, measurements among them, keep that name, and eng refuses the
+`queuekeeper remote` reaches it by the SSH alias `build-host`, or `second-mac`; `--host` or
+`QUEUEKEEPER_OFFLOAD_HOST` names another destination. Until 2026-10-28 the second Mac was the build
+host. Records made until then, measurements among them, keep that name, and queuekeeper refuses the
 configuration's earlier names ([earlier names](#earlier-names)).
 
 ```sh
-python3 scripts/eng run LANE [-- ARGUMENTS]            # a heavy lane: whichever Mac has spare capacity, the second Mac first
-python3 scripts/eng run --here LANE                    # this Mac
-python3 scripts/eng run --offload-only LANE            # the second Mac if it can start it now, never here
-python3 scripts/eng admit -- COMMAND                   # any other heavy command: the second Mac first, as a lane goes
-python3 scripts/eng admit --here -- COMMAND            # this Mac: a command whose products the session uses here
-python3 scripts/eng remote run LANE [-- ARGUMENTS]     # any lane, on the second Mac
-python3 scripts/eng remote admit [--exclusive | --model] -- COMMAND
-python3 scripts/eng remote passed LANE [--commit REV]
-python3 scripts/eng remote setup [FORMULA ...] [--check]  # the gates' tools (Setting up the second Mac)
-python3 scripts/eng remote setup --runtimes [--check]     # both Macs' simulator runtimes, evened out
+python3 scripts/qk run LANE [-- ARGUMENTS]            # a heavy lane: whichever Mac has spare capacity, the second Mac first
+python3 scripts/qk run --here LANE                    # this Mac
+python3 scripts/qk run --offload-only LANE            # the second Mac if it can start it now, never here
+python3 scripts/qk admit -- COMMAND                   # any other heavy command: the second Mac first, as a lane goes
+python3 scripts/qk admit --here -- COMMAND            # this Mac: a command whose products the session uses here
+python3 scripts/qk remote run LANE [-- ARGUMENTS]     # any lane, on the second Mac
+python3 scripts/qk remote admit [--exclusive | --model] -- COMMAND
+python3 scripts/qk remote passed LANE [--commit REV]
+python3 scripts/qk remote setup [FORMULA ...] [--check]  # the gates' tools (Setting up the second Mac)
+python3 scripts/qk remote setup --runtimes [--check]     # both Macs' simulator runtimes, evened out
 ```
 
 ### Which Mac runs a lane
 
-Every lane in engineering.json, a short check as much as a gate, goes to the second Mac first
+Every lane in queuekeeper.json, a short check as much as a gate, goes to the second Mac first
 unless it says why it stays on this Mac, as `"here": "REASON"`, which configuration validation
 requires to be a nonempty reason, and runs on this Mac when the second Mac is at capacity (the
 owner's decision, 2026-11-07). A lane says `here` when it needs a physical device, or a measurement
 tied to this Mac's hardware, such as goldens rendered on this Mac's GPU. A `self` lane runs where
-it starts, and its script's `eng admit` commands run there: its parts share build products, a build
-and then an exclusive timed run of what was built, so `eng run` sets `VOCARO_SELF_LANE` to the
-lane's name in its command's environment, and each `eng admit` under it stays on that Mac, its
+it starts, and its script's `queuekeeper admit` commands run there: its parts share build products, a build
+and then an exclusive timed run of what was built, so `queuekeeper run` sets `QUEUEKEEPER_SELF_LANE` to the
+lane's name in its command's environment, and each `queuekeeper admit` under it stays on that Mac, its
 receipt's `hereBecause` saying `a part of the self lane LANE, …`.
-A foreground lane, which takes the screen, goes to the second Mac and only there, where eng holds
-the second Mac's foreground for it ([second Mac foreground](second-mac-foreground.md)). Simulator
+A foreground lane, which takes the screen, goes to the second Mac and only there, where queuekeeper holds
+the second Mac's foreground for it ([second Mac foreground](https://github.com/vocaro/vocaro-engineering/blob/main/guides/second-mac-foreground.md)). Simulator
 lanes and background Mac UI lanes go to the second Mac like the rest, and a lane's first run there is its
 check (the owner's decision, 2026-10-28): counts that differ from this Mac's are a defect to fix,
 not a reason to keep the lane here. A lane group runs its lanes under its one admission on one
@@ -574,7 +574,7 @@ marked a lane for the second Mac, is refused, true or false ([earlier names](#ea
 
 To add Macs, give each a distinct SSH alias and follow [the build host setup](#setting-up-the-second-mac).
 On the Mac that starts the queue workers, put the existing build Mac and the new ones in
-`~/Library/Application Support/vocaro-engineering/gate-hosts`, in the order the queue should try
+`~/Library/Application Support/queuekeeper/gate-hosts`, in the order the queue should try
 them. The file holds a comma-separated list of aliases.
 
 ```text
@@ -582,7 +582,7 @@ build-host,gate-03,gate-04
 ```
 
 Workers started from Terminal, Codex, or the signed LaunchAgent read the same file for that account.
-When the file is missing, an existing `VOCARO_GATE_HOSTS` export still works. With neither setting,
+When the file is missing, an existing `QUEUEKEEPER_GATE_HOSTS` export still works. With neither setting,
 the queue uses this Mac and the existing offload host. An explicit `HEAVY_SLOT_DIR` namespace reads
 its own `gate-hosts` file from that directory.
 
@@ -594,13 +594,13 @@ misconfigured host stops the offer with its diagnosis, and an interrupted connec
 that may have started yields no verdict.
 
 The list applies to merge queue gates. Foreground lanes use the designated foreground Mac, and
-standalone `eng run` and commands that act on one remote, such as `eng remote setup`, use the
-ordinary offload host or their explicit host. `VOCARO_OFFLOAD_HOST=none` disables offloading,
+standalone `queuekeeper run` and commands that act on one remote, such as `queuekeeper remote setup`, use the
+ordinary offload host or their explicit host. `QUEUEKEEPER_OFFLOAD_HOST=none` disables offloading,
 including the queue list.
 
 #### Check gate placement without running a gate
 
-Run `python3 scripts/eng queue placement` from the project. It reads the first gate lane on
+Run `python3 scripts/qk queue placement` from the project. It reads the first gate lane on
 `origin/main`, lists the build Macs in their configured order, and checks each host's current
 capacity over SSH. Give a lane name to inspect a different lane, or add `--json` to save the
 timestamped readings. This command leaves queue entries, workers, and admissions alone.
@@ -612,17 +612,17 @@ all slots up to the host's maximum. The same PID and process start in two readin
 same blocker. The admission identity lets you match a running holder to its release in that host's
 admission log. Keep shell commands and project evidence with the owning project.
 
-Use `eng queue status` for a gate already waiting and `eng admissions usage` for capacity and
+Use `queuekeeper queue status` for a gate already waiting and `queuekeeper admissions usage` for capacity and
 utilization history on this Mac and the ordinary offload host. A placement reading is a snapshot.
 The host checks admission again when the lane actually starts.
 
-[Cloud gate runners](cloud-gate-runners.md) compares overflow hosts and the cost of a pilot.
+[Cloud gate runners](https://github.com/vocaro/vocaro-engineering/blob/main/guides/cloud-gate-runners.md) compares overflow hosts and the cost of a pilot.
 
 #### Screen state
 
-No guide, policy or log line assumes either Mac's screen state. eng reads it on the Mac that runs
-a lane, with the check `eng host screen [--remote]` runs
-([checking a Mac's screen](background-mac-testing.md#checking-a-macs-screen)), and writes what it
+No guide, policy or log line assumes either Mac's screen state. queuekeeper reads it on the Mac that runs
+a lane, with the check `queuekeeper host screen [--remote]` runs
+([checking a Mac's screen](https://github.com/vocaro/vocaro-engineering/blob/main/guides/background-mac-testing.md#checking-a-macs-screen)), and writes what it
 read, or `unknown` and why, never a guess (vocaro-engineering#185). The owner keeps the second Mac
 unlocked; both Macs can lock, by hand or by idle time under their settings.
 
@@ -631,14 +631,14 @@ trusted for accessibility (on the 27.2 beta 26B5091g as on 27.2 26B123), yet the
 gives it the console user's session: it opens offscreen windows and reads its own accessibility.
 What a locked screen or a sleeping display has been seen to stop, on which Mac and build, what
 wakes a locked screen's display and keeps it on, and what is unmeasured, is dated history in
-[lock screen and display sleep](background-mac-testing.md#lock-screen-and-display-sleep): on macOS
+[lock screen and display sleep](https://github.com/vocaro/vocaro-engineering/blob/main/guides/background-mac-testing.md#lock-screen-and-display-sleep): on macOS
 27.2 (26B123), locked for those measurements, EPUBLib's Mac suite and whole gate passed on the
 second Mac (2026-10-28 and 10-29), while the accessibility API (`AXUIElement`) vended no offscreen
 window behind the lock, as on this Mac on 27.0. A run whose mechanism a lock or a sleeping display
-stops is unmeasured, never passed ([shared resources](../agents/core.md#shared-resources)).
+stops is unmeasured, never passed ([shared resources](https://github.com/vocaro/vocaro-engineering/blob/main/agents/core.md#shared-resources)).
 
 A lane whose tests need an unlocked console screen, such as one that reads its own tree through the
-accessibility API, says `"unlockedScreen": true`; a group that runs such a lane says so too. eng
+accessibility API, says `"unlockedScreen": true`; a group that runs such a lane says so too. queuekeeper
 reads both Macs' screens with their capacity and places the lane only on a Mac whose screen reads
 unlocked, `locked` and `unknown` alike counting as no room for it, and its placement line says so:
 `the lane needs an unlocked screen, and the second Mac's is locked (screen: locked (...) on NAME at
@@ -651,7 +651,7 @@ keeps it on, behind a lock too, but unlocks nothing, so a `"display": true` lane
 locked screen as unmeasured also says `"unlockedScreen": true`, and so does each group that runs it.
 Without it, on 2026-11-07, the merge queue sent EPUBLib's gate to a locked Mac three times in a row,
 each run unmeasured, until the queue held
-([vocaro-engineering#293](https://github.com/vocaro/vocaro-engineering/issues/293)). `eng doctor`
+([vocaro-engineering#293](https://github.com/vocaro/vocaro-engineering/issues/293)). `queuekeeper doctor`
 warns of a `"display": true` lane that leaves `unlockedScreen` out; one whose tests measure behind a
 lock says `"unlockedScreen": false`. Pagepour's gate and Mac suites declare it: its Mac lanes,
 `mac-tests` and `mac-purchases`, read their tree through the accessibility API until their tests
@@ -659,26 +659,26 @@ move to the in-process NSAccessibility methods
 ([Pagepour#123](https://github.com/vocaro/Pagepour/issues/123)).
 
 Once admitted, a lane that says `"unlockedScreen": true` or `"display": true` has the screen of the
-Mac that runs it read and logged, `eng: screen: STATE (...) on this Mac (NAME) at HH:MM:SS`, or on
+Mac that runs it read and logged, `queuekeeper: screen: STATE (...) on this Mac (NAME) at HH:MM:SS`, or on
 the second Mac, and kept in its receipt as `screen`, and read again, as `screenAfter`, when it ends
-unmeasured, after a line naming that Mac: `eng: LANE unmeasured on this Mac (NAME)`. Any lane that
+unmeasured, after a line naming that Mac: `queuekeeper: LANE unmeasured on this Mac (NAME)`. Any lane that
 ends unmeasured with a log saying the screen is locked is read again the same way. A lane that runs on
 this Mac after it was offered to the second Mac says so in one line, with why, before it starts:
-`eng: gate runs on this Mac (NAME), not the second Mac: REASON; the second Mac's lines above are from
+`queuekeeper: gate runs on this Mac (NAME), not the second Mac: REASON; the second Mac's lines above are from
 the offer it did not take`. The merge queue's hold for runs that gave no verdict names the Mac the
 last ran on, and quotes the last screen line of its log. A run whose last reading shows a locked screen
-does not count toward that hold, and the queue runs the lane next with `eng run --unlocked-screen`,
+does not count toward that hold, and the queue runs the lane next with `queuekeeper run --unlocked-screen`,
 which places it as `"unlockedScreen": true` does, on an undeclared lane too
 ([maintenance](maintenance.md#the-merge-queue), vocaro-engineering#293).
 
-`eng run` sends the lane to the Mac that has spare capacity for it, whole or filtered
-(`eng run LANE -- FILTER`), over the working tree as it is: a tree with uncommitted changes or new
+`queuekeeper run` sends the lane to the Mac that has spare capacity for it, whole or filtered
+(`queuekeeper run LANE -- FILTER`), over the working tree as it is: a tree with uncommitted changes or new
 files goes as a snapshot commit ([how a run reaches the second Mac](#how-a-run-reaches-the-second-mac)),
 so a session's iteration over its edits runs there too. Both Macs are for work, the second Mac
-first, and the choice is eng's, by what each Mac's admission would admit, never the session's or
+first, and the choice is queuekeeper's, by what each Mac's admission would admit, never the session's or
 the owner's (the owner's decisions, 2026-10-28 and 2026-11-04,
 [vocaro-engineering#168](https://github.com/vocaro/vocaro-engineering/issues/168)). Before it
-offers the lane, `eng run` reads both Macs' capacity for it: a Mac has spare capacity while a
+offers the lane, `queuekeeper run` reads both Macs' capacity for it: a Mac has spare capacity while a
 guaranteed slot is free there, every guaranteed slot for a whole-host lane and every slot up to
 HEAVY_SLOTS_MAX for an exclusive one, its CPU's busy share is under its own HEAVY_BUSY_LIMIT, and
 no whole-host lane or exclusive work runs there. On 2026-11-04 the second Mac, 10 cores, ran two
@@ -687,21 +687,21 @@ guaranteed slots admitted the second gate whatever the load, and 8 of 12 gates t
 ended with no verdict; the rule above is what that cost.
 
 "The second Mac first" orders the offer; it does not keep work off this Mac. Some work is never
-offered: `eng admit --here`, `self` lanes and the `eng admit` parts their scripts run, `--here` runs,
+offered: `queuekeeper admit --here`, `self` lanes and the `queuekeeper admit` parts their scripts run, `--here` runs,
 foreground work and lanes that say why they stay here run where they start, and the receipt's
-`hereBecause` says so. Light lanes and `eng admit` without `--verify` were never offered until
+`hereBecause` says so. Light lanes and `queuekeeper admit` without `--verify` were never offered until
 2026-11-07; they are now, as every lane is (the owner's decision, 2026-11-07). Offered work fills
 the second Mac's guaranteed slots first, so a whole-host lane, such as a gate, which needs all of
 them free, seldom finds them free there and starts on this Mac instead. On 2026-11-06 this
 Mac's fan ran while the second Mac's stayed quiet, yet the second Mac was 97% busy and had run
 three or four heavy jobs for 48% of the previous three hours, while this Mac ran one, a whole-host
 gate, for 84% of them; it took hand scripting to show it. Judge a Mac's use by its reading, not by
-its fan: `eng admissions usage` shows both Macs' capacity now side by side, with whether each has
+its fan: `queuekeeper admissions usage` shows both Macs' capacity now side by side, with whether each has
 room for a heavy and for a whole-host lane, the share of the last 3 hours (`--since` and `--until`
 set another period) each Mac spent at each count of admitted heavy jobs, and this Mac's admissions
-by why they ran here: never offered (`eng admit --here`, a self lane's part, foreground work,
-`eng run --here`, a lane that says `here`, nested work, and in lines from before 2026-11-07
-`eng admit` without `--verify`) or offered and declined, with the second Mac's reason. Admission lines
+by why they ran here: never offered (`queuekeeper admit --here`, a self lane's part, foreground work,
+`queuekeeper run --here`, a lane that says `here`, nested work, and in lines from before 2026-11-07
+`queuekeeper admit` without `--verify`) or offered and declined, with the second Mac's reason. Admission lines
 record their placement from 2026-11-07 on, and older ones count as unrecorded under their labels.
 A `self` lane takes no admission of its own and is not counted; the parts its script admits are.
 
@@ -717,16 +717,16 @@ Mac's last admission (`…: LABEL, and the CPU of the second Mac does not yet sh
 pressure is level 1, normal, and can be read (`…: LABEL, and on the second Mac memory pressure is
 level 2 (warning), not 1 (normal)`). The reading reports the seconds since that admission, the
 Mac's own HEAVY_SETTLE_SECONDS and its memory pressure level for this, read from the same limits
-as its admission (`eng admissions limits`); a reading from a toolkit older than
+as its admission (`queuekeeper admissions limits`); a reading from a toolkit older than
 vocaro-engineering#201 has none of them and withholds nothing by them. A free guaranteed slot
 needs neither, here as in admission. Until vocaro-engineering#201 the reading judged that slot by
-the load alone, and eng could send a lane to wait on a Mac whose admission then withheld it. A
+the load alone, and queuekeeper could send a lane to wait on a Mac whose admission then withheld it. A
 queued request whose process has ended, one that has not asked lately, one behind
 exclusive work queued ahead, and one that waits for a dead or uncertain guard entry counted as a
 guaranteed slot keep nothing, as in admission; the reading runs no recovery census, so it counts
 every such entry, and the next admission may remove one. A lane's own place in this Mac's queue,
 which it keeps between offers, is not counted against it. Until vocaro-engineering#186 the reading
-counted a guaranteed slot such a request kept as free, and eng offered work there that admission
+counted a guaranteed slot such a request kept as free, and queuekeeper offered work there that admission
 then held back or that competed with the gate.
 
 The reading applies admission's rule for an exclusive request queued there too: while one whose
@@ -736,14 +736,14 @@ capacity there (`exclusive work is queued ahead on the second Mac: LABEL`). One 
 ended holds nothing back, and neither does one queued while a dead or uncertain guard entry is
 counted as any slot, which it would wait for, as in admission (#89); one queued behind a
 whole-host request that asks is that request's turn, read as the slots kept for it. Until
-vocaro-engineering#191 the reading did not report such a request, and eng offered a lane to a Mac
+vocaro-engineering#191 the reading did not report such a request, and queuekeeper offered a lane to a Mac
 whose admission then held it back for as long as the exclusive work waited and ran.
 
 1. The second Mac runs the lane when its reading shows spare capacity and it can start the lane
-   now: its queue admits the lane within five seconds (`eng run --if-free` there, which exits 75
+   now: its queue admits the lane within five seconds (`queuekeeper run --if-free` there, which exits 75
    without running otherwise) and one of the project's four checkouts there is free.
 2. When the second Mac's reading shows no spare capacity and this Mac's shows some, the lane goes
-   to this Mac's queue at once, and nothing is offered: `eng: trying LANE on this Mac:` says why,
+   to this Mac's queue at once, and nothing is offered: `queuekeeper: trying LANE on this Mac:` says why,
    and the receipt's `hereBecause` records it, naming the second Mac's CPU when that is it, as
    `the second Mac is busy (CPU 97% busy, at or above its HEAVY_BUSY_LIMIT=75%)`, else the
    whole-host lane or exclusive work running there, its guaranteed slots all busy, or those slots
@@ -758,7 +758,7 @@ whose admission then held it back for as long as the exclusive work waited and r
    when every checkout of the project there is in use or the model is held: this Mac's own
    admission then gets the same five seconds, and the lane runs here if it admits it, the receipt
    recording that the second Mac was busy. Busy is no configuration problem.
-3. While neither Mac's reading shows spare capacity, `eng: neither Mac has spare capacity for
+3. While neither Mac's reading shows spare capacity, `queuekeeper: neither Mac has spare capacity for
    LANE now (…), so it goes to whichever admits it first, the second Mac asked first` says so, and
    the lane is offered to the second Mac, whose guaranteed slots admit it however busy its CPU. While
    both decline it, the lane waits for whichever admits it first. It waits in this Mac's queue,
@@ -766,11 +766,11 @@ whose admission then held it back for as long as the exclusive work waited and r
    is offered to the second Mac again when the reading allows, so the second Mac is asked at least
    every two minutes; each offer costs the second Mac a checkout's claim, the project's `provision`
    lane and a policy refresh. An offer made again sends nothing a second time: the second Mac holds
-   the commits after the first. `eng: LANE waits for whichever Mac admits it first:` says so, with
+   the commits after the first. `queuekeeper: LANE waits for whichever Mac admits it first:` says so, with
    why the second Mac has not taken it, and this Mac's admission prints what it waits behind
    ([heavy-work admission](#heavy-work-admission)). A second Mac that cannot be reached at one of
    these offers is asked again at the next, since one that went offline during the wait may come
-   back before it ends: `eng: LANE waits for this Mac, and asks the second Mac again at the next
+   back before it ends: `queuekeeper: LANE waits for this Mac, and asks the second Mac again at the next
    offer:` says why, once for each reason. A lane that neither admits within 5,400 s ends with
    exit 75 (`BUSY`) and runs nowhere.
 
@@ -791,24 +791,24 @@ as every request there is refused ([heavy-work admission](#heavy-work-admission)
 A lane this Mac takes runs in this checkout, over its working tree as it is once admitted, not over
 the commit sent to the second Mac. So when a commit was sent, this Mac runs the lane only while the
 working tree is still that commit's tree: once admitted it snapshots the tree again, and when the
-two differ it exits 2 without running, `eng: LANE not run on this Mac: the working tree changed
+two differ it exits 2 without running, `queuekeeper: LANE not run on this Mac: the working tree changed
 after COMMIT was sent` with the changed paths, rather than run a tree other than the one sent
 ([vocaro-engineering#79](https://github.com/vocaro/vocaro-engineering/issues/79)). It holds a
 toolkit snapshot it sent to the same rule: `the toolkit's working tree changed after COMMIT was
 sent`. Restore the tree or run the lane again. Its receipt's `sent` names the commit, and `project` the tree as it stood
 once admitted.
 
-`eng admit` instead runs its command from what it sent, so that a wait here is not lost to an edit
+`queuekeeper admit` instead runs its command from what it sent, so that a wait here is not lost to an edit
 the session made meanwhile: on 2026-11-07 a command the second Mac kept declining waited here
 behind a gate and then refused over an unrelated documentation edit
 ([vocaro-engineering#276](https://github.com/vocaro/vocaro-engineering/issues/276)). While the tree is
-still the one sent, the command runs in this checkout, as before. Once it is not, eng says so, with
+still the one sent, the command runs in this checkout, as before. Once it is not, queuekeeper says so, with
 the changed paths, and lays out what was sent as the second Mac lays it out: a detached worktree of
 the project at the commit sent, in a new temporary directory under the main checkout's name, with
 the toolkit beside it, where a project's relative paths to the toolkit find it (the toolkit's
 checkout itself, by a symbolic link, while its tree is still the one sent, and otherwise a worktree
-of it at that commit), and `VOCARO_ENGINEERING_ROOT` naming it. The project's `provision` lane runs
-there first, its log in `.build/engineering/admit/provision.log`, and then the command, in the
+of it at that commit), and `QUEUEKEEPER_ROOT` naming it. The project's `provision` lane runs
+there first, its log in `.build/queuekeeper/admit/provision.log`, and then the command, in the
 worktree's directory that matches the current one. What it changed in files Git does not ignore
 comes back as from the second Mac (below): applied here only while the tree here is still the one
 sent, so usually kept as a patch, exit 73. Both worktrees and the directory are removed when the
@@ -820,13 +820,13 @@ refuses, as above: its results, kept results and logs are the checkout's.
 
 Each of this Mac's waits that ends unadmitted is logged as withdrawn, as each
 declined offer is on the second Mac ([admission log](#admission-log)); every request retains
-its arrival across retries, and keeps its place in this Mac's queue across local waits ([heavy-work admission](#heavy-work-admission)). `eng run --if-free`
+its arrival across retries, and keeps its place in this Mac's queue across local waits ([heavy-work admission](#heavy-work-admission)). `queuekeeper run --if-free`
 asks each Mac once, five seconds each, and exits 75 when both are busy. The admission logs of
 2026-10-27 hold this overflow before it was the rule: the build host's three `timed-out` requests
-were `eng run --if-free` declining after 5.5 s, and each of those lanes then ran on this Mac
+were `queuekeeper run --if-free` declining after 5.5 s, and each of those lanes then ran on this Mac
 ([vocaro-engineering#49](https://github.com/vocaro/vocaro-engineering/issues/49)).
 
-First `eng run` checks, before it sends anything, that the second Mac can be reached: its name
+First `queuekeeper run` checks, before it sends anything, that the second Mac can be reached: its name
 resolves, an address of it answers on its ssh port within 3 s, and `ssh build-host true` finishes
 within 30 s. The second Mac stays on its own wired network, while the owner takes this Mac to
 others, where the second Mac's `.local` name does not resolve at all. The check then stops at the
@@ -834,18 +834,18 @@ name, after the 5 s that macOS waits for a multicast DNS answer that never comes
 2026-10-27), and sends nothing; an address that does not answer costs 3 s, not ssh's 10 s
 `ConnectTimeout`. When this Mac is away from the second Mac's network in that way, when nothing
 answers, or when ssh cannot connect, the second Mac cannot be reached, which is no configuration
-problem: `eng run` prints one line, `eng: running LANE on this Mac:`, with why, and runs the lane
+problem: `queuekeeper run` prints one line, `queuekeeper: running LANE on this Mac:`, with why, and runs the lane
 here, under this Mac's admission, at once (the owner's decision, 2026-10-27). It does the same
 when the second Mac could not run the lane as it runs here: when the lane's arguments name a
 physical device ([physical devices and the second Mac](#physical-devices-and-the-second-mac)).
 A toolkit checkout with changes keeps no lane here: its working tree goes as a snapshot too.
 
 A second Mac that answers but is misconfigured stops the lane instead, for the owner's decision
-([shared resources](../agents/core.md#shared-resources)): when it refuses the login, as for a key
+([shared resources](https://github.com/vocaro/vocaro-engineering/blob/main/agents/core.md#shared-resources)): when it refuses the login, as for a key
 it does not accept or a host key that changed, its login shell fails, it cannot receive the
 commit or run the toolkit, it refuses the lane for any reason but being busy, as when its Xcode
 at this Mac's developer directory differs or every checkout holds changes a run left, or it fails
-the project's `provision` lane. `eng run` runs nothing here then. It says what is wrong and what
+the project's `provision` lane. `queuekeeper run` runs nothing here then. It says what is wrong and what
 fixing it takes, and exits 78 (`EX_CONFIG`). In the merge queue that exit is a run with no verdict,
 run again once the host has settled, and the hold after the bound is for the owner, the one kind
 whose cause is his to fix; a session that finds the cause gone still resumes it
@@ -853,24 +853,24 @@ whose cause is his to fix; a session that finds the cause gone still resumes it
 lost once the work was sent leaves the run unmeasured rather than running the lane a second time
 here, since it may still run there.
 
-`eng run --here` keeps a lane on this Mac, for instance a build whose products the session uses
+`queuekeeper run --here` keeps a lane on this Mac, for instance a build whose products the session uses
 here, or, once the owner has decided so, any lane while the second Mac is misconfigured. It is not
-for a second Mac that is busy or loaded: eng reads that itself and runs the lane here when this Mac
+for a second Mac that is busy or loaded: queuekeeper reads that itself and runs the lane here when this Mac
 has the capacity, so a session that sees the second Mac loaded and this Mac idle runs
-`eng run LANE` and asks nobody (the owner's decision, 2026-11-04,
+`queuekeeper run LANE` and asks nobody (the owner's decision, 2026-11-04,
 [vocaro-engineering#168](https://github.com/vocaro/vocaro-engineering/issues/168)).
-`eng run --offload-only` remains for work that must not run here, below.
-`eng run --serial GROUP`, a group's serial reference, runs here too, and nested work runs inside
-the admission it inherits, here. `eng run` looks for the second Mac only when
-`VOCARO_OFFLOAD_HOST` names one or `~/.ssh/config` defines the alias `build-host` or
-`second-mac`, which `ssh -G` reports; `VOCARO_OFFLOAD_HOST=none` keeps every lane here. A
-lane's results come back to `.build/engineering/remote/LANE/` when it ran on the second Mac and
-stay in `.build/engineering/LANE/` when it ran here. Every `eng run` ends with a short summary, on
+`queuekeeper run --offload-only` remains for work that must not run here, below.
+`queuekeeper run --serial GROUP`, a group's serial reference, runs here too, and nested work runs inside
+the admission it inherits, here. `queuekeeper run` looks for the second Mac only when
+`QUEUEKEEPER_OFFLOAD_HOST` names one or `~/.ssh/config` defines the alias `build-host` or
+`second-mac`, which `ssh -G` reports; `QUEUEKEEPER_OFFLOAD_HOST=none` keeps every lane here. A
+lane's results come back to `.build/queuekeeper/remote/LANE/` when it ran on the second Mac and
+stay in `.build/queuekeeper/LANE/` when it ran here. Every `queuekeeper run` ends with a short summary, on
 stderr after stdout is flushed: its verdict, its passed, failed, skipped and unmeasured tests kept
 apart, or that its log counts none, each failing test with its file and line, and the path to its
 `failures.txt` or receipt (`lane_report`). The second Mac's own run leaves it to the Mac that sent it.
 A lane group's results hold each of its lanes' log and receipt as well, under `lanes/` as on the
-Mac that ran it, so here `.build/engineering/remote/GROUP/lanes/LANE.log` and `LANE.json`. They
+Mac that ran it, so here `.build/queuekeeper/remote/GROUP/lanes/LANE.log` and `LANE.json`. They
 come back once the run there ends, whether the lane passed or failed, its timeout ended it or a
 stop did. A lane's receipt gives its status, outcome, seconds and the executed and skipped tests
 its log counts, so its counts read here; a lane a stop ended has the outcome `stopped` and no
@@ -879,34 +879,34 @@ stay in the second Mac's checkout until a later run there replaces them.
 
 Every run's receipt says where it ran. `ranOn` is `this Mac` or `second Mac`, which a receipt
 written before 2026-10-28 gives as `build host`, and `mac` names the Mac. On this Mac,
-`hereBecause` says why the run ran here: the lane's own reason, `--here` or `eng admit --here`,
+`hereBecause` says why the run ran here: the lane's own reason, `--here` or `queuekeeper admit --here`,
 `--serial`, nested work, a self lane's part, foreground work, no second Mac configured, the second Mac having no spare capacity (its CPU, a whole-host
 lane or exclusive work running there, or its guaranteed slots all busy), the second Mac being busy
 once offered, or why it could not be reached or could not run the work. The second Mac's own receipt, kept within the receipt that comes back,
 names the Mac that sent the run in `dispatchedFrom`. A receipt holds its lane's last run only.
 The share of heavy work each Mac runs over a period is in their admission logs, one line for
-each admission: `eng admissions` here and on a copy of the second Mac's log counts each Mac's
+each admission: `queuekeeper admissions` here and on a copy of the second Mac's log counts each Mac's
 admissions by lane ([admission log](#admission-log)).
 
 The second Mac runs a lane in its own login shell's environment, not this Mac's, so a variable
-set for `eng run` or `eng admit` here does not reach it. On 2026-10-27 a variable set for `eng remote admit`
+set for `queuekeeper run` or `queuekeeper admit` here does not reach it. On 2026-10-27 a variable set for `queuekeeper remote admit`
 read as unset there (toolkit `e137d7e`). A run that a variable selects, such as one that points a
 package at a binary built here into an ignored path or sets an xcodebuild `TEST_RUNNER_` variable,
-takes `--here` (`eng run --here`, `eng admit --here`), or names the setting in its command.
+takes `--here` (`queuekeeper run --here`, `queuekeeper admit --here`), or names the setting in its command.
 The loss is silent when the lane's script has a default: on 2026-11-11 a BreezEPUB purchase lane
 given its simulator runtime in a variable ran on the default iOS 27.0, and only
 the receipt's `Taking:` line showed it. A lane setting meant to reach the second Mac is an
-argument after `--` (`eng run purchases -- --runtime ID`), and the receipt is where to confirm
+argument after `--` (`queuekeeper run purchases -- --runtime ID`), and the receipt is where to confirm
 it took effect.
 
-`eng admit -- COMMAND` goes as a lane does, at HEAD or a snapshot commit: to whichever Mac has
+`queuekeeper admit -- COMMAND` goes as a lane does, at HEAD or a snapshot commit: to whichever Mac has
 spare capacity for it, the second Mac first, to this Mac while the second Mac has none or cannot
 be reached, and while neither has to whichever admits it first, within its `--timeout`;
 `--if-free` asks each once (the owner's decision, 2026-11-07: all work first come, first served,
-the second Mac first; until then only `eng admit --verify` was offered, and `--verify` is still
+the second Mac first; until then only `queuekeeper admit --verify` was offered, and `--verify` is still
 accepted, meaning the same). The two Macs share gigabit Ethernet, and a dispatch prepares and sends
 in about 4 s. The command runs in the directory of the second Mac's checkout that matches the
-current one, and its output and receipt come back to `.build/engineering/remote/admit/`. eng keeps
+current one, and its output and receipt come back to `.build/queuekeeper/remote/admit/`. queuekeeper keeps
 it here, saying why, when the second Mac could not run it as it runs here: its directory is outside
 the checkout or one Git ignores, which the commit sent lacks, or its words name this checkout's
 path, a simulator by its identifier, which is a member of this Mac's pool, a physical device of
@@ -924,14 +924,14 @@ it: any `TEST_RUNNER_` variable, or `DEVELOPER_DIR`, whose Xcode the second Mac 
 misconfigured were its own at that path another. Nested in an admission, it runs inside that admission, here; a part of a `self`
 lane stays on the Mac where the lane runs; foreground work runs where its foreground is held
 ([attended Mac sessions](#attended-mac-sessions)); and work the second Mac runs for this Mac runs
-there. A test that a lane covers runs best as that lane, `eng run LANE -- FILTER`;
-`eng remote admit -- COMMAND` sends a command on purpose, to run in the root of a checkout there.
+there. A test that a lane covers runs best as that lane, `queuekeeper run LANE -- FILTER`;
+`queuekeeper remote admit -- COMMAND` sends a command on purpose, to run in the root of a checkout there.
 
-`eng admit --here -- COMMAND` runs the command on this Mac and offers it nowhere, `hereBecause`
-saying `eng admit --here`. It is for a command whose products the session uses here afterwards:
+`queuekeeper admit --here -- COMMAND` runs the command on this Mac and offers it nowhere, `hereBecause`
+saying `queuekeeper admit --here`. It is for a command whose products the session uses here afterwards:
 build output, DerivedData, a result bundle or other files outside version control, or an app it
 then launches. Nothing about a command tells such a build from a test whose result is its log and
-status, so the session says so. `eng app keep` builds the kept apps this way.
+status, so the session says so. `queuekeeper app keep` builds the kept apps this way.
 
 What a command that ran on the second Mac changed in the checkout's files that Git does not
 ignore comes back and is applied here, so that `swift package resolve`, a formatter or a code
@@ -940,19 +940,19 @@ stages the checkout's tree in a temporary index (tracked edits and deletions, an
 files no `.gitignore` names, as a snapshot commit stages them), writes `git diff --binary` against
 the commit sent to `changes.patch`, restores its checkout to that commit for the next run, and
 sends the patch back with the receipt, into the dispatch's results under
-`.build/engineering/remote/.dispatches/admit/`. Here eng applies it with `git apply --binary`, to
+`.build/queuekeeper/remote/.dispatches/admit/`. Here queuekeeper applies it with `git apply --binary`, to
 the working tree and not the index, only while the working tree is still the tree that was sent,
 and says which files it changed; the exit status stays the command's. When the tree here changed
-meanwhile, or `git apply` refuses the patch (it applies all of it or none), eng applies nothing,
-keeps the patch as `.build/engineering/remote/unapplied/DISPATCH.patch`, says why and where it is,
-and exits 73 (`UNAPPLIED`, sysexits' `EX_CANTCREAT`, which no other eng status uses); apply it with
+meanwhile, or `git apply` refuses the patch (it applies all of it or none), queuekeeper applies nothing,
+keeps the patch as `.build/queuekeeper/remote/unapplied/DISPATCH.patch`, says why and where it is,
+and exits 73 (`UNAPPLIED`, sysexits' `EX_CANTCREAT`, which no other queuekeeper status uses); apply it with
 `git apply --binary PATCH` once the tree allows, or run the command again. Files Git ignores, such
 as `.build` and its build products, stay on the second Mac, and one line says so, naming
-`eng admit --here`, which keeps them on this Mac.
+`queuekeeper admit --here`, which keeps them on this Mac.
 
 A caller that holds or will take its own admission here, such as a push keeper that runs a gate
-under the push's one admission, offers the lane with `eng run --offload-only LANE` instead:
-`eng run` would run a lane it could not send under an admission of its own, and the caller would
+under the push's one admission, offers the lane with `queuekeeper run --offload-only LANE` instead:
+`queuekeeper run` would run a lane it could not send under an admission of its own, and the caller would
 then run it a second time. The second Mac takes it only if it can start it now, a tree with
 uncommitted changes as a snapshot, so the status is that of the working tree the caller would
 otherwise run; but it never runs here. The command exits 75 (`BUSY`) when the second Mac declines
@@ -961,7 +961,7 @@ the lane itself. It exits 78 when
 the second Mac is misconfigured, which stops the caller too, and otherwise with the lane's status
 there.
 
-`eng doctor` compares the two Macs and reports a difference as an error: their default Xcodes
+`queuekeeper doctor` compares the two Macs and reports a difference as an error: their default Xcodes
 (`xcode-select -p` and its version), the Xcode at this Mac's developer directory, which every run
 there uses, and the simulator runtimes that Xcode lists on each, as well as a second Mac that
 answers but refuses the login. A second Mac that cannot be reached, as when this Mac is away from
@@ -971,11 +971,11 @@ developer directory, but whatever reads its default, such as `ssh build-host xco
 or a script without `DEVELOPER_DIR`, sees another Xcode. The two Macs keep the same runtimes,
 and that is doctor's to fix, not the owner's (the owner's decision, 2026-11-03,
 [vocaro-engineering#123](https://github.com/vocaro/vocaro-engineering/issues/123)): when one has a
-runtime the other lacks, doctor evens them out as `eng remote setup --runtimes` does, deleting a
+runtime the other lacks, doctor evens them out as `queuekeeper remote setup --runtimes` does, deleting a
 runtime that no simulator but Xcode's defaults uses and copying any other to the Mac that lacks it
 ([setting up the second Mac](#setting-up-the-second-mac)), with its progress on standard error, then
 compares again. The difference is an error only when that fails. Doctor also shuts down the
-[stale pool simulators](#stale-pool-simulators) on both Macs, as `eng simulator-pool reap` does, on
+[stale pool simulators](#stale-pool-simulators) on both Macs, as `queuekeeper simulator-pool reap` does, on
 the second Mac only when it answered, and lists each stop under `offload`, `reaped`
 ([vocaro-engineering#127](https://github.com/vocaro/vocaro-engineering/issues/127)). Under `offload` in the report,
 `unchecked` names what was not compared: the second Mac, and why, when it cannot be reached, its
@@ -1003,25 +1003,25 @@ place of the earlier rule that a simulator lane went there only once a run there
 this Mac's test counts): counts that differ are a defect to fix there. One that also needs a
 physical device stays here for that.
 
-Each Mac keeps its own [pool](simulator-testing.md#reserved-simulator-pool) and its own
+Each Mac keeps its own [pool](https://github.com/vocaro/vocaro-engineering/blob/main/guides/simulator-testing.md#reserved-simulator-pool) and its own
 [device record](#device-reservations). A lane on the second Mac takes or creates members in the
 second Mac's simulators and reserves them in the second Mac's record, so a member of the same
 name on each Mac is two simulators, and a reservation on one Mac says nothing about the other's.
 Physical devices, which both Macs reach, are reserved only in this Mac's record
 ([physical devices and the second Mac](#physical-devices-and-the-second-mac)).
 A project's first run there creates its first members and lets their first boot finish. A
-session's `VOCARO_DEVICE_OWNER` and agent session do not cross SSH, so a reservation there names
-an owner the run generates: `simulator-tests-UUID` for `eng simulator-tests`, and `POOL-UUID` for
+session's `QUEUEKEEPER_DEVICE_OWNER` and agent session do not cross SSH, so a reservation there names
+an owner the run generates: `simulator-tests-UUID` for `queuekeeper simulator-tests`, and `POOL-UUID` for
 a gate that takes its member with `vocaro_engineering.simulators.pool.member()`.
-`eng simulator-pool list` and `eng disk` show the pool of the Mac they run on; a run on the second
+`queuekeeper simulator-pool list` and `queuekeeper disk` show the pool of the Mac they run on; a run on the second
 Mac prunes that Mac's members of the kind it takes.
 
 Only logs and receipts come back: the lane's, or a group's and each of its lanes'.
-`eng simulator-tests` leaves each device's log and result bundle in the second Mac's checkout,
+`queuekeeper simulator-tests` leaves each device's log and result bundle in the second Mac's checkout,
 where the lane's log names them, and puts a failing device's last 40 lines in the lane's log. A
 session that needs a result bundle or a device log here runs the lane with `--here`.
 
-Measured on 2026-10-27 with `eng remote run` from clean checkouts, against the same lane at the
+Measured on 2026-10-27 with `queuekeeper remote run` from clean checkouts, against the same lane at the
 same commit on this Mac
 ([vocaro-engineering#31](https://github.com/vocaro/vocaro-engineering/issues/31)). The build host
 was an M1 Max (10 cores, 64 GB, macOS 27.2 26B123) and this Mac an M5 Max (18 cores, 36 GB,
@@ -1050,7 +1050,7 @@ of `ios-tests`. That was its state then, not now.
 
 ### How a run reaches the second Mac
 
-`eng remote` runs a commit: HEAD when the working tree is HEAD's, and otherwise a snapshot commit
+`queuekeeper remote` runs a commit: HEAD when the working tree is HEAD's, and otherwise a snapshot commit
 of the working tree. It copies the checkout's index, with its modification time, to a temporary
 file and, with `GIT_INDEX_FILE` naming the copy, takes the working tree with `git add -A`, tracked
 changes, deletions and nonignored untracked files alike, writes it with `git write-tree`, and makes
@@ -1064,7 +1064,7 @@ Ignored files stay out, as they do from a commit: the second Mac's checkout has 
 its own. A large untracked file that no `.gitignore` names is sent too, and its copy stays among
 the repository's objects until Git's garbage collection prunes the snapshot, so ignore what the
 second Mac does not need.
-`eng run`, `eng admit`, `eng remote run` and `eng remote admit` all send work this way.
+`queuekeeper run`, `queuekeeper admit`, `queuekeeper remote run` and `queuekeeper remote admit` all send work this way.
 The toolkit's checkout goes the same way, as a snapshot of its working tree when it has changes,
 untracked files included, rather than keep the work here (owner's decision, 2026-11-02,
 [vocaro-engineering#104](https://github.com/vocaro/vocaro-engineering/issues/104)); admission
@@ -1084,17 +1084,17 @@ while the toolkit checkout still holds the HEAD it had, as a run here reads the 
 the second Mac does needs a toolkit commit a branch holds: the policy refresh there reads the
 toolkit's `origin/main`, not the commit checked out. A queue's gate uses a clean copy of the toolkit instead ([which toolkit a gate runs](maintenance.md#the-merge-queue)).
 
-`eng remote` takes no slot here. It pushes the commit, and the toolkit commit that runs it, by git
+`queuekeeper remote` takes no slot here. It pushes the commit, and the toolkit commit that runs it, by git
 over SSH and without hooks to bare repositories under
 `~/Development/build-host` on the second Mac, so nothing reaches GitHub. The connection that
 prepares them first lists the processes earlier runs left running there
 ([processes left over from runs](#processes-left-over-from-runs)). There `offload_host.py`,
 sent along and run by the host's own Python, takes one of four persistent checkouts of the
-project, checks the commit out detached with the toolkit beside it, and runs `eng run`, or
-`eng remote admit`'s command, in the checkout's root, or `eng admit`'s command in the directory that matches
+project, checks the commit out detached with the toolkit beside it, and runs `queuekeeper run`, or
+`queuekeeper remote admit`'s command, in the checkout's root, or `queuekeeper admit`'s command in the directory that matches
 the one it was sent from. The work it runs knows it runs there for this Mac, whose name
-`VOCARO_DISPATCHED_FROM` gives, and its receipts say so. A checkout keeps its ignored inputs and
-build products, so its next build is warm; `eng remote` waits for one when all four are in use.
+`QUEUEKEEPER_DISPATCHED_FROM` gives, and its receipts say so. A checkout keeps its ignored inputs and
+build products, so its next build is warm; `queuekeeper remote` waits for one when all four are in use.
 Of the free checkouts, a run takes the one whose last tree is nearest its commit's, by the files
 that differ between the two, so its builds redo the least, and the log says which slot it took and
 how many files differ (`slot 1: its last tree is the commit's, so its builds are warm`). A slot
@@ -1103,7 +1103,7 @@ In index order alone, PDFReflowLib's queue gate there spent 406 to 733 s in its 
 slot that had last built an older tree, against 362 to 365 s warm (2026-11-05;
 [vocaro-engineering#183](https://github.com/vocaro/vocaro-engineering/issues/183)).
 A project's `provision` lane, when it has one, runs first to provision the checkout's ignored
-inputs, and the work runs only if it passes. It runs there as `eng run --here provision`, admitted as
+inputs, and the work runs only if it passes. It runs there as `queuekeeper run --here provision`, admitted as
 every lane is, and with `--if-free` when the work was offered to start now, so that a second Mac with
 no free slot declines the work rather than hold the checkout while the provision lane waits. The work runs with `PYTHONDONTWRITEBYTECODE=1`, so
 its Python leaves no `__pycache__` in the checkout, which a project's `.gitignore` need not name;
@@ -1113,12 +1113,12 @@ changes stays as it is for inspection and is passed over. Once it is read, remov
 
 #### A named checkout slot
 
-`eng remote run LANE --checkout-slot N` and `eng remote admit --checkout-slot N -- COMMAND` run in
+`queuekeeper remote run LANE --checkout-slot N` and `queuekeeper remote admit --checkout-slot N -- COMMAND` run in
 checkout N, 0 to 3, and no other, for a check that depends on the checkout's absolute path, warm
 products or generated project. Repeat one across slots by running it once per slot, each named:
 
 ```sh
-for slot in 0 1 2 3; do python3 scripts/eng remote run LANE --checkout-slot "$slot"; done
+for slot in 0 1 2 3; do python3 scripts/qk remote run LANE --checkout-slot "$slot"; done
 ```
 
 The run waits for that slot under the same lock as any other, even while other checkouts are free,
@@ -1132,9 +1132,9 @@ removes them, since no other slot may stand in and waiting would not clear them.
 takes the nearest free checkout as above.
 
 A checkout slot says where a run's files are. It is not a heavy-work slot, which says how much of
-the Mac the run may use and which `eng admit` waits for only after the checkout is held, and it is
+the Mac the run may use and which `queuekeeper admit` waits for only after the checkout is held, and it is
 not the foreground reservation, taken at that same later point. So waiting for a named checkout
-holds neither. It does not choose the Mac either: `eng remote` always means the second Mac.
+holds neither. It does not choose the Mac either: `queuekeeper remote` always means the second Mac.
 
 A push learns what the second Mac has only from the refs its repository advertises, and a
 checkout's detached HEAD is none of them. Placing a commit deletes the ref that carried it, so a
@@ -1143,9 +1143,9 @@ however much of it they hold. Against a stand-in second Mac on this Mac, an unch
 holding 24 MiB of random data and a one-line change on it each sent 24.01 MiB to such a
 repository (Git 2.54.0, Apple Git-157, 2026-10-29;
 [vocaro-engineering#67](https://github.com/vocaro/vocaro-engineering/issues/67)). So each
-repository there names each commit its checkouts hold as `refs/vocaro/checkouts/COMMIT`, no more
+repository there names each commit its checkouts hold as `refs/queuekeeper/checkouts/COMMIT`, no more
 refs than checkouts. Placing a commit names it, and the preparing connection names them all
-again before the pushes, so a repository whose checkouts an older eng placed, or that lost one, is
+again before the pushes, so a repository whose checkouts an older queuekeeper placed, or that lost one, is
 current. A push then sends only what those commits lack: nothing for a commit a checkout holds,
 282 bytes for that one-line change. It is warm when this Mac has one of the commits the second
 Mac named, and cold when it has none, as for a project's first push or once its checkouts are
@@ -1154,9 +1154,9 @@ there, unreferenced.
 
 Dispatches that send one commit at once, as two lanes started together from one checkout do with
 the toolkit's commit, race for its ref, and the push that loses fails with `cannot lock ref …:
-reference already exists`. eng then asks the repository with `git ls-remote` for both names the
+reference already exists`. queuekeeper then asks the repository with `git ls-remote` for both names the
 commit can have there, the pushed ref and the checkout's, and when either names it, the push has
-sent it: eng says `holds COMMIT all the same` and the dispatch goes on. The winner's dispatch may
+sent it: queuekeeper says `holds COMMIT all the same` and the dispatch goes on. The winner's dispatch may
 already have placed the commit, deleting the pushed ref, and not yet named it as a checkout's; on
 2026-11-04 that left neither name, and a BreezEPUB lane stopped with exit 78 and the advice to
 repair the repository or free space
@@ -1175,7 +1175,7 @@ A stock macOS sshd accepts only `LANG` and `LC_*` (`AcceptEnv` in
 `/etc/ssh/sshd_config.d/100-macos.conf`, macOS 27.2). Without it, Git says `--negotiate-only
 requires protocol v2`, `fatal: the remote end hung up unexpectedly` and `push negotiation failed;
 proceeding anyway with push`, and pushes as it would without the setting, successfully (measured
-with the stand-in dropping the variable). eng sets neither it nor any other Git setting: the refs
+with the stand-in dropping the variable). queuekeeper sets neither it nor any other Git setting: the refs
 make a push warm over any protocol. Whether the second Mac's sshd passes `GIT_PROTOCOL` is
 unmeasured.
 
@@ -1187,13 +1187,13 @@ advertisement; `pack`; `transfer`, until the pack's last byte is written, which 
 indexes as it arrives; and `receiver`, until the second Mac reports the ref, which takes the rest
 of its indexing and its connectivity check. It gives the objects and bytes Git reports, the bytes
 to Git's rounding, whether the push was warm or cold, the `push.negotiate` setting it read, and
-every line it wrote beyond its progress and the ref's report, which eng also prints, such as a
+every line it wrote beyond its progress and the ref's report, which queuekeeper also prints, such as a
 negotiation's failure. The result's `phases` give the second Mac's wait for a checkout, placing
-the commits there and each eng command, and the work's own receipt gives `queueSeconds`, its
-wait in the queue, as a receipt of a run on this Mac does. eng prints a line for each push and
+the commits there and each queuekeeper command, and the work's own receipt gives `queueSeconds`, its
+wait in the queue, as a receipt of a run on this Mac does. queuekeeper prints a line for each push and
 one for the preparation and the queue's wait before the result.
 
-A push that has not finished in 30 minutes is stopped, as is one that a stop interrupts: eng
+A push that has not finished in 30 minutes is stopped, as is one that a stop interrupts: queuekeeper
 ends git and the ssh it started at once, and nothing of the push enters the second Mac's
 repository. Stopped at its bound, it stops the work for the owner, as a push that fails does:
 nothing ran there. Either way, a record of what was sent, unique to the dispatch, says how far the
@@ -1203,7 +1203,7 @@ the repository, and Git's prune removes it once it is older than `gc.pruneExpire
 unless set (Git 2.54.0).
 
 Output comes back as it is written. The lane's log, the command's output and a receipt land in
-`.build/engineering/remote/LANE/` (`remote/admit/` for a command), and the exit status is the
+`.build/queuekeeper/remote/LANE/` (`remote/admit/` for a command), and the exit status is the
 second Mac's: the work's, and 1 for a run stopped before the work began, even after the provision
 lane passed (vocaro-engineering#317). A lane group's lanes' logs and receipts follow once the run there ends, a stopped
 run's included, into `lanes/` there, and the receipt's `returned` lists those that came. Before
@@ -1213,21 +1213,21 @@ second Mac must have the same Xcode build at this Mac's developer directory, or 
 refused. A different macOS is reported but refuses nothing: a whole lane's pass there counts
 for a push from this Mac, while as a qualification claim it names the second Mac's platform. A
 whole lane's receipt is also kept by commit in the repository's Git directory, so
-`eng remote passed LANE` answers from any worktree whether the lane, without arguments, passed
+`queuekeeper remote passed LANE` answers from any worktree whether the lane, without arguments, passed
 at exactly that commit. A whole lane's run on this Mac, at a commit with no working changes and
 by a toolkit with none, is kept there too, with `ranOn` `this Mac` and the worktree it ran in, so
 that a gate the merge queue ran here counts from a session's checkout
 ([vocaro-engineering#198](https://github.com/vocaro/vocaro-engineering/issues/198)). A later run
 of the lane at that commit, on either Mac, replaces it. What the run wrote in its `results/` is
 kept beside the receipt, in `LANE.results/`
-([a lane's results](parallel-tests.md#a-lanes-results)). A push path that
+([a lane's results](https://github.com/vocaro/vocaro-engineering/blob/main/guides/parallel-tests.md#a-lanes-results)). A push path that
 accepts it in place of running the gate again prints both Macs' macOS versions from the receipt.
 
 Each dispatch also keeps its own copy of its results, in
-`.build/engineering/remote/.dispatches/LANE/TIME-PID/` (`admit` for a command), which the line
+`.build/queuekeeper/remote/.dispatches/LANE/TIME-PID/` (`admit` for a command), which the line
 that gives the run's status names. `LANE/` holds the copy of the dispatch that ended last, so two
 dispatches of one lane, or two commands, at once each keep their own. Each name keeps its newest
-eight, two for each checkout there, and eng names each one it removes. Dispatches of one name file
+eight, two for each checkout there, and queuekeeper names each one it removes. Dispatches of one name file
 their results in turn. Replacing `remote/admit/` by removing it and renaming another into its
 place fails with `Directory not empty` (Errno 66) when two dispatches interleave, and left one
 dispatch's results unfiled
@@ -1237,22 +1237,22 @@ The receipt names the commit that ran (`commit`) and the HEAD it was sent from (
 commit unless `snapshot` is true, and likewise the toolkit's: `toolkit`, `toolkitHead` and
 `toolkitSnapshot`, with the toolkit checkout's own HEAD beside them as `toolkitCheckoutHead`, which
 differs from `toolkitHead` only when `origin/main` was sent in its place. A snapshot's receipt, of
-either, stays in `.build/engineering/remote/LANE/`: no branch holds the snapshot, so its result is
-no commit's pass, and `eng remote passed` never counts it, for HEAD or for the snapshot itself. Commit the work and run the lane again for a pass
-that counts. `eng run` and `eng remote run` say so as they send a snapshot of the whole lane,
-naming the changed and untracked files, as `eng run` does for a run here on such a tree
+either, stays in `.build/queuekeeper/remote/LANE/`: no branch holds the snapshot, so its result is
+no commit's pass, and `queuekeeper remote passed` never counts it, for HEAD or for the snapshot itself. Commit the work and run the lane again for a pass
+that counts. `queuekeeper run` and `queuekeeper remote run` say so as they send a snapshot of the whole lane,
+naming the changed and untracked files, as `queuekeeper run` does for a run here on such a tree
 ([vocaro-engineering#197](https://github.com/vocaro/vocaro-engineering/issues/197)).
-`eng remote run --serial GROUP` runs a group's lanes one after another there, under
+`queuekeeper remote run --serial GROUP` runs a group's lanes one after another there, under
 the second Mac's admission: the group's serial reference
-([parallel-only failures](parallel-tests.md#a-failure-seen-only-side-by-side)). Its receipt says
-`serial` and, like a snapshot's, stays in `.build/engineering/remote/GROUP/`: it is no pass of the
+([parallel-only failures](https://github.com/vocaro/vocaro-engineering/blob/main/guides/parallel-tests.md#a-failure-seen-only-side-by-side)). Its receipt says
+`serial` and, like a snapshot's, stays in `.build/queuekeeper/remote/GROUP/`: it is no pass of the
 group's, whose lanes run side by side.
 
-A stop carries over: `eng remote` tells the second Mac to stop, the run stops as a stop signal
+A stop carries over: `queuekeeper remote` tells the second Mac to stop, the run stops as a stop signal
 stops a local one, and it leaves the second Mac's admission. A connection's end is no stop
 ([vocaro-engineering#321](https://github.com/vocaro/vocaro-engineering/issues/321)). When the
 dispatching Mac sleeps, or the connection otherwise drops, a run that has started goes on, and
-`eng remote` reconnects, again after each failure, once it is awake, and collects the run's log,
+`queuekeeper remote` reconnects, again after each failure, once it is awake, and collects the run's log,
 result and returned files from a journal the second Mac keeps under `dispatches/` in its
 remote root, as if the connection had stayed up: the run passed, failed or was unmeasured by its
 own receipt, and that receipt's `connection` says it was collected on a later connection. A stop
@@ -1265,12 +1265,12 @@ The second Mac cannot tell a dispatcher that died from a Mac asleep or a dropped
 the dispatching Mac decides. A dispatch that may keep a journal tries to record its journal
 identifier, host, PID and process start time under `dispatchers/` in this Mac's durable state
 (`remote.dispatch_records`). It keeps the record if it cannot collect a known journal's result or
-learn that the journal is gone. The next `eng remote` dispatch or queue worker start looks for a
+learn that the journal is gone. The next `queuekeeper remote` dispatch or queue worker start looks for a
 dispatcher proven gone, with no process at that PID or one that started at another time, as after
 a reboot. It sends `stop` for that journal alone through `reattach`. A run still active leaves
 admission and frees its checkout when it handles the stop, with its journal kept a week. A
 dispatcher still alive, as on a sleeping Mac, is left alone. If the second Mac cannot answer for
-the record, it stays for another attempt and eng reports that it could not request the stop.
+the record, it stays for another attempt and queuekeeper reports that it could not request the stop.
 
 For a run whose connection's end is a stop (one with a device reservation, or one before its
 dispatcher heard it start), a Mac that crashes or loses power closes nothing, and the second
@@ -1282,7 +1282,7 @@ run's output from then on, so a dispatcher that wakes reports the run unmeasured
 ssh's own two-minute bound. A journaled run its dispatcher has heard start is never stopped by
 silence (vocaro-engineering#287, #321).
 
-A run nobody is attending still ends. `eng run` and `eng admit` on the second Mac stop their own
+A run nobody is attending still ends. `queuekeeper run` and `queuekeeper admit` on the second Mac stop their own
 work at its timeout, as ever, unmeasured. Past that, once a connection has been lost, the second
 Mac itself stops whatever is left after the lane's timeouts, or `--time-limit`, plus 95 minutes
 for a checkout and admission, SIGKILL following five minutes later; the result says `detached`,
@@ -1293,7 +1293,7 @@ stays here.
 
 ssh closes a connection that has heard nothing from the second Mac for about two minutes
 (`ServerAliveInterval` 30 s, four times), so a shorter silence leaves the run going. When a run
-returns no result, `eng remote` says what ssh last said, such as `Timeout, server NAME not
+returns no result, `queuekeeper remote` says what ssh last said, such as `Timeout, server NAME not
 responding.`, when the run was dispatched and when it was lost, in UTC, and how long this Mac
 slept in between, read as the difference between a clock that runs through sleep and one that
 stops for it. A Mac asleep runs no ssh. On 2026-10-26 a dispatch lost its connection around
@@ -1310,15 +1310,15 @@ out during banner exchange`, no SSH banner came within 10 s. Without that line, 
 then nothing more for `ServerAliveInterval` times `ServerAliveCountMax`, two minutes, during key
 exchange or authentication (OpenSSH 10.3p1 against a listener on this Mac, 2026-10-27). Each
 connection also reads this Mac's sleep across the attempt, as a lost run does. A Mac asleep answers
-nothing, so a timeout that this Mac slept through says nothing about the second Mac, and eng then
+nothing, so a timeout that this Mac slept through says nothing about the second Mac, and queuekeeper then
 says to keep this Mac awake rather than to wake the second Mac.
 
-On 2026-10-27 the build host accepted `eng run`'s first connection at 22:13:09 UTC, and this Mac
+On 2026-10-27 the build host accepted `queuekeeper run`'s first connection at 22:13:09 UTC, and this Mac
 then slept until 22:16:39: its lid had closed at 22:11:35, and its power log gives
 `Thermal Emergency Sleep` for each sleep after the first. The build host ended that connection, never
 authenticated, at 22:15:12, about sshd's default `LoginGraceTime` of 120 s later. ssh's two-minute
 timeout ran out at 22:18:38, two minutes of awake time after the connection began. ssh had said
-`Connection to ADDRESS port 22 timed out`, and eng said to wake the build host, which had stayed
+`Connection to ADDRESS port 22 timed out`, and queuekeeper said to wake the build host, which had stayed
 awake and on its network.
 
 ### Local Network access
@@ -1341,13 +1341,13 @@ agent (`launchctl submit`), the same probe was blocked from its first try, under
 `/usr/bin/python3` alike, though `nehelper` said the owner's preference allowed Homebrew's Python
 (`org.python.python`, which has no team ID).
 
-eng tells this from a second Mac that is away: when a connection to the second Mac fails, the reach check asks macOS
+queuekeeper tells this from a second Mac that is away: when a connection to the second Mac fails, the reach check asks macOS
 which process is responsible for its own (`responsibility_get_pid_responsible_for_pid`), and when that is a Python, the
 process itself or a worker above it, it raises `NoLocalNetwork`, saying that this process has lost Local Network
 access, and searches for no renamed second Mac. A queue worker asks before each round, while a second Mac is
-configured, and on such an answer exits, holding nothing, with its entries back in the queue. The next `eng land`,
-`eng queue wait` or `eng queue resume` from a live session starts a worker that reaches the second Mac. A session
-that finds the queue waiting with no worker runs `eng queue resume`.
+configured, and on such an answer exits, holding nothing, with its entries back in the queue. The next `queuekeeper land`,
+`queuekeeper queue wait` or `queuekeeper queue resume` from a live session starts a worker that reaches the second Mac. A session
+that finds the queue waiting with no worker runs `queuekeeper queue resume`.
 
 A queue can use a signed launcher app as the responsible process. A per-repository LaunchAgent runs the app directly
 and names its bundle ID in `AssociatedBundleIdentifiers`. The app stays alive while its Python worker runs, including
@@ -1358,29 +1358,29 @@ exited and macOS attributed it to Python (vocaro-engineering#299). See [Signed q
 for setup and recovery. Apple describes the bundle attribution and signing requirements in
 [TN3179](https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy).
 
-A worker whose session ends during a gate exits too. The `eng run` of each of the gate's lanes offers the lane to the
+A worker whose session ends during a gate exits too. The `queuekeeper run` of each of the gate's lanes offers the lane to the
 second Mac first, and when that offer gets `NoLocalNetwork` it runs nothing on this Mac and exits 69 (`EX_UNAVAILABLE`).
 The worker reads that as no verdict and exits as it does before a round, without counting the run toward
-`queue.noVerdictRuns`. Only the `eng run` a queue worker starts for a gate's lane does this: a session's own `eng run`
+`queue.noVerdictRuns`. Only the `queuekeeper run` a queue worker starts for a gate's lane does this: a session's own `queuekeeper run`
 keeps its fallback, as does a second Mac that is only away (vocaro-engineering#300).
 
 ### The second Mac's own toolkit checkout
 
-The second Mac has a toolkit checkout of its own at `~/Development/vocaro-engineering`. No dispatched
+The second Mac has a toolkit checkout of its own at `~/Development/queuekeeper`. No dispatched
 run uses it: each run uses the toolkit checkout dispatched beside its project, at the commit that was
-sent. Anything that runs `eng` straight from that checkout does use it, such as a
+sent. Anything that runs `queuekeeper` straight from that checkout does use it, such as a
 [recovery](#stale-pool-simulators) run there over ssh. On 2026-11-05 it was at e097b91, about 195
-commits behind, and it lacked `eng admissions limits`. Its own `origin/main` was stale too, since
-nothing there fetched it. eng now keeps it current (owner's decision, 2026-11-05: "it should be
-auto-updated by the eng scripts";
+commits behind, and it lacked `queuekeeper admissions limits`. Its own `origin/main` was stale too, since
+nothing there fetched it. queuekeeper now keeps it current (owner's decision, 2026-11-05: "it should be
+auto-updated by the queuekeeper scripts";
 [vocaro-engineering#203](https://github.com/vocaro/vocaro-engineering/issues/203)).
 
 The update runs in two places:
 
-- The connection that prepares each dispatch, so every `eng run`, `eng admit`, `eng remote`
+- The connection that prepares each dispatch, so every `queuekeeper run`, `queuekeeper admit`, `queuekeeper remote`
   and merge-queue gate sent there. The dispatch passes the commit this Mac's `origin/main` names, and
   a checkout that already holds it counts as current without a fetch.
-- `eng doctor`, in what it fixes on both Macs (`cli.fix_hosts`). It always fetches.
+- `queuekeeper doctor`, in what it fixes on both Macs (`cli.fix_hosts`). It always fetches.
 
 offload_host fast-forwards the checkout to `origin/main`, without hooks, under the same conditions as
 this Mac's shared checkout follows a landing
@@ -1395,8 +1395,8 @@ this Mac's shared checkout follows a landing
   checkout itself does not count, and open files are not read.
 
 Otherwise it leaves the checkout as it is and says why. A dispatch prints one line,
-`remote: left HOST's toolkit checkout ~/Development/vocaro-engineering at COMMIT as it is: REASON`,
-and goes on. `eng doctor` reports the same line as an error. Reasons include a missing checkout,
+`remote: left HOST's toolkit checkout ~/Development/queuekeeper at COMMIT as it is: REASON`,
+and goes on. `queuekeeper doctor` reports the same line as an error. Reasons include a missing checkout,
 another branch, a detached HEAD, changes, commits of its own or a diverged history, a process running
 from it, and a fetch that failed or timed out. These are the owner's to decide. A session does not
 stash, reset or edit that checkout to make it follow. An update prints
@@ -1415,7 +1415,7 @@ Limits:
   the connection that prepares a dispatch.
 
 `tests/host_isolation.py` replaces `cli.fix_hosts`, so no doctor test updates the real second Mac,
-and a test that dispatches uses a fake second Mac or `VOCARO_OFFLOAD_HOST=none`.
+and a test that dispatches uses a fake second Mac or `QUEUEKEEPER_OFFLOAD_HOST=none`.
 
 ### Setting up the second Mac
 
@@ -1431,7 +1431,7 @@ The owner prepares the second Mac once:
 1. Turn on Remote Login (System Settings, General, Sharing) and add this Mac's public key to the
    second Mac's `~/.ssh/authorized_keys`.
 2. Name it in this Mac's `~/.ssh/config`, so that `ssh build-host true` succeeds without a
-   prompt. eng takes the alias `second-mac` as well, in place of `build-host` or on the same
+   prompt. queuekeeper takes the alias `second-mac` as well, in place of `build-host` or on the same
    `Host` line beside it, and tries `build-host` first ([earlier names](#earlier-names)):
 
    ```
@@ -1441,24 +1441,24 @@ The owner prepares the second Mac once:
    ```
 
    `AddressFamily inet` keeps ssh to IPv4. The build host's `.local` name resolved first to an
-   IPv6 link-local address that never answered, so each connection waited out `eng remote`'s
+   IPv6 link-local address that never answered, so each connection waited out `queuekeeper remote`'s
    `ConnectTimeout` of 10 s before trying IPv4: about 10 s for every connection, four for a
    project's run, where it now takes 0.3 s (2026-10-27). An ssh without `ConnectTimeout`, such as
    a plain `ssh build-host`, waited out macOS's own TCP connection timeout instead, 75 s
    (`net.inet.tcp.keepinit`). Neither Mac reached the other over IPv6 at all, while IPv4 worked;
-   that is the network's, which is the owner's. `eng doctor` measures each address ssh tries, and
+   that is the network's, which is the owner's. `queuekeeper doctor` measures each address ssh tries, and
    reports first addresses that keep every connection waiting as an error
    ([which Mac runs a lane](#which-mac-runs-a-lane)).
 
    macOS renames a Mac whose `.local` name another machine on the network claims, adding or
    raising a `-N` suffix (`-3` became `-4` on 2026-11-01). The old `HostName` then does not
-   resolve, or resolves to the other machine, which presents another host key. eng finds the
+   resolve, or resolves to the other machine, which presents another host key. queuekeeper finds the
    second Mac again in either case: Remote Login still offers ssh over Bonjour, under the
-   computer name, so eng resolves each Mac that `dns-sd -B _ssh._tcp` lists to its current name
+   computer name, so queuekeeper resolves each Mac that `dns-sd -B _ssh._tcp` lists to its current name
    and asks it, as ssh would ask the old name, to run `true` while presenting the key
    `known_hosts` holds for the old name (or for `HostKeyAlias`). That key is the second Mac's
-   identity: when exactly one Mac presents it, eng uses that Mac's name for every connection of the
-   run, says so in one line, `eng: build-host was renamed: …`, and `eng doctor` reports the rename
+   identity: when exactly one Mac presents it, queuekeeper uses that Mac's name for every connection of the
+   run, says so in one line, `queuekeeper: build-host was renamed: …`, and `queuekeeper doctor` reports the rename
    as an error until `~/.ssh/config` names it. None, or more than one, is a second Mac that cannot
    be reached, and the failure says what the search saw: that Bonjour lists no other Mac offering
    ssh, so the second Mac is away or asleep, or which Macs it lists, none presenting the key. The
@@ -1466,13 +1466,13 @@ The owner prepares the second Mac once:
    the name's lookup already waits; finding a renamed Mac took 7.4 s in all (macOS 27.0.1,
    2026-11-01).
 
-   Every ssh connection eng makes searches this way when its name does not resolve or answers with
+   Every ssh connection queuekeeper makes searches this way when its name does not resolve or answers with
    another key, since ssh then logged in nowhere and nothing ran: the check before a dispatch, a
-   foreground lane's preparing connection, `eng remote foreground` and the other questions eng asks
+   foreground lane's preparing connection, `queuekeeper remote foreground` and the other questions queuekeeper asks
    the second Mac. On 2026-11-03 the second Mac became `-5` while only the check before a dispatch
    searched, and that search found nothing before 10 a.m.: `dns-sd` pads an hour of one digit with a
-   space (` 9:46:14.615  Add …`), which eng did not read as a Mac. Lanes fell back to this Mac, and
-   foreground lanes and `eng remote foreground` told sessions to wake a Mac that was awake. With both
+   space (` 9:46:14.615  Add …`), which queuekeeper did not read as a Mac. Lanes fell back to this Mac, and
+   foreground lanes and `queuekeeper remote foreground` told sessions to wake a Mac that was awake. With both
    fixed, a search from this Mac with `-4` configured found `-5` by its key in 7.2 s (macOS 27.2,
    2026-11-03; vocaro-engineering#129).
 
@@ -1481,8 +1481,8 @@ The owner prepares the second Mac once:
    `HostName`, so a later rename needs only the new `HostName`, not a new `known_hosts` entry.
    Giving the second Mac a `LocalHostName` no other machine is likely to claim (`sudo scutil
    --set LocalHostName NAME` there) makes renames rarer, though macOS can still rename it. That
-   setting, and `~/.ssh/config`, are the owner's: eng changes neither, needs `sudo` for the first,
-   and says what to set. Nothing else in eng depends on the old name.
+   setting, and `~/.ssh/config`, are the owner's: queuekeeper changes neither, needs `sudo` for the first,
+   and says what to set. Nothing else in queuekeeper depends on the old name.
 
 3. Install the Xcode this Mac uses at the same path and follow the first-launch instructions
    from the setup report.
@@ -1490,10 +1490,10 @@ The owner prepares the second Mac once:
    Then, from this Mac, install the tools the projects' gates use:
 
    ```sh
-   python3 scripts/eng remote setup [FORMULA ...] [--import MODULE ...]
+   python3 scripts/qk remote setup [FORMULA ...] [--import MODULE ...]
    ```
 
-   It puts Homebrew on the login shell's PATH in `~/.zprofile`, since `eng remote` runs in the
+   It puts Homebrew on the login shell's PATH in `~/.zprofile`, since `queuekeeper remote` runs in the
    second Mac's login shell, and installs Homebrew's Python, `uv`, `shellcheck`, `xcodegen`,
    `zstd` and each formula a project names. A new login shell then checks every one, each
    `--import` module in that Python, and the Xcode at this Mac's developer directory, one line
@@ -1504,18 +1504,18 @@ The owner prepares the second Mac once:
 5. Give both Macs the same simulator runtimes, and again whenever either gains one:
 
    ```sh
-   python3 scripts/eng remote setup --runtimes [--check]
+   python3 scripts/qk remote setup --runtimes [--check]
    ```
 
    It gives both Macs the same runtimes of the Xcode at this Mac's developer directory, as
-   `eng doctor` compares them, and `eng doctor` runs it itself when they differ. A runtime that only
+   `queuekeeper doctor` compares them, and `queuekeeper doctor` runs it itself when they differ. A runtime that only
    one Mac has is deleted from that Mac when no simulator but Xcode's defaults uses it there, read
    again just before the delete (`xcrun simctl runtime delete`), so a runtime nobody uses costs
    neither Mac its space; one that something uses, or whose simulators simctl cannot list, is
    copied to the other. A superseded build, one whose identifier CoreSimulator resolves to another
-   build by the rule `eng disk` uses (Reclaiming disk space), runs none of its identifier's
+   build by the rule `queuekeeper disk` uses (Reclaiming disk space), runs none of its identifier's
    simulators, so none uses it, unless the toolkit pins it or that Mac's device record names it,
-   as `eng disk` keeps it; an unreadable record keeps every superseded build used. This Mac sends
+   as `queuekeeper disk` keeps it; an unreadable record keeps every superseded build used. This Mac sends
    its pins with each request, since the second Mac reads nothing of the toolkit
    ([#190](https://github.com/vocaro/vocaro-engineering/issues/190)). Both must have that Xcode at
    the same path. The
@@ -1523,7 +1523,7 @@ The owner prepares the second Mac once:
    cryptex, the one disk image of its listed size in its asset's `Restore` folder), so a beta
    build Apple no longer serves comes across exactly. It goes over the second Mac's SSH
    connection, never GitHub, into `~/Development/build-host/runtimes` on the second Mac or
-   `~/Library/Application Support/vocaro-engineering/runtimes` on this Mac, outside
+   `~/Library/Application Support/queuekeeper/runtimes` on this Mac, outside
    `/private/tmp`, which a reboot empties. Only an image of exactly its listed size is added,
    with `xcrun simctl runtime add --move`, which leaves no second copy. A copy that fails or is
    stopped adds nothing and leaves nothing staged, and the next run removes what a reboot or a
@@ -1557,8 +1557,8 @@ The owner prepares the second Mac once:
    unset token
    ```
 
-8. For work that signs, keep the second Mac's login keychain unlocked for `eng remote`'s runs:
-   from this Mac, in your own Terminal, run `python3 scripts/eng keychain keep-unlocked` once and
+8. For work that signs, keep the second Mac's login keychain unlocked for `queuekeeper remote`'s runs:
+   from this Mac, in your own Terminal, run `python3 scripts/qk keychain keep-unlocked` once and
    type the second Mac's login password at its prompt
    ([keeping it unlocked](#keeping-the-second-macs-keychain-unlocked)).
 
@@ -1568,16 +1568,16 @@ credential file above, even when the project has no private package dependencies
 clones a private dependency with git, and git's default helper on a Mac, osxkeychain, cannot read
 the keychain from an SSH session: it fails with `-25308`, and the clone fails
 ([keychains on the right Mac](#keychains-on-the-right-mac)). When
-`git-credentials` exists, `eng remote`
+`git-credentials` exists, `queuekeeper remote`
 gives each run's git that file through the store helper and no other helper, by
 `GIT_CONFIG_COUNT` variables that reach only the run, so the owner's own git configuration on
 the second Mac is unchanged. A token reaches only the repositories it names, read-only, and it
 expires: renew it before then. Check the second Mac with a short lane first, such as this
-toolkit's `python3 scripts/eng remote run gate`.
+toolkit's `python3 scripts/qk remote run gate`.
 
 Private GitHub release assets need the authenticated API as well as Git source access.
 Declare their packages in `githubArtifacts`; admitted builds use the shared
-[artifact preparation](public-access.md#private-binary-artifacts-and-build-credentials), whose
+[artifact preparation](https://github.com/vocaro/vocaro-engineering/blob/main/guides/public-access.md#private-binary-artifacts-and-build-credentials), whose
 credential lookup reads this same run-scoped Git helper. Do not put a token into a package
 manifest, asset URL or committed configuration.
 
@@ -1594,18 +1594,18 @@ password, and never put it in chat, a command's arguments, an environment variab
 evidence: `security unlock-keychain` asks for it in the owner's own Terminal.
 
 ```sh
-python3 scripts/eng keychain recover [--target MAC] [--keychain PATH] [--identity NAME]
-python3 scripts/eng remote admit -- python3 scripts/eng keychain check [--keychain PATH] --identity NAME
+python3 scripts/qk keychain recover [--target MAC] [--keychain PATH] [--identity NAME]
+python3 scripts/qk remote admit -- python3 scripts/qk keychain check [--keychain PATH] --identity NAME
 ```
 
-`eng keychain recover` is the owner's, and unlocks nothing and reads no password. It:
+`queuekeeper keychain recover` is the owner's, and unlocks nothing and reads no password. It:
 
 - names this Mac, by the LocalHostName that receipts record, and the kind of session it runs in;
-- finds the target, by default the second Mac, through the resolver `eng remote` uses
-  (`VOCARO_OFFLOAD_HOST`, else the alias `~/.ssh/config` defines), and asks it for its name and
-  the keychain file over the same bounded SSH connection `eng doctor` makes, which never asks for
+- finds the target, by default the second Mac, through the resolver `queuekeeper remote` uses
+  (`QUEUEKEEPER_OFFLOAD_HOST`, else the alias `~/.ssh/config` defines), and asks it for its name and
+  the keychain file over the same bounded SSH connection `queuekeeper doctor` makes, which never asks for
   a password. On the second Mac, where neither names a destination, its device record, which
-  every `eng remote` run makes defer physical devices to the sending Mac, marks it as the target,
+  every `queuekeeper remote` run makes defer physical devices to the sending Mac, marks it as the target,
   so the owner there gets the local command and no alias. `--target MAC` names this Mac or the
   second Mac by its LocalHostName;
 - refuses, saying what to do instead, when the target is neither this Mac nor the second Mac,
@@ -1624,13 +1624,13 @@ python3 scripts/eng remote admit -- python3 scripts/eng keychain check [--keycha
   printed;
 - prints the check below last, for the context the automation runs in.
 
-`eng keychain check` runs where the automation that uses the key runs: on the second Mac, through
-`eng remote admit`, which runs it as every `eng remote` run is run, in its login shell under an
+`queuekeeper keychain check` runs where the automation that uses the key runs: on the second Mac, through
+`queuekeeper remote admit`, which runs it as every `queuekeeper remote` run is run, in its login shell under an
 SSH login. It prints a JSON record with four separate results:
 
 - `session`: the kind of session, `ssh`, `gui` or `background`, from the process's audit session
   flags, with a note on what a result there establishes. An SSH login is flagged remote and has no
-  graphic access ([probing a session](background-mac-testing.md#probing-a-session)).
+  graphic access ([probing a session](https://github.com/vocaro/vocaro-engineering/blob/main/guides/background-mac-testing.md#probing-a-session)).
 - `keychain`: `security show-keychain-info` on the file. `unlocked` when it read the settings,
   `locked` when Security refused it the interaction an unlock needs (errSecInteractionNotAllowed),
   `missing` for no such keychain.
@@ -1655,7 +1655,7 @@ locked keychain or a key's access control can raise one.
 - A result holds for the kind of session it was measured in. Signing that succeeds in the owner's
   GUI session, as an owner-local build does, does not qualify the key's use from SSH, nor an SSH
   result a GUI session.
-- An unlock made beforehand does not reach an `eng remote` run. On the second Mac, the next run's
+- An unlock made beforehand does not reach an `queuekeeper remote` run. On the second Mac, the next run's
   check read the login keychain `locked` and signing failed with `errSecInternalComponent`, the
   identity present, both after the owner unlocked the keychain in its GUI session with Keychain
   Access and after an accepted `security unlock-keychain` in an `ssh -t` session from the
@@ -1675,12 +1675,12 @@ locked keychain or a key's access control can raise one.
 The owner keeps the second Mac's login keychain unlocked for its automation: the second Mac holds
 no sensitive data and stays in a secure place (the owner's decision, 2026-10-30, which replaces
 that of 2026-10-29 to sign only in the owner's GUI session there). Since an unlock reaches only the
-session that made it, and every `eng remote` connection is an SSH login of its own, no unlock made
+session that made it, and every `queuekeeper remote` connection is an SSH login of its own, no unlock made
 once can serve the runs: each run unlocks the keychain itself, in its own session, with the second
 Mac's login password, which the owner gives once.
 
 ```sh
-python3 scripts/eng keychain keep-unlocked [--identity NAME]
+python3 scripts/qk keychain keep-unlocked [--identity NAME]
 ```
 
 The owner runs it in their own Terminal, on the Mac that sends work to the second Mac or in a shell
@@ -1689,7 +1689,7 @@ on the second Mac. It establishes the Mac and the target as `recover` does and r
 directly there:
 
 - refuses, having asked for nothing, on any Mac but the one the sending Mac reached, without a
-  terminal to ask at, or before `eng remote` has made its root, `~/Development/build-host`;
+  terminal to ask at, or before `queuekeeper remote` has made its root, `~/Development/build-host`;
 - asks for the login password at the second Mac's own prompt, which shows nothing typed, and
   tries it with `SecKeychainUnlock` on `~/Library/Keychains/login.keychain-db`, three times at most;
   a password that does not unlock it is not kept;
@@ -1702,7 +1702,7 @@ directly there:
   no password unlocked the keychain, which changes nothing, or the settings were not set, and 2
   when it refused.
 
-Each `eng remote run` and `eng remote admit` then reads the file on the second Mac and unlocks the
+Each `queuekeeper remote run` and `queuekeeper remote admit` then reads the file on the second Mac and unlocks the
 login keychain with `SecKeychainUnlock` before it claims a checkout, in the run's own session,
 which the work it starts shares; the run says so in one line. The password goes to Security only:
 never into a command's arguments, an environment variable, a log, a receipt or chat. Without the
@@ -1712,13 +1712,13 @@ with the fix: run `keep-unlocked` again. The refusal is configuration, so the wo
 this Mac.
 
 Measured on the second Mac (2026-10-30, macOS 27.2 26B123), after the owner ran `keep-unlocked`
-from the workstation: in the next `eng remote admit` run, the run unlocked the login keychain, and
-`eng keychain check` in that run's SSH session read it `unlocked` (`show-keychain-info` answered
+from the workstation: in the next `queuekeeper remote admit` run, the run unlocked the login keychain, and
+`queuekeeper keychain check` in that run's SSH session read it `unlocked` (`show-keychain-info` answered
 `no-timeout`), found the Apple Development identity (1 valid) and signed with it: outcome `passed`,
 with no partition-list or access-control change. A plain `ssh build-host` session a minute later
 still read it locked ("User interaction is not allowed").
 
-So it reaches `eng remote`'s runs only: a plain `ssh build-host` session, or a process started in
+So it reaches `queuekeeper remote`'s runs only: a plain `ssh build-host` session, or a process started in
 one, still finds the login keychain locked. To undo it, delete the file on the second Mac, and set
 the lock settings the owner wants with `security set-keychain-settings`.
 
@@ -1726,7 +1726,7 @@ the lock settings the owner wants with `security set-keychain-settings`.
 
 Until 2026-10-28 the second Mac was the build host, which read as the one Mac that builds,
 though both do. Its configuration names became offload names, and since
-[vocaro-engineering#58](https://github.com/vocaro/vocaro-engineering/issues/58) eng reads none of
+[vocaro-engineering#58](https://github.com/vocaro/vocaro-engineering/issues/58) queuekeeper reads none of
 the old ones. It refuses each, naming what replaces it, rather than ignoring it: a checkout or a
 shell that still uses one meant something by it, and ignoring it would move that work silently.
 
@@ -1734,118 +1734,52 @@ shell that still uses one meant something by it, and ignoring it would move that
   every lane and group that gives it. Delete it, since every heavy or exclusive lane goes to the
   second Mac unless it says why it stays, with `here`; a checkout older than its project's change
   rebases onto main.
-- `eng run --build-host-only`: refused, beside any other flag too; use `--offload-only`.
+- `queuekeeper run --build-host-only`: refused, beside any other flag too; use `--offload-only`.
 - `devices recover --build-host-unchecked REASON`: refused; use `--offload-unchecked REASON`.
-- `VOCARO_BUILD_HOST`, set to anything, even beside `VOCARO_OFFLOAD_HOST`: refused; set
-  `VOCARO_OFFLOAD_HOST` instead, to the same value. Ignored, it could send work to the second Mac
-  that it was meant to keep here, so eng refuses it wherever it reads `VOCARO_OFFLOAD_HOST`: before
-  `eng run` or `eng admit` chooses a Mac, in `eng remote run`, `admit` or `setup`
-  without `--host`, and in `eng doctor`. A command that neither chooses a Mac nor reaches the second Mac, such as a `self`
-  lane, a lane that says `here`, `eng run --here` or `eng spelling`, never read it and runs as
-  before, so the second Mac's own `eng run --here` does not stop for it. Every other lane, a
+- `VOCARO_BUILD_HOST`, set to anything, even beside `QUEUEKEEPER_OFFLOAD_HOST`: refused; set
+  `QUEUEKEEPER_OFFLOAD_HOST` instead, to the same value. Ignored, it could send work to the second Mac
+  that it was meant to keep here, so queuekeeper refuses it wherever it reads `QUEUEKEEPER_OFFLOAD_HOST`: before
+  `queuekeeper run` or `queuekeeper admit` chooses a Mac, in `queuekeeper remote run`, `admit` or `setup`
+  without `--host`, and in `queuekeeper doctor`. A command that neither chooses a Mac nor reaches the second Mac, such as a `self`
+  lane, a lane that says `here`, `queuekeeper run --here` or `queuekeeper spelling`, never read it and runs as
+  before, so the second Mac's own `queuekeeper run --here` does not stop for it. Every other lane, a
   light one included, chooses a Mac, and is refused while it is set.
 
 Nothing reads the other renamed words, so nothing refuses them: a receipt's `ranOn`, now
 `second Mac`, and a device record's recovery, which records its check of the second Mac as
 `offload`. Receipts and records written before keep `build host` and `buildHost`, since they are
-data already on disk, and such a receipt still counts: `eng remote passed` and `eng release` read
+data already on disk, and such a receipt still counts: `queuekeeper remote passed` and `eng release` read
 the second Mac's receipts by commit, whatever their `ranOn`.
 
 These keep the build host's name:
 
 - The SSH alias `build-host`, which the owner defines in `~/.ssh/config`, stays the default, since
-  the toolkit cannot change that file. eng also takes `second-mac`, as `Host second-mac` in place
-  of `Host build-host` or both on one line, and without `--host` or `VOCARO_OFFLOAD_HOST` uses the
+  the toolkit cannot change that file. queuekeeper also takes `second-mac`, as `Host second-mac` in place
+  of `Host build-host` or both on one line, and without `--host` or `QUEUEKEEPER_OFFLOAD_HOST` uses the
   first of the two that `ssh -G` resolves.
 - `~/Development/build-host` on the second Mac, which holds its bare repositories, its warm
   checkouts, the runtime staging and `git-credentials`: another name would make every checkout
   cold and leave the token behind.
-- `refs/vocaro/build-host/`, under which a push carries a commit into those repositories: another
+- `refs/queuekeeper/hosts/`, under which a push carries a commit into those repositories: another
   prefix would orphan the refs already there, such as one a lost run left.
 - Records made before the rename, measurements, logs and receipts among them, and the guides'
   dated observations, which keep their words.
-
-## Scratch and result directories
-
-A worktree that builds a package and its apps holds 8 to 14 GB of SwiftPM and Xcode output, and
-a full data volume fails every session's shell with `ENOSPC`. Before fanning sessions out into
-build worktrees, check `df -h /System/Volumes/Data` and budget about 12 GB for each; when the
-budget does not allow it, work one at a time in one worktree. Put a scratch build
-(`--scratch-path`) outside the repository and delete it once its result is read. Remove a
-worktree once its work has landed.
-
-A change to documents or scripts that builds nothing needs no full checkout. Add the worktree
-with `git worktree add --no-checkout`, list the paths with `git sparse-checkout set --no-cone`,
-then run `git checkout`. A link check needs each changed document's local link targets on disk,
-and a hook that lints every document on disk needs every document and its targets. That set was
-13 MB of studywright's 2.5 GB tracked tree (October 2026). Check `extensions.worktreeConfig`
-first: with it on, the sparse setting stayed in the new worktree's own configuration and left
-the main checkout whole.
-
-Keep a run's results directory only while it is worth reading: a run that passed removes its
-own, and a run with a failure or an unmeasured result keeps it and prints the path. Prune
-earlier runs' directories by count, naming each one removed. Keeping every run's results once
-filled a 1.8 TiB volume in three days. Concurrent runs share TMPDIR, so record the owning
-process's PID and start time in a directory before it takes the name the pruner matches. The
-pruner leaves a directory whose recorded process still has that PID and start time (a reused PID
-has a different start time and protects nothing) and counts only finished runs against the
-limit. A directory made by an older tool that records no owner is pruned as finished, so the
-protection holds only between runs that record owners.
-
-Key a scratch package that is kept between runs by checkout, for example
-`NAME/<directory name>-<checksum of the checkout path>`. One scratch shared by every checkout
-raced: two builds started together failed on a manifest holding one checkout's text and the
-tail of the other's, and runs started 20 seconds apart passed while one ran a harness compiled
-from the other checkout's source. Two runs from one checkout still share its scratch.
-
-The macOS temporary-file cleaner deletes files in the user's temporary directory that have not
-been read, written or changed for three days, and leaves the directories. A kept SwiftPM scratch
-then holds dependency checkouts without their `Package.swift`; SwiftPM takes them as resolved
-and fails with "the package manifest … cannot be accessed" (observed on macOS 27, October 2026).
-When a build fails in a scratch an earlier run left, discard that scratch's build directory
-once, say so, and build again from nothing. Report a failure only after the clean build.
-
-A reboot empties `/private/tmp`. The reboot after the 2026-10-14 panic removed a coordinator's
-scratch, a shared baseline, every agent's notes and the handoff records kept there; the
-worktrees survived. The restarts that installed the 2026-10-26 macOS updates also emptied both
-Macs' user temporary directories (`$TMPDIR`), and a failed gate's lane logs went with the build
-host's. Keep notes, counting scripts and proposed commit messages that must outlive
-a reboot in the worktree's ignored `.build/`. The device record now lives outside `/private/tmp`
-([device reservations](#device-reservations)).
-
-Durable inputs live outside `/private/tmp` too. Keep pinned model weights and other verified
-downloads, which are too large for a worktree and shared by every checkout, in
-`~/Development/models/PROJECT/`, one folder for each pinned snapshot, and make a project's
-download script and backend documentation default there. That folder survives reboots and the
-temporary-file cleaner, has the same path on the second Mac, and is never an `eng disk`
-candidate. `~/Library/Caches` is no substitute: macOS treats caches as regenerable and may delete
-them when the volume runs short, which on this host happens when sessions are busiest.
-`eng doctor` warns when the project's tracked Markdown names model storage under `/tmp` or
-`/private/tmp`: a path there that names models or weights, or that a variable whose name holds
-`MODEL` is set to. It skips files under a `measurements` or `evidence` folder, whose records keep
-the paths their runs used.
-
-Claude Code keeps each session's scratchpad under `/private/tmp`
-([reclaiming disk space](#reclaiming-disk-space)), so a session whose work may span a reboot
-copies its deliverables (scripts, probe sources, results) into the project's evidence folder as
-it makes them. Before reasoning about what survived, read `last reboot`, not only `uptime`, and
-compare the reboot times with when the files were last used.
 
 ## Reclaiming disk space
 
 The rules above slow growth; they do not recover what crashed or finished sessions left behind.
 Reclaiming that needs proof that nobody's live work is in it, and a quiet session, a passed
-deadline or a finished-sounding name proves nothing. `eng disk` takes the inventory and changes
+deadline or a finished-sounding name proves nothing. `queuekeeper disk` takes the inventory and changes
 nothing:
 
 ```sh
-python3 scripts/eng disk
+python3 scripts/qk disk
 ```
 
 It covers every project in `~/Development`, whichever project runs it, and reads only what those
 projects leave on the host: their worktrees, the simulators and runtimes their tests use, the
 DerivedData and SwiftPM caches their builds fill, the failure records their test runs keep, the
-lane results eng keeps by commit in their Git directories, and the scratch builds and results their sessions leave in `/private/tmp` and the user temporary
+lane results queuekeeper keeps by commit in their Git directories, and the scratch builds and results their sessions leave in `/private/tmp` and the user temporary
 directory. It never surveys the home
 directory or the rest of the volume. It prints each item's size, the reason for its status and
 the exact command that would remove it.
@@ -1854,8 +1788,8 @@ A **candidate** is proven unowned by the rules below, and `--delete` removes it 
 only the owner can say whether it is still wanted: test results, a directory no repository has
 registered and a worktree outside the session directories. Simulators and runtimes are never
 owner items: Xcode makes its simulators again and downloads its runtimes again (the owner's
-decision, 2026-11-03, the first to let eng delete without asking). Everything else is **kept**:
-in use, owned, of unclear ownership, or holding work or evidence. `eng disk --dry-run` lists only
+decision, 2026-11-03, the first to let queuekeeper delete without asking). Everything else is **kept**:
+in use, owned, of unclear ownership, or holding work or evidence. `queuekeeper disk --dry-run` lists only
 the candidates, with their commands: exactly what `--delete` removes.
 
 - **In use.** One `lsof` and `ps` census of the account's processes is taken first. A path is in
@@ -1870,14 +1804,14 @@ the candidates, with their commands: exactly what `--delete` removes.
   runs), has no process, is clean (no modified or untracked path) and has landed: its HEAD is
   contained in origin/main, every one of its commits has an equal patch there and none is a
   merge, or merging it into origin/main would change nothing (a squash). That is the proof
-  Closeout's `landed.sh` makes, by the same code ([agent skills](skills.md)), less what needs
+  Closeout's `landed.sh` makes, by the same code ([agent skills](https://github.com/vocaro/vocaro-engineering/blob/main/guides/skills.md)), less what needs
   the network: its merged pull request lookup, and its search of the project's open issues for
   citations. So a detached worktree that origin/main reaches only by equal patches or a squash is
   kept: it is the last ref to those commits, and removing it would leave them to `git gc`. One on
   a branch is not, since the branch remains. Ignored files under a `measurements` or `evidence`
   directory keep it, as any ignored file `ignored.py` cannot name a cache does. The rest of
   `.build` is SwiftPM's, SwiftPM 6's `.buildSystem_debug`, `.buildSystem_release` and
-  `CACHEDIR.TAG` among it. eng's results under `.build/engineering` (lane logs, receipts, remote
+  `CACHEDIR.TAG` among it. queuekeeper's results under `.build/queuekeeper` (lane logs, receipts, remote
   results) keep an unlanded worktree, but go with a landed one, since its work is on origin/main
   where a lane runs it again; the reason says so. Closeout still keeps a worktree for them. 44
   landed subagent worktrees (`.claude/worktrees/agent-*`), 90 GiB, had to be removed by hand on
@@ -1897,22 +1831,22 @@ the candidates, with their commands: exactly what `--delete` removes.
   commands there again; its work is on main and its branch remains. A merge queue's checkout is
   locked and kept, except one of the layout beside the main checkout (`NAME-queue`,
   `NAME-queue-toolkit`) that its worker locked as `retired by the merge queue` when it made the
-  checkout afresh under `~/Development/vocaro-queue` because a process still used the old one:
+  checkout afresh under `~/Development/queuekeeper-workers` because a process still used the old one:
   once no process does, that is an owner decision, `git worktree remove --force --force PATH`
   ([where the queue's checkouts are](maintenance.md#the-merge-queue)).
 - **Simulators**, from `simctl list -j`. A member of a pool that a main checkout's
-  engineering.json names in `simulatorPool` is a candidate only under the
-  [pruning rule](simulator-testing.md#pruning), and its command is `eng simulator-pool prune`,
+  queuekeeper.json names in `simulatorPool` is a candidate only under the
+  [pruning rule](https://github.com/vocaro/vocaro-engineering/blob/main/guides/simulator-testing.md#pruning), and its command is `queuekeeper simulator-pool prune`,
   which reserves it, checks it again and records the deletion. A device left by the retired
-  [disposable lifecycle](simulator-testing.md#disposable-simulators), whose unique name carries a
+  [disposable lifecycle](https://github.com/vocaro/vocaro-engineering/blob/main/guides/simulator-testing.md#disposable-simulators), whose unique name carries a
   UUID, is a candidate when it is shut down, unused for the idle time, absent from every
   process's arguments and files, and unnamed, by UDID or name, in every device record: the one
-  the devices module reads, the account's record when `VOCARO_DEVICE_RECORD` names another, and
+  the devices module reads, the account's record when `QUEUEKEEPER_DEVICE_RECORD` names another, and
   any legacy `/private/tmp` handoff file. Every device is shut down and unused by any process
   before it can be a candidate, and an unreadable record keeps every device. Xcode's default
   devices, unavailable named devices and device directories CoreSimulator no longer lists are
-  candidates, and `eng doctor` deletes this Mac's defaults itself; any other named device, which
-  may be another pool's member on a checkout eng cannot see, is kept. A runtime no device uses
+  candidates, and `queuekeeper doctor` deletes this Mac's defaults itself; any other named device, which
+  may be another pool's member on a checkout queuekeeper cannot see, is kept. A runtime no device uses
   is a candidate once simctl's `lastUsedAt` is over 14 days old, or absent, so a pool that will
   create its members on it next keeps it meanwhile; one that came with Xcode is kept.
   CoreSimulator resolves a runtime identifier's devices to one build, so when several builds of
@@ -1921,14 +1855,14 @@ the candidates, with their commands: exactly what `--delete` removes.
   the build whose image CoreSimulator used last. Any other build of the identifier is superseded
   and a candidate once its own `lastUsedAt` is over 14 days old or absent, unless the toolkit
   pins it (the builds qualified for
-  [guarded VoiceOver activation](voiceover-simulator.md), `voiceover/activation.py`'s
+  [guarded VoiceOver activation](https://github.com/vocaro/vocaro-engineering/blob/main/guides/voiceover-simulator.md), `voiceover/activation.py`'s
   `QUALIFIED`) or a device record names it, for instance as a pool template's `runtimeBuild`. A
   template's `installedBuilds`, the builds installed when it was warmed, pins none: removing one
   only makes the pool warm that template again. An
   unreadable record keeps every superseded build, and an identifier whose choice neither the SDK
   nor a single last use shows has no superseded build. A pinned build is kept even with no
   device ([#188](https://github.com/vocaro/vocaro-engineering/issues/188)). With a second Mac, a
-  runtime candidate's reason names the second Mac's copy, read as `eng remote setup --runtimes`
+  runtime candidate's reason names the second Mac's copy, read as `queuekeeper remote setup --runtimes`
   reads it. The two Macs keep the same runtimes
   ([#123](https://github.com/vocaro/vocaro-engineering/issues/123)): that command deletes a runtime
   only one Mac lists when no simulator uses it there, as none uses a superseded build nothing
@@ -1943,7 +1877,7 @@ the candidates, with their commands: exactly what `--delete` removes.
   building, it has no build products to lose and is a candidate under the same rules: no
   process and idle for `--min-idle-hours`. So is one whose `Build` holds only `ProfileData`, the
   coverage data a `test-without-building` without `-derivedDataPath` leaves on every run: 1,850
-  such folders, 15 GiB, on 2026-11-04, before `eng simulator-tests` gave each test step a folder of
+  such folders, 15 GiB, on 2026-11-04, before `queuekeeper simulator-tests` gave each test step a folder of
   its own ([#158](https://github.com/vocaro/vocaro-engineering/issues/158)). One holding other
   `Build` contents or anything else is an owner item. The folders every build shares (`ModuleCache.noindex`, `SDKExplicitPrecompiledModules`)
   are kept. A SwiftPM scratch (a
@@ -1960,34 +1894,34 @@ the candidates, with their commands: exactly what `--delete` removes.
   kept.
 - **Kept failure records**, in each main checkout's and worktree's `.build/failures/`, counted by
   name. Their rule prunes a record once it is 14 days old or once five newer records of its name
-  exist ([kept failure records](app-testing.md#kept-failure-records)). A checkout with records past
+  exist ([kept failure records](https://github.com/vocaro/vocaro-engineering/blob/main/guides/app-testing.md#kept-failure-records)). A checkout with records past
   it is a candidate, sized by those records, whose command is `eng failures prune CHECKOUT`; one
   with none past it, or whose records a process uses, is kept. `eng failures keep` applies the
   same rule as it keeps a record, on either Mac. Records alone never keep a landed worktree.
 - **Kept lane results**, beside the receipts in each main checkout's
-  `.git/vocaro-engineering/remote/COMMIT/LANE.results/`
-  ([a lane's results](parallel-tests.md#a-lanes-results)), counted by lane. Their rule keeps a
+  `.git/queuekeeper/remote/COMMIT/LANE.results/`
+  ([a lane's results](https://github.com/vocaro/vocaro-engineering/blob/main/guides/parallel-tests.md#a-lanes-results)), counted by lane. Their rule keeps a
   lane's results at its newest 10 commits, by the time its receipt was kept, and at every commit
   kept in the last 14 days, and removes the rest; it never removes a receipt, which is small and
-  which eng release, a checkpoint and `eng remote passed` read, so a receipt's `keptResults` can
+  which eng release, a checkpoint and `queuekeeper remote passed` read, so a receipt's `keptResults` can
   name a folder that is gone. A landing gate's iOS shards keep about 1 MB at each commit, so the
   store would otherwise grow by that with every gated commit
   ([#218](https://github.com/vocaro/vocaro-engineering/issues/218)). An open issue or evidence
   that cites a commit's times does not keep them: evidence copies what it cites
-  ([evidence](evidence.md)). A repository with results past the rule is a candidate, sized by
-  them, whose command is `eng remote prune-results CHECKOUT` (`--dry-run` lists them); one with
+  ([evidence](https://github.com/vocaro/vocaro-engineering/blob/main/guides/evidence.md)). A repository with results past the rule is a candidate, sized by
+  them, whose command is `queuekeeper remote prune-results CHECKOUT` (`--dry-run` lists them); one with
   none past it, or whose store a process uses, is kept.
 - **Evidence archives**, on a Mac that offloads to a second one. A folder in `~/Development` named
   `*-evidence`, `*-measurements` or `session-evidence` that is not a Git checkout, and a main
   checkout's `.build/session-evidence`, are owner items. Their command is
   `eng evidence offload`, which deletes a folder here only once every file verified there
-  ([evidence](evidence.md#public-and-private-destinations)). A main checkout's archive goes to
-  `Development/session-evidence/<project>` there. eng's background offload retry runs that command
+  ([evidence](https://github.com/vocaro/vocaro-engineering/blob/main/guides/evidence.md#public-and-private-destinations)). A main checkout's archive goes to
+  `Development/session-evidence/<project>` there. queuekeeper's background offload retry runs that command
   by itself once nothing in the folder has changed for 24 hours and no process uses it, so an
   archive listed here moves without a person unless it is in use, still changing, or its offload
   failed for a reason other than the second Mac being away.
 
-`eng disk --delete` removes every candidate category at once, on a terminal or not, without
+`queuekeeper disk --delete` removes every candidate category at once, on a terminal or not, without
 asking: any session runs it when the volume runs short (the owner's decision, 2026-11-05; until
 then it asked him on a terminal for every category but simulators and runtimes, and
 `--yes 'owner, 2026-11-04 chat'` carried an approval he gave in chat into a run without one).
@@ -1996,7 +1930,7 @@ then it asked him on a terminal for every category but simulators and runtimes, 
 their commands are only printed. Immediately before each
 removal it takes a fresh census and checks that candidate again, refuses an `rm` inside any
 working tree or reached through a link, and appends every decision to
-`~/Library/Application Support/vocaro-engineering/disk-reclaimed.jsonl`. It never runs an owner
+`~/Library/Application Support/queuekeeper/disk-reclaimed.jsonl`. It never runs an owner
 item's command. Inventory and dry-run sizes are allocated sizes from `du`. APFS clones share
 blocks, so removing one can free less than its size. To report how much space a cleanup freed,
 measure free space on the same volume immediately before and after the run, for example with
@@ -2006,8 +1940,8 @@ separately because other activity on the volume can affect the net change across
 Run the inventory again after removing worktrees because DerivedData whose workspace went with
 them becomes a candidate.
 
-Use `eng disk --dry-run --archive-worktrees` to see which additional worktrees can go after
-archiving. `eng disk --delete --archive-worktrees` also stages the ignored evidence, lane results
+Use `queuekeeper disk --dry-run --archive-worktrees` to see which additional worktrees can go after
+archiving. `queuekeeper disk --delete --archive-worktrees` also stages the ignored evidence, lane results
 and unclassified files from those worktrees and verifies them on the second Mac before removing the
 checkout. This applies to clean, landed, idle worktrees under a project's `.claude/worktrees`.
 Persistent checkouts, Codex worktrees, and detached commits that main cannot reach stay under
@@ -2060,7 +1994,7 @@ While the volume is falling, symptomsd's log names each process that has dirtied
 
 ### Processes left over from runs
 
-Those fills began the evening `eng remote` work started on the build host, came every six to
+Those fills began the evening `queuekeeper remote` work started on the build host, came every six to
 seven hours, and stopped at the restart that installed macOS 27.2 (26B123), at 02:05 UTC on
 2026-10-27. The restart also emptied `$TMPDIR`, and with it what could have named the writer.
 Nothing in the toolkit was found to write the space, and the investigation closed it as a likely
@@ -2069,9 +2003,9 @@ defect of the macOS 27.2 or Xcode 27.2 beta that the restart replaced
 explanation it weighed was a process that a run left running until the restart, and supervision
 cannot see a child that moved to a session of its own and was orphaned between two samples
 ([process supervision](#process-supervision)). So the second Mac is searched for such processes
-before work is sent there: `eng remote`, and `eng run` for a lane it sends there, print what the
+before work is sent there: `queuekeeper remote`, and `queuekeeper run` for a lane it sends there, print what the
 search finds in the connection that prepares the second Mac's repositories, before anything is
-pushed, and `eng doctor` lists it under `offload`, `leftovers`. A process is listed when it is
+pushed, and `queuekeeper doctor` lists it under `offload`, `leftovers`. A process is listed when it is
 the account's, runs from a checkout there (`~/Development/build-host/checkouts`), the
 temporary directory (`$TMPDIR`) or a simulator's device directory, and no live run accounts for
 it:
@@ -2089,7 +2023,7 @@ it:
   everything below it. A simulator's processes descend from `launchd_sim`, never from a run, so
   a device is a live run's while the second Mac's [device record](#device-reservations) holds
   it, unreleased, for one of that run's processes with its recorded start, or while one of them
-  names its UDID. The reservation is the exact signal: `eng simulator-tests` names its devices
+  names its UDID. The reservation is the exact signal: `queuekeeper simulator-tests` names its devices
   by their kind, so the run names a device only while an `xcodebuild` of its names it. A pool
   member's reservation records the process that took it (`holderProcess`), and an active run's
   records its process.
@@ -2119,7 +2053,7 @@ call's disk I/O count left out a buffered 4 MiB that the process never flushed i
 The search itself only reports. A search that fails says why, and the work is sent all the same.
 Tell the owner what it lists, with its PIDs and their writes: whether to stop a process is the
 owner's decision, as is any other change to a shared host
-([shared resources](../agents/core.md#shared-resources)). The exceptions are a process that an
+([shared resources](https://github.com/vocaro/vocaro-engineering/blob/main/agents/core.md#shared-resources)). The exceptions are a process that an
 ended run provably launched, and a stale pool simulator, both below.
 
 ### Leftovers an ended run launched
@@ -2136,7 +2070,7 @@ from the slot's bundle executables after its claim: `offload_host.Launches`, sam
 `LAUNCH_SAMPLE_SECONDS` and once as each command ends, in `SLOT.launched.jsonl` beside the slot's
 lock, each line naming the process by PID, start and command line and the run by its PID and
 start. The cleanup that reaps stale pool simulators, before work is sent to the second Mac and in
-`eng simulator-pool reap` there, then runs `offload_host.stop_leftovers`; `eng doctor`, a diagnostic,
+`queuekeeper simulator-pool reap` there, then runs `offload_host.stop_leftovers`; `queuekeeper doctor`, a diagnostic,
 runs it as a dry run, which signals nothing and lists each process it would stop (`would stop PID
 …`). Its `proofs` lists every condition a process must meet; it stops nothing while the census
 could not check everything. It runs the census and every check again from fresh listings immediately before
@@ -2151,20 +2085,20 @@ recording existed has no record, and is only listed; so are Xcode's programs, su
 
 On 2026-10-31 a `Pagepour Duo 1` simulator, a `launchd_sim` with about 320 descendants, sat booted
 on the second Mac for 22 hours waiting for that decision. The owner has decided it for this one
-case: any session may run `python3 scripts/eng simulator-pool reap`, without asking, and eng runs it
+case: any session may run `python3 scripts/qk simulator-pool reap`, without asking, and queuekeeper runs it
 in the connection that lists leftovers before work is sent to the second Mac, and on both Macs in
-`eng doctor` (the owner's decision, 2026-11-03). Heavy work that runs on the Mac it was started on, a lane
-`eng run` runs there or a command `eng admit` runs there, reaps that Mac the same way once it is admitted and
+`queuekeeper doctor` (the owner's decision, 2026-11-03). Heavy work that runs on the Mac it was started on, a lane
+`queuekeeper run` runs there or a command `queuekeeper admit` runs there, reaps that Mac the same way once it is admitted and
 before it starts, so that a run here frees what is left over before it takes simulators
 ([vocaro-engineering#156](https://github.com/vocaro/vocaro-engineering/issues/156)). Work a dispatch sent
 to the second Mac does not reap again, since its dispatch just did, nor does work nested in an admission
-it inherits, nor a `self` lane, whose `eng admit` commands reap each as it is admitted. It runs
+it inherits, nor a `self` lane, whose `queuekeeper admit` commands reap each as it is admitted. It runs
 `xcrun simctl shutdown UDID` on a simulator only when all of these hold:
 
 1. It is a member of a project's pool: named `POOL LABEL N`, for a pool named by the project, or by a
    project's main checkout here or its checkout on the second Mac. Or it is that pool's warmed template,
-   `POOL LABEL template (RUNTIME)` on the runtime its name gives, as `eng simulator-pool list` shows one
-   ([warmed templates](simulator-testing.md#warmed-templates)). Asked on 2026-11-04 "May the pool's reap
+   `POOL LABEL template (RUNTIME)` on the runtime its name gives, as `queuekeeper simulator-pool list` shows one
+   ([warmed templates](https://github.com/vocaro/vocaro-engineering/blob/main/guides/simulator-testing.md#warmed-templates)). Asked on 2026-11-04 "May the pool's reap
    shut down a warmed template a killed warm-up left booted?", the owner answered "Yes, reap them"
    ([vocaro-engineering#153](https://github.com/vocaro/vocaro-engineering/issues/153)). The stop is
    logged and printed as a warmed template's, not a member's. Before booting a newly created template,
@@ -2193,10 +2127,10 @@ it inherits, nor a `self` lane, whose `eng admit` commands reap each as it is ad
 **A pool member with no live reservation goes after 2 hours, whoever booted it.** That includes one the
 owner booted by hand. To keep one running, boot a simulator outside the pool, or reserve it with
 `python3 -m vocaro_engineering.devices reserve`, which records no process and so counts as live. A
-session that took a member with `eng simulator-pool take`, whose process ends when it prints the
+session that took a member with `queuekeeper simulator-pool take`, whose process ends when it prints the
 UDID, holds a reservation whose process is gone, which counts as live until its expected release,
 an hour after the take unless `take --hold MINUTES` asked for longer. To work past that, it runs
-`eng simulator-pool extend UDID [--hold MINUTES]` (an hour from now by default), or records a running
+`queuekeeper simulator-pool extend UDID [--hold MINUTES]` (an hour from now by default), or records a running
 process of its own (`devices update KEY --own PID`) (vocaro-engineering#179).
 
 **A template stays while its warm-up runs.** The pool reserves a template in the warming process's name,
@@ -2213,7 +2147,7 @@ It stops only what it is sure of: a census with anything unread, an unreadable d
 admission guard, or a `simctl` that does not list its devices stops nothing and says so. A failed shutdown is
 reported and not tried again in that run; the next run may try it once more. Each stop
 is printed, for the session to report, and logged in the Mac's own
-`~/Library/Application Support/vocaro-engineering/simulator-reaps.jsonl` as a `stopping` line written
+`~/Library/Application Support/queuekeeper/simulator-reaps.jsonl` as a `stopping` line written
 first, then `stopped` or `failed`, with its UDID, name, `launchd_sim` PID and start, age in seconds, and
 reason. A log that cannot be written stops nothing. The log is a sibling of the
 [admission log](#admission-log), whose audit reads only admissions.
@@ -2238,7 +2172,7 @@ session recovers leftover simulators by hand or brings them to the owner (the ow
 2026-11-04, [vocaro-engineering#156](https://github.com/vocaro/vocaro-engineering/issues/156), which
 reverses the report-only rule of [#97](https://github.com/vocaro/vocaro-engineering/issues/97)). Pool
 members are erased before each take, so a dead holder leaves nothing on the device to restore. Each run of
-`eng simulator-pool reap`, the reap before a dispatch to the second Mac or a run here and `eng doctor`'s releases an
+`queuekeeper simulator-pool reap`, the reap before a dispatch to the second Mac or a run here and `queuekeeper doctor`'s releases an
 entry of that Mac's device record only when all of these hold, read in that order:
 
 1. The entry records a process (`holderProcess`, an active run's process, `--own` processes) and every
@@ -2249,7 +2183,7 @@ entry of that Mac's device record only when all of these hold, read in that orde
 2. Its expected release has passed, or nothing accounts for its owner (the owner's decision,
    2026-11-04, in chat, taking #156's alternative). Before its expected release an entry goes only when:
    - it records `heldOnlyWhileHolderRuns`, which a run's own pool writes beside `holderProcess`
-     (`eng simulator-tests`, `simulators.pool.member`, a warm-up or prune) and `eng simulator-pool take`
+     (`queuekeeper simulator-tests`, `simulators.pool.member`, a warm-up or prune) and `queuekeeper simulator-pool take`
      never does. A take's process ends when it prints the UDID, and its session then holds the member
      by its word; a session between commands runs no process that names it (an agent's own process
      carries no session ID, only the commands it starts do), so no census can show that it has gone,
@@ -2273,7 +2207,7 @@ release passed`, or `early: nothing accounts for its owner`) and `recovery.verif
 starts, the release that had passed or, for an early one, what the owner's census checked, and the
 `Shutdown` it saw; it logs a `releasing` line, with the same `qualified`,
 before it writes the record, then `released`, in `simulator-reaps.jsonl`, so a log that cannot be written
-releases nothing. A released reservation that `eng simulator-pool take` made also gets a `reap` line in
+releases nothing. A released reservation that `queuekeeper simulator-pool take` made also gets a `reap` line in
 `simulator-holds.jsonl` (simulator-testing.md, Reserved simulator pool), which, unlike these, never holds
 the release up. Each release is printed (`released KEY (UDID), held for owner …`); `--dry-run` says
 `would release` and changes nothing.
@@ -2282,12 +2216,12 @@ An entry whose processes are gone and whose release has passed, but which reap c
 rest, stays held and is named with why (`reap did not release it: simctl shows it Booted, not Shutdown`,
 for one; its simulator is still under 2 hours old) and its exact `devices recover` command; for an entry
 in the second Mac's record that command runs there, as `ssh HOST 'cd
-~/Development/vocaro-engineering/src/python && python3 -m vocaro_engineering.devices recover …'`, since
-run here it would read this Mac's record. `eng simulator-pool reap`, with or without `--dry-run`, and
-`eng doctor`'s `reaped` name every such entry; the reap before a dispatch or a run here names only those of
+~/Development/queuekeeper/src/python && python3 -m vocaro_engineering.devices recover …'`, since
+run here it would read this Mac's record. `queuekeeper simulator-pool reap`, with or without `--dry-run`, and
+`queuekeeper doctor`'s `reaped` name every such entry; the reap before a dispatch or a run here names only those of
 simulators it just stopped. `devices status` names them too, and releases nothing. One not yet due that
 reap leaves (`its release is due …; reap did not release it: …`, a take's or one whose owner something
-accounts for) is named only by `eng simulator-pool reap`. A member still booted whose dead reservation
+accounts for) is named only by `queuekeeper simulator-pool reap`. A member still booted whose dead reservation
 is not yet due but qualifies early, a run's whose owner nothing accounts for, reap shuts down once it has
 run 2 hours and then releases in the same run (the owner's decision, 2026-11-05); `--dry-run` names it as
 one it would stop and would release. A take's, or one whose owner something accounts for, stays booted
@@ -2303,9 +2237,9 @@ shared their bundle identifiers and version; the system ran an old copy's extens
 never ran ([vocaro-engineering#87](https://github.com/vocaro/vocaro-engineering/issues/87)). The same
 holds for document types, URL schemes, Spotlight importers, services and Share extensions.
 
-So when an `eng run` or `eng admit` ends, by a pass, a failure, its time limit or a stop, eng runs
+So when an `queuekeeper run` or `queuekeeper admit` ends, by a pass, a failure, its time limit or a stop, queuekeeper runs
 `pluginkit -r` on each `Contents/PlugIns/*.appex` and `lsregister -u` on each Mac app under the derived
-data its xcodebuilds named (`app_registrations`). A lane needs no option: eng reads the `-derivedDataPath`,
+data its xcodebuilds named (`app_registrations`). A lane needs no option: queuekeeper reads the `-derivedDataPath`,
 or the folder of `-xctestrun …/Build/Products/…`, of each xcodebuild among the run's descendants, however
 deep in its scripts, every 0.5 seconds. Nested runs leave this to the outermost, so a run keeps its
 registrations until it ends.
@@ -2335,10 +2269,10 @@ goes. A problem here is printed on stderr and never changes the run's result.
 
 Physical devices, and the members of a project's simulator pool, are
 used only under a real reservation in the host's one device record, a human-readable JSON file
-outside every repository: `~/Library/Application Support/vocaro-engineering/device-handoff.json`
+outside every repository: `~/Library/Application Support/queuekeeper/device-handoff.json`
 of the account the sessions run as. `src/python/vocaro_engineering/devices.py` is its only
 writer. It finds the record from the account's home directory, not `HOME` or `TMPDIR`, so a
-session with a private environment joins the same record; `VOCARO_DEVICE_RECORD` names an
+session with a private environment joins the same record; `QUEUEKEEPER_DEVICE_RECORD` names an
 isolated record for tests only. Committed documentation keeps no device identifiers or live
 session details. An entry records:
 
@@ -2353,7 +2287,7 @@ Read and change the record through the helper's CLI, or from a script through
 `devices.Record()` and its `reserve`, `update`, `release` and `recover` methods:
 
 ```sh
-export PYTHONPATH="$VOCARO_ENGINEERING_ROOT/src/python"
+export PYTHONPATH="$QUEUEKEEPER_ROOT/src/python"
 python3 -m vocaro_engineering.devices status
 python3 -m vocaro_engineering.devices show iPhone    # the entry and its revision; 0 if new
 python3 -m vocaro_engineering.devices reserve iPhone --owner SESSION --revision N \
@@ -2407,11 +2341,11 @@ a run sent to the second Mac, while anything there may still use the device
 ([physical devices and the second Mac](#physical-devices-and-the-second-mac)).
 
 Give every command the device's explicit identifier: the canonical uppercase UDID of a device
-you own or have reserved, never a name or `booted`. [Simulator testing](simulator-testing.md)
+you own or have reserved, never a name or `booted`. [Simulator testing](https://github.com/vocaro/vocaro-engineering/blob/main/guides/simulator-testing.md)
 covers the pool's take, use and release steps.
 
 A physical device's reservation records the owner's approval, and approval of a run covers
-installing and launching there, not operating the device by hand. [Device testing](device-testing.md)
+installing and launching there, not operating the device by hand. [Device testing](https://github.com/vocaro/vocaro-engineering/blob/main/guides/device-testing.md)
 has the preflight, UI-automation authorization and restoration steps for physical devices.
 
 ### Taking the iPad or iPhone in turn
@@ -2446,12 +2380,12 @@ run, with the shortcuts he made there once, and releasing or recovering it puts 
 entry's `notifications` records each step. Without those shortcuts the command says what to ask
 the owner when asking for the device. `devices run` watches the device's log for a
 banner while its command runs, and runs a command that one reached once more
-([notifications during a run](device-testing.md#notifications-during-a-run)).
+([notifications during a run](https://github.com/vocaro/vocaro-engineering/blob/main/guides/device-testing.md#notifications-during-a-run)).
 
 Record each app the session launches on the device with `devices update KEY --launched BUNDLE`.
 Releasing an entry that records any requires `--apps-quit "…"`, saying how they were quit (for
 example `devicectl device process terminate`), so the next holder does not find them running. The
-Shortcuts app that `devices take` opens for the silencing shortcut is eng's own and needs no such
+Shortcuts app that `devices take` opens for the silencing shortcut is queuekeeper's own and needs no such
 word. The next entry starts without them; its `previousLease` keeps them. An app running on a device a
 session holds is not another session's work, since the record shows nobody else holds the device:
 a leftover the holder may quit, but never uninstall or clear beyond the agreed cleanup.
@@ -2464,7 +2398,7 @@ refuses `--approved-*` on a physical device, a hardware UDID of 8 and 16 hex dig
 the owner's agreement is between the session and the owner. Only `mac-foreground` records the
 owner's approval. A reservation made before then recorded
 one, and work on it stops once that has ended: `devices.require_window(KEY, entry)` refuses,
-`eng remote --device` refuses, and `status` reports the device's work as refused. An ended window
+`queuekeeper remote --device` refuses, and `status` reports the device's work as refused. An ended window
 releases nothing; the session restores the device and releases it.
 
 ### Bounded device runs
@@ -2478,11 +2412,11 @@ python3 -m vocaro_engineering.devices run iPhone --owner SESSION --revision N --
 
 A project's launcher calls it from Python, `devices.BoundedRun([KEY], owner, command, revision=N,
 limit=…, restoration=…).execute(command, stdout=log)`, and adds its own restoration queries and
-release around it, as Pagepour's mobile UI session does. `eng remote --device` runs the same
+release around it, as Pagepour's mobile UI session does. `queuekeeper remote --device` runs the same
 checks and bound for a run on the second Mac ([below](#physical-devices-and-the-second-mac)).
 The launcher:
 
-- requires the session, `--owner` or else `VOCARO_DEVICE_OWNER` or the agent session, to hold
+- requires the session, `--owner` or else `QUEUEKEEPER_DEVICE_OWNER` or the agent session, to hold
   KEY with no run active, at `--revision` when given, and KEY to name a physical device. It never
   acquires, extends or changes a reservation;
 - requires the window the entry records, as above, and refuses once it has ended
@@ -2539,7 +2473,7 @@ runs to the second Mac, and the second Mac's record holds only the second Mac's 
 The second Mac never reads this Mac's record itself: that would give code running there a way
 into this Mac, so a run carries the reservation it may use instead.
 
-Every `eng remote` run first makes the second Mac's record defer physical devices to the sending
+Every `queuekeeper remote` run first makes the second Mac's record defer physical devices to the sending
 Mac's (`devices defer MAC`, kept as the record's `physicalDevicesRecordedOn`, which `status`
 reports). A record that defers them refuses to reserve a physical device or to give an entry one,
 and names the record that holds them. A hardware UDID, 8 and 16 hex digits or 40, is physical; a
@@ -2552,16 +2486,16 @@ A run on the second Mac uses a physical device only under a reservation held her
 carries:
 
 ```sh
-python3 scripts/eng remote admit --device iPhone -- COMMAND
-python3 scripts/eng remote run --device iPhone LANE -- ARGUMENTS
+python3 scripts/qk remote admit --device iPhone -- COMMAND
+python3 scripts/qk remote run --device iPhone LANE -- ARGUMENTS
 ```
 
 - `--device KEY`, repeatable, makes the dispatch a [bounded run](#bounded-device-runs) of the
   reservations held here: the session holds each KEY here with no run active, within the owner's
   window, KEY names a physical device, and every device the command or the lane's arguments
   name is one of them; otherwise nothing is sent. `--device-owner` names the session, else
-  `VOCARO_DEVICE_OWNER`, else the agent session.
-- The dispatch marks each entry's run active with the `eng remote` process as the run's process,
+  `QUEUEKEEPER_DEVICE_OWNER`, else the agent session.
+- The dispatch marks each entry's run active with the `queuekeeper remote` process as the run's process,
   records the connection's `ssh` as the entry's own process, and records the run's outcome when
   it ends, with the host, the work and the results directory, in the entry's `run`. Its end, by a
   stop, its death or a dropped connection, stops the run there, so a run whose dispatcher vanished
@@ -2578,7 +2512,7 @@ python3 scripts/eng remote run --device iPhone LANE -- ARGUMENTS
 - The bound starts when the dispatch does, so it counts sending the commits and waiting for
   admission there. Once it passes, by this Mac's clock, the dispatch stops the run there as a stop
   does, and the outcome begins `stopped at its Ns bound`.
-- The run reads its reservations from `VOCARO_DEVICE_LEASE`:
+- The run reads its reservations from `QUEUEKEEPER_DEVICE_LEASE`:
   `{"record": MAC, "devices": {KEY: UDID}, "until": END}`, where END is the reservations' end.
   There `devices run KEY -- COMMAND` takes KEY from the lease, since the second Mac's record
   defers physical devices: it checks the devices the command names against the lease, bounds the
@@ -2594,11 +2528,11 @@ python3 scripts/eng remote run --device iPhone LANE -- ARGUMENTS
   longer run of hex digits such as a SHA-256, and 40 hex digits that the Git of the project's
   checkout knows as an object, such as a commit's whole hash, or that a signing setting or
   option takes as a code-signing identity's SHA-1, name no device, with `--device` or
-  without it. `eng run` keeps a lane whose arguments name a physical device of this record on
-  this Mac, and `eng admit` a command that names any hardware UDID.
+  without it. `queuekeeper run` keeps a lane whose arguments name a physical device of this record on
+  this Mac, and `queuekeeper admit` a command that names any hardware UDID.
 
 A dependency commit can be absent from the caller's Git object database. Declare it before the
-command with `eng remote admit --git-commit /path/to/dependency=FULL_SHA -- COMMAND FULL_SHA`.
+command with `queuekeeper remote admit --git-commit /path/to/dependency=FULL_SHA -- COMMAND FULL_SHA`.
 The repeatable option verifies the full 40-digit hash as a commit in that local repository before
 sending anything. Only an exact, separate positional command argument is exempt; `id=FULL_SHA`, a hash following
 an option, or a hash inside a shell command string still follows the device checks. A device known
@@ -2607,21 +2541,21 @@ the dependency checkout path is used only for local verification and need not ex
 second Mac. A missing object, tree, tag object, invalid hash, or unreadable repository refuses
 the dispatch. Declare each foreign commit separately; this grants no exemption to other hashes.
 
-`eng doctor` reports both Macs' records under `deviceRecord`. It is an error for this Mac's record
+`queuekeeper doctor` reports both Macs' records under `deviceRecord`. It is an error for this Mac's record
 to defer physical devices, or for the second Mac's to hold one or to defer them to another Mac;
 a record there that defers them to no Mac yet is listed as unchecked until the next run.
 
 The records constrain only work that goes through the toolkit: `xcodebuild` or `devicectl` run
 by hand on the second Mac, or Xcode there, reaches the devices without them. A lane that needs a
 device says so with `"here"`, so sending one to the second Mac is always an explicit
-`eng remote --device`.
+`queuekeeper remote --device`.
 
 ## Attended Mac sessions
 
-Mac VoiceOver and foreground UI default to the [second Mac's foreground](second-mac-foreground.md),
-which eng reserves for each run without asking the owner, not to this Mac. These rules
+Mac VoiceOver and foreground UI default to the [second Mac's foreground](https://github.com/vocaro/vocaro-engineering/blob/main/guides/second-mac-foreground.md),
+which queuekeeper reserves for each run without asking the owner, not to this Mac. These rules
 are a method for a session on this Mac's foreground within a period the owner approved
-beforehand ([this Mac's foreground](second-mac-foreground.md#this-macs-foreground)); they grant
+beforehand ([this Mac's foreground](https://github.com/vocaro/vocaro-engineering/blob/main/guides/second-mac-foreground.md#this-macs-foreground)); they grant
 nothing by themselves. The drivers' check below is the same on both Macs.
 
 Agree the window with the owner first, then reserve the foreground for it before taking it.
@@ -2636,7 +2570,7 @@ holder in `devices status`, and its reservation is refused while the entry is he
 ```sh
 python3 -m vocaro_engineering.devices reserve mac-foreground --owner SESSION --revision N \
   --purpose "Mac XCUITest of …" --release-by 2026-10-23T18:00:00Z
-export VOCARO_DEVICE_OWNER=SESSION
+export QUEUEKEEPER_DEVICE_OWNER=SESSION
 python3 -m vocaro_engineering.devices check      # at the start and before each action
 python3 -m vocaro_engineering.devices update mac-foreground --owner SESSION --revision N \
   --own PID
@@ -2646,11 +2580,11 @@ python3 -m vocaro_engineering.devices release mac-foreground --owner SESSION --r
 
 A foreground driver calls `devices check`, or `devices.require_foreground(owner)` from Python,
 at the start and before each key, activation or `set frontmost`. It refuses unless the session
-named by `--owner` or `VOCARO_DEVICE_OWNER` holds the entry, the entry is neither orphaned nor
-uncertain, and, on this Mac, its expected release has not passed. `eng run --here` checks a lane marked
-`"foreground": true` the same way, and `eng admit --foreground` a command; on the second Mac eng
-holds the entry for the run itself and names it in `VOCARO_DEVICE_OWNER`
-([running foreground work](second-mac-foreground.md#running-foreground-work)), and a run there may
+named by `--owner` or `QUEUEKEEPER_DEVICE_OWNER` holds the entry, the entry is neither orphaned nor
+uncertain, and, on this Mac, its expected release has not passed. `queuekeeper run --here` checks a lane marked
+`"foreground": true` the same way, and `queuekeeper admit --foreground` a command; on the second Mac queuekeeper
+holds the entry for the run itself and names it in `QUEUEKEEPER_DEVICE_OWNER`
+([running foreground work](https://github.com/vocaro/vocaro-engineering/blob/main/guides/second-mac-foreground.md#running-foreground-work)), and a run there may
 outlast its expected release. On this Mac a passed expected release releases nothing: `status`
 reports it, the check refuses further foreground work, and the session stops, restores and
 releases. A reservation made before 2026-11-06 that recorded an approval also stops once that
@@ -2672,17 +2606,8 @@ build admitted as heavy work as usual.
   or when a helper expires.
 - Restore the original settings before returning control.
 
-[Background Mac testing](background-mac-testing.md) and [Mac VoiceOver](voiceover-mac.md)
+[Background Mac testing](https://github.com/vocaro/vocaro-engineering/blob/main/guides/background-mac-testing.md) and [Mac VoiceOver](https://github.com/vocaro/vocaro-engineering/blob/main/guides/voiceover-mac.md)
 describe the drivers, key guards and VoiceOver restoration.
-
-## Copies that share a bundle identifier
-
-Several sessions may run their own Debug builds of one app, all with one bundle identifier. A
-tool that picks an app by bundle identifier, such as computer use or AppleScript's
-`application id`, can reach another session's copy and its windows. List the running copies'
-paths with `ps -Ao pid,args`, and act on or quit only your own, by path and PID. The same holds
-for Xcode: with two Xcodes running, `application id "com.apple.dt.Xcode"` can reach the wrong
-one, so address Xcode by its path.
 
 ## Process supervision
 
@@ -2693,9 +2618,9 @@ and processes rather than launching a duplicate. Wait for a confirmed terminal r
 starting dependent tests or pushes. Never infer termination from a missing parent or an expired
 observation wait.
 
-Supervise the process group you own. The toolkit's `processes.supervise`, which `eng run`,
-`eng admit` and the resource CLI use (`eng run` with a unique log per lane under
-`.build/engineering/LANE/`), follows these rules:
+Supervise the process group you own. The toolkit's `processes.supervise`, which `queuekeeper run`,
+`queuekeeper admit` and the resource CLI use (`queuekeeper run` with a unique log per lane under
+`.build/queuekeeper/LANE/`), follows these rules:
 
 - Start the command in a new session and process group. Capture the root's start identity
   (`ps -o lstart=`) before `poll()` can reap it; once reaped, its PID cannot seed adoption or
@@ -2735,8 +2660,8 @@ Supervise the process group you own. The toolkit's `processes.supervise`, which 
   starts, its root once started, each process with its start and each process group and session
   at the first sample that sees it, when a group or session is first seen without the command
   or used again, and the command's confirmed end. When the admitting process is killed before it
-  settles its entry, `eng admissions recover` runs this census against the record.
-- A push keeper ([checkout provisioning and publication](#checkout-provisioning-and-publication))
+  settles its entry, `queuekeeper admissions recover` runs this census against the record.
+- A push keeper ([checkout provisioning and publication](https://github.com/vocaro/vocaro-engineering/blob/main/guides/shared-host.md#checkout-provisioning-and-publication))
   supervises its own commands and applies the same census to a command that fails on its own,
   with a positive status and no stop. When the census finds nothing, the keeper releases its
   heavy-work admission but keeps the checkout's transaction lock, its owner record showing
@@ -2746,13 +2671,13 @@ Supervise the process group you own. The toolkit's `processes.supervise`, which 
   admission entry marked uncertain, even after the observed children drain. A command that
   passes has no census there either. The keeper appends what it sees of each command it runs
   inside the admission to the admission's process record, as the supervisor does, so
-  `eng admissions recover` checks a killed or uncertain keeper's entry as it checks any other;
+  `queuekeeper admissions recover` checks a killed or uncertain keeper's entry as it checks any other;
   the checkout lock stays for a check by hand.
 - Once the root exits, its observed descendants have 60 s to end. The supervisor lists any still
   running on stderr, as `ps -o pid,ppid,pgid,lstart,args` rows with the parent and group each
   had when first seen, and stops them: SIGTERM, then SIGKILL 10 s later, or 120 s for a foreground
   run, which restores what it changed on the Mac first
-  ([second Mac foreground](second-mac-foreground.md#waiting-for-the-foreground)). The root's status counts
+  ([second Mac foreground](https://github.com/vocaro/vocaro-engineering/blob/main/guides/second-mac-foreground.md#waiting-for-the-foreground)). The root's status counts
   once they are gone; a process that survives SIGKILL is still awaited. A lane's `timeout` bounds
   only the root, so a root that exits in time keeps its status through the grace. Agents
   reported Xcode's `DTServiceHub` outliving an ad hoc `xcodebuild … test` on a fresh iOS
@@ -2771,7 +2696,7 @@ Supervise the process group you own. The toolkit's `processes.supervise`, which 
   raises `NotStarted` and releases admission. `Popen` reaps the child whose exec failed before
   it raises, so nothing is left to inspect; keeping the guard would stop every session's
   admission over a typo.
-- `eng admit`, `eng run` and the resource CLI carry out SIGTERM, SIGINT and SIGHUP as a stop
+- `queuekeeper admit`, `queuekeeper run` and the resource CLI carry out SIGTERM, SIGINT and SIGHUP as a stop
   ([lock reclamation](#lock-reclamation)). The supervisor forwards the signal to the root's group
   and to each observed descendant, sends SIGKILL to what remains 10 s later, or once a nested
   admission has settled (below), and raises `Interrupted` once the root and every observed
@@ -2789,7 +2714,7 @@ Supervise the process group you own. The toolkit's `processes.supervise`, which 
 - SIGKILL waits for a nested admission to settle. When SIGKILL falls due, after a stop, a timeout
   or the grace, and the root or an observed descendant is an admission owner (its PID and start
   time are an owner's in the guard), the supervisor sends no SIGKILL until every such owner has
-  ended, for at most `SETTLE_WAIT` (30 s) more. Such an owner is an `eng admit` or resource CLI
+  ended, for at most `SETTLE_WAIT` (30 s) more. Such an owner is an `queuekeeper admit` or resource CLI
   run inside a command that holds no admission, such as a `self` lane's script, so it has a guard
   entry of its own. It has received the signal too, so it stops its own command, with its own
   10 s to SIGKILL and 5 s after, and then removes its entry, or keeps it uncertain if a process
@@ -2797,7 +2722,7 @@ Supervise the process group you own. The toolkit's `processes.supervise`, which 
   included, which leaves its entry for recovery; a stopped or timed-out run is
   uncertain if any process is still running 5 s after that SIGKILL. Until 2026-10-27 SIGKILL
   came 10 s after the stop whatever ran, so a lane whose script admits its own work, as
-  BreezEPUB's book-opening lane does, could end its `eng admit` while Xcode's tools were still
+  BreezEPUB's book-opening lane does, could end its `queuekeeper admit` while Xcode's tools were still
   ending, and the entry left behind refused every session's heavy work until the guard was
   recovered by hand.
 - After the first signal of a stop, a timeout or the grace, a process first seen later receives
@@ -2824,201 +2749,11 @@ supervisor's outcome is uncertain, keep the reservation for recovery and launch 
 run against it.
 
 Tests of supervision code bound stalls rather than durations and start a timeout under test
-only once the real descendant has published its identity ([app testing](app-testing.md)).
+only once the real descendant has published its identity ([app testing](https://github.com/vocaro/vocaro-engineering/blob/main/guides/app-testing.md)).
 A bound the supervisor enforces, such as SIGKILL's wait for an admission owner, is checked at
 each sample: once a sample comes after the bound, the supervisor must act before the next one.
 A wall-clock limit on the whole run failed on the second Mac when the run stalled for a minute
 without the load average showing it (#314).
-
-## Long-running measurements
-
-Background a long run with its output redirected to a log.
-
-- Agent shells can start with an empty PATH. Export it first, including Homebrew's `bin` where
-  tools such as `uv` live, and invoke binaries by absolute path. Redirect to a file rather than
-  piping through `tail` or `grep`: a missing pipe binary kills the whole pipeline.
-- An empty log is buffering until shown otherwise: redirected output is block-buffered (about 4
-  to 8 KB). Check the processes, twice, since a run alternates working and reporting.
-- In zsh, the shell agents' commands run in, `status` is a read-only parameter. `status=$?`
-  after a run fails, stops the wrapper and loses the run's exit code: a 48-minute gate's result
-  had to be read back from its log (October 2026). Capture it as `rc=$?`.
-- zsh does not split an unquoted variable into words. `A="-only-testing:X -only-testing:Y"`
-  passed as `$A` reached xcodebuild as one argument, "Unknown build action", and an
-  `eng run ios-tests` ran no test (2026-11-05). Build an array, `A+=("-only-testing:$n")`, and
-  pass `"${A[@]}"`.
-- Apple's `git grep -E` has no `\b`: a pattern using it matches nothing and exits 1, exactly as
-  a search that found nothing does. A sweep for British spellings read that silence as a clean
-  tree (October 2026). Use `git grep -w`, or `grep -E`, which honors `\b`.
-- Wait for a run by its own completion signal, a line its wrapper appends or a file it
-  publishes, never by `pgrep -f PATTERN` from a shell, whose own command line matches the
-  pattern.
-- On-device FoundationModels generation burns CPU in `TGOnDeviceInferenceProviderService` and
-  `modelmanagerd` while the test runner sits near idle. Private Cloud Compute generation shows
-  about 0% local CPU for the runner and the local model server alike, so check their connection
-  instead (`lsof -nP -iTCP:PORT` shows an `ESTABLISHED` pair) and the server's health response
-  (macOS 27, October 2026).
-- The first Vision text recognition in a process cost about 55 seconds of model preparation and
-  about 0.35 seconds a page after it (macOS 27, October 2026). Time warm-up apart from
-  throughput.
-- Run one generative-model workload per machine. Two processes driving one Mac's on-device model
-  both sat at about 0% CPU with no output for many minutes, and concurrent Core ML and
-  FoundationModels work made an embedder return silently wrong vectors
-  ([embedding correctness](../knowledge/ml/embedding-correctness.md)). Admit the run with
-  `--model`, which holds the host's model lock while builds and tests run beside it
-  ([model admission](#model-admission)), and a run that is timed or compared with a baseline with
-  `--exclusive`. Before starting, look for other `swiftpm-testing-helper` and `xctest` processes,
-  including another worktree's suite, and take a process listing during any wall-clock
-  measurement. Whether heavy work beside on-device generation slows it or changes its output is
-  not measured.
-
-[Measurement](measurement.md) covers what to record.
-
-## Long pre-push checks
-
-Git's SSH transport holds the connection that read the remote refs open for the whole pre-push
-hook. During long gates GitHub closed that connection despite an SSH `ServerAliveInterval`
-keepalive, and the push ended on SIGPIPE after every gate had passed (October 2026). Push over
-HTTPS instead: it reads the refs before the hook and sends the pack in a separate request after
-it, so no connection has to outlast the gates.
-
-On a GitHub checkout used to publish, configure `origin` with the repository's SSH fetch URL
-and its HTTPS push URL. Run this in the main checkout, substituting the owner and repository:
-
-```sh
-git remote set-url --push origin https://github.com/OWNER/REPOSITORY.git
-git remote set-url origin git@github.com:OWNER/REPOSITORY.git
-git remote get-url origin
-git remote get-url --push origin
-```
-
-Set the push URL first so an existing HTTPS origin keeps pushing over HTTPS throughout. The
-repository-local settings apply to linked worktrees, including the queue's checkout. `eng land`,
-Closeout and direct Git pushes to `origin` use that push URL. HTTPS pushes use the GitHub
-credential helper described in [Adoption](adoption.md).
-
-Protect explicit GitHub SSH push URLs at the transport layer too. From the publishing checkout,
-point Git's SSH command at the shared toolkit's guard:
-
-```sh
-git config --local core.sshCommand '"$HOME/Development/vocaro-engineering/bin/eng-git-ssh"'
-```
-
-Use the actual toolkit path if it is installed elsewhere. The guard refuses writes to
-`github.com`, `ssh.github.com`, and SSH aliases for either before the pre-push hook starts.
-GitHub fetches and SSH operations on other hosts still use OpenSSH. A publishing command that
-overrides `core.sshCommand` or sets `GIT_SSH_COMMAND` must select an HTTPS push URL itself.
-
-HTTPS has failure modes of its own:
-
-- A pack larger than `http.postBuffer` (1 MiB by default) is streamed with chunked encoding, and
-  GitHub answered a 116 MB chunked pack with HTTP 408 after both lanes had passed. The same push
-  with `http.postBuffer` at 1 GiB and `http.version` at `HTTP/1.1` published a 208 MB pack.
-  Measure the pack first and set the buffer above it:
-  `git rev-list --objects origin/main..SHA | git pack-objects --stdout | wc -c`.
-- Because the refs are read before the hook, another push to `main` while the gates run makes
-  GitHub refuse the update afterwards
-  (`cannot lock ref 'refs/heads/main': is at NEW but expected OLD`). Fetch; if the gated commit
-  still descends from the new `origin/main` (`git merge-base --is-ancestor origin/main SHA`),
-  push it again, and otherwise integrate and run the gates on the new tree. Push the gated
-  commit by name (`SHA:refs/heads/main`) rather than `main`, so a retry never publishes a local
-  `main` another session advanced after the gates ran. In zsh, brace a variable in that refspec
-  (`"${sha}:refs/heads/main"`): an unbraced `$sha:refs/…` reads `:r` as a history modifier and
-  mangles the refspec.
-
-Follow the owned hook to its terminal result before starting more work. Record the exact commit,
-the clean tree and each complete gate result. A transport failure does not establish a test
-failure, and interrupted or missing checks never count as passed. A retry follows the
-repository's hook policy and publishes only the verified commit. Whether a documentation-only
-commit may skip the hook is that repository's policy, not a shared default.
-
-## Checkout provisioning and publication
-
-A fresh checkout or worktree has none of the ignored inputs its gates need. Provision them
-idempotently: fill gaps only, verify each input against a committed identity, and report a
-present input whose bytes drifted rather than overwriting it. A `--check` mode reports without
-changing anything.
-
-A Claude Code session started in a worktree reads the project configuration from the checkout
-the worktree was made from, so a `SessionStart` hook's `$CLAUDE_PROJECT_DIR` and working
-directory are that checkout; the session's own directory arrives only as the `cwd` field of the
-hook's input (observed October 2026). Read that field and hand over to the worktree's copy of
-the provisioning script.
-
-Reuse a large input from another registered worktree of the same repository before fetching it:
-
-1. Open the donor's regular file without following a symbolic link.
-2. Verify its committed byte count and SHA-256.
-3. Make an APFS clone in private staging on the destination volume.
-4. Verify the staged clone the same way, then publish it create-only.
-
-Donor and destination keep independent file identities. A missing, drifted or unusable donor, a
-different volume or unsupported cloning falls back to the fetch path; report verified donor
-reuse separately from fetch completion.
-
-Link a shared ignored directory with `ln -sn TARGET LINK`. In a reused worktree that already
-holds the link, a bare `ln -s` follows it and writes a link inside the target pointing at
-itself; `-n` refuses with "File exists".
-
-Keep writable build products and Python environments private to one checkout, at a stable path,
-so warm builds stay warm. An APFS-cloned `.build` at a different source path recompiled with
-stale-path warnings (6.6 s against 0.7 s for a same-path warm build), and adding compiler CAS
-flags directly to a normal SwiftPM gate command failed planning (both on Xcode 27.1, Swift 6.4,
-October 2026).
-
-A pre-push hook runs its gates over the working tree, not over the commits being pushed, so a
-tested publication comes from a clean checkout of the exact commit. Never push a shared tree
-that holds another session's edits. A persistent push checkout makes this cheap:
-
-- a separate, canonical linked worktree at a stable path, detached, with its own ignored inputs
-  and build products (`git worktree add --detach PATH origin/main` creates it);
-- advancement only to a descendant of its HEAD, by detached checkout; it refuses dirty tracked
-  bytes or modes, a differing index, nonignored untracked files, symbolic paths and backward or
-  divergent moves, and never resets or cleans;
-- a keeper that holds the checkout and host gate locks from before it moves the tree until the
-  remote acknowledges the push, and refuses an inherited variable that redirects the host lock;
-- nested lanes that take their own temporary locks while the host lock stays held, so test
-  fixtures keep real locks rather than an inherited opt-out;
-- Git variables that a hook exports for its repository (`GIT_DIR`, `GIT_INDEX_FILE` and the
-  others) cleared before any command touches a nested repository;
-- HEAD, the index tree, every tracked byte and mode and the nonignored untracked files checked
-  against the frozen commit before and after each lane;
-- success reported only with a commit and tree receipt; a no-op push without a hook receipt is
-  not a qualified publication.
-
-## Toolchain selection
-
-Use a full Xcode, not the Command Line Tools. The Command Line Tools ship the same Swift, so a
-version check passes, but they lack `coremlcompiler` and cannot build test targets;
-`xcode-select -p` shows which is selected. Name the stable path, `/Applications/Xcode.app`,
-rather than an installed version, and prefix direct `swift`, `xcrun` and `xcodebuild` commands
-with it:
-
-```sh
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcrun xcodebuild -version
-```
-
-Name a beta or second Xcode by its own path in the same way for every command that needs it, and
-record `xcodebuild -version` and `sw_vers` with each result. Installing or first launching
-another Xcode can restart the simulator service under every session;
-[simulator testing](simulator-testing.md) covers what that does to running simulators.
-
-## Inspecting system code without starting it
-
-Use `dyld_info -disassemble` on a framework's path under `/System/Library`, which prints its
-code under its method names even for a framework that exists only in the dyld shared cache, or
-`lldb -b -o "target create BINARY" -o "disassemble -n METHOD"` without a run command for a
-binary on disk. `target create` refuses a framework that is only in the shared cache as one that
-"does not exist". Neither names the selector a stub call goes to or the characters of a string
-address; a reader that maps the shared cache as its own process does can annotate both. A
-framework's localized `.loctable` property lists map a word heard or shown to its key, which
-leads to the code that uses it ([Mac VoiceOver](voiceover-mac.md) applies this to VoiceOver). To
-see calls made into code you own, log from that code.
-
-Never start or attach a debugger to answer a framework question on the shared workstation.
-Developer Mode is off there (`DevToolsSecurity -status`), so a debugger launch raises an
-administrator-password dialog that takes the keyboard from the owner and every session. If one
-appears, stop your processes, leave the dialog for the owner and say so. Sampling your own child
-(`sample "$(pgrep -P $!)"`) needs no password; never sample another session's process.
 
 ## Lock reclamation
 
@@ -3027,8 +2762,8 @@ Three kinds of marker coexist, and they are reclaimed differently:
 - Admission's guard records each owner's PID, process start, label, whether it is exclusive or
   holds the model, its admission time and an uncertainty flag; beside it, each entry's process
   record lists what supervision saw of that owner's commands. It is
-  `/tmp/studywright-gate-suite.lock.warm-push-guard`, named after StudyWright's former host gate
-  lock, or `SW_GATE_LOCK_FILE` with `.warm-push-guard` appended: StudyWright's gate checks an
+  `/tmp/queuekeeper-gate-suite.lock.warm-push-guard`, named after StudyWright's former host gate
+  lock, or `QUEUEKEEPER_GATE_LOCK_FILE` with `.warm-push-guard` appended: StudyWright's gate checks an
   inherited admission against that path, and tests isolate admission by redirecting it. This
   repository's test modules each import `tests/host_isolation.py`, which redirects it and
   `HEAVY_SLOT_DIR` for the whole process, and `test_host_isolation` fails a module that does not
@@ -3045,7 +2780,7 @@ Three kinds of marker coexist, and they are reclaimed differently:
   may add, are read past. A guard is out of that format as a whole when one entry is, or when
   `owners` is missing or anything but an object, an empty list among them
   ([vocaro-engineering#72](https://github.com/vocaro/vocaro-engineering/issues/72)): admission
-  and `eng admissions recover` refuse it, and nested work inside an admission it records fails
+  and `queuekeeper admissions recover` refuse it, and nested work inside an admission it records fails
   rather than reusing that admission.
 - The exclusive queue (`exclusive-queue.json` in the slot directory, changed only under its
   `coordination.lock`) records each waiting request's PID, process start, label, `queuedAt` arrival
@@ -3070,7 +2805,7 @@ while another owner was dead changed nothing, so its own entry died with its pro
 killed by its agent stranded a run that finished normally beside it, and the host admitted no
 heavy work for 80 minutes, until the guard was recovered by hand.
 
-`eng admit`, `eng run` and the resource CLI carry out SIGTERM, SIGINT and SIGHUP as a stop. A
+`queuekeeper admit`, `queuekeeper run` and the resource CLI carry out SIGTERM, SIGINT and SIGHUP as a stop. A
 stop while queued leaves nothing to release. Once admitted, the job first marks its entry
 uncertain, in case SIGKILL follows, then stops its command
 ([process supervision](#process-supervision)). When the command and every observed descendant
@@ -3082,9 +2817,9 @@ for recovery. Until 2026-10-22 none of these signals was handled. SIGTERM and SI
 admitting process at once, leaving its entry dead and its command, in its own session, running
 unsupervised; SIGINT stopped only the command's process group and left the entry uncertain.
 
-A job admitted inside another supervised command, as when a `self` lane's script runs `eng admit`,
+A job admitted inside another supervised command, as when a `self` lane's script runs `queuekeeper admit`,
 is stopped in this order. The outer supervisor sends the stop's signal to the lane's processes,
-the nested `eng admit` and its command among them, and leaves the nested job's later children
+the nested `queuekeeper admit` and its command among them, and leaves the nested job's later children
 to it. The nested job marks its entry uncertain and stops its command: the signal, then SIGKILL
 10 s later. Once the command and every observed descendant have ended and its census finds
 nothing left, it removes its entry and ends by the signal; if any process is left, it keeps the
@@ -3130,7 +2865,7 @@ app 3.6556.2 running Claude Code 2.1.308, macOS 27.0.1, load average about 5). C
 ends the stopped subagent's turn, which stops its foreground command, then stops each of its shell
 tasks still running. An admitted command that has not ended 1.5 s after the SIGTERM is killed with
 its entry in place. On 2026-10-22 a coordinator at a usage limit stopped ten subagents this way.
-Three were inside `eng admit`, running a VoiceOver simulator session and two `swift test` runs, and
+Three were inside `queuekeeper admit`, running a VoiceOver simulator session and two `swift test` runs, and
 their entries kept every session on the host from heavy work for more than two hours, until the
 owner approved removing the guard. The same subagents ending at the account's usage limit
 (HTTP 429) left nothing behind three times, as a subagent's end stops nothing. To wind subagents
@@ -3173,7 +2908,7 @@ Claude Code 2.1.308's code for stopping a shell command explains the second inte
 the shell's process group and each descendant that one `ps -A` scan lists, but abandons a scan
 that takes longer than 500 ms and then signals the group alone. SIGKILL follows 1.5 s after the
 stop begins, to the group, to the descendants found and to a fresh scan from the shell, which has
-usually exited by then. The host's load average was above 100 during these probes. `eng admit`
+usually exited by then. The host's load average was above 100 during these probes. `queuekeeper admit`
 runs in the shell's process group, so it always receives the SIGTERM and stops its command, but
 it has 1.0 to 1.5 s before its own SIGKILL, and nothing escalates after that. A command that has
 not ended by then leaves its entry uncertain and, if the scan missed it, runs on unsupervised.
@@ -3184,7 +2919,7 @@ command, which leads its own session, is killed with SIGKILL and no SIGTERM firs
 its own session receives nothing and runs on. `codex exec` ends its session with its turn: in two
 runs the command was killed without a logged signal, in the watched one 5 ms after the turn
 completed (2026-10-23, Codex 0.163.0-alpha.11.2 as ChatGPT's Codex Desktop bundles it, run as
-`codex exec`, macOS 27.0). An `eng admit` killed this way never marks its entry uncertain: the
+`codex exec`, macOS 27.0). An `queuekeeper admit` killed this way never marks its entry uncertain: the
 entry stays, dead, and its command runs on unsupervised. A Codex Desktop thread keeps the
 command past its turn: one a new local thread started and yielded on ran its full 900 s after the
 turn ended, with its child in its own session, and neither received a signal; the app listed it
@@ -3207,14 +2942,14 @@ stayed ([heavy-work admission](#heavy-work-admission)). Until 2026-11-01 recover
 task stop's SIGKILL left entries whose commands had all ended refusing heavy work on both Macs
 until the owner removed them; agents could not always run the command themselves.
 
-`eng admissions recover` carries out the same recovery by hand. The first command below lists each entry that is dead or uncertain, with its identity, label,
+`queuekeeper admissions recover` carries out the same recovery by hand. The first command below lists each entry that is dead or uncertain, with its identity, label,
 PID and how long ago it was admitted (for an entry an older toolkit wrote, how long ago its owner
 started), whether its owner still runs, and whether it has a process record. The second recovers
 one entry, named by its owner's PID or by its identity:
 
 ```sh
-python3 scripts/eng admissions recover
-python3 scripts/eng admissions recover 56766
+python3 scripts/qk admissions recover
+python3 scripts/qk admissions recover 56766
 ```
 
 Admission publishes a complete opening process record before it publishes the guard. If it cannot
@@ -3235,7 +2970,7 @@ and logs a `recovered` line ([admission log](#admission-log)), only when all of 
   and skips a process for a group or session if its birth follows the recorded close for every
   unsettled command that used that ID. Without a close time for any such command, the space is
   still checked without a birth cutoff.
-- For a record that names no command, the owner ended before its first: `eng admit`, `eng run`
+- For a record that names no command, the owner ended before its first: `queuekeeper admit`, `queuekeeper run`
   and the resource CLI start every command through `processes.supervise`, which records it before
   starting it in a session of its own, so whatever the owner started before then is in the
   owner's process group, or in its session where the group leads it. The census finds nothing
@@ -3257,7 +2992,7 @@ whose record cannot vouch for every command, is removed by hand, once you have c
 nothing its owner started still runs:
 
 ```sh
-python3 scripts/eng admissions remove 56766 --why "ps shows nothing of BreezEPUB ways-in"
+python3 scripts/qk admissions remove 56766 --why "ps shows nothing of BreezEPUB ways-in"
 ```
 
 It runs recovery first: an entry recovery can prove finished is recovered as above, and one whose
@@ -3271,7 +3006,7 @@ shell started in the shell's group, leaves nothing to check there, which is why 
 comes first. Otherwise it removes the entry, and the guard with its last one, deletes its record,
 and logs a `recovered` line marked `byHand`, with why recovery left the entry and the `--why`
 given ([admission log](#admission-log)). It is deliberately a command of its own, outside this
-repository's allow rule for `eng admissions recover`, whose basis is that recovery removes only
+repository's allow rule for `queuekeeper admissions recover`, whose basis is that recovery removes only
 provably finished entries: a session's auto mode asks before it removes one that is not (owner's
 decision, 2026-11-08,
 [vocaro-engineering#315](https://github.com/vocaro/vocaro-engineering/issues/315)). Until then
@@ -3282,9 +3017,9 @@ the entry. Admission writes its first line under the coordination lock just befo
 entry, so that no entry is published without a record, even one whose owner is killed before its
 first command: `admission`, the identity; `owner`, as `[PID, start]`; the owner's process `group`
 and `session`; the `ancestors` it was started under, as `[PID, start]`; and `supervised`, whether
-the owner starts every command through `processes.supervise`, as `eng admit`, `eng run` and the
+the owner starts every command through `processes.supervise`, as `queuekeeper admit`, `queuekeeper run` and the
 resource CLI do (`Admission(supervised=True)`). A toolkit older than 2026-11-08 cannot read that
-line, and so leaves such an entry for a check by hand. The toolkit's supervision in the admitting process (`eng admit`, `eng run`, the
+line, and so leaves such an entry for a check by hand. The toolkit's supervision in the admitting process (`queuekeeper admit`, `queuekeeper run`, the
 resource CLI, and `processes.supervise` inside an `Admission` the same process holds) appends JSON
 lines to it, each naming one command by a key of its own: `argv` before the command starts; `root`,
 its PID, once started; at each sample that sees something new, the `processes` first seen, as
@@ -3327,7 +3062,7 @@ entry was removed by hand.
 ### Probing stop signals
 
 The stops above were measured with `siglog.py` and `watch.py`, kept with the scripts that start
-and read them in [`src/python/StopSignals`](../src/python/StopSignals), standard library only.
+and read them in [`src/python/StopSignals`](https://github.com/vocaro/vocaro-engineering/blob/main/src/python/StopSignals), standard library only.
 
 - `siglog.py LOG child SECONDS` logs each SIGTERM, SIGINT and SIGHUP it receives and runs on, and
   starts a child that leads a session of its own and does the same. Each writes `exiting` after
@@ -3345,7 +3080,7 @@ Start the watcher detached, where the action under test cannot reach it, then ha
 tool under test run the probe as its command, so the probe's processes are that command's:
 
 ```sh
-K=~/Development/vocaro-engineering/src/python/StopSignals D=/private/tmp/stop-probe/NAME
+K=~/Development/queuekeeper/src/python/StopSignals D=/private/tmp/stop-probe/NAME
 mkdir -p "$D" && python3 -I "$K/detach.py" python3 -I "$K/watch.py" "$D/probe.log" "$D/probe.watch" 1800
 python3 -I "$K/siglog.py" "$D/probe.log" child 300 && true    # run by the command under test
 python3 -I "$K/report.py" "$D"                                # once the action is done
@@ -3371,7 +3106,7 @@ archive it once its probe has ended.
 
 ## Ending a coordinated command
 
-Use the supplied `eng run` or resource CLI for commands. They return the child's status after
+Use the supplied `queuekeeper run` or resource CLI for commands. They return the child's status after
 leaving admission normally. If using Admission directly, leave the context before raising SystemExit
 for a nonzero result. An exception inside the context retains its uncertain guard, by design,
 because the coordinator cannot infer whether that exception left children running. Admission used
