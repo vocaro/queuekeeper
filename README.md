@@ -150,6 +150,13 @@ licensing helper, ends a batch run that has gone silent, and runs a project's te
 switches it on by listing `queuekeeper.unity` in its `extensions`. Its README lists what is not
 built yet.
 
+## The Mac hardware plugin
+
+The [Mac hardware plugin](src/python/queuekeeper/mac_hardware/README.md) keeps a lane on the chip
+its results are valid on. A lane whose output differs by GPU lists its chips, such as
+`"chips": ["apple-m5-max"]`, and runs only on a Mac that has one. Every other lane runs on either
+Mac, as before.
+
 ## Documentation
 
 - [Getting started](doc/getting_started.md)

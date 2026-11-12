@@ -44,6 +44,9 @@ The lane ends unmeasured, with nothing run, when that Mac has no editor, an edit
 open, the lock is held, or an orphaned licensing helper will not stop. A lane without the key, such
 as a docs check, is not stopped by an open editor.
 
+A lane whose results differ by GPU, such as one that compares rendered images, also lists its chips
+with the [Mac hardware plugin](../mac_hardware/README.md), which keeps it on a Mac that has one.
+
 ## Doctor, disk and host
 
 - `queuekeeper doctor` warns when the pinned editor is missing on this Mac or the second Mac, when
@@ -110,8 +113,6 @@ failed. `closed` otherwise exits with its command's own status.
 
 These parts of [issue 6](https://github.com/vocaro/queuekeeper/issues/6) are not built:
 
-- **Placing a lane by the GPU it needs.** The second Mac's placement script runs before any plugin
-  exists there, so this needs a design of its own.
 - **Play mode.** An editor left in Play mode does not make a lane unmeasured, and
   `queuekeeper host editors` does not show it. Only the editor knows its Play state.
 - **The Hub sign-in** in `doctor`. Nothing on disk was found that says whether the Hub is signed in.

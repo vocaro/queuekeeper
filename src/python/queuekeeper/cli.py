@@ -942,6 +942,14 @@ def perform(argv, report):
             if group is None and args.serial: raise ValueError(f"--serial runs a lane group, and {args.lane} is not one")
             # Why the lane runs only here, as its configuration says, or None: it goes to the second Mac.
             reason = stays(config["lanes"], args.lane)
+            # Or why it runs only on the second Mac, as a key an extension added says. It waits there for its
+            # admission and never falls back to this Mac, where its result would not be the one asked for.
+            placed = extensions.placement(config["lanes"], args.lane) if reason is None else None
+            if placed and placed[0] == extensions.THERE:
+                if args.here or args.serial or os.environ.get(resources.TOKEN):
+                    raise ValueError(f"{args.lane} runs only on the second Mac ({placed[1]}), so it cannot run here"
+                                     + (" with --here" if args.here else ""))
+                return remote.there_lane(root, config, args.lane, extra, args.expect, placed[1])
             # Keep the queue's placement scope at the outer lane.
             queue_gate = bool(os.environ.pop(remote.QUEUE_GATE, None))
             exclude = os.environ.pop(remote.QUEUE_GATE_EXCLUDE, None)

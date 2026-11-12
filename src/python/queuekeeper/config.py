@@ -56,10 +56,11 @@ def load(root):
 # compares them, vocaro-engineering#248).
 LANE_KEYS = frozenset({"command", "resource", "minimumTests", "timeout", "foreground", "here", "model", "display",
                        "budgetMinutes", "wholeHost", "apps", "unlockedScreen", "devices", "compileFirst",
-                       "deviceRunMinutes", "stall", "unity"})
+                       "deviceRunMinutes", "stall", "unity", "chips"})
 # The lane keys above that an extension shipped here adds (hooks.LANE_KEYS), by its module: a project that uses one
 # without the extension is told which to switch on.
-EXTENSION_LANE_KEYS = {"display": "queuekeeper.mac_desktop", "unity": "queuekeeper.unity"}
+EXTENSION_LANE_KEYS = {"display": "queuekeeper.mac_desktop", "unity": "queuekeeper.unity",
+                       "chips": "queuekeeper.mac_hardware"}
 # The top-level keys an extension shipped here adds (hooks.CONFIG_KEYS), by its module, refused the same way.
 EXTENSION_CONFIG_KEYS = {"unity": "queuekeeper.unity"}
 GROUP_KEYS = frozenset({"parallel", "jobs", "resource", "here", "model", "budgetMinutes", "wholeHost", "unlockedScreen"})
@@ -585,7 +586,9 @@ def stays(lanes, name):
     if lane.get("here"): return f"the lane says: {lane['here']}"
     for member in lane.get("parallel", []):
         if lanes[member].get("here"): return f"its lane {member} says: {lanes[member]['here']}"
-    return None
+    # A key an extension added may keep the lane here too, such as the chips its results are valid on.
+    placed = hooks.placement(lanes, name)
+    return placed[1] if placed and placed[0] == hooks.HERE else None
 
 
 def model(name, lane):

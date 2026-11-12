@@ -25,11 +25,12 @@ CORE = "queuekeeper"
 APPLE = "queuekeeper.apple"
 DESKTOP = "queuekeeper.mac_desktop"
 UNITY = "queuekeeper.unity"
-EXTENSIONS = (APPLE, DESKTOP, UNITY)
+HARDWARE = "queuekeeper.mac_hardware"
+EXTENSIONS = (APPLE, DESKTOP, UNITY, HARDWARE)
 # What an extension may import of the others: the ones it requires.
 REQUIRED = {APPLE: (DESKTOP,), UNITY: (DESKTOP,)}
 # How a finding names a package: the core's is None.
-LABEL = {None: "core", APPLE: "Apple", DESKTOP: "Mac desktop", UNITY: "Unity"}
+LABEL = {None: "core", APPLE: "Apple", DESKTOP: "Mac desktop", UNITY: "Unity", HARDWARE: "Mac hardware"}
 TOOLKIT = "vocaro_engineering"
 VISIBILITY = "queuekeeper.visibility"
 # A call that imports the module its first argument names.
@@ -239,6 +240,7 @@ class Packages(unittest.TestCase):
         self.assertIn(APPLE, names)
         self.assertIn(DESKTOP, names)
         self.assertIn(UNITY, names)
+        self.assertIn(HARDWARE, names)
 
     def test_no_module_imports_what_it_may_not(self):
         self.assertEqual(Layout.read(SOURCE).lines(), [])
