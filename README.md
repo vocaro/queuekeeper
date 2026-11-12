@@ -55,11 +55,11 @@ needs one lane named `gate`, which is the command every change must pass:
 }
 ```
 
-**2. Check the setup.** `queuekeeper doctor` reports anything missing, such as a lane with no
+**2. Check the setup.** `qk doctor` reports anything missing, such as a lane with no
 timeout.
 
 ```sh
-queuekeeper doctor
+qk doctor
 ```
 
 **3. Land the configuration as your first change.** Commit the file on a branch, then queue it
@@ -73,7 +73,7 @@ lands as shown here:
 git switch -c add-queuekeeper
 git add queuekeeper.json
 git commit -m "Add Queuekeeper"
-queuekeeper land --wait
+qk land --wait
 ```
 
 Queuekeeper now does what you would otherwise do by hand. It starts a worker for the repository,
@@ -85,21 +85,21 @@ result and prints the commit it landed as.
 tested and why anything is held:
 
 ```sh
-queuekeeper queue status
+qk queue status
 ```
 
 For a view that updates by itself, a web page of the queue, or a notification when the queue needs
 you, turn on the [visibility features](#visibility).
 
 **5. If the change comes back.** When the gate fails or the commit conflicts with `main`,
-`queuekeeper land --wait` exits with status 1 and says why, with the path of the log. Nothing was
-pushed. Fix the problem, commit, and run `queuekeeper land --wait` again.
+`qk land --wait` exits with status 1 and says why, with the path of the log. Nothing was
+pushed. Fix the problem, commit, and run `qk land --wait` again.
 
 **6. Start the next change from `main`.** The queue lands your commits as new commits, so begin
 the next piece of work from `origin/main`, not from the old branch.
 
 **7. Hand it to your agents.** Tell your agents to queue their commits with
-`queuekeeper land --wait` instead of pushing. Each one's change waits its turn, changes that arrive
+`qk land --wait` instead of pushing. Each one's change waits its turn, changes that arrive
 together are tested as one batch, and a change that breaks the gate goes back to the agent that
 wrote it without blocking the others.
 
@@ -126,15 +126,15 @@ See the [Apple plugin's README](src/python/queuekeeper/apple/README.md) for deta
 Agents read exit codes. You need to see whether the queue is moving and to hear when it needs you.
 Three features do that, each off until you turn it on:
 
-- **Watch.** `queuekeeper watch` shows the queue in the terminal and redraws it as it changes.
+- **Watch.** `qk watch` shows the queue in the terminal and redraws it as it changes.
 - **Notify.** A macOS banner, a command of yours or a webhook tells you of a hold only you can fix,
   a change that came back, a flaky test and a landing that skipped the gate.
-- **Dashboard.** `queuekeeper serve` serves a read-only web page on your Mac: what the queue is
+- **Dashboard.** `qk serve` serves a read-only web page on your Mac: what the queue is
   doing at a glance, then the queue, the build farm, the logs and the day's history.
 
 ```sh
-queuekeeper visibility enable dashboard
-queuekeeper serve --open
+qk visibility enable dashboard
+qk serve --open
 ```
 
 See [Visibility](doc/visibility.md) for details.

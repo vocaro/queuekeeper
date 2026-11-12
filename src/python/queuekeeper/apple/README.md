@@ -13,7 +13,7 @@ break.
 Scripts that pick a simulator by name, or use `booted`, end up on Xcode's default simulators or on
 one another agent is using. The pool gives each run its own.
 
-- **Taking a simulator.** `queuekeeper simulator-pool take --device iPhone-17-Pro --runtime iOS-27-0`
+- **Taking a simulator.** `qk simulator-pool take --device iPhone-17-Pro --runtime iOS-27-0`
   reserves a free member of that kind, or creates one, and prints its identifier. Reservations go
   through one locked record per Mac, so two agents cannot take the same simulator. `check` refuses
   any simulator outside the pool.
@@ -30,7 +30,7 @@ names one stays on the Mac it was started on.
 ## Simulator tests
 
 ```sh
-queuekeeper simulator-tests --scheme App --runtime iOS-27-0 \
+qk simulator-tests --scheme App --runtime iOS-27-0 \
     --device iPhone-17-Pro --device iPad-Air-13-inch-M4
 ```
 
@@ -49,11 +49,11 @@ It covers iOS simulators only, one runtime per run.
 ## Swift package tests
 
 `swift test --parallel` reports a skipped XCTest test as passed and prints no total.
-`queuekeeper xctest` builds once, packs XCTest classes into shards by their last run times, runs the
+`qk xctest` builds once, packs XCTest classes into shards by their last run times, runs the
 shards side by side and prints one line with the counts of tests run and skipped. A shard that ran a
 different number of tests than it was given counts as failed.
 
-For lanes that call `xcodebuild` themselves, `queuekeeper results keep` reads a result bundle and
+For lanes that call `xcodebuild` themselves, `qk results keep` reads a result bundle and
 records each test's outcome and duration in the same form.
 
 ## Physical devices
@@ -95,9 +95,9 @@ holds nothing sensitive.
 
 ## Keeping Macs alike
 
-Test results from two Macs are comparable only if the tools match. `queuekeeper doctor` compares the
+Test results from two Macs are comparable only if the tools match. `qk doctor` compares the
 Xcode build and the installed simulator runtimes on every Mac. It evens out the runtimes by copying
-a runtime image to the Mac that lacks it, or deleting one that nothing uses. `queuekeeper disk`
+a runtime image to the Mac that lacks it, or deleting one that nothing uses. `qk disk`
 lists stale DerivedData folders, SwiftPM caches and unused runtimes, and deletes them on request.
 
 ## Requirements

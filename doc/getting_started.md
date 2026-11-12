@@ -20,19 +20,24 @@ For the Apple plugin, see [its requirements](../src/python/queuekeeper/apple/REA
 
 ## Install
 
-Clone the repository and install the `queuekeeper` command from the checkout. `qk` is installed as
-a short alias.
+Clone the repository and run its setup script with the Python that will run Queuekeeper:
 
 ```sh
 git clone https://github.com/vocaro/queuekeeper.git
 cd queuekeeper
-uv tool install --editable .
+python3 tools/install-checkout.py
 ```
+
+The script puts the `qk` command on your PATH, where it runs this checkout with that Python, and
+makes the `queuekeeper` package importable for projects whose own scripts use it. It says so if
+the folder it used, `~/.local/bin` unless another on your PATH can be written, is not on your PATH
+yet. `python3 tools/install-checkout.py --check` says whether both are in place, and `--remove`
+takes them out. Updating Queuekeeper is `git pull` in the checkout.
 
 Check that it runs:
 
 ```sh
-queuekeeper --help
+qk --help
 ```
 
 ## Configure a project
@@ -58,7 +63,7 @@ one lane, `gate`, which is the command every change must pass:
 Then run:
 
 ```sh
-queuekeeper doctor
+qk doctor
 ```
 
 It reports missing commands, lanes without a timeout, and tests that no lane runs.
@@ -94,8 +99,8 @@ Do this once you have landed changes on one Mac.
 3. Install the tools the second Mac needs, then check both Macs:
 
    ```sh
-   queuekeeper remote setup
-   queuekeeper doctor
+   qk remote setup
+   qk doctor
    ```
 
 From then on, lanes are offered to the second Mac first and run on the first Mac when the second
@@ -104,25 +109,25 @@ there.
 
 ## Keep the queue running
 
-A worker starts by itself when you run `queuekeeper land` and exits when nothing is waiting. To
+A worker starts by itself when you run `qk land` and exits when nothing is waiting. To
 have the queue also check for waiting work at login and every two minutes, set up the signed
 launcher. It also avoids a macOS restriction that can cut a background worker off from the local
 network. See [The build farm](build_farm.md#macos-local-network-privacy).
 
 ## See what the queue is doing
 
-`queuekeeper queue status` says what is waiting and why. Three features, each off until you turn
+`qk queue status` says what is waiting and why. Three features, each off until you turn
 it on, show more:
 
 ```sh
-queuekeeper visibility enable watch
-queuekeeper watch                          # the queue in the terminal, redrawn as it changes
+qk visibility enable watch
+qk watch                          # the queue in the terminal, redrawn as it changes
 
-queuekeeper visibility enable notify       # a banner when the queue needs you
-queuekeeper notify test
+qk visibility enable notify       # a banner when the queue needs you
+qk notify test
 
-queuekeeper visibility enable dashboard
-queuekeeper serve --open                   # a read-only web page of the queue
+qk visibility enable dashboard
+qk serve --open                   # a read-only web page of the queue
 ```
 
 [Visibility](visibility.md) describes each one.
@@ -133,7 +138,7 @@ Agents need to know to queue their work instead of pushing it. Add a rule like t
 instructions your agents read, such as `AGENTS.md` or `CLAUDE.md`:
 
 ```markdown
-Never push to main. Commit on your own branch, then run `queuekeeper land --wait` as a
+Never push to main. Commit on your own branch, then run `qk land --wait` as a
 background command and follow it to its result. Exit 0 means landed, 1 means it came back
 with a reason, and 75 means the queue is held or still waiting.
 ```

@@ -9,9 +9,9 @@ removed without touching the queue or the others.
 
 | Feature | What it gives you | Command |
 |---|---|---|
-| `watch` | A live view of the queue in the terminal | `queuekeeper watch` |
-| `notify` | A banner, a command or a webhook when the queue needs you | `queuekeeper notify` |
-| `dashboard` | A read-only web page of the queue | `queuekeeper serve` |
+| `watch` | A live view of the queue in the terminal | `qk watch` |
+| `notify` | A banner, a command or a webhook when the queue needs you | `qk notify` |
+| `dashboard` | A read-only web page of the queue | `qk serve` |
 
 All three read the same two things: the queue's [event journal](#the-event-journal), which is
 always written, and its status.
@@ -21,9 +21,9 @@ always written, and its status.
 Every feature is off until you turn it on.
 
 ```sh
-queuekeeper visibility status            # each feature, and whether it is on
-queuekeeper visibility enable notify
-queuekeeper visibility disable notify
+qk visibility status            # each feature, and whether it is on
+qk visibility enable notify
+qk visibility disable notify
 ```
 
 What is on belongs to the owner and the Mac, not to a project, so it is kept in
@@ -34,15 +34,15 @@ it, whatever the file says.
 
 ## The watch feature
 
-`queuekeeper watch` shows the queue in the terminal and draws it again every two seconds until
+`qk watch` shows the queue in the terminal and draws it again every two seconds until
 interrupted: what the queue is doing in one line, each running gate, the entries waiting, the last
 few settled and the journal's last events.
 
 ```sh
-queuekeeper visibility enable watch
-queuekeeper watch                  # live, until Ctrl-C
-queuekeeper watch --once           # print the view once
-queuekeeper watch --interval 5 --events 20
+qk visibility enable watch
+qk watch                  # live, until Ctrl-C
+qk watch --once           # print the view once
+qk watch --interval 5 --events 20
 ```
 
 Where its output is not a terminal, it prints the view once and exits, as with `--once`.
@@ -54,10 +54,10 @@ for, a separate process reads the journal from where the last one stopped and se
 through every channel that is on. The queue does not wait for it.
 
 ```sh
-queuekeeper visibility enable notify
-queuekeeper notify status          # each rule and channel, and whether it is on
-queuekeeper notify test            # send a test notice through each channel that is on
-queuekeeper notify check           # look now for a queue that is stuck
+qk visibility enable notify
+qk notify status          # each rule and channel, and whether it is on
+qk notify test            # send a test notice through each channel that is on
+qk notify check           # look now for a queue that is stuck
 ```
 
 **Rules** decide which events you are told of:
@@ -82,11 +82,11 @@ queuekeeper notify check           # look now for a queue that is stuck
 | `webhook` | Posts the notice as JSON to your URL | Its `url` is set |
 
 ```sh
-queuekeeper notify enable landed                     # a rule
-queuekeeper notify disable banner                    # a channel
-queuekeeper notify set webhook url https://example.com/hook
-queuekeeper notify set command argv '["/usr/local/bin/tell-me", "--queue"]'
-queuekeeper notify unset webhook url
+qk notify enable landed                     # a rule
+qk notify disable banner                    # a channel
+qk notify set webhook url https://example.com/hook
+qk notify set command argv '["/usr/local/bin/tell-me", "--queue"]'
+qk notify unset webhook url
 ```
 
 The settings are the `notify` object of `visibility.json`. The `command` channel's `argv` is an
@@ -110,9 +110,9 @@ What to expect:
   Center.
 - **A queue that stalls is found by looking.** Entries that wait with no worker, or gates in a row
   with no verdict, write no event. So each command that reaches the Macs, such as `land`, `run`
-  and `queue`, starts a look at what `queuekeeper queue doctor` finds, at most once every two
+  and `queue`, starts a look at what `qk queue doctor` finds, at most once every two
   minutes for a repository. A finding is told once it has lasted five minutes, and again only
-  after it has gone and come back. `queuekeeper notify check` looks now.
+  after it has gone and come back. `qk notify check` looks now.
 - **Looking needs a command to run.** With the signed launcher set up, one runs every two minutes.
   Without it, a queue nobody touches is not looked at until the next command.
 
@@ -121,13 +121,13 @@ A rule is an entry in `rules.py`; a channel is a module of its own in `notify/ch
 
 ## The dashboard feature
 
-`queuekeeper serve` serves a read-only web page of the queue at `http://localhost:8750/`.
+`qk serve` serves a read-only web page of the queue at `http://localhost:8750/`.
 
 ```sh
-queuekeeper visibility enable dashboard
-queuekeeper serve --open           # serve, and open the page in the browser
-queuekeeper serve --port 9000
-queuekeeper serve ../other-project # show another repository too
+qk visibility enable dashboard
+qk serve --open           # serve, and open the page in the browser
+qk serve --port 9000
+qk serve ../other-project # show another repository too
 ```
 
 | Tab | What it shows |
@@ -141,7 +141,7 @@ queuekeeper serve ../other-project # show another repository too
 The page asks for its tab's data every two seconds, so it follows the queue without being
 reloaded.
 
-**Repositories.** The page shows the repository `queuekeeper serve` was started in, those given on
+**Repositories.** The page shows the repository `qk serve` was started in, those given on
 its command line, and every repository whose queue has journaled an event while the feature was
 on. With more than one, a picker in the header switches between them, and its first entry lists
 them all with a line each. Each repository's pages have addresses of their own, such as
@@ -177,11 +177,11 @@ repository's Git directory, each time its state changes. The queue writes the jo
 nothing back. A journal that cannot be written is skipped and never stops a round.
 
 ```sh
-queuekeeper queue events                       # everything, oldest first
-queuekeeper queue events --follow              # then each new event as it happens
-queuekeeper queue events --since 2026-11-12    # from a date or time
-queuekeeper queue events --kind entry.         # every kind that begins with entry.
-queuekeeper queue events --json                # the journal's own lines
+qk queue events                       # everything, oldest first
+qk queue events --follow              # then each new event as it happens
+qk queue events --since 2026-11-12    # from a date or time
+qk queue events --kind entry.         # every kind that begins with entry.
+qk queue events --json                # the journal's own lines
 ```
 
 Every event has these keys, and its kind's own beside them:
@@ -217,7 +217,7 @@ and never renames or removes one, so a reader ignores what it does not know.
 
 The journal starts a new file at 4 MB and keeps the one before it, as `events.1.jsonl`.
 
-The queue's state at one moment, as opposed to its changes, is `queuekeeper queue status --json`.
+The queue's state at one moment, as opposed to its changes, is `qk queue status --json`.
 In Python that is `merge_queue.snapshot(root)`.
 
 ## How features stay separate

@@ -4,15 +4,15 @@ How a commit gets from an agent's branch to `main`, and what happens when it doe
 
 ## Landing a commit
 
-An agent commits its work on any branch and runs `queuekeeper land`. That queues the commits the
+An agent commits its work on any branch and runs `qk land`. That queues the commits the
 branch has and `origin/main` lacks, held by a Git ref of their own, so the agent's session can end
 and its branch can move or be deleted. One worker per repository does the rest.
 
 ```sh
-queuekeeper land --wait          # queue HEAD and follow it to its result
-queuekeeper land BRANCH          # queue a branch and return at once
-queuekeeper queue status         # what is waiting, what is testing, what came back and why
-queuekeeper queue remove ID      # take an entry out
+qk land --wait          # queue HEAD and follow it to its result
+qk land BRANCH          # queue a branch and return at once
+qk queue status         # what is waiting, what is testing, what came back and why
+qk queue remove ID      # take an entry out
 ```
 
 Each round, the worker:
@@ -29,7 +29,7 @@ discard the result.
 
 ## Checked before it is queued
 
-`queuekeeper land` refuses an entry in seconds, with nothing queued, when a round would only send it
+`qk land` refuses an entry in seconds, with nothing queued, when a round would only send it
 back later:
 
 - **Conflicts.** It makes the integration a round would make, onto `origin/main` and every entry
@@ -56,7 +56,7 @@ The worker tries the cheap explanations before the expensive one:
 3. **Bisect.** Otherwise the batch is halved until one entry fails alone. Both halves gate at the
    same time, on different Macs, and every entry that passes along the way lands.
 
-Steps 1 and 2 read test names from the output of `queuekeeper unittest`, the bundled Python test
+Steps 1 and 2 read test names from the output of `qk unittest`, the bundled Python test
 runner. A failure in any other kind of lane goes straight to the bisect.
 
 ## While a gate runs
@@ -78,7 +78,7 @@ settle (CPU busy share under 75%, normal memory pressure) and runs the lane agai
 
 After three runs in a row with no verdict, the queue holds with every entry still waiting. A hold
 states its reason and who can clear it: an agent for most causes, the owner only for causes an agent
-cannot fix, such as a refused SSH key. Whoever fixes the cause runs `queuekeeper queue resume`.
+cannot fix, such as a refused SSH key. Whoever fixes the cause runs `qk queue resume`.
 
 A remote that cannot be reached is retried with backoff for about an hour before the queue holds.
 During a GitHub incident, the worker reads GitHub's status page and keeps trying while Git
@@ -86,18 +86,18 @@ operations are degraded.
 
 ## Emergencies
 
-- `queuekeeper land --front` tests an entry next, ahead of everything waiting.
-- `queuekeeper land --no-gate --why "..."` lands with only the lint lane and the pre-push hook. The
+- `qk land --front` tests an entry next, ahead of everything waiting.
+- `qk land --no-gate --why "..."` lands with only the lint lane and the pre-push hook. The
   reason is required and is recorded in a `Landed-without-gate:` trailer. Status lists the commit as
   ungated until a later gate covers it.
 
 ## A queue that looks stuck
 
-`queuekeeper queue doctor` reads the queue's own records and says whether it is testing or stuck,
-and what would unstick it. `queuekeeper queue placement` shows whether each build Mac could start a
+`qk queue doctor` reads the queue's own records and says whether it is testing or stuck,
+and what would unstick it. `qk queue placement` shows whether each build Mac could start a
 gate now, without running one.
 
-`queuekeeper queue events` prints the queue's journal, one line for each change of its state. See
+`qk queue events` prints the queue's journal, one line for each change of its state. See
 [Visibility](visibility.md).
 
 See also [Lanes and admission](lanes_and_admission.md), [The build farm](build_farm.md) and
