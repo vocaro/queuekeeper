@@ -1935,7 +1935,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
         updated, _ = toolkit_line(host, answered.get("toolkitCheckout"))
         if updated: print(f"remote: {updated}", file=sys.stderr, flush=True)
         for found in answered.get("siblingCheckouts") or []:
-            updated, _ = toolkit_line(host, found)
+            updated, _ = toolkit_line(host, found, what="checkout")
             if updated: print(f"remote: {updated}", file=sys.stderr, flush=True)
         advertised = answered.get("advertised") if isinstance(answered.get("advertised"), dict) else {}
         preparation["git"]["there"] = answered.get("git")
@@ -3506,13 +3506,12 @@ def sibling_requests(root):
     return requests
 
 
-def toolkit_line(host, found):
+def toolkit_line(host, found, what="toolkit checkout"):
     """What is said of offload_host.update_toolkit's answer from host, and whether it is the owner's to decide:
     (None, False) for a checkout already current, or one another connection is updating; (line, False) for one
     it updated; (line, True) for one it left as it is, or could not update, and why."""
     if not isinstance(found, dict) or found.get("state") in ("current", "busy"): return None, False
-    path = found.get("path") or offload_host.TOOLKIT_CHECKOUT
-    where = f"{host}'s {'toolkit ' * (path == offload_host.TOOLKIT_CHECKOUT)}checkout ~/{path}"
+    where = f"{host}'s {what} ~/{found.get('path') or offload_host.TOOLKIT_CHECKOUT}"
     if found.get("state") == "updated":
         count = found.get("behind")
         return (f"updated {where} from {str(found.get('head'))[:12]} to {str(found.get('to'))[:12]}, "
