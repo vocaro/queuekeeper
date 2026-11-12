@@ -186,6 +186,12 @@ STACK_ADMISSION_DECLINED = "queue: no Mac admitted the last lane of this stacked
 # beside the gate in a checkout of its own with this suffix (Worker.docs_beside), and the code batch's pass carries over
 # the documents main gained (Worker.carry). It goes ahead of an older entry only when the two change no path in common.
 DOCS_SUFFIX = "-docs"
+# The seconds the toolkit's spelling check or `queuekeeper docs check` may run unadmitted, in the worker's checkout, as a
+# docs-only batch's lane (Worker.quick, vocaro-engineering#394). Both took 0.2-1.3 s on this Mac at a load of 15-44 on
+# 2026-11-11; one that reaches this limit runs again admitted, as any lane, so a slow check is never a failure.
+DOCS_CHECK_LIMIT = 60
+# The commands of those checks, which a project's lane must run exactly to run unadmitted.
+QUICK_CHECKS = {SPELLING: IMPLICIT_SPELLING, DOCS: IMPLICIT_DOCS}
 # What a gate's lanes return when `queuekeeper queue remove` took an entry it tests out of the queue, which stopped them by the
 # cancel a thrown-away stacked gate's lanes end with, here or on the second Mac, freeing their admission there: no
 # verdict on anything, and what is left of the batch gates again (Worker.gate, vocaro-engineering#247). The gate looks
@@ -2646,7 +2652,7 @@ class Worker:
         """What integrate records of an entry it put on top, the changelog conflicts it settled: in the queue."""
         self.queue.record(entry, **fields)
 
-    def gate(self, lanes, round_name, where=(), cancel=None):
+    def gate(self, lanes, round_name, where=(), cancel=None, quick=False):
         """(status of the first of lanes that did not pass or 0, its log). ran_on is the second Mac that ran
         that lane, by its dispatch's record (remote.dispatched), or None when it ran here or nowhere. A pass of
         the gate lane leaves its wall time and the parts its log reports in self.measured, for the gate's
@@ -2655,7 +2661,8 @@ class Worker:
         limit would (processes.Canceled), for a stacked gate thrown away (Stack). So does an entry it tests that leaves
         the queue, as `queuekeeper queue remove` takes it out, and the gate then returns WITHDRAWN, with self.withdrawn naming
         those entries (Removal, vocaro-engineering#247). lane_now is (the lane running, when it began, where), by which
-        a gate stacked on this one goes to another Mac (Worker.admitted_mac)."""
+        a gate stacked on this one goes to another Mac (Worker.admitted_mac). quick, for a docs-only batch's lanes, runs
+        the toolkit's two docs checks unadmitted first (Worker.quick)."""
         log, self.ran_on, self.measured, self.timed_out, self.ran_where = None, None, None, None, ""
         self.failed_lane, self.failed_load, self.withdrawn = None, None, []
         self.failed_dispatch = None
@@ -2674,6 +2681,12 @@ class Worker:
             lane_wait.remove(lane_wait.path_of(self.checkout, lane))
             shutil.rmtree(lane_log.parent / "lanes", ignore_errors=True)
             self.say(f"{lane} on {self.head()[:12]}")
+            if quick:
+                status_ = self.quick(lane, log)
+                if status_ is not None:
+                    if not status_: continue
+                    self.failed_lane = lane
+                    return status_, log
             began = time.time()  # wall clock, to match the dispatch records' start times
             started = time.monotonic()  # for the gate's measured duration
             self.lane_now = (lane, began, tuple(where))
@@ -2758,6 +2771,28 @@ class Worker:
                     self.say(said)
                     if self.measured: self.measured.update(results=said, log=str(log))
         return 0, log
+
+    def quick(self, lane, log):
+        """The status of lane, one of a docs-only batch's lanes, run in this checkout without admission, when it is the
+        toolkit's spelling check or `queuekeeper docs check` (QUICK_CHECKS), the project's own lane of that name or none, so
+        that seconds of checks never wait behind heavy or whole-host work (vocaro-engineering#394); None for any other
+        lane, or one that did not end within DOCS_CHECK_LIMIT, which queuekeeper run then runs admitted as before."""
+        command = QUICK_CHECKS.get(lane)
+        if command is None: return None
+        try: configured = load(self.checkout).get("lanes", {}).get(lane)
+        except (OSError, ValueError): return None
+        if configured is not None and configured.get("command") != command: return None
+        try:
+            status_ = processes.run(command, cwd=self.checkout, log_path=log, timeout=DOCS_CHECK_LIMIT,
+                                    env=self.environment)
+        except processes.TimedOut as error:
+            self.say(f"{lane}: did not end unadmitted within {DOCS_CHECK_LIMIT}s ({error}): running it admitted")
+            return None
+        except OSError as error:
+            self.say(f"{lane}: could not run unadmitted ({error}): running it admitted")
+            return None
+        self.say(f"{lane} exited {status_} in the queue's checkout, unadmitted, as a docs-only batch's check")
+        return status_
 
     def read_group(self, lane, folder, log, *, include_swift=False):
         """For a lane that is a group, whose own output gives only the end of a failed lane's log: add its queuekeeper unittest
@@ -3384,15 +3419,17 @@ class Worker:
         beside = self.beside(waiting, batch, base, config, docs, ungated)
         self.role = "older half" if beside else "batch"
         self.begun(round_name, head, base, applied, beside)
-        # A bisect's gates stack nothing, but docs entries still land beside them (docs_beside, #394).
+        # A bisect's gates, and the gate of an entry queuekeeper land --front put on its own, stack nothing, but docs entries
+        # still land beside them (docs_beside, #394).
         if beside:
             result, log = self.watched(self, config, lanes_of(config), base, head, [*applied, *beside.newer],
                                        lambda: beside.both(self, lanes_of(config), round_name), stacks=False)
-        elif self.limit and not (self.alone or docs or ungated):
+        elif (self.limit or self.alone) and not (docs or ungated):
             result, log = self.watched(self, config, lanes_of(config), base, head, applied,
                                        lambda: self.gate(lanes_of(config), round_name), stacks=False)
         elif self.alone or docs or ungated:
-            result, log = self.gate(ungated["lanes"] if ungated else docs or lanes_of(config), round_name)
+            result, log = self.gate(ungated["lanes"] if ungated else docs or lanes_of(config), round_name,
+                                    quick=bool(docs))
         else:
             lanes = lanes_of(config)
             self.lane_now = None
@@ -3488,7 +3525,7 @@ class Worker:
         self.queue.mark(landing_, TESTING)
         runner.say(f"{len(landing_)} docs-only entr{'y' if len(landing_) == 1 else 'ies'} at {head[:12]} on "
                    f"{base[:12]}: running only {', '.join(lanes)}, beside the gate of {len(applied)}, no code lane")
-        result, log = runner.gate(lanes, f"{time.strftime('%Y%m%d-%H%M%S')}-{head[:8]}")
+        result, log = runner.gate(lanes, f"{time.strftime('%Y%m%d-%H%M%S')}-{head[:8]}", quick=True)
         if not result:
             current = [self.queue.read(entry["id"]) for entry in landing_]
             if any(entry is None or entry["state"] not in WAITING for entry in current):

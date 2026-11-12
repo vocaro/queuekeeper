@@ -402,9 +402,8 @@ class RemoteTests(unittest.TestCase):
         for name, text in [("ssh", FAKE_SSH), ("login-shell", FAKE_SHELL)]:
             (tools / name).write_text(text)
             host_isolation.executable(tools / name)
-        # The second Mac's Python is the Mac's own when it has one: Python 3.9 without Homebrew.
-        system = Path("/usr/bin/python3")
-        (tools / "python3").symlink_to(system if sys.platform == "darwin" and system.exists() else sys.executable)
+        # The second Mac's Python is this one: Queuekeeper needs 3.14 or newer on every Mac.
+        (tools / "python3").symlink_to(sys.executable)
         self.toolkit = self.make_toolkit(base / "vocaro-engineering")
         self.project = base / "example"
         self.project.mkdir()
@@ -5865,8 +5864,7 @@ class SecondMacDoctorTests(unittest.TestCase):
                            ("xcrun", FAKE_XCRUN)]:
             (tools / name).write_text(text)
             host_isolation.executable(tools / name)
-        system = Path("/usr/bin/python3")
-        (tools / "python3").symlink_to(system if sys.platform == "darwin" and system.exists() else sys.executable)
+        (tools / "python3").symlink_to(sys.executable)
         self.xcodes = base / "xcodes"
         self.xcodes.mkdir()
         self.project = base / "example"
@@ -6822,8 +6820,7 @@ class RemoteRuntimeTests(unittest.TestCase):
                            ("xcode-select", '#!/bin/sh\n[ "$1" = -p ] && echo "$FAKE_DEVELOPER"\n')]:
             (tools / name).write_text(text)
             host_isolation.executable(tools / name)
-        system = Path("/usr/bin/python3")
-        (tools / "python3").symlink_to(system if sys.platform == "darwin" and system.exists() else sys.executable)
+        (tools / "python3").symlink_to(sys.executable)
         self.runtimes = base / "runtimes"
         for mac in ("here", "there", "catalog"): (self.runtimes / mac).mkdir(parents=True)
         self.developer = base / "Xcode.app/Contents/Developer"

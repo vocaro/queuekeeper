@@ -3525,6 +3525,66 @@ class DefaultDocsOnly(Fixture):
         self.assertEqual(self.state(guide)["docsOnly"], ["spelling", "docs"])
         self.assertEqual(self.gates(), 1)
 
+    def test_a_docs_only_batch_does_not_wait_behind_a_whole_host_lane(self):
+        """vocaro-engineering#394: a docs-only batch's spelling and docs checks, the toolkit's, run unadmitted under
+        DOCS_CHECK_LIMIT, so a whole-host lane holding this Mac does not hold them back. The old worker ran them through
+        queuekeeper run's admission, which waited until the holder let go: here, after PATIENCE, which fails the test."""
+        from queuekeeper import resources
+        slots = self.base / "slots"
+        environment = {"HEAVY_SLOT_DIR": str(slots), "HEAVY_SLOTS": "2", "HEAVY_SLOTS_MAX": "3",
+                       "HEAVY_SETTLE_SECONDS": "0"}
+        held, release, released_early = threading.Event(), threading.Event(), []
+        def hold():
+            with contextlib.redirect_stderr(io.StringIO()), resources.Admission("gate", whole_host=True, timeout=0):
+                held.set()
+                if not release.wait(stretched(60)): released_early.append(True)
+        self.commit("guides/guide.md", "guide", "# Guide\n")
+        [identifier] = self.add("guide")
+        with patch.dict(os.environ, environment):
+            holder = threading.Thread(target=hold, name="whole-host lane", daemon=True)
+            holder.start()
+            self.assertTrue(held.wait(stretched(30)))
+            os.environ.pop(resources.TOKEN, None)  # the worker is no work nested in the holder's admission
+            said = io.StringIO()
+            try:
+                with contextlib.redirect_stdout(said): self.assertEqual(self.work(), 0)
+            finally:
+                release.set()
+                holder.join()
+        self.assertEqual(released_early, [], said.getvalue())
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual(self.state(identifier)["docsOnly"], ["spelling", "docs"])
+        for lane in ("spelling", "docs"):
+            self.assertIn(f"{lane} exited 0 in the queue's checkout, unadmitted, as a docs-only batch's check",
+                          said.getvalue())
+
+    def test_a_docs_check_that_reaches_its_limit_runs_admitted(self):
+        """The control: a check that does not end within DOCS_CHECK_LIMIT runs again through queuekeeper run, admitted."""
+        self.commit("guides/guide.md", "guide", "# Guide\n")
+        [identifier] = self.add("guide")
+        real = mq.processes.run
+        def slow(command, **options):
+            if command in mq.QUICK_CHECKS.values(): raise mq.processes.TimedOut("the fixture's slow check")
+            return real(command, **options)
+        said = io.StringIO()
+        with patch.object(mq.processes, "run", slow), contextlib.redirect_stdout(said): self.work()
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertIn(f"spelling: did not end unadmitted within {mq.DOCS_CHECK_LIMIT}s", said.getvalue())
+        self.assertIn("spelling exited 0 on this Mac", said.getvalue())
+
+    def test_a_project_docs_lane_of_its_own_is_admitted(self):
+        """A docs lane whose command is not the toolkit's has a cost queuekeeper cannot know, so it runs admitted."""
+        config = self.config()
+        config["lanes"]["docs"] = {"command": ["python3", "scripts/qk", "docs", "check", "--strict"]}
+        worker = mq.Worker(mq.Queue(self.repo))
+        worker.checkout = self.base / "checkout"
+        worker.checkout.mkdir()
+        (worker.checkout / "queuekeeper.json").write_text(json.dumps(config))
+        with patch.object(mq.processes, "run") as run_:
+            self.assertIsNone(worker.quick("docs", self.base / "docs.log"))
+            self.assertIsNone(worker.quick("gate", self.base / "gate.log"))
+        run_.assert_not_called()
+
     def test_broken_links_in_the_default_docs_folder_are_rejected(self):
         self.commit("docs/guide.md", "guide", "[missing](missing.md)\n")
         [identifier] = self.add("guide")
@@ -3641,7 +3701,9 @@ class ImplicitSpelling(Fixture):
         [identifier] = self.add("fix")
         with self.lanes_run() as started: self.rounds()
         self.assertEqual(self.state(identifier)["state"], "landed")
-        self.assertEqual(started[:2], [self.RUN, ["python3", "scripts/qk", "run", "docs"]])
+        # The toolkit's check runs unadmitted in a docs-only batch, and the project's own docs lane through queuekeeper run
+        # (vocaro-engineering#394).
+        self.assertEqual(started[:2], [mq.IMPLICIT_SPELLING, ["python3", "scripts/qk", "run", "docs"]])
         self.assertEqual(self.gates(), 0)
 
     def test_turned_off_the_queue_asks_eng_run_for_no_spelling_lane(self):
@@ -7569,6 +7631,26 @@ class Stacked(Fixture):
         # The document landed first, and the batch on top of it.
         self.assertEqual(run(self.repo, "git", "rev-parse", f"{self.state(first)['landedAs']}^"), guide["landedAs"])
         self.assertLessEqual({"hold", "doc"}, self.main_files())
+
+    def test_a_docs_entry_lands_beside_the_gate_of_an_entry_put_first(self):
+        """An entry queuekeeper land --front put on its own stacks nothing behind it, but a docs entry that arrives during its
+        gate still lands beside it: the old worker gated such an entry with no watch, so the docs entry waited it out."""
+        self.commit("hold", "a"); self.commit("doc/guide.md", "guide", "# Guide\n")
+        with patch.object(mq.Queue, "start"), patch("builtins.print"): mq.add(self.repo, "a", front=True)
+        first = self.added("a")["id"]
+        # The old worker gives no sign while the gate holds: a bound, far beyond what the landing beside it takes, ends
+        # the wait, so that it fails rather than waits.
+        deadline = []
+        def then(log):
+            deadline[:] = deadline or [time.monotonic() + stretched(120)]
+            return "docs beside the gate: pushed" in log or time.monotonic() > deadline[0]
+        log = self.worked("guide", then)
+        guide = self.added("guide")
+        self.assertEqual((self.state(first)["state"], guide["state"]), ("landed", "landed"), log)
+        self.assertEqual(guide["docsOnly"], ["spelling", "docs"], log)
+        self.assertEqual(self.gates(), 1, log)
+        self.assertNotIn("that arrived during the gate", log)
+        self.assertIn("carried the result over 1 file(s) on main: doc/guide.md", log)
 
     def test_a_stacked_gate_goes_on_over_a_document_landed_beside_the_gate_below_it(self):
         """A code entry stacked on the batch, and then a docs entry landed beside the gate: the batch carries its

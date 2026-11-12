@@ -675,8 +675,15 @@ records no queue lane reads, and check first: studywright's gate compiles source
 repositories use this path for root `README.md`, `CONTRIBUTING.md`, and `CHANGELOG.md`, and
 Markdown files (`.md` or `.markdown`) under `doc/`, `docs/`, `guides/`, and `knowledge/`.
 The worker runs spelling, unless disabled, followed by the project's `docs` lane or the toolkit's
-implicit `docs` lane (`python3 scripts/qk docs check`). Both run through ordinary lane admission
-and leave their logs and receipts. This includes this toolkit's guides and knowledge articles.
+implicit `docs` lane (`python3 scripts/qk docs check`). This includes this toolkit's guides and
+knowledge articles. The toolkit's two checks, `queuekeeper spelling` and `queuekeeper docs check`, run in the
+worker's checkout without admission, so that seconds of checks never wait behind a whole-host
+gate or busy slots (vocaro-engineering#394): implicit, or a project lane of that name whose
+command is exactly the toolkit's. Each has `DOCS_CHECK_LIMIT`, 60 s, about 45 times the slowest
+measured run (0.2–1.3 s on this Mac at a load of 15–44, 2026-11-11). One that reaches it runs
+again through `queuekeeper run`, admitted, so a slow check is never a failure and never runs long
+outside admission. Any other docs lane, such as a project script, runs through ordinary lane
+admission, since queuekeeper cannot know its cost. Either way the lanes leave their logs.
 Code, configuration, agent instructions, non-Markdown data, and documents under source or test
 folders retain the code gate. A batch that changes nothing runs every code lane, and so does an
 entry whose own commits change a document and code.
@@ -687,10 +694,10 @@ change, by `main`'s settings as above, and keeps docs-only entries out of code b
 
 - Queued beside code entries, the docs-only entries land first, in a round of their own on the
   docs lanes; the code entries gate in the next round, without them.
-- While a code batch gates, a bisect's half among them, a docs-only entry that waits lands
-  beside the gate, in a checkout of its own beside the worker's (suffix `-docs`), looked for
-  every `STACK_POLL`. Only entries whose
-  every path a carry-over takes go there; when the code batch passes, its result carries over
+- While a code batch gates, a bisect's half or an entry put first among them, a docs-only entry
+  that waits lands beside the gate, in a checkout of its own beside the worker's (suffix
+  `-docs`), looked for every `STACK_POLL`. Only entries whose every path a carry-over takes go
+  there; when the code batch passes, its result carries over
   the documents `main` gained (*Main moving under a passed batch*), and so does a gate stacked on
   it. A docs-only entry is never stacked on a code gate.
 - A docs-only entry goes ahead of an older entry only when the two change no path in common, and
