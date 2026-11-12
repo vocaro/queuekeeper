@@ -141,7 +141,7 @@ class SimulatorTests(Fixture):
     def test_the_pools_are_those_the_main_checkouts_name(self):
         (self.main / "engineering.json").write_text(json.dumps({"simulatorPool": "Project"}))
         (self.development / "Unconfigured").mkdir()
-        self.assertEqual(disk.pools(self.development), frozenset({"Project"}))
+        self.assertEqual(apple_disk.pools(self.development), frozenset({"Project"}))
         # A main checkout that lags origin/main still names the pool origin/main names.
         lagging = self.development / "Lagging"
         lagging.mkdir()
@@ -150,7 +150,7 @@ class SimulatorTests(Fixture):
         git(lagging, "update-ref", "refs/remotes/origin/main", "HEAD")
         git(lagging, "rm", "-q", "engineering.json")
         git(lagging, "commit", "-q", "-m", "older")
-        self.assertEqual(disk.pools(self.development), frozenset({"Project", "Lagging"}))
+        self.assertEqual(apple_disk.pools(self.development), frozenset({"Project", "Lagging"}))
 
     def test_booted_recent_reserved_or_referenced_disposable_devices_are_kept(self):
         booted = device(f"P-{uuid.uuid4()}", state="Booted")
@@ -174,7 +174,7 @@ class SimulatorTests(Fixture):
         record = self.root / "isolated-record.json"
         record.write_text(json.dumps({"devices": {"a": {"device": reserved["udid"]}}}))
         with patch.dict(os.environ, {"VOCARO_DEVICE_RECORD": str(record)}):
-            items = self.simulators([reserved, unnamed], records=disk.device_records())
+            items = self.simulators([reserved, unnamed], records=apple_disk.device_records())
         self.assertEqual(items[reserved["udid"]].status, disk.KEPT)
         self.assertIn(f"named in the device record {record}", items[reserved["udid"]].reason)
         self.assertEqual(items[unnamed["udid"]].status, disk.CANDIDATE, items[unnamed["udid"]].reason)
@@ -187,7 +187,7 @@ class SimulatorTests(Fixture):
         environment = {key: value for key, value in os.environ.items() if key != "VOCARO_DEVICE_RECORD"}
         with patch.dict(os.environ, environment, clear=True), patch.object(devices, "default_path", return_value=moved), \
              patch.object(devices, "LEGACY", str(self.root / "*device-handoff*.json")):
-            records = disk.device_records()
+            records = apple_disk.device_records()
         self.assertEqual(set(records) & {str(moved), str(legacy)}, {str(moved), str(legacy)})
 
     def test_an_unreadable_device_record_keeps_every_disposable_device(self):
@@ -307,17 +307,17 @@ class SimulatorTests(Fixture):
 
     def test_the_second_macs_runtimes_are_read_as_eng_remote_reads_them(self):
         from queuekeeper import remote
-        self.assertIsNone(disk.runtimes_there(None))
+        self.assertIsNone(apple_disk.runtimes_there(None))
         with patch.object(remote, "developer_directory", return_value="/X.app"), \
                 patch.object(remote, "runtime_images", return_value={"images": [{"build": "B", "users": []}]}) as read:
-            self.assertEqual(disk.runtimes_there("build-host"), {"images": [{"build": "B", "users": []}]})
+            self.assertEqual(apple_disk.runtimes_there("build-host"), {"images": [{"build": "B", "users": []}]})
         read.assert_called_once_with("build-host", "build-host", "/X.app")
         with patch.object(remote, "developer_directory", return_value="/X.app"), \
                 patch.object(remote, "runtime_images", side_effect=remote.Misconfigured("unreachable", "fix")):
-            self.assertIn("error", disk.runtimes_there("build-host"))
+            self.assertIn("error", apple_disk.runtimes_there("build-host"))
         with patch.object(remote, "developer_directory", return_value="/X.app"), \
                 patch.object(remote, "runtime_images", return_value={"images": None}):
-            self.assertEqual(disk.runtimes_there("build-host"), {"error": "simctl did not list its runtime images"})
+            self.assertEqual(apple_disk.runtimes_there("build-host"), {"error": "simctl did not list its runtime images"})
 
 
 class CacheTests(Fixture):
@@ -392,49 +392,23 @@ class CacheTests(Fixture):
         self.assertNotIn(str(gone), items)
         self.assertEqual(items[str(project)].status, disk.CANDIDATE)
 
-    def test_scratch_outside_checkouts_is_a_candidate_and_results_are_owner_decisions(self):
-        temp = self.root / "tmp"
-        scratch = temp / "session/scratchpad/build"
-        scratch.mkdir(parents=True)
-        (scratch / "workspace-state.json").write_text("{}")
-        checkout = temp / "share/Project"
-        (checkout / ".build").mkdir(parents=True)
-        (checkout / ".git").write_text("gitdir: elsewhere\n")
-        (checkout / ".build/workspace-state.json").write_text("{}")
-        used = temp / "used"
-        (used / "Build").mkdir(parents=True)
-        (used / "Logs").mkdir()
-        bundle = temp / "session/scratchpad/run.xcresult"
-        bundle.mkdir()
-        live, finished = temp / "checks.live", temp / "checks.done"
-        started = subprocess.run(["ps", "-o", "lstart=", "-p", str(os.getpid())], capture_output=True, text=True).stdout
-        for directory, pid in ((live, os.getpid()), (finished, 999999)):
-            directory.mkdir()
-            (directory / "owner").write_text(f"{pid} {started.strip()}\n")
-        sessions = temp / "claude-501"
-        open_checkout = self.worktree("live")
-        kept = sessions / disk.encoded(open_checkout) / "session/scratchpad/dd"
-        left = sessions / disk.encoded(self.main / ".claude/worktrees/removed") / "session/scratchpad/dd"
-        removed = self.main / ".claude/worktrees/still-running"
-        running = sessions / disk.encoded(removed) / "session/scratchpad/dd"
-        for directory in (kept, left, running):
-            directory.mkdir(parents=True)
-            (directory / "workspace-state.json").write_text("{}")
-        processes = [disk.Process(3, "swift-build", cwd=str(used)), disk.Process(4, "claude", cwd=str(removed / "Output"))]
-        host = self.host(processes, temp_roots=[(temp, 6)], session_scratch=sessions)
-        items = self.items(host, ["scratch", "results"])
-        self.assertEqual(items[str(kept)].status, disk.KEPT)
-        self.assertIn(f"whose checkout {open_checkout} still exists", items[str(kept)].reason)
-        self.assertEqual(items[str(left)].status, disk.CANDIDATE)
-        self.assertEqual(items[str(running)].status, disk.KEPT)
-        self.assertIn("PID 4 (claude) still works in its checkout", items[str(running)].reason)
-        self.assertEqual(items[str(scratch)].status, disk.CANDIDATE, items[str(scratch)].reason)
-        self.assertNotIn(str(checkout / ".build"), items)
-        self.assertEqual(items[str(used)].status, disk.KEPT)
-        self.assertEqual(items[str(bundle)].status, disk.OWNER)
-        self.assertEqual(items[str(live)].status, disk.KEPT)
-        self.assertIn("still in progress", items[str(live)].reason)
-        self.assertEqual(items[str(finished)].status, disk.OWNER)
+
+class DeletionTests(Fixture):
+    def setUp(self):
+        super().setUp()
+        self.ledger = self.root / "ledger.jsonl"
+
+    def test_simulator_deletion_names_the_exact_device(self):
+        disposable, pool = device(f"P-{uuid.uuid4()}"), device("Project Duo 1")
+        listing = {"devices": {"com.apple.CoreSimulator.SimRuntime.iOS-27-0": [disposable, pool]}}
+        collect = lambda categories=None: disk.inventory(self.host(simulators=listing), disk.Sizes(measure=False), categories)
+        calls = []
+        def run(command, **options):
+            calls.append(command)
+            return subprocess.CompletedProcess(command, 0, "", "")
+        with contextlib.redirect_stdout(StringIO()):
+            disk.delete(collect(["simulator"]), lambda category: collect([category]), self.ledger, run=run)
+        self.assertEqual(calls, [["xcrun", "simctl", "delete", disposable["udid"]]])
 
 
 if __name__ == "__main__":

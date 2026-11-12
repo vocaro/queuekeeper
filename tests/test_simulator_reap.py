@@ -1028,7 +1028,7 @@ class ReapCommandTests(unittest.TestCase):
             with patch.object(offload_host, "reap", return_value=here or self.EMPTY) as local, \
                     patch.object(remote, "reap_there", return_value=there or self.EMPTY) as far, \
                     patch.object(remote, "configured", return_value=host), \
-                    patch("queuekeeper.disk.pools", return_value=frozenset({"Pagepour"})), redirect_stdout(output):
+                    patch("queuekeeper.apple.disk.pools", return_value=frozenset({"Pagepour"})), redirect_stdout(output):
                 status = simulator_pool.main(["reap", *arguments], project)
         return status, output.getvalue(), local, far
 

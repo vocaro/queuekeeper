@@ -161,9 +161,8 @@ class Fixture(unittest.TestCase):
         shutil.copy(ROOT / "scripts/qk", self.repo / "scripts/qk")
         (self.repo / "lane.py").write_text(LANE)
         # The agent entry a direct-main project keeps, which `eng docs check` reads.
-        (self.repo / "AGENTS.md").write_text("# Fixture\n\n" + (ROOT / cli.SHARED_GUIDANCE).read_text() + "\n"
-                                             + "".join(f"{line}\n" for line in cli.claude_imports({})))
-        (self.repo / "CLAUDE.md").write_text(f"{cli.CLAUDE_ENTRY}\n")
+        (self.repo / "AGENTS.md").write_text("# Fixture\n")
+        (self.repo / "CLAUDE.md").write_text("@AGENTS.md\n")
         (self.repo / "engineering.json").write_text(json.dumps({
             "schemaVersion": 1, "name": "fixture", "integration": "direct-main",
             # Generated paths are opaque identities, including when embedded in fixture source.

@@ -314,7 +314,7 @@ class Doctor(Project):
         subprocess.run(["git", "init", "-q", str(self.root)], check=True)
         subprocess.run(["git", "-C", str(self.root), "add", "."], check=True)
         with patch.object(cli.shutil, "which", return_value="/usr/bin/true"), \
-                patch.object(cli, "source_identity", return_value={}), patch.object(cli, "agent_entry", return_value=[]), \
+                patch.object(cli, "source_identity", return_value={}), \
                 patch.object(cli.remote, "compare_hosts", return_value={"errors": []}), \
                 patch.object(cli, "fix_hosts", return_value={"errors": []}), \
                 contextlib.redirect_stdout(StringIO()) as output:

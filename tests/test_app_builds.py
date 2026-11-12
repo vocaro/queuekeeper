@@ -15,6 +15,7 @@ from unittest.mock import patch
 
 import host_isolation  # noqa: F401  (first: keeps every test out of the host's admission)
 from queuekeeper import cli, config, disk, merge_queue
+from queuekeeper.apple import disk as apple_disk
 from queuekeeper.apple import app_builds, device_pass
 
 BUNDLE = "com.example.demo"
@@ -496,7 +497,7 @@ class Disk(unittest.TestCase):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         home = Path(temp.name)
-        store = home / disk.APP_STORE / "Demo"
+        store = home / apple_disk.APP_STORE / "Demo"
         (store / "kept/mac/abc/Demo.app").mkdir(parents=True)
         (store / "derived/mac").mkdir(parents=True)
         old = time.time() - 3 * 86400
@@ -507,7 +508,7 @@ class Disk(unittest.TestCase):
                          [("kept", disk.KEPT), ("derived/mac", disk.CANDIDATE)])
         # A keep under way holds the store's lock, which keeps its cache: a build's arguments name a path with a
         # space in it, Application Support, that no census of arguments reads whole.
-        with app_builds.Store("Demo", home / disk.APP_STORE).locked():
+        with app_builds.Store("Demo", home / apple_disk.APP_STORE).locked():
             [_, cache] = disk.app_builds(host, disk.Usage([]), disk.Sizes(measure=False))
         self.assertEqual((cache.status, cache.reason), (disk.KEPT, "a keep is building with it now"))
         self.assertEqual(disk.app_builds(SimpleNamespace(home=home / "none"), None, None), [])

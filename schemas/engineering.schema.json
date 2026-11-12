@@ -1,0 +1,584 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Vocaro engineering project configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "name"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "repository": {
+      "type": "string"
+    },
+    "toolkit": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "capabilities": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "app-extensions",
+          "background-assets",
+          "background-mac",
+          "background-processing",
+          "data-protection",
+          "external-validation",
+          "file-handoff",
+          "foundation-models",
+          "measurement",
+          "native-python",
+          "packaging",
+          "simulator-pool",
+          "storekit",
+          "voiceover"
+        ]
+      }
+    },
+    "simulatorPool": {
+      "description": "The name every member of the project's simulator pool starts with, as in 'NAME iPhone 17 Pro 1'; required with the simulator-pool capability",
+      "type": "string",
+      "minLength": 1
+    },
+    "integration": {
+      "enum": [
+        "direct-main",
+        "pull-request"
+      ]
+    },
+    "exceptions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "rule",
+          "reason"
+        ],
+        "properties": {
+          "rule": {
+            "type": "string",
+            "minLength": 1
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "lanes": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "oneOf": [
+          {
+            "description": "A lane: a command and how it runs",
+            "required": ["command"],
+            "propertyNames": {
+              "enum": ["command", "resource", "minimumTests", "timeout", "foreground", "here", "model", "display",
+                       "budgetMinutes", "wholeHost", "apps", "unlockedScreen", "devices", "compileFirst",
+                       "deviceRunMinutes", "stall"]
+            }
+          },
+          {
+            "description": "A lane group: other lanes run side by side under its one admission (guides/parallel-tests.md)",
+            "required": ["parallel"],
+            "propertyNames": {
+              "enum": ["parallel", "jobs", "resource", "here", "model", "budgetMinutes", "wholeHost", "unlockedScreen"]
+            }
+          }
+        ],
+        "properties": {
+          "parallel": {
+            "description": "A lane group's lanes, each a lane with a command, which run side by side under the group's one admission; the group needs the heaviest resource among them (guides/parallel-tests.md)",
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "type": "string"
+            }
+          },
+          "jobs": {
+            "description": "How many of a lane group's lanes run at once, from 1 to their number; without it, all of them",
+            "type": "integer",
+            "minimum": 1
+          },
+          "command": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "resource": {
+            "description": "The admission the lane takes, first come, first served, the second Mac first (the owner's decision, 2026-11-07): heavy, one slot, which light, the older name of a short check, and no resource mean too; exclusive, the host to itself; or self, for a lane whose script admits each of its parts itself, which eng run runs where it starts, unadmitted (guides/shared-host.md, Heavy-work admission)",
+            "enum": [
+              "light",
+              "heavy",
+              "exclusive",
+              "self"
+            ]
+          },
+          "minimumTests": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "timeout": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "stall": {
+            "description": "Opt-in quiet monitoring for an admitted leaf lane. Report-only by default; stopping requires a healthy-run measurement and a reviewed bound (guides/parallel-tests.md).",
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["seconds"],
+            "properties": {
+              "seconds": {"type": "integer", "minimum": 1},
+              "action": {"enum": ["report", "stop"]},
+              "reason": {"type": "string", "minLength": 1},
+              "primaryControl": {"type": "boolean", "description": "Explicitly declare that the supervised primary process only coordinates descendant work. Its CPU cannot mask quiet descendants; no descendants leaves the observation unavailable. Omit for serial or primary-process computation."}
+            },
+            "allOf": [{"if": {"required": ["action"], "properties": {"action": {"const": "stop"}}},
+                       "then": {"required": ["reason"]}}]
+          },
+          "foreground": {
+            "description": "The lane takes a Mac's screen, keyboard, pointer, focus or speech, as Mac VoiceOver and Mac XCUITest lanes do. It needs a heavy or exclusive resource. eng run sends it to the second Mac, which eng takes the foreground of for the run, waiting while another run holds it, and never to this Mac; eng run --here, or here, runs it on this Mac only for the session holding mac-foreground within the owner's window",
+            "type": "boolean"
+          },
+          "apps": {
+            "description": "A foreground lane's app under test, each name as a crash-report alert names the process that quit, such as EPUBLib. A failed run during which eng cleared a crash-report alert for another process, one that stood longer than one look, is unmeasured; one for these, or for a process eng cannot name, stays failed (guides/second-mac-foreground.md, Crash-report alerts)",
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "here": {
+            "description": "Why an admitted lane runs only on this Mac rather than on the owner's second Mac: a physical device, or a measurement tied to this Mac's hardware, such as goldens rendered on its GPU. Simulator, background Mac UI and foreground lanes go to the second Mac like the rest. A lane group that runs such a lane stays here with it",
+            "type": "string",
+            "minLength": 1
+          },
+          "model": {
+            "description": "A heavy lane that runs a model: on-device generation, another local generative model on the GPU, or Core ML whose compute units include the GPU. eng run admits it with one slot and the host's model lock, so model runs exclude each other while other heavy work runs beside them. A lane group that runs it needs model too, or an exclusive resource, and a group that runs two or more needs jobs 1. A model run that is timed or compared with a baseline is exclusive instead, which holds the model already",
+            "type": "boolean"
+          },
+          "display": {
+            "description": "A heavy or exclusive lane whose tests wait for what the display's refresh times, such as a scroll view's animation: eng run runs its command, on either Mac and in a lane group too, under a one-second caffeinate -u, which wakes a sleeping display behind a lock too, and then caffeinate -d, which keeps it on for the command's life, and the lane's receipt shows them in its command. Neither unlocks the screen, so a test that reads its tree through the accessibility API still needs an unlocked one",
+            "type": "boolean"
+          },
+          "budgetMinutes": {
+            "description": "The gate lane's time budget in minutes, from its measured time. When the median wall time of its recent passing runs in the merge queue exceeds it, eng land and eng doctor warn and name its slowest parts (guides/releasing.md, Keeping the split). Only the gate lane takes it",
+            "type": "integer",
+            "minimum": 1
+          },
+          "deviceRunMinutes": {
+            "description": "Minimum admission estimate in minutes for the full device lane, including the build, every device, and cleanup inside the lane. The reservation's own cleanup allowance is added separately",
+            "type": "integer",
+            "minimum": 1
+          },
+          "wholeHost": {
+            "description": "A heavy lane that is a Mac's work, such as a gate that runs the project's suites side by side: it takes every guaranteed slot of the Mac it runs on, so a second such lane never runs beside it there, and eng run sends it to the Mac that has them all free, while a lighter heavy lane still shares. A lane group that runs it needs wholeHost too, or an exclusive resource, which holds the host already (guides/shared-host.md, Which Mac runs a lane)",
+            "type": "boolean"
+          },
+          "devices": {
+            "description": "The device-record entries, such as iPhone, that a lane's script uses when its command is not eng device-pass, whose --device options say so: the lane waits for admission only until the last start that can finish within the window the session holds them for (guides/releasing.md, The device pass). It needs an admitted lane",
+            "type": "array",
+            "items": {"type": "string", "minLength": 1},
+            "minItems": 1
+          },
+          "unlockedScreen": {
+            "description": "A lane whose tests need an unlocked console screen, such as one that reads its own tree through the accessibility API; a lane group that runs such a lane says so too. eng places it only on a Mac whose screen reads unlocked, locked and unknown alike counting as no room for it, and otherwise it waits instead of running unmeasured. It needs an admitted lane (guides/shared-host.md, Which Mac runs a lane)",
+            "type": "boolean"
+          },
+          "compileFirst": {
+            "description": "An argv that compiles the lane's test target, such as xcodebuild build-for-testing on the derived data its command uses. It runs before the command in the lane's one admission and timeout, and a failure ends the run as build-failed with no test run. It needs an admitted lane, and a group runs its lanes' commands without it (guides/app-testing.md, Compile before the tests)",
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    },
+    "testLanes": {
+      "description": "What eng doctor's check that every test has a lane cannot work out for itself (guides/app-testing.md, Every test has a lane)",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "skip": {
+          "description": "Test paths kept as records, not counted as coverage, each mapped to the reason; a key ending in / is a directory",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1
+          },
+          "propertyNames": {
+            "minLength": 1
+          }
+        },
+        "selects": {
+          "description": "For a lane whose command the check cannot read, the paths its tests are under; a key ending in / is a directory, and an empty list says the lane runs no test",
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "propertyNames": {
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "spelling": {
+      "description": "Exemptions from eng spelling, each mapped to the reason it is kept",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "skip": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1
+          },
+          "propertyNames": {
+            "minLength": 1
+          },
+          "description": "Tracked paths neither read nor judged by name; a key ending in / is a directory"
+        },
+        "exemptPhrases": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1
+          },
+          "propertyNames": {
+            "minLength": 1
+          },
+          "description": "Case-sensitive text removed before a line is read, such as a standard's term"
+        },
+        "exemptRuns": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1
+          },
+          "propertyNames": {
+            "minLength": 1
+          },
+          "description": "Whole identifiers another project named, such as MonoBehaviour"
+        },
+        "exemptTokens": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1
+          },
+          "propertyNames": {
+            "minLength": 1
+          },
+          "description": "Case-sensitive subwords, such as a proper name or a foreign word"
+        }
+      }
+    },
+    "queue": {
+      "description": "The merge queue (guides/maintenance.md, The merge queue)",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "lanes": {
+          "description": "The lanes a batch passes before it lands, in order. Without it, the lane named gate",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "carryOver": {
+          "description": "Paths main may change under a passed result without gating again, a directory ending in /, each with why no queue lane reads it",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "hookCoveredBy": {
+          "description": "The queue lanes that cover the pre-push hook, each with what of the hook it runs. With it, the queue pushes without running the hook",
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "docsOnly": {
+          "description": "Conventional Markdown docs use spelling and docs checks by default. False disables this path; an object replaces default paths and lanes. Docs landings skip code hooks and are no full gate.",
+          "type": [
+            "object",
+            "boolean"
+          ],
+          "additionalProperties": false,
+          "required": [
+            "paths",
+            "lanes"
+          ],
+          "properties": {
+            "paths": {
+              "description": "Each path, a directory ending in /, with why no code lane reads it",
+              "type": "object",
+              "minProperties": 1,
+              "additionalProperties": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "lanes": {
+              "description": "The lanes a docs-only batch runs instead, in order; never gate, whose receipt eng release reads",
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "not": {
+                  "const": "gate"
+                }
+              }
+            },
+            "exclude": {
+              "description": "Paths consumed by code or tests, with why; these retain code gates even under listed documentation directories",
+              "type": "object",
+              "additionalProperties": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "not": {
+            "const": true
+          }
+        },
+        "noVerdictRuns": {
+          "description": "How many runs in a row of a batch's gate may give no verdict (exit 3, 75 or 78) before the queue holds; 3 where it is unset. Read from main, never from a branch (guides/maintenance.md, The merge queue)",
+          "type": "integer",
+          "minimum": 1
+        },
+        "spelling": {
+          "description": "false stops the queue running the toolkit's spelling check, eng spelling, before the gate, on an ungated landing and before a docs-only batch's lanes in a project with no spelling lane; a project's own spelling lane runs either way. Read from main (guides/maintenance.md, The merge queue)",
+          "const": false
+        },
+        "carryOverChecks": {
+          "description": "Commands that must pass on the rebased tree before a passed result carries over a move of main; any other outcome gates again, with no blame",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["command"],
+            "properties": {
+              "command": {
+                "description": "An argv list, never shell source. {base} in a word is the commit the result passed on",
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "paths": {
+                "description": "Run only when main moved one of these paths, a directory ending in /. Without it, on every carry-over",
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "app": {
+      "description": "The app eng app keeps and runs: the last good build of each platform, kept on this Mac (guides/app-builds.md)",
+      "type": "object",
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "required": [
+            "project"
+          ],
+          "not": {
+            "required": [
+              "workspace"
+            ]
+          }
+        },
+        {
+          "required": [
+            "workspace"
+          ],
+          "not": {
+            "required": [
+              "project"
+            ]
+          }
+        }
+      ],
+      "anyOf": [
+        {
+          "required": [
+            "mac"
+          ]
+        },
+        {
+          "required": [
+            "ios"
+          ]
+        }
+      ],
+      "properties": {
+        "project": {
+          "description": "The Xcode project, a path inside the checkout",
+          "type": "string",
+          "minLength": 1
+        },
+        "workspace": {
+          "description": "The Xcode workspace, a path inside the checkout",
+          "type": "string",
+          "minLength": 1
+        },
+        "directory": {
+          "description": "Where the project is and the build runs, inside the checkout. Without it, the checkout's top",
+          "type": "string",
+          "minLength": 1
+        },
+        "configuration": {
+          "description": "The build configuration. Without it, Debug",
+          "type": "string",
+          "minLength": 1
+        },
+        "prepare": {
+          "description": "A command run in directory before each build, such as generating the project",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "mac": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "scheme"
+          ],
+          "properties": {
+            "scheme": {
+              "description": "The scheme that builds the app",
+              "type": "string",
+              "minLength": 1
+            },
+            "product": {
+              "description": "The built app's file name, such as Name.app; needed only when the build makes more than one app",
+              "type": "string",
+              "pattern": "^[^/]+\\.app$"
+            },
+            "settings": {
+              "description": "Build settings given on xcodebuild's command line, such as DEVELOPMENT_TEAM",
+              "type": "object",
+              "propertyNames": {
+                "pattern": "^[A-Z_][A-Z0-9_]*$"
+              },
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "afterLanding": {
+              "description": "Whether the merge queue keeps a build of it after each gated landing. Without it, true",
+              "type": "boolean"
+            }
+          }
+        },
+        "ios": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "scheme"
+          ],
+          "properties": {
+            "scheme": {
+              "description": "The scheme that builds the app",
+              "type": "string",
+              "minLength": 1
+            },
+            "product": {
+              "description": "The built app's file name, such as Name.app; needed only when the build makes more than one app",
+              "type": "string",
+              "pattern": "^[^/]+\\.app$"
+            },
+            "settings": {
+              "description": "Build settings given on xcodebuild's command line, such as DEVELOPMENT_TEAM",
+              "type": "object",
+              "propertyNames": {
+                "pattern": "^[A-Z_][A-Z0-9_]*$"
+              },
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "afterLanding": {
+              "description": "Whether the merge queue keeps a build of it after each gated landing. Without it, false",
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    },
+    "release": {
+      "description": "The release gate (guides/releasing.md, Two gates and Checkpoints)",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "lanes": {
+          "description": "The release checks, each a lane of its own, which run after gate on the release commit; eng release requires a pass of each at the commit, or the owner's waiver of its failure. Never gate, which eng release checks first, nor any lane a landing runs: spelling, provision, queue.lanes or gate, queue.docsOnly.lanes, or a member of a group among them",
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "not": {"const": "gate"}
+          }
+        },
+        "maxCommits": {
+          "description": "The commits main may hold since the last commit that passed every release lane before a checkpoint is due. Without it, 100",
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    }
+  }
+}

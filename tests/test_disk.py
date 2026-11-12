@@ -64,27 +64,45 @@ class Fixture(unittest.TestCase):
         return {item.path: item for item in disk.inventory(host, disk.Sizes(measure=False), categories)}
 
 
-class DeletionTests(Fixture):
+SCRATCH = "Test scratch folders"
+
+
+def scratch_items(root):
+    """An extension's items for these tests: each folder under root/tmp, a candidate once nothing uses it."""
+    def items(host, usage, sizes, wanted):
+        if "scratch" not in wanted: return []
+        return [disk.cache_item(host, usage, sizes, "scratch", path, "a test's scratch folder")
+                for path in sorted((root / "tmp").iterdir())]
+    return items
+
+
+class Extended(Fixture):
+    """The inventory with one extension's category, and none of the Apple extension's, which the command would add."""
+
     def setUp(self):
         super().setUp()
-        self.landed = self.worktree("landed")
-        self.unlanded = self.worktree("unlanded")
-        commit(self.unlanded, "work", "unlanded\n")
-        self.scratch = self.root / "tmp/scratch"
-        self.scratch.mkdir(parents=True)
-        (self.scratch / "workspace-state.json").write_text("{}")
+        self.scratch, self.other = self.root / "tmp/scratch", self.root / "tmp/other"
+        for folder in (self.scratch, self.other): folder.mkdir(parents=True)
         self.ledger = self.root / "ledger.jsonl"
+        for patched in (patch.object(cli, "EXTENSIONS", ()), patch.object(disk, "EXTENSION_HOSTS", []),
+                        patch.object(disk, "EXTENSION_PRIMES", []),
+                        patch.object(disk, "EXTENSION_ITEMS", [scratch_items(self.root)]),
+                        patch.dict(disk.CATEGORIES, {"scratch": SCRATCH, "simulator": "Simulators",
+                                                     "runtime": "Simulator runtimes"})):
+            patched.start()
+            self.addCleanup(patched.stop)
 
     def collect(self, processes=(), categories=None):
-        host = self.host(processes, temp_roots=[(self.root / "tmp", 3)])
-        return disk.inventory(host, disk.Sizes(measure=False), categories)
+        return disk.inventory(self.host(processes), disk.Sizes(measure=False), categories)
 
+
+class DeletionTests(Extended):
     def test_every_candidate_category_is_removed_without_asking_and_no_owner_item(self):
         # The owner's decision of 2026-11-05: a candidate is proven unowned, so --delete asks nobody, on a
         # terminal or not; an owner item's command never runs.
         stale = disk.Item("simulator", "U Example", disk.CANDIDATE, "test", command=["xcrun", "simctl", "delete", "U"])
         runtime = disk.Item("runtime", "R", disk.CANDIDATE, "test", command=["xcrun", "simctl", "runtime", "delete", "R"])
-        owner = disk.Item("evidence", "/nowhere/x-evidence", disk.OWNER, "test", command=["eng", "evidence", "offload"])
+        owner = disk.Item("scratch", "/nowhere/kept", disk.OWNER, "test", command=["rm", "-rf", "--", "/nowhere/kept"])
         items = [*self.collect(), stale, runtime, owner]
         calls = []
         def run(command, **options):
@@ -97,15 +115,13 @@ class DeletionTests(Fixture):
         with patch("builtins.input", side_effect=AssertionError("asked")), contextlib.redirect_stdout(StringIO()) as output:
             removed = disk.delete(items, fresh, self.ledger, out=print, run=run)
         self.assertEqual(removed, 4)
-        self.assertFalse(self.landed.exists() or self.scratch.exists())
-        self.assertTrue(self.unlanded.exists())
+        self.assertFalse(self.scratch.exists() or self.other.exists())
         self.assertIn(stale.command, calls)
         self.assertIn(runtime.command, calls)
         self.assertNotIn(owner.command, calls)  # an owner item's command never runs
-        self.assertIn("Removing 1 linked worktrees candidates, ", output.getvalue())
-        self.assertNotIn("Kept every", output.getvalue())
+        self.assertIn("Removing 2 test scratch folders candidates, ", output.getvalue())
         records = {record["path"]: record for record in map(json.loads, self.ledger.read_text().splitlines())}
-        self.assertEqual(set(records), {str(self.landed), str(self.scratch), stale.path, runtime.path})
+        self.assertEqual(set(records), {str(self.scratch), str(self.other), stale.path, runtime.path})
         self.assertTrue(all("approval" not in record for record in records.values()))  # nobody asked: none to name
 
     def test_yes_names_who_asked_on_every_entry(self):
@@ -122,7 +138,7 @@ class DeletionTests(Fixture):
         self.assertEqual(removed, 3)
         self.assertIn("on the approval --yes: owner, 2026-11-05 chat.", output.getvalue())
         records = {record["path"]: record for record in map(json.loads, self.ledger.read_text().splitlines())}
-        for path in (str(self.landed), str(self.scratch), stale.path):
+        for path in (str(self.scratch), str(self.other), stale.path):
             self.assertEqual(records[path]["approval"], "--yes: owner, 2026-11-05 chat")
 
     def test_yes_still_checks_each_candidate_again_and_without_a_name_says_only_yes(self):
@@ -131,21 +147,20 @@ class DeletionTests(Fixture):
         with contextlib.redirect_stdout(StringIO()):
             disk.delete(items, lambda category: self.collect([process], [category]), self.ledger, approval="")
         self.assertTrue(self.scratch.exists())
-        self.assertFalse(self.landed.exists())
+        self.assertFalse(self.other.exists())
         records = {record["path"]: record for record in map(json.loads, self.ledger.read_text().splitlines())}
         self.assertTrue(records[str(self.scratch)]["outcome"].startswith("skipped: in use: PID 78"))
-        self.assertEqual(records[str(self.landed)]["approval"], "--yes")
+        self.assertEqual(records[str(self.other)]["approval"], "--yes")
 
     def test_each_decision_is_recorded_with_its_outcome(self):
         with contextlib.redirect_stdout(StringIO()):
             removed = disk.delete(self.collect(), lambda category: self.collect(categories=[category]), self.ledger,
                                   out=print)
         self.assertEqual(removed, 2)
-        self.assertFalse(self.landed.exists() or self.scratch.exists())
-        self.assertTrue(self.unlanded.exists())
+        self.assertFalse(self.scratch.exists() or self.other.exists())
         records = [json.loads(line) for line in self.ledger.read_text().splitlines()]
         self.assertEqual(sorted((record["path"], record["outcome"]) for record in records),
-                         sorted([(str(self.landed), "removed"), (str(self.scratch), "removed")]))
+                         sorted([(str(self.scratch), "removed"), (str(self.other), "removed")]))
 
     def test_a_candidate_is_checked_again_before_removal(self):
         items = self.collect()
@@ -163,18 +178,6 @@ class DeletionTests(Fixture):
             disk.delete([item], lambda category: [item], self.ledger)
         self.assertTrue(inside.exists())
         self.assertIn("inside a repository's working tree", self.ledger.read_text())
-
-    def test_simulator_deletion_names_the_exact_device(self):
-        disposable, pool = device(f"P-{uuid.uuid4()}"), device("Project Duo 1")
-        listing = {"devices": {"com.apple.CoreSimulator.SimRuntime.iOS-27-0": [disposable, pool]}}
-        collect = lambda categories=None: disk.inventory(self.host(simulators=listing), disk.Sizes(measure=False), categories)
-        calls = []
-        def run(command, **options):
-            calls.append(command)
-            return subprocess.CompletedProcess(command, 0, "", "")
-        with contextlib.redirect_stdout(StringIO()):
-            disk.delete(collect(["simulator"]), lambda category: collect([category]), self.ledger, run=run)
-        self.assertEqual(calls, [["xcrun", "simctl", "delete", disposable["udid"]]])
 
 
 class KeptResultsTests(Fixture):
@@ -245,38 +248,9 @@ class KeptResultsTests(Fixture):
         self.assertEqual(self.items(self.host(now=self.now), ["kept-results"])[str(self.store)].status, disk.KEPT)
 
 
-class CommandTests(Fixture):
-    def test_archive_worktrees_dry_run_does_not_transfer_or_print_a_bypass_command(self):
-        commit(self.main, ".gitignore", ".build/\n")
-        self.publish()
-        path = self.worktree("archive")
-        (path / ".build").mkdir()
-        (path / ".build/probe.log").write_text("evidence")
-        output = StringIO()
-        host = self.host(temp_roots=[], offload_host="second")
-        with patch.object(disk.Host, "current", return_value=host), patch.object(disk.Sizes, "prime"), \
-                patch.object(disk, "archive_worktrees") as archive, contextlib.redirect_stdout(output), \
-                contextlib.redirect_stderr(StringIO()):
-            self.assertEqual(cli.main(["--project", str(self.root), "disk", "--dry-run", "--archive-worktrees"]), 0)
-        archive.assert_not_called()
-        self.assertIn(f"{path} (verify archive before removal)", output.getvalue())
-        self.assertNotIn(f"worktree remove {path}", output.getvalue())
-        self.assertTrue(path.exists())
-
-    def test_eng_disk_reports_and_changes_nothing(self):
-        landed = self.worktree("landed")
-        host = self.host(temp_roots=[])
-        output = StringIO()
-        with patch.object(disk.Host, "current", return_value=host), patch.object(disk.Sizes, "prime"), \
-                contextlib.redirect_stdout(output), contextlib.redirect_stderr(StringIO()):
-            self.assertEqual(cli.main(["--project", str(self.root), "disk", "--min-size-mb", "0"]), 0)
-        text = output.getvalue()
-        self.assertIn("This inventory changed nothing", text)
-        self.assertIn(f"$ git -C {self.main} worktree remove {landed}", text)
-        self.assertTrue(landed.exists())
-
-    def run_disk(self, *arguments):
-        host = self.host(temp_roots=[])
+class CommandTests(Extended):
+    def run_disk(self, *arguments, processes=()):
+        host = self.host(processes)
         output = StringIO()
         with patch.object(disk.Host, "current", return_value=host), \
                 patch.object(disk.Sizes, "prime", autospec=True) as prime, \
@@ -284,26 +258,31 @@ class CommandTests(Fixture):
             self.assertEqual(cli.main(["--project", str(self.root), "disk", *arguments]), 0)
         return {(str(call.args[1]), call.args[2]) for call in prime.call_args_list}, output.getvalue()
 
-    def test_eng_disk_reads_only_the_projects_locations(self):
+    def test_disk_reports_and_changes_nothing(self):
+        _, text = self.run_disk("--min-size-mb", "0")
+        self.assertIn("This inventory changed nothing", text)
+        self.assertIn(f"$ rm -rf -- {self.scratch}", text)
+        self.assertTrue(self.scratch.exists())
+
+    def test_disk_measures_only_the_folders_an_extension_names(self):
         scanned, text = self.run_disk()
-        self.assertEqual(scanned, {(str(self.home / "Library/Developer/Xcode/DerivedData"), 1),
-                                   (str(self.home / "Library/Caches/org.swift.swiftpm"), 2)})
+        self.assertEqual(scanned, set())
+        with patch.object(disk, "EXTENSION_PRIMES", [lambda host: [(self.root / "tmp", 1), (None, 2)]]):
+            scanned, text = self.run_disk()
+        self.assertEqual(scanned, {(str(self.root / "tmp"), 1)})
         with self.assertRaises(SystemExit), contextlib.redirect_stderr(StringIO()):
             self.run_disk("--map")
 
     def test_a_dry_run_lists_only_what_delete_would_remove(self):
-        landed, unlanded = self.worktree("landed"), self.worktree("unlanded")
-        commit(unlanded, "work", "unlanded\n")
-        outside = self.worktree("outside", parent=self.root / "elsewhere")
-        _, text = self.run_disk("--dry-run")
+        busy = [disk.Process(79, "swift-build", cwd=str(self.other))]
+        _, text = self.run_disk("--dry-run", processes=busy)
         self.assertIn("Dry run: nothing was removed", text)
-        self.assertIn(f"$ git -C {self.main} worktree remove {landed}", text)
-        self.assertNotIn(str(unlanded), text)
-        self.assertNotIn(str(outside), text)  # an owner decision --delete never runs
+        self.assertIn(f"$ rm -rf -- {self.scratch}", text)
+        self.assertNotIn(str(self.other), text)  # kept: a process works in it
         self.assertIn("In all: 1 items", text)
-        self.assertTrue(landed.exists())
-        _, text = self.run_disk("--dry-run", "--json")
-        self.assertEqual([item["path"] for item in json.loads(text)["items"]], [str(landed)])
+        self.assertTrue(self.scratch.exists())
+        _, text = self.run_disk("--dry-run", "--json", processes=busy)
+        self.assertEqual([item["path"] for item in json.loads(text)["items"]], [str(self.scratch)])
         with self.assertRaises(SystemExit), contextlib.redirect_stderr(StringIO()):
             self.run_disk("--dry-run", "--delete")
 

@@ -1,10 +1,21 @@
 #!/usr/bin/env python3
-"""Queuekeeper's own launcher: it runs this checkout's code on this checkout as the project."""
+"""A project's launcher for Queuekeeper: it runs Queuekeeper on the project this file is in.
+
+It finds Queuekeeper where VOCARO_ENGINEERING_ROOT names it, else in this checkout when this is Queuekeeper's own,
+else in ~/Development/queuekeeper."""
+import os
 from pathlib import Path
 import sys
 
 root = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(root / "src/python"))
+named = os.environ.get("VOCARO_ENGINEERING_ROOT")
+home = (root / named).resolve() if named else root if (root / "src/python/queuekeeper/cli.py").is_file() \
+    else Path.home() / "Development/queuekeeper"
+if not (home / "src/python/queuekeeper/cli.py").is_file():
+    print(f"queuekeeper: no Queuekeeper at {home}. Clone vocaro/queuekeeper there or set VOCARO_ENGINEERING_ROOT.",
+          file=sys.stderr)
+    raise SystemExit(2)
+sys.path.insert(0, str(home / "src/python"))
 from queuekeeper.cli import main
 
 raise SystemExit(main(["--project", str(root), *sys.argv[1:]]))

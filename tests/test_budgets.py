@@ -190,7 +190,7 @@ class DoctorChecks(unittest.TestCase):
                 "integration": "direct-main", "lanes": {"gate": {"command": ["tool", "--device", "iPad"], "timeout": 60}}}))
             with patch.dict(os.environ, {"VOCARO_OFFLOAD_HOST": "none"}), \
                     patch.object(cli.shutil, "which", return_value="/usr/bin/true"), \
-                    patch.object(cli, "source_identity", return_value={}), patch.object(cli, "agent_entry", return_value=[]), \
+                    patch.object(cli, "source_identity", return_value={}), \
                     patch.object(cli.skills, "warnings", return_value=[]), contextlib.redirect_stdout(io.StringIO()) as output:
                 self.assertEqual(cli.main(["--project", directory, "doctor"]), 0)
             warnings = json.loads(output.getvalue())["warnings"]
