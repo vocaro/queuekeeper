@@ -840,11 +840,11 @@ whether each configured build Mac could admit a gate lane now, even when the que
 
 ### Signed queue launcher
 
-Set this up once on the Mac that owns the queues. From the toolkit checkout, build the app in its
+Set this up once on the Mac that owns the queues. From the Queuekeeper checkout, build the app in its
 build directory, then sign it in your Terminal with an Apple-issued signing identity.
 
 ```sh
-app="$PWD/.build/Vocaro Queue Launcher.app"
+app="$PWD/.build/Queuekeeper Launcher.app"
 mkdir -p "$app/Contents/MacOS"
 cp src/objc/QueueLauncher/Info.plist "$app/Contents/Info.plist"
 python3 scripts/qk admit --here -- /usr/bin/clang -std=c11 -O2 -Wall -Wextra -Werror \
@@ -854,13 +854,13 @@ python3 scripts/qk admit --here -- /usr/bin/clang -std=c11 -O2 -Wall -Wextra -We
 ```
 
 Install the app at a stable path and register it with Launch Services. When macOS prompts for
-Local Network access, allow Vocaro Queue Launcher. If the app is blocked from reaching the second
+Local Network access, allow Queuekeeper Launcher. If the app is blocked from reaching the second
 Mac, check its access in System Settings under Privacy & Security, then Local Network.
 
 ```sh
 mkdir -p "$HOME/Applications"
-/usr/bin/ditto "$app" "$HOME/Applications/Vocaro Queue Launcher.app"
-app="$HOME/Applications/Vocaro Queue Launcher.app"
+/usr/bin/ditto "$app" "$HOME/Applications/Queuekeeper Launcher.app"
+app="$HOME/Applications/Queuekeeper Launcher.app"
 /usr/bin/open -g -a "$app" --args /usr/bin/true
 ```
 
