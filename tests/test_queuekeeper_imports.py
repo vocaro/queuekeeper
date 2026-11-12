@@ -2,8 +2,9 @@
 
 The core, `queuekeeper` outside its extensions, imports neither the toolkit (`vocaro_engineering`)
 nor an extension. The Mac desktop extension, `queuekeeper.mac_desktop`, may import the core. The Apple
-extension, `queuekeeper.apple`, which requires it, may import both. Neither imports the toolkit, and
-the Mac desktop extension never imports the Apple one.
+extension, `queuekeeper.apple`, and the Unity one, `queuekeeper.unity`, which require it, may import both.
+None imports the toolkit, the Mac desktop extension imports neither of the two that require it, and
+those two never import each other.
 
 A visibility feature, a module or package of its own in `queuekeeper.visibility`, may import the core and never
 another feature, and nothing outside a feature imports it: the switch loads it by its name (queuekeeper.visibility).
@@ -23,7 +24,12 @@ SOURCE = Path(__file__).resolve().parents[1] / "src/python"
 CORE = "queuekeeper"
 APPLE = "queuekeeper.apple"
 DESKTOP = "queuekeeper.mac_desktop"
-EXTENSIONS = (APPLE, DESKTOP)
+UNITY = "queuekeeper.unity"
+EXTENSIONS = (APPLE, DESKTOP, UNITY)
+# What an extension may import of the others: the ones it requires.
+REQUIRED = {APPLE: (DESKTOP,), UNITY: (DESKTOP,)}
+# How a finding names a package: the core's is None.
+LABEL = {None: "core", APPLE: "Apple", DESKTOP: "Mac desktop", UNITY: "Unity"}
 TOOLKIT = "vocaro_engineering"
 VISIBILITY = "queuekeeper.visibility"
 # A call that imports the module its first argument names.
@@ -39,7 +45,11 @@ DESKTOP_TOOLKIT = "Mac desktop imports toolkit"
 # `queuekeeper.processes`, or the extension's `from . import remote` for the core's `remote`. It
 # names no module here, so its module does not import until the port rewrites it.
 OLD_NAME = "old name"
-KINDS = (CORE_TOOLKIT, CORE_APPLE, APPLE_TOOLKIT, CORE_DESKTOP, DESKTOP_APPLE, DESKTOP_TOOLKIT, OLD_NAME)
+KINDS = tuple(dict.fromkeys(
+    [CORE_TOOLKIT, CORE_APPLE, APPLE_TOOLKIT, CORE_DESKTOP, DESKTOP_APPLE, DESKTOP_TOOLKIT]
+    + [f"{LABEL[owner]} imports toolkit" for owner in LABEL]
+    + [f"{LABEL[owner]} imports {LABEL[other]}" for owner in LABEL for other in EXTENSIONS
+       if other != owner and other not in REQUIRED.get(owner, ())] + [OLD_NAME]))
 
 
 def within(module, package):
@@ -109,10 +119,9 @@ def feature(module):
 
 def forbidden(module):
     """The packages module may not import, a visibility feature other than its own apart (violations)."""
-    if within(module, APPLE): return [TOOLKIT]
-    if within(module, DESKTOP): return [TOOLKIT, APPLE]
-    if within(module, CORE): return [TOOLKIT, APPLE, DESKTOP]
-    return []
+    if not within(module, CORE): return []
+    owner = extension(module)
+    return [TOOLKIT] + [other for other in EXTENSIONS if other != owner and other not in REQUIRED.get(owner, ())]
 
 
 def violations(source, module, package=False):
@@ -203,11 +212,9 @@ class Layout:
                     target, missing = self.named(self.in_toolkit(here + suffix), self.old)
                 if target is None and missing is None: continue  # The library, or another project.
                 if target is None:
-                    found.add(({APPLE: APPLE_TOOLKIT, DESKTOP: DESKTOP_TOOLKIT}.get(owner, CORE_TOOLKIT), missing))
-                elif within(target, APPLE) and owner != APPLE:
-                    found.add((DESKTOP_APPLE if owner == DESKTOP else CORE_APPLE, target))
-                elif within(target, DESKTOP) and owner is None:
-                    found.add((CORE_DESKTOP, target))
+                    found.add((f"{LABEL[owner]} imports toolkit", missing))
+                elif extension(target) not in (None, owner, *REQUIRED.get(owner, ())):
+                    found.add((f"{LABEL[owner]} imports {LABEL[extension(target)]}", target))
                 elif stale:
                     found.add((OLD_NAME, target))
         return found
@@ -231,6 +238,7 @@ class Packages(unittest.TestCase):
         self.assertIn(CORE, names)
         self.assertIn(APPLE, names)
         self.assertIn(DESKTOP, names)
+        self.assertIn(UNITY, names)
 
     def test_no_module_imports_what_it_may_not(self):
         self.assertEqual(Layout.read(SOURCE).lines(), [])
@@ -291,6 +299,25 @@ class Controls(unittest.TestCase):
         for source in ("from .mac_desktop import foreground", "from queuekeeper.mac_desktop import foreground", "from . import mac_desktop"):
             with self.subTest(source=source):
                 self.assertTrue(violations(source, "queuekeeper.remote"))
+
+    def test_unity_may_import_the_core_and_the_desktop_extension_and_never_apple_nor_apple_it(self):
+        for source in ("from .. import extensions", "from ..mac_desktop import foreground", "from . import editor"):
+            with self.subTest(source=source):
+                self.assertEqual(violations(source, "queuekeeper.unity.commands"), [])
+        for source, module in (("from ..apple import devices", "queuekeeper.unity.commands"),
+                               ("from vocaro_engineering import evidence", "queuekeeper.unity.commands"),
+                               ("from ..unity import editor", "queuekeeper.apple.lane"),
+                               ("from ..unity import editor", "queuekeeper.mac_desktop.lane"),
+                               ("from .unity import editor", "queuekeeper.remote")):
+            with self.subTest(source=source, module=module):
+                self.assertTrue(violations(source, module))
+        sources = {"queuekeeper": ("", True), "queuekeeper.unity": ("", True), "queuekeeper.apple": ("", True),
+                   "queuekeeper.apple.devices": ("", False), "queuekeeper.unity.editor": ("", False),
+                   "queuekeeper.unity.commands": ("from ..apple import devices", False),
+                   "queuekeeper.apple.lane": ("from ..unity import editor", False)}
+        layout = Layout(sources)
+        self.assertEqual(layout.kinds("queuekeeper.unity.commands"), {("Unity imports Apple", "queuekeeper.apple.devices")})
+        self.assertEqual(layout.kinds("queuekeeper.apple.lane"), {("Apple imports Unity", "queuekeeper.unity.editor")})
 
     def test_the_core_may_import_itself_the_library_and_names_that_only_start_alike(self):
         for source in ("import os\nfrom pathlib import Path", "from . import processes", "from .resources import BUSY",

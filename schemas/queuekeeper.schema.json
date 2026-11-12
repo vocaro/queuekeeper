@@ -49,6 +49,23 @@
       "type": "string",
       "minLength": 1
     },
+    "unity": {
+      "description": "The Unity extension's key, which a project gets with queuekeeper.unity: where its Unity project is, and the window layout a new worktree's editor starts with",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "project": {
+          "description": "The folder that holds ProjectSettings, relative to the checkout, such as 'lab'; the checkout itself when left out",
+          "type": "string",
+          "minLength": 1
+        },
+        "layout": {
+          "description": "A window layout (.dwlt), relative to the checkout, that queuekeeper unity open gives a worktree with none of its own before its first launch",
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
     "integration": {
       "enum": [
         "direct-main",
