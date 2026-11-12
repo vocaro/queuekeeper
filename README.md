@@ -40,21 +40,64 @@ queues, including other local queues for AI agents, and says where they are the 
 
 ## Getting started
 
-```sh
-queuekeeper land --wait     # queue HEAD and follow it: 0 landed, 1 came back, 75 held or still waiting
-queuekeeper queue status    # what is waiting, what is testing, what came back and why
+This walk-through adds Queuekeeper to an existing project and lands a first change through it. It
+assumes Queuekeeper is installed: [Getting started](doc/getting_started.md) covers the requirements
+and installation.
+
+**1. Say how the project is tested.** Create `queuekeeper.json` at the root of the repository. It
+needs one lane named `gate`, which is the command every change must pass:
+
+```json
+{
+  "lanes": {
+    "gate": {"command": ["scripts/test.sh"], "timeout": 1800}
+  }
+}
 ```
 
-Requirements:
+**2. Check the setup.** `queuekeeper doctor` reports anything missing, such as a lane with no
+timeout.
 
-- **macOS.** Queuekeeper has not been ported to Linux or Windows.
-- **Python 3.14 or newer**, with no other Python packages.
-- **Git**, and a repository whose changes land directly on `main` of a remote named `origin`.
-- **Optional: more Macs**, each reachable by SSH key, with Python 3.14 or newer.
-- **For the Apple plugin:** full Xcode, the same build on every Mac.
+```sh
+queuekeeper doctor
+```
 
-Installation, a first `queuekeeper.json` and adding a second Mac are covered in
-[Getting started](doc/getting_started.md).
+**3. Land the configuration as your first change.** Commit the file on a branch, then queue it
+instead of pushing it:
+
+```sh
+git switch -c add-queuekeeper
+git add queuekeeper.json
+git commit -m "Add Queuekeeper"
+queuekeeper land --wait
+```
+
+Queuekeeper now does what you would otherwise do by hand. It starts a worker for the repository,
+applies your commit on top of the latest `main` in a checkout of its own, runs the gate there, and
+pushes if the gate passes. Your working tree is not touched. `--wait` follows the commit to its
+result and prints the commit it landed as.
+
+**4. Watch the queue.** From any terminal in the repository, see what is waiting, what is being
+tested and why anything is held:
+
+```sh
+queuekeeper queue status
+```
+
+**5. If the change comes back.** When the gate fails or the commit conflicts with `main`,
+`queuekeeper land --wait` exits with status 1 and says why, with the path of the log. Nothing was
+pushed. Fix the problem, commit, and run `queuekeeper land --wait` again.
+
+**6. Start the next change from `main`.** The queue lands your commits as new commits, so begin
+the next piece of work from `origin/main`, not from the old branch.
+
+**7. Hand it to your agents.** Tell your agents to queue their commits with
+`queuekeeper land --wait` instead of pushing. Each one's change waits its turn, changes that arrive
+together are tested as one batch, and a change that breaks the gate goes back to the agent that
+wrote it without blocking the others.
+
+From here, [add a second Mac](doc/getting_started.md#add-a-second-mac) so gates run off your
+desk, and turn on the [Apple plugin](#the-apple-plugin) if you build for Apple platforms.
 
 ## The Apple plugin
 
