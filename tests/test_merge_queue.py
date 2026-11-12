@@ -24,7 +24,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src/python"))
-from queuekeeper import cli, config as configuration, landing, merge_queue as mq, offload_host
+from queuekeeper import cli, config as configuration, landing_proofs, merge_queue as mq, offload_host
 # What eng land runs before it queues, which Fixture leaves out but SpelledBeforeQueued puts back.
 SPELLED_BEFORE_QUEUED = mq.spelled_before_queued
 import host_isolation
@@ -521,8 +521,8 @@ class Landing(Fixture):
         self.assertEqual(run(self.repo, "git", "log", "--format=%s", "-3", "origin/main").splitlines(),
                          ["Add after", "Add b", "Add elsewhere"])
         # Closeout and eng disk's proof: the branch, merge and all, is on main as equal patches.
-        self.assertEqual(mq.landing.contained(lambda *words: mq.git(self.repo, *words), "origin/main", tip),
-                         mq.landing.PATCH_EQUIVALENT)
+        self.assertEqual(mq.landing_proofs.contained(lambda *words: mq.git(self.repo, *words), "origin/main", tip),
+                         mq.landing_proofs.PATCH_EQUIVALENT)
 
     def test_a_refreshed_branch_whose_replay_conflicts_is_refused(self):
         """A negative control: main changes the branch's file after the sync, so its commits do not replay."""
@@ -548,7 +548,7 @@ class Landing(Fixture):
         said = self.refused("b")
         self.assertRegex(said, self.REFUSED)
         self.assertNotIn("cherry-pick", said)
-        self.assertIsNone(mq.landing.contained(lambda *words: mq.git(self.repo, *words), "origin/main", tip))
+        self.assertIsNone(mq.landing_proofs.contained(lambda *words: mq.git(self.repo, *words), "origin/main", tip))
 
     def test_adding_a_branch_again_replaces_it(self):
         self.commit("a", "a")
@@ -3767,39 +3767,39 @@ class ImplicitSpelling(Fixture):
 
 
 class NegatedClaims(unittest.TestCase):
-    """What landing.negated reads as a closing claim its own clause denies (vocaro-engineering#286)."""
+    """What landing_proofs.negated reads as a closing claim its own clause denies (vocaro-engineering#286)."""
     def test_each_form_of_negation_is_refused(self):
         for message in ("This does not fix #43.", "This doesn't fix #43.", "This doesn’t fix #43.",
                         "This cannot close #43.", "This will never resolve #43.", "This no longer fixes #43.",
                         "Landed without the fix #43.", "NOT fixed #43."):
             with self.subTest(message):
-                self.assertEqual(landing.negated(message), [(1, message, "#43")])
+                self.assertEqual(landing_proofs.negated(message), [(1, message, "#43")])
 
     def test_a_few_words_may_stand_between_and_more_may_not(self):
         for message in ("It does not yet fix #43.", "It does not by itself fix #43.", "It does not on its own fix #43."):
             with self.subTest(message):
-                self.assertEqual(len(landing.negated(message)), 1)
-        self.assertEqual(landing.negated("It does not on any of its paths fix #43."), [])
+                self.assertEqual(len(landing_proofs.negated(message)), 1)
+        self.assertEqual(landing_proofs.negated("It does not on any of its paths fix #43."), [])
 
     def test_a_plain_claim_passes(self):
         for message in ("Closes #43.", "Fixes #43", "resolved: #43", "Add a thing\n\nCloses #43.\nCloses #44."):
             with self.subTest(message):
-                self.assertEqual(landing.negated(message), [])
+                self.assertEqual(landing_proofs.negated(message), [])
 
     def test_other_repositories_and_urls_are_named_in_full(self):
         for message, issue in (("This does not fix vocaro/BreezEPUB#43.", "vocaro/BreezEPUB#43"),
                                ("This does not close https://github.com/vocaro/BreezEPUB/issues/43.",
                                 "vocaro/BreezEPUB#43")):
             with self.subTest(message):
-                self.assertEqual(landing.negated(message), [(1, message, issue)])
-        self.assertEqual(landing.negated("Closes vocaro/BreezEPUB#43."), [])
-        self.assertEqual(landing.negated("Fixes https://github.com/vocaro/BreezEPUB/issues/43"), [])
+                self.assertEqual(landing_proofs.negated(message), [(1, message, issue)])
+        self.assertEqual(landing_proofs.negated("Closes vocaro/BreezEPUB#43."), [])
+        self.assertEqual(landing_proofs.negated("Fixes https://github.com/vocaro/BreezEPUB/issues/43"), [])
 
     def test_what_is_no_claim_passes(self):
         for message in ("Refs #43.", "This does not change #43.", "This leaves #43 open.", "Does not touch fixes in #43.",
                         "Finished without fixing #43.", "Not ready: see #43.", "Refs vocaro/BreezEPUB#43, not fixed."):
             with self.subTest(message):
-                self.assertEqual(landing.negated(message), [])
+                self.assertEqual(landing_proofs.negated(message), [])
 
     def test_a_negation_in_an_earlier_clause_passes(self):
         for message in ("The lane did not start, and fixes #43.", "The lane did not start and fixes #43.",
@@ -3808,30 +3808,30 @@ class NegatedClaims(unittest.TestCase):
                         "Stop if it cannot run because that fixes #43.", "This is not slow but fixes #43.",
                         "The run (that did not start) fixes #43."):
             with self.subTest(message):
-                self.assertEqual(landing.negated(message), [])
+                self.assertEqual(landing_proofs.negated(message), [])
 
     def test_a_claim_on_its_own_line_passes_after_a_line_that_negates(self):
         for message in ("Do not count a run\n\nCloses #43.", "It does not change the parser\nCloses #43.",
                         "Notes:\n- does not retry\n- fixes #43"):
             with self.subTest(message):
-                self.assertEqual(landing.negated(message), [])
+                self.assertEqual(landing_proofs.negated(message), [])
 
     def test_a_negation_wrapped_onto_the_line_before_is_refused(self):
-        self.assertEqual(landing.negated("Add a thing\n\nThis does not\nfix #43, and adds more."),
+        self.assertEqual(landing_proofs.negated("Add a thing\n\nThis does not\nfix #43, and adds more."),
                          [(4, "fix #43, and adds more.", "#43")])
 
     def test_not_only_asserts_the_claim(self):
         for message in ("This not only fixes #43 but adds a test.", "It does not just fix #43."):
             with self.subTest(message):
-                self.assertEqual(landing.negated(message), [])
+                self.assertEqual(landing_proofs.negated(message), [])
 
     def test_each_claim_is_judged_alone(self):
-        self.assertEqual([claim[2] for claim in landing.negated("Fixes #1 and does not close #2.")], ["#2"])
-        self.assertEqual([claim[2] for claim in landing.negated("Does not fix #1 or close #2.")], ["#1", "#2"])
-        self.assertEqual(landing.negated("Closes #1, not #2."), [])
+        self.assertEqual([claim[2] for claim in landing_proofs.negated("Fixes #1 and does not close #2.")], ["#2"])
+        self.assertEqual([claim[2] for claim in landing_proofs.negated("Does not fix #1 or close #2.")], ["#1", "#2"])
+        self.assertEqual(landing_proofs.negated("Closes #1, not #2."), [])
 
     def test_a_version_number_ends_no_clause(self):
-        self.assertEqual(len(landing.negated("This does not in v1.2 fix #43.")), 1)
+        self.assertEqual(len(landing_proofs.negated("This does not in v1.2 fix #43.")), 1)
 
 
 class ClaimsBeforeQueued(Fixture):
@@ -4570,9 +4570,9 @@ class Changelogs(Fixture):
         self.assertIsNone(mq.Queue(self.repo).held())
         # The first went in as it was; each settled one adds its very line beside other neighbors, which
         # Closeout's landed.sh proves resolved, so its branch goes unasked (#164, guides/maintenance.md).
-        contained = lambda branch: mq.landing.contained(lambda *words: mq.git(self.repo, *words), "origin/main", branch)
-        self.assertNotIn(contained("b0"), (None, mq.landing.RESOLVED))
-        self.assertEqual([contained("b1"), contained("b2")], [mq.landing.RESOLVED] * 2)
+        contained = lambda branch: mq.landing_proofs.contained(lambda *words: mq.git(self.repo, *words), "origin/main", branch)
+        self.assertNotIn(contained("b0"), (None, mq.landing_proofs.RESOLVED))
+        self.assertEqual([contained("b1"), contained("b2")], [mq.landing_proofs.RESOLVED] * 2)
 
     def test_a_settled_commit_keeps_its_message_and_author(self):
         for name, start in (("b0", self.top("- a")), ("b1", self.top("- b"))):

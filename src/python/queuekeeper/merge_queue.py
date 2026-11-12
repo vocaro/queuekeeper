@@ -51,7 +51,7 @@ import time
 import urllib.request
 
 from .apple import app_builds
-from . import budgets, disk, lane_results, landing, lane_progress, lane_report, lane_wait, offload_host, parallel, processes, remote, \
+from . import budgets, disk, lane_results, landing_proofs, lane_progress, lane_report, lane_wait, offload_host, parallel, processes, remote, \
     resources
 from .config import DOCS, DOCS_FILES, DOCS_FOLDERS, IMPLICIT_DOCS, IMPLICIT_SPELLING, SPELLING, SPELLING_LIMIT, \
     TOOLKIT_ROOT, lane_to_run, load, parse, stays, unlocked_screen
@@ -757,8 +757,8 @@ def checked_before_running(root, tip, config):
 
 def claims_before_queued(root, base, tip):
     """Refuse tip, queuing nothing, when a message of its commits after base denies a closing claim, as "This does not
-    fix #43." does: GitHub closes the issue when the commit reaches main (landing.negated, vocaro-engineering#286)."""
-    found = landing.negated_claims(lambda *words: git(root, *words), f"{base}..{tip}")
+    fix #43." does: GitHub closes the issue when the commit reaches main (landing_proofs.negated, vocaro-engineering#286)."""
+    found = landing_proofs.negated_claims(lambda *words: git(root, *words), f"{base}..{tip}")
     if found is None: raise Refused(f"{tip[:12]} is not queued: its commit messages could not be read")
     if not found: return
     issue = found[0][3]
@@ -2625,7 +2625,7 @@ class Worker:
         self.gating = ()
         applied = []
         for entry in batch:
-            how = landing.contained(lambda *words: git(self.checkout, *words), base, entry["tip"])
+            how = landing_proofs.contained(lambda *words: git(self.checkout, *words), base, entry["tip"])
             if how:
                 self.left_out(entry, LANDED, landedAs=base, why=f"origin/main already holds it ({how})")
                 continue
@@ -4368,11 +4368,11 @@ def scratch(queue, base, kind):
 
 def linear(queue, root, tip):
     """The commit that tip's own commits, replayed in order onto origin/main, make, or None when they cannot be:
-    a merge in origin/main..tip brings in work of its own (landing.own_merges), as a merge of another branch does, or a
+    a merge in origin/main..tip brings in work of its own (landing_proofs.own_merges), as a merge of another branch does, or a
     commit conflicts. The merges are refreshes of the branch from main, as the desktop app's sync makes, which a
     queue must not put on main; the branch and its worktree are left as they are, and a commit main already has
     is passed over, as a round's pick does (vocaro-engineering#217)."""
-    if landing.own_merges(lambda *words: git(root, *words), MAIN, tip) != []: return None
+    if landing_proofs.own_merges(lambda *words: git(root, *words), MAIN, tip) != []: return None
     own = text(root, "rev-list", "--reverse", "--no-merges", f"{MAIN}..{tip}").split()
     with scratch(queue, text(root, "rev-parse", MAIN), "linear") as path:
         for commit in own:
@@ -4394,8 +4394,8 @@ def merge_refusal(root, merges, tip):
     refusal names those commits and the two ways to carry them (vocaro-engineering#262). Any other merge, as one
     whose replay conflicts, has only the branch's own commits to move."""
     read = lambda *words: git(root, *words)
-    bringing = landing.own_merges(read, MAIN, tip)
-    commits = landing.brought_in(read, MAIN, bringing) if bringing else None
+    bringing = landing_proofs.own_merges(read, MAIN, tip)
+    commits = landing_proofs.brought_in(read, MAIN, bringing) if bringing else None
     if not commits:
         return (f"{merges[0][:12]} is a merge, which a queue would have to put on main: rebase the branch's own "
                 "commits onto origin/main and add it again")

@@ -39,7 +39,7 @@ OLD_NAME = "old name"
 BORROWED = {"queuekeeper.evidence", "queuekeeper.landing", "queuekeeper.stale_modules", "queuekeeper.toolkit_copy"}
 KINDS = (CORE_TOOLKIT, CORE_APPLE, APPLE_TOOLKIT, OLD_NAME)
 # The most lines of each kind the list may hold. Lower a number as its kind shrinks; never raise it.
-CEILING = {CORE_TOOLKIT: 26, CORE_APPLE: 21, APPLE_TOOLKIT: 5, OLD_NAME: 0}
+CEILING = {CORE_TOOLKIT: 25, CORE_APPLE: 21, APPLE_TOOLKIT: 5, OLD_NAME: 0}
 
 
 def within(module, package):
