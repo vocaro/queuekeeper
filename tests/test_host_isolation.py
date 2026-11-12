@@ -12,7 +12,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
-from queuekeeper import offload_host, resources
+from queuekeeper import offload_host, resources, shims
 from queuekeeper.parallel import unisolated
 import host_isolation
 from host_isolation import stretched
@@ -148,7 +148,7 @@ class HostIsolationTests(unittest.TestCase):
     def test_a_suite_run_inside_a_lane_drops_what_that_lane_set_for_its_own_command(self):
         # On 2026-11-09 fixtures wrote into the real gate's results/, and its summary named a fixture's test as failed (#289).
         cli = host_isolation.cli
-        names = (cli.parallel.RESULTS_VARIABLE, cli.stale_modules.ROOT_VARIABLE, cli.SELF_LANE, cli.app_registrations.RUN,
+        names = (cli.parallel.RESULTS_VARIABLE, shims.ROOT_VARIABLE, cli.SELF_LANE, cli.app_registrations.RUN,
                  cli.devices.WINDOW, cli.devices.OWNER, "VOCARO_ENGINEERING_ROOT", "VOCARO_LANE_PROGRESS_RUN")
         source = str(Path(resources.__file__).resolve().parents[1])
         for name in names:

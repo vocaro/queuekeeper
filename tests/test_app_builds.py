@@ -14,7 +14,7 @@ import unittest
 from unittest.mock import patch
 
 import host_isolation  # noqa: F401  (first: keeps every test out of the host's admission)
-from queuekeeper import cli, config, disk, merge_queue, toolkit_copy
+from queuekeeper import cli, config, disk, merge_queue
 from queuekeeper.apple import app_builds, device_pass
 
 BUNDLE = "com.example.demo"
@@ -92,9 +92,6 @@ class Validation(unittest.TestCase):
                                    "-configuration", "Debug", "-destination", "generic/platform=iOS",
                                    "-derivedDataPath", "/d", "-allowProvisioningUpdates", "A=1", "B=2"])
         self.assertNotIn("-allowProvisioningUpdates", app_builds.build_command(APP, "mac", Path("/d")))
-
-    def test_app_is_a_host_command_so_a_stale_worktree_runs_mains_copy(self):
-        self.assertIn("app", toolkit_copy.HOST_COMMANDS)
 
 
 class Fixture(unittest.TestCase):

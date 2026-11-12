@@ -20,7 +20,7 @@ import threading
 import time
 import unittest
 
-from . import lane_results, processes, stale_modules
+from . import lane_results, processes, shims
 
 # Lines of a failed lane's log printed under its result.
 TAIL = 40
@@ -129,7 +129,7 @@ def lanes(root, members, directory, jobs, judge, receipt, on_stop=None, results_
                                    **({"stall": lane["stall"], "progress_path": results_directory / name / "progress.json"
                                       if results_directory is not None else directory / f"{name}.progress.json"}
                                       if "stall" in lane else {}),
-                                   env=stale_modules.environment(results_environment(results_directory / name)
+                                   env=shims.environment(results_environment(results_directory / name)
                                        if results_directory is not None else os.environ, root))
             status = judge(lane, status, log.read_text(errors="replace"))
         except processes.TimedOut as error:

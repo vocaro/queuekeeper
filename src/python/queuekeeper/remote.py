@@ -65,7 +65,7 @@ import threading
 import time
 import uuid
 
-from . import disk, lane_results, lane_wait, offload_host, parallel, processes, resources, toolkit_copy
+from . import disk, lane_results, lane_wait, offload_host, parallel, processes, resources, git_state
 from .apple import capture_approvals, devices, run_results
 from .config import TOOLKIT_ROOT, unlocked_screen
 from .resources import BUSY, FREE_WAIT
@@ -673,10 +673,10 @@ def toolkit_gap(toolkit):
     from it to end (vocaro-engineering#209; guides/maintenance.md, The shared checkout follows each toolkit
     landing). A dispatch says it only when it sends the checkout's own tree: a clean checkout on main that is
     only behind sends origin/main instead (followed)."""
-    count = toolkit_copy.behind(toolkit)
+    count = git_state.behind(toolkit)
     if not count: return None
-    return (f"the toolkit sent, {toolkit} at {toolkit_copy.git(toolkit, 'rev-parse', '--short=12', 'HEAD')}, is "
-            f"{count} commit{'s' * (count != 1)} behind its origin/main (last landed: {toolkit_copy.last_landed(toolkit)}): "
+    return (f"the toolkit sent, {toolkit} at {git_state.git(toolkit, 'rev-parse', '--short=12', 'HEAD')}, is "
+            f"{count} commit{'s' * (count != 1)} behind its origin/main (last landed: {git_state.last_landed(toolkit)}): "
             "a project change that needs newer toolkit code fails there; the shared checkout follows each landing "
             "once nothing runs from it")
 
@@ -691,10 +691,10 @@ def followed(toolkit, commit, head):
     replaces #104's rule that a dispatch sends what a run here would read). A dirty checkout, one on another
     branch, one current, or one with commits of its own sends its own tree, as before."""
     if commit != head: return None
-    if toolkit_copy.git(toolkit, "symbolic-ref", "--quiet", "--short", "HEAD") != "main": return None
-    upstream = toolkit_copy.git(toolkit, "rev-parse", "--verify", "--quiet", f"{toolkit_copy.UPSTREAM}^{{commit}}")
+    if git_state.git(toolkit, "symbolic-ref", "--quiet", "--short", "HEAD") != "main": return None
+    upstream = git_state.git(toolkit, "rev-parse", "--verify", "--quiet", f"{git_state.UPSTREAM}^{{commit}}")
     if not upstream or upstream == head: return None
-    if toolkit_copy.git(toolkit, "merge-base", "--is-ancestor", head, upstream) is None: return None
+    if git_state.git(toolkit, "merge-base", "--is-ancestor", head, upstream) is None: return None
     return upstream
 
 
@@ -1966,7 +1966,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
                        "commit": sending_kit, "head": upstream or kit_head, "ref": f"{REF}{sending_kit}",
                        "origin": origin(toolkit)}
                 if upstream:
-                    kit.update(checkoutHead=kit_head, behind=toolkit_copy.behind(toolkit) or 0)
+                    kit.update(checkoutHead=kit_head, behind=git_state.behind(toolkit) or 0)
         except RuntimeError as error:  # Git cannot name a commit to send, so nothing is sent.
             raise Unavailable(str(error)) from error
         preparation["seconds"]["staging"] = round(time.monotonic() - began, 3)

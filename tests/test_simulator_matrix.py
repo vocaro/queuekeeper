@@ -13,7 +13,7 @@ import unittest
 from unittest import mock
 import uuid
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
-from queuekeeper import lane_results, stale_modules
+from queuekeeper import lane_results
 from queuekeeper.apple import devices
 from queuekeeper.apple.simulators import matrix
 import host_isolation
@@ -666,7 +666,7 @@ class SimulatorMatrixTests(unittest.TestCase):
         modules, _ = self.planted_modules()
         (self.root / "bin/xcodebuild").write_text((self.root / "bin/xcodebuild").read_text().replace(
             "print(\"error: file 'include/resvg.h'",
-            f"print({stale_modules.NOTICE + ': the rerun of xcodebuild ended with status 65'!r}); "
+            f"print({matrix.STALE_NOTICE + ': the rerun of xcodebuild ended with status 65'!r}); "
             "print(\"error: file 'include/resvg.h'"))
         status, output = self.run_matrix(FAKE_STALE_BUILDS="99")
         self.assertEqual(status, 1, output)

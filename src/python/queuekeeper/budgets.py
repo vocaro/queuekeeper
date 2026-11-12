@@ -21,7 +21,7 @@ import statistics
 import subprocess
 from pathlib import Path
 
-from . import toolkit_copy
+from . import git_state
 
 GATE = "gate"
 # The passing gate runs the median is taken over, newest first, and the fewest that judge a budget.
@@ -183,7 +183,7 @@ def git(root, *arguments):
 
 def checkouts(root):
     """Usable worktrees of the repository, each with its own lane receipts in .build/engineering."""
-    paths = [Path(entry["worktree"]) for entry in toolkit_copy.worktrees(root) if "prunable" not in entry]
+    paths = [Path(entry["worktree"]) for entry in git_state.worktrees(root) if "prunable" not in entry]
     return [path for path in paths if path.is_dir()] or [Path(root)]
 
 

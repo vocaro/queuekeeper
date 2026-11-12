@@ -73,7 +73,7 @@ import time
 from types import SimpleNamespace
 import uuid
 
-from ... import lane_results, processes, resources, stale_modules
+from ... import lane_results, processes, resources
 from ...parallel import RESULTS_VARIABLE, TAIL, combined, outcome
 from . import pool as simulator_pool, speech
 from .pool import DEVICE_TYPE, RUNTIME, qualified
@@ -86,7 +86,9 @@ BOOT_COMMAND = 120
 TEST_ALLOWANCE = 600
 # What clang says of an explicit module built before a dependency changed a header, and the folder of
 # derived data whose removal let the next build pass (vocaro/vocaro-engineering#85).
-STALE_MODULE = stale_modules.STALE_MODULE
+STALE_MODULE = "has been modified since the module file"
+# What the toolkit's build-tool wrapper says when it has rebuilt already (its stale_modules.NOTICE).
+STALE_NOTICE = "eng: STALE MODULES"
 EXPLICIT_MODULES = "Build/Intermediates.noindex/SwiftExplicitPrecompiledModules"
 
 
@@ -520,7 +522,7 @@ class Run:
         stale.unlink(missing_ok=True)
         text = log.read_text(errors="replace")
         # Under eng run, the xcodebuild wrapper has removed the stale modules and rebuilt once already (#267).
-        if status != 0 and STALE_MODULE in text and stale_modules.NOTICE not in text:
+        if status != 0 and STALE_MODULE in text and STALE_NOTICE not in text:
             # Reused derived data can outlive a dependency change, and only the modules are out of date.
             # One rebuild, not a loop: a second occurrence is a failure the cache does not explain.
             log.replace(stale)
