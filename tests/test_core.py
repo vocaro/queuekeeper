@@ -624,6 +624,37 @@ def malformed_guards(identity, entry):
     return {name: json.dumps(value) for name, value in cases.items()}
 
 
+class CommandEnvironmentTests(unittest.TestCase):
+    def test_a_command_runs_with_what_the_projects_extensions_add_to_its_environment(self):
+        # The extensions are loaded before their additions are read: a lane that generates an Xcode project needs
+        # the path the toolkit's hooks name (vocaro-engineering#403).
+        from queuekeeper import extensions
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve() / "project"
+            hooks = root.parent / "kit/src/python/examplekit"
+            hooks.mkdir(parents=True)
+            root.mkdir()
+            (hooks / "__init__.py").write_text("")
+            (hooks / "hooks.py").write_text(
+                "from queuekeeper import extensions\n"
+                "def added(): return {'EXAMPLE_KIT_ROOT': 'from the kit'}\n"
+                "def register(): extensions.COMMAND_ENVIRONMENT.append(added)\n")
+            (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example", "extensions": [
+                {"module": "examplekit.hooks", "path": "../kit/src/python"}]}))
+            before, paths, seen = list(extensions.COMMAND_ENVIRONMENT), list(sys.path), []
+
+            def restore():
+                extensions.COMMAND_ENVIRONMENT[:] = before
+                sys.path[:] = paths
+                for name in [name for name in sys.modules if name.split(".")[0] == "examplekit"]: del sys.modules[name]
+            self.addCleanup(restore)
+            with patch.object(cli, "perform", side_effect=lambda argv, report: seen.append(
+                    os.environ.get("EXAMPLE_KIT_ROOT")) or 0), patch.object(cli.lane_report.Report, "finish"):
+                self.assertEqual(cli.main(["--project", str(root), "doctor"]), 0)
+            self.assertEqual(seen, ["from the kit"])
+            self.assertNotIn("EXAMPLE_KIT_ROOT", os.environ)
+
+
 class ResourceTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

@@ -576,7 +576,9 @@ def admit(root, args, config=None, *, device_window=None):
 def main(argv=None):
     report = lane_report.Report()
     try:
-        # XcodeGen expands this selected, host-local path before generating its project (#373).
+        # The project's extensions first: they add commands, and what they add to a command's environment, such as
+        # the host-local path XcodeGen expands before generating a project (#373), is read once they are loaded.
+        load_extensions(argv)
         with patch_environment(extensions.command_environment()):
             status = perform(argv, report)
     except Exception as error:
@@ -586,15 +588,19 @@ def main(argv=None):
     return status
 
 
-def perform(argv, report):
-    """Run the command argv names, telling report of a lane run's progress for the summary that ends it."""
-    # The project's extensions first, since they add commands: its folder is --project's when that comes first, as
-    # a launcher gives it, else the current one, and a linked worktree's extensions are found from its main checkout.
+def load_extensions(argv):
+    """Load the extensions of the project argv names: its folder is --project's when that comes first, as a launcher
+    gives it, else the current one, and a linked worktree's extensions are found from its main checkout."""
     given = sys.argv[1:] if argv is None else list(argv)
     folder = Path(given[1] if given[:1] == ["--project"] and len(given) > 1 else
                   given[0].split("=", 1)[1] if given[:1] and given[0].startswith("--project=") else ".")
     extensions.load(extensions_of(folder, git_state.main_checkout(folder)))
-    # Then the visibility features their owner turned on, which add commands too (visibility).
+
+
+def perform(argv, report):
+    """Run the command argv names, telling report of a lane run's progress for the summary that ends it. The
+    project's extensions are loaded already (load_extensions)."""
+    # The visibility features their owner turned on, which add commands too (visibility).
     visibility.load()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project", type=Path, default=Path.cwd())
