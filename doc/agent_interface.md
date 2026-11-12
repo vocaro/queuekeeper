@@ -22,8 +22,8 @@ Exit codes separate the cases an agent must treat differently:
 - **Fixed status lines** end every run with the verdict, the test counts, up to twenty failing
   tests with file and line, and the path of the full log.
 - **Refusals** say what did not run and the command to run next.
-- **JSON** is available from `queue status`, `queue doctor`, `queue placement`, `admissions now` and
-  `doctor`.
+- **JSON** is available from `queue status`, `queue doctor`, `queue placement`, `queue events`,
+  `admissions now` and `doctor`.
 - **Nothing prompts.** Commands are meant to run in the background and be followed to their result.
 
 ## Holds

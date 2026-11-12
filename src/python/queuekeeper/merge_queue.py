@@ -52,6 +52,7 @@ import urllib.request
 
 from . import budgets, disk, extensions, lane_results, landing_proofs, lane_progress, lane_report, lane_wait, offload_host, parallel, processes, remote, \
     resources
+from . import events
 from .config import DOCS, DOCS_FILES, DOCS_FOLDERS, IMPLICIT_DOCS, IMPLICIT_SPELLING, SPELLING, SPELLING_LIMIT, \
     TOOLKIT_ROOT, lane_to_run, load, parse, stays, unlocked_screen
 
@@ -68,6 +69,8 @@ QUEUED, TESTING, PASSED, LANDED, FAILED, CONFLICT, REMOVED = \
     "queued", "testing", "passed", "landed", "failed", "conflict", "removed"
 # Passed is a batch whose lanes passed and whose push has not landed it: Worker.keep and Worker.push_passed.
 WAITING = {QUEUED, TESTING, PASSED}
+# What an entry's record gives the event of its final state (Queue.settle), where it has them.
+EVENT_FIELDS = ("why", "log", "landedAs", "landedTip", "landedCommits", "docsOnly", "ungated")
 # What Worker.older returns for a batch whose lanes gave no verdict, which is no entry's state.
 NO_VERDICT_OUTCOME = "no verdict"
 # What a lane exits with when it says nothing about the commits: unmeasured, no admission, a
@@ -1160,6 +1163,10 @@ class Queue:
             fcntl.flock(lock, fcntl.LOCK_EX)
             yield
 
+    def emit(self, kind, **fields):
+        """Write an event to the queue's journal (events), which explains the queue and never stops it."""
+        return events.emit(self.directory, kind, **fields)
+
     def save(self, entry):
         path = self.entries / f"{entry['id']}.json"
         staged = path.with_suffix(f".{os.getpid()}.tmp")
@@ -1188,6 +1195,8 @@ class Queue:
             if current["state"] not in WAITING: return current
             current.update(state=state, settled=time.time(), **fields)
             self.save(current)
+        self.emit(f"entry.{state}", entry=current["id"], subject=current.get("subject"),
+                  **{key: current.get(key) for key in EVENT_FIELDS})
         if state in (LANDED, REMOVED): git(self.root, "update-ref", "-d", f"refs/queuekeeper/queue/{entry['id']}")
         return current
 
@@ -1202,14 +1211,17 @@ class Queue:
     def mark(self, entries, state):
         """Queued or testing, for the entries nobody has removed meanwhile. An entry that goes back to the
         queue leaves behind the batch whose pass it held, and so that pass."""
+        moved = []
         with self.locked():
             for entry in entries:
                 current = self.read(entry["id"])
                 if current and current["state"] in WAITING:
+                    if current["state"] != state: moved.append(current["id"])
                     current["state"] = state
                     current.pop("passed", None)
                     if state != TESTING: current.pop("stopsWhenRemoved", None)
                     self.save(current)
+        if moved: self.emit("entries.testing" if state == TESTING else "entries.requeued", entries=moved)
 
     def round_state(self):
         """The worker's account of its round (ROUND_FILE), or None when there is none."""
@@ -1244,6 +1256,7 @@ class Queue:
     def hold(self, why):
         self.hold_file.write_text(why + "\n")
         print(f"queue: held: {why}", flush=True)
+        self.emit("queue.held", why=why, **{"for": OWNER if why.startswith("for the owner") else SESSION})
 
     @contextlib.contextmanager
     def worker(self):
@@ -1477,6 +1490,8 @@ def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False
              "directory": str(root), **({"replays": replays} if merges else {}), **flags}
     text(root, "update-ref", f"refs/queuekeeper/queue/{identifier}", tip)
     with queue.locked(): queue.save(entry)
+    queue.emit("entry.queued", entry=identifier, subject=entry["subject"], commits=len(commits), branch=entry["branch"],
+               note=note, **flags)
     print(f"queued {identifier}: {len(commits)} commit(s), {entry['subject']}")
     for name in OPTIONS:
         if name in flags: print(f"queue: {identifier} {asked_for(name)}{because(flags)}")
@@ -1638,7 +1653,15 @@ def round_lines(state, at=None):
     return lines
 
 
-def status(root, as_json=False, recent=5):
+def snapshot(root, recent=5):
+    """The queue's state as `queuekeeper queue status --json` prints it, which the visibility features read too
+    (doc/visibility.md): the worker, any hold, the round's account, the entries waiting, the last recent settled and
+    the IDs of those landed ungated."""
+    return reading(root, recent)[0]
+
+
+def reading(root, recent=5):
+    """(snapshot, the entries landed ungated that no gate on main has covered since)."""
     queue = Queue(root)
     entries = queue.all()
     waiting = [entry for entry in entries if entry["state"] in WAITING]
@@ -1655,10 +1678,16 @@ def status(root, as_json=False, recent=5):
             gate["progress"] = [record for record in gate["progress"] if lane_progress.valid(record, gate.get("began"))]
         if isinstance(gate.get("began"), (int, float)): gate["runningSeconds"] = round(time.time() - gate["began"])
         if stuck(gate): gate["stuck"] = stuck(gate)
+    return {"worker": working, "held": why, "round": current, "waiting": waiting, "recent": done,
+            "ungated": [entry["id"] for entry in ungated]}, ungated
+
+
+def status(root, as_json=False, recent=5):
+    state, ungated = reading(root, recent)
     if as_json:
-        print(json.dumps({"worker": working, "held": why, "round": current, "waiting": waiting, "recent": done,
-                          "ungated": [entry["id"] for entry in ungated]}, indent=2))
+        print(json.dumps(state, indent=2))
         return 0
+    working, why, current, waiting, done = (state[key] for key in ("worker", "held", "round", "waiting", "recent"))
     print(f"worker: {'running' if working else 'none'}" + (f"; held {why}" if why else ""))
     if waiting and not working and not why: print("waiting with no worker: `queuekeeper queue resume` starts one")
     for line in round_lines(current or {}): print(line)
@@ -2652,6 +2681,13 @@ class Worker:
         """What integrate records of an entry it put on top, the changelog conflicts it settled: in the queue."""
         self.queue.record(entry, **fields)
 
+    def gate_ended(self, lane, round_name, status_, log, seconds=None):
+        """Tell the journal how a lane of a gate ended: its exit status, or WITHDRAWN for one stopped as its entries
+        left the queue, and the Mac it ran on, where a record says."""
+        self.queue.emit("gate.ended", lane=lane, round=round_name, role=self.role, status=status_, log=str(log),
+                        mac=self.ran_where.removeprefix(" on ") or None,
+                        seconds=None if seconds is None else round(seconds))
+
     def gate(self, lanes, round_name, where=(), cancel=None, quick=False):
         """(status of the first of lanes that did not pass or 0, its log). ran_on is the second Mac that ran
         that lane, by its dispatch's record (remote.dispatched), or None when it ran here or nowhere. A pass of
@@ -2681,9 +2717,12 @@ class Worker:
             lane_wait.remove(lane_wait.path_of(self.checkout, lane))
             shutil.rmtree(lane_log.parent / "lanes", ignore_errors=True)
             self.say(f"{lane} on {self.head()[:12]}")
+            self.queue.emit("gate.began", lane=lane, round=round_name, role=self.role, head=self.head(),
+                            entries=list(self.gating))
             if quick:
                 status_ = self.quick(lane, log)
                 if status_ is not None:
+                    self.gate_ended(lane, round_name, status_, log)
                     if not status_: continue
                     self.failed_lane = lane
                     return status_, log
@@ -2719,9 +2758,11 @@ class Worker:
                 if isinstance(error, processes.Canceled) and removal.gone:
                     self.withdrawn = removal.gone
                     self.say(f"{lane}: stopped{self.ran_where}, as {', '.join(removal.gone)} left the queue")
+                    self.gate_ended(lane, round_name, WITHDRAWN, log, time.monotonic() - started)
                     return WITHDRAWN, log
                 self.timed_out = f"{lane} reached its limit: {error}"
                 self.say(f"{lane}: unmeasured: {error}")
+                self.gate_ended(lane, round_name, lane_results.UNMEASURED, log, time.monotonic() - started)
                 return lane_results.UNMEASURED, log
             except BaseException:
                 loads.stopped.set()
@@ -2748,6 +2789,7 @@ class Worker:
             self.ran_where = self.mac(lane, began)
             busy = sampler.finish() if sampler else {}
             self.say(f"{lane} exited {status_}{self.placed(lane, began)}")
+            self.gate_ended(lane, round_name, status_, log, ended - started)
             if status_:
                 self.failed_lane = lane
                 if status_ not in NO_VERDICT:
@@ -2967,6 +3009,8 @@ class Worker:
                 self.say(f"pushed {head[:12]}" + (", landed without the gate, which the next gate on main covers"
                                                   if ungated else ""))
                 own = self.landed(batch, base, head)
+                self.queue.emit("batch.pushed", head=head, base=base, entries=[entry["id"] for entry in batch],
+                                ungated=bool(ungated) or None)
                 for entry in batch:
                     commit, count = own.get(entry["id"], (head, 0))
                     self.queue.settle(entry, LANDED, landedAs=commit, landedTip=head,
@@ -3167,6 +3211,9 @@ class Worker:
             else: del flake["trackerError"]
             self.say(f"flaky: {flake_words(flake)}; "
                      + (f"tracker: {flake['issue']}" if "issue" in flake else f"the tracker has no record: {flake['trackerError']}"))
+        for flake in flakes:
+            self.queue.emit("test.flaky", test=flake.get("test"), commit=flake.get("commit"), issue=flake.get("issue"),
+                            landed=not touching, entries=[entry["id"] for entry in applied])
         for entry in applied:
             current = self.queue.read(entry["id"]) or entry
             self.queue.record(entry, flakes=current.get("flakes", []) + flakes)
@@ -3566,6 +3613,8 @@ class Worker:
                          waitingSince=None)
             state.setdefault("gates", {})
         self.queue.note(change)
+        self.queue.emit("round.began", round=round_name, head=head, base=base, adopted=adopted or None,
+                        entries=[entry["id"] for entry in applied], bisect=bisect)
 
     def older(self, config, applied, base, head, docs, ungated, result, log, round_name, flakes=None, reran=False,
               runner=None):
@@ -4019,6 +4068,7 @@ class Worker:
         if self.alone: verdict["alone"] = True
         if self.measured: verdict["gate"] = self.measured
         for entry in batch: self.queue.record(entry, state=PASSED, passed=verdict)
+        self.queue.emit("batch.passed", head=head, base=base, entries=verdict["batch"])
 
     def push_passed(self, passed):
         """Push the batch whose pass keep recorded, when it is still the batch that passed: the same entries, none
@@ -4543,6 +4593,19 @@ def run(root, *, if_waiting=False):
         if queue.held() or not queue.waiting(): return 0
 
 
+def journal(root, as_json=False, since=None, kinds=(), following=False, out=print):
+    """`queuekeeper queue events`: the journal's events (events), oldest first, as a line of words each or, with
+    as_json, as the journal's own lines; then, when following, each new one as it is written, until interrupted."""
+    queue = Queue(root)
+    def show(event):
+        out(json.dumps(event) if as_json else events.words(event), flush=True)
+    for event in events.read(queue.directory, since.timestamp() if since else None, kinds): show(event)
+    if following:
+        with contextlib.suppress(KeyboardInterrupt):
+            for event in events.follow(queue.directory, kinds): show(event)
+    return 0
+
+
 def passed_push(queue):
     """What a hold keeps of a batch that passed, for its reason: the push it waits for."""
     passed = [entry for entry in queue.all() if entry["state"] == PASSED]
@@ -4554,7 +4617,9 @@ def passed_push(queue):
 
 def resume(root):
     queue = Queue(root)
+    was = queue.held()
     with contextlib.suppress(OSError): queue.hold_file.unlink()
+    if was: queue.emit("queue.resumed", was=was)
     queue.start()
     print(f"{len(queue.waiting())} waiting; worker {'running' if queue.working() else 'not needed'}")
     return 0
@@ -4607,6 +4672,15 @@ def add_arguments(parser):
                                        "or one did, 75 held or still waiting at the limit")
     following.add_argument("id", nargs="+")
     following.add_argument("--limit", type=float, default=WAIT_LIMIT, metavar="SECONDS")
+    told = operations.add_parser("events", help="print the queue's journal, one line for each change of its state: "
+                                 "entries queued, testing, landed and sent back, rounds, gates, flaky tests and holds")
+    told.add_argument("--json", action="store_true", help="each event as the journal holds it, one JSON object a line")
+    told.add_argument("--follow", action="store_true", help="then print each new event as it happens, until interrupted")
+    told.add_argument("--since", type=resources.local_time, metavar="WHEN", help="only events from WHEN, an ISO 8601 "
+                      "date or time, local unless it names a zone")
+    told.add_argument("--kind", action="append", default=[], metavar="KIND", help="only events of KIND, such as "
+                      "entry.landed, or of every kind that begins with it when it ends in a dot, such as entry.; "
+                      "repeatable")
     removing = operations.add_parser("remove", help="take an entry out; a run in progress finishes, and lands nothing")
     removing.add_argument("id")
     operations.add_parser("resume", help="clear a hold and start the worker: any session does this itself once the "
@@ -4629,6 +4703,7 @@ def main(root, args):
     if args.operation == "placement": return placement(root, args.lane, args.json)
     if args.operation == "wait":
         return wait(root, args.id[0], args.limit) if len(args.id) == 1 else wait_for(root, args.id, args.limit)
+    if args.operation == "events": return journal(root, args.json, args.since, args.kind, args.follow)
     if args.operation == "remove": return remove(Queue(root), args.id)
     if args.operation == "resume": return resume(root)
     if args.operation == "launcher-plist":

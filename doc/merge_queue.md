@@ -97,5 +97,8 @@ operations are degraded.
 and what would unstick it. `queuekeeper queue placement` shows whether each build Mac could start a
 gate now, without running one.
 
+`queuekeeper queue events` prints the queue's journal, one line for each change of its state. See
+[Visibility](visibility.md).
+
 See also [Lanes and admission](lanes_and_admission.md), [The build farm](build_farm.md) and
 [The agent interface](agent_interface.md).

@@ -15,6 +15,7 @@ from . import __version__, budgets, disk, docs, extensions, git_state, lane_cove
 from .config import TOOLKIT_ROOT, admission as admission_of, extensions_of, lane_to_run, load, source_identity, \
     display_lane_warnings, lane_devices, self_lane_warnings, stays, unadmitted, unlocked_screen
 from .resources import BUSY, FREE_WAIT
+from . import visibility
 
 # The commands that reach the hosts, before each of which extensions.HOST_COMMAND runs.
 HOST_COMMANDS = {"run", "admit", "remote", "land", "queue", "disk"}
@@ -593,6 +594,8 @@ def perform(argv, report):
     folder = Path(given[1] if given[:1] == ["--project"] and len(given) > 1 else
                   given[0].split("=", 1)[1] if given[:1] and given[0].startswith("--project=") else ".")
     extensions.load(extensions_of(folder, git_state.main_checkout(folder)))
+    # Then the visibility features their owner turned on, which add commands too (visibility).
+    visibility.load()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project", type=Path, default=Path.cwd())
     parser.add_argument("--version", action="version", version=__version__)
@@ -785,6 +788,8 @@ def perform(argv, report):
         "included, and file names; exit 1 on any, 2 when nothing was checked")
     spell.add_argument("paths", nargs="*", help="files or directories; untracked files under them are read too")
     disk.add_arguments(commands.add_parser("disk", help="inventory reclaimable disk space; changes nothing without --delete"))
+    commands.add_parser("visibility", help="turn the features that show the queue to its owner on and off: "
+                        "status, enable FEATURE, disable FEATURE")
     hosts = commands.add_parser("host", help="read a Mac's state as queuekeeper reads it")
     reads = hosts.add_subparsers(dest="operation", required=True)
     screen = reads.add_parser("screen", help="say whether a Mac's console screen is locked, from both keys the "
@@ -803,6 +808,8 @@ def perform(argv, report):
     project = argv[1] if first == 2 else argv[0].split("=", 1)[1] if first == 1 else None
     if argv[first:first + 1] and argv[first] in extensions.COMMANDS:
         return extensions.COMMANDS[argv[first]][1](argv[first + 1:], project)
+    # The switch is the owner's and this Mac's, and reads no project.
+    if argv[first:first + 1] == ["visibility"]: return visibility.main(argv[first + 1:])
     # Recovery, like the admission log, covers the whole host and reads no project.
     if argv[first:first + 2] == ["admissions", "recover"]: return resources.recover_main(argv[first + 2:])
     if argv[first:first + 2] == ["admissions", "remove"]: return resources.remove_main(argv[first + 2:])

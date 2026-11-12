@@ -122,6 +122,7 @@ See the [Apple plugin's README](src/python/queuekeeper/apple/README.md) for deta
   has room
 - [The build farm](doc/build_farm.md): running lanes on other Macs
 - [The agent interface](doc/agent_interface.md): exit codes and output that agents act on
+- [Visibility](doc/visibility.md): the event journal, and the features that show the queue to you
 - [Related tools](doc/related_tools.md)
 
 ## Limitations
@@ -139,7 +140,8 @@ See the [Apple plugin's README](src/python/queuekeeper/apple/README.md) for deta
   directly is offered to one other Mac.
 - **A build host can be asleep, locked or busy.** Queuekeeper reports these as no verdict and waits,
   which is correct but slower than a machine that is always ready.
-- **No web interface**, dashboards or notifications. Everything is the command line and log files.
+- **No web interface**, dashboards or notifications yet. Everything is the command line and log
+  files. [Visibility](doc/visibility.md) says what is built toward them and what is planned.
 
 ## License
 

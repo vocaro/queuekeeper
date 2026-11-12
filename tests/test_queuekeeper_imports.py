@@ -4,6 +4,9 @@ The core, `queuekeeper` outside `queuekeeper.apple`, imports neither the toolkit
 (`vocaro_engineering`) nor the Apple extension. The extension may import the core, and never the
 toolkit.
 
+A visibility feature, a module or package of its own in `queuekeeper.visibility`, may import the core and never
+another feature, and nothing outside a feature imports it: the switch loads it by its name (queuekeeper.visibility).
+
 The check also reads an import written for the toolkit's layout, such as `vocaro_engineering.remote` or a
 relative import of a module that is on the other side here, as the import it stands for.
 
@@ -19,6 +22,7 @@ SOURCE = Path(__file__).resolve().parents[1] / "src/python"
 CORE = "queuekeeper"
 APPLE = "queuekeeper.apple"
 TOOLKIT = "vocaro_engineering"
+VISIBILITY = "queuekeeper.visibility"
 # A call that imports the module its first argument names.
 IMPORTERS = {"import_module", "__import__"}
 
@@ -81,8 +85,14 @@ def imported(source, module, package=False):
     return found
 
 
+def feature(module):
+    """The visibility feature module is, or is in, by its name: None for the switch itself and for every other."""
+    if not within(module, VISIBILITY) or module == VISIBILITY: return None
+    return ".".join(module.split(".")[:VISIBILITY.count(".") + 2])
+
+
 def forbidden(module):
-    """The packages module may not import."""
+    """The packages module may not import, a visibility feature other than its own apart (violations)."""
     if within(module, APPLE): return [TOOLKIT]
     if within(module, CORE): return [TOOLKIT, APPLE]
     return []
@@ -93,7 +103,8 @@ def violations(source, module, package=False):
     alone. This is the whole rule once every import is written for Queuekeeper's layout."""
     return [f"{module}:{line} imports {name}"
             for line, name in imported(source, module, package)
-            for barred in forbidden(module) if within(name, barred)]
+            if any(within(name, barred) for barred in forbidden(module))
+            or (name and feature(name) and feature(name) != feature(module))]
 
 
 def modules(root):
@@ -250,6 +261,28 @@ class Controls(unittest.TestCase):
                        "from queuekeeper import apple_notes", "from . import applesauce"):
             with self.subTest(source=source):
                 self.assertEqual(violations(source, "queuekeeper.remote"), [])
+
+    def test_nothing_imports_a_visibility_feature_but_itself(self):
+        for source, module, package in (
+                ("from .visibility import notify", "queuekeeper.cli", False),
+                ("import queuekeeper.visibility.dashboard.server", "queuekeeper.merge_queue", False),
+                ("from . import notify", "queuekeeper.visibility", True),
+                ("from .. import notify", "queuekeeper.visibility.dashboard", True),
+                ("from ..notify import rules", "queuekeeper.visibility.dashboard.server", False),
+                ("from ..visibility import dashboard", "queuekeeper.apple.lane", False)):
+            with self.subTest(source=source, module=module):
+                self.assertTrue(violations(source, module, package))
+
+    def test_a_visibility_feature_may_import_the_core_and_itself(self):
+        for source, module, package in (
+                ("from ... import events, merge_queue", "queuekeeper.visibility.notify", True),
+                ("from . import rules\nfrom .channels import banner", "queuekeeper.visibility.notify", True),
+                ("from .. import rules", "queuekeeper.visibility.notify.channels", True),
+                ("from .. import visibility", "queuekeeper.cli", False),
+                ("from .. import extensions, resources", "queuekeeper.visibility", True)):
+            with self.subTest(source=source, module=module):
+                self.assertEqual(violations(source, module, package), [])
+        self.assertTrue(violations("from ...apple import devices", "queuekeeper.visibility.notify", True))
 
     def test_the_toolkit_may_import_either(self):
         self.assertEqual(violations("from queuekeeper.apple import devices\nimport queuekeeper",
