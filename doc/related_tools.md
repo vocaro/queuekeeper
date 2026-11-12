@@ -67,8 +67,9 @@ one check command are enough, start with one of them.
 
 ## Where the others are better
 
-- **Teams.** Reviews, approvals, branch protection, single sign-on, audit trails and dashboards.
-  Queuekeeper has none of these and assumes everyone who can queue a commit is trusted.
+- **Teams.** Reviews, approvals, branch protection, single sign-on, audit trails and dashboards a
+  whole team shares. Queuekeeper has none of these and assumes everyone who can queue a commit is
+  trusted. Its [dashboard](visibility.md) is one owner's, read-only and served to their own Mac.
 - **Throughput.** The hosted queues test many speculative batches at once across as many CI
   machines as you pay for. Queuekeeper runs one gate, one gate stacked on it, and the two halves of
   a bisect, on a handful of Macs.
@@ -78,8 +79,8 @@ one check command are enough, start with one of them.
   Mac being awake, logged in and unlocked.
 - **Flaky-test history.** Trunk, Mergify and Aviator track flaky tests across runs and can
   quarantine them. Queuekeeper proves a flake by rerunning it, for one kind of lane.
-- **Maturity.** They have many users, support and a web interface. Queuekeeper has one user and a
-  command line.
+- **Maturity.** They have many users, support and a web interface you manage the queue from.
+  Queuekeeper has one user, a command line and a web page that only shows.
 
 ## You may not need a new queue
 

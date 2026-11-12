@@ -107,6 +107,24 @@ have the queue also check for waiting work at login and every two minutes, set u
 launcher. It also avoids a macOS restriction that can cut a background worker off from the local
 network. See [The build farm](build_farm.md#macos-local-network-privacy).
 
+## See what the queue is doing
+
+`queuekeeper queue status` says what is waiting and why. Three features, each off until you turn
+it on, show more:
+
+```sh
+queuekeeper visibility enable watch
+queuekeeper watch                          # the queue in the terminal, redrawn as it changes
+
+queuekeeper visibility enable notify       # a banner when the queue needs you
+queuekeeper notify test
+
+queuekeeper visibility enable dashboard
+queuekeeper serve --open                   # a read-only web page of the queue
+```
+
+[Visibility](visibility.md) describes each one.
+
 ## Tell your agents
 
 Agents need to know to queue their work instead of pushing it. Add a rule like this to the

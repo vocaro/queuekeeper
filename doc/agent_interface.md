@@ -30,6 +30,8 @@ Exit codes separate the cases an agent must treat differently:
 
 When the queue stops, the hold's reason begins with whom it is for. Most holds are for an agent,
 which fixes the cause and runs `queuekeeper queue resume` itself. A hold is for the owner only when
-an agent cannot fix the cause, such as a refused SSH key.
+an agent cannot fix the cause, such as a refused SSH key. With the
+[notify feature](visibility.md#the-notify-feature) on, the owner is told of such a hold when it
+happens.
 
 See also [The merge queue](merge_queue.md).

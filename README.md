@@ -84,6 +84,9 @@ tested and why anything is held:
 queuekeeper queue status
 ```
 
+For a view that updates by itself, a web page of the queue, or a notification when the queue needs
+you, turn on the [visibility features](#visibility).
+
 **5. If the change comes back.** When the gate fails or the commit conflicts with `main`,
 `queuekeeper land --wait` exits with status 1 and says why, with the path of the log. Nothing was
 pushed. Fix the problem, commit, and run `queuekeeper land --wait` again.
@@ -114,6 +117,24 @@ The Apple plugin lets agents build and test iOS and Mac apps without getting in 
 
 See the [Apple plugin's README](src/python/queuekeeper/apple/README.md) for details.
 
+## Visibility
+
+Agents read exit codes. You need to see whether the queue is moving and to hear when it needs you.
+Three features do that, each off until you turn it on:
+
+- **Watch.** `queuekeeper watch` shows the queue in the terminal and redraws it as it changes.
+- **Notify.** A macOS banner, a command of yours or a webhook tells you of a hold only you can fix,
+  a change that came back, a flaky test and a landing that skipped the gate.
+- **Dashboard.** `queuekeeper serve` serves a read-only web page on your Mac: what the queue is
+  doing at a glance, then the queue, the build farm, the logs and the day's history.
+
+```sh
+queuekeeper visibility enable dashboard
+queuekeeper serve --open
+```
+
+See [Visibility](doc/visibility.md) for details.
+
 ## Documentation
 
 - [Getting started](doc/getting_started.md)
@@ -122,7 +143,8 @@ See the [Apple plugin's README](src/python/queuekeeper/apple/README.md) for deta
   has room
 - [The build farm](doc/build_farm.md): running lanes on other Macs
 - [The agent interface](doc/agent_interface.md): exit codes and output that agents act on
-- [Visibility](doc/visibility.md): the event journal, and the features that show the queue to you
+- [Visibility](doc/visibility.md): the terminal view, notifications, the web dashboard and the
+  event journal under them
 - [Related tools](doc/related_tools.md)
 
 ## Limitations
@@ -140,8 +162,9 @@ See the [Apple plugin's README](src/python/queuekeeper/apple/README.md) for deta
   directly is offered to one other Mac.
 - **A build host can be asleep, locked or busy.** Queuekeeper reports these as no verdict and waits,
   which is correct but slower than a machine that is always ready.
-- **No web interface**, dashboards or notifications yet. Everything is the command line and log
-  files. [Visibility](doc/visibility.md) says what is built toward them and what is planned.
+- **The dashboard only shows.** It is read-only, has no sign-in and is served to your own Mac.
+  Removing an entry or clearing a hold is still a command. Notifications are macOS banners unless
+  you point them at a command or a webhook.
 
 ## License
 
