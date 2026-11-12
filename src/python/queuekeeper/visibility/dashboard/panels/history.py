@@ -7,6 +7,7 @@ from .... import events
 TITLE, ORDER = "History", 40
 MOST = 200
 LEVELS = {"entry.failed": "danger", "entry.conflict": "danger", "queue.held": "warning", "test.flaky": "warning",
+          "gate.stuck": "warning",
           "entry.landed": "success", "batch.pushed": "success"}
 STAMP = len("2026-11-12 09:30:19 ")
 

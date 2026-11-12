@@ -60,10 +60,16 @@ def spawn(directory, event):
     """Start a delivery for the queue kept in directory, apart from this process, when event is one a rule that is
     on tells of (extensions.AFTER_EVENT). It returns at once."""
     if visibility.switched_off() or rules.rule_of(event, rules.chosen(settings())) is None: return
+    start(str(directory))
+
+
+def start(*arguments):
+    """Start this feature's process (`python3 -m queuekeeper.visibility.notify ARGUMENTS`) apart from this one, which
+    does not wait for it."""
     package_root = str(Path(__file__).resolve().parents[3])
     environment = {**os.environ, "PYTHONPATH": os.pathsep.join(
         [package_root, *filter(None, [os.environ.get("PYTHONPATH")])])}
-    started = subprocess.Popen([sys.executable, "-m", MODULE, str(directory)], stdin=subprocess.DEVNULL,
+    started = subprocess.Popen([sys.executable, "-m", MODULE, *arguments], stdin=subprocess.DEVNULL,
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=environment,
                                start_new_session=True, cwd="/")
     # It outlives this process, which must not wait for it; one that ends first is reaped here.
@@ -141,12 +147,19 @@ def deliver(directory, now=None):
 
 
 def main(argv):
-    if len(argv) != 1:
-        print(f"usage: python3 -m {MODULE} DIRECTORY", file=sys.stderr)
+    """The feature's process: a delivery for the queue kept in DIRECTORY, or with --check a look for a queue that
+    is stuck in the repository at ROOT (check)."""
+    checking = argv[:1] == ["--check"]
+    if len(argv) != 1 + checking:
+        print(f"usage: python3 -m {MODULE} DIRECTORY | --check ROOT", file=sys.stderr)
         return 2
     if visibility.switched_off() or "notify" not in visibility.enabled(): return 0
-    try: deliver(argv[0])
+    try:
+        if checking:
+            from . import check
+            check.check(argv[1])
+        else: deliver(argv[0])
     except Exception as error:  # noqa: BLE001
-        log(f"the delivery for {argv[0]} stopped: {error}")
+        log(f"the {'check of' if checking else 'delivery for'} {argv[-1]} stopped: {error}")
         return 1
     return 0

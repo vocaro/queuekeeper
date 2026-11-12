@@ -1116,7 +1116,9 @@ class GateWatch:
         mac = lane_wait.second_mac(host) if host else where
         since, stranded = record.get("since") if waiting else None, bool(waiting and record.get("stranded"))
         held_up = stuck({"waitingSince": since, "stranded": stranded})
-        if held_up and not self.said_stuck: self.say(f"{self.lane}: {held_up}")
+        if held_up and not self.said_stuck:
+            self.say(f"{self.lane}: {held_up}")
+            self.queue.emit("gate.stuck", lane=self.lane, role=self.role, why=held_up, waitingSince=since)
         self.said_stuck = bool(held_up)
         self.queue.gate_note(self.role, mac=mac, waiting=waiting, waitingKind=record.get("kind") if waiting else None,
                              waitingSince=since, stranded=stranded,

@@ -8152,6 +8152,10 @@ class RoundAccount(Fixture):
                 watch.look()
             self.assertEqual(queue.round_state()["gates"]["batch"]["waitingSince"], began)
             self.assertEqual(out.getvalue().count("gate: stuck: the gate has waited 15m01s"), 1, out.getvalue())
+            # And the journal once, for whatever tells the owner (doc/visibility.md).
+            told, = mq.events.read(queue.directory, kinds=["gate.stuck"])
+            self.assertEqual((told["lane"], told["role"], told["waitingSince"]), ("gate", "batch", began))
+            self.assertTrue(told["why"].startswith("stuck: the gate has waited 15m01s"), told["why"])
             # Once admitted, the wait and its start clear.
             mq.lane_wait.running()
             watch.look()

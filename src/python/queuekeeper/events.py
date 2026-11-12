@@ -40,6 +40,7 @@ KINDS = {
     "round.began": "round {round} began: {entries} at {head} on {base}",
     "gate.began": "{lane} began at {head}",
     "gate.ended": "{lane} exited {status}{where}",
+    "gate.stuck": "{lane} is {why}",
     "batch.passed": "passed at {head}: {entries}",
     "batch.pushed": "pushed {head}: {entries}",
     "test.flaky": "flaky: {test} at {commit}",

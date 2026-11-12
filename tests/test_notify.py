@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 import host_isolation  # noqa: F401 -- first, as every test module
 from queuekeeper import cli, events, extensions, merge_queue as mq, visibility
 from queuekeeper.visibility import notify
-from queuekeeper.visibility.notify import channels, commands, deliver, rules
+from queuekeeper.visibility.notify import channels, check, commands, deliver, rules
 from queuekeeper.visibility.notify.channels import banner, command, webhook
 import test_merge_queue
 
@@ -46,7 +46,7 @@ class Settings:
         os.environ.pop(visibility.SWITCH, None)
 
     def keep_extensions(self):
-        for kept in (extensions.COMMANDS, extensions.LOADED, extensions.AFTER_EVENT):
+        for kept in (extensions.COMMANDS, extensions.LOADED, extensions.AFTER_EVENT, extensions.HOST_COMMAND):
             before = kept.copy()
             self.addCleanup(lambda kept=kept, before=before: (kept.clear(), kept.update(before) if isinstance(kept, dict)
                                                               else kept.extend(before)))
@@ -60,11 +60,11 @@ class Settings:
 
 class Rules(unittest.TestCase):
     def test_the_defaults_tell_of_what_needs_the_owner_and_not_of_every_landing(self):
-        self.assertEqual(DEFAULT, {"held-owner", "came-back", "flaky", "ungated"})
+        self.assertEqual(DEFAULT, {"held-owner", "came-back", "stuck", "flaky", "ungated"})
 
     def test_the_settings_turn_one_rule_on_or_off_and_ignore_what_is_no_switch(self):
         self.assertEqual(rules.chosen({"rules": {"landed": True, "flaky": False, "ungated": "no", "unknown": True}}),
-                         {"held-owner", "came-back", "ungated", "landed"})
+                         {"held-owner", "came-back", "stuck", "ungated", "landed"})
         self.assertEqual(rules.chosen({"rules": []}), DEFAULT)
 
     def test_each_kind_goes_to_its_rule_and_the_rest_to_none(self):
@@ -73,7 +73,7 @@ class Rules(unittest.TestCase):
                 ({"kind": "queue.held", "for": "session"}, ["held-session"]),
                 ({"kind": "queue.held"}, ["held-session"]),
                 ({"kind": "entry.failed"}, ["came-back"]), ({"kind": "entry.conflict"}, ["came-back"]),
-                ({"kind": "test.flaky"}, ["flaky"]),
+                ({"kind": "test.flaky"}, ["flaky"]), ({"kind": "gate.stuck"}, ["stuck"]),
                 ({"kind": "entry.landed", "ungated": {"why": "w"}}, ["ungated", "landed"]),
                 ({"kind": "entry.landed"}, ["landed"]), ({"kind": "queue.resumed"}, ["resumed"]),
                 ({"kind": "gate.began"}, []), ({"kind": "later.kind"}, []), ({}, [])):
@@ -102,6 +102,8 @@ class Rules(unittest.TestCase):
                  "test_x failed its gate and passed alone, so its batch landed", rules.NORMAL),
                 ({"kind": "test.flaky", "test": "test_x", "landed": False}, "Flaky test",
                  "test_x failed its gate and passed alone, and its batch was bisected", rules.NORMAL),
+                ({"kind": "gate.stuck", "lane": "gate", "why": "stuck: the gate has waited 15m01s"}, "Gate is stuck",
+                 "gate is stuck: the gate has waited 15m01s", rules.URGENT),
                 ({"kind": "queue.resumed"}, "Queue resumed", "Its hold was cleared", rules.NORMAL)):
             with self.subTest(title=title):
                 notice_ = rules.notice(event, on, "project")
@@ -348,6 +350,146 @@ class Spawning(Settings, unittest.TestCase):
         self.popen.assert_not_called()
 
 
+class Checking(Settings, test_merge_queue.Fixture):
+    """The look for a queue that is stuck without an event, with findings of the test's and a channel that keeps
+    what it is sent."""
+
+    def setUp(self):
+        super().setUp()
+        self.configure()
+        self.directory = mq.Queue(self.repo).directory
+        self.sent, self.found = [], []
+        kept = types.SimpleNamespace(send=lambda notice_, config: self.sent.append(notice_))
+        on = patch.object(channels, "on", lambda found: [("kept", kept, {})])
+        on.start()
+        self.addCleanup(on.stop)
+
+    def look(self, at):
+        return check.check(self.repo, now=at, diagnose=lambda root: (list(self.found), [], False))
+
+    def finding(self, signal="no worker", diagnosis="2 entries wait and no worker runs"):
+        return {"signal": signal, "diagnosis": diagnosis, "remedy": "run `queuekeeper queue resume`"}
+
+    def test_a_finding_is_told_once_it_has_lasted_and_only_once(self):
+        self.found = [self.finding()]
+        self.assertEqual(self.look(1000.0), (self.found, 0))
+        self.assertEqual(self.look(1000.0 + check.PERSIST - 1)[1], 0)
+        self.assertEqual(self.look(1000.0 + check.PERSIST)[1], 1)
+        self.assertEqual(self.look(1000.0 + check.PERSIST + 600)[1], 0)
+        notice_, = self.sent
+        self.assertEqual((notice_["title"], notice_["level"], notice_["rule"], notice_["repository"]),
+                         ("Queue looks stuck", rules.URGENT, "stuck", "project"))
+        self.assertEqual(notice_["body"], "2 entries wait and no worker runs. Next: run `queuekeeper queue resume`")
+
+    def test_a_finding_that_goes_before_it_has_lasted_is_never_told(self):
+        self.found = [self.finding()]
+        self.look(1000.0)
+        self.found = []
+        self.look(1100.0)
+        self.found = [self.finding()]
+        self.assertEqual(self.look(1000.0 + check.PERSIST)[1], 0)
+        self.assertEqual(self.sent, [])
+
+    def test_a_finding_that_went_and_came_back_is_told_again_once_it_has_lasted_again(self):
+        self.found = [self.finding()]
+        self.look(0.0)
+        self.look(check.PERSIST)
+        self.found = []
+        self.look(check.PERSIST + 10)
+        self.found = [self.finding()]
+        self.assertEqual(self.look(check.PERSIST + 20)[1], 0)
+        self.assertEqual(self.look(2 * check.PERSIST + 20)[1], 1)
+        self.assertEqual(len(self.sent), 2)
+
+    def test_each_finding_lasts_by_its_own_signal_whatever_its_words_become(self):
+        self.found = [self.finding(diagnosis="1 entry waits and no worker runs")]
+        self.look(0.0)
+        self.found = [self.finding(diagnosis="3 entries wait and no worker runs"), self.finding("no verdict", "3 gates gave none")]
+        self.assertEqual(self.look(check.PERSIST)[1], 1)
+        self.assertEqual(self.look(2 * check.PERSIST)[1], 1)
+        self.assertEqual([notice_["finding"]["signal"] for notice_ in self.sent], ["no worker", "no verdict"])
+
+    def test_a_hold_and_an_entry_that_came_back_unchanged_are_not_this_looks_to_tell(self):
+        self.found = [self.finding("held", "the queue is held for a test"), self.finding("came back", "e2 holds e1's change")]
+        self.look(0.0)
+        self.assertEqual(self.look(check.PERSIST), ([], 0))
+        self.assertEqual(self.sent, [])
+
+    def test_the_rule_turned_off_tells_of_nothing(self):
+        self.configure(rules_={"stuck": False})
+        self.found = [self.finding()]
+        self.look(0.0)
+        self.assertEqual(self.look(check.PERSIST)[1], 0)
+        self.assertEqual(self.sent, [])
+
+    def test_a_channel_that_refuses_is_logged_and_the_finding_is_not_told_again(self):
+        def refuse(notice_, config): raise RuntimeError("no route")
+        self.found = [self.finding()]
+        self.look(0.0)
+        with patch.object(channels, "on", lambda found: [("broken", types.SimpleNamespace(send=refuse), {})]):
+            self.assertEqual(self.look(check.PERSIST)[1], 0)
+        self.assertEqual(self.look(check.PERSIST + 60)[1], 0)
+        self.assertIn('broken did not send "Queue looks stuck": no route', deliver.log_path().read_text())
+
+    def test_the_queues_own_doctor_is_what_it_asks(self):
+        self.commit("a.txt", "one")
+        self.add("one")
+        findings, told = check.check(self.repo, now=0.0)
+        self.assertEqual(([finding["signal"] for finding in findings], told), (["no worker"], 0))
+        self.assertEqual(check.check(self.repo, now=check.PERSIST)[1], 1)
+        self.assertIn("1 entry wait and no worker runs", self.sent[0]["body"])
+
+    def spawned(self, folder=None):
+        with patch.object(deliver, "start") as start, patch.object(check.Path, "cwd", return_value=folder or self.repo):
+            check.spawn()
+        return start
+
+    def test_a_command_starts_a_look_at_its_repository_at_most_once_in_two_minutes(self):
+        self.spawned().assert_called_once_with("--check", str(self.repo))
+        self.spawned().assert_not_called()
+        old = time.time() - check.EVERY - 1
+        os.utime(self.directory / check.STATE, (old, old))
+        self.spawned().assert_called_once_with("--check", str(self.repo))
+
+    def test_a_command_in_a_linked_worktree_starts_the_look_at_its_main_checkout(self):
+        linked = self.base / "linked"
+        test_merge_queue.run(self.repo, "git", "worktree", "add", "-q", str(linked), "-b", "linked")
+        self.spawned(linked).assert_called_once_with("--check", str(self.repo))
+
+    def test_no_look_starts_where_there_is_no_queue_or_the_rule_or_the_feature_is_off(self):
+        self.spawned(self.base).assert_not_called()
+        self.configure(rules_={"stuck": False})
+        self.spawned().assert_not_called()
+        self.configure()
+        with patch.dict(os.environ, {visibility.SWITCH: "off"}): self.spawned().assert_not_called()
+
+    def test_the_process_looks_when_asked_to_check(self):
+        with patch.object(check, "check") as looked:
+            self.assertEqual(deliver.main(["--check", str(self.repo)]), 0)
+        looked.assert_called_once_with(str(self.repo))
+        with patch.object(check, "check", side_effect=RuntimeError("no queue")):
+            self.assertEqual(deliver.main(["--check", str(self.repo)]), 1)
+        self.assertIn(f"the check of {self.repo} stopped: no queue", deliver.log_path().read_text())
+
+    def test_the_command_lists_the_findings_and_exits_1_when_there_are_any(self):
+        self.keep_extensions()
+        printed = io.StringIO()
+        with patch("sys.stdout", printed): status = cli.main(["--project", str(self.repo), "notify", "check"])
+        self.assertEqual((status, printed.getvalue()), (0, "0 finding(s), 0 told of now\n"))
+        self.commit("a.txt", "one")
+        self.add("one")
+        printed = io.StringIO()
+        with patch("sys.stdout", printed): status = cli.main(["--project", str(self.repo), "notify", "check"])
+        self.assertEqual(status, 1)
+        self.assertIn("no worker: 1 entry wait and no worker runs", printed.getvalue())
+        self.assertTrue(printed.getvalue().endswith("1 finding(s), 0 told of now\n"))
+
+    def test_the_feature_registers_the_look_with_the_commands_that_reach_the_hosts(self):
+        self.keep_extensions()
+        visibility.load()
+        self.assertIn(check.spawn, extensions.HOST_COMMAND)
+
+
 class EndToEnd(Settings, test_merge_queue.Fixture):
     """The queue, with the feature on, tells its owner of an entry that came back, through a delivery of its own."""
 
@@ -410,7 +552,7 @@ class Command(Settings, unittest.TestCase):
         self.assertEqual(self.command("enable", "banner")[0], 0)
         self.assertEqual(self.stated()["rules"], {"landed": True, "flaky": False})
         self.assertEqual(self.stated()["channels"]["banner"], {"enabled": True})
-        self.assertEqual(rules.chosen(deliver.settings()), {"held-owner", "came-back", "ungated", "landed"})
+        self.assertEqual(rules.chosen(deliver.settings()), {"held-owner", "came-back", "stuck", "ungated", "landed"})
         status, _, errors = self.command("enable", "nope")
         self.assertEqual(status, 2)
         self.assertIn("notify has no rule or channel named nope", errors)

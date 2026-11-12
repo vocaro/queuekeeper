@@ -6,7 +6,7 @@ import sys
 import time
 
 from ... import git_state, merge_queue, visibility
-from . import HELP, channels, deliver, rules
+from . import HELP, channels, check, deliver, rules
 
 # A value shown in place of one that may be a secret, such as a webhook's address or a header.
 HIDDEN = "(set)"
@@ -105,6 +105,9 @@ def main(argv, project=None):
     for name in ("channel", "key"): removing.add_argument(name)
     trying = operations.add_parser("test", help="send a test notice through each channel that is on")
     trying.add_argument("--channel", help="through this channel alone")
+    operations.add_parser("check", help="look now for a queue that is stuck, as `queuekeeper queue doctor` does, and "
+                          "tell of what has lasted, as the commands that reach the hosts do by themselves every two "
+                          "minutes: 0 when nothing is found, 1 when something is")
     operations.add_parser("deliver", help="tell now of what this project's queue has journaled since the last "
                           "delivery, as the queue does by itself after each event")
     args = parser.parse_args(argv)
@@ -121,6 +124,11 @@ def main(argv, project=None):
             return 0
         # Named as a delivery names it: by the repository's main checkout, not by a linked worktree of it.
         if args.operation == "test": return test((git_state.main_checkout(root) or root).name, args.channel)
+        if args.operation == "check":
+            findings, told = check.check(git_state.main_checkout(root) or root)
+            for finding in findings: print(f"{finding['signal']}: {finding['diagnosis']}")
+            print(f"{len(findings)} finding(s), {told} told of now")
+            return 1 if findings else 0
         told = deliver.deliver(merge_queue.Queue(root).directory)
         print(f"{told} notice(s) sent")
         return 0

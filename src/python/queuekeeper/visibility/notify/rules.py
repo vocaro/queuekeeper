@@ -8,6 +8,7 @@ RULES = {
     "held-owner": (True, "the queue stopped for a cause only its owner can fix"),
     "held-session": (False, "the queue stopped for a cause an agent fixes"),
     "came-back": (True, "an entry failed its gate, or conflicts with main"),
+    "stuck": (True, "a gate is held up, or the queue's doctor finds the queue stuck"),
     "flaky": (True, "a failed test passed alone"),
     "ungated": (True, "an entry landed without the gate"),
     "landed": (False, "an entry landed"),
@@ -29,6 +30,7 @@ def candidates(event):
     if kind == "queue.held": return ["held-owner" if event.get("for") == "owner" else "held-session"]
     if kind in ("entry.failed", "entry.conflict"): return ["came-back"]
     if kind == "test.flaky": return ["flaky"]
+    if kind == "gate.stuck": return ["stuck"]
     if kind == "entry.landed": return ["ungated", "landed"] if event.get("ungated") else ["landed"]
     if kind == "queue.resumed": return ["resumed"]
     return []
@@ -36,6 +38,13 @@ def candidates(event):
 
 def rule_of(event, on):
     return next((name for name in candidates(event) if name in on), None)
+
+
+def finding_notice(finding, repository):
+    """The notice of a finding of the queue's doctor (merge_queue.diagnose) that has lasted (check): what it found,
+    then what would heal it."""
+    return {"rule": "stuck", "level": URGENT, "title": "Queue looks stuck", "repository": repository, "event": None,
+            "body": cut(f"{finding.get('diagnosis')}. Next: {finding.get('remedy')}"), "finding": finding}
 
 
 def cut(text):
@@ -55,6 +64,7 @@ def notice(event, on, repository):
     elif rule == "came-back":
         title = "Entry has a conflict" if event["kind"] == "entry.conflict" else "Entry came back"
         body, level = f"{subject}: {why}", URGENT
+    elif rule == "stuck": title, body, level = "Gate is stuck", f"{event.get('lane') or 'A lane'} is {why}", URGENT
     elif rule == "flaky":
         title, level = "Flaky test", NORMAL
         body = (f"{event.get('test') or 'A test'} failed its gate and passed alone"

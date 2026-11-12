@@ -57,6 +57,7 @@ through every channel that is on. The queue does not wait for it.
 queuekeeper visibility enable notify
 queuekeeper notify status          # each rule and channel, and whether it is on
 queuekeeper notify test            # send a test notice through each channel that is on
+queuekeeper notify check           # look now for a queue that is stuck
 ```
 
 **Rules** decide which events you are told of:
@@ -66,6 +67,7 @@ queuekeeper notify test            # send a test notice through each channel tha
 | `held-owner` | The queue stopped for a cause only you can fix | On |
 | `held-session` | The queue stopped for a cause an agent fixes | Off |
 | `came-back` | An entry failed its gate, or conflicts with `main` | On |
+| `stuck` | A gate is held up by dead admission entries, or the queue's doctor finds the queue stuck | On |
 | `flaky` | A failed test passed alone | On |
 | `ungated` | An entry landed without the gate | On |
 | `landed` | An entry landed | Off |
@@ -106,8 +108,13 @@ What to expect:
   the banner carries its icon, its notifications must be allowed in System Settings, and clicking
   the banner opens Script Editor. A banner shows for a few seconds and then stays in Notification
   Center.
-- **A queue that is stuck without an event is not told.** `queuekeeper queue doctor` still finds
-  that.
+- **A queue that stalls is found by looking.** Entries that wait with no worker, or gates in a row
+  with no verdict, write no event. So each command that reaches the Macs, such as `land`, `run`
+  and `queue`, starts a look at what `queuekeeper queue doctor` finds, at most once every two
+  minutes for a repository. A finding is told once it has lasted five minutes, and again only
+  after it has gone and come back. `queuekeeper notify check` looks now.
+- **Looking needs a command to run.** With the signed launcher set up, one runs every two minutes.
+  Without it, a queue nobody touches is not looked at until the next command.
 
 A rule is an entry in `rules.py`; a channel is a module of its own in `notify/channels/`, with a
 `ready(config)` and a `send(notice, config)`. Adding either changes no other file.
@@ -198,6 +205,7 @@ Every event has these keys, and its kind's own beside them:
 | `round.began` | The worker started a round | `round`, `head`, `base`, `entries`, `bisect`, `adopted` |
 | `gate.began` | A lane of a gate started | `lane`, `round`, `role`, `head`, `entries` |
 | `gate.ended` | A lane of a gate ended | `lane`, `round`, `role`, `status`, `log`, `mac`, `seconds` |
+| `gate.stuck` | A gate's wait for admission is held up by dead entries | `lane`, `role`, `why`, `waitingSince` |
 | `batch.passed` | A batch's lanes passed, before its push | `head`, `base`, `entries` |
 | `batch.pushed` | A batch was pushed to `main` | `head`, `base`, `entries`, `ungated` |
 | `test.flaky` | A failed test passed alone | `test`, `commit`, `issue`, `landed`, `entries` |
