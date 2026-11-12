@@ -14,7 +14,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 import host_isolation  # noqa: F401  Keeps every test out of the host's heavy-work admission.
 from queuekeeper import offload_host, remote
-from queuekeeper.apple import capture_approvals
+from queuekeeper.mac_desktop import capture_approvals
 
 RUNNER = "AppForegroundTests-Runner.app"
 

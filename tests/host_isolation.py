@@ -37,10 +37,13 @@ import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 from queuekeeper import cli, offload_host, remote, resources, shims
-from queuekeeper import apple
-from queuekeeper.apple import app_registrations, crash_alerts, device_notifications, devices, notification_center
+from queuekeeper import apple, mac_desktop
+from queuekeeper.apple import app_registrations, device_notifications, devices
+from queuekeeper.mac_desktop import crash_alerts, notification_center
 
-# The suite runs with the Apple extension switched on, as the command does for every project.
+# The suite runs with the Apple extension switched on, as the command does for every project, after the desktop
+# extension it requires.
+mac_desktop.register()
 apple.register()
 from queuekeeper.waiting import stretched  # noqa: F401 -- the tests' bound on a stall, re-exported
 

@@ -716,37 +716,6 @@ def security_unlock(path, password):
         release(reference)
 
 
-def unlock_for_run(root, unlock=security_unlock):
-    """Unlock the login keychain in this run's own SSH session, when the owner has kept its password
-    in root (keep_unlocked): an unlock in another session, the owner's desktop or an earlier SSH login,
-    does not reach this one (guides/shared-host.md, Keychains on the right Mac). The path it unlocked,
-    or None when no password is kept. A kept password that does not unlock it is the owner's to fix,
-    and the run does not start: work that signs would fail later, and less plainly."""
-    kept = root / KEYCHAIN_PASSWORD
-    if not kept.is_file(): return None
-    path = Path.home() / KEYCHAINS / LOGIN_KEYCHAIN
-    fix = (f"on the Mac that sends work here, run `python3 scripts/qk keychain keep-unlocked` and type this Mac's "
-           f"login password at its prompt, or delete {kept} to send work without the unlock "
-           "(guides/shared-host.md, Keychains on the right Mac)")
-    if not path.is_file(): raise Refusal(f"{kept} holds the password of {path}, which is not there", fix)
-    try:
-        password = kept.read_bytes()
-    except OSError as error:
-        raise Refusal(f"{kept} cannot be read: {error}", fix) from None
-    # A file the owner wrote by hand may end in a newline, which no typed password does.
-    if password.endswith(b"\n"): password = password[:-1]
-    try:
-        status, unlocked = unlock(path, password)
-    except (OSError, AttributeError) as error:
-        raise Refusal(f"Security could not be called to unlock {path}: {error}", fix) from None
-    if status == AUTH_FAILED:
-        raise Refusal(f"the password in {kept} does not unlock {path} (errSecAuthFailed): this Mac's login password "
-                      "may have changed since it was kept", fix)
-    if status or not unlocked:
-        raise Refusal(f"{path} is not unlocked with the password in {kept}: OSStatus {status}", fix)
-    return str(path)
-
-
 def keep(path, password):
     """Write password to path whole, readable and writable only by this account, replacing any file there."""
     temporary = path.with_name(f".{path.name}.{os.getpid()}")
@@ -766,7 +735,7 @@ def keep_unlocked(request, ask=None, unlock=security_unlock, run=subprocess.run,
     """`qk keychain keep-unlocked` on the second Mac, in the owner's Terminal there or through the
     `ssh -t` the sending Mac runs: ask for this Mac's login password, and once it has unlocked the login
     keychain, keep it in request["root"], under the home, readable only by this account, for each qk
-    remote run to unlock that keychain in its own session (unlock_for_run). Then set the keychain to
+    remote run to unlock that keychain in its own session (the Mac desktop extension's keychain.unlock_for_run). Then set the keychain to
     lock neither after a time nor on sleep, so that the owner's own session keeps it unlocked too. The
     password goes only to Security and that file. Exit 0 when both are done, 1 when no password given
     unlocked the keychain, which changes nothing, or the settings were not changed, and 2 when it
@@ -3818,8 +3787,6 @@ def main(plan):
                           "both Macs have at the same path")
         root, project, toolkit = Path.home() / plan["root"], plan["project"], plan.get("toolkit")
         screen_declined(plan)
-        unlocked = unlock_for_run(root)
-        if unlocked: say(f"unlocked {unlocked} for this run's session, with the password keep-unlocked kept")
         base = root / "checkouts" / project["directory"]
         began = time.monotonic()
         claimed = claim(base, plan["checkouts"], project["directory"], wait=not plan.get("decline"),

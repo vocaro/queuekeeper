@@ -1,11 +1,11 @@
-"""The physical devices a run on the second Mac uses, and what else a dispatch asks of the Apple extension: the
-default test allowance of a simulator-tests lane, the capture approvals the second Mac reports, the hardware a
-command names, and the project's simulator pool. The core's remote calls these through queuekeeper.extensions.DISPATCH."""
+"""The physical devices a run on the second Mac uses, and what else a dispatch asks of the Apple extension's devices:
+the hardware a command names and the project's simulator pool. The core's remote calls these through
+queuekeeper.extensions.DEVICES, which lane.py's Devices, built on the one here, fills."""
 from pathlib import Path
 import sys
 
 from .. import extensions
-from . import capture_approvals, devices
+from . import devices
 from .simulators import pool as simulator_pool
 
 
@@ -122,19 +122,12 @@ def carrying(lease, root, host, work, name, send):
         return devices.UNMEASURED
 
 
-class Dispatch(extensions.Dispatch):
+class Devices(extensions.Devices):
     def lease(self, keys, owner, words, root=None, *, budget=None, commits=()):
         return lease(keys, owner or devices.default_owner(), words, root=root, budget=budget, commits=commits)
 
     def carrying(self, held, root, host, work, name, send):
         return carrying(held, root, host, work, name, send)
-
-    def test_allowance(self, words):
-        from .simulators.matrix import default_test_allowance
-        return default_test_allowance(words)
-
-    def capture_lines(self, found):
-        return capture_approvals.report(found)
 
     def reserved_devices(self, words):
         return named_devices(words)
@@ -145,7 +138,3 @@ class Dispatch(extensions.Dispatch):
     def pool(self, root):
         return simulator_pool.configured(root)
 
-
-def register():
-    """Put the extension's dispatch hooks in the core."""
-    if not isinstance(extensions.DISPATCH, Dispatch): extensions.DISPATCH = Dispatch()

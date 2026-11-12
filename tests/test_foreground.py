@@ -17,7 +17,9 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 from queuekeeper import cli, config, offload_host, processes, remote
-from queuekeeper.apple import devices, foreground
+from queuekeeper.apple import devices
+from queuekeeper.mac_desktop import reservations
+from queuekeeper.mac_desktop import foreground
 import host_isolation
 from host_isolation import stretched
 from queuekeeper.apple.voiceover import state as voiceover_state
@@ -91,7 +93,7 @@ class SlotTests(unittest.TestCase):
             # The second Mac is not a workstation: its reservation records no approval (#207).
             self.assertNotIn("approval", entry)
             # A run there may outlast its expected release.
-            with patch.object(devices, "datetime", Later):
+            with patch.object(devices, "datetime", Later), patch.object(reservations, "datetime", Later):
                 self.assertEqual(devices.require_foreground(owner)["ownerChatID"], owner)
             self.assertEqual(entry["purpose"], "Project voiceover-mac")
         self.assertNotIn(devices.OWNER, os.environ)
@@ -114,6 +116,50 @@ class SlotTests(unittest.TestCase):
         self.assertEqual((entry["state"], entry["run"]), ("released", "the run's work ended"))
         self.assertNotIn(devices.OWNER, os.environ)
         with self.slot(): pass
+
+    def test_each_guard_holds_for_the_run_inside_the_lease_and_leaves_before_the_release(self):
+        self.second_mac()
+        seen = []
+
+        def guard(name):
+            @contextlib.contextmanager
+            def held(owner, *, record, said, **options):
+                seen.append((f"enter {name}", devices.condition(record.entry(devices.FOREGROUND)), sorted(options)))
+                try: yield
+                finally: seen.append((f"leave {name}", devices.condition(record.entry(devices.FOREGROUND))))
+            return held
+
+        with patch.object(foreground, "GUARDS", [guard("one"), guard("two")]):
+            with self.slot(): seen.append("run")
+        self.assertEqual(seen, [("enter one", "active", ["voiceover"]), ("enter two", "active", ["voiceover"]), "run",
+                                ("leave two", "active"), ("leave one", "active")])
+        self.assertEqual(self.record.entry(devices.FOREGROUND)["state"], "released")
+
+    def test_a_guard_that_could_not_restore_keeps_the_foreground_and_one_that_did_releases_it(self):
+        self.second_mac()
+
+        class Failed(RuntimeError):
+            def __init__(self, restored): self.restored = restored
+
+        def guard(restored):
+            @contextlib.contextmanager
+            def held(owner, **_options):
+                yield
+                raise Failed(restored)
+            return held
+
+        with patch.object(foreground, "GUARDS", [guard(True)]), self.assertRaises(Failed):
+            with self.slot(): pass
+        self.assertEqual(self.record.entry(devices.FOREGROUND)["state"], "released")
+        with patch.object(foreground, "GUARDS", [guard(False)]), self.assertRaises(Failed):
+            with self.slot(): pass
+        entry = self.record.entry(devices.FOREGROUND)
+        self.assertNotEqual(entry["state"], "released")
+        self.assertIn("queuekeeper: foreground retained: a guard's restoration or owned-process state is unverified", self.said)
+
+    def test_the_apple_extension_s_guard_keeps_voiceover_s_state(self):
+        from queuekeeper.apple import lane
+        self.assertIn(lane.preserved_voiceover, foreground.GUARDS)
 
     def test_initial_unknown_is_untouched_and_released_but_final_unknown_is_retained(self):
         self.second_mac()
@@ -336,7 +382,7 @@ class SlotTests(unittest.TestCase):
         # A run whose process is gone left an orphan, which needs attended recovery.
         self.record.update(devices.FOREGROUND, owner="other run", revision=held["revision"], activeRun=True,
                            hostProcessIdentifier=os.getpid())
-        with patch.object(devices, "process_start", return_value="another start"):
+        with patch.object(reservations, "process_start", return_value="another start"):
             with self.assertRaisesRegex(devices.Refused, "orphan.*attended recovery"):
                 with self.slot(): self.fail("ran over an orphan")
         self.assertEqual(self.record.entry(devices.FOREGROUND)["ownerChatID"], "other run")

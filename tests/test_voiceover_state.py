@@ -12,7 +12,9 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 from queuekeeper import processes
-from queuekeeper.apple import devices, foreground
+from queuekeeper.apple import devices
+from queuekeeper.mac_desktop import reservations
+from queuekeeper.mac_desktop import foreground
 import host_isolation
 from queuekeeper.apple.voiceover import guard, state
 
@@ -521,14 +523,14 @@ class StateTests(unittest.TestCase):
     def test_expired_approval_still_allows_original_restoration_but_no_new_work(self):
         self.enabled = True
         with self.scope(target=False):
-            with patch.object(devices, "require_window", side_effect=devices.Refused("expired")):
+            with patch.object(reservations, "require_window", side_effect=devices.Refused("expired")):
                 with self.assertRaises(devices.Refused): state.read(self.owner, record=self.record)
                 # Restoration bypasses only the approval deadline, not lease ownership.
                 # Keep patch through __exit__ using an independently entered context below.
         self.assertTrue(self.enabled)
         scope = self.scope(target=False)
         scope.__enter__()
-        with patch.object(devices, "require_window", side_effect=devices.Refused("expired")):
+        with patch.object(reservations, "require_window", side_effect=devices.Refused("expired")):
             scope.__exit__(None, None, None)
         self.assertTrue(self.enabled)
 

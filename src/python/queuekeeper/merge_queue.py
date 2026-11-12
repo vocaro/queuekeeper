@@ -791,7 +791,7 @@ def spelling_run(queue, root, commit):
         lane = lanes.get(SPELLING)
         command = IMPLICIT_SPELLING if SPELLING not in lanes else lane.get("command") if isinstance(lane, dict) else None
         if not (isinstance(command, list) and command) or (SPELLING in lanes and any(
-                lane.get(key) for key in ("foreground", "display", "unlockedScreen", "parallel", "wholeHost", "model"))):
+                lane.get(key) for key in ("foreground", "unlockedScreen", "parallel", "wholeHost", "model", *extensions.LANE_KEYS))):
             return None, ["the project's spelling lane is not one command that qk land can run here"], None
         env = environment()
         if not os.environ.get(TOOLKIT_VARIABLE):

@@ -1,8 +1,9 @@
 """Queuekeeper's packages import only what they may (vocaro/vocaro-engineering#403).
 
-The core, `queuekeeper` outside `queuekeeper.apple`, imports neither the toolkit
-(`vocaro_engineering`) nor the Apple extension. The extension may import the core, and never the
-toolkit.
+The core, `queuekeeper` outside its extensions, imports neither the toolkit (`vocaro_engineering`)
+nor an extension. The Mac desktop extension, `queuekeeper.mac_desktop`, may import the core. The Apple
+extension, `queuekeeper.apple`, which requires it, may import both. Neither imports the toolkit, and
+the Mac desktop extension never imports the Apple one.
 
 A visibility feature, a module or package of its own in `queuekeeper.visibility`, may import the core and never
 another feature, and nothing outside a feature imports it: the switch loads it by its name (queuekeeper.visibility).
@@ -21,6 +22,8 @@ import host_isolation  # noqa: F401 -- first, as every test module
 SOURCE = Path(__file__).resolve().parents[1] / "src/python"
 CORE = "queuekeeper"
 APPLE = "queuekeeper.apple"
+DESKTOP = "queuekeeper.mac_desktop"
+EXTENSIONS = (APPLE, DESKTOP)
 TOOLKIT = "vocaro_engineering"
 VISIBILITY = "queuekeeper.visibility"
 # A call that imports the module its first argument names.
@@ -29,15 +32,28 @@ IMPORTERS = {"import_module", "__import__"}
 CORE_TOOLKIT = "core imports toolkit"
 CORE_APPLE = "core imports Apple"
 APPLE_TOOLKIT = "Apple imports toolkit"
+CORE_DESKTOP = "core imports Mac desktop"
+DESKTOP_APPLE = "Mac desktop imports Apple"
+DESKTOP_TOOLKIT = "Mac desktop imports toolkit"
 # An import the rules allow, written for the toolkit's layout: `vocaro_engineering.processes` for
 # `queuekeeper.processes`, or the extension's `from . import remote` for the core's `remote`. It
 # names no module here, so its module does not import until the port rewrites it.
 OLD_NAME = "old name"
-KINDS = (CORE_TOOLKIT, CORE_APPLE, APPLE_TOOLKIT, OLD_NAME)
+KINDS = (CORE_TOOLKIT, CORE_APPLE, APPLE_TOOLKIT, CORE_DESKTOP, DESKTOP_APPLE, DESKTOP_TOOLKIT, OLD_NAME)
 
 
 def within(module, package):
     return module == package or module.startswith(package + ".")
+
+
+def extension(module):
+    """The extension module is part of, or None for one of the core's."""
+    return next((package for package in EXTENSIONS if within(module, package)), None)
+
+
+def inner(name):
+    """name below its extension's package, or below the core's: its place in the toolkit's one package."""
+    return name[len(extension(name) or CORE) + 1:]
 
 
 def statements(source):
@@ -94,7 +110,8 @@ def feature(module):
 def forbidden(module):
     """The packages module may not import, a visibility feature other than its own apart (violations)."""
     if within(module, APPLE): return [TOOLKIT]
-    if within(module, CORE): return [TOOLKIT, APPLE]
+    if within(module, DESKTOP): return [TOOLKIT, APPLE]
+    if within(module, CORE): return [TOOLKIT, APPLE, DESKTOP]
     return []
 
 
@@ -140,9 +157,8 @@ class Layout:
         self.new = {name: name for name in sources}
         self.old = {}
         for name in sources:
-            if name == APPLE: continue
-            inner = name[len(APPLE) + 1:] if within(name, APPLE) else name[len(CORE) + 1:]
-            self.old[TOOLKIT + ("." + inner if inner else "")] = name
+            if name in EXTENSIONS: continue
+            self.old[TOOLKIT + ("." + inner(name) if inner(name) else "")] = name
 
     @classmethod
     def read(cls, root):
@@ -152,8 +168,7 @@ class Layout:
     def in_toolkit(name):
         """The toolkit's name for what `name` would be here: every module there sat in one package."""
         if within(name, TOOLKIT): return name
-        inner = name[len(APPLE) + 1:] if within(name, APPLE) else name[len(CORE) + 1:]
-        return TOOLKIT + ("." + inner if inner else "")
+        return TOOLKIT + ("." + inner(name) if inner(name) else "")
 
     def named(self, name, known):
         """What `name` means when `known` maps names to modules: (the module, None), when it names a
@@ -175,7 +190,7 @@ class Layout:
         """Each rule module's source breaks, as (kind, what it imports), and each allowed import it
         writes under a toolkit name."""
         source, package = self.sources[module]
-        apple = within(module, APPLE)
+        owner = extension(module)
         found = set()
         for _line, level, base, names in statements(source):
             here = absolute(level, base, module, package)
@@ -188,9 +203,11 @@ class Layout:
                     target, missing = self.named(self.in_toolkit(here + suffix), self.old)
                 if target is None and missing is None: continue  # The library, or another project.
                 if target is None:
-                    found.add((APPLE_TOOLKIT if apple else CORE_TOOLKIT, missing))
-                elif within(target, APPLE) and not apple:
-                    found.add((CORE_APPLE, target))
+                    found.add(({APPLE: APPLE_TOOLKIT, DESKTOP: DESKTOP_TOOLKIT}.get(owner, CORE_TOOLKIT), missing))
+                elif within(target, APPLE) and owner != APPLE:
+                    found.add((DESKTOP_APPLE if owner == DESKTOP else CORE_APPLE, target))
+                elif within(target, DESKTOP) and owner is None:
+                    found.add((CORE_DESKTOP, target))
                 elif stale:
                     found.add((OLD_NAME, target))
         return found
@@ -209,10 +226,11 @@ def summary(lines):
 
 
 class Packages(unittest.TestCase):
-    def test_both_packages_are_there(self):
+    def test_the_core_and_both_extensions_are_there(self):
         names = {name for _, name, _ in modules(SOURCE)}
         self.assertIn(CORE, names)
         self.assertIn(APPLE, names)
+        self.assertIn(DESKTOP, names)
 
     def test_no_module_imports_what_it_may_not(self):
         self.assertEqual(Layout.read(SOURCE).lines(), [])
@@ -254,6 +272,25 @@ class Controls(unittest.TestCase):
         self.assertEqual(violations("from ... import remote", "queuekeeper.apple.simulators.pool"), [])
         self.assertTrue(violations("from vocaro_engineering import evidence", "queuekeeper.apple.devices"))
         self.assertTrue(violations("from vocaro_engineering.voiceover import state", "queuekeeper.apple"))
+
+    def test_the_desktop_extension_may_import_the_core_and_neither_apple_nor_the_toolkit(self):
+        for source in ("from .. import remote", "from ..resources import process_start", "from . import reservations"):
+            with self.subTest(source=source):
+                self.assertEqual(violations(source, "queuekeeper.mac_desktop.foreground"), [])
+        for source in ("from ..apple import devices", "from queuekeeper.apple import devices", "import queuekeeper.apple",
+                       "from vocaro_engineering import evidence"):
+            with self.subTest(source=source):
+                self.assertTrue(violations(source, "queuekeeper.mac_desktop.foreground"))
+        self.assertTrue(violations("from ..apple.voiceover import state", "queuekeeper.mac_desktop.foreground"))
+
+    def test_apple_may_import_the_desktop_extension_and_the_core_may_not(self):
+        for source in ("from ..mac_desktop import reservations", "from queuekeeper.mac_desktop.reservations import Record"):
+            with self.subTest(source=source):
+                self.assertEqual(violations(source, "queuekeeper.apple.devices"), [])
+        self.assertEqual(violations("from ...mac_desktop import reservations", "queuekeeper.apple.voiceover.state"), [])
+        for source in ("from .mac_desktop import foreground", "from queuekeeper.mac_desktop import foreground", "from . import mac_desktop"):
+            with self.subTest(source=source):
+                self.assertTrue(violations(source, "queuekeeper.remote"))
 
     def test_the_core_may_import_itself_the_library_and_names_that_only_start_alike(self):
         for source in ("import os\nfrom pathlib import Path", "from . import processes", "from .resources import BUSY",

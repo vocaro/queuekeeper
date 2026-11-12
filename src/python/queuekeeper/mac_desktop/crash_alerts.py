@@ -395,12 +395,12 @@ def guarded(purpose, *, said=None, receipt=None, windows=None, watch=None, apps=
 
 
 def main(argv=None):
-    """`python3 -m queuekeeper.apple.crash_alerts check`: clear this Mac's crash-report alerts, as a driver does
+    """`python3 -m queuekeeper.mac_desktop.crash_alerts check`: clear this Mac's crash-report alerts, as a driver does
     between steps under the foreground it holds; exit 0 when no system alert is left over the screen,
     lane_results.UNMEASURED when one is, which it names, and 1 when they cannot be read."""
     argv = sys.argv[1:] if argv is None else argv
     if argv != ["check"]:
-        print("usage: python3 -m queuekeeper.apple.crash_alerts check", file=sys.stderr)
+        print("usage: python3 -m queuekeeper.mac_desktop.crash_alerts check", file=sys.stderr)
         return 2
     said = lambda text: print(text, file=sys.stderr, flush=True)
     _cleared, left = clear(said)

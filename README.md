@@ -119,7 +119,10 @@ The Apple plugin lets agents build and test iOS and Mac apps without getting in 
 - **Unattended Macs.** Crash dialogs, notification banners, locked keychains and lapsed permissions
   are cleared, or the run is reported as unmeasured instead of failed.
 
-See the [Apple plugin's README](src/python/queuekeeper/apple/README.md) for details.
+See the [Apple plugin's README](src/python/queuekeeper/apple/README.md) for details. The guards for
+unattended Macs are a plugin of their own, the
+[Mac desktop plugin](src/python/queuekeeper/mac_desktop/README.md), which the Apple plugin builds on and
+other plugins can too.
 
 ## Visibility
 
@@ -156,8 +159,8 @@ See [Visibility](doc/visibility.md) for details.
 - **One user so far.** Queuekeeper was extracted from its author's private tooling. Expect rough
   edges, and defaults that suit one person's setup.
 - **macOS only**, for the queue and for every build host.
-- **One plugin.** Only the Apple plugin exists. The video game plugin is not written yet, and there
-  is no Android plugin. The core runs any command as a lane, so those builds can be queued, but
+- **One platform plugin.** Only the Apple plugin exists, with the Mac desktop plugin it builds on. The
+  video game plugin is not written yet, and there is no Android plugin. The core runs any command as a lane, so those builds can be queued, but
   nothing manages emulators, devices or editors for them.
 - **No pull requests.** Queuekeeper lands directly on `main` and refuses a project set up for pull
   requests. There is no review step.

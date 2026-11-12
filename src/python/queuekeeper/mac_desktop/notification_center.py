@@ -23,7 +23,7 @@ import re
 import sys
 import time
 
-from . import crash_alerts, devices, foreground
+from . import crash_alerts, foreground, reservations
 from .. import lane_results, offload_host
 
 # The process whose windows these are, by its executable, which the window list's owner name (on macOS 27.2,
@@ -244,14 +244,14 @@ def close(pid, notification):
 
 
 def lease(owner=None, record=None):
-    """Refuse, with devices.Refused, unless this is the second Mac and owner, by default QUEUEKEEPER_DEVICE_OWNER,
+    """Refuse, with reservations.Refused, unless this is the second Mac and owner, by default QUEUEKEEPER_DEVICE_OWNER,
     holds its mac-foreground lease: queuekeeper closes the owner's notifications only on a Mac nobody works at, and only
     for the run that holds its screen."""
-    record = record or devices.Record()
+    record = record or reservations.Record()
     if not foreground.second_mac(record):
-        raise devices.Refused("queuekeeper closes Notification Center's notifications only on the second Mac, under the "
+        raise reservations.Refused("queuekeeper closes Notification Center's notifications only on the second Mac, under the "
                               f"foreground lease a run holds there; this Mac's are the owner's ({GUIDE}, {SECTION})")
-    devices.require_foreground(owner if owner is not None else os.environ.get(devices.OWNER), record)
+    reservations.require_foreground(owner if owner is not None else os.environ.get(reservations.OWNER), record)
 
 
 def gone(number, wait):
@@ -269,7 +269,7 @@ def gone(number, wait):
 def dismiss(said=None, *, owner=None, record=None, wait=GONE):
     """Close the notifications of every Notification Center window on the screen, under the held foreground
     lease, and confirm each window gone; a report of what was found and closed, without what any notification
-    says. With no such window it does nothing and needs no lease. It raises devices.Refused when a window is
+    says. With no such window it does nothing and needs no lease. It raises reservations.Refused when a window is
     there and no lease is held, and Blocked, naming the window, when the window list or the window cannot be
     read, a notification is the owner's or cannot be closed, or the window stays on the screen."""
     said = said or (lambda text: print(text, file=sys.stderr, flush=True))
@@ -317,13 +317,13 @@ def dismiss(said=None, *, owner=None, record=None, wait=GONE):
 
 
 def main(argv=None):
-    """`python3 -m queuekeeper.apple.notification_center list|check`: list says which Notification Center windows
+    """`python3 -m queuekeeper.mac_desktop.notification_center list|check`: list says which Notification Center windows
     are over this Mac's screen, exiting 0 when none is and lane_results.UNMEASURED when one is; check, under the
     second Mac's foreground lease the caller holds, closes their notifications as a run does before it starts,
     exiting 0 once none is left, lane_results.UNMEASURED naming one it could not clear, and 1 without a lease."""
     argv = sys.argv[1:] if argv is None else argv
     if argv not in (["list"], ["check"]):
-        print("usage: python3 -m queuekeeper.apple.notification_center list|check", file=sys.stderr)
+        print("usage: python3 -m queuekeeper.mac_desktop.notification_center list|check", file=sys.stderr)
         return 2
     said = lambda text: print(text, file=sys.stderr, flush=True)
     if argv == ["list"]:
@@ -336,7 +336,7 @@ def main(argv=None):
         return lane_results.UNMEASURED if found else 0
     try:
         report = dismiss(said)
-    except devices.Refused as error:
+    except reservations.Refused as error:
         said(f"queuekeeper: {error}")
         return 1
     except Blocked as error:

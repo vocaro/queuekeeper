@@ -11,7 +11,7 @@ owner's own Terminal, and nothing of the toolkit reads it, stores it or passes i
 `qk keychain keep-unlocked` is the owner's too, once, for the second Mac, whose keychain the owner
 keeps unlocked for its automation (the owner's decision, 2026-10-30). An unlock reaches only the
 session that made it, and each qk remote run is an SSH login of its own, so every run unlocks the
-login keychain itself (offload_host.unlock_for_run), with the password this command asks for once, at
+login keychain itself (unlock_for_run), with the password this command asks for once, at
 the second Mac's own prompt, and keeps there readable only by its account.
 
 `qk keychain check` runs where the automation that uses the key runs, such as on the second Mac
@@ -24,14 +24,16 @@ not be made is unmeasured, never passed (guides/shared-host.md, Keychains on the
 """
 import difflib
 import json
+import os
 from pathlib import Path
 import re
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 
-from .. import lane_results, host_context, offload_host, remote
+from .. import extensions, lane_results, host_context, offload_host, remote
 
 DEFAULT = "~/Library/Keychains/login.keychain-db"
 # Seconds each of the check's commands, and the question to the second Mac, may take.
@@ -315,6 +317,57 @@ def execute(args, out=print):
     record = check(args.keychain, args.identity, args.timeout)
     out(json.dumps(record, indent=2))
     return {PASSED: 0, FAILED: 1}.get(record["outcome"], lane_results.UNMEASURED)
+
+
+def unlock_for_run(root, unlock=None):
+    """Unlock the login keychain in this run's own SSH session, when the owner has kept its password
+    in root (keep_unlocked): an unlock in another session, the owner's desktop or an earlier SSH login,
+    does not reach this one (guides/shared-host.md, Keychains on the right Mac). The path it unlocked,
+    or None when no password is kept. A kept password that does not unlock it is the owner's to fix,
+    and the run does not start: work that signs would fail later, and less plainly."""
+    kept = root / offload_host.KEYCHAIN_PASSWORD
+    if not kept.is_file(): return None
+    path = Path.home() / offload_host.KEYCHAINS / offload_host.LOGIN_KEYCHAIN
+    fix = (f"on the Mac that sends work here, run `python3 scripts/qk keychain keep-unlocked` and type this Mac's "
+           f"login password at its prompt, or delete {kept} to send work without the unlock "
+           "(guides/shared-host.md, Keychains on the right Mac)")
+    if not path.is_file(): raise offload_host.Refusal(f"{kept} holds the password of {path}, which is not there", fix)
+    try:
+        password = kept.read_bytes()
+    except OSError as error:
+        raise offload_host.Refusal(f"{kept} cannot be read: {error}", fix) from None
+    # A file the owner wrote by hand may end in a newline, which no typed password does.
+    if password.endswith(b"\n"): password = password[:-1]
+    try:
+        status, unlocked = (unlock or offload_host.security_unlock)(path, password)
+    except (OSError, AttributeError) as error:
+        raise offload_host.Refusal(f"Security could not be called to unlock {path}: {error}", fix) from None
+    if status == offload_host.AUTH_FAILED:
+        raise offload_host.Refusal(f"the password in {kept} does not unlock {path} (errSecAuthFailed): this Mac's login password "
+                      "may have changed since it was kept", fix)
+    if status or not unlocked:
+        raise offload_host.Refusal(f"{path} is not unlocked with the password in {kept}: OSStatus {status}", fix)
+    return str(path)
+
+
+# Set, to the keychain's path, for what a run starts once it has unlocked the keychain: a lane its command runs is
+# in the same session and unlocks nothing again.
+UNLOCKED = "QUEUEKEEPER_KEYCHAIN_UNLOCKED"
+
+
+def unlock_run(root, config):
+    """Before an admitted lane or command starts on the second Mac, sent there from another (remote.DISPATCHER):
+    unlock the login keychain for its session when the owner kept its password (extensions.PREPARE_LANE). A kept
+    password that does not unlock it leaves the run unmeasured, with the owner's fix, and nothing of it runs."""
+    if not os.environ.get(remote.DISPATCHER) or os.environ.get(UNLOCKED): return
+    try:
+        unlocked = unlock_for_run(Path.home() / remote.ROOT)
+    except offload_host.Refusal as refusal:
+        raise extensions.Unavailable(f"{refusal}: {refusal.fix}") from None
+    if unlocked:
+        os.environ[UNLOCKED] = unlocked
+        print(f"queuekeeper: unlocked {unlocked} for this run's session, with the password keep-unlocked kept",
+              file=sys.stderr, flush=True)
 
 
 def add_arguments(parser):

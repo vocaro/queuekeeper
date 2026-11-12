@@ -1,3 +1,4 @@
+import contextlib
 from io import StringIO
 import json
 import os
@@ -11,7 +12,7 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 from queuekeeper import cli, lane_results, offload_host, remote
-from queuekeeper.apple import keychain
+from queuekeeper.mac_desktop import keychain
 from queuekeeper import host_context
 import host_isolation
 from host_isolation import stretched
@@ -514,14 +515,14 @@ class KeepUnlockedTests(unittest.TestCase):
 
     def test_a_run_unlocks_the_login_keychain_in_its_own_session_only_when_its_password_is_kept(self):
         unlock = Unlocks()
-        self.assertIsNone(offload_host.unlock_for_run(self.root, unlock))
+        self.assertIsNone(keychain.unlock_for_run(self.root, unlock))
         self.assertEqual(unlock.calls, [])
         # Kept by keep-unlocked, or written by hand with a newline the password does not hold.
         for written in [b"the right one", b"the right one\n"]:
             with self.subTest(written):
                 self.kept.write_bytes(written)
                 unlock = Unlocks()
-                self.assertEqual(offload_host.unlock_for_run(self.root, unlock), str(self.login))
+                self.assertEqual(keychain.unlock_for_run(self.root, unlock), str(self.login))
                 self.assertEqual(unlock.calls, [(str(self.login), b"the right one")])
 
     def test_a_kept_password_that_does_not_unlock_the_keychain_refuses_the_run_with_the_owner_s_fix(self):
@@ -529,16 +530,51 @@ class KeepUnlockedTests(unittest.TestCase):
         for unlock, said in [(Unlocks(), "does not unlock"), (Unlocks(b"an old one", unlocked=False), "OSStatus 0"),
                              (Mock(side_effect=OSError("no Security")), "Security could not be called")]:
             with self.subTest(said), self.assertRaises(offload_host.Refusal) as refused:
-                offload_host.unlock_for_run(self.root, unlock)
+                keychain.unlock_for_run(self.root, unlock)
             self.assertIn(said, str(refused.exception))
             self.assertIn("`python3 scripts/qk keychain keep-unlocked`", refused.exception.fix)
             self.assertFalse(refused.exception.busy)
         self.login.unlink()
         unlock = Unlocks()
         with self.assertRaises(offload_host.Refusal) as refused:
-            offload_host.unlock_for_run(self.root, unlock)
+            keychain.unlock_for_run(self.root, unlock)
         self.assertIn(f"{self.login}, which is not there", str(refused.exception))
         self.assertEqual(unlock.calls, [])
+
+    def test_only_a_run_sent_to_the_second_mac_unlocks_and_what_it_starts_does_not_unlock_again(self):
+        self.kept.write_bytes(b"the right one")
+        unlock = Unlocks()
+        with patch.object(offload_host, "security_unlock", unlock), contextlib.redirect_stderr(StringIO()) as said:
+            # A run started on this Mac is in the owner's session, and unlocks nothing.
+            with patch.dict(os.environ):
+                os.environ.pop(remote.DISPATCHER, None)
+                os.environ.pop(keychain.UNLOCKED, None)
+                keychain.unlock_run(self.root, {})
+                self.assertEqual(unlock.calls, [])
+            with patch.dict(os.environ, {remote.DISPATCHER: "workstation"}):
+                os.environ.pop(keychain.UNLOCKED, None)
+                keychain.unlock_run(self.root, {})
+                self.assertEqual(unlock.calls, [(str(self.login), b"the right one")])
+                self.assertEqual(os.environ[keychain.UNLOCKED], str(self.login))
+                # A lane the run's command starts inherits the mark.
+                keychain.unlock_run(self.root, {})
+                self.assertEqual(len(unlock.calls), 1)
+        self.assertEqual(said.getvalue().count("for this run's session"), 1)
+
+    def test_a_kept_password_that_does_not_unlock_leaves_a_sent_run_unmeasured_with_the_fix(self):
+        from queuekeeper import extensions
+        self.kept.write_bytes(b"an old one")
+        with patch.object(offload_host, "security_unlock", Unlocks()), \
+                patch.dict(os.environ, {remote.DISPATCHER: "workstation"}):
+            os.environ.pop(keychain.UNLOCKED, None)
+            with self.assertRaises(extensions.Unavailable) as unavailable: keychain.unlock_run(self.root, {})
+            self.assertNotIn(keychain.UNLOCKED, os.environ)
+        self.assertIn("does not unlock", str(unavailable.exception))
+        self.assertIn("`python3 scripts/qk keychain keep-unlocked`", str(unavailable.exception))
+
+    def test_the_desktop_extension_unlocks_before_a_lane_s_command(self):
+        from queuekeeper import extensions
+        self.assertIn(keychain.unlock_run, extensions.PREPARE_LANE)
 
     def test_security_reports_a_missing_keychain_and_unlocks_nothing(self):
         # Security itself, as a run calls it, on a keychain file that is not there: no keychain is touched.
@@ -567,7 +603,7 @@ class KeepUnlockedTests(unittest.TestCase):
         self.assertIn("no-timeout", said)
         self.assertNotIn("the right one", said)
         # Each run then unlocks with it.
-        self.assertEqual(offload_host.unlock_for_run(self.root, Unlocks()), str(self.login))
+        self.assertEqual(keychain.unlock_for_run(self.root, Unlocks()), str(self.login))
 
     def test_it_changes_nothing_when_no_password_unlocks_or_it_cannot_ask(self):
         run = Commands()

@@ -36,20 +36,11 @@ HOST_FIXES = []
 AFTER_EVENT = []
 LOADED = []
 
-class Lane:
-    """What an extension does around a lane's run and an admitted command's: the devices and the foreground it holds
-    for them, and the alerts it clears. This one, the core's own, does nothing: it knows no devices and no foreground.
-    An extension puts its own in LANE."""
 
-    # The words a command's help uses for where the session holding a device is named.
-    device_owner = "the agent session"
-
-    def recover(self):
-        """Put back what a run that died left changed on this Mac, before the next command starts."""
-
-    def take_window(self):
-        """The device window an enclosing run leased to this command, read once, or None."""
-        return None
+class Foreground:
+    """What an extension does with a Mac's foreground, its screen, keyboard and focus, around a lane's run and an
+    admitted command's: the foreground it holds for them and the alerts it clears. This one, the core's own, does
+    nothing: it knows no foreground. One extension puts its own in FOREGROUND, with `provide`."""
 
     def foreground_mac(self):
         """The second Mac whose foreground a foreground run takes, or None: the run holds this Mac's."""
@@ -57,6 +48,36 @@ class Lane:
 
     def require_foreground(self):
         """Refuse foreground work on this Mac unless the session holds its foreground."""
+
+    def foreground_held(self, stack, name, label, timeout, expected=None):
+        """None once the second Mac's foreground is held for the work, entered in stack, or BUSY after saying so."""
+        return None
+
+    def guarded_alerts(self, stack, purpose, receipt, apps=()):
+        """What judges a foreground run by the alerts over the screen, entered in stack; None when nothing does;
+        or a status, with nothing run, when the screen could not be cleared."""
+        return None
+
+    def cleared_notifications(self, receipt):
+        """None once nothing covers the second Mac's screen, or a status, with nothing run."""
+        return None
+
+    def capture_lines(self, found):
+        """The lines that say what the second Mac reported of its capture approvals."""
+        return []
+
+
+class Devices:
+    """What an extension does with the devices a run uses: the windows it waits in around a lane's run and an
+    admitted command's, and the reservations a dispatch to the second Mac carries. This one, the core's own, knows no
+    devices. One extension puts its own in DEVICES, with `provide`."""
+
+    # The words a command's help uses for where the session holding a device is named.
+    device_owner = "the agent session"
+
+    def take_window(self):
+        """The device window an enclosing run leased to this command, read once, or None."""
+        return None
 
     def held_window(self, keys):
         """The window the session holds the devices named by keys for, or None."""
@@ -77,36 +98,9 @@ class Lane:
         """status, the end of a wait for admission, after saying so when the device window cut it short."""
         return status
 
-    def foreground_held(self, stack, name, label, timeout, expected=None):
-        """None once the second Mac's foreground is held for the work, entered in stack, or BUSY after saying so."""
-        return None
-
-    def guarded_alerts(self, stack, purpose, receipt, apps=()):
-        """What judges a foreground run by the alerts over the screen, entered in stack; None when nothing does;
-        or a status, with nothing run, when the screen could not be cleared."""
-        return None
-
-    def cleared_notifications(self, receipt):
-        """None once nothing covers the second Mac's screen, or a status, with nothing run."""
-        return None
-
-    def around_run(self, commands, root):
-        """A context that holds for the run of commands in root."""
-        return contextlib.nullcontext()
-
-    def report_results(self, results):
-        """Print what a lane kept in its results folder."""
-
     def device_lane_passed(self, results, keys):
         """Whether the results record a pass on every device of keys."""
         return False
-
-
-LANE = Lane()
-
-
-class Dispatch:
-    """What an extension adds to a dispatch to the second Mac. This one, the core's own, knows no devices."""
 
     def lease(self, keys, owner, words, root=None, *, budget=None, commits=()):
         """The reservations held here that a run on the second Mac carries, or None when it uses no device."""
@@ -116,14 +110,6 @@ class Dispatch:
     def carrying(self, held, root, host, work, name, send):
         """send()'s status, with the run it makes recorded for what held reserves."""
         return send()
-
-    def test_allowance(self, words):
-        """The seconds one test may run by default under the lane command words, or None when it has no such limit."""
-        return None
-
-    def capture_lines(self, found):
-        """The lines that say what the second Mac reported of its capture approvals."""
-        return []
 
     def reserved_devices(self, words):
         """{KEY: IDENTIFIER} of the devices in this Mac's record that words name."""
@@ -138,7 +124,88 @@ class Dispatch:
         return None
 
 
-DISPATCH = Dispatch()
+# The slots one extension fills, each with the core's own until then (provide).
+FOREGROUND = Foreground()
+DEVICES = Devices()
+SLOTS = {"FOREGROUND": Foreground, "DEVICES": Devices}
+# Each (): puts back what a run that died left changed on this Mac, before the next command starts.
+RECOVER = []
+# Each (commands, root) -> a context that holds for the run of commands in root.
+AROUND_RUN = []
+# Each (results): prints what a lane kept in its results folder.
+REPORT_RESULTS = []
+# Each (words) -> the seconds one test may run by default under the lane command words, or None when it sets no
+# such limit. The first that sets one is the allowance.
+TEST_ALLOWANCE = []
+
+
+def provide(slot, provider):
+    """Put provider in slot, FOREGROUND or DEVICES. A slot has one provider: a second extension's is refused, since
+    the core asks a slot one question and takes one answer. The same extension registering again changes nothing."""
+    held = globals()[slot]
+    if not isinstance(provider, SLOTS[slot]): raise TypeError(f"{slot} takes an extensions.{SLOTS[slot].__name__}")
+    if type(held) is type(provider): return
+    if type(held) is not SLOTS[slot]:
+        raise ValueError(f"{type(provider).__module__} provides {slot}, which {type(held).__module__} already does: "
+                         "a slot has one provider")
+    globals()[slot] = provider
+
+
+def recover():
+    for put_back in RECOVER: put_back()
+
+
+@contextlib.contextmanager
+def around_run(commands, root):
+    """Every extension's context for the run of commands in root, entered in the order registered."""
+    with contextlib.ExitStack() as stack:
+        for around in AROUND_RUN: stack.enter_context(around(commands, root))
+        yield
+
+
+def report_results(results):
+    for report in REPORT_RESULTS: report(results)
+
+
+def test_allowance(words):
+    for allowance in TEST_ALLOWANCE:
+        seconds = allowance(words)
+        if seconds is not None: return seconds
+    return None
+
+
+class LaneKey:
+    """A key an extension adds to a lane in queuekeeper.json, and what it does to the lane's run. An extension puts
+    one in LANE_KEYS under the key's name. The key is still listed in schemas/queuekeeper.schema.json, which an editor
+    reads without loading any extension."""
+
+    # Whether a lane that says the key has its Mac's screen read at its start and when it ends unmeasured.
+    reads_screen = False
+
+    def check(self, name, lane):
+        """Raise ValueError, naming the lane, when its value for the key is not one the key takes."""
+
+    def command(self, lane, command):
+        """The command the lane runs, given the one it would run otherwise."""
+        return command
+
+
+# key -> LaneKey: the keys extensions add to a lane.
+LANE_KEYS = {}
+
+
+def lane_command(lane, command):
+    """The command a lane runs once each key an extension added to it has had its say, in the order registered."""
+    for key, added in LANE_KEYS.items():
+        if key in lane: command = added.command(lane, command)
+    return command
+
+
+def reads_screen(lane):
+    """Whether a key an extension added makes the lane's result depend on its Mac's screen."""
+    return any(added.reads_screen and lane.get(key) for key, added in LANE_KEYS.items())
+
+
 # name -> (help, main(arguments, project)): commands an extension adds that parse their own arguments.
 COMMANDS = {}
 # name -> (help, add_arguments(parser), execute(root, args, config), whether it reads the project's configuration):
@@ -161,12 +228,20 @@ def command_environment():
     return values
 
 
-def load(named):
+def load(named, requiring=()):
     """Import each extension named and call its `register`, once. Each is a module's name, or (name, folder) for a
-    module whose package is in folder, which goes on the import path."""
+    module whose package is in folder, which goes on the import path.
+
+    An extension that builds on others names them in its module's REQUIRES, a tuple of module names. They are loaded
+    first, so a project lists only the extensions it uses itself. requiring is the chain of extensions being loaded,
+    by which a cycle is refused."""
     for entry in named:
         name, folder = (entry, None) if isinstance(entry, str) else entry
         if name in LOADED: continue
+        if name in requiring:
+            raise ValueError(f"extensions require each other in a cycle: {' -> '.join([*requiring, name])}")
         if folder and folder not in sys.path: sys.path.insert(0, folder)
-        importlib.import_module(name).register()
+        module = importlib.import_module(name)
+        load(getattr(module, "REQUIRES", ()), (*requiring, name))
+        module.register()
         LOADED.append(name)

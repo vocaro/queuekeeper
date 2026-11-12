@@ -15,7 +15,7 @@ from unittest.mock import Mock, patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src/python"))
 from queuekeeper import cli, lane_wait, offload_host, remote, resources
-from queuekeeper.apple import foreground
+from queuekeeper.mac_desktop import foreground
 import host_isolation
 
 
@@ -263,7 +263,7 @@ class Waits(Named):
         record = Mock()
         record.entry.return_value = {"ownerChatID": "s-2", "purpose": "voiceover", "expectedReleaseBy": "soon"}
         with patch.object(foreground, "second_mac", return_value=True), \
-                patch.object(foreground.devices, "condition", return_value="held"), \
+                patch.object(foreground.reservations, "condition", return_value="held"), \
                 patch.object(foreground.offload_host, "mac_name", return_value="here"), self.assertRaises(TimeoutError):
             with foreground.slot("gate", timeout=0, record=record, ready=lambda: [], said=lambda text: None):
                 self.fail("ran while another run held the foreground")
