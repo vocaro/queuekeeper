@@ -16,6 +16,7 @@ import uuid
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 from queuekeeper import cli, disk
 from queuekeeper.apple import devices, disk as apple_disk
+from queuekeeper.mac_desktop import reservations
 import host_isolation
 
 apple_disk.register()
@@ -186,6 +187,7 @@ class SimulatorTests(Fixture):
         for path in [moved, legacy]: path.write_text("{}")
         environment = {key: value for key, value in os.environ.items() if key != "QUEUEKEEPER_DEVICE_RECORD"}
         with patch.dict(os.environ, environment, clear=True), patch.object(devices, "default_path", return_value=moved), \
+             patch.object(reservations, "default_path", return_value=moved), \
              patch.object(devices, "LEGACY", str(self.root / "*device-handoff*.json")):
             records = apple_disk.device_records()
         self.assertEqual(set(records) & {str(moved), str(legacy)}, {str(moved), str(legacy)})

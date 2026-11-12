@@ -13,7 +13,7 @@ import time
 from . import __version__, budgets, disk, docs, extensions, git_state, lane_coverage, lane_report, lane_results, lane_wait, merge_queue, offload_host, \
     parallel, processes, remote, resources, shims, spelling
 from .config import TOOLKIT_ROOT, admission as admission_of, exclusive_refusal, extensions_of, lane_to_run, load, source_identity, \
-    display_lane_warnings, lane_devices, self_lane_warnings, stays, unadmitted, unlocked_screen
+    lane_devices, self_lane_warnings, stays, unadmitted, unlocked_screen
 from .resources import BUSY, FREE_WAIT
 from . import visibility
 
@@ -157,21 +157,10 @@ def judge(lane, result, log, extra=(), expect=None):
     return result, []
 
 
-# A lane that says "display": true waits for what the display's refresh times, such as a scroll view's
-# animation. Its command runs under a one-second caffeinate -u, which wakes a sleeping display, behind a
-# lock too, and then caffeinate -d, which keeps an awake one on but wakes none, and no other assertion
-# (guides/background-mac-testing.md, Lock screen and display sleep).
-AWAKE = ["sh", "-c", 'caffeinate -u -t 1; exec caffeinate -d -- "$@"', "sh"]
-
-
-def awake(lane, extra=()):
-    """The command a lane runs, with extra appended: under AWAKE when the lane says "display": true,
-    where the receipt's command shows the assertions. caffeinate -d execs the command in its own
-    process and holds the assertion from a child of it, which ends when the command does, so the
-    command keeps the run's PID and status and the assertion ends with it, however it ends (this Mac,
-    macOS 27.0.1, 2026-10-28)."""
-    command = [*lane["command"], *extra]
-    return [*AWAKE, *command] if lane.get("display") else command
+def lane_command(lane, extra=()):
+    """The command a lane runs, with extra appended, as the keys extensions add to a lane make it
+    (extensions.lane_command), such as the Mac desktop extension's "display". The receipt records it so."""
+    return extensions.lane_command(lane, [*lane["command"], *extra])
 
 
 def lane_label(root, config, lane):
@@ -498,14 +487,14 @@ def admit(root, args, config=None, *, device_window=None):
     if args.time_limit != processes.DEFAULT_LIMIT: kind += ["--time-limit", f"{args.time_limit:g}"]
     # Foreground work holds the foreground of the Mac it runs on: the second Mac's, which queuekeeper takes for it, or this
     # Mac's, which the session holds within the owner's window. qk remote admit --foreground sends it there.
-    second = args.foreground and extensions.LANE.foreground_mac()
+    second = args.foreground and extensions.FOREGROUND.foreground_mac()
     if args.foreground and args.verify:
         raise ValueError("--verify never sends foreground work: send it to the second Mac with "
                          "qk remote admit --foreground -- COMMAND")
     if args.app and not args.foreground:
         raise ValueError("--app names the app under test of foreground work, whose crash-report alerts queuekeeper clears: "
                          "add --foreground")
-    if args.foreground and not second: extensions.LANE.require_foreground()
+    if args.foreground and not second: extensions.FOREGROUND.require_foreground()
     # Nested work runs inside the admission it inherits, here.
     inherited = bool(os.environ.get(resources.TOKEN))
     reason = here_because(args, inherited)
@@ -522,18 +511,18 @@ def admit(root, args, config=None, *, device_window=None):
                "foreground": args.foreground, "timeLimit": args.time_limit, **placement(reason)}
     with processes.forwarding_signals(), contextlib.ExitStack() as stack:
         asked = time.monotonic()
-        waiting = extensions.LANE.window_wait("the command", device_window, " ".join(command))
+        waiting = extensions.DEVICES.window_wait("the command", device_window, " ".join(command))
         allowed = waiting.seconds if waiting is not None else lambda seconds: seconds
-        closed = extensions.LANE.window_closed("the command", waiting)
+        closed = extensions.DEVICES.window_closed("the command", waiting)
         if closed is not None: return closed
         # The second Mac's foreground first, so that a command waiting for it holds no slot.
-        waited = extensions.LANE.foreground_held(stack, "the command", " ".join(command), allowed(args.timeout)) if second else None
-        if waited is not None: return extensions.LANE.not_admitted("the command", waiting, waited)
-        closed = extensions.LANE.window_closed("the command", waiting)
+        waited = extensions.FOREGROUND.foreground_held(stack, "the command", " ".join(command), allowed(args.timeout)) if second else None
+        if waited is not None: return extensions.DEVICES.not_admitted("the command", waiting, waited)
+        closed = extensions.DEVICES.window_closed("the command", waiting)
         if closed is not None: return closed
         admission = admitted_here(stack, "the command", " ".join(command), allowed(args.timeout), offered, args.if_free,
                                   args.exclusive, args.model, placement=admission_placement(offered, reason))
-        if isinstance(admission, int): return extensions.LANE.not_admitted("the command", waiting, admission)
+        if isinstance(admission, int): return extensions.DEVICES.not_admitted("the command", waiting, admission)
         sent = offered.sent if offered is not None else {}
         # Once the tree here is no longer what was sent, the command runs from what was sent (#276).
         moved = remote.moved_trees(root, offered)
@@ -543,7 +532,7 @@ def admit(root, args, config=None, *, device_window=None):
             receipt["project"] = source_identity(root)
             if sent.get("commit"): receipt["sent"] = sent["commit"]
         receipt["queueSeconds"] = round(time.monotonic() - asked, 3)
-        if device_window is not None: extensions.LANE.report_window(device_window, receipt["queueSeconds"])
+        if device_window is not None: extensions.DEVICES.report_window(device_window, receipt["queueSeconds"])
         if offered is not None:
             receipt["hereBecause"] = offered.status
             fell_back("the command", offered)
@@ -551,11 +540,11 @@ def admit(root, args, config=None, *, device_window=None):
         def work():
             # Finalize the alert report before record() writes the receipt, while admission still holds.
             with resources.child_requests(), contextlib.ExitStack() as alert_stack:
-                alerts = extensions.LANE.guarded_alerts(alert_stack, " ".join(command), receipt, args.app or ()) \
+                alerts = extensions.FOREGROUND.guarded_alerts(alert_stack, " ".join(command), receipt, args.app or ()) \
                     if args.foreground else None
                 if isinstance(alerts, int): return alerts
                 # The second Mac's Notification Center windows, under the foreground queuekeeper holds there (#204).
-                blocked = extensions.LANE.cleared_notifications(receipt) if second else None
+                blocked = extensions.FOREGROUND.cleared_notifications(receipt) if second else None
                 if blocked is not None: return blocked
                 for prepare in extensions.PREPARE_LANE: prepare(root, config)
                 directory, variables = Path.cwd(), None
@@ -569,7 +558,7 @@ def admit(root, args, config=None, *, device_window=None):
                                                  admission.interrupted)
                     if provisioned: return provisioned
                 # A foreground command restores what it changed on the Mac before SIGKILL, VoiceOver first.
-                with extensions.LANE.around_run([command], directory):
+                with extensions.around_run([command], directory):
                     status = processes.supervise(command, cwd=directory, env=variables, on_stop=admission.interrupted,
                                                  timeout=args.time_limit,
                                                  kill_after=processes.FOREGROUND_KILL_AFTER if args.foreground
@@ -761,7 +750,7 @@ def perform(argv, report):
                             "(repeatable); the dispatch records the run in its entry and "
                             "stops it before the reservation ends")
         choice.add_argument("--device-owner", metavar="SESSION", help="the session holding --device (default: "
-                            f"{extensions.LANE.device_owner})")
+                            f"{extensions.DEVICES.device_owner})")
         choice.add_argument("--checkout-slot", metavar="N", help="run in this one of the second Mac's checkouts of the "
                             f"project, 0 to {remote.CHECKOUTS - 1}, waiting for it under the checkout's lock, however "
                             "many others are free, to repeat a check in a named checkout (guides/shared-host.md, A "
@@ -838,7 +827,7 @@ def perform(argv, report):
     split = argv.index("--") if "--" in argv else len(argv)
     args = parser.parse_args(argv[:split])
     # Only the remote work itself reports its admission. Provisioning and nested commands do not.
-    device_window = extensions.LANE.take_window()
+    device_window = extensions.DEVICES.take_window()
     args.passed = argv[split + 1:] if split < len(argv) else None
     if args.passed is not None and (args.action, getattr(args, "operation", None)) not in {
             ("run", None), ("admit", None), ("remote", "run"), ("remote", "admit")}:
@@ -849,7 +838,7 @@ def perform(argv, report):
         for started in extensions.HOST_COMMAND: started()
     root = args.project.resolve()
     # What a run that died left changed on this Mac, the next command puts back.
-    extensions.LANE.recover()
+    extensions.recover()
     try:
         # The inventory, the skill links and the admission log cover the whole host, so they need no project
         # configuration.
@@ -890,7 +879,6 @@ def perform(argv, report):
                                 "what a commit must pass before it lands gate (guides/adoption.md, Lane names)")
             warnings += budgets.doctor_warnings(config)
             warnings += self_lane_warnings(root, config)
-            warnings += display_lane_warnings(config)
             warnings += split_warnings(root, config)
             from .waiting import doctor_warnings as fixed_wait_warnings  # #284
             warnings += fixed_wait_warnings(root)
@@ -942,11 +930,11 @@ def perform(argv, report):
             # Mac's, only the session holding mac-foreground within the owner's window runs it on, with --here.
             # Otherwise it goes to the second Mac and waits there for its foreground, never falling back to this
             # Mac (foreground.py).
-            second = lane.get("foreground") and extensions.LANE.foreground_mac()
+            second = lane.get("foreground") and extensions.FOREGROUND.foreground_mac()
             if lane.get("foreground") and not second:
                 if args.offload_only or not (args.here or lane.get("here")):
                     return remote.foreground_lane(root, config, args.lane, extra, args.expect)
-                extensions.LANE.require_foreground()
+                extensions.FOREGROUND.require_foreground()
             group = report.group = lane.get("parallel")
             if group is not None and (extra or args.expect):
                 raise ValueError(f"{args.lane} runs a group of lanes, which takes no arguments or --expect; "
@@ -983,7 +971,7 @@ def perform(argv, report):
             # when it ends unmeasured (vocaro-engineering#185). A nested lane rechecks its own requirement:
             # the outer admission may not have placed work for an unlocked screen (#366).
             needs = unlocked_screen(config["lanes"], args.lane)
-            reads_screen = needs or any(config["lanes"][name].get("display") for name in (group or [args.lane]))
+            reads_screen = needs or any(extensions.reads_screen(config["lanes"][name]) for name in (group or [args.lane]))
             policy_commit = refresh_policy(root) if resource != "self" else None
             directory = root / ".build/queuekeeper" / args.lane
             receipt = {"project": source_identity(root), "toolkit": source_identity(TOOLKIT_ROOT),
@@ -1001,7 +989,7 @@ def perform(argv, report):
                 conclude(directory, receipt, status, **fields)
                 remote.keep_here(root, args.lane, receipt, status, whole, results=directory / "results")
                 # A lane's output goes to its log; the Mac that sent a dispatch prints these once they are back.
-                if not os.environ.get(remote.DISPATCHER): extensions.LANE.report_results(directory / "results")
+                if not os.environ.get(remote.DISPATCHER): extensions.report_results(directory / "results")
             def prepared(work):
                 # What an earlier run left in results/ is not this run's, here as on the second Mac (remote.RESULTS).
                 # The lane finds the directory in QUEUEKEEPER_RESULTS_DIR, and a group's lanes each find one of their own in it.
@@ -1012,12 +1000,12 @@ def perform(argv, report):
                 commands = [config["lanes"][name]["command"] for name in group] if group is not None else \
                     [lane["command"], *([lane["compileFirst"]] if "compileFirst" in lane else [])]
                 try:
-                    with resources.child_requests(), extensions.LANE.around_run(commands, root): return work()
+                    with resources.child_requests(), extensions.around_run(commands, root): return work()
                 finally:
                     # Nested in another lane, its results go into that lane's too, however it ended (#218).
                     parallel.hand_up(directory / "results", args.lane)
             if group is None:
-                command = awake(lane, extra)
+                command = lane_command(lane, extra)
                 receipt.update(command=command, arguments=extra, timeout=limit)
                 def execute(on_stop=None):
                     def work():
@@ -1034,8 +1022,8 @@ def perform(argv, report):
             else:
                 jobs = 1 if args.serial else lane.get("jobs", len(group))
                 receipt.update(parallel=group, jobs=jobs)
-                # Each lane's receipt shows the command it ran, under the display's assertions or not.
-                members = [(name, {**config["lanes"][name], "command": awake(config["lanes"][name])}) for name in group]
+                # Each lane's receipt shows the command it ran, as its own keys make it.
+                members = [(name, {**config["lanes"][name], "command": lane_command(config["lanes"][name])}) for name in group]
                 def execute(on_stop=None):
                     return record(directory, receipt, lambda: prepared(lambda: parallel.lanes(root, members, directory / "lanes", jobs,
                                   lambda member, status, log: judge(member, status, log)[0], receipt, on_stop,
@@ -1043,7 +1031,7 @@ def perform(argv, report):
             try:
                 with processes.forwarding_signals():
                     if resource == "self":
-                        if device_window is not None: extensions.LANE.report_window(device_window, 0)
+                        if device_window is not None: extensions.DEVICES.report_window(device_window, 0)
                         scroll_bars_recorded(receipt, args.lane, inherited)
                         # Each part its script admits stays on this Mac, which holds what an earlier part built.
                         lane_wait.running()
@@ -1055,21 +1043,21 @@ def perform(argv, report):
                             # The window the session holds the lane's devices for, here or leased by the Mac that
                             # sent it. Arguments such as a filter make a run no earlier one measures.
                             device_window = device_window if device_window is not None else \
-                                extensions.LANE.held_window(keys)
-                            waiting = extensions.LANE.window_wait(args.lane, device_window,
+                                extensions.DEVICES.held_window(keys)
+                            waiting = extensions.DEVICES.window_wait(args.lane, device_window,
                                                   lane_label(root, config, args.lane) if whole else None,
                                                   keys=keys or None,
                                                   budget=(lane.get("deviceRunMinutes", 0) * 60 or None) if whole else None,
                                                   fallback=limit if whole and keys else None)
                             allowed = waiting.seconds if waiting is not None else lambda seconds: seconds
-                            closed = extensions.LANE.window_closed(args.lane, waiting)
+                            closed = extensions.DEVICES.window_closed(args.lane, waiting)
                             if closed is not None: return closed
                             # The second Mac's foreground first, so that a run waiting for it holds no slot.
-                            waited = extensions.LANE.foreground_held(stack, args.lane, lane_label(root, config, args.lane),
+                            waited = extensions.FOREGROUND.foreground_held(stack, args.lane, lane_label(root, config, args.lane),
                                                      allowed(remote.OVERFLOW_TIMEOUT),
                                                      expected=lane.get("timeout")) if second else None
-                            if waited is not None: return extensions.LANE.not_admitted(args.lane, waiting, waited)
-                            closed = extensions.LANE.window_closed(args.lane, waiting)
+                            if waited is not None: return extensions.DEVICES.not_admitted(args.lane, waiting, waited)
+                            closed = extensions.DEVICES.window_closed(args.lane, waiting)
                             if closed is not None: return closed
                             admission = admitted_here(stack, args.lane, lane_label(root, config, args.lane),
                                                       allowed(remote.OVERFLOW_TIMEOUT), offered, args.if_free,
@@ -1077,23 +1065,23 @@ def perform(argv, report):
                                                       lane.get("wholeHost", False),
                                                       needs and not os.environ.get(resources.TOKEN),
                                                       admission_placement(offered, reason))
-                            if isinstance(admission, int): return extensions.LANE.not_admitted(args.lane, waiting, admission)
+                            if isinstance(admission, int): return extensions.DEVICES.not_admitted(args.lane, waiting, admission)
                             stopped = admitted_tree(root, args.lane, offered, receipt)
                             if stopped is not None: return stopped
                             # The wait in the queue, apart from what came before it (remote.execute).
                             receipt["queueSeconds"] = round(time.monotonic() - asked, 3)
-                            if device_window is not None: extensions.LANE.report_window(device_window, receipt["queueSeconds"])
+                            if device_window is not None: extensions.DEVICES.report_window(device_window, receipt["queueSeconds"])
                             if offered is not None:
                                 receipt["hereBecause"] = offered.status
                                 fell_back(args.lane, offered)
                             reap_here(root, inherited)
                             scroll_bars_recorded(receipt, args.lane, inherited)
-                            alerts = extensions.LANE.guarded_alerts(stack, args.lane, receipt, lane.get("apps", ())) \
+                            alerts = extensions.FOREGROUND.guarded_alerts(stack, args.lane, receipt, lane.get("apps", ())) \
                                 if lane.get("foreground") else None
                             if isinstance(alerts, int): return alerts
-                            blocked = extensions.LANE.cleared_notifications(receipt) if second else None
+                            blocked = extensions.FOREGROUND.cleared_notifications(receipt) if second else None
                             if blocked is not None: return blocked
-                            closed = extensions.LANE.window_closed(args.lane, waiting)
+                            closed = extensions.DEVICES.window_closed(args.lane, waiting)
                             if closed is not None: return closed
                             if reads_screen: receipt["screen"] = screen_reading()
                             if inherited and needs and receipt["screen"]["state"] != "unlocked":
@@ -1135,7 +1123,7 @@ def perform(argv, report):
             if before is not None: status = lane_results.BEFORE_TESTS
             concluded(status, **({"unmeasured": unmeasured} if status == lane_results.UNMEASURED else {}),
                       **({"beforeTests": before} if before is not None else {}))
-            if status == 0 and whole and keys and admission is not None and extensions.LANE.device_lane_passed(directory / "results", keys):
+            if status == 0 and whole and keys and admission is not None and extensions.DEVICES.device_lane_passed(directory / "results", keys):
                 admission.device_lane_passed(keys)
             return status
         return 0

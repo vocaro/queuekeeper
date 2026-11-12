@@ -15,7 +15,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 import host_isolation
 from host_isolation import stretched
 from queuekeeper import cli, lane_results, offload_host, remote
-from queuekeeper.apple import crash_alerts, devices, foreground
+from queuekeeper.apple import devices
+from queuekeeper.mac_desktop import crash_alerts, foreground
 from queuekeeper.apple.voiceover import state as voiceover_state
 
 SECOND = "Trevors-MacBook-Pro-715"

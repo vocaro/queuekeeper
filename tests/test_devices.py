@@ -20,6 +20,7 @@ SOURCE = Path(__file__).resolve().parents[1] / "src/python"
 sys.path.insert(0, str(SOURCE))
 from queuekeeper import cli, resources
 from queuekeeper.apple import device_notifications, devices
+from queuekeeper.mac_desktop import reservations
 import host_isolation
 from host_isolation import stretched
 from queuekeeper.resources import process_start
@@ -326,7 +327,7 @@ class DeviceRecordTests(unittest.TestCase):
         self.assertIn("without its PID", recovered["run"]["uncertainty"])
 
     def test_foreground_finally_retains_explicit_unknown_launch_uncertainty(self):
-        from queuekeeper.apple import foreground
+        from queuekeeper.mac_desktop import foreground
         from queuekeeper.apple.voiceover import state
         with patch.object(foreground, "second_mac", return_value=True), \
              patch.object(foreground, "front", return_value="owned control"), \
@@ -401,7 +402,7 @@ class DeviceRecordTests(unittest.TestCase):
         self.assertIs(devices.require_window("Example Duo 1", duo), duo)
         self.assertEqual(self.record.update("Example Duo 1", owner="session-a", revision=duo["revision"],
                                             device=PHONE.replace("C", "E"))["device"], PHONE.replace("C", "E"))
-        with patch.object(devices, "datetime", Later):
+        with patch.object(devices, "datetime", Later), patch.object(reservations, "datetime", Later):
             later_entry = self.record.entry("iPhone")
             self.assertIs(devices.require_window("iPhone", later_entry), later_entry)
         self.assertNotIn("work on the device is refused", self.cli("status")[1])
@@ -637,7 +638,7 @@ class DeviceRecordTests(unittest.TestCase):
         self.assertEqual(self.cli("check", "--owner", "session-a")[1].strip(),
                          f"{devices.FOREGROUND}: held by session-a for attended Mac XCUITest, expected release "
                          f"{entry['expectedReleaseBy']}")
-        with patch.object(devices, "datetime", Later):
+        with patch.object(devices, "datetime", Later), patch.object(reservations, "datetime", Later):
             self.assertEqual(devices.condition(self.record.entry(devices.FOREGROUND)), "held")
             with self.assertRaisesRegex(devices.Refused, f"window agreed for {devices.FOREGROUND} ended at"):
                 devices.require_foreground("session-a")
@@ -653,7 +654,7 @@ class DeviceRecordTests(unittest.TestCase):
         self.assertTrue(self.record.defer("workstation"))
         self.assertIn(f"{devices.FOREGROUND}: free; queuekeeper reserves it for each run", self.cli("status")[1])
         self.foreground()
-        with patch.object(devices, "datetime", Later):
+        with patch.object(devices, "datetime", Later), patch.object(reservations, "datetime", Later):
             self.assertEqual(devices.require_foreground("session-a")["ownerChatID"], "session-a")
             output = self.cli("status")[1]
         self.assertIn("overdue, which releases nothing", output)

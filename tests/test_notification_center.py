@@ -12,7 +12,9 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 import host_isolation
 from queuekeeper import cli, lane_results
-from queuekeeper.apple import devices, foreground, notification_center
+from queuekeeper.apple import devices
+from queuekeeper.mac_desktop import reservations
+from queuekeeper.mac_desktop import foreground, notification_center
 from queuekeeper.apple.voiceover import state as voiceover_state
 
 SECOND = "Trevors-MacBook-Pro-715"
@@ -237,7 +239,7 @@ class DismissTests(HostTest):
             self.assertEqual(notification_center.main(["list"]), lane_results.UNMEASURED)
             self.assertIn("window 29", out.getvalue())
             # check with no lease refuses and closes nothing.
-            with patch.object(devices, "Record", return_value=self.record):
+            with patch.object(reservations, "Record", return_value=self.record):
                 self.assertEqual(notification_center.main(["check"]), 1)
                 self.assertEqual(self.host.pressed, [])
                 with self.held():

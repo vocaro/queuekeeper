@@ -4863,9 +4863,10 @@ class ToolkitCopy(Fixture):
                 os.environ[mq.PROGRESS_VARIABLE] = moved.env[mq.PROGRESS_VARIABLE]
 
     def code_of(self, checkout):
-        """A toolkit checkout's config module, loaded apart from this process's."""
+        """A toolkit checkout's config module, loaded apart from this process's, as one of the queuekeeper package,
+        whose hook points it reads (extensions.LANE_KEYS)."""
         source = checkout / "src/python/queuekeeper/config.py"
-        spec = importlib.util.spec_from_file_location(f"config_of_{len(self.moves)}", source)
+        spec = importlib.util.spec_from_file_location(f"queuekeeper.config_of_{len(self.moves)}", source)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         return module
@@ -5234,9 +5235,10 @@ class ToolkitsOwnWorker(Fixture):
                 os.environ[mq.PROGRESS_VARIABLE] = moved.env[mq.PROGRESS_VARIABLE]
 
     def code_of(self, checkout):
-        """A toolkit checkout's config module, loaded apart from this process's."""
+        """A toolkit checkout's config module, loaded apart from this process's, as one of the queuekeeper package,
+        whose hook points it reads (extensions.LANE_KEYS)."""
         source = checkout / "src/python/queuekeeper/config.py"
-        spec = importlib.util.spec_from_file_location(f"own_config_{len(self.moves)}_{checkout.name}", source)
+        spec = importlib.util.spec_from_file_location(f"queuekeeper.own_config_{len(self.moves)}_{checkout.name}", source)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         return module

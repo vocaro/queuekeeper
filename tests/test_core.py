@@ -19,7 +19,9 @@ import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 from queuekeeper import cli, config, lane_results, processes, resources
-from queuekeeper.apple import devices, foreground
+from queuekeeper.apple import devices
+from queuekeeper.mac_desktop import reservations
+from queuekeeper.mac_desktop import display, foreground
 from queuekeeper.apple.simulators import pool as simulator_pool
 import host_isolation
 from host_isolation import stretched
@@ -1717,13 +1719,13 @@ class ResourceTests(unittest.TestCase):
                                ("suites/lanes/mac.json", "mac"), ("suites/lanes/ios.json", "ios")]:
                 with self.subTest(path):
                     command = lanes[name]["command"]
-                    expected = [*cli.AWAKE, *command] if lanes[name].get("display") else command
+                    expected = [*display.AWAKE, *command] if lanes[name].get("display") else command
                     self.assertEqual(json.loads((receipts / path).read_text())["command"], expected)
             # Arguments go to the command, not to either assertion.
             record.unlink()
             self.assertEqual(cli.main(["--project", str(root), "run", "mac", "--", "extra"]), 0)
             self.assertEqual(json.loads((receipts / "mac/source.json").read_text())["command"],
-                             [*cli.AWAKE, *lanes["mac"]["command"], "extra"])
+                             [*display.AWAKE, *lanes["mac"]["command"], "extra"])
             self.assertEqual(record.read_text().splitlines(), ["caffeinate -u -t 1", f"{held('mac')} extra", "mac"])
 
     def test_an_unreadable_unknown_or_uncertain_guard_is_never_reclaimed(self):
@@ -3977,8 +3979,8 @@ class LaneLabelTests(unittest.TestCase):
         def slot(purpose, **options):
             yield "owner"
             raise TimeoutError("the device record stayed locked for 30s; nothing was changed")
-        with patch.object(foreground, "slot", slot), patch.object(cli.extensions.LANE, "guarded_alerts", return_value=None), \
-                patch.object(cli.extensions.LANE, "cleared_notifications", return_value=None):
+        with patch.object(foreground, "slot", slot), patch.object(cli.extensions.FOREGROUND, "guarded_alerts", return_value=None), \
+                patch.object(cli.extensions.FOREGROUND, "cleared_notifications", return_value=None):
             status, error = self.run_lane(beta, "--here", "gate")
         self.assertEqual(status, 2, error)
         self.assertTrue(ran.exists())
@@ -4128,7 +4130,7 @@ class DeviceWindowWaitTests(unittest.TestCase):
                     now += timedelta(seconds=timeout)
                     raise TimeoutError("Resource queue busy")
 
-                with patch.object(devices, "datetime", wraps=datetime) as clock, \
+                with patch.object(devices, "datetime", wraps=datetime) as clock, patch.object(reservations, "datetime", clock), \
                         patch.object(resources, "Admission", side_effect=busy) as admission, \
                         patch.object(cli, "refresh_policy", return_value="policy"), \
                         patch.object(cli, "source_identity", return_value={}), \
@@ -4309,7 +4311,7 @@ class DeviceWindowWaitTests(unittest.TestCase):
             nonlocal now
             now = latest + timedelta(seconds=1)
 
-        with patch.object(devices, "datetime", wraps=datetime) as clock, \
+        with patch.object(devices, "datetime", wraps=datetime) as clock, patch.object(reservations, "datetime", clock), \
                 patch.object(cli, "reap_here", side_effect=prepare):
             clock.now.side_effect = lambda zone: now.astimezone(zone)
             status, error = self.run_lane(root, "device")

@@ -18,6 +18,7 @@ import subprocess
 import time
 
 from .. import devices
+from ...mac_desktop import reservations
 from . import guard
 
 WAIT = 5
@@ -130,8 +131,8 @@ def _toggle():
 class _Lease:
     def __init__(self, owner, record):
         self.owner = owner
-        self.record = record or devices.Record()
-        entry = devices.require_foreground(owner, self.record)
+        self.record = record or reservations.Record()
+        entry = reservations.require_foreground(owner, self.record)
         self.identity = self._identity(entry)
         self.uncertainty_revision = None
         # One list per open preserved() scope, innermost last: its transitions that failed, which it restores.
@@ -150,50 +151,50 @@ class _Lease:
 
     @staticmethod
     def _identity(entry):
-        return (entry.get("reservedAt"), entry.get("hostProcessIdentifier"), entry.get("hostProcessStart"))
+        return reservations.identity(entry)
 
     def check(self, *, restoring=False):
         if restoring:
-            entry = self.record.entry(devices.FOREGROUND)
+            entry = self.record.entry(reservations.FOREGROUND)
             own_failure = entry is not None and self.uncertainty_revision is not None \
                 and entry.get("revision") == self.uncertainty_revision \
                 and entry.get("state") != "restoration-unverified" \
-                and (not entry.get("activeRun") or devices.process_start(entry.get("hostProcessIdentifier"))
+                and (not entry.get("activeRun") or reservations.process_start(entry.get("hostProcessIdentifier"))
                      == entry.get("hostProcessStart"))
             if entry is None or entry.get("ownerChatID") != self.owner \
-                    or (devices.condition(entry) not in ("held", "active") and not own_failure):
-                raise devices.Refused("The original foreground lease no longer permits VoiceOver restoration")
+                    or (reservations.condition(entry) not in ("held", "active") and not own_failure):
+                raise reservations.Refused("The original foreground lease no longer permits VoiceOver restoration")
         else:
-            entry = devices.require_foreground(self.owner, self.record)
+            entry = reservations.require_foreground(self.owner, self.record)
         identity = self._identity(entry)
         if identity != self.identity:
-            raise devices.Refused("The foreground lease changed before VoiceOver state access")
+            raise reservations.Refused("The foreground lease changed before VoiceOver state access")
         return entry
 
     def uncertain(self, reason):
         # Never write into a subsequent holder's entry, even if a PID/owner string is reused.
         try:
-            entry = self.record.entry(devices.FOREGROUND)
+            entry = self.record.entry(reservations.FOREGROUND)
             if entry is None or entry.get("ownerChatID") != self.owner or entry.get("state") == "released": return
             if self._identity(entry) != self.identity: return
             # Only this instance's own uncertainty may permit a restoration retry. Never
             # adopt a marker written by another state scope or any unrelated run failure.
-            if devices.condition(entry) == "uncertain" and entry["revision"] != self.uncertainty_revision: return
+            if reservations.condition(entry) == "uncertain" and entry["revision"] != self.uncertainty_revision: return
             # The marker names the revision it writes, so that recover_restoration can tell that nothing was
             # written to the entry after it.
-            changed = self.record.update(devices.FOREGROUND, owner=self.owner, revision=entry["revision"],
+            changed = self.record.update(reservations.FOREGROUND, owner=self.owner, revision=entry["revision"],
                                          uncertain=True, voiceOverRestoration={"verified": False, "reason": reason,
                                                                                "revision": entry["revision"] + 1})
             self.uncertainty_revision = changed["revision"]
-        except (devices.Refused, OSError, TimeoutError):
+        except (reservations.Refused, OSError, TimeoutError):
             # The enclosing foreground scope also retains an active/orphan entry if its
             # record could not accept the uncertainty marker. Never mask the state failure.
             return
 
 
 def _lease(owner, record):
-    owner = owner or os.environ.get(devices.OWNER)
-    record = record or devices.Record()
+    owner = owner or os.environ.get(reservations.OWNER)
+    record = record or reservations.Record()
     current = _CURRENT.get()
     if current is not None and current.owner == owner and current.record.path.resolve() == record.path.resolve():
         # Share restoration provenance only within this process/context's active scope.

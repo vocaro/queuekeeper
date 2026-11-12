@@ -4,6 +4,8 @@ import os
 import re
 from pathlib import Path
 
+from . import extensions as hooks
+
 TOOLKIT_ROOT = Path(__file__).resolve().parents[3]
 # The extensions a project gets when its queuekeeper.json names none, and that a command with no project loads.
 EXTENSIONS = ("queuekeeper.apple",)
@@ -55,6 +57,9 @@ def load(root):
 LANE_KEYS = frozenset({"command", "resource", "minimumTests", "timeout", "foreground", "here", "model", "display",
                        "budgetMinutes", "wholeHost", "apps", "unlockedScreen", "devices", "compileFirst",
                        "deviceRunMinutes", "stall"})
+# The lane keys above that an extension shipped here adds (hooks.LANE_KEYS), by its module: a project that uses one
+# without the extension is told which to switch on.
+EXTENSION_LANE_KEYS = {"display": "queuekeeper.mac_desktop"}
 GROUP_KEYS = frozenset({"parallel", "jobs", "resource", "here", "model", "budgetMinutes", "wholeHost", "unlockedScreen"})
 
 
@@ -95,7 +100,11 @@ def parse(source):
         raise ValueError(f"Unknown configuration keys: {sorted(set(value) - allowed)}")
     if not isinstance(value.get("name"), str) or not value["name"]:
         raise ValueError("Project name must be a nonempty string")
-    extensions(value.get("extensions", list(EXTENSIONS)))
+    declared = extensions(value.get("extensions", list(EXTENSIONS)))
+    # The extensions shipped here that the project switches on add keys to its lanes, so they are loaded before the
+    # lanes are checked, whichever command reads the configuration. One in a folder of the project's is the
+    # command's to load (cli.perform), which knows the folder.
+    hooks.load([named for named in declared if isinstance(named, str) and named.startswith(__package__ + ".")])
     if value.get("integration", "direct-main") not in {"direct-main", "pull-request"}:
         raise ValueError("Unknown integration policy")
     pool = value.get("simulatorPool")
@@ -110,11 +119,11 @@ def parse(source):
         if isinstance(lane, dict) and "parallel" in lane:
             group(name, lane, lanes)
             continue
-        if not isinstance(lane, dict) or set(lane) - LANE_KEYS:
+        if not isinstance(lane, dict) or set(lane) - LANE_KEYS - set(hooks.LANE_KEYS):
             raise ValueError(f"Invalid lane {name}")
         apps(name, lane)
         device_keys(name, lane)
-        for key in ["foreground", "model", "display", "wholeHost", "unlockedScreen"]:
+        for key in ["foreground", "model", "wholeHost", "unlockedScreen"]:
             if key in lane and type(lane[key]) is not bool:
                 raise ValueError(f"{name}.{key} must be true or false")
         resource_of(name, lane)
@@ -127,9 +136,7 @@ def parse(source):
         screen(name, lane)
         compile_first(name, lane)
         stall(name, lane)
-        if lane.get("display") and unadmitted(lane):
-            raise ValueError(f"{name}.display needs an admitted lane: only an admitted test run holds the display's "
-                             "assertions, and a self lane is not admitted")
+        extension_keys(name, lane)
         command = lane.get("command")
         if not isinstance(command, list) or not command or any(not isinstance(x, str) or not x for x in command):
             raise ValueError(f"Lane {name} needs an argv list, never shell source")
@@ -256,25 +263,15 @@ def self_lane_warnings(root, config):
     return warnings
 
 
-def display_lane_warnings(config):
-    """qk doctor's warning for each "display": true lane that does not say "unlockedScreen": "display" wakes the
-    display and keeps it on, behind a lock too, but unlocks nothing, so queuekeeper may place the lane on a Mac whose screen
-    is locked, where a test that reports a lock as unmeasured gives no verdict, and the merge queue sends its gate
-    there again until it holds (vocaro-engineering#293). A lane whose tests measure behind a lock says
-    "unlockedScreen": false, which settles the question; only a lane that leaves it out is warned of."""
-    lanes = config.get("lanes", {})
-    warnings = []
-    for name, lane in sorted(lanes.items()):
-        if not isinstance(lane, dict) or not lane.get("display") or "unlockedScreen" in lane: continue
-        groups = sorted(group for group, other in lanes.items() if isinstance(other, dict)
-                        and name in (other.get("parallel") or []) and not other.get("unlockedScreen"))
-        also = f", and so does each group that runs it, {', '.join(groups)}," if groups else ""
-        warnings.append(f"{name} says \"display\": true, which wakes the display but does not unlock the screen, and "
-                        "does not say \"unlockedScreen\", so queuekeeper may place it on a Mac whose screen is locked, where a "
-                        "test that reports a lock as unmeasured gives no verdict: if its tests need an unlocked "
-                        f"screen, it needs \"unlockedScreen\": true{also} and if they measure behind a lock, say "
-                        "\"unlockedScreen\": false (guides/shared-host.md, Which Mac runs a lane)")
-    return warnings
+def extension_keys(name, lane):
+    """Check each key of a lane that an extension adds (hooks.LANE_KEYS), by the extension's own rule. A key of
+    EXTENSION_LANE_KEYS whose extension the project has not switched on is refused, naming the extension."""
+    for key in lane:
+        if key in hooks.LANE_KEYS: hooks.LANE_KEYS[key].check(name, lane)
+        elif key in EXTENSION_LANE_KEYS:
+            raise ValueError(f"{name}.{key} is the {EXTENSION_LANE_KEYS[key]} extension's key, and the project does not "
+                             f"switch that extension on: list {EXTENSION_LANE_KEYS[key]}, or an extension that requires "
+                             "it, in extensions")
 
 
 def unadmitted(lane):

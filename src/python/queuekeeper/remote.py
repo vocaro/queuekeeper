@@ -1727,7 +1727,7 @@ def clock_line(config, lane, arguments=()):
     if words and re.fullmatch(r"python(?:3(?:\.\d+)?)?", Path(words[0]).name):
         words = words[1:]
     if len(words) >= 2 and Path(words[0]).name == "qk" and words[1] == "simulator-tests":
-        allowance = extensions.DISPATCH.test_allowance([*words[2:], *arguments])
+        allowance = extensions.test_allowance([*words[2:], *arguments])
         if allowance is not None:
             limits += f" and the default test allowance is set to {allowance}s"
     return f"{lane}'s log is arriving: {limits}; a heartbeat every {PROGRESS_INTERVAL:g}s says whether the log has grown"
@@ -2123,7 +2123,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
         wrote = sorted({Path(path).parts[1] for path in files if len(Path(path).parts) > 2} & set(group))
         print(f"remote: {len(files)} file{'s' if len(files) != 1 else ''} the run wrote in its {RESULTS} came back in "
               f"{results / RESULTS}" + (f", from {', '.join(wrote)}" if wrote else ""), file=sys.stderr, flush=True)
-        extensions.LANE.report_results(results / RESULTS)
+        extensions.report_results(results / RESULTS)
     if members and result.get("stage") == "work":
         members = config["lanes"][lane]["parallel"]
         came = [member for member in members if f"lanes/{member}.log" in returned]
@@ -2264,7 +2264,7 @@ def main(root, config, args):
         work = ["run", "--here", *(["--serial"] if args.serial else []),
                 *(["--expect", str(args.expect)] if args.expect else []), args.lane, *(["--", *extra] if extra else [])]
         budget = lane.get("timeout") if "parallel" not in lane else None
-        held = extensions.DISPATCH.lease(args.device or [], args.device_owner, extra, root=root, budget=budget)
+        held = extensions.DEVICES.lease(args.device or [], args.device_owner, extra, root=root, budget=budget)
         # A leased run sent again, after a notification reached it, offers the same commits (carrying).
         sent = {}
         send = lambda: execute(root, config, host, work, lane=args.lane, arguments=extra, expect=args.expect,
@@ -2273,7 +2273,7 @@ def main(root, config, args):
             sending = send
             send = lambda: not_run_if_busy(args.lane, sending)
         with processes.forwarding_signals():
-            return extensions.DISPATCH.carrying(held, root, host, work, args.lane, lambda: offering_here(
+            return extensions.DEVICES.carrying(held, root, host, work, args.lane, lambda: offering_here(
                 f"qk run --here {args.lane}", send) if lane.get("foreground") else send())
     # Without a leading --, argparse collected the command, and a later -- belongs to it.
     command = args.command + ([] if args.passed is None else ["--", *args.passed]) if args.command else args.passed
@@ -2290,7 +2290,7 @@ def main(root, config, args):
     refused = exclusive_refusal(config, command) if args.exclusive else None
     if refused: raise ValueError(f"qk remote admit --exclusive refused: {refused}")
     commits = commit_arguments(getattr(args, "git_commit", None) or [])
-    held = extensions.DISPATCH.lease(args.device or [], args.device_owner, command, root=root,
+    held = extensions.DEVICES.lease(args.device or [], args.device_owner, command, root=root,
                                      budget=args.time_limit, commits=commits)
     work = ["admit", *kind, "--", *command]
     sent = {}
@@ -2305,7 +2305,7 @@ def main(root, config, args):
         sending = send
         send = lambda: not_run_if_busy("the command", sending)
     with processes.forwarding_signals():
-        return extensions.DISPATCH.carrying(held, root, host, work, "admit", lambda: offering_here(
+        return extensions.DEVICES.carrying(held, root, host, work, "admit", lambda: offering_here(
             "qk admit --foreground -- COMMAND", send) if args.foreground else send())
 
 
@@ -2354,7 +2354,7 @@ def foreground_report(host):
     print(f"{found.get('mac')}'s foreground: {holder}")
     for line in crash_dialog_report(found.get("crashDialogs"), entry): print(line)
     if "captureApprovals" in found:  # a second Mac whose toolkit predates them says nothing
-        for line in extensions.DISPATCH.capture_lines(found["captureApprovals"]): print(line)
+        for line in extensions.FOREGROUND.capture_lines(found["captureApprovals"]): print(line)
     for problem, fix in found.get("problems", []):
         print(f"- {problem}: {fix}")
     if found.get("problems"):
@@ -2834,7 +2834,7 @@ def first(root, config, lane, arguments, expect, fallback=True, queue_gate=False
     work = ["run", "--here", "--if-free", *(["--expect", str(expect)] if expect else []), lane,
             *(["--", *arguments] if arguments else [])]
     # A run that names a physical device uses it here, or there only by `qk remote run --device`.
-    named = extensions.DISPATCH.reserved_devices(arguments)
+    named = extensions.DEVICES.reserved_devices(arguments)
     refused = (f"its arguments name the physical device of {', '.join(named)}, which the second Mac uses only under "
                "a reservation `qk remote run --device` carries from here") if named else None
     settings = config.get("lanes", {}).get(lane, {})
@@ -2974,7 +2974,7 @@ def first_command(root, config, command, kind):
         relative = directory.relative_to(top).as_posix()
     except ValueError:
         relative = None
-    refused, named = None, sorted(extensions.DISPATCH.named_devices(command, top))
+    refused, named = None, sorted(extensions.DEVICES.named_devices(command, top))
     if relative is None:
         refused = f"its directory {directory} is outside the checkout {top}"
     elif relative != "." and subprocess.run(["git", "-C", str(top), "check-ignore", "-q", relative], env=environment(),
@@ -3506,7 +3506,7 @@ def dispatch(root, name, since):
 def reap_request(root):
     """What a dispatch from root asks of offload_host.reap: the project's pool, besides those the second
     Mac's checkouts name."""
-    pool = extensions.DISPATCH.pool(root)
+    pool = extensions.DEVICES.pool(root)
     return {"pools": [pool] if isinstance(pool, str) and pool else []}
 
 

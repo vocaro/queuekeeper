@@ -4,7 +4,9 @@ The Apple plugin gives Queuekeeper what it needs to build and test iOS and Mac a
 simulator pools, physical-device reservations, Xcode test runners, and guards against the dialogs
 and permissions that stop a test run on a Mac nobody is watching.
 
-It is optional, and the core runs without it. It was developed against Xcode 27.2, iOS 27 simulators
+It is optional, and the core runs without it. It builds on the
+[Mac desktop plugin](../mac_desktop/README.md), which a project that lists the Apple plugin gets too. It was
+developed against Xcode 27.2, iOS 27 simulators
 and macOS 27, and parts of it depend on behavior Apple does not document, which a new release can
 break.
 
@@ -76,22 +78,17 @@ hand bypasses it. It currently tracks one iPhone and one iPad.
 
 ## Unattended Macs
 
-A UI test on a Mac nobody is watching fails for reasons unrelated to the code. The plugin handles
-the ones met so far:
+A UI test on a Mac nobody is watching fails for reasons unrelated to the code. The
+[Mac desktop plugin](../mac_desktop/README.md) handles the ones that have nothing to do with Xcode: it
+reserves the Mac's foreground for one run at a time, clears crash alerts and notification banners,
+keeps the login keychain unlocked, and tracks screen-capture approvals.
 
-| Problem | What the plugin does |
-|---|---|
-| Two UI runs fight over one screen and keyboard | Reserves the Mac's foreground for one run at a time |
-| A "quit unexpectedly" alert covers the window under test | Suppresses crash dialogs for the run, dismisses any that appear, restores the setting afterward |
-| A notification banner covers the screen | Closes it. If it cannot, the run is unmeasured |
-| The login keychain is locked in an SSH session, so code signing fails | Unlocks it for each run from a password the owner stored once on that Mac |
-| macOS asks for screen-capture approval again every 30 days | Launches the test runner from one stable path so the approval persists, and reports when it will lapse |
-| Every built copy of a Mac app stays registered, and the system launches an old one | Unregisters the copies a run built |
-| VoiceOver is left on, or toggled late, after a run | Saves and restores its state |
+The Apple plugin adds two of its own:
 
-When a guard cannot clear a problem, the run ends unmeasured instead of failed. The keychain guard
-stores a login password on the build Mac, readable only by that account. Use it only on a Mac that
-holds nothing sensitive.
+- **App registrations.** Every built copy of a Mac app stays registered, and the system can launch
+  an old one, so the plugin unregisters the copies a run built.
+- **VoiceOver.** A run can leave VoiceOver on, or toggle it late. The plugin saves its state when a
+  run takes the foreground and restores it before the foreground is released.
 
 ## Keeping Macs alike
 

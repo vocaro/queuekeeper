@@ -1904,15 +1904,15 @@ class RemoteTests(unittest.TestCase):
         # Real dispatch, checkout and lease handling; only desktop/VoiceOver I/O is a stand-in.
         source = self.toolkit / "src/python/queuekeeper"
         waiter = Path(self.temp.name) / "foreground-waiter.pid"
-        with (source / "apple/foreground.py").open("a") as fixture:
+        with (source / "mac_desktop/foreground.py").open("a") as fixture:
             fixture.write("\ndef problems():\n    from pathlib import Path\n"
                           f"    Path({str(waiter)!r}).write_text(str(os.getpid()))\n    return []\n"
-                          "front = lambda: None\n"
-                          "@contextlib.contextmanager\ndef fixture_preserved(*args, **kwargs):\n    yield\n"
-                          "voiceover_state.preserved = fixture_preserved\n")
-        with (source / "apple/lane.py").open("a") as fixture:
-            fixture.write("\nLane.guarded_alerts = lambda *args, **kwargs: None\n"
-                          "Lane.cleared_notifications = lambda *args, **kwargs: None\n")
+                          "front = lambda: None\n")
+        with (source / "apple/voiceover/state.py").open("a") as fixture:
+            fixture.write("\n@contextlib.contextmanager\ndef preserved(*args, **kwargs):\n    yield\n")
+        with (source / "mac_desktop/lane.py").open("a") as fixture:
+            fixture.write("\nForeground.guarded_alerts = lambda *args, **kwargs: None\n"
+                          "Foreground.cleared_notifications = lambda *args, **kwargs: None\n")
         commit_all(self.toolkit)
         record = devices.Record(self.record_there)
         record.defer(offload_host.mac_name())
@@ -2718,14 +2718,15 @@ class RemoteTests(unittest.TestCase):
         # The run's keychain line says "unlocked PATH for this run's session"; the policy it prints speaks of
         # unlocked screens, so the check is for that line.
         self.assertNotIn("for this run's session", output + error)
-        # A kept password for a login keychain this second Mac does not have: the run does not start.
+        # A kept password for a login keychain this second Mac does not have: the run does not start. The desktop
+        # extension unlocks before the first lane there, the provision lane, whose output says why and how to fix it.
         kept = self.home / remote.ROOT / offload_host.KEYCHAIN_PASSWORD
         kept.write_text("not a real password\n")
         status, output, error = self.qk("remote", "admit", "--", sys.executable, "-c", "print('the work ran')")
         self.assertEqual(status, 2, output + error)
         login = self.home / offload_host.KEYCHAINS / offload_host.LOGIN_KEYCHAIN
-        self.assertIn(f"{kept} holds the password of {login}, which is not there", error)
-        self.assertIn("`python3 scripts/qk keychain keep-unlocked`", error)
+        self.assertIn(f"{kept} holds the password of {login}, which is not there", output + error)
+        self.assertIn("`python3 scripts/qk keychain keep-unlocked`", output + error)
         self.assertNotIn("the work ran", output)
 
     def run_here(self, *arguments):
