@@ -17,7 +17,7 @@ import host_isolation  # first, as every test module
 
 from queuekeeper import config, extensions, unity
 from queuekeeper.lane_results import UNMEASURED, executed_tests
-from queuekeeper.unity import batch, commands, editor, licensing, project, settings
+from queuekeeper.unity import batch, commands, doctor, editor, licensing, project, settings
 
 unity.register()
 
@@ -458,6 +458,49 @@ class CommandTests(Folder):
         status, _, error = self.unity("test")
         self.assertEqual(status, 2)
         self.assertIn('"unity": {"project": "lab"}', error)
+
+
+class DoctorTests(Folder):
+    def setUp(self):
+        super().setUp()
+        self.project = self.unity_project()
+        self.config = {"unity": {"project": "lab"}, "lanes": {"gate": {"command": ["qk", "unity", "test"]}}}
+        self.enterContext(patch.object(editor, "HUB", self.folder / "hub"))
+        self.there = True
+        self.enterContext(patch.object(doctor, "second_mac", lambda: "studio"))
+        self.enterContext(patch.object(doctor, "installed_there", lambda host, binary: self.there))
+
+    def warnings(self):
+        return doctor.warnings(self.project.parent, self.config)
+
+    def test_a_project_whose_pinned_editor_both_macs_have_is_warned_of_nothing(self):
+        fake_editor(self.folder / "hub", "6000.6.0f1")
+        self.assertEqual(self.warnings(), [])
+        self.assertIn(doctor.warnings, extensions.DOCTOR)
+
+    def test_a_mac_without_the_pinned_editor_is_named(self):
+        fake_editor(self.folder / "hub", "6000.6.1f1")
+        self.there = False
+        here, there = self.warnings()
+        self.assertIn("Unity 6000.6.0f1, which lab pins, is not installed on this Mac", here)
+        self.assertIn("is not installed on studio", there)
+
+    def test_a_second_mac_that_could_not_be_asked_is_not_warned_of(self):
+        fake_editor(self.folder / "hub", "6000.6.0f1")
+        self.there = None
+        self.assertEqual(self.warnings(), [])
+
+    def test_a_lane_that_runs_without_a_graphics_device_is_named(self):
+        fake_editor(self.folder / "hub", "6000.6.0f1")
+        self.config["lanes"]["fast"] = {"command": ["Unity", "-batchmode", "-nographics"]}
+        self.assertEqual(len(self.warnings()), 1)
+        self.assertIn("fast passes -nographics", self.warnings()[0])
+
+    def test_a_missing_unity_project_or_pin_is_said(self):
+        (self.project / "ProjectSettings/ProjectVersion.txt").write_text("")
+        self.assertIn("pins no editor version", self.warnings()[0])
+        self.config["unity"] = {"project": "elsewhere"}
+        self.assertIn("there is no Unity project at", self.warnings()[0])
 
 
 if __name__ == "__main__":
