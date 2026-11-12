@@ -13,7 +13,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-import host_isolation  # noqa: F401 -- first, as every test module
+import host_isolation  # first, as every test module
 
 from queuekeeper import config, extensions, unity
 from queuekeeper.lane_results import UNMEASURED, executed_tests
@@ -26,8 +26,7 @@ def fake_editor(hub, version, executable=True):
     binary = Path(hub) / version / editor.BINARY
     binary.parent.mkdir(parents=True)
     binary.write_text("#!/bin/sh\nexit 0\n")
-    binary.chmod(0o755 if executable else 0o644)
-    return binary
+    return host_isolation.executable(binary) if executable else binary
 
 
 class Folder(unittest.TestCase):
@@ -123,9 +122,9 @@ class LockTests(Folder):
     def test_an_lsof_that_cannot_answer_is_not_proof_and_the_lock_stays(self):
         # It fails as a denied one does: an error and exit 1, which is also its status for "no holders".
         (self.folder / "bin").mkdir()
-        (self.folder / "bin/lsof").write_text(
+        host_isolation.executable(
+            self.folder / "bin/lsof",
             '#!/bin/sh\necho "lsof: cannot read process table: Operation not permitted" >&2\nexit 1\n')
-        (self.folder / "bin/lsof").chmod(0o755)
         self.lock.touch()
         with patch.dict(os.environ, {"PATH": f"{self.folder / 'bin'}:{os.environ['PATH']}"}):
             self.assertEqual(self.clear(), project.KEPT)
