@@ -704,6 +704,9 @@ def host_screen(args):
 # Set to off, work that runs on this Mac does not reap first (reap_here). tests/host_isolation sets it, so that no
 # run a test makes, in its process or a child, stops a simulator or releases a reservation of this Mac.
 REAP_SWITCH = "VOCARO_REAP_BEFORE_RUN"
+# The status of a command that refused how it was called, as argparse's does: lane_report.before_tests leaves it as it
+# is, since it already tells a refusal apart from a test's failure (vocaro-engineering#393).
+USAGE = 2
 
 
 def reap_here(root, inherited):
@@ -1616,8 +1619,8 @@ def perform(argv, report):
             # A failure whose log shows no test started, such as a project that could not be generated, exits apart
             # from a test's failure, and stays a failure (vocaro-engineering#393). A compileFirst build that failed
             # is already told apart, a status that gives no verdict keeps its meaning, and a failure record in its
-            # results is a test's.
-            before = lane_report.before_tests(log) if status > 0 and status not in merge_queue.NO_VERDICT \
+            # results is a test's. A command that refused its usage, status 2, already says so apart from a test.
+            before = lane_report.before_tests(log) if status > 0 and status != USAGE and status not in merge_queue.NO_VERDICT \
                 and not compile_failed(receipt) and not lane_report.records(directory / "results") else None
             if before is not None: status = evidence.BEFORE_TESTS
             concluded(status, **({"unmeasured": unmeasured} if status == evidence.UNMEASURED else {}),

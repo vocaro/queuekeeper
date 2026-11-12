@@ -325,6 +325,13 @@ class Summary(unittest.TestCase):
         self.assertEqual(status, 4)
         self.assertIn("eng run lane: failed (exit 4), on this Mac", lines)
 
+    def test_a_command_that_refused_its_usage_keeps_status_2(self):
+        # simulator-tests refuses a lane command without its separator so, before any test (#393's gate failure).
+        self.configure(lane=self.printing("error: a lane whose command runs simulator-tests ends with \"--\"\n", 2))
+        status, lines = self.eng("lane")
+        self.assertEqual(status, 2)
+        self.assertIn("eng run lane: failed (exit 2), on this Mac", lines)
+
     def test_a_too_short_run_says_why_in_its_summary(self):
         self.configure(lane={**self.printing("Ran 1 test in 0.1s\n\nOK"), "minimumTests": 2})
         status, lines = self.eng("lane")
