@@ -9,8 +9,9 @@ REQUIRES = ("queuekeeper.mac_desktop",)
 
 def register():
     """Add the extension to the core (queuekeeper.extensions.load)."""
-    from . import commands, disk, doctor, settings
+    from . import commands, disk, doctor, lane, settings
     settings.register()
     commands.register()
     doctor.register()
     disk.register()
+    lane.register()

@@ -100,7 +100,8 @@
                 "devices",
                 "compileFirst",
                 "deviceRunMinutes",
-                "stall"
+                "stall",
+                "unity"
               ]
             }
           },
@@ -234,6 +235,10 @@
           },
           "display": {
             "description": "The Mac desktop extension's key, which a project gets with queuekeeper.mac_desktop or an extension that requires it, such as queuekeeper.apple. A heavy or exclusive lane whose tests wait for what the display's refresh times, such as a scroll view's animation: qk run runs its command, on either Mac and in a lane group too, under a one-second caffeinate -u, which wakes a sleeping display behind a lock too, and then caffeinate -d, which keeps it on for the command's life, and the lane's receipt shows them in its command. Neither unlocks the screen, so a test that reads its tree through the accessibility API still needs an unlocked one",
+            "type": "boolean"
+          },
+          "unity": {
+            "description": "The Unity extension's key, which a project gets with queuekeeper.unity. A lane whose command runs the project's Unity editor: queuekeeper run runs its command under queuekeeper unity ready --, which checks on the Mac that runs it that an editor is installed, that no editor has the project open, that no stale lock is left and that no orphaned licensing helper remains, and ends the lane unmeasured, with nothing run, when one of them does not hold",
             "type": "boolean"
           },
           "budgetMinutes": {
