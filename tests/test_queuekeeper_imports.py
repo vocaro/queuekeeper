@@ -33,10 +33,6 @@ APPLE_TOOLKIT = "Apple imports toolkit"
 # `queuekeeper.processes`, or the extension's `from . import remote` for the core's `remote`. It
 # names no module here, so its module does not import until the port rewrites it.
 OLD_NAME = "old name"
-# Toolkit modules that are here whole only so that the port can copy the little the core uses from
-# each (decision H of vocaro/vocaro-engineering#403); the toolkit keeps them. Importing one is
-# importing the toolkit, and their own imports are not read. Delete a name with its file.
-BORROWED = {"queuekeeper.evidence", "queuekeeper.landing", "queuekeeper.stale_modules", "queuekeeper.toolkit_copy"}
 KINDS = (CORE_TOOLKIT, CORE_APPLE, APPLE_TOOLKIT, OLD_NAME)
 # The most lines of each kind the list may hold. Lower a number as its kind shrinks; never raise it.
 CEILING = {CORE_TOOLKIT: 22, CORE_APPLE: 21, APPLE_TOOLKIT: 4, OLD_NAME: 0}
@@ -145,8 +141,7 @@ class Layout:
 
     @classmethod
     def read(cls, root):
-        return cls({name: (path.read_text(), package) for path, name, package in modules(root)
-                    if name not in BORROWED})
+        return cls({name: (path.read_text(), package) for path, name, package in modules(root)})
 
     @staticmethod
     def in_toolkit(name):
@@ -218,9 +213,6 @@ class Packages(unittest.TestCase):
         names = {name for _, name, _ in modules(SOURCE)}
         self.assertIn(CORE, names)
         self.assertIn(APPLE, names)
-
-    def test_each_borrowed_module_is_still_here(self):
-        self.assertEqual(BORROWED - {name for _, name, _ in modules(SOURCE)}, set())
 
     def test_the_source_breaks_the_rules_only_where_the_list_says(self):
         found, known = Layout.read(SOURCE).lines(), known_lines()

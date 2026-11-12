@@ -9,10 +9,15 @@ stands and what is left. Delete each item as it is done, and the file when the l
 - The code and its history were extracted from the toolkit's `main` at `4bad68c4` with
   `tools/extract-from-toolkit.sh`, which keeps the paths in `tools/extract-paths.txt`. Run it again
   and merge its result to take the toolkit's later changes; the script says how.
-- Every module moved, unchanged, into `src/python/queuekeeper` (the core) or
-  `src/python/queuekeeper/apple` (the Apple extension). No import is rewritten yet, so 22 of the
-  46 modules do not import, and every test module but `tests/test_queuekeeper_imports.py` fails to
-  import, because `tests/host_isolation.py` imports `vocaro_engineering`.
+- Every module is in `src/python/queuekeeper` (the core) or `src/python/queuekeeper/apple` (the Apple
+  extension), and every import the rules allow is written for this layout. 34 of the 46 modules
+  import. The other 12 wait for an import that breaks a rule to be cut: `disk`, and through it
+  `remote`, `merge_queue`, `lane_report`, `cli` and `apple.keychain`; `apple.simulators.speech`, and
+  through it `pool`, `matrix` and `apple.run_results`; and `apple.simulators.duo_pose` and `template`.
+- `tests/host_isolation.py` imports `cli` and `remote`, so no test module that imports it runs yet.
+  Five that need no host isolation run without it for now: `test_queuekeeper_imports`,
+  `test_lane_results`, `test_landing_proofs`, `test_git_state` and `test_shims`. Each says so, and
+  imports `host_isolation` again once that helper imports.
 - `tests/test_queuekeeper_imports.py` holds the rules: the core imports neither the toolkit nor the
   extension, and the extension never imports the toolkit. `tests/known_import_violations.txt`
   lists where the code breaks them today, and that list only shrinks.
@@ -34,37 +39,51 @@ These came whole and sit on the side that gets most of each.
 | `config.py` | core | Keep a loader for `queuekeeper.json` with the queue, lane and host keys. Delete the rest, which stays the toolkit's |
 | `budgets.py` | core | The device half of its doctor warnings goes to the extension; its use of `release` goes |
 
-## Toolkit files here only to copy from
+## Copies of toolkit code
 
-The toolkit keeps these. The core copies the little it uses, then the file is deleted here and its
-name taken out of `BORROWED` in `tests/test_queuekeeper_imports.py`, which until then counts an
-import of one as an import of the toolkit.
+The toolkit keeps these files, and the core holds a copy of the little it uses of each, unchanged.
+`tools/extract-paths.txt` still names the four files, so a later extraction that changed one shows as
+a conflict with its deletion here: port the change to the copy by hand, then keep the file deleted.
 
-| File | What the core takes |
-|---|---|
-| `evidence.py` | The lane-result vocabulary: `UNMEASURED`, `unmeasured_tests`, `counted`, `repeats_asked`, `skipped_tests`, `RAN`, `PYTEST_SUMMARY`. The core owns it, and the toolkit's `evidence` imports it |
-| `landing.py` | The four proofs: `contained`, `negated_claims`, `own_merges`, `brought_in`, with `proof`, `changes`, `hunks`, `same_change` and `resolutions` |
-| `toolkit_copy.py` | What `budgets` and `remote` use |
-| `stale_modules.py` | What `parallel` uses |
+| Toolkit file | Copy here | Tests |
+|---|---|---|
+| `evidence.py` | `lane_results.py`: the lane-result vocabulary. The core owns it, and the toolkit's `evidence` is to import it | `test_lane_results.py`, from `test_core.py` |
+| `landing.py` | `landing_proofs.py`: `contained`, `proof`, `own_merges`, `brought_in`, `negated`, `negated_claims` and what they rest on | `test_landing_proofs.py`, from `test_closeout.py` |
+| `toolkit_copy.py` | `git_state.py`: `git`, `behind`, `last_landed`, `worktrees` | `test_git_state.py`, new |
+| `stale_modules.py` | `shims.py`: the environment that puts the build-tool wrappers first on a lane's PATH | `test_shims.py`, from `test_stale_modules.py` |
+
+Still open:
+
+- `cli.py` still imports `evidence`, `toolkit_copy` and `stale_modules`, and `disk.py` `landing`, as
+  toolkit modules; they change to the copies when those two files are split.
+- The wrappers `bin/shims/xcodebuild` and `bin/shims/swift`, and the rebuild they make when a module
+  cache is stale, are not here. `shims.SHIMS` names a folder that does not exist, so a lane's own tools
+  run. They wrap Apple's build tools: decide whether they come to the extension.
+- The case of `test_core.py`'s `EvidenceTests` that goes through `cli.judge` comes with the lane runner.
+- The contract with the toolkit: a commit the queue lands past a conflict, by keeping both sides, must
+  read as landed by the `resolved` method in the toolkit's `landed.sh`.
 
 ## Import ties to cut
 
-`python3 tests/test_queuekeeper_imports.py --report` prints the current list. At the layout commit:
+`python3 tests/test_queuekeeper_imports.py --report` prints the current list. Now:
 
 | Kind | Count |
 |---|---|
-| Core imports toolkit | 30 |
+| Core imports toolkit | 22 |
 | Core imports Apple | 21 |
-| Apple imports toolkit | 14 |
-| Allowed, but written under a toolkit name or place (`old name`) | 34 |
+| Apple imports toolkit | 4 |
+| Allowed, but written under a toolkit name or place (`old name`) | 0 |
 
-- The old names are mechanical: `vocaro_engineering.processes` becomes `queuekeeper.processes`, and
-  the extension's `from . import remote` becomes `from .. import remote`.
+- Core imports toolkit: `cli` 15 and `disk` 5, which go when those files are split; `budgets` imports
+  `release`, and `parallel` `failure_records`, inside a function.
+- Core imports Apple: `cli` 12, `remote` 5, `disk` 3 and `merge_queue` 1, for the extension's hook points.
+  `cli.py` and `disk.py` still name the extension's modules as their own (`from . import devices`).
+- Apple imports toolkit: `keychain` imports `host_context`, `simulators.duo_pose` and
+  `simulators.template` import `support`, and `simulators.speech` imports `voiceover.activation`.
 - `processes`, `progress`, `lane_wait`, `lane_progress`, `resources` and `remote` import each other
-  inside functions and form one cycle. A module with such imports loads today and fails when the
-  function runs.
-- The tests import `vocaro_engineering` throughout, `tests/host_isolation.py` first. The import test
-  goes back to importing `host_isolation`, as every test module does, once that helper imports.
+  inside functions and form one cycle.
+- Tests still import five toolkit modules by the toolkit's name: `release`, `failure_records`,
+  `evidence_offload`, `ignored` and `host_context`.
 
 ## Tests
 
@@ -81,6 +100,9 @@ All tests are in `tests/`, flat, because each imports `host_isolation` from besi
 - **Core:** the rest. `test_processes`, `test_progress`, `test_waiting`, `test_leftover_stops` and
   `test_slow_listings` test moved modules and came along, though the plan's lists leave them out;
   `test_leftover_stops` also imports the simulator pool.
+- **Not brought, and needed:** `test_core` holds the admission tests (`ResourceTests`, `CpuBusyTests`,
+  `AdmissionLogTests`, `UsageTests`, `RecoveryTests`, `LaneLabelTests`), about 4,000 lines that test
+  `resources`, beside tests of what stays.
 - **Not brought:** `test_core`, `test_launcher`, `test_package_paths` and `test_setup` test `cli`
   and `config` beside toolkit modules; the cases about the lane runner, `admit` and the queue's
   config keys are still to be found and copied. `test_git_ssh` tests `bin/eng-git-ssh`, and
