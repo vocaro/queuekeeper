@@ -8,8 +8,16 @@ from pathlib import Path
 import sys
 
 if sys.version_info < (3, 14):
+    # A project that runs this launcher under an interpreter of its own, such as a pinned environment's, gets the
+    # Mac's python3 in its place, once: the lanes it runs still use whatever their commands name.
+    import shutil
+    other = shutil.which("python3")
+    if other and "QUEUEKEEPER_LAUNCHER_PYTHON" not in os.environ and not os.path.samefile(other, sys.executable):
+        os.environ["QUEUEKEEPER_LAUNCHER_PYTHON"] = other
+        os.execv(other, [other, __file__, *sys.argv[1:]])
     print(f"queuekeeper: needs Python 3.14 or newer, and {sys.executable} is {sys.version.split()[0]}", file=sys.stderr)
     raise SystemExit(2)
+os.environ.pop("QUEUEKEEPER_LAUNCHER_PYTHON", None)
 
 root = Path(__file__).resolve().parents[1]
 named = os.environ.get("QUEUEKEEPER_ROOT")
