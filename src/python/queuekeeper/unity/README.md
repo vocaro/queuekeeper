@@ -31,6 +31,28 @@ Switch it on in `queuekeeper.json`, and say where the Unity project is:
 Editors are matched by the absolute project path they were started with, so a sibling worktree's
 editor is never closed or counted as this project's.
 
+## Lanes
+
+A lane whose command runs the editor says so:
+
+```json
+"gate": {"command": ["./tools/verification/check.sh", "--gates"], "resource": "exclusive", "unity": true}
+```
+
+Queuekeeper then runs the command under `queuekeeper unity ready --` on whichever Mac runs the lane.
+The lane ends unmeasured, with nothing run, when that Mac has no editor, an editor has the project
+open, the lock is held, or an orphaned licensing helper will not stop. A lane without the key, such
+as a docs check, is not stopped by an open editor.
+
+## Doctor, disk and host
+
+- `queuekeeper doctor` warns when the pinned editor is missing on this Mac or the second Mac, when
+  a lane passes `-nographics`, and when there is no Unity project where the project says.
+- `queuekeeper disk` lists `Library/`, `Temp/` and `Logs/` in every checkout of the project. They
+  are kept while an editor has the project open or while they changed lately.
+- `queuekeeper host editors` lists the editors and batch runs on this Mac, each with its project
+  and version, and the versions installed.
+
 ## Commands
 
 ```bash
@@ -48,6 +70,13 @@ python3 scripts/qk unity closed -- ./tools/verification/check.sh --gates
 Closes the project's editor with SIGTERM, runs the command, and opens the editor again if it closed
 one. An editor that stays open, such as one asking about unsaved changes, is left alone and nothing
 runs.
+
+```bash
+python3 scripts/qk unity ready -- ./tools/verification/check.sh --gates
+```
+
+Runs the command once a batch run may start on the project, and exits 3 with nothing run when one
+may not. This is what a `"unity": true` lane runs under.
 
 ```bash
 python3 scripts/qk unity open
@@ -81,10 +110,12 @@ failed. `closed` otherwise exits with its command's own status.
 
 These parts of [issue 6](https://github.com/vocaro/queuekeeper/issues/6) are not built:
 
-- Doctor checks for the pinned editor on every Mac, the Hub sign-in and `-nographics` in a lane.
-- `Library/`, `Temp/` and `Logs/` in the disk inventory.
-- The lock and licensing checks before a lane starts, and an editor in Play mode making an
-  exclusive lane unmeasured.
-- A Mac's open editors in `queuekeeper host`.
-- Placing a lane by the GPU it needs.
-- Per-test results kept in the lane's results folder, as the Apple plugin's `xctest` keeps them.
+- **Placing a lane by the GPU it needs.** The second Mac's placement script runs before any plugin
+  exists there, so this needs a design of its own.
+- **Play mode.** An editor left in Play mode does not make a lane unmeasured, and
+  `queuekeeper host editors` does not show it. Only the editor knows its Play state.
+- **The Hub sign-in** in `doctor`. Nothing on disk was found that says whether the Hub is signed in.
+  A run on a Mac that is not signed in ends unmeasured, by its log.
+- **Per-test results in Queuekeeper's own form.** `unity test` keeps Unity's `results.xml` and
+  `tests.log` in the lane's results folder, but `queuekeeper run` does not print them per test as
+  it does for the Apple plugin's `xctest`.
