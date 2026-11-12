@@ -1,0 +1,64 @@
+# Lanes and admission
+
+A lane is a command Queuekeeper runs for you, such as a build or a test suite. Admission decides
+when a Mac has room to run it.
+
+## Lanes
+
+A lane is a named command in `queuekeeper.json`, written as an argument list, with a timeout and a
+statement of what it needs from the machine:
+
+```json
+{
+  "lanes": {
+    "unit":    {"command": ["queuekeeper", "unittest", "-s", "tests"], "timeout": 1800},
+    "ui":      {"command": ["scripts/ui-tests.sh"], "timeout": 3600, "unlockedScreen": true},
+    "measure": {"command": ["scripts/benchmarks.sh"], "resource": "exclusive"},
+    "gate":    {"parallel": ["unit", "ui"], "budgetMinutes": 20}
+  },
+  "queue": {"lanes": ["gate"]}
+}
+```
+
+`queuekeeper run LANE` runs one, for an agent as for the queue.
+
+- **Receipts.** Each run leaves a log and a receipt that records the commit, the command, the exit
+  status, the outcome, the Mac it ran on and how long it waited.
+- **Results by commit.** Results of whole-lane runs at a clean commit are kept by commit, so any
+  worktree can ask whether that commit already passed a lane.
+- **Test counts.** A lane can require a minimum number of executed tests, so a run that silently
+  selects nothing fails. Counts are read from unittest, pytest, XCTest and Swift Testing output.
+- **Groups.** A lane group runs its members side by side under one admission.
+- **Budgets.** `budgetMinutes` warns when the gate's median time drifts past the target, and names
+  the slowest parts.
+
+## Admission
+
+Ten agents that each start a build at the same moment make every build slow and every timing test
+meaningless. Every lane, and any command run through `queuekeeper admit -- COMMAND`, therefore asks
+the Mac for a slot first, in one first-come, first-served queue for the whole machine.
+
+- Three slots are always available. Further slots, up to half the cores, open one at a time while
+  the CPU busy share is under 75% and memory pressure is normal.
+- A lane can ask for the whole host, for work that starts its own parallel jobs, or for exclusive
+  use, for timing measurements. One lane at a time may use an on-device model or the GPU.
+- A waiting lane says what it is waiting for and behind whom, and repeats it every five minutes.
+- `queuekeeper admissions now` shows who holds slots and who is waiting on every Mac. An admission
+  log records every wait and hold.
+
+Admission cannot preempt running work, and it cannot see work that never asks, such as an editor's
+background indexing.
+
+## Process supervision
+
+Every lane runs in its own session and process group with a time limit. When a lane ends, times out
+or is stopped, Queuekeeper takes a census of what it started and stops what is left. If something
+survives, the run is marked uncertain and its slot stays held until that is settled, so the leftover
+load is never hidden. An entry whose owner has provably finished is recovered automatically.
+
+## Checking a project's setup
+
+`queuekeeper doctor` checks a project's lanes, such as a lane with no timeout or a test that no lane
+runs, and every Mac's setup.
+
+See also [The merge queue](merge_queue.md) and [The build farm](build_farm.md).
