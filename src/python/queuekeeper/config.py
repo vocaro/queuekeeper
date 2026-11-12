@@ -56,10 +56,10 @@ def load(root):
 # compares them, vocaro-engineering#248).
 LANE_KEYS = frozenset({"command", "resource", "minimumTests", "timeout", "foreground", "here", "model", "display",
                        "budgetMinutes", "wholeHost", "apps", "unlockedScreen", "devices", "compileFirst",
-                       "deviceRunMinutes", "stall"})
+                       "deviceRunMinutes", "stall", "unity"})
 # The lane keys above that an extension shipped here adds (hooks.LANE_KEYS), by its module: a project that uses one
 # without the extension is told which to switch on.
-EXTENSION_LANE_KEYS = {"display": "queuekeeper.mac_desktop"}
+EXTENSION_LANE_KEYS = {"display": "queuekeeper.mac_desktop", "unity": "queuekeeper.unity"}
 # The top-level keys an extension shipped here adds (hooks.CONFIG_KEYS), by its module, refused the same way.
 EXTENSION_CONFIG_KEYS = {"unity": "queuekeeper.unity"}
 GROUP_KEYS = frozenset({"parallel", "jobs", "resource", "here", "model", "budgetMinutes", "wholeHost", "unlockedScreen"})

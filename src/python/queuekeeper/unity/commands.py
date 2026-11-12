@@ -2,6 +2,7 @@
 
     queuekeeper unity test [--platform EditMode|PlayMode] [--results DIR]
     queuekeeper unity closed -- COMMAND
+    queuekeeper unity ready -- COMMAND
     queuekeeper unity open [--ensure | --status]
 
 Each exits 3, unmeasured, when nothing ran for a reason that says nothing of the work: no editor on this Mac, an
@@ -171,6 +172,26 @@ def closed(project, command):
     return status
 
 
+def replace(command):
+    """Become command, which keeps this process's PID and gives its own status."""
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os.execvp(command[0], command)
+
+
+def ready_then(project, command):
+    """Run command once a batch run may start on project (ready), as a lane that says "unity": true does. It ends
+    unmeasured, with command not run, when this Mac has no editor or one may not start."""
+    binary, status = found_editor(project)
+    if binary is None: return status
+    status = ready(project)
+    if status is not None: return status
+    try: replace(command)
+    except OSError as error:
+        warn(f"could not run {command[0]}: {error}")
+        return USAGE
+
+
 def git_directories(root):
     """(this worktree's git directory, the repository's), or None outside a repository."""
     ran = subprocess.run(["git", "-C", str(root), "rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"],
@@ -255,14 +276,16 @@ def main(arguments, project=None):
                        "results folder, or a temporary one)")
     actions.add_parser("closed", help="close the project's editor, run COMMAND, and open the editor again: "
                        "queuekeeper unity closed -- COMMAND")
+    actions.add_parser("ready", help="run COMMAND once a batch run may start on the project, and exit 3 with nothing "
+                       "run when one may not, as a lane that says \"unity\": true does: queuekeeper unity ready -- COMMAND")
     opened = actions.add_parser("open", help="open this linked worktree's editor, once; for a post-checkout hook, "
                                 f"which a session declines with {OPEN_VARIABLE}=0")
     how = opened.add_mutually_exclusive_group()
     how.add_argument("--ensure", action="store_true", help="open it now, whether or not it was opened before")
     how.add_argument("--status", action="store_true", help="only say whether one is open: exit 0 when it is, 1 when not")
     args = parser.parse_args(arguments)
-    if (command is not None) != (args.action == "closed") or command == []:
-        parser.error("closed takes the command after --, and only closed does")
+    if (command is not None) != (args.action in ("closed", "ready")) or command == []:
+        parser.error("closed and ready take the command after --, and only they do")
     root = Path(project or ".").resolve()
     try: config = configuration.load(root)
     except (OSError, ValueError) as error:
@@ -274,6 +297,7 @@ def main(arguments, project=None):
         return USAGE
     if args.action == "test": return test(found, args)
     if args.action == "closed": return closed(found, command)
+    if args.action == "ready": return ready_then(found, command)
     return open_editor(root, found, "ensure" if args.ensure else "status" if args.status else "once",
                        settings.layout(root, config))
 

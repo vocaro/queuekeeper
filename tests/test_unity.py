@@ -17,7 +17,7 @@ import host_isolation  # first, as every test module
 
 from queuekeeper import config, disk, extensions, unity
 from queuekeeper.lane_results import UNMEASURED, executed_tests
-from queuekeeper.unity import batch, commands, disk as unity_disk, doctor, editor, licensing, project, settings
+from queuekeeper.unity import batch, commands, disk as unity_disk, doctor, editor, lane, licensing, project, settings
 
 unity.register()
 
@@ -400,6 +400,24 @@ class CommandTests(Folder):
                     contextlib.redirect_stderr(io.StringIO()):
                 commands.main(arguments, str(self.root))
 
+    def test_ready_becomes_the_command_once_a_batch_run_may_start(self):
+        became = []
+        self.enterContext(patch.object(commands, "replace", became.append))
+        self.assertIsNone(self.unity("ready", "--", "check.sh", "--gates")[0])
+        self.assertEqual(became, [["check.sh", "--gates"]])
+
+    def test_ready_runs_nothing_while_an_editor_has_the_project_or_its_lock_is_held(self):
+        self.enterContext(patch.object(commands, "replace", lambda command: self.fail("the command ran")))
+        self.editors = [self.window()]
+        status, _, error = self.unity("ready", "--", "check.sh")
+        self.assertEqual(status, UNMEASURED)
+        self.assertIn("Unity is running on", error)
+        self.editors = []
+        with patch.object(project, "clear_stale_lock", side_effect=project.Held(self.project / project.LOCK, [99])):
+            self.assertEqual(self.unity("ready", "--", "check.sh")[0], UNMEASURED)
+        with patch.object(licensing, "repair", side_effect=licensing.Unrepaired("the helper stayed")):
+            self.assertEqual(self.unity("ready", "--", "check.sh")[0], UNMEASURED)
+
     def worktree(self, linked=True):
         own = self.folder / ("git/worktrees/w" if linked else "git")
         own.mkdir(parents=True, exist_ok=True)
@@ -557,6 +575,29 @@ class DiskTests(Folder):
         self.assertEqual(self.items(), {})
         self.assertEqual(unity_disk.items(None, None, None, {"simulator"}), [])
         self.assertIn(unity_disk.CATEGORY, disk.CATEGORIES)
+
+
+class LaneKeyTests(unittest.TestCase):
+    BASE = {"schemaVersion": 1, "name": "Project"}
+
+    def parse(self, value=True, listed=("queuekeeper.unity",)):
+        lanes = {"gate": {"command": ["./check.sh"], "resource": "heavy", "unity": value}}
+        return config.parse(json.dumps({**self.BASE, "extensions": list(listed), "lanes": lanes}))["lanes"]["gate"]
+
+    def test_a_lane_that_says_unity_runs_under_the_readiness_check_and_no_other_does(self):
+        gate = self.parse()
+        wrapped = extensions.lane_command(gate, gate["command"])
+        self.assertEqual(wrapped[1:], [str(config.TOOLKIT_ROOT / "bin/qk"), "unity", "ready", "--", "./check.sh"])
+        self.assertTrue((config.TOOLKIT_ROOT / "bin/qk").exists())
+        self.assertEqual(lane.UnityLane().command({"unity": False}, ["./check.sh"]), ["./check.sh"])
+        self.assertEqual(extensions.lane_command({}, ["./check.sh"]), ["./check.sh"])
+        self.assertFalse(extensions.reads_screen(gate))
+
+    def test_the_key_takes_true_or_false_and_is_refused_by_name_without_the_extension(self):
+        with self.assertRaisesRegex(ValueError, "gate.unity must be true or false"): self.parse("yes")
+        with patch.dict(extensions.LANE_KEYS, {}, clear=True), patch.object(extensions, "LOADED", ["queuekeeper.unity"]), \
+                self.assertRaisesRegex(ValueError, "gate.unity is the queuekeeper.unity extension's key"):
+            self.parse(listed=())
 
 
 if __name__ == "__main__":
