@@ -134,7 +134,7 @@ queuekeeper serve ../other-project # show another repository too
 |---|---|
 | Home | What the queue is doing in one line, three numbers for the day, and a line from each other tab that has something to say, what needs you first |
 | Queue | The round's gates, every entry waiting, and the last twenty settled, with why each came back |
-| Farm | Each Mac's admission slots, what holds them and what waits, for every project |
+| Farm | Each Mac's admission slots, what holds them and what waits, for every project, with its CPU's busy share against its limit, its load, its memory pressure and whether its screen is locked |
 | Logs | The queue's logs, newest first, and one of them followed as it is written |
 | History | The day's totals and the journal's last two hundred events |
 
@@ -164,8 +164,8 @@ other file, and one that fails shows its fault in its own tab while the others g
 
 **Limits.**
 
-- The Farm tab shows admission slots, holders and waiters. It does not show CPU load, memory
-  pressure or screen lock.
+- The Farm tab reads each Mac about every ten seconds, since each question to the second Mac is a
+  connection over SSH.
 - A server started where macOS denies local-network access, such as from some background
   launchers, shows the second Mac as unreachable. One started from a terminal reads it.
 - The page polls. A change shows within two seconds, not at once.

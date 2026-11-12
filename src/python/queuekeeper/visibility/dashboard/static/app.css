@@ -58,6 +58,7 @@ a { color: var(--accent); }
 .gate .top { display: flex; justify-content: space-between; gap: 8px; font-weight: 500; }
 .bar { height: 6px; border-radius: 3px; background: var(--soft); overflow: hidden; margin: 6px 0; }
 .bar i { display: block; height: 100%; background: var(--accent); }
+.bar i.over { background: #d99a1c; }
 .columns { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; }
 .columns .card { margin-top: 12px; }
 .controls { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }

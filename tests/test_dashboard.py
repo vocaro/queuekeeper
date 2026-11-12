@@ -20,6 +20,8 @@ import host_isolation  # noqa: F401 -- first, as every test module
 from queuekeeper import cli, events, extensions, merge_queue as mq, visibility
 from queuekeeper.visibility.dashboard import panels, registry, repository, server
 from queuekeeper.visibility.dashboard.panels import farm, history, home, logs, queue
+
+READ_DETAIL = farm.read_detail  # the real one, which Fixture replaces so that no test asks a Mac
 import test_merge_queue
 
 HOSTS = {"schemaVersion": 1, "hosts": [
@@ -30,6 +32,9 @@ HOSTS = {"schemaVersion": 1, "hosts": [
     {"name": "second Mac (build)", "role": "second", "state": "unknown", "reasons": ["ssh could not reach build"]}]}
 
 
+LOADS = {"here": {"cpuBusy": 68.0, "busyLimit": 75.0, "load": 3.2, "memory": "normal", "screen": "locked", "error": None}}
+
+
 class Fixture(test_merge_queue.Fixture):
     """A queue, a registry of the test's and a farm that is read from HOSTS and never from a Mac."""
 
@@ -38,11 +43,12 @@ class Fixture(test_merge_queue.Fixture):
         listed = patch.object(registry, "path", lambda: self.base / "settings" / registry.FILE)
         listed.start()
         self.addCleanup(listed.stop)
-        reading = patch.object(farm, "read", lambda: HOSTS)
-        reading.start()
-        self.addCleanup(reading.stop)
-        self.addCleanup(farm.STATE.update, reading=None, at=0.0, busy=False, error=None)
-        farm.STATE.update(reading=None, at=0.0, busy=False, error=None)
+        for name, value in (("read", lambda: HOSTS), ("read_detail", lambda: dict(LOADS))):
+            reading = patch.object(farm, name, value)
+            reading.start()
+            self.addCleanup(reading.stop)
+        self.addCleanup(farm.STATE.update, reading=None, detail={}, at=0.0, busy=False, error=None)
+        farm.STATE.update(reading=None, detail={}, at=0.0, busy=False, error=None)
         self.one = repository.Repository("project", self.repo)
 
     def settle(self, branch, state=mq.FAILED, **fields):
@@ -172,9 +178,45 @@ class Panels(Fixture):
                                            "exclusive": False}])
         self.assertEqual(here["waiters"], [{"label": "other unit", "waitedSeconds": 12.5, "reason": "every slot is busy"}])
         self.assertEqual((second["state"], second["reasons"]), ("unknown", ["ssh could not reach build"]))
+        self.assertEqual((here["load"], second["load"]), (LOADS["here"], None))
         self.assertEqual(farm.summary(self.one), {
             "title": "Farm", "level": "warning",
-            "text": "1 Mac read, 2 of 7 slots in use, 1 waiting; second Mac (build) could not be read"})
+            "text": "1 Mac read, 2 of 7 slots in use, 1 waiting; the screen of this Mac (desk) is locked; "
+                    "second Mac (build) could not be read"})
+
+    def test_a_macs_load_is_what_its_pressure_and_screen_readings_say(self):
+        self.assertEqual(farm.load_of({"cpuBusy": 91.4, "busyLimit": 75, "load": 12.08, "memory": 4}, {"state": "unlocked"}),
+                         {"cpuBusy": 91.4, "busyLimit": 75, "load": 12.08, "memory": "critical", "screen": "unlocked",
+                          "error": None})
+        self.assertEqual(farm.load_of({"cpuBusy": None, "memory": None, "busyLimit": True}, {"state": "asleep"}),
+                         {"cpuBusy": None, "busyLimit": None, "load": None, "memory": None, "screen": "unknown",
+                          "error": None})
+        self.assertEqual(farm.load_of({"error": "no slot directory"}, None)["error"], "no slot directory")
+        self.assertEqual(farm.load_of("nonsense", [])["screen"], "unknown")
+
+    def test_both_macs_are_asked_and_one_that_cannot_be_is_given_its_reason(self):
+        pressure = {"cpuBusy": 10.0, "busyLimit": 75.0, "load": 1.0, "memory": 1}
+        with patch.object(farm.offload_host, "pressure", return_value=pressure), \
+                patch.object(farm.offload_host, "screen", return_value={"state": "unlocked"}), \
+                patch.object(farm.remote, "configured", return_value="build"), \
+                patch.object(farm.remote, "reading_there", return_value=({**pressure, "cpuBusy": 80.0}, 80.0)), \
+                patch.object(farm.remote, "screen_there", return_value={"state": "locked"}):
+            found = READ_DETAIL()
+            self.assertEqual((found["here"]["cpuBusy"], found["here"]["screen"]), (10.0, "unlocked"))
+            self.assertEqual((found["second"]["cpuBusy"], found["second"]["screen"]), (80.0, "locked"))
+            with patch.object(farm.remote, "screen_there", side_effect=farm.remote.Unavailable("build is asleep")):
+                self.assertEqual(READ_DETAIL()["second"]["error"], "build is asleep")
+            with patch.object(farm.remote, "configured", return_value=None):
+                self.assertEqual(list(READ_DETAIL()), ["here"])
+
+    def test_a_load_that_cannot_be_read_leaves_the_slots_and_the_last_load_shown(self):
+        self.read_farm()
+        farm.STATE["at"] = 0.0
+        with patch.object(farm, "read_detail", side_effect=RuntimeError("no ioreg")):
+            self.read_farm()
+        found = farm.data(self.one, {})
+        self.assertIsNone(found["error"])
+        self.assertEqual(found["hosts"][0]["load"], LOADS["here"])
 
     def test_a_farm_that_cannot_be_read_says_why_and_keeps_its_last_reading(self):
         self.read_farm()
