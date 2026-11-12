@@ -236,11 +236,11 @@ class ReleaseLane(Fixture):
         lane = {"command": [sys.executable, "-c", LANE.format(source=str(SOURCE)), "--owner", "session-a",
                             "--wait", "0", *[word for key in keys for word in ("--device", key)], "--",
                             *self.command()], "minimumTests": len(keys)}
-        (root / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Devices", "lanes": {
+        (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Devices", "lanes": {
             "gate": {"command": [sys.executable, "-c", "pass"]}, "device-voiceover": lane},
             "release": {"lanes": ["device-voiceover"]}}))
         (root / ".gitignore").write_text(".build/\n")
-        for words in (["init", "-q"], ["add", "engineering.json", ".gitignore"],
+        for words in (["init", "-q"], ["add", "queuekeeper.json", ".gitignore"],
                       ["-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qm", "project"]):
             subprocess.run(["git", "-C", str(root), *words], check=True)
         commit = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()

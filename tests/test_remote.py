@@ -523,7 +523,7 @@ class RemoteTests(unittest.TestCase):
                 "capture_output=True, text=True, env=env).stdout if helpers[-1:] and 'store' in helpers[-1] else ''; "
                 "print([line for line in fill.splitlines() if line.startswith('username=')])"]},
         }
-        (self.project / "engineering.json").write_text(json.dumps(
+        (self.project / "queuekeeper.json").write_text(json.dumps(
             {"schemaVersion": 1, "name": "Example", "lanes": lanes}, indent=2))
         (self.project / ".gitignore").write_text(".build/\n")
         # A directory of the checkout's own, for a command that runs in one.
@@ -588,8 +588,7 @@ class RemoteTests(unittest.TestCase):
             shutil.copytree(config.TOOLKIT_ROOT / part, root / part, ignore=shutil.ignore_patterns("__pycache__"))
         # Its .gitignore keeps out the bytecode that running it writes beside its source.
         shutil.copyfile(config.TOOLKIT_ROOT / ".gitignore", root / ".gitignore")
-        (root / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "vocaro-engineering",
-                                                           "toolkit": {"path": "."}}))
+        (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "vocaro-engineering"}))
         subprocess.run(["git", "init", "-q", "-b", "main", str(root)], check=True)
         # The fixture can be removed as soon as its first commit returns. A detached repack can race that cleanup.
         git(root, "config", "maintenance.auto", "false")
@@ -601,10 +600,10 @@ class RemoteTests(unittest.TestCase):
         return root
 
     def test_a_toolkit_origin_naming_a_path_here_is_refused_before_anything_is_sent(self):
-        settings = json.loads((self.toolkit / "engineering.json").read_text())
+        settings = json.loads((self.toolkit / "queuekeeper.json").read_text())
         settings["lanes"] = {"check": {"command": [sys.executable, "-c", "print('Ran 1 tests')"], "minimumTests": 1,
                                        "resource": "heavy"}}
-        (self.toolkit / "engineering.json").write_text(json.dumps(settings))
+        (self.toolkit / "queuekeeper.json").write_text(json.dumps(settings))
         commit_all(self.toolkit)
         # A clone of a checkout here, as QUEUEKEEPER_ROOT may name: its origin is that checkout's path.
         clone = Path(self.temp.name) / "clone/vocaro-engineering"
@@ -642,7 +641,7 @@ class RemoteTests(unittest.TestCase):
 
     def test_declined_dispatches_reuse_the_hosts_original_arrival_after_a_busy_checkout(self):
         release = self.hold_slot(1)
-        settings = json.loads((self.project / "engineering.json").read_text())
+        settings = json.loads((self.project / "queuekeeper.json").read_text())
         sent, arrivals = {}, []
         def dispatch():
             return remote.execute(self.project, settings, "fake", ["run", "--here", "--if-free", "check"],
@@ -664,7 +663,7 @@ class RemoteTests(unittest.TestCase):
         # vocaro-engineering#380: the heartbeat's last word falls after the decline's connection ended, and its writer
         # was finalized with the failed word still buffered, which printed a BrokenPipeError as an ignored exception.
         release = self.hold_slot(1)
-        settings = json.loads((self.project / "engineering.json").read_text())
+        settings = json.loads((self.project / "queuekeeper.json").read_text())
         beating, original = [], remote.heartbeat
         def heartbeat(channel, seconds):
             beating.append(threading.current_thread())
@@ -696,9 +695,9 @@ class RemoteTests(unittest.TestCase):
                    "from queuekeeper import resources; "
                    "print('transport-age-absent:', resources.REQUEST_STARTED not in os.environ); "
                    "print('fresh-child-priority:', time.time()-resources.request_started()<30); print('Ran 1 tests')")
-        settings = json.loads((self.project / "engineering.json").read_text())
+        settings = json.loads((self.project / "queuekeeper.json").read_text())
         settings["lanes"]["own"]["command"] = [sys.executable, "-c", command]
-        (self.project / "engineering.json").write_text(json.dumps(settings))
+        (self.project / "queuekeeper.json").write_text(json.dumps(settings))
         commit_all(self.project)
         for name, arguments in [("admit", ["remote", "admit", "--", sys.executable, "-c", command]),
                                 ("own", ["remote", "run", "own"])]:
@@ -857,7 +856,7 @@ class RemoteTests(unittest.TestCase):
         launcher = self.project / "scripts/qk"
         launcher.parent.mkdir()
         launcher.write_text("print('TEST simulated')\nprint('Repeat series: asked 3 repeats')\n")
-        settings = self.project / "engineering.json"
+        settings = self.project / "queuekeeper.json"
         config = json.loads(settings.read_text())
         config["lanes"]["pool"] = {"command": [sys.executable, "scripts/qk", "simulator-tests", "--scheme", "A",
                                               "--runtime", "iOS-27-2", "--device", "iPhone-17-Pro"],
@@ -928,7 +927,7 @@ class RemoteTests(unittest.TestCase):
         # vocaro-engineering#104: the toolkit's working tree goes as the project's does, where it used to
         # be refused and the work kept on this Mac, which reads that same tree.
         head = git(self.toolkit, "rev-parse", "HEAD")
-        settings = self.toolkit / "engineering.json"
+        settings = self.toolkit / "queuekeeper.json"
         settings.write_text(settings.read_text() + "\n")
         (self.toolkit / "untracked.txt").write_text("new\n")
         status, output, error = self.qk("remote", "run", "check")
@@ -942,17 +941,17 @@ class RemoteTests(unittest.TestCase):
         # The second Mac ran the snapshot, untracked file included.
         kit = self.checkout(0).parent / "vocaro-engineering"
         self.assertEqual(git(kit, "rev-parse", "HEAD"), receipt["toolkit"])
-        self.assertEqual((kit / "engineering.json").read_text(), settings.read_text())
+        self.assertEqual((kit / "queuekeeper.json").read_text(), settings.read_text())
         self.assertTrue((kit / "untracked.txt").is_file())
         # The toolkit checkout's own HEAD, index and working tree are as they were.
         self.assertEqual(git(self.toolkit, "rev-parse", "HEAD"), head)
-        self.assertEqual(git(self.toolkit, "status", "--porcelain"), "M engineering.json\n?? untracked.txt")
+        self.assertEqual(git(self.toolkit, "status", "--porcelain"), "M queuekeeper.json\n?? untracked.txt")
         # A run on a toolkit no branch holds is no pass of the project's commit.
         self.assertEqual(self.qk("remote", "passed", "check")[0], 1)
         status, _output, error = self.qk("remote", "admit", "--", "true")
         self.assertEqual(status, 0, error)
         # The positive control: with the toolkit committed, the same commit's run is a pass.
-        git(self.toolkit, "checkout", "--", "engineering.json")
+        git(self.toolkit, "checkout", "--", "queuekeeper.json")
         (self.toolkit / "untracked.txt").unlink()
         status, output, error = self.qk("remote", "run", "check")
         self.assertEqual(status, 0, output + error)
@@ -1042,7 +1041,7 @@ class RemoteTests(unittest.TestCase):
         offered.sent = {"commit": self.commit, "kit": kit}
         with patch.object(remote, "TOOLKIT_ROOT", self.toolkit):
             self.assertIsNone(remote.changed_since(self.project, offered))
-            (self.toolkit / "engineering.json").write_text("{}\n")
+            (self.toolkit / "queuekeeper.json").write_text("{}\n")
             self.assertIn("toolkit's working tree changed after", remote.changed_since(self.project, offered))
 
     def test_a_different_xcode_on_the_second_mac_is_refused(self):
@@ -1768,7 +1767,7 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual(left.read_text(), "a run left this\n")
 
     def test_two_requests_for_one_slot_run_there_in_turn(self):
-        settings = self.project / "engineering.json"
+        settings = self.project / "queuekeeper.json"
         project = json.loads(settings.read_text())
         # Fails if the other request's run is in the checkout, and holds it until the test says so.
         project["lanes"]["turn"] = {"resource": "self", "command": [sys.executable, "-c", (
@@ -1872,7 +1871,7 @@ class RemoteTests(unittest.TestCase):
         (self.project / "scripts").mkdir()
         (self.project / "scripts/helper.py").write_text("NAME = 'helper'\n")
         commit_all(self.project)
-        command = json.loads((self.project / "engineering.json").read_text())["lanes"]["imports"]["command"]
+        command = json.loads((self.project / "queuekeeper.json").read_text())["lanes"]["imports"]["command"]
         results = lambda name: self.project / ".build/queuekeeper/remote" / name
         slot = lambda name: json.loads((results(name) / "source.json").read_text())["result"]["slot"]
         # A lane's output is in its log, and a command's in its output.
@@ -1970,7 +1969,7 @@ class RemoteTests(unittest.TestCase):
                 f'#!/bin/sh\nif [ "$HOME" = "$FAKE_HOME" ] && [ "$*" = {shlex.quote(arguments)} ]; then\n'
                 f'    exec /bin/cat {shlex.quote(str(listing))}\nfi\n{fallback}\n')
 
-        settings = self.project / "engineering.json"
+        settings = self.project / "queuekeeper.json"
         project = json.loads(settings.read_text())
         # The lane records its actual PID and the queuekeeper process supervising it, together.
         project["lanes"]["linger"]["command"] = [sys.executable, "-c",
@@ -2724,11 +2723,11 @@ class RemoteTests(unittest.TestCase):
     def test_buildhost_on_a_lane_or_group_is_refused_before_anything_runs_on_either_mac(self):
         # vocaro-engineering#58 removed it. A checkout that still gives it, true to send a lane there or
         # false to keep it here, is refused, rather than having its work go where it did not say.
-        refused = ("queuekeeper: engineering.json gives {} \"buildHost\", which vocaro-engineering#58 removed: every heavy or "
+        refused = ("queuekeeper: queuekeeper.json gives {} \"buildHost\", which vocaro-engineering#58 removed: every heavy or "
                    "exclusive lane goes to the second Mac unless it says why it stays, with \"here\": \"REASON\", so "
                    "delete {}, and rebase a checkout older than that change onto main (guides/shared-host.md, "
                    "Earlier names)\n")
-        original = (self.project / "engineering.json").read_text()
+        original = (self.project / "queuekeeper.json").read_text()
         for marks, named, pronoun in [({"gate": True}, "gate", "it"), ({"gate": False}, "gate", "it"),
                                       ({"pair": True}, "pair", "it"), ({"pair": False}, "pair", "it"),
                                       ({"gate": True, "pair": False}, "gate and pair", "each"),
@@ -2736,7 +2735,7 @@ class RemoteTests(unittest.TestCase):
             with self.subTest(marks):
                 settings = json.loads(original)
                 for name, value in marks.items(): settings["lanes"][name]["buildHost"] = value
-                (self.project / "engineering.json").write_text(json.dumps(settings, indent=2))
+                (self.project / "queuekeeper.json").write_text(json.dumps(settings, indent=2))
                 for arguments in (["gate"], ["--here", "gate"], ["--offload-only", "gate"], ["pair"], ["fail"]):
                     status, output, error = self.run_here(*arguments)
                     self.assertEqual((status, error), (2, refused.format(named, pronoun)), output + error)
@@ -2747,7 +2746,7 @@ class RemoteTests(unittest.TestCase):
                     self.assertFalse((self.project / ".build/queuekeeper" / place).exists(), place)
                 self.assertFalse((self.home / remote.ROOT).exists())
         # The positive control: the same lanes without it run, the heavy one on the second Mac.
-        (self.project / "engineering.json").write_text(original)
+        (self.project / "queuekeeper.json").write_text(original)
         status, output, error = self.run_here("gate")
         self.assertEqual(status, 0, output + error)
         self.assertEqual(json.loads((self.project / ".build/queuekeeper/remote/gate/source.json").read_text())["ranOn"],
@@ -2949,9 +2948,9 @@ class RemoteTests(unittest.TestCase):
         self.assertFalse((results / "lanes").exists())
         self.assertEqual(self.lane_files("pair", "right", there)[1]["executedTests"], 2)
         # A later run that never reaches its lanes sends back nothing an earlier run left there.
-        settings = json.loads((self.project / "engineering.json").read_text())
+        settings = json.loads((self.project / "queuekeeper.json").read_text())
         settings["lanes"]["provision"]["command"] = [sys.executable, "-c", "raise SystemExit(4)"]
-        (self.project / "engineering.json").write_text(json.dumps(settings, indent=2))
+        (self.project / "queuekeeper.json").write_text(json.dumps(settings, indent=2))
         commit_all(self.project)
         status, output, error = self.qk("remote", "run", "pair")
         self.assertEqual(status, 2, output + error)
@@ -2968,14 +2967,14 @@ class RemoteTests(unittest.TestCase):
             output.write("\ndef cpu(identities):\n    return {pid: (start, 0) for pid, start in identities.items()} "
                          "if identities else None\n")
         commit_all(self.toolkit)
-        settings = json.loads((self.project / "engineering.json").read_text())
+        settings = json.loads((self.project / "queuekeeper.json").read_text())
         # Fixed: one second is the test's configured quiet bound, not a production calibration.
         settings["lanes"].update({
             "quiet": {"command": [sys.executable, "-c", "import time; time.sleep(120)"],
                       "timeout": round(stretched(30)), "stall": {
                           "seconds": 1, "action": "stop", "reason": "fixture's deliberately idle command"}},
             "quiet-group": {"parallel": ["quiet", "left"]}})
-        (self.project / "engineering.json").write_text(json.dumps(settings))
+        (self.project / "queuekeeper.json").write_text(json.dumps(settings))
         commit_all(self.project)
         for lane, observation in (("quiet", "results/progress.json"),
                                   ("quiet-group", "results/quiet/progress.json")):
@@ -3176,11 +3175,11 @@ class RemoteTests(unittest.TestCase):
                  "    print('-> Test %s()' % name + (' passed after 0.001 seconds.' if os.environ.get('FAKE_CORPUS') else\n"
                  "        ' was cancelled after 0.001 seconds: \"Set FAKE_CORPUS for the admitted corpus.\"'))\n"
                  "print('Test run with 2 tests in 1 suite passed after 0.001 seconds.')\n")
-        settings = json.loads((self.project / "engineering.json").read_text())
+        settings = json.loads((self.project / "queuekeeper.json").read_text())
         settings["lanes"]["corpus"] = {"command": [sys.executable, "-c", tests], "resource": "heavy"}
         settings["lanes"]["corpus-gate"] = {"command": ["env", "FAKE_CORPUS=pinned", sys.executable, "-c", tests],
                                             "resource": "heavy"}
-        (self.project / "engineering.json").write_text(json.dumps(settings))
+        (self.project / "queuekeeper.json").write_text(json.dumps(settings))
         for lane, expect, code, outcome in [("corpus", "2", lane_results.UNMEASURED, "unmeasured"),
                                             ("corpus-gate", "2", 0, "passed"), ("corpus", "3", 2, "failed")]:
             with self.subTest(lane=lane, expect=expect):
@@ -3197,9 +3196,9 @@ class RemoteTests(unittest.TestCase):
     def test_every_lane_is_admitted_and_offered_to_the_second_mac_first_light_ones_included(self):
         # The owner's decision, 2026-11-07 (vocaro-engineering#200): first come, first served, the second Mac first,
         # and no light exception. fail says "light" and fails with 3; an unmarked lane is heavy work too.
-        lanes = json.loads((self.project / "engineering.json").read_text())
+        lanes = json.loads((self.project / "queuekeeper.json").read_text())
         lanes["lanes"]["unmarked"] = {"command": [sys.executable, "-c", "print('Ran 1 tests')"]}
-        (self.project / "engineering.json").write_text(json.dumps(lanes))
+        (self.project / "queuekeeper.json").write_text(json.dumps(lanes))
         for lane, expected in [("fail", 3), ("unmarked", 0)]:
             with self.subTest(lane):
                 status, output, error = self.run_here(lane)
@@ -3346,10 +3345,10 @@ class RemoteTests(unittest.TestCase):
         """vocaro-engineering#185: a lane that says "unlockedScreen": true goes to a Mac whose screen queuekeeper reads as
         unlocked, says where it fell back and what the screen read, and waits rather than run on a locked one. Each
         Mac's screen comes from a recording: the second Mac's from FAKE_SCREEN_IOREG, this Mac's from its own."""
-        original = (self.project / "engineering.json").read_text()
+        original = (self.project / "queuekeeper.json").read_text()
         settings = json.loads(original)
         settings["lanes"]["gate"]["unlockedScreen"] = True
-        (self.project / "engineering.json").write_text(json.dumps(settings, indent=2))
+        (self.project / "queuekeeper.json").write_text(json.dumps(settings, indent=2))
         # The second Mac locked by its idle time, this Mac unlocked: the lane runs here, and nothing is sent.
         with patch.dict(os.environ, {"FAKE_SCREEN_IOREG": str(SCREENS / "second-mac-locked-idle.plist")}):
             status, output, error = self.run_here("gate")
@@ -3382,7 +3381,7 @@ class RemoteTests(unittest.TestCase):
         self.assertFalse((self.project / ".build/queuekeeper/gate").exists())
         self.assertFalse((self.project / ".build/queuekeeper/remote/gate").exists())
         # The negative control: the lane without the declaration goes to the locked second Mac, as before.
-        (self.project / "engineering.json").write_text(original)
+        (self.project / "queuekeeper.json").write_text(original)
         with patch.dict(os.environ, {"FAKE_SCREEN_IOREG": str(SCREENS / "second-mac-locked-by-hand.plist")}):
             status, output, error = self.run_here("gate")
         self.assertEqual(status, 0, output + error)
@@ -3531,7 +3530,7 @@ class RemoteTests(unittest.TestCase):
             self.assertFalse(lane.exists(), output)
         (self.project / "new.txt").write_text("new\n")
         # The toolkit's snapshot is held to what was sent the same way (vocaro-engineering#104).
-        settings = self.toolkit / "engineering.json"
+        settings = self.toolkit / "queuekeeper.json"
         settings.write_text(settings.read_text() + "\n")
         with self.subTest("toolkit changed"), contextlib.ExitStack() as here, contextlib.ExitStack() as there:
             here.enter_context(self.busy_here())
@@ -3542,7 +3541,7 @@ class RemoteTests(unittest.TestCase):
             status, output = self.waits_there("gate", waiting, change)
             self.assertEqual(status, 2, output)
             self.assertIn("queuekeeper: gate not run on this Mac: the toolkit's working tree changed after ", output)
-            self.assertIn("M\tengineering.json", output)
+            self.assertIn("M\tqueuekeeper.json", output)
             self.assertFalse(lane.exists(), output)
 
     # Fixed: the 8 s overflow wait is the behavior under test, and both Macs stay busy past it.
@@ -3808,9 +3807,9 @@ class RemoteTests(unittest.TestCase):
             stack.callback(lambda: (python.unlink(), python.symlink_to(target)))
 
         def provisioning(stack):
-            settings = json.loads((self.project / "engineering.json").read_text())
+            settings = json.loads((self.project / "queuekeeper.json").read_text())
             settings["lanes"]["provision"]["command"] = [sys.executable, "-c", "raise SystemExit(4)"]
-            (self.project / "engineering.json").write_text(json.dumps(settings, indent=2))
+            (self.project / "queuekeeper.json").write_text(json.dumps(settings, indent=2))
             commit_all(self.project)
 
         return [("login", login, ["ssh reached fake but could not log in: someone@fake: Permission denied",
@@ -3994,13 +3993,13 @@ exec {shlex.quote(real)} "$@"
         self.assertFalse((self.project / ".build/queuekeeper/gate").exists())
         self.assertFalse((self.project / ".build/queuekeeper/remote/gate").exists())
         # A toolkit checkout with changes no longer declines: it goes as a snapshot (vocaro-engineering#104).
-        (self.toolkit / "engineering.json").write_text((self.toolkit / "engineering.json").read_text() + "\n")
+        (self.toolkit / "queuekeeper.json").write_text((self.toolkit / "queuekeeper.json").read_text() + "\n")
         status, output, error = self.run_here("--offload-only", "gate")
         self.assertEqual(status, 0, output + error)
         self.assertTrue(json.loads((self.project / ".build/queuekeeper/remote/gate/source.json").read_text())
                         ["toolkitSnapshot"])
         self.assertFalse((self.project / ".build/queuekeeper/gate").exists())
-        git(self.toolkit, "checkout", "--", "engineering.json")
+        git(self.toolkit, "checkout", "--", "queuekeeper.json")
         shutil.rmtree(self.project / ".build/queuekeeper/remote/gate")
         # A lane the second Mac never takes, and --here, contradict the mode.
         for lane, because in [("build", "the lane says: its goldens"), ("local-pair", "its lane build says"),
@@ -4128,7 +4127,7 @@ exec {shlex.quote(real)} "$@"
         # A toolkit checkout with changes no longer keeps the lane here: its tree goes as a snapshot
         # (vocaro-engineering#104).
         (self.project / ".build/queuekeeper/gate/source.json").unlink()
-        (self.toolkit / "engineering.json").write_text((self.toolkit / "engineering.json").read_text() + "\n")
+        (self.toolkit / "queuekeeper.json").write_text((self.toolkit / "queuekeeper.json").read_text() + "\n")
         status, output, error = self.run_here("gate")
         self.assertEqual(status, 0, output + error)
         self.assertNotIn("on this Mac", error)
@@ -4325,7 +4324,7 @@ exec {shlex.quote(real)} "$@"
         self.assertEqual(self.session(linked), before)
         self.assertEqual(git(linked, "show", f"{commit}:edited.txt"), "edited")
         self.assertEqual(git(linked, "ls-tree", "-r", "--name-only", commit).split(),
-                         [".gitignore", "edited.txt", "engineering.json", "new.txt", "pkg/README.md"])
+                         [".gitignore", "edited.txt", "new.txt", "pkg/README.md", "queuekeeper.json"])
 
     def test_nested_work_runs_its_lane_inside_the_admission_it_inherits(self):
         inner = [sys.executable, str(self.toolkit / "bin/qk"), "--project", str(self.project), "run", "gate"]
@@ -4340,7 +4339,7 @@ exec {shlex.quote(real)} "$@"
     def test_configuration_refuses_buildhost_on_any_lane_or_group_whatever_its_value(self):
         # vocaro-engineering#58 removed it. True, which sent a lane to the second Mac, and false, which no longer
         # kept one here, are refused alike, on a lane of any kind and on a group, before any other check.
-        refused = ("engineering.json gives {} \"buildHost\", which vocaro-engineering#58 removed: every heavy or "
+        refused = ("queuekeeper.json gives {} \"buildHost\", which vocaro-engineering#58 removed: every heavy or "
                    "exclusive lane goes to the second Mac unless it says why it stays, with \"here\": \"REASON\", so "
                    "delete {}, and rebase a checkout older than that change onto main (guides/shared-host.md, "
                    "Earlier names)")
@@ -4351,12 +4350,12 @@ exec {shlex.quote(real)} "$@"
             marked = "group" if "group" in lanes else "lane"
             for value in [True, False, 1, None]:
                 with self.subTest(lanes=lanes, value=value):
-                    (self.project / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
+                    (self.project / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
                         "lanes": {**lanes, marked: {**lanes[marked], "buildHost": value}}}))
                     with self.assertRaises(ValueError) as raised: config.load(self.project)
                     self.assertEqual(str(raised.exception), refused.format(marked, "it"))
         # It names every lane and group that gives it, so that one change fixes them all.
-        (self.project / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example", "lanes": {
+        (self.project / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example", "lanes": {
             "a": {**heavy, "buildHost": True}, "b": heavy, "c": {**heavy, "buildHost": False},
             "g": {"parallel": ["b"], "resource": "heavy", "buildHost": True}}}))
         with self.assertRaises(ValueError) as raised: config.load(self.project)
@@ -4366,7 +4365,7 @@ exec {shlex.quote(real)} "$@"
         for lanes, reason in zip(kinds, [None, None, None,
                                          "the lane says: GPU goldens", None]):
             with self.subTest(lanes=lanes), contextlib.redirect_stderr(StringIO()) as said:
-                (self.project / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
+                (self.project / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
                                                                            "lanes": lanes}))
                 loaded = config.load(self.project)["lanes"]
                 self.assertEqual(config.stays(loaded, "group" if "group" in lanes else "lane"), reason)
@@ -4383,7 +4382,7 @@ exec {shlex.quote(real)} "$@"
             "a group's own reason": {"other": heavy, "group": {"parallel": ["other"], "resource": "heavy", "here": ""}}}
         for case, lanes in invalid.items():
             with self.subTest(case):
-                (self.project / "engineering.json").write_text(json.dumps(
+                (self.project / "queuekeeper.json").write_text(json.dumps(
                     {"schemaVersion": 1, "name": "Example", "lanes": lanes}))
                 with self.assertRaises(ValueError): config.load(self.project)
         # The positive controls: a lane, and a group, that say why, a group that runs such a lane, and a
@@ -4393,7 +4392,7 @@ exec {shlex.quote(real)} "$@"
         lanes = {"goldens": goldens, "other": heavy,
                  "group": {"parallel": ["goldens", "other"], "resource": "heavy"},
                  "own": {"parallel": ["other"], "resource": "heavy", "here": "a measurement tied to this Mac"}}
-        (self.project / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example", "lanes": lanes}))
+        (self.project / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example", "lanes": lanes}))
         loaded = config.load(self.project)["lanes"]
         self.assertEqual([config.stays(loaded, name) for name in lanes],
                          ["the lane says: its goldens come from this Mac's GPU", None,
@@ -4706,10 +4705,10 @@ exec {shlex.quote(real)} "$@"
 
     def self_lane(self, name, inner):
         """Add a self lane whose script runs `queuekeeper admit` with inner's words twice, as a build and a run of it."""
-        settings = json.loads((self.project / "engineering.json").read_text())
+        settings = json.loads((self.project / "queuekeeper.json").read_text())
         admit = shlex.join([sys.executable, str(self.toolkit / "bin/qk"), "admit", *inner])
         settings["lanes"][name] = {"resource": "self", "command": ["/bin/sh", "-c", f"{admit} && {admit}"]}
-        (self.project / "engineering.json").write_text(json.dumps(settings))
+        (self.project / "queuekeeper.json").write_text(json.dumps(settings))
         commit_all(self.project)
 
     def test_a_self_lanes_parts_stay_on_the_mac_where_the_lane_runs(self):
@@ -4869,7 +4868,7 @@ exec {shlex.quote(real)} "$@"
                   "json.dump({'directory': os.getcwd(), 'new': read('new.txt'), 'edited': read('edited.txt'), "
                   "'provisioned': os.path.exists(os.path.join(here, '.build', 'provisioned')), 'toolkit': root, "
                   "'real': root and os.path.realpath(root), "
-                  "'settings': open(os.path.join(root, 'engineering.json')).read() if root else None}, "
+                  "'settings': open(os.path.join(root, 'queuekeeper.json')).read() if root else None}, "
                   "open(os.environ['PROBE_FILE'], 'w'))\n"
                   "if 'edit' in sys.argv[2:]: open('README.md', 'a').write('formatted\\n')\n"
                   "sys.exit(int(sys.argv[1]))")
@@ -4967,7 +4966,7 @@ exec {shlex.quote(real)} "$@"
             self.assertEqual(self.worktrees(self.project), [f"worktree {self.project.resolve()}"])
         (self.project / "notes.txt").unlink()
         # The toolkit's tree is held to what was sent the same way: a worktree of it at the commit sent goes beside.
-        settings = self.toolkit / "engineering.json"
+        settings = self.toolkit / "queuekeeper.json"
         sent_settings = settings.read_text()
         with self.subTest("toolkit changed"), contextlib.ExitStack() as here, contextlib.ExitStack() as there:
             here.enter_context(self.busy_here())
@@ -4987,11 +4986,11 @@ exec {shlex.quote(real)} "$@"
             self.assertEqual(self.worktrees(self.project), [f"worktree {self.project.resolve()}"])
 
     def test_the_toolkit_runs_itself_without_a_second_checkout(self):
-        settings = json.loads((self.toolkit / "engineering.json").read_text())
+        settings = json.loads((self.toolkit / "queuekeeper.json").read_text())
         # Heavy, so the second Mac's policy refresh fetches the toolkit's origin from its own checkout.
         settings["lanes"] = {"check": {"command": [sys.executable, "-c", "print('Ran 1 tests')"], "minimumTests": 1,
                                        "resource": "heavy"}}
-        (self.toolkit / "engineering.json").write_text(json.dumps(settings))
+        (self.toolkit / "queuekeeper.json").write_text(json.dumps(settings))
         commit = commit_all(self.toolkit)
         with contextlib.redirect_stdout(StringIO()), contextlib.redirect_stderr(StringIO()) as error:
             self.assertEqual(cli.main(["--project", str(self.toolkit), "remote", "run", "check"]), 0, error.getvalue())
@@ -5717,7 +5716,7 @@ class RemoteSetupTests(unittest.TestCase):
         self.brew = self.prefix / "bin/brew"
         self.project = base / "example"
         self.project.mkdir()
-        (self.project / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example"}))
+        (self.project / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example"}))
         self.environment = patch.dict(os.environ, {
             "PATH": f"{tools}{os.pathsep}{os.environ['PATH']}", "FAKE_HOME": str(self.home),
             "FAKE_SHELL": str(tools / "login-shell"), "FAKE_PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
@@ -5872,7 +5871,7 @@ class SecondMacDoctorTests(unittest.TestCase):
         self.xcodes.mkdir()
         self.project = base / "example"
         self.project.mkdir()
-        (self.project / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
+        (self.project / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
                                                                    "integration": "direct-main"}))
         self.home = home
         (base / "second-mac-tmp").mkdir()
@@ -6831,7 +6830,7 @@ class RemoteRuntimeTests(unittest.TestCase):
         self.developer.mkdir(parents=True)
         self.project = base / "example"
         self.project.mkdir()
-        (self.project / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example"}))
+        (self.project / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example"}))
         self.environment = patch.dict(os.environ, {
             "PATH": f"{tools}{os.pathsep}{os.environ['PATH']}", "FAKE_HOME": str(self.home), "HOME": str(self.local),
             "FAKE_SHELL": str(tools / "login-shell"), "FAKE_RUNTIMES": str(self.runtimes), "FAKE_MAC": "here",
@@ -8036,7 +8035,7 @@ class EarlierNameTests(unittest.TestCase):
             "config.py": [
                 '"""Refuse "buildHost", true or false, on any lane or group. It once sent a lane to the second Mac, and',
                 'marked = [name for name, lane in lanes.items() if isinstance(lane, dict) and "buildHost" in lane]',
-                'raise ValueError(f"engineering.json gives {named} \\"buildHost\\", which vocaro-engineering#58 '
+                'raise ValueError(f"queuekeeper.json gives {named} \\"buildHost\\", which vocaro-engineering#58 '
                 'removed: every heavy "'],
             "remote.py": [
                 'HOST_VARIABLE, OLD_HOST_VARIABLE = "QUEUEKEEPER_OFFLOAD_HOST", "VOCARO_BUILD_HOST"',

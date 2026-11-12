@@ -740,7 +740,7 @@ class LaneGroupTests(unittest.TestCase):
         self.root = Path(temporary.name).resolve()
 
     def configure(self, lanes):
-        (self.root / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Group", "lanes": lanes}))
+        (self.root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Group", "lanes": lanes}))
 
     def run_lane(self, *arguments):
         with patch.object(cli, "source_identity", return_value={}), contextlib.redirect_stdout(StringIO()) as output, \
@@ -854,7 +854,7 @@ class LaneGroupTests(unittest.TestCase):
                                                    "buildHost": value}})
                 status, said = self.run_lane("group")
                 self.assertEqual(status, 2, said)
-                self.assertIn("engineering.json gives group \"buildHost\", which vocaro-engineering#58 removed", said)
+                self.assertIn("queuekeeper.json gives group \"buildHost\", which vocaro-engineering#58 removed", said)
         # The positive controls, the second the group above without buildHost.
         # A group that gives no resource is heavy, as its lanes are (the owner's decision, 2026-11-07).
         for group in ({"parallel": ["one", "two"], "jobs": 1}, {"parallel": ["heavy", "one"], "resource": "exclusive"},

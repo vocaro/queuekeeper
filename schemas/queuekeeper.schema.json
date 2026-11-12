@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Vocaro engineering project configuration",
+  "title": "Queuekeeper project configuration",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -15,39 +15,34 @@
       "type": "string",
       "minLength": 1
     },
-    "repository": {
-      "type": "string"
-    },
-    "toolkit": {
-      "type": "object",
-      "properties": {
-        "path": {
-          "type": "string"
-        }
-      },
-      "additionalProperties": false
-    },
-    "capabilities": {
+    "extensions": {
+      "description": "The extensions the project switches on: each a module's name, or its name and the folder its package is in, relative to the project's main checkout. Without the key a project gets queuekeeper.apple",
       "type": "array",
-      "uniqueItems": true,
       "items": {
-        "enum": [
-          "app-extensions",
-          "background-assets",
-          "background-mac",
-          "background-processing",
-          "data-protection",
-          "external-validation",
-          "file-handoff",
-          "foundation-models",
-          "measurement",
-          "native-python",
-          "packaging",
-          "simulator-pool",
-          "storekit",
-          "voiceover"
+        "oneOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "module"
+            ],
+            "properties": {
+              "module": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              }
+            }
+          }
         ]
       }
+    },
+    "repository": {
+      "type": "string"
     },
     "simulatorPool": {
       "description": "The name every member of the project's simulator pool starts with, as in 'NAME iPhone 17 Pro 1'; required with the simulator-pool capability",
@@ -60,27 +55,6 @@
         "pull-request"
       ]
     },
-    "exceptions": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "required": [
-          "rule",
-          "reason"
-        ],
-        "properties": {
-          "rule": {
-            "type": "string",
-            "minLength": 1
-          },
-          "reason": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
-        "additionalProperties": false
-      }
-    },
     "lanes": {
       "type": "object",
       "additionalProperties": {
@@ -89,18 +63,46 @@
         "oneOf": [
           {
             "description": "A lane: a command and how it runs",
-            "required": ["command"],
+            "required": [
+              "command"
+            ],
             "propertyNames": {
-              "enum": ["command", "resource", "minimumTests", "timeout", "foreground", "here", "model", "display",
-                       "budgetMinutes", "wholeHost", "apps", "unlockedScreen", "devices", "compileFirst",
-                       "deviceRunMinutes", "stall"]
+              "enum": [
+                "command",
+                "resource",
+                "minimumTests",
+                "timeout",
+                "foreground",
+                "here",
+                "model",
+                "display",
+                "budgetMinutes",
+                "wholeHost",
+                "apps",
+                "unlockedScreen",
+                "devices",
+                "compileFirst",
+                "deviceRunMinutes",
+                "stall"
+              ]
             }
           },
           {
             "description": "A lane group: other lanes run side by side under its one admission (guides/parallel-tests.md)",
-            "required": ["parallel"],
+            "required": [
+              "parallel"
+            ],
             "propertyNames": {
-              "enum": ["parallel", "jobs", "resource", "here", "model", "budgetMinutes", "wholeHost", "unlockedScreen"]
+              "enum": [
+                "parallel",
+                "jobs",
+                "resource",
+                "here",
+                "model",
+                "budgetMinutes",
+                "wholeHost",
+                "unlockedScreen"
+              ]
             }
           }
         ],
@@ -128,7 +130,7 @@
             }
           },
           "resource": {
-            "description": "The admission the lane takes, first come, first served, the second Mac first (the owner's decision, 2026-11-07): heavy, one slot, which light, the older name of a short check, and no resource mean too; exclusive, the host to itself; or self, for a lane whose script admits each of its parts itself, which eng run runs where it starts, unadmitted (guides/shared-host.md, Heavy-work admission)",
+            "description": "The admission the lane takes, first come, first served, the second Mac first (the owner's decision, 2026-11-07): heavy, one slot, which light, the older name of a short check, and no resource mean too; exclusive, the host to itself; or self, for a lane whose script admits each of its parts itself, which queuekeeper run runs where it starts, unadmitted (guides/shared-host.md, Heavy-work admission)",
             "enum": [
               "light",
               "heavy",
@@ -148,22 +150,55 @@
             "description": "Opt-in quiet monitoring for an admitted leaf lane. Report-only by default; stopping requires a healthy-run measurement and a reviewed bound (guides/parallel-tests.md).",
             "type": "object",
             "additionalProperties": false,
-            "required": ["seconds"],
+            "required": [
+              "seconds"
+            ],
             "properties": {
-              "seconds": {"type": "integer", "minimum": 1},
-              "action": {"enum": ["report", "stop"]},
-              "reason": {"type": "string", "minLength": 1},
-              "primaryControl": {"type": "boolean", "description": "Explicitly declare that the supervised primary process only coordinates descendant work. Its CPU cannot mask quiet descendants; no descendants leaves the observation unavailable. Omit for serial or primary-process computation."}
+              "seconds": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "action": {
+                "enum": [
+                  "report",
+                  "stop"
+                ]
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              },
+              "primaryControl": {
+                "type": "boolean",
+                "description": "Explicitly declare that the supervised primary process only coordinates descendant work. Its CPU cannot mask quiet descendants; no descendants leaves the observation unavailable. Omit for serial or primary-process computation."
+              }
             },
-            "allOf": [{"if": {"required": ["action"], "properties": {"action": {"const": "stop"}}},
-                       "then": {"required": ["reason"]}}]
+            "allOf": [
+              {
+                "if": {
+                  "required": [
+                    "action"
+                  ],
+                  "properties": {
+                    "action": {
+                      "const": "stop"
+                    }
+                  }
+                },
+                "then": {
+                  "required": [
+                    "reason"
+                  ]
+                }
+              }
+            ]
           },
           "foreground": {
-            "description": "The lane takes a Mac's screen, keyboard, pointer, focus or speech, as Mac VoiceOver and Mac XCUITest lanes do. It needs a heavy or exclusive resource. eng run sends it to the second Mac, which eng takes the foreground of for the run, waiting while another run holds it, and never to this Mac; eng run --here, or here, runs it on this Mac only for the session holding mac-foreground within the owner's window",
+            "description": "The lane takes a Mac's screen, keyboard, pointer, focus or speech, as Mac VoiceOver and Mac XCUITest lanes do. It needs a heavy or exclusive resource. queuekeeper run sends it to the second Mac, which queuekeeper takes the foreground of for the run, waiting while another run holds it, and never to this Mac; queuekeeper run --here, or here, runs it on this Mac only for the session holding mac-foreground within the owner's window",
             "type": "boolean"
           },
           "apps": {
-            "description": "A foreground lane's app under test, each name as a crash-report alert names the process that quit, such as EPUBLib. A failed run during which eng cleared a crash-report alert for another process, one that stood longer than one look, is unmeasured; one for these, or for a process eng cannot name, stays failed (guides/second-mac-foreground.md, Crash-report alerts)",
+            "description": "A foreground lane's app under test, each name as a crash-report alert names the process that quit, such as EPUBLib. A failed run during which queuekeeper cleared a crash-report alert for another process, one that stood longer than one look, is unmeasured; one for these, or for a process queuekeeper cannot name, stays failed (guides/second-mac-foreground.md, Crash-report alerts)",
             "type": "array",
             "minItems": 1,
             "items": {
@@ -177,15 +212,15 @@
             "minLength": 1
           },
           "model": {
-            "description": "A heavy lane that runs a model: on-device generation, another local generative model on the GPU, or Core ML whose compute units include the GPU. eng run admits it with one slot and the host's model lock, so model runs exclude each other while other heavy work runs beside them. A lane group that runs it needs model too, or an exclusive resource, and a group that runs two or more needs jobs 1. A model run that is timed or compared with a baseline is exclusive instead, which holds the model already",
+            "description": "A heavy lane that runs a model: on-device generation, another local generative model on the GPU, or Core ML whose compute units include the GPU. queuekeeper run admits it with one slot and the host's model lock, so model runs exclude each other while other heavy work runs beside them. A lane group that runs it needs model too, or an exclusive resource, and a group that runs two or more needs jobs 1. A model run that is timed or compared with a baseline is exclusive instead, which holds the model already",
             "type": "boolean"
           },
           "display": {
-            "description": "A heavy or exclusive lane whose tests wait for what the display's refresh times, such as a scroll view's animation: eng run runs its command, on either Mac and in a lane group too, under a one-second caffeinate -u, which wakes a sleeping display behind a lock too, and then caffeinate -d, which keeps it on for the command's life, and the lane's receipt shows them in its command. Neither unlocks the screen, so a test that reads its tree through the accessibility API still needs an unlocked one",
+            "description": "A heavy or exclusive lane whose tests wait for what the display's refresh times, such as a scroll view's animation: queuekeeper run runs its command, on either Mac and in a lane group too, under a one-second caffeinate -u, which wakes a sleeping display behind a lock too, and then caffeinate -d, which keeps it on for the command's life, and the lane's receipt shows them in its command. Neither unlocks the screen, so a test that reads its tree through the accessibility API still needs an unlocked one",
             "type": "boolean"
           },
           "budgetMinutes": {
-            "description": "The gate lane's time budget in minutes, from its measured time. When the median wall time of its recent passing runs in the merge queue exceeds it, eng land and eng doctor warn and name its slowest parts (guides/releasing.md, Keeping the split). Only the gate lane takes it",
+            "description": "The gate lane's time budget in minutes, from its measured time. When the median wall time of its recent passing runs in the merge queue exceeds it, queuekeeper land and queuekeeper doctor warn and name its slowest parts (guides/releasing.md, Keeping the split). Only the gate lane takes it",
             "type": "integer",
             "minimum": 1
           },
@@ -195,17 +230,20 @@
             "minimum": 1
           },
           "wholeHost": {
-            "description": "A heavy lane that is a Mac's work, such as a gate that runs the project's suites side by side: it takes every guaranteed slot of the Mac it runs on, so a second such lane never runs beside it there, and eng run sends it to the Mac that has them all free, while a lighter heavy lane still shares. A lane group that runs it needs wholeHost too, or an exclusive resource, which holds the host already (guides/shared-host.md, Which Mac runs a lane)",
+            "description": "A heavy lane that is a Mac's work, such as a gate that runs the project's suites side by side: it takes every guaranteed slot of the Mac it runs on, so a second such lane never runs beside it there, and queuekeeper run sends it to the Mac that has them all free, while a lighter heavy lane still shares. A lane group that runs it needs wholeHost too, or an exclusive resource, which holds the host already (guides/shared-host.md, Which Mac runs a lane)",
             "type": "boolean"
           },
           "devices": {
-            "description": "The device-record entries, such as iPhone, that a lane's script uses when its command is not eng device-pass, whose --device options say so: the lane waits for admission only until the last start that can finish within the window the session holds them for (guides/releasing.md, The device pass). It needs an admitted lane",
+            "description": "The device-record entries, such as iPhone, that a lane's script uses when its command is not queuekeeper device-pass, whose --device options say so: the lane waits for admission only until the last start that can finish within the window the session holds them for (guides/releasing.md, The device pass). It needs an admitted lane",
             "type": "array",
-            "items": {"type": "string", "minLength": 1},
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
             "minItems": 1
           },
           "unlockedScreen": {
-            "description": "A lane whose tests need an unlocked console screen, such as one that reads its own tree through the accessibility API; a lane group that runs such a lane says so too. eng places it only on a Mac whose screen reads unlocked, locked and unknown alike counting as no room for it, and otherwise it waits instead of running unmeasured. It needs an admitted lane (guides/shared-host.md, Which Mac runs a lane)",
+            "description": "A lane whose tests need an unlocked console screen, such as one that reads its own tree through the accessibility API; a lane group that runs such a lane says so too. queuekeeper places it only on a Mac whose screen reads unlocked, locked and unknown alike counting as no room for it, and otherwise it waits instead of running unmeasured. It needs an admitted lane (guides/shared-host.md, Which Mac runs a lane)",
             "type": "boolean"
           },
           "compileFirst": {
@@ -221,7 +259,7 @@
       }
     },
     "testLanes": {
-      "description": "What eng doctor's check that every test has a lane cannot work out for itself (guides/app-testing.md, Every test has a lane)",
+      "description": "What queuekeeper doctor's check that every test has a lane cannot work out for itself (guides/app-testing.md, Every test has a lane)",
       "type": "object",
       "additionalProperties": false,
       "properties": {
@@ -253,7 +291,7 @@
       }
     },
     "spelling": {
-      "description": "Exemptions from eng spelling, each mapped to the reason it is kept",
+      "description": "Exemptions from queuekeeper spelling, each mapped to the reason it is kept",
       "type": "object",
       "additionalProperties": false,
       "properties": {
@@ -357,7 +395,7 @@
               }
             },
             "lanes": {
-              "description": "The lanes a docs-only batch runs instead, in order; never gate, whose receipt eng release reads",
+              "description": "The lanes a docs-only batch runs instead, in order; never gate, whose receipt queuekeeper release reads",
               "type": "array",
               "minItems": 1,
               "uniqueItems": true,
@@ -388,7 +426,7 @@
           "minimum": 1
         },
         "spelling": {
-          "description": "false stops the queue running the toolkit's spelling check, eng spelling, before the gate, on an ungated landing and before a docs-only batch's lanes in a project with no spelling lane; a project's own spelling lane runs either way. Read from main (guides/maintenance.md, The merge queue)",
+          "description": "false stops the queue running the toolkit's spelling check, queuekeeper spelling, before the gate, on an ungated landing and before a docs-only batch's lanes in a project with no spelling lane; a project's own spelling lane runs either way. Read from main (guides/maintenance.md, The merge queue)",
           "const": false
         },
         "carryOverChecks": {
@@ -397,7 +435,9 @@
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["command"],
+            "required": [
+              "command"
+            ],
             "properties": {
               "command": {
                 "description": "An argv list, never shell source. {base} in a word is the commit the result passed on",
@@ -423,7 +463,7 @@
       }
     },
     "app": {
-      "description": "The app eng app keeps and runs: the last good build of each platform, kept on this Mac (guides/app-builds.md)",
+      "description": "The app queuekeeper app keeps and runs: the last good build of each platform, kept on this Mac (guides/app-builds.md)",
       "type": "object",
       "additionalProperties": false,
       "oneOf": [
@@ -555,6 +595,14 @@
               "type": "boolean"
             }
           }
+        },
+        "links": {
+          "description": "Checkouts beside the project that its build names by a relative path, such as ../NAME, each linked beside the kept source",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
         }
       }
     },
@@ -564,13 +612,15 @@
       "additionalProperties": false,
       "properties": {
         "lanes": {
-          "description": "The release checks, each a lane of its own, which run after gate on the release commit; eng release requires a pass of each at the commit, or the owner's waiver of its failure. Never gate, which eng release checks first, nor any lane a landing runs: spelling, provision, queue.lanes or gate, queue.docsOnly.lanes, or a member of a group among them",
+          "description": "The release checks, each a lane of its own, which run after gate on the release commit; queuekeeper release requires a pass of each at the commit, or the owner's waiver of its failure. Never gate, which queuekeeper release checks first, nor any lane a landing runs: spelling, provision, queue.lanes or gate, queue.docsOnly.lanes, or a member of a group among them",
           "type": "array",
           "uniqueItems": true,
           "items": {
             "type": "string",
             "minLength": 1,
-            "not": {"const": "gate"}
+            "not": {
+              "const": "gate"
+            }
           }
         },
         "maxCommits": {

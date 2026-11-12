@@ -404,9 +404,9 @@ exec /bin/ps "$@"
         root = self.base / "project"
         root.mkdir()
         lane = self.build_command()
-        (root / "engineering.json").write_text(json.dumps({
-            "schemaVersion": 1, "name": "Example", "toolkit": {"path": str(cli.TOOLKIT_ROOT)}, "capabilities": [],
-            "lanes": {"mac": {"command": lane, "resource": "light"}}, "exceptions": []}))
+        (root / "queuekeeper.json").write_text(json.dumps({
+            "schemaVersion": 1, "name": "Example", 
+            "lanes": {"mac": {"command": lane, "resource": "light"}}}))
         previous = Path.cwd()
         os.chdir(root)
         self.addCleanup(os.chdir, previous)

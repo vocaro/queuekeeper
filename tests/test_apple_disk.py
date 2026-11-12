@@ -139,16 +139,16 @@ class SimulatorTests(Fixture):
         self.assertIn("in no project's pool", items[other["udid"]].reason)
 
     def test_the_pools_are_those_the_main_checkouts_name(self):
-        (self.main / "engineering.json").write_text(json.dumps({"simulatorPool": "Project"}))
+        (self.main / "queuekeeper.json").write_text(json.dumps({"simulatorPool": "Project"}))
         (self.development / "Unconfigured").mkdir()
         self.assertEqual(apple_disk.pools(self.development), frozenset({"Project"}))
         # A main checkout that lags origin/main still names the pool origin/main names.
         lagging = self.development / "Lagging"
         lagging.mkdir()
         git(lagging, "init", "-q", "-b", "main")
-        commit(lagging, "engineering.json", json.dumps({"simulatorPool": "Lagging"}))
+        commit(lagging, "queuekeeper.json", json.dumps({"simulatorPool": "Lagging"}))
         git(lagging, "update-ref", "refs/remotes/origin/main", "HEAD")
-        git(lagging, "rm", "-q", "engineering.json")
+        git(lagging, "rm", "-q", "queuekeeper.json")
         git(lagging, "commit", "-q", "-m", "older")
         self.assertEqual(apple_disk.pools(self.development), frozenset({"Project", "Lagging"}))
 

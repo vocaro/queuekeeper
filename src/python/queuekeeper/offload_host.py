@@ -2394,9 +2394,9 @@ def start_shutdown(udid):
 
 
 def known_pools(root):
-    """The simulator pools that the projects' checkouts under root name in engineering.json."""
+    """The simulator pools that the projects' checkouts under root name in queuekeeper.json."""
     found = set()
-    for path in (Path.home() / root / "checkouts").glob("*/*/*/engineering.json"):
+    for path in (Path.home() / root / "checkouts").glob("*/*/*/queuekeeper.json"):
         try: name = json.loads(path.read_text()).get("simulatorPool")
         except (OSError, ValueError, AttributeError): continue
         if isinstance(name, str) and name: found.add(name)

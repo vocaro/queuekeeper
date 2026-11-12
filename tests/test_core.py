@@ -37,22 +37,27 @@ def setUpModule():
 
 
 class ConfigurationTests(unittest.TestCase):
-    def test_unknown_capabilities_and_a_pool_without_its_name_are_rejected(self):
+    def test_a_key_the_configuration_does_not_know_and_a_pool_with_no_name_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            cases = [{"capabilities": ["typo"]}, {"capabilities": ["simulator-pool"]}, {"simulatorPool": "Example"},
-                     {"capabilities": ["simulator-pool"], "simulatorPool": " Example"},
-                     {"capabilities": ["simulator-disposable"]},
-                     {"capabilities": ["simulator-disposable", "simulator-pool"], "simulatorPool": "Example"}]
+            cases = [{"capabilities": ["simulator-pool"]}, {"toolkit": {"path": "../kit"}}, {"simulatorPool": " Example"},
+                     {"simulatorPool": ""}, {"extensions": "queuekeeper.apple"}, {"extensions": ["not a module"]},
+                     {"extensions": [{"path": "../kit/src/python"}]}, {"extensions": [{"module": "kit.hooks", "other": 1}]}]
             for case in cases:
                 with self.subTest(case):
-                    (root / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example", **case}))
+                    (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example", **case}))
                     with self.assertRaises(ValueError): config.load(root)
-            # Disposable simulators are retired: the error says what replaces them.
-            with self.assertRaisesRegex(ValueError, "retired: use simulator-pool"): config.load(root)
-            (root / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
-                "capabilities": ["simulator-pool"], "simulatorPool": "Example"}))
+            (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example", "simulatorPool": "Example",
+                "extensions": ["queuekeeper.apple", {"module": "kit.hooks", "path": "../kit/src/python"}]}))
             self.assertEqual(config.load(root)["simulatorPool"], "Example")
+            self.assertEqual(config.extensions_of(root), [("queuekeeper.apple", None),
+                                                          ("kit.hooks", str((root / "../kit/src/python").resolve()))])
+            # A linked worktree's extensions are found from its main checkout, and a project that names none, or a
+            # folder with no project, gets the default.
+            self.assertEqual(config.extensions_of(root, root / "main")[1][1], str((root / "main/../kit/src/python").resolve()))
+            (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example"}))
+            self.assertEqual(config.extensions_of(root), [("queuekeeper.apple", None)])
+            self.assertEqual(config.extensions_of(root / "none"), [("queuekeeper.apple", None)])
 
     def test_the_schema_lists_the_lane_and_group_keys_config_accepts(self):
         # vocaro-engineering#248: config took unlockedScreen, and lane groups, while the schema refused them.
@@ -64,7 +69,7 @@ class ConfigurationTests(unittest.TestCase):
                      "properties": (set(entry["properties"]), config.LANE_KEYS | config.GROUP_KEYS)}
             return {f"{where}: {sorted(listed - accepted)} extra, {sorted(accepted - listed)} missing"
                     for where, (listed, accepted) in found.items() if listed != accepted}
-        schema = json.loads((config.TOOLKIT_ROOT / "schemas/engineering.schema.json").read_text())
+        schema = json.loads((config.TOOLKIT_ROOT / "schemas/queuekeeper.schema.json").read_text())
         self.assertEqual(drift(schema), set())
         entry = schema["properties"]["lanes"]["additionalProperties"]
         self.assertFalse(entry["additionalProperties"])
@@ -82,7 +87,7 @@ class ConfigurationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             def load(lanes):
-                (root / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
+                (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
                                                                    "lanes": lanes}))
                 return config.load(root)
             lane = {"command": ["true"], "unlockedScreen": True}
@@ -95,10 +100,10 @@ class ConfigurationTests(unittest.TestCase):
     def test_lane_commands_are_argv_not_shell_source(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            (root / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
+            (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
                 "lanes": {"bad": {"command": "printf success"}}}))
             with self.assertRaises(ValueError): config.load(root)
-            (root / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
+            (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
                 "lanes": {"ui": {"command": ["xcodebuild", "test"], "foreground": "yes"}}}))
             with self.assertRaisesRegex(ValueError, "foreground must be true or false"): config.load(root)
 
@@ -119,7 +124,7 @@ class ConfigurationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             def configure(lanes):
-                (root / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
+                (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
                     "lanes": {"one": command, "generate": generate, **lanes}}))
             for lanes, reason in invalid:
                 with self.subTest(lanes):
@@ -148,7 +153,7 @@ class ConfigurationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             def configure(lanes):
-                (root / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
+                (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
                     "lanes": {"one": command, "gate": gate, **lanes}}))
             for lanes, reason in invalid:
                 with self.subTest(lanes):
@@ -160,7 +165,7 @@ class ConfigurationTests(unittest.TestCase):
                     loaded = config.load(root)
                     self.assertTrue(config.whole_host_lane(loaded["lanes"], "gate"))
                     self.assertFalse(config.whole_host_lane(loaded["lanes"], "one"))
-        schema = json.loads((config.TOOLKIT_ROOT / "schemas/engineering.schema.json").read_text())
+        schema = json.loads((config.TOOLKIT_ROOT / "schemas/queuekeeper.schema.json").read_text())
         self.assertEqual(schema["properties"]["lanes"]["additionalProperties"]["properties"]["wholeHost"]["type"], "boolean")
 
     def test_every_resource_but_self_is_admitted_and_light_means_heavy(self):
@@ -188,12 +193,12 @@ class ConfigurationTests(unittest.TestCase):
             root = Path(directory)
             for lanes, reason in invalid:
                 with self.subTest(reason):
-                    (root / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
+                    (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
                                                                        "lanes": lanes}))
                     with self.assertRaisesRegex(ValueError, re.escape(reason)): config.load(root)
             for lanes in valid:
                 with self.subTest(lanes):
-                    (root / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
+                    (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
                                                                        "lanes": lanes}))
                     config.load(root)
 
@@ -212,7 +217,7 @@ class ConfigurationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             def configure(lanes):
-                (root / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
+                (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
                     "lanes": {"one": command, **lanes}}))
             for lanes, reason in invalid:
                 with self.subTest(lanes):
@@ -222,7 +227,7 @@ class ConfigurationTests(unittest.TestCase):
                 with self.subTest(lanes):
                     configure(lanes)
                     config.load(root)
-        schema = json.loads((config.TOOLKIT_ROOT / "schemas/engineering.schema.json").read_text())
+        schema = json.loads((config.TOOLKIT_ROOT / "schemas/queuekeeper.schema.json").read_text())
         self.assertEqual(schema["properties"]["lanes"]["additionalProperties"]["properties"]["display"]["type"], "boolean")
 
     def test_a_group_that_runs_several_model_lanes_runs_them_one_at_a_time(self):
@@ -237,7 +242,7 @@ class ConfigurationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             def configure(group):
-                (root / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
+                (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
                     "lanes": {**lanes, "group": group}}))
             for group in invalid:
                 with self.subTest(group):
@@ -251,7 +256,7 @@ class ConfigurationTests(unittest.TestCase):
     def test_missing_prerequisites_are_reported_without_starting_work(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            (root / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example"}))
+            (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example"}))
             with patch.object(cli.shutil, "which", return_value=None), patch.object(cli, "source_identity", return_value={}), contextlib.redirect_stdout(StringIO()):
                 self.assertEqual(cli.main(["--project", directory, "doctor"]), 1)
 
@@ -259,7 +264,7 @@ class ConfigurationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             lanes = {"tests": {"command": ["true"]}, "docs": {"command": ["true"]},
                      "gate": {"command": ["true"], "timeout": 14400}, "all": {"parallel": ["tests", "gate"]}}
-            (Path(directory) / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
+            (Path(directory) / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
                 "integration": "direct-main", "lanes": lanes}))
             with patch.object(cli.shutil, "which", return_value="/usr/bin/true"), \
                     patch.object(cli, "source_identity", return_value={}), contextlib.redirect_stdout(StringIO()) as output:
@@ -268,30 +273,6 @@ class ConfigurationTests(unittest.TestCase):
             self.assertEqual(len(warnings), 1, warnings)
             self.assertIn(f"2 lane(s) declare no timeout and are stopped, unmeasured, after queuekeeper's default "
                           f"{processes.DEFAULT_LIMIT}s: docs, tests;", warnings[0])
-
-    def test_doctor_no_longer_asks_heavy_capabilities_for_a_heavy_lane(self):
-        # Every lane is admitted, a light one and one that gives no resource as heavy work (the owner, 2026-11-07), so
-        # no capability needs a lane marked heavy.
-        with tempfile.TemporaryDirectory() as directory:
-            light = {"check": {"command": ["true"], "timeout": 60}}
-            cases = [(["voiceover"], light, False), (["simulator-pool", "measurement"], {}, False),
-                     (["voiceover"], {"check": {**light["check"], "resource": "light"}}, False),
-                     (["measurement"], {"gate": {"command": ["true"], "resource": "exclusive", "timeout": 60}}, False),
-                     (["packaging"], light, False)]
-            for capabilities, lanes, warned in cases:
-                with self.subTest(capabilities=capabilities, lanes=sorted(lanes)):
-                    (Path(directory) / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
-                        "integration": "direct-main", "capabilities": capabilities, "lanes": lanes,
-                        **({"simulatorPool": "Example"} if "simulator-pool" in capabilities else {})}))
-                    with patch.object(cli.shutil, "which", return_value="/usr/bin/true"), patch.object(cli, "source_identity", return_value={}), \
-                            contextlib.redirect_stdout(StringIO()) as output:
-                        # A warning is not a missing prerequisite.
-                        self.assertEqual(cli.main(["--project", directory, "doctor"]), 0)
-                    warnings = [warning for warning in json.loads(output.getvalue())["warnings"]
-                                if "named gate" not in warning and "budgetMinutes" not in warning]
-                    self.assertEqual(bool(warnings), warned, warnings)
-                    for capability in capabilities if warned else []:
-                        self.assertIn(capability, warnings[0])
 
     def test_doctor_warns_while_xcode_default_simulators_exist(self):
         default, member = "11111111-2222-3333-4444-555555555555", "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"
@@ -305,8 +286,8 @@ class ConfigurationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             for capabilities, defaults, warned in cases:
                 with self.subTest(capabilities=capabilities, defaults=defaults):
-                    (Path(directory) / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
-                        "integration": "direct-main", "capabilities": capabilities,
+                    (Path(directory) / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
+                        "integration": "direct-main",
                         **({"simulatorPool": "Example"} if "simulator-pool" in capabilities else {})}))
                     with patch.object(cli.shutil, "which", return_value="/usr/bin/true"), patch.object(cli, "source_identity", return_value={}), \
                             patch.object(simulator_pool, "simctl", side_effect=simctl), \
@@ -330,7 +311,7 @@ class ConfigurationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             for declared, warned in cases:
                 with self.subTest(declared=declared):
-                    (Path(directory) / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
+                    (Path(directory) / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
                         **declared}))
                     with patch.object(cli.shutil, "which", return_value="/usr/bin/true"), patch.object(cli, "source_identity", return_value={}), contextlib.redirect_stdout(StringIO()) as output:
                         self.assertEqual(cli.main(["--project", directory, "doctor"]), 0)
@@ -347,15 +328,15 @@ class ConfigurationTests(unittest.TestCase):
             root = Path(directory)
             for declared, reason in invalid:
                 with self.subTest(declared=declared):
-                    (root / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
+                    (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
                                                                        "release": declared}))
                     with self.assertRaisesRegex(ValueError, re.escape(reason)): config.load(root)
             for declared in valid:
                 with self.subTest(declared=declared):
-                    (root / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
+                    (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
                                                                        "release": declared}))
                     self.assertEqual(config.load(root)["release"], declared)
-        schema = json.loads((config.TOOLKIT_ROOT / "schemas/engineering.schema.json").read_text())
+        schema = json.loads((config.TOOLKIT_ROOT / "schemas/queuekeeper.schema.json").read_text())
         self.assertEqual(set(schema["properties"]["release"]["properties"]), {"lanes", "maxCommits"})
 
     def test_a_release_lane_is_no_lane_a_landing_runs(self):
@@ -392,7 +373,7 @@ class ConfigurationTests(unittest.TestCase):
             root = Path(directory)
 
             def write(lanes, queue, named):
-                (root / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example", **lanes,
+                (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example", **lanes,
                     **({"queue": queue} if queue else {}), "release": {"lanes": [named]}}))
             for lanes, queue, named, why in landing:
                 with self.subTest(lanes=lanes, queue=queue, named=named):
@@ -424,7 +405,7 @@ class ConfigurationTests(unittest.TestCase):
                 if text is not None:
                     (Path(directory) / "scripts").mkdir()
                     (Path(directory) / "scripts/step.sh").write_text(text)
-                (Path(directory) / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
+                (Path(directory) / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
                     "integration": "direct-main", "lanes": {
                         "gate": {"command": ["true"], "timeout": 60},
                         "step": {"command": command, "resource": "self", "timeout": 60},
@@ -455,7 +436,7 @@ class ConfigurationTests(unittest.TestCase):
             with self.subTest(keys=keys, groups=sorted(groups)), tempfile.TemporaryDirectory() as directory:
                 lanes = {"suite": {**suite, **keys}, "docs": {"command": ["true"], "timeout": 60}, **groups}
                 lanes.setdefault("gate", {"command": ["true"], "timeout": 60})
-                (Path(directory) / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
+                (Path(directory) / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
                     "integration": "direct-main", "lanes": lanes}))
                 with patch.object(cli.shutil, "which", return_value="/usr/bin/true"), \
                         patch.object(cli, "source_identity", return_value={}), \
@@ -475,7 +456,7 @@ class ConfigurationTests(unittest.TestCase):
             root = Path(directory)
             # Reports one executed test for each argument it receives.
             count = [sys.executable, "-c", "import sys; print('Ran', len(sys.argv) - 1, 'tests')"]
-            (root / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Lanes", "lanes": {
+            (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Lanes", "lanes": {
                 "test": {"command": count, "minimumTests": 5}, "check": {"command": [sys.executable, "-c", "pass"]}}}))
             cases = [(["test"], 2, None),  # the whole lane still needs its minimumTests
                      (["test", "--", "a", "b"], 0, ["a", "b"]),
@@ -510,7 +491,7 @@ class ConfigurationTests(unittest.TestCase):
             reporting = [sys.executable, "-c", "import sys; n = sys.argv[sys.argv.index('--repeat') + 1]; "
                          "print(f'Repeat series: asked {n} repeats of X (3 runs); runs: 3 passed'); print('Ran 6 tests')"]
             ignoring = [sys.executable, "-c", "print('Ran 1 test')"]
-            (root / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Lanes", "lanes": {
+            (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Lanes", "lanes": {
                 "series": {"command": reporting, "minimumTests": 1, "timeout": 100},
                 "once": {"command": ignoring, "minimumTests": 1}}}))
             def run(*arguments):
@@ -557,7 +538,7 @@ class ConfigurationTests(unittest.TestCase):
             lanes = {"hung": {"command": [sys.executable, "-c", f"import time; time.sleep({20 * limit})"]},
                      "quick": {"command": [sys.executable, "-c", "print('Ran 1 test')"]},
                      "both": {"parallel": ["hung", "quick"]}}
-            (root / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Lanes", "lanes": lanes}))
+            (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Lanes", "lanes": lanes}))
             with patch.object(processes, "DEFAULT_LIMIT", limit), contextlib.redirect_stdout(StringIO()):
                 for name, status in (("hung", lane_results.UNMEASURED), ("quick", 0), ("both", lane_results.UNMEASURED)):
                     with self.subTest(name), patch.object(cli, "source_identity", return_value={}), \
@@ -590,7 +571,7 @@ class ConfigurationTests(unittest.TestCase):
                      "failed": lane(f"{unmeasured}\nRan 2 tests", 1),
                      # Fixed: the slow lane's 1 s timeout is the behavior under test; the others have none.
                      "slow": {"command": [sys.executable, "-c", "import time; time.sleep(60)"], "timeout": 1}}
-            (root / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Lanes", "lanes": lanes}))
+            (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Lanes", "lanes": lanes}))
             # The outcome is the lane's verdict: a zero exit that ran too few tests failed.
             cases = {"unmeasured": (3, "unmeasured"), "skipped": (0, "passed"), "short": (3, "unmeasured"),
                      "short-passed": (2, "failed"), "short-unmeasured": (3, "unmeasured"), "failed": (1, "failed"),
@@ -1643,7 +1624,7 @@ class ResourceTests(unittest.TestCase):
     def test_a_model_lane_and_a_group_that_runs_it_hold_the_model(self):
         root = Path(self.temp.name)
         probe = [sys.executable, "-c", f"import json, os; print('model', json.loads(os.environ[{resources.TOKEN!r}]).get('model'))"]
-        (root / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Model", "lanes": {
+        (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Model", "lanes": {
             "generate": {"command": probe, "resource": "heavy", "model": True},
             "build": {"command": probe, "resource": "heavy"},
             "both": {"parallel": ["generate", "build"], "resource": "heavy", "model": True}}}))
@@ -1669,7 +1650,7 @@ class ResourceTests(unittest.TestCase):
             return {"command": ["sh", "-c", f'echo {name} >> "$RECORD"; exit {status}'], "resource": "heavy", **options}
         lanes = {"mac": lane("mac", display=True), "ios": lane("ios"), "failing": lane("failing", 4, display=True),
                  "suites": {"parallel": ["mac", "ios"], "resource": "heavy", "jobs": 1}}
-        (root / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Display", "lanes": lanes}))
+        (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Display", "lanes": lanes}))
         held = lambda name: f"caffeinate -d -- sh -c {lanes[name]['command'][2]}"
         receipts = root / ".build/queuekeeper"
         with patch.dict(os.environ, {"PATH": f"{tools}{os.pathsep}{os.environ['PATH']}", "RECORD": str(record)}), \
@@ -1845,7 +1826,7 @@ class ResourceTests(unittest.TestCase):
         guard = Path(os.environ["QUEUEKEEPER_GATE_LOCK_FILE"] + ".warm-push-guard")
         marker = root / "command.pid"
         command = [sys.executable, "-c", f"import os, pathlib, time\npathlib.Path({str(marker)!r}).write_text(str(os.getpid()))\ntime.sleep(120)"]
-        (root / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Stop",
+        (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Stop",
             "lanes": {"stopped": {"command": command, "resource": "heavy"}}}))
         launch = ("import sys\nfrom unittest.mock import patch\nfrom queuekeeper import cli\n"
                   "with patch.object(cli, 'refresh_policy', return_value='policy'), patch.object(cli, 'source_identity', return_value={}):\n"
@@ -2002,7 +1983,7 @@ class ResourceTests(unittest.TestCase):
 
     def test_zero_test_failure_releases_a_confirmed_finished_lane(self):
         root = Path(self.temp.name)
-        (root / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Zero",
+        (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Zero",
             "lanes": {"empty": {"command": ["unused"], "resource": "heavy", "minimumTests": 1}}}))
         def finished(*args, **kwargs):
             kwargs["log_path"].write_text("Executed 0 tests, with 0 failures")
@@ -2025,7 +2006,7 @@ class ResourceTests(unittest.TestCase):
 
     def admit(self, *arguments):
         root = Path(self.temp.name)
-        (root / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Admit"}))
+        (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Admit"}))
         receipt = root / ".build/queuekeeper/admit/source.json"
         receipt.unlink(missing_ok=True)
         with patch.object(cli, "refresh_policy", return_value="policy") as policy, patch.object(cli, "source_identity", return_value={}), contextlib.redirect_stderr(StringIO()) as error:
@@ -3759,7 +3740,7 @@ class LaneLabelTests(unittest.TestCase):
     def project(self, name, **lanes):
         root = Path(self.temp.name) / name
         root.mkdir()
-        (root / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": name, "lanes": lanes}))
+        (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": name, "lanes": lanes}))
         return root
 
     def marker(self, root, lane, state):

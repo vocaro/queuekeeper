@@ -6,7 +6,7 @@ batch, starts `queuekeeper app keep --after-landing` in the background (merge_qu
 pushed commit as an ordinary build and keeps the product here. "Good" is a commit that landed through the gate
 and then built: a build that fails keeps nothing, and the build kept before it stays the one that runs.
 
-engineering.json's `app` says how to build (config.app):
+queuekeeper.json's `app` says how to build (config.app):
 
     "app": {"project": "Name.xcodeproj",        # or "workspace": "Name.xcworkspace"
             "directory": ".",                   # where the project is, inside the checkout
@@ -55,7 +55,7 @@ import time
 
 from . import device_pass, devices
 from .. import processes
-from ..config import APP_PLATFORMS, DEFAULT_TOOLKIT, TOOLKIT_ROOT, load
+from ..config import APP_PLATFORMS, TOOLKIT_ROOT, load
 
 # Names an isolated store for tests; sessions use the default.
 OVERRIDE = "QUEUEKEEPER_APP_STORE"
@@ -220,12 +220,15 @@ def ensure_source(root, store):
     return store.source
 
 
-def link_toolkit(root, store, config):
-    """Link the shared toolkit checkout beside the source worktree where the project's toolkit.path finds it, as the
-    queue puts its toolkit copy beside its checkout: a project that builds the toolkit's Swift packages names them
-    by that path (../vocaro-engineering/src/swift/...), which from the store would otherwise lead nowhere. The
-    link is the store's own; anything else already there is left alone."""
-    relative = config.get("toolkit", {}).get("path", DEFAULT_TOOLKIT)
+def link_beside(root, store, config):
+    """Link each checkout app.links names beside the source worktree, where the project's relative path finds it: a
+    project that builds another checkout's Swift packages names them by such a path (../NAME/src/swift/...), which
+    from the store would otherwise lead nowhere. A link is the store's own; anything else already there is left
+    alone."""
+    for relative in config.get("app", {}).get("links", []): link(root, store, relative)
+
+
+def link(root, store, relative):
     place = Path(os.path.normpath(store.source / relative))
     target = (repository(root) / relative).resolve()
     if store.path not in place.parents or not target.is_dir() or place == target: return
@@ -324,8 +327,8 @@ def build(root, store, config, platform, commit, *, admit=None):
     checkout(source, commit)
     config = load(source)
     if "app" not in config or platform not in config["app"]:
-        raise Failed(f"engineering.json at {commit[:12]} configures no {platform} app")
-    link_toolkit(root, store, config)
+        raise Failed(f"queuekeeper.json at {commit[:12]} configures no {platform} app")
+    link_beside(root, store, config)
     app = config["app"]
     directory = source / app.get("directory", ".")
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -381,7 +384,7 @@ def keep(root, config, *, commit=None, chosen=None, after=False, store=None, adm
     store = store or Store(config["name"])
     wanted = chosen or (after_landing(config) if after else platforms(config))
     if not wanted:
-        say("nothing to keep: engineering.json's app keeps no platform" + (" after landing" if after else ""))
+        say("nothing to keep: queuekeeper.json's app keeps no platform" + (" after landing" if after else ""))
         return 0
     failed = False
     with store.locked(wait, waiting=lambda: say("waiting for the keep under way")):
@@ -573,17 +576,17 @@ def add_arguments(parser):
 
 
 def behind_main(root):
-    """What to say when this checkout's engineering.json lacks `app` but origin/main's has one: the checkout is
+    """What to say when this checkout's queuekeeper.json lacks `app` but origin/main's has one: the checkout is
     behind, as the owner's shared checkout can be, and `add app` would send its reader the wrong way. Empty when
     origin/main configures no app either, or cannot be read; it is not fetched, so as to read nothing new."""
     if root is None: return ""
     try:
-        shown = git(root, "show", f"{MAIN}:engineering.json", check=False)
+        shown = git(root, "show", f"{MAIN}:queuekeeper.json", check=False)
         if shown.returncode or "app" not in json.loads(shown.stdout): return ""
         behind = git(root, "rev-list", "--count", f"HEAD..{MAIN}", check=False).stdout.strip() or "some"
     except (OSError, ValueError, subprocess.TimeoutExpired):
         return ""
-    return (f" at this checkout, which is {behind} commit(s) behind origin/main, whose engineering.json does: "
+    return (f" at this checkout, which is {behind} commit(s) behind origin/main, whose queuekeeper.json does: "
             f"update the checkout, or run queuekeeper app from a worktree at origin/main")
 
 
@@ -591,7 +594,7 @@ def execute(root, args, config=None):
     if args.operation == "device": return install_and_launch(args.udid, args.app, args.bundle)
     config = config if config is not None else load(root)
     if "app" not in config:
-        say("engineering.json configures no app" + (behind_main(root) or ": add `app` (guides/app-builds.md)"))
+        say("queuekeeper.json configures no app" + (behind_main(root) or ": add `app` (guides/app-builds.md)"))
         return 2
     store = Store(config["name"])
     try:
@@ -608,7 +611,7 @@ def execute(root, args, config=None):
         key = DEVICES["iphone"] if args.iphone else DEVICES["ipad"] if args.ipad else None
         platform = "ios" if key else "mac"
         if platform not in config["app"]:
-            raise Failed(f"engineering.json's app builds no {platform} app")
+            raise Failed(f"queuekeeper.json's app builds no {platform} app")
         with processes.forwarding_signals():
             kept = current(root, config, platform, store=store, build_missing=not args.no_build)
             if key is None:

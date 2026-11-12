@@ -48,7 +48,7 @@ def _json(run, *arguments):
 
 
 def pools(development, run=subprocess.run):
-    """The simulator pools the projects' main checkouts name in engineering.json, in the working
+    """The simulator pools the projects' main checkouts name in queuekeeper.json, in the working
     tree or at origin/main, since a main checkout can lag the project's main."""
     if not Path(development).is_dir(): return frozenset()
     found = set()
@@ -56,7 +56,7 @@ def pools(development, run=subprocess.run):
         if not (path / ".git").is_dir(): continue
         found.add(simulator_pool.configured(path))
         try:
-            text = git(run, path, "show", "origin/main:engineering.json", timeout=30).stdout
+            text = git(run, path, "show", "origin/main:queuekeeper.json", timeout=30).stdout
             found.add(json.loads(text).get("simulatorPool"))
         except (OSError, subprocess.SubprocessError, ValueError, AttributeError):
             pass

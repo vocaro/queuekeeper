@@ -96,7 +96,7 @@ def local_toolkit():
         run(base, "git", "init", "-q", "-b", "main", str(checkout))
         for part in ("src/python", "bin", "scripts"):
             shutil.copytree(ROOT / part, checkout / part, ignore=shutil.ignore_patterns("__pycache__"))
-        for name in ("engineering.json", ".gitignore"):
+        for name in ("queuekeeper.json", ".gitignore"):
             shutil.copy(ROOT / name, checkout / name)
         run(checkout, "git", "add", ".")
         run(checkout, "git", "commit", "-qm", "Toolkit")
@@ -163,7 +163,7 @@ class Fixture(unittest.TestCase):
         # The agent entry a direct-main project keeps, which `queuekeeper docs check` reads.
         (self.repo / "AGENTS.md").write_text("# Fixture\n")
         (self.repo / "CLAUDE.md").write_text("@AGENTS.md\n")
-        (self.repo / "engineering.json").write_text(json.dumps({
+        (self.repo / "queuekeeper.json").write_text(json.dumps({
             "schemaVersion": 1, "name": "fixture", "integration": "direct-main",
             # Generated paths are opaque identities, including when embedded in fixture source.
             "spelling": {"exemptPhrases": {str(self.base): "the generated root is an opaque fixture identity"}},
@@ -178,8 +178,8 @@ class Fixture(unittest.TestCase):
 
     def publish(self, config, message="Change the configuration"):
         """Commit this configuration in the clone's checkout and push it to main."""
-        (self.repo / "engineering.json").write_text(json.dumps(config))
-        run(self.repo, "git", "add", "engineering.json")
+        (self.repo / "queuekeeper.json").write_text(json.dumps(config))
+        run(self.repo, "git", "add", "queuekeeper.json")
         run(self.repo, "git", "commit", "-q", "--allow-empty", "-m", message)
         run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
 
@@ -1930,8 +1930,8 @@ class NoVerdict(Fixture):
         config["queue"]["noVerdictRuns"] = 5
         run(self.repo, "git", "fetch", "-q", "origin")
         run(self.repo, "git", "checkout", "-q", "-B", "raise", "origin/main")
-        (self.repo / "engineering.json").write_text(json.dumps(config))
-        run(self.repo, "git", "add", "engineering.json")
+        (self.repo / "queuekeeper.json").write_text(json.dumps(config))
+        run(self.repo, "git", "add", "queuekeeper.json")
         run(self.repo, "git", "commit", "-qm", "Raise the bound")
         [identifier] = self.add("raise")
         with patch("builtins.print"): self.work()
@@ -1950,7 +1950,7 @@ class NoVerdict(Fixture):
 
     def test_the_schema_knows_the_setting(self):
         # The schema's queue takes no property it does not list, so a project that set the bound failed it.
-        queue = json.loads((ROOT / "schemas/engineering.schema.json").read_text())["properties"]["queue"]
+        queue = json.loads((ROOT / "schemas/queuekeeper.schema.json").read_text())["properties"]["queue"]
         self.assertFalse(queue["additionalProperties"])
         self.assertEqual(queue["properties"]["noVerdictRuns"]["type"], "integer")
         self.assertEqual(queue["properties"]["noVerdictRuns"]["minimum"], 1)
@@ -2860,13 +2860,13 @@ class PrePushHooks(Fixture):
         return self.ran.read_text().splitlines() if self.ran.exists() else []
 
     def opt_in(self, covering, branch=None):
-        """Name covering in engineering.json, directly on main or on a branch of its own."""
-        config = json.loads((self.repo / "engineering.json").read_text())
+        """Name covering in queuekeeper.json, directly on main or on a branch of its own."""
+        config = json.loads((self.repo / "queuekeeper.json").read_text())
         config["queue"]["hookCoveredBy"] = covering
         run(self.repo, "git", "fetch", "-q", "origin")
         run(self.repo, "git", "checkout", "-q", "-B", branch or "opt-in", "origin/main")
-        (self.repo / "engineering.json").write_text(json.dumps(config))
-        run(self.repo, "git", "add", "engineering.json")
+        (self.repo / "queuekeeper.json").write_text(json.dumps(config))
+        run(self.repo, "git", "add", "queuekeeper.json")
         run(self.repo, "git", "commit", "-qm", "Opt in")
         if not branch: run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
 
@@ -3036,16 +3036,16 @@ class PrePushHooks(Fixture):
         self.assertEqual(len(self.runs()), 1)
 
     def test_the_commit_that_first_names_the_lanes_cannot_opt_out_either(self):
-        config = json.loads((self.repo / "engineering.json").read_text())
+        config = json.loads((self.repo / "queuekeeper.json").read_text())
         config["lanes"]["checks"] = config["lanes"].pop("gate")
-        (self.repo / "engineering.json").write_text(json.dumps(config))
-        run(self.repo, "git", "add", "engineering.json")
+        (self.repo / "queuekeeper.json").write_text(json.dumps(config))
+        run(self.repo, "git", "add", "queuekeeper.json")
         run(self.repo, "git", "commit", "-qm", "No gate lane yet")
         run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
         run(self.repo, "git", "checkout", "-q", "-B", "name", "origin/main")
         config["queue"].update(lanes=["checks"], hookCoveredBy={"checks": "all the hook runs"})
-        (self.repo / "engineering.json").write_text(json.dumps(config))
-        run(self.repo, "git", "add", "engineering.json")
+        (self.repo / "queuekeeper.json").write_text(json.dumps(config))
+        run(self.repo, "git", "add", "queuekeeper.json")
         run(self.repo, "git", "commit", "-qm", "Name the lanes")
         self.hook("exit 1")
         [identifier] = self.add("name")
@@ -3054,19 +3054,19 @@ class PrePushHooks(Fixture):
         self.assertEqual(len(self.runs()), 1)
 
     def test_the_opt_in_must_name_lanes_the_queue_runs_and_what_they_cover(self):
-        config = json.loads((self.repo / "engineering.json").read_text())
+        config = json.loads((self.repo / "queuekeeper.json").read_text())
         config["lanes"]["other"] = {"command": ["true"]}
         for bad in ({"other": "not a queue lane"}, {"absent": "no such lane"}, {"gate": ""}, {"gate": "  "}, {"gate": 1},
                     {}, ["gate"], "gate"):
             with self.subTest(bad=bad):
-                (self.repo / "engineering.json").write_text(json.dumps({**config, "queue": {"hookCoveredBy": bad}}))
+                (self.repo / "queuekeeper.json").write_text(json.dumps({**config, "queue": {"hookCoveredBy": bad}}))
                 with self.assertRaisesRegex(ValueError, "hookCoveredBy"): self.config()
         for queue in ({"hookCoveredBy": {"gate": "the default lane"}},
                       {"lanes": ["other"], "hookCoveredBy": {"other": "a named lane"}}):
-            (self.repo / "engineering.json").write_text(json.dumps({**config, "queue": queue}))
+            (self.repo / "queuekeeper.json").write_text(json.dumps({**config, "queue": queue}))
             self.assertEqual(self.config()["queue"], queue)
         # A named list replaces the default gate lane.
-        (self.repo / "engineering.json").write_text(json.dumps(
+        (self.repo / "queuekeeper.json").write_text(json.dumps(
             {**config, "queue": {"lanes": ["other"], "hookCoveredBy": {"gate": "not run"}}}))
         with self.assertRaisesRegex(ValueError, "hookCoveredBy"): self.config()
 
@@ -3091,10 +3091,10 @@ class CarryOverChecks(Fixture):
 
     def name_checks(self, *checks):
         """Put queue.carryOverChecks on main, as a project does, and return that commit."""
-        config = json.loads((self.repo / "engineering.json").read_text())
+        config = json.loads((self.repo / "queuekeeper.json").read_text())
         config["queue"]["carryOverChecks"] = list(checks)
-        (self.repo / "engineering.json").write_text(json.dumps(config))
-        run(self.repo, "git", "add", "engineering.json")
+        (self.repo / "queuekeeper.json").write_text(json.dumps(config))
+        run(self.repo, "git", "add", "queuekeeper.json")
         run(self.repo, "git", "commit", "-qm", "Name the carry-over checks")
         run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
         return run(self.repo, "git", "rev-parse", "HEAD")
@@ -3212,21 +3212,21 @@ class CarryOverChecks(Fixture):
         self.assertEqual(self.state(identifier)["state"], "landed")
 
     def test_the_configuration_is_checked(self):
-        config = json.loads((self.repo / "engineering.json").read_text())
+        config = json.loads((self.repo / "queuekeeper.json").read_text())
         good = {"command": ["python3", "x.py"]}
         for checks in ([], [good], [{**good, "paths": ["records/", "guide.md"]}]):
-            (self.repo / "engineering.json").write_text(json.dumps({**config, "queue": {"carryOverChecks": checks}}))
+            (self.repo / "queuekeeper.json").write_text(json.dumps({**config, "queue": {"carryOverChecks": checks}}))
             self.assertEqual(self.config()["queue"]["carryOverChecks"], checks)
         for bad in ("python3 x.py", {"command": ["x"]}, ["python3 x.py"], [["python3", "x.py"]], [{}], [{"command": []}],
                     [{"command": "python3 x.py"}], [{"command": ["python3", ""]}], [{"command": ["x"], "other": 1}],
                     [{"command": ["x"], "paths": []}], [{"command": ["x"], "paths": "records/"}],
                     [{"command": ["x"], "paths": [""]}]):
             with self.subTest(bad=bad):
-                (self.repo / "engineering.json").write_text(json.dumps({**config, "queue": {"carryOverChecks": bad}}))
+                (self.repo / "queuekeeper.json").write_text(json.dumps({**config, "queue": {"carryOverChecks": bad}}))
                 with self.assertRaisesRegex(ValueError, "carryOverChecks"): self.config()
 
     def test_the_schema_knows_the_setting(self):
-        schema = json.loads((ROOT / "schemas/engineering.schema.json").read_text())
+        schema = json.loads((ROOT / "schemas/queuekeeper.schema.json").read_text())
         check = schema["properties"]["queue"]["properties"]["carryOverChecks"]["items"]
         self.assertEqual(set(check["properties"]), {"command", "paths"})
 
@@ -3236,7 +3236,7 @@ class DocsOnly(Fixture):
         super().setUp()
         self.docs_counter, self.docs_status = self.base / "docs-runs", self.base / "docs-status"
         self.ran = self.base / "hook-runs"
-        config = json.loads((self.repo / "engineering.json").read_text())
+        config = json.loads((self.repo / "queuekeeper.json").read_text())
         config["lanes"]["docs"] = {"command": ["python3", "lane.py", str(self.docs_counter), str(self.docs_status)]}
         self.declared = {"paths": {"doc/": "no code lane reads it", "README.md": "nor this"}, "lanes": ["docs"]}
         self.configured = config
@@ -3383,9 +3383,9 @@ class DocsOnly(Fixture):
         config["lanes"]["checks"] = config["lanes"].pop("gate")
         self.publish(config, "No gate lane yet")
         run(self.repo, "git", "checkout", "-q", "-B", "declare", "origin/main")
-        config["queue"].update(lanes=["checks"], docsOnly={"paths": {"engineering.json": "it says so"}, "lanes": ["docs"]})
-        (self.repo / "engineering.json").write_text(json.dumps(config))
-        run(self.repo, "git", "add", "engineering.json")
+        config["queue"].update(lanes=["checks"], docsOnly={"paths": {"queuekeeper.json": "it says so"}, "lanes": ["docs"]})
+        (self.repo / "queuekeeper.json").write_text(json.dumps(config))
+        run(self.repo, "git", "add", "queuekeeper.json")
         run(self.repo, "git", "commit", "-qm", "Declare the docs here")
         [identifier] = self.add("declare")
         self.work()
@@ -3394,7 +3394,7 @@ class DocsOnly(Fixture):
 
     def test_a_hook_the_code_lanes_cover_does_not_run(self):
         # The hook is part of lanes that read none of the batch's paths, so it can say nothing new of them.
-        config = json.loads((self.repo / "engineering.json").read_text())
+        config = json.loads((self.repo / "queuekeeper.json").read_text())
         config["queue"]["hookCoveredBy"] = {"gate": "all the hook runs"}
         self.publish(config, "Opt in")
         PrePushHooks.hook(self, "exit 1")
@@ -3416,7 +3416,7 @@ class DocsOnly(Fixture):
         config = self.configured
         good = {"paths": {"doc/": "why"}, "lanes": ["docs"]}
         for declared in (good, {"paths": {"doc/": "why", "README.md": "why"}, "lanes": ["docs"]}):
-            (self.repo / "engineering.json").write_text(json.dumps({**config, "queue": {"docsOnly": declared}}))
+            (self.repo / "queuekeeper.json").write_text(json.dumps({**config, "queue": {"docsOnly": declared}}))
             self.assertEqual(self.config()["queue"]["docsOnly"], declared)
         for bad in ({}, {"paths": {"doc/": "why"}}, {"lanes": ["docs"]}, {**good, "other": 1}, {**good, "paths": {}},
                     {**good, "paths": ["doc/"]}, {**good, "paths": {"doc/": ""}}, {**good, "paths": {" ": "why"}},
@@ -3424,11 +3424,11 @@ class DocsOnly(Fixture):
                     {**good, "lanes": ["absent"]}, {**good, "lanes": ["gate"]}, {**good, "lanes": ["docs", "gate"]}, {**good, "exclude": []},
                     {**good, "exclude": {"doc/input.md": ""}}, True, []):
             with self.subTest(bad=bad):
-                (self.repo / "engineering.json").write_text(json.dumps({**config, "queue": {"docsOnly": bad}}))
+                (self.repo / "queuekeeper.json").write_text(json.dumps({**config, "queue": {"docsOnly": bad}}))
                 with self.assertRaisesRegex(ValueError, "docsOnly"): self.config()
 
     def test_the_schema_knows_the_setting(self):
-        schema = json.loads((ROOT / "schemas/engineering.schema.json").read_text())
+        schema = json.loads((ROOT / "schemas/queuekeeper.schema.json").read_text())
         declared = schema["properties"]["queue"]["properties"]["docsOnly"]
         self.assertEqual(set(declared["properties"]), {"paths", "lanes", "exclude"})
         self.assertEqual(declared["properties"]["lanes"]["items"]["not"], {"const": "gate"})
@@ -3573,7 +3573,7 @@ class DefaultDocsOnly(Fixture):
             with self.subTest(path=path):
                 self.assertEqual(mq.docs_lanes(config, [path]), ["spelling", "docs"])
                 self.assertIsNone(mq.docs_lanes(config, [path, "src/code.py"]))
-        for path in ("engineering.json", "guides/config.json", "guides/code.py", "tests/input.md", "src/input.md",
+        for path in ("queuekeeper.json", "guides/config.json", "guides/code.py", "tests/input.md", "src/input.md",
                      "AGENTS.md", "agents/core.md", ".github/workflows/check.yml", "README.md.orig"):
             with self.subTest(path=path): self.assertIsNone(mq.docs_lanes(config, [path]))
         self.assertIsNone(mq.docs_lanes(config, []))
@@ -3691,7 +3691,7 @@ class ImplicitSpelling(Fixture):
         self.assertNotIn(mq.IMPLICIT_SPELLING, started)
 
     def test_turned_off_the_gate_alone_decides(self):
-        config = json.loads((self.repo / "engineering.json").read_text())
+        config = json.loads((self.repo / "queuekeeper.json").read_text())
         config["queue"]["spelling"] = False
         self.publish(config, "Turn the toolkit's spelling off")
         self.commit("fix", "fix", content=BRITISH)
@@ -3703,7 +3703,7 @@ class ImplicitSpelling(Fixture):
 
     def test_a_projects_own_spelling_lane_runs_in_its_place(self):
         own, own_status = self.base / "own-spelling", self.base / "own-status"
-        config = json.loads((self.repo / "engineering.json").read_text())
+        config = json.loads((self.repo / "queuekeeper.json").read_text())
         config["lanes"]["spelling"] = {"command": ["python3", "lane.py", str(own), str(own_status)]}
         self.publish(config, "Add a spelling lane")
         # The project's lane passes it, so the toolkit's never read it.
@@ -3717,12 +3717,12 @@ class ImplicitSpelling(Fixture):
     def test_a_branch_that_drops_the_spelling_lane_gets_the_toolkits(self):
         # Main's lane names spelling; the batch's checkout, which queuekeeper run reads, no longer has it.
         own, own_status = self.base / "own-spelling", self.base / "own-status"
-        config = json.loads((self.repo / "engineering.json").read_text())
+        config = json.loads((self.repo / "queuekeeper.json").read_text())
         config["lanes"]["spelling"] = {"command": ["python3", "lane.py", str(own), str(own_status)]}
         self.publish(config, "Add a spelling lane")
         run(self.repo, "git", "checkout", "-q", "-B", "drop", "origin/main")
         del config["lanes"]["spelling"]
-        (self.repo / "engineering.json").write_text(json.dumps(config))
+        (self.repo / "queuekeeper.json").write_text(json.dumps(config))
         run(self.repo, "git", "commit", "-qam", "Drop the spelling lane")
         [identifier] = self.add("drop")
         said = self.rounds()
@@ -3731,15 +3731,15 @@ class ImplicitSpelling(Fixture):
         self.assertTrue(any("runs the toolkit's" in words for words in said), said)
 
     def test_queue_spelling_can_only_turn_it_off(self):
-        config = json.loads((self.repo / "engineering.json").read_text())
+        config = json.loads((self.repo / "queuekeeper.json").read_text())
         config["queue"]["spelling"] = False
-        (self.repo / "engineering.json").write_text(json.dumps(config))
+        (self.repo / "queuekeeper.json").write_text(json.dumps(config))
         self.assertIs(self.config()["queue"]["spelling"], False)
         for bad in (True, "no", 0, None):
             with self.subTest(bad=bad):
-                (self.repo / "engineering.json").write_text(json.dumps({**config, "queue": {"spelling": bad}}))
+                (self.repo / "queuekeeper.json").write_text(json.dumps({**config, "queue": {"spelling": bad}}))
                 with self.assertRaisesRegex(ValueError, "queue.spelling can only be false"): self.config()
-        schema = json.loads((ROOT / "schemas/engineering.schema.json").read_text())
+        schema = json.loads((ROOT / "schemas/queuekeeper.schema.json").read_text())
         self.assertEqual(schema["properties"]["queue"]["properties"]["spelling"]["const"], False)
 
 
@@ -3928,7 +3928,7 @@ class ImplicitSpellingLane(Fixture):
         self.assertEqual(admitted.call_args.args[1:3], ("spelling", "fixture spelling"))
 
     def test_queue_spelling_says_only_whether_the_queue_asks(self):
-        # A batch's engineering.json that turns it off must not leave the round's `queuekeeper run spelling` with no lane.
+        # A batch's queuekeeper.json that turns it off must not leave the round's `queuekeeper run spelling` with no lane.
         config = self.config()
         config["queue"]["spelling"] = False
         self.publish(config, "Turn the toolkit's spelling off")
@@ -4130,9 +4130,9 @@ class SpelledBeforeQueued(Fixture):
         config = self.own_lane(0)
         run(self.repo, "git", "checkout", "-q", "-B", "drop", "origin/main")
         del config["lanes"]["spelling"]
-        (self.repo / "engineering.json").write_text(json.dumps(config))
+        (self.repo / "queuekeeper.json").write_text(json.dumps(config))
         (self.repo / "fix").write_text(BRITISH)
-        run(self.repo, "git", "add", "engineering.json", "fix")
+        run(self.repo, "git", "add", "queuekeeper.json", "fix")
         run(self.repo, "git", "commit", "-qm", "Drop the spelling lane")
         identifier, _, error = self.land("drop")
         self.assertIsNone(identifier)
@@ -4176,7 +4176,7 @@ class AheadOfTheQueue(Fixture):
     def setUp(self):
         super().setUp()
         self.light_counter, self.light_status = self.base / "spelling-runs", self.base / "spelling-status"
-        config = json.loads((self.repo / "engineering.json").read_text())
+        config = json.loads((self.repo / "queuekeeper.json").read_text())
         config["lanes"]["spelling"] = {"command": ["python3", "lane.py", str(self.light_counter), str(self.light_status)]}
         self.configured = config
         self.publish(config, "Add a spelling lane")
@@ -4229,10 +4229,10 @@ class AheadOfTheQueue(Fixture):
         self.assertNotIn("aheadWhy", self.state(identifier))
         for name in ("front", "noGate"):
             with self.subTest(name=name):
-                (self.repo / "engineering.json").write_text(json.dumps(
+                (self.repo / "queuekeeper.json").write_text(json.dumps(
                     {**self.configured, "queue": {name: {"why": "a setting that no longer exists"}}}))
                 with self.assertRaisesRegex(ValueError, "queue supports only"): self.config()
-        schema = json.loads((ROOT / "schemas/engineering.schema.json").read_text())["properties"]["queue"]["properties"]
+        schema = json.loads((ROOT / "schemas/queuekeeper.schema.json").read_text())["properties"]["queue"]["properties"]
         self.assertFalse({"front", "noGate"} & set(schema))
 
     def test_a_front_entry_is_tested_next_as_a_batch_of_its_own(self):
@@ -4424,16 +4424,16 @@ class AheadOfTheQueue(Fixture):
 
 
 class LaggingCheckout(Fixture):
-    """The main checkout's engineering.json is behind origin/main, as Pagepour's was (#96)."""
+    """The main checkout's queuekeeper.json is behind origin/main, as Pagepour's was (#96)."""
     def session(self, lagging, published=None):
         """Leave the main checkout on a commit with the configuration lagging, and in a session's worktree
         on branch fix a commit on top of origin/main, which holds the configuration published."""
-        current = json.loads((self.repo / "engineering.json").read_text())
+        current = json.loads((self.repo / "queuekeeper.json").read_text())
         self.publish(lagging, "An older configuration")
         worktree = self.base / "session"
         run(self.repo, "git", "worktree", "add", "-q", "-b", "fix", str(worktree))
-        (worktree / "engineering.json").write_text(json.dumps(published or current))
-        run(worktree, "git", "add", "engineering.json")
+        (worktree / "queuekeeper.json").write_text(json.dumps(published or current))
+        run(worktree, "git", "add", "queuekeeper.json")
         run(worktree, "git", "commit", "-q", "--allow-empty", "-m", "The newer configuration")
         run(worktree, "git", "push", "-q", "origin", "HEAD:main")
         (worktree / "fix").write_text("x")
@@ -4444,7 +4444,7 @@ class LaggingCheckout(Fixture):
     def land_from_another_project(self):
         other = self.base / "dependent"
         other.mkdir()
-        (other / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "dependent"}))
+        (other / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "dependent"}))
         run(other, "git", "init", "-q")
         (other / "scripts").mkdir()
         shutil.copy(ROOT / "scripts/qk", other / "scripts/qk")
@@ -4460,7 +4460,7 @@ class LaggingCheckout(Fixture):
 
     def test_no_gate_lane_on_origin_main_is_refused_whatever_the_checkout_says(self):
         """The negative control: the checkout has a gate lane, and origin/main and the commit have none."""
-        current = json.loads((self.repo / "engineering.json").read_text())
+        current = json.loads((self.repo / "queuekeeper.json").read_text())
         self.session(current, {"schemaVersion": 1, "name": "fixture"})
         done = self.land_from_another_project()
         self.assertNotEqual(done.returncode, 0)
@@ -4477,7 +4477,7 @@ class LaggingCheckout(Fixture):
         self.assertEqual(mq.Queue(self.repo).all(), [])
 
     def test_pull_request_on_origin_main_is_refused_whatever_the_checkout_says(self):
-        current = json.loads((self.repo / "engineering.json").read_text())
+        current = json.loads((self.repo / "queuekeeper.json").read_text())
         self.session(current, {**current, "integration": "pull-request"})
         done = self.land_from_another_project()
         self.assertNotEqual(done.returncode, 0)
@@ -4486,7 +4486,7 @@ class LaggingCheckout(Fixture):
 
     def test_the_worker_runs_no_lane_from_the_checkout(self):
         """The issue's open question: a gate that would fail, only in the main checkout, does not run."""
-        current = json.loads((self.repo / "engineering.json").read_text())
+        current = json.loads((self.repo / "queuekeeper.json").read_text())
         # No implicit spelling subprocess on the published commit. Either stale lane would fail.
         current["queue"]["spelling"] = False
         failing_lanes = {lane: {"command": ["false"]} for lane in ("gate", "spelling")}
@@ -4653,7 +4653,7 @@ class Changelogs(Fixture):
 
     def test_the_same_shape_in_another_file_comes_back(self):
         # The ordinary conflict is decided by Git. Run the fixture gate on the survivor without an implicit spelling lane.
-        config = json.loads((self.repo / "engineering.json").read_text())
+        config = json.loads((self.repo / "queuekeeper.json").read_text())
         self.publish({**config, "queue": {**config["queue"], "spelling": False}}, "Turn the toolkit's spelling off")
         self.commit("NOTES.md", "notes", self.START)
         run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
@@ -4749,7 +4749,7 @@ class ToolkitCopy(Fixture):
             "head = subprocess.run(['git', '-C', root, 'rev-parse', 'HEAD'], capture_output=True, text=True).stdout.strip() if root else ''\n"
             "dirty = subprocess.run(['git', '-C', root, 'status', '--porcelain'], capture_output=True, text=True).stdout.strip() if root else ''\n"
             "pathlib.Path(sys.argv[1]).write_text('\\n'.join([root, head, dirty]))\n")
-        config = json.loads((self.repo / "engineering.json").read_text())
+        config = json.loads((self.repo / "queuekeeper.json").read_text())
         config["lanes"]["gate"]["command"] = ["python3", "report.py", str(self.seen)]
         run(self.repo, "git", "checkout", "-q", "-B", "start", "origin/main")
         run(self.repo, "git", "add", "report.py")
@@ -4865,7 +4865,7 @@ class ToolkitCopy(Fixture):
 
     def set_on_main(self, key):
         """main's gate lane with the key set, published after the entry was added, as EPUBLib's 41f46e94 landed it."""
-        config = json.loads((self.repo / "engineering.json").read_text())
+        config = json.loads((self.repo / "queuekeeper.json").read_text())
         config["lanes"]["gate"][key] = True
         run(self.repo, "git", "checkout", "-q", "-B", "start", "origin/main")
         self.publish(config, f"Set {key} on the gate lane")
@@ -4913,7 +4913,7 @@ class ToolkitCopy(Fixture):
     def test_a_bisect_goes_on_from_where_the_worker_that_moved_left_it(self):
         """Two entries that fail together, the toolkit landing between the rounds: the worker that takes over
         tests the oldest alone, as the one it replaces was about to, costing no gate."""
-        config = json.loads((self.repo / "engineering.json").read_text())
+        config = json.loads((self.repo / "queuekeeper.json").read_text())
         config["lanes"]["gate"]["command"] = ["python3", "lane.py", str(self.counter), str(self.status)]
         # Kept on this Mac, so that the bisect gates one half at a time, which the count below follows, rather than its
         # halves at once (Beside): every lane is admitted and offerable since the owner's decision of 2026-11-07.
@@ -4971,7 +4971,7 @@ class ToolkitCopy(Fixture):
 
     def test_the_checkouts_relative_path_to_the_toolkit_finds_the_queues_copy(self):
         # Pagepour's and studywright's ../vocaro-engineering, here ../toolkit, as a lane reads it.
-        config = json.loads((self.repo / "engineering.json").read_text())
+        config = json.loads((self.repo / "queuekeeper.json").read_text())
         config["lanes"]["gate"]["command"] = ["python3", "-c", "import os, pathlib, sys; "
                                               "pathlib.Path(sys.argv[1]).write_text(os.path.realpath('../toolkit'))",
                                               str(self.seen)]
@@ -5132,15 +5132,15 @@ class ToolkitsOwnWorker(Fixture):
     def setUp(self):
         super().setUp()
         shutil.copytree(ROOT / "src/python", self.repo / "src/python", ignore=shutil.ignore_patterns("__pycache__"))
-        # Its own toolkit, as the toolkit's engineering.json names it, with the toolkit's spelling exemptions, which
+        # Its own toolkit, as the toolkit's queuekeeper.json names it, with the toolkit's spelling exemptions, which
         # its Python needs to pass the spelling check the queue runs before the gate.
-        config = json.loads((self.repo / "engineering.json").read_text())
+        config = json.loads((self.repo / "queuekeeper.json").read_text())
         spelling = configuration.load(ROOT).get("spelling", {})
         spelling = {**spelling, "exemptPhrases": {
             **spelling.get("exemptPhrases", {}), **config["spelling"]["exemptPhrases"]}}
-        (self.repo / "engineering.json").write_text(json.dumps(
-            {**config, "toolkit": {"path": "."}, "spelling": spelling}))
-        run(self.repo, "git", "add", "src", "engineering.json")
+        (self.repo / "queuekeeper.json").write_text(json.dumps(
+            {**config, "spelling": spelling}))
+        run(self.repo, "git", "add", "src", "queuekeeper.json")
         run(self.repo, "git", "commit", "-qm", "Toolkit")
         run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
         self.started = self.base / "started"
@@ -5191,9 +5191,9 @@ class ToolkitsOwnWorker(Fixture):
         self.assertNotEqual(edited, original)
         source.write_text(edited)
         if key:
-            config = json.loads((self.repo / "engineering.json").read_text())
+            config = json.loads((self.repo / "queuekeeper.json").read_text())
             config["lanes"]["gate"][key] = True
-            (self.repo / "engineering.json").write_text(json.dumps(config))
+            (self.repo / "queuekeeper.json").write_text(json.dumps(config))
         run(self.repo, "git", "commit", "-qam", f"Change the toolkit on {branch}")
         return run(self.repo, "git", "rev-parse", "HEAD")
 
@@ -5214,7 +5214,7 @@ class ToolkitsOwnWorker(Fixture):
         self.assertEqual(self.moves, [])
         knows = run(self.repo, "git", "rev-parse", "origin/main")
         # The control: the code this worker is started from refuses main as it now stands.
-        main = run(self.repo, "git", "show", "origin/main:engineering.json")
+        main = run(self.repo, "git", "show", "origin/main:queuekeeper.json")
         with self.assertRaisesRegex(ValueError, "Invalid lane gate"): configuration.parse(main)
         self.commit("b", "b")
         status, state, said = self.landed("b", adder=self.code_of(self.repo))
@@ -6327,9 +6327,9 @@ class Refusals(Fixture):
         self.assertIn("no configured lane", mq.offerable({"lanes": {"gate": {}}, "queue": off}, ["spelling", "gate"]))
 
     def test_configuration_is_checked(self):
-        config = json.loads((self.repo / "engineering.json").read_text())
+        config = json.loads((self.repo / "queuekeeper.json").read_text())
         for bad in ({"lanes": ["none"]}, {"other": 1}, {"carryOver": {"x/": ""}}):
-            (self.repo / "engineering.json").write_text(json.dumps({**config, "queue": bad}))
+            (self.repo / "queuekeeper.json").write_text(json.dumps({**config, "queue": bad}))
             with self.assertRaises(ValueError): self.config()
 
     def test_a_push_refused_for_any_other_reason_holds(self):
@@ -6397,17 +6397,17 @@ class Refusals(Fixture):
 
     def test_the_commit_that_first_names_the_lanes_lands_and_main_decides_after(self):
         """Negative control first: once main names its lanes, a branch cannot choose another."""
-        config = json.loads((self.repo / "engineering.json").read_text())
+        config = json.loads((self.repo / "queuekeeper.json").read_text())
         lane = config["lanes"].pop("gate")
         config["lanes"]["checks"] = lane
-        (self.repo / "engineering.json").write_text(json.dumps(config))
-        run(self.repo, "git", "add", "engineering.json")
+        (self.repo / "queuekeeper.json").write_text(json.dumps(config))
+        run(self.repo, "git", "add", "queuekeeper.json")
         run(self.repo, "git", "commit", "-qm", "No gate lane yet")
         run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
         run(self.repo, "git", "checkout", "-q", "-B", "name", "origin/main")
         config["queue"]["lanes"] = ["checks"]
-        (self.repo / "engineering.json").write_text(json.dumps(config))
-        run(self.repo, "git", "add", "engineering.json")
+        (self.repo / "queuekeeper.json").write_text(json.dumps(config))
+        run(self.repo, "git", "add", "queuekeeper.json")
         run(self.repo, "git", "commit", "-qm", "Name the lanes")
         [named] = self.add("name")
         self.work()
@@ -6419,8 +6419,8 @@ class Refusals(Fixture):
         (self.repo / "bad").write_text("x")
         config["lanes"]["nothing"] = {"command": ["true"]}
         config["queue"]["lanes"] = ["nothing"]
-        (self.repo / "engineering.json").write_text(json.dumps(config))
-        run(self.repo, "git", "add", "bad", "engineering.json")
+        (self.repo / "queuekeeper.json").write_text(json.dumps(config))
+        run(self.repo, "git", "add", "bad", "queuekeeper.json")
         run(self.repo, "git", "commit", "-qm", "Choose a gate that passes")
         [skip] = self.add("skip")
         self.work()
@@ -6432,7 +6432,7 @@ class Refusals(Fixture):
         dependency does: this repository's queue takes it, and its own session's entry waits beside it."""
         other = self.base / "dependent"
         other.mkdir()
-        (other / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "dependent"}))
+        (other / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "dependent"}))
         run(other, "git", "init", "-q")
         (other / "scripts").mkdir()
         shutil.copy(ROOT / "scripts/qk", other / "scripts/qk")
@@ -6454,7 +6454,7 @@ class Refusals(Fixture):
         other.mkdir()
         (other / "scripts").mkdir()
         shutil.copy(ROOT / "scripts/qk", other / "scripts/qk")
-        (other / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "dependent"}))
+        (other / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "dependent"}))
         run(other, "git", "init", "-q")
         for words, said in ((["land", "--repo", "project"], "you name"), (["land", "--repo", "absent", "x"], "names no project")):
             done = subprocess.run(["python3", "scripts/qk", *words], cwd=other, capture_output=True, text=True)
@@ -6648,7 +6648,7 @@ class FlakyReruns(Fixture):
         # This gate intentionally consumes docs/*.md as test inputs, so its documents keep the code gate.
         config["queue"]["docsOnly"] = False
         config["lanes"]["gate"] = {"command": ["python3", "scripts/qk", "unittest", "-s", "tests", "-v"], "timeout": 600}
-        (self.repo / "engineering.json").write_text(json.dumps(config))
+        (self.repo / "queuekeeper.json").write_text(json.dumps(config))
         run(self.repo, "git", "add", ".")
         run(self.repo, "git", "commit", "-qm", "Gate on an queuekeeper unittest suite")
         run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
@@ -6751,12 +6751,12 @@ class FlakyReruns(Fixture):
 
     def make_gate_a_group(self, other_status):
         """Make the gate a group of the queuekeeper unittest suite and a lane that exits other_status, as the toolkit's is (#289)."""
-        declared = json.loads((self.repo / "engineering.json").read_text())
+        declared = json.loads((self.repo / "queuekeeper.json").read_text())
         declared["lanes"]["suite"] = declared["lanes"]["gate"]
         declared["lanes"]["other"] = {"command": ["python3", "-c", f"raise SystemExit({other_status})"], "timeout": 600}
         declared["lanes"]["gate"] = {"parallel": ["suite", "other"], "resource": "heavy"}
-        (self.repo / "engineering.json").write_text(json.dumps(declared))
-        run(self.repo, "git", "add", "engineering.json")
+        (self.repo / "queuekeeper.json").write_text(json.dumps(declared))
+        run(self.repo, "git", "add", "queuekeeper.json")
         run(self.repo, "git", "commit", "-qm", "Gate on a group of lanes")
         run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
 
@@ -7735,7 +7735,7 @@ class RemovedWhileTesting(Fixture):
         self.addCleanup(starting.stop)
         # The removal lands on the gate lane these tests time, not on the toolkit's spelling check ahead of it, which a
         # loaded Mac can stretch past the moment a test removes the entry.
-        config = json.loads((self.repo / "engineering.json").read_text())
+        config = json.loads((self.repo / "queuekeeper.json").read_text())
         self.publish({**config, "queue": {**config["queue"], "spelling": False}}, "Turn the toolkit's spelling off")
 
     def remove(self, identifier):

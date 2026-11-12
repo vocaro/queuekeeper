@@ -175,7 +175,7 @@ def parse(argv, *, parser_factory=argparse.ArgumentParser):
     parser.add_argument("--derived-data", type=Path, default=Path(".build/simulator-tests/derived"))
     parser.add_argument("--logs", type=Path, default=Path(".build/simulator-tests/logs"))
     parser.add_argument("--pool", help="the simulator pool, the start of every member's name (default: the "
-                        "project's simulatorPool in engineering.json)")
+                        "project's simulatorPool in queuekeeper.json)")
     parser.add_argument("--setting", action="append", default=[], metavar="NAME=VALUE",
                         help="a build setting for the build, after CODE_SIGNING_ALLOWED=NO")
     parser.add_argument("--forward-env", action="append", default=[], metavar="PREFIX",
@@ -952,7 +952,7 @@ def main(argv, project=None):
     name = args.pool or simulator_pool.running(project)
     if args.directory is not None: os.chdir(args.directory)
     if not name:
-        print("queuekeeper simulator-tests: name the simulator pool with --pool, or in engineering.json's simulatorPool",
+        print("queuekeeper simulator-tests: name the simulator pool with --pool, or in queuekeeper.json's simulatorPool",
               file=sys.stderr)
         return 2
     run = Run(args)

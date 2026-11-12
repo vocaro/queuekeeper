@@ -5,21 +5,38 @@ import re
 from pathlib import Path
 
 TOOLKIT_ROOT = Path(__file__).resolve().parents[3]
-# integrations/shared.py, copied into each project, keeps its own copy of this path.
-DEFAULT_TOOLKIT = "../vocaro-engineering"
-CAPABILITIES = {
-    "simulator-pool", "voiceover", "background-mac",
-    "packaging", "measurement", "native-python", "external-validation",
-    "background-processing", "app-extensions", "data-protection", "file-handoff",
-    "storekit", "foundation-models", "background-assets",
-}
+# The extensions a project gets when its queuekeeper.json names none, and that a command with no project loads.
+EXTENSIONS = ("queuekeeper.apple",)
+FILE = "queuekeeper.json"
+
+
+def extensions(declared):
+    """A project's extensions, checked: each a module's dotted name, or {"module": NAME, "path": FOLDER} for one
+    whose package is in FOLDER, a path relative to the project's main checkout."""
+    if not isinstance(declared, list): raise ValueError("extensions must be a list")
+    for entry in declared:
+        named = entry.get("module") if isinstance(entry, dict) else entry
+        if not isinstance(named, str) or not re.fullmatch(r"[A-Za-z_]\w*(\.[A-Za-z_]\w*)*", named) or (
+                isinstance(entry, dict) and (set(entry) - {"module", "path"} or not isinstance(entry.get("path", ""), str))):
+            raise ValueError('extensions lists module names, or {"module": NAME, "path": FOLDER}')
+    return declared
+
+
+def extensions_of(root, base=None):
+    """What the project at root switches on, as (module, folder or None) pairs: its queuekeeper.json's extensions,
+    or EXTENSIONS when it names none or there is no readable project. A folder is resolved against base, the
+    project's main checkout when root is a linked worktree of it, else against root."""
+    try: declared = extensions(json.loads((Path(root) / FILE).read_text()).get("extensions", list(EXTENSIONS)))
+    except (OSError, ValueError, AttributeError): declared = list(EXTENSIONS)
+    return [(entry["module"], str((Path(base or root) / entry["path"]).resolve()) if entry.get("path") else None)
+            if isinstance(entry, dict) else (entry, None) for entry in declared]
 
 
 def load(root):
-    return parse((Path(root).resolve() / "engineering.json").read_text())
+    return parse((Path(root).resolve() / FILE).read_text())
 
 
-# The keys a lane and a lane group take, which parse checks and schemas/engineering.schema.json lists (a test
+# The keys a lane and a lane group take, which parse checks and schemas/queuekeeper.schema.json lists (a test
 # compares them, vocaro-engineering#248).
 LANE_KEYS = frozenset({"command", "resource", "minimumTests", "timeout", "foreground", "here", "model", "display",
                        "budgetMinutes", "wholeHost", "apps", "unlockedScreen", "devices", "compileFirst",
@@ -54,45 +71,20 @@ def lane_devices(lane):
 
 
 def parse(source):
-    """A project's engineering.json, checked, from its text, wherever that came from."""
+    """A project's queuekeeper.json, checked, from its text, wherever that came from."""
     value = json.loads(source)
     if not isinstance(value, dict) or value.get("schemaVersion") != 1:
-        raise ValueError("engineering.json requires schemaVersion 1")
-    allowed = {"schemaVersion", "name", "toolkit", "capabilities", "lanes", "exceptions",
-               "integration", "repository", "spelling", "simulatorPool", "githubArtifacts", "queue", "release", "app",
-               "testLanes"}
-    hosted = [key for key in ("hostedRepositories", "voiceover") if key in value]
-    if hosted:
-        raise ValueError(f"engineering.json gives {' and '.join(hosted)}, which configured GitHub's hosted Mac runner "
-                         "until vocaro-engineering stopped running tests there: Mac VoiceOver runs on the second Mac "
-                         "as a foreground lane, so delete them, and rebase a checkout older than its project's change "
-                         "onto main (guides/second-mac-foreground.md)")
+        raise ValueError("queuekeeper.json requires schemaVersion 1")
+    allowed = {"schemaVersion", "name", "extensions", "lanes", "integration", "repository", "spelling", "simulatorPool",
+               "queue", "release", "app", "testLanes"}
     if set(value) - allowed:
         raise ValueError(f"Unknown configuration keys: {sorted(set(value) - allowed)}")
     if not isinstance(value.get("name"), str) or not value["name"]:
         raise ValueError("Project name must be a nonempty string")
-    toolkit = value.get("toolkit", {})
-    if not isinstance(toolkit, dict) or set(toolkit) - {"path"} or not isinstance(toolkit.get("path", DEFAULT_TOOLKIT), str):
-        raise ValueError("toolkit must contain only an optional checkout path")
+    extensions(value.get("extensions", list(EXTENSIONS)))
     if value.get("integration", "direct-main") not in {"direct-main", "pull-request"}:
         raise ValueError("Unknown integration policy")
-    artifacts = value.get("githubArtifacts", [])
-    if not isinstance(artifacts, list) or any(not isinstance(name, str) or
-            not re.fullmatch(r"\.|[A-Za-z0-9_-]+", name) for name in artifacts) or len(set(artifacts)) != len(artifacts):
-        raise ValueError("githubArtifacts must list distinct package identities, or . for this package")
-    capabilities = value.get("capabilities", [])
-    if not isinstance(capabilities, list) or any(not isinstance(c, str) for c in capabilities):
-        raise ValueError("capabilities must be a list of names")
-    if "simulator-disposable" in capabilities:
-        raise ValueError("simulator-disposable is retired: use simulator-pool and name the pool in simulatorPool "
-                         "(guides/simulator-testing.md, Reserved simulator pool)")
-    if set(capabilities) - CAPABILITIES:
-        raise ValueError(f"Unknown capabilities: {sorted(set(capabilities) - CAPABILITIES)}")
-    if len(set(capabilities)) != len(capabilities):
-        raise ValueError("Duplicate capability")
     pool = value.get("simulatorPool")
-    if ("simulator-pool" in capabilities) != (pool is not None):
-        raise ValueError("The simulator-pool capability and simulatorPool, the name its members start with, go together")
     if pool is not None and (not isinstance(pool, str) or not pool.strip() or pool != pool.strip()):
         raise ValueError("simulatorPool must be a nonempty name, such as the project's")
     if not isinstance(value.get("lanes", {}), dict):
@@ -147,9 +139,6 @@ def parse(source):
                                                 or not r.strip() for k, r in entries.items()):
             raise ValueError(f"spelling.{key} maps each entry to the reason it is kept")
     test_lanes(value.get("testLanes", {}))
-    exceptions = value.get("exceptions", [])
-    if not isinstance(exceptions, list) or any(not isinstance(x, dict) or not all(isinstance(x.get(k), str) and x[k] for k in ["rule", "reason"]) for x in exceptions):
-        raise ValueError("Exceptions require a rule and a reason")
     return value
 
 
@@ -205,7 +194,7 @@ def compile_first(name, lane):
 # What a lane takes of its Mac. Every lane is admitted, first come, first served, and offered to the second Mac
 # first (the owner's decision, 2026-11-07, vocaro-engineering#200): heavy, one slot of heavy-work admission, which a
 # lane that gives no resource takes too; light, which once ran unadmitted where it started, now means heavy, so
-# that the engineering.json files that give it keep loading; exclusive, the host to itself; and self, a lane whose
+# that the queuekeeper.json files that give it keep loading; exclusive, the host to itself; and self, a lane whose
 # script admits each of its parts itself, such as a calibration that builds under `queuekeeper admit` and then times under
 # `queuekeeper admit --exclusive`, which an admission of its own would refuse, so queuekeeper run runs it where it starts, unadmitted
 # (guides/shared-host.md, Heavy-work admission).
@@ -292,8 +281,11 @@ APP_PLATFORMS = {"mac": True, "ios": False}
 def app(declared):
     """The app `queuekeeper app` keeps and runs (app_builds.py, guides/app-builds.md)."""
     if not isinstance(declared, dict) or set(declared) - {"project", "workspace", "directory", "configuration",
-                                                          "prepare", *APP_PLATFORMS}:
-        raise ValueError("app supports only project or workspace, directory, configuration, prepare, mac and ios")
+                                                          "prepare", "links", *APP_PLATFORMS}:
+        raise ValueError("app supports only project or workspace, directory, configuration, prepare, links, mac and ios")
+    links = declared.get("links", [])
+    if not isinstance(links, list) or any(not isinstance(link, str) or not link.strip() for link in links):
+        raise ValueError("app.links lists the checkouts beside the project that its build names by a relative path")
     if ("project" in declared) == ("workspace" in declared):
         raise ValueError("app names its Xcode project or its workspace, one of them")
     for key in ("project", "workspace", "directory", "configuration"):
@@ -472,7 +464,7 @@ def retired(lanes):
     marked = [name for name, lane in lanes.items() if isinstance(lane, dict) and "buildHost" in lane]
     if not marked: return
     named = ", ".join(marked[:-1]) + " and " + marked[-1] if len(marked) > 1 else marked[0]
-    raise ValueError(f"engineering.json gives {named} \"buildHost\", which vocaro-engineering#58 removed: every heavy "
+    raise ValueError(f"queuekeeper.json gives {named} \"buildHost\", which vocaro-engineering#58 removed: every heavy "
                      "or exclusive lane goes to the second Mac unless it says why it stays, with \"here\": \"REASON\", "
                      f"so delete {'it' if len(marked) == 1 else 'each'}, and rebase a checkout older than that change "
                      "onto main (guides/shared-host.md, Earlier names)")

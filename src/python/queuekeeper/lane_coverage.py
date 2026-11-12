@@ -9,7 +9,7 @@ the tracked source, without building or running anything, and each lane's select
 - queuekeeper spelling, queuekeeper docs, queuekeeper run (whose lane is read in its own right), swift build, swift run and an xcodebuild
   that tests nothing select no test.
 
-Any other command, a project's own script most often, cannot be read, and engineering.json's testLanes.selects
+Any other command, a project's own script most often, cannot be read, and queuekeeper.json's testLanes.selects
 states what it selects instead. So there are three answers, and could-not-tell is not a pass: a test no readable lane
 selects has no lane only when every lane was read; while one could not be, that test may be in it. A test counts as
 selected when any lane selects any of it, and which lanes run when is the guide's rule, not this check's.

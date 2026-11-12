@@ -55,7 +55,7 @@ def default_simulators(config):
     pool member and fills it with the project's apps (vocaro-engineering#91). Xcode makes them again
     when it installs a runtime. `queuekeeper doctor` deletes each one first (fix_hosts), so this names only
     those still there: booted, in use or named by a process."""
-    if not any(capability.startswith("simulator") for capability in config.get("capabilities", [])):
+    if not config.get("simulatorPool"):
         return []
     try:
         result = simulator_pool.simctl("list", "devices", "-j", timeout=120)
@@ -75,7 +75,13 @@ def simulator_warnings(root, config):
     return default_simulators(config)
 
 
+def required_commands(config):
+    """Xcode's tools, for a project that uses simulators or keeps an app."""
+    return {"xcrun", "xcodebuild"} if config.get("simulatorPool") or config.get("app") else set()
+
+
 def register():
     """Add these checks and fixes to `doctor`."""
+    if required_commands not in extensions.REQUIRED_COMMANDS: extensions.REQUIRED_COMMANDS.append(required_commands)
     if fix_hosts not in extensions.HOST_FIXES: extensions.HOST_FIXES.append(fix_hosts)
     if simulator_warnings not in extensions.DOCTOR: extensions.DOCTOR.append(simulator_warnings)

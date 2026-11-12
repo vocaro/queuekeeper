@@ -32,7 +32,7 @@ class Project(unittest.TestCase):
         value = {"schemaVersion": 1, "name": "Example"}
         if spelling is not None:
             value["spelling"] = spelling
-        files = {"engineering.json": json.dumps(value), **files}
+        files = {"queuekeeper.json": json.dumps(value), **files}
         for name, text in files.items():
             path = self.root / name
             path.parent.mkdir(parents=True, exist_ok=True)

@@ -457,7 +457,7 @@ class LaneTests(HostTest):
         lane = lambda status: {"command": [sys.executable, "-c", f"open({str(self.ran)!r}, 'a').write('ran\\n'); "
                                            f"print('Ran 1 tests'); raise SystemExit({status})"],
                                "resource": "heavy", "foreground": True}
-        (self.project / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Project", "lanes": {
+        (self.project / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Project", "lanes": {
             "ui-mac": lane(0), "broken-mac": lane(1), "tested-mac": {**lane(1), "apps": ["EPUBLib"]}}}))
         for patcher in (patch.dict(os.environ, {devices.OVERRIDE: str(self.device_record.path),
                                                 "HEAVY_SLOT_DIR": str(self.root / "slots"), "HEAVY_POLL_SECONDS": "0.01",
@@ -564,13 +564,13 @@ class LaneTests(HostTest):
                             ({**command, "apps": [" EPUBLib"]}, "apps names the app under test"),
                             ({**command, "foreground": False, "apps": ["EPUBLib"]}, "apps needs a foreground lane")):
             with self.subTest(lane):
-                (self.project / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Project",
+                (self.project / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Project",
                                                                            "lanes": {"ui": lane}}))
                 with self.assertRaisesRegex(ValueError, words): config.load(self.project)
-        (self.project / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Project",
+        (self.project / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Project",
                                                                    "lanes": {"ui": {**command, "apps": ["EPUBLib"]}}}))
         self.assertEqual(config.load(self.project)["lanes"]["ui"]["apps"], ["EPUBLib"])
-        schema = json.loads((config.TOOLKIT_ROOT / "schemas/engineering.schema.json").read_text())
+        schema = json.loads((config.TOOLKIT_ROOT / "schemas/queuekeeper.schema.json").read_text())
         self.assertEqual(schema["properties"]["lanes"]["additionalProperties"]["properties"]["apps"]["type"], "array")
 
     def test_admit_takes_the_app_under_test_and_remote_admit_sends_it(self):

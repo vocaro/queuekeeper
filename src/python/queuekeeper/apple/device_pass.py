@@ -1,7 +1,7 @@
 """A release's physical-device pass as a lane: `queuekeeper device-pass --device KEY ... -- COMMAND` (vocaro-engineering#148).
 
 The release gate's device pass (guides/releasing.md, Two gates) is a lane of its own, named in
-engineering.json's `release.lanes`, whose command is this one, or a project script that builds first and
+queuekeeper.json's `release.lanes`, whose command is this one, or a project script that builds first and
 then calls run() from Python. `queuekeeper run LANE` admits it and writes its receipt, so `eng release` finds a pass
 of it at the commit as it finds any other lane's (release.lane_passed). The lane is heavy and says
 `"here"`: physical devices are reserved in this Mac's device record only, and the second Mac's defers them.

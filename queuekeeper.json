@@ -1,9 +1,8 @@
 {
   "schemaVersion": 1,
   "name": "queuekeeper",
-  "toolkit": {"path": "../vocaro-engineering"},
   "integration": "direct-main",
-  "capabilities": ["simulator-pool"],
+  "extensions": ["queuekeeper.apple"],
   "simulatorPool": "Queuekeeper",
   "lanes": {
     "gate": {
@@ -22,6 +21,5 @@
     "exemptPhrases": {
       "was cancelled after": "Swift Testing's own line for a canceled test, which Queuekeeper reads in lane logs"
     }
-  },
-  "exceptions": []
+  }
 }

@@ -778,7 +778,7 @@ class ReapTests(unittest.TestCase):
     def test_a_scan_finds_the_pool_a_checkout_names(self):
         checkout = self.home / remote.ROOT / "checkouts/pagepour/0/pagepour"
         checkout.mkdir(parents=True)
-        (checkout / "engineering.json").write_text(json.dumps({"simulatorPool": "Pagepour"}))
+        (checkout / "queuekeeper.json").write_text(json.dumps({"simulatorPool": "Pagepour"}))
         report = offload_host.reap(remote.ROOT, [], listed=self.listed, begin=self.begin)
         self.assertStopped(report)
 
@@ -1023,7 +1023,7 @@ class ReapCommandTests(unittest.TestCase):
 
     def run_command(self, *arguments, here=None, there=None, host="fake"):
         with tempfile.TemporaryDirectory() as project:
-            Path(project, "engineering.json").write_text(json.dumps({"simulatorPool": "Example"}))
+            Path(project, "queuekeeper.json").write_text(json.dumps({"simulatorPool": "Example"}))
             output = StringIO()
             with patch.object(offload_host, "reap", return_value=here or self.EMPTY) as local, \
                     patch.object(remote, "reap_there", return_value=there or self.EMPTY) as far, \
@@ -1064,7 +1064,7 @@ class ReapCommandTests(unittest.TestCase):
     def test_a_dispatch_asks_for_the_projects_pool(self):
         with tempfile.TemporaryDirectory() as project:
             self.assertEqual(remote.reap_request(project), {"pools": []})
-            Path(project, "engineering.json").write_text(json.dumps({"simulatorPool": "Example"}))
+            Path(project, "queuekeeper.json").write_text(json.dumps({"simulatorPool": "Example"}))
             self.assertEqual(remote.reap_request(project), {"pools": ["Example"]})
         self.assertIn('"reap": {"pools": ["Example"]}', remote.census_command(reap={"pools": ["Example"]}))
 
@@ -1082,8 +1082,8 @@ class ReapBeforeRunTests(unittest.TestCase):
         self.project = self.root / "project"
         self.project.mkdir()
         ran = [sys.executable, "-c", "open('ran', 'a').write('ran')"]
-        (self.project / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Project",
-            "capabilities": ["simulator-pool"], "simulatorPool": "Example", "lanes": {"heavy": {"command": ran, "resource": "heavy"},
+        (self.project / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Project",
+            "simulatorPool": "Example", "lanes": {"heavy": {"command": ran, "resource": "heavy"},
                                                   "own": {"command": ran, "resource": "self"}}}))
         # patch.dict puts back the whole environment when it stops, the switch host_isolation set among it.
         environment = patch.dict(os.environ, {"HEAVY_SLOT_DIR": str(self.root / "slots"),

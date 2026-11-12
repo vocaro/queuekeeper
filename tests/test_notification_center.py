@@ -255,7 +255,7 @@ class LaneTests(HostTest):
         self.ran = self.root / "ran"
         lane = {"command": [sys.executable, "-c", f"open({str(self.ran)!r}, 'a').write('ran\\n'); print('Ran 1 tests')"],
                 "resource": "heavy", "foreground": True}
-        (self.project / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Project",
+        (self.project / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Project",
                                                                    "lanes": {"ui-mac": lane}}))
         for patcher in (patch.dict(os.environ, {devices.OVERRIDE: str(self.record.path),
                                                 "HEAVY_SLOT_DIR": str(self.root / "slots"), "HEAVY_POLL_SECONDS": "0.01",

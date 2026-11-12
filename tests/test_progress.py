@@ -216,7 +216,7 @@ class LaneTests(unittest.TestCase):
             hung = {"command": [sys.executable, "-c", "import time; time.sleep(60)"],
                     "timeout": round(stretched(30)), "stall": settings}
             quick = {"command": [sys.executable, "-c", "print('Ran 1 test')"]}
-            (root / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "test", "lanes": {
+            (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "test", "lanes": {
                 "hung": hung, "quick": quick, "both": {"parallel": ["hung", "quick"]}}}))
             readings = lambda ids: {pid: (start, 0) for pid, start in ids.items()} if ids else None
             with patch.object(progress, "cpu", side_effect=readings), patch.object(cli, "source_identity", return_value={}), \

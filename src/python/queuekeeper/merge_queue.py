@@ -436,8 +436,8 @@ def lanes_of(config):
 
 def config_source(root, commit):
     """The configuration text at commit. A checkout's working tree can lag behind it."""
-    shown = git(root, "show", f"{commit}:engineering.json")
-    if shown.returncode: raise ValueError(f"{commit} has no engineering.json: {shown.stderr.strip() or 'no output'}")
+    shown = git(root, "show", f"{commit}:queuekeeper.json")
+    if shown.returncode: raise ValueError(f"{commit} has no queuekeeper.json: {shown.stderr.strip() or 'no output'}")
     return shown.stdout
 
 
@@ -772,7 +772,7 @@ def claims_before_queued(root, base, tip):
 
 def spelling_run(queue, root, commit):
     """(exit status, the lines it printed, the command) of the spelling lane on commit, in a scratch worktree outside
-    every checkout, as the worker picks it (Worker.gate): the project's own spelling lane when commit's engineering.json
+    every checkout, as the worker picks it (Worker.gate): the project's own spelling lane when commit's queuekeeper.json
     configures one (Worker.has_lane), run as its command, here and with no admission, or the toolkit's check,
     IMPLICIT_SPELLING, when it does not. A status of None says why it was not run: a lane that is no one command, or
     a run that reached SPELLING_LIMIT."""
@@ -1322,7 +1322,7 @@ def repository(root, named):
     main checkout, as a session fixing a dependency names it."""
     candidates = [Path(named).expanduser(), Queue(root).main_checkout.parent / named]
     for path in candidates:
-        if (path / "engineering.json").is_file() and git(path, "rev-parse", "--git-dir").returncode == 0:
+        if (path / "queuekeeper.json").is_file() and git(path, "rev-parse", "--git-dir").returncode == 0:
             return path.resolve()
     raise ValueError(f"--repo {named} names no project: give a checkout's path, or the name of a project beside "
                      f"{Queue(root).main_checkout}")
@@ -1386,7 +1386,7 @@ def warn(root):
     # The advisory checks read their own fields, so the waiter's schema must not reject main.
     try:
         config = json.loads(config_source(root, MAIN))
-        if not isinstance(config, dict): raise ValueError("engineering.json must be an object")
+        if not isinstance(config, dict): raise ValueError("queuekeeper.json must be an object")
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         print(f"warning: could not read landing budget configuration: {error}", flush=True)
         return
@@ -1836,7 +1836,7 @@ def diagnose(root):
     try: suites = unittest_lanes(config := config_at(root, MAIN))
     except ValueError as error:
         suites = {}
-        found("configuration", f"origin/main's queue lanes cannot be read: {error}", "fix engineering.json on main")
+        found("configuration", f"origin/main's queue lanes cannot be read: {error}", "fix queuekeeper.json on main")
     # Each waiting entry whose tree alone queuekeeper unittest refuses, as queuekeeper land now refuses before queuing: one queued
     # before that check, or by a toolkit without it.
     refusing = {}
@@ -2787,7 +2787,7 @@ class Worker:
         return member_log, list(dict.fromkeys(assertions))
 
     def has_lane(self, lane):
-        """Whether the checkout's own engineering.json, which queuekeeper run reads, configures lane: where it does not, queuekeeper run
+        """Whether the checkout's own queuekeeper.json, which queuekeeper run reads, configures lane: where it does not, queuekeeper run
         runs the toolkit's spelling check as that lane (lane_to_run)."""
         try: return lane in load(self.checkout).get("lanes", {})
         except (OSError, ValueError): return False
@@ -2952,7 +2952,7 @@ class Worker:
 
     def keep_app(self, head):
         """Start keeping the app built at head, the gated commit just pushed, in the background, when head's
-        engineering.json keeps one after landing (extensions.AFTER_LANDING): the round goes on while it builds, and a build
+        queuekeeper.json keeps one after landing (extensions.AFTER_LANDING): the round goes on while it builds, and a build
         that fails leaves the build kept before it. A docs-only or ungated landing keeps none. Head's settings, not
         main's at the batch's base as the gate's: keeping a build gates nothing, and so the commit that first gives
         `app` keeps its build too (Pagepour's, 2026-11-06, kept none)."""

@@ -140,7 +140,7 @@ class GateBudget(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             def load(lanes):
-                (root / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example", "lanes": lanes}))
+                (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example", "lanes": lanes}))
                 return configuration.load(root)
             self.assertEqual(load({"gate": {**GATE, "budgetMinutes": 30}})["lanes"]["gate"]["budgetMinutes"], 30)
             load({"mac": GATE, "gate": {"parallel": ["mac"], "budgetMinutes": 30}})
@@ -149,7 +149,7 @@ class GateBudget(unittest.TestCase):
                                   ({"gate": {**GATE, "budgetMinutes": 2.5}}, "positive integer"),
                                   ({"gate": {**GATE, "budgetMinutes": True}}, "positive integer")]:
                 with self.subTest(lanes=lanes), self.assertRaisesRegex(ValueError, reason): load(lanes)
-        schema = json.loads((configuration.TOOLKIT_ROOT / "schemas/engineering.schema.json").read_text())
+        schema = json.loads((configuration.TOOLKIT_ROOT / "schemas/queuekeeper.schema.json").read_text())
         self.assertIn("budgetMinutes", schema["properties"]["lanes"]["additionalProperties"]["properties"])
 
 
@@ -186,7 +186,7 @@ class DoctorChecks(unittest.TestCase):
 
     def test_eng_doctor_gives_them(self):
         with tempfile.TemporaryDirectory() as directory:
-            (Path(directory) / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
+            (Path(directory) / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
                 "integration": "direct-main", "lanes": {"gate": {"command": ["tool", "--device", "iPad"], "timeout": 60}}}))
             with patch.dict(os.environ, {"QUEUEKEEPER_OFFLOAD_HOST": "none"}), \
                     patch.object(cli.shutil, "which", return_value="/usr/bin/true"), \
@@ -210,7 +210,7 @@ class Landing(Fixture):
         run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
 
     def budget(self, minutes):
-        declared = json.loads((self.repo / "engineering.json").read_text())
+        declared = json.loads((self.repo / "queuekeeper.json").read_text())
         declared["lanes"]["gate"]["budgetMinutes"] = minutes
         self.publish(declared)
 

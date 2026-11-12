@@ -143,19 +143,19 @@ def canonical(udid):
 
 
 def configured(root):
-    """The pool a project's engineering.json names, or None."""
+    """The pool a project's queuekeeper.json names, or None."""
     try:
-        return json.loads((Path(root) / "engineering.json").read_text()).get("simulatorPool")
+        return json.loads((Path(root) / "queuekeeper.json").read_text()).get("simulatorPool")
     except (OSError, ValueError, AttributeError):
         return None
 
 
 def running(project=None):
-    """The pool of the project a command runs in: the engineering.json in the working directory, which a lane's
+    """The pool of the project a command runs in: the queuekeeper.json in the working directory, which a lane's
     is, and the launcher's project only where the directory has none. A launcher always names its own checkout,
     and the toolkit's, which names a pool of its own, runs in other projects' roots too."""
     here = Path.cwd()
-    return configured(here if (here / "engineering.json").exists() else project or here)
+    return configured(here if (here / "queuekeeper.json").exists() else project or here)
 
 
 def instant(value):
@@ -1258,7 +1258,7 @@ def main(argv, project=None):
     # parser has them, and an action's own leave the value given before it unless they are given again.
     def scoping(parser, default):
         parser.add_argument("--pool", default=default, help="the pool's name, the start of every member's "
-                            "(default: the project's simulatorPool in engineering.json)")
+                            "(default: the project's simulatorPool in queuekeeper.json)")
         parser.add_argument("--owner", default=default, help=f"the session reservations name (default: "
                             f"${device_record.OWNER}, else the agent's session)")
         return parser
@@ -1333,7 +1333,7 @@ def main(argv, project=None):
     name = args.pool or running(project)
     owner = args.owner or default_owner()
     if not name:
-        parser.error("name the pool with --pool, or in engineering.json's simulatorPool")
+        parser.error("name the pool with --pool, or in queuekeeper.json's simulatorPool")
     if not owner and (args.action not in {"list", "check"} or getattr(args, "held", False)):
         parser.error(f"name the owner with --owner or ${device_record.OWNER}")
     try:

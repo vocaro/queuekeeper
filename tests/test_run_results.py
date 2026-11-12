@@ -220,7 +220,7 @@ class KeepTests(unittest.TestCase):
     def lane(self, *command):
         project = self.root / "project"
         project.mkdir()
-        (project / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "P", "lanes": {"smoke": {"command": list(command)}}}))
+        (project / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "P", "lanes": {"smoke": {"command": list(command)}}}))
         finished = subprocess.run([sys.executable, str(ENG), "--project", str(project), "run", "smoke"], cwd=project,
                                   capture_output=True, text=True, env=os.environ)
         return finished, project / ".build/queuekeeper/smoke/results"

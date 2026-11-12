@@ -1261,8 +1261,8 @@ class SimulatorMatrixTests(unittest.TestCase):
         matrix = [sys.executable, str(ENG), "simulator-tests", "--scheme", "Package-Tests", "--runtime", "iOS-27-0",
                   "--device", "iPhone-17-Pro", "--device", "iPad-Air-13-inch-M4"]
         # The pool's name comes from the project's configuration.
-        (self.root / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Project",
-            "capabilities": ["simulator-pool"], "simulatorPool": "Project", "lanes": {
+        (self.root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Project",
+            "simulatorPool": "Project", "lanes": {
             "ios-tests": {"command": [*matrix, "--"], "minimumTests": 6}, "unseparated": {"command": matrix}}}))
         run = lambda lane: subprocess.run([sys.executable, str(ENG), "--project", str(self.root), "run", lane, "--",
                                            "-only-testing:T/C"], cwd=self.root, capture_output=True, text=True,
@@ -1288,14 +1288,14 @@ class SimulatorMatrixTests(unittest.TestCase):
                    "--device", "iPhone-17-Pro"]
         # A project that names no pool, run by a launcher whose own checkout (the toolkit) names one: the
         # run's project decides, so it refuses rather than taking the toolkit's members.
-        (self.root / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Project"}))
+        (self.root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Project"}))
         finished = subprocess.run(command, cwd=self.root, capture_output=True, text=True, env=self.environment)
         self.assertEqual(finished.returncode, 2, finished.stdout + finished.stderr)
         self.assertIn("name the simulator pool", finished.stderr)
         self.assertFalse((self.state / "simctl.log").exists())
 
     def test_a_run_outside_a_project_root_takes_the_launchers_pool(self):
-        # A directory with no engineering.json, such as a project's subdirectory, has the launcher's project
+        # A directory with no queuekeeper.json, such as a project's subdirectory, has the launcher's project
         # name the pool: here Queuekeeper's own, which names Queuekeeper.
         command = [sys.executable, str(ENG), "simulator-tests", "--scheme", "Package-Tests", "--runtime", "iOS-27-0",
                    "--device", "iPhone-17-Pro"]

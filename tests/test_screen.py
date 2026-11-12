@@ -342,7 +342,7 @@ class InheritedAdmissionTests(unittest.TestCase):
                 name = "group"
                 lanes[name] = {"parallel": ["check"], "resource": "heavy",
                                "unlockedScreen": declared}
-            (root / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Nested", "lanes": lanes}))
+            (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Nested", "lanes": lanes}))
             with resources.Admission("outer", exclusive=True, timeout=0), \
                     patch.object(cli, "refresh_policy", return_value="policy"), \
                     patch.object(cli, "source_identity", return_value={}), \

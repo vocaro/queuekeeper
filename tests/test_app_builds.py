@@ -119,9 +119,9 @@ class Fixture(unittest.TestCase):
                                                 str(self.store.source)], capture_output=True))
 
     def commit(self, subject, app=APP):
-        (self.root / "engineering.json").write_text(json.dumps(project(app)))
+        (self.root / "queuekeeper.json").write_text(json.dumps(project(app)))
         (self.root / "change").write_text(subject)
-        git(self.root, "add", "engineering.json", "change")
+        git(self.root, "add", "queuekeeper.json", "change")
         git(self.root, "commit", "-q", "-m", subject)
         git(self.root, "push", "-q", "origin", "HEAD:main")
         return git(self.root, "rev-parse", "HEAD")
@@ -133,8 +133,8 @@ class Fixture(unittest.TestCase):
     def builds(self):
         return self.calls.read_text().splitlines() if self.calls.exists() else []
 
-    def keep(self, **options):
-        return app_builds.keep(self.root, project(), store=self.store, admit=self.admit, **options)
+    def keep(self, app=APP, **options):
+        return app_builds.keep(self.root, project(app), store=self.store, admit=self.admit, **options)
 
 
 class Keeping(Fixture):
@@ -154,19 +154,23 @@ class Keeping(Fixture):
         listing = git(self.root, "worktree", "list", "--porcelain")
         self.assertIn(f"worktree {self.store.source}\nHEAD {head}\ndetached\nlocked {app_builds.SOURCE_REASON}", listing)
 
-    def test_the_shared_toolkit_is_linked_where_the_projects_toolkit_path_finds_it(self):
-        # A project names the toolkit's Swift packages by ../vocaro-engineering, which from the store leads nowhere.
-        toolkit = self.temp / "vocaro-engineering"
+    def test_a_checkout_the_app_links_is_linked_where_the_projects_path_finds_it(self):
+        # A project names another checkout's Swift packages by ../toolkit, which from the store leads nowhere.
+        toolkit = self.temp / "toolkit"
         toolkit.mkdir()
+        linked = {**APP, "links": ["../toolkit"]}
+        link = self.store.path / "toolkit"
+        # The control: an app that links nothing gets no link.
         self.keep(chosen=["mac"])
-        link = self.store.path / "vocaro-engineering"
+        self.assertFalse(link.exists() or link.is_symlink())
+        self.keep(linked, commit=self.commit("linked", linked), chosen=["mac"])
         self.assertEqual((link.is_symlink(), link.resolve()), (True, toolkit.resolve()))
         # It stays across builds, and something else already there is left alone.
-        self.keep(commit=self.commit("second"), chosen=["mac"])
+        self.keep(linked, commit=self.commit("second", linked), chosen=["mac"])
         self.assertTrue(link.is_symlink())
         link.unlink()
         link.mkdir()
-        self.keep(commit=self.commit("third"), chosen=["mac"])
+        self.keep(linked, commit=self.commit("third", linked), chosen=["mac"])
         self.assertFalse(link.is_symlink())
 
     def test_a_commit_the_newest_kept_build_holds_is_not_built_again(self):
@@ -307,7 +311,7 @@ class Configured(Fixture):
 
     def test_a_checkout_behind_an_origin_main_that_configures_app_says_so(self):
         # The owner's shared Pagepour checkout was behind the commit that added `app` (vocaro-engineering#206).
-        (self.root / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Demo"}))
+        (self.root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Demo"}))
         git(self.root, "commit", "-q", "-am", "no app")
         git(self.root, "push", "-q", "origin", "HEAD:main")
         self.commit("app again")
@@ -319,11 +323,11 @@ class Configured(Fixture):
         self.assertNotIn("add `app`", said)
 
     def test_a_project_whose_origin_main_configures_no_app_is_told_to_add_it(self):
-        (self.root / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Demo"}))
+        (self.root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Demo"}))
         git(self.root, "commit", "-q", "-am", "no app")
         git(self.root, "push", "-q", "origin", "HEAD:main")
         self.assertEqual(self.status(), 2)
-        self.assertEqual(self.said, ["engineering.json configures no app: add `app` (guides/app-builds.md)"])
+        self.assertEqual(self.said, ["queuekeeper.json configures no app: add `app` (guides/app-builds.md)"])
 
 
 class Ps:
@@ -443,13 +447,13 @@ class Devices(unittest.TestCase):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         root = Path(temp.name)
-        (root / "engineering.json").write_text(json.dumps(project({"project": "A.xcodeproj", "mac": {"scheme": "A"}})))
+        (root / "queuekeeper.json").write_text(json.dumps(project({"project": "A.xcodeproj", "mac": {"scheme": "A"}})))
         # The owner's decision of 2026-11-06: the device's reservation records no approval, so queuekeeper app takes none.
         with contextlib.redirect_stderr(StringIO()), self.assertRaises(SystemExit):
             cli.main(["--project", str(root), "app", "run", "--iphone", "--approved-by", "owner"])
         self.assertEqual(cli.main(["--project", str(root), "app", "run", "--ipad"]), 2)
         self.assertTrue(any("builds no ios app" in line for line in self.said), self.said)
-        (root / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "A"}))
+        (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "A"}))
         self.assertEqual(cli.main(["--project", str(root), "app", "status"]), 2)
         self.assertTrue(any("configures no app" in line for line in self.said), self.said)
 
@@ -473,7 +477,7 @@ class Queue(Fixture):
     def test_a_commit_that_keeps_nothing_after_landing_starts_nothing(self):
         worker, said = self.worker()
         none = self.commit("no keeping", app={**APP, "mac": {"scheme": "D", "afterLanding": False}})
-        (self.root / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Demo"}))
+        (self.root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Demo"}))
         git(self.root, "commit", "-q", "-am", "no app")
         with patch.object(app_builds, "spawn_keep") as spawn:
             merge_queue.Worker.keep_app(worker, none)

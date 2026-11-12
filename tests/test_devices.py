@@ -757,7 +757,7 @@ class DeviceRecordTests(unittest.TestCase):
     def test_a_foreground_lane_runs_only_for_the_session_holding_mac_foreground(self):
         project = self.root / "project"
         project.mkdir()
-        (project / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Project", "lanes": {
+        (project / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Project", "lanes": {
             "ui": {"command": [sys.executable, "-c", "open('ran', 'a').write('ran')"], "resource": "heavy",
                    "foreground": True}}}))
         def run(owner):

@@ -26,7 +26,7 @@ which has no text, and caught `NeighbourAlignmentTests.swift` only because its c
 What is exempt, each learned by breaking it:
   * Someone else's name, verbatim: another project's API (Unity's `MonoBehaviour`, Apple's
     `isCancelled`), a file name searched for literally (`LICENCE`). A project adds its own in
-    engineering.json: proper names (Denise, Seymour), foreign words (entre, chapitre), a
+    queuekeeper.json: proper names (Denise, Seymour), foreign words (entre, chapitre), a
     standard's terms, retained upstream text. They come from its own fixtures and corpora, so it
     lists each with its reason; the toolkit keeps no shared list of names or foreign words.
   * A cited title. The first <em> of a list item is a bibliography entry's title slot, kept
@@ -222,7 +222,7 @@ def american_for(subword):
 
 
 class Rules:
-    """The built-in exemptions plus a project's own from engineering.json's `spelling`."""
+    """The built-in exemptions plus a project's own from queuekeeper.json's `spelling`."""
 
     def __init__(self, project=None):
         project = project or {}

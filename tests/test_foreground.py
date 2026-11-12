@@ -366,7 +366,7 @@ class RoutingTests(unittest.TestCase):
                   " print('Ran 1 tests')")
         self.lanes = {"voiceover-mac": {"command": [sys.executable, "-c", script, str(self.record.path),
                                                     str(self.during)], "resource": "heavy", "foreground": True}}
-        (self.project / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Project",
+        (self.project / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Project",
                                                                    "lanes": self.lanes}))
         for patcher in (patch.dict(os.environ, {devices.OVERRIDE: str(self.record.path),
                                                 "HEAVY_SLOT_DIR": str(self.root / "slots"), "HEAVY_POLL_SECONDS": "0.01",
@@ -402,7 +402,7 @@ class RoutingTests(unittest.TestCase):
 
     def test_an_unreachable_second_mac_offers_a_window_here_for_foreground_work_alone(self):
         self.lanes["plain"] = {"command": [sys.executable, "-c", "print('Ran 1 tests')"], "resource": "heavy"}
-        (self.project / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Project",
+        (self.project / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Project",
                                                                    "lanes": self.lanes}))
         away = remote.Unreachable("build-host cannot be reached: ssh: connect to host mac.local port 22: Host is down",
                                   "wake build-host and connect it to the network")
@@ -442,7 +442,7 @@ class RoutingTests(unittest.TestCase):
         from queuekeeper import processes
         self.record.defer(SECOND)
         self.lanes["plain"] = {"command": [sys.executable, "-c", "print('Ran 1 tests')"], "resource": "heavy"}
-        (self.project / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Project",
+        (self.project / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Project",
                                                                    "lanes": self.lanes}))
         graces = []
         real = processes.run
@@ -503,7 +503,7 @@ class ResultsTests(unittest.TestCase):
             write = ("import os, pathlib, sys\nif sys.argv[1:] != ['skip']:\n"
                      "    folder = pathlib.Path(os.environ['QUEUEKEEPER_RESULTS_DIR'])\n"
                      "    (folder / 'transcript.txt').write_text('VO')\nprint('Ran 1 tests')")
-            (project / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "P", "lanes": {
+            (project / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "P", "lanes": {
                 "note": {"command": [sys.executable, "-c", write]}}}))
             results = project / ".build/queuekeeper/note/results"
             with patch.object(cli, "source_identity", return_value={}), contextlib.redirect_stdout(StringIO()), \
@@ -518,14 +518,10 @@ class ResultsTests(unittest.TestCase):
 class ConfigurationTests(unittest.TestCase):
     def load(self, value):
         with tempfile.TemporaryDirectory() as directory:
-            (Path(directory) / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "P", **value}))
+            (Path(directory) / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "P", **value}))
             return config.load(directory)
 
-    def test_hosted_runner_configuration_is_refused_and_a_foreground_lane_is_admitted_work(self):
-        for keys in [{"hostedRepositories": ["vocaro/P"]}, {"voiceover": {"workflows": ["voiceover-mac.yml"]}}]:
-            with self.subTest(keys), self.assertRaisesRegex(ValueError, f"{next(iter(keys))}, which configured "
-                                                                         "GitHub's hosted Mac runner"):
-                self.load(keys)
+    def test_a_foreground_lane_is_admitted_work(self):
         with self.assertRaisesRegex(ValueError, "foreground needs an admitted lane"):
             self.load({"lanes": {"ui": {"command": ["true"], "resource": "self", "foreground": True}}})
         # One that gives no resource, or light, is admitted as heavy work (the owner's decision, 2026-11-07).

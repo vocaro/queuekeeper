@@ -84,7 +84,7 @@ class Extended(Fixture):
         self.scratch, self.other = self.root / "tmp/scratch", self.root / "tmp/other"
         for folder in (self.scratch, self.other): folder.mkdir(parents=True)
         self.ledger = self.root / "ledger.jsonl"
-        for patched in (patch.object(cli, "EXTENSIONS", ()), patch.object(disk, "EXTENSION_HOSTS", []),
+        for patched in (patch.object(cli, "extensions_of", lambda *folders: []), patch.object(disk, "EXTENSION_HOSTS", []),
                         patch.object(disk, "EXTENSION_PRIMES", []),
                         patch.object(disk, "EXTENSION_ITEMS", [scratch_items(self.root)]),
                         patch.dict(disk.CATEGORIES, {"scratch": SCRATCH, "simulator": "Simulators",

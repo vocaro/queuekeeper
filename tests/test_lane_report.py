@@ -178,7 +178,7 @@ class Summary(unittest.TestCase):
         self.lane_dir = self.root / ".build/queuekeeper/lane"
 
     def configure(self, **lanes):
-        (self.root / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example", "lanes": lanes}))
+        (self.root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example", "lanes": lanes}))
 
     def command(self, body):
         return [sys.executable, "-c", textwrap.dedent(body)]

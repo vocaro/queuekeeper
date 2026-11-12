@@ -12,12 +12,10 @@ import time
 
 from . import __version__, budgets, disk, docs, extensions, git_state, lane_coverage, lane_report, lane_results, lane_wait, merge_queue, offload_host, \
     parallel, processes, remote, resources, shims, spelling
-from .config import TOOLKIT_ROOT, admission as admission_of, lane_to_run, load, source_identity, \
+from .config import TOOLKIT_ROOT, admission as admission_of, extensions_of, lane_to_run, load, source_identity, \
     display_lane_warnings, lane_devices, self_lane_warnings, stays, unadmitted, unlocked_screen
 from .resources import BUSY, FREE_WAIT
 
-# The extensions every project gets, until a project's configuration names its own.
-EXTENSIONS = ("queuekeeper.apple",)
 # The commands that reach the hosts, before each of which extensions.HOST_COMMAND runs.
 HOST_COMMANDS = {"run", "admit", "remote", "land", "queue", "disk"}
 
@@ -180,7 +178,7 @@ def lane_label(root, config, lane):
     so that two projects' lanes of one name stay apart in waiting messages, the guard and the admission
     log (#51). A space, as in the labels callers pass, such as `warm push REV`, and in an `queuekeeper admit`
     command line; no configured project name or lane has one, and a colon would read as one more field
-    after the `: ` that waiting messages put before a label. The name is engineering.json's, else the
+    after the `: ` that waiting messages put before a label. The name is queuekeeper.json's, else the
     checkout's; a linked worktree's directory is named for its session, so it takes its main checkout's."""
     name = config.get("name") or (git_state.main_checkout(root) or root).name
     return f"{name} {lane}"
@@ -589,7 +587,12 @@ def main(argv=None):
 
 def perform(argv, report):
     """Run the command argv names, telling report of a lane run's progress for the summary that ends it."""
-    extensions.load(EXTENSIONS)
+    # The project's extensions first, since they add commands: its folder is --project's when that comes first, as
+    # a launcher gives it, else the current one, and a linked worktree's extensions are found from its main checkout.
+    given = sys.argv[1:] if argv is None else list(argv)
+    folder = Path(given[1] if given[:1] == ["--project"] and len(given) > 1 else
+                  given[0].split("=", 1)[1] if given[:1] and given[0].startswith("--project=") else ".")
+    extensions.load(extensions_of(folder, git_state.main_checkout(folder)))
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project", type=Path, default=Path.cwd())
     parser.add_argument("--version", action="version", version=__version__)
@@ -846,8 +849,7 @@ def perform(argv, report):
         if args.action in extensions.PARSED_COMMANDS: return extensions.PARSED_COMMANDS[args.action][2](root, args, config)
         if args.action == "doctor":
             required = {"git", "python3"}
-            if any(c.startswith("simulator") or c == "packaging" for c in config.get("capabilities", [])):
-                required |= {"xcrun", "xcodebuild"}
+            for needed in extensions.REQUIRED_COMMANDS: required |= set(needed(config))
             missing = sorted(name for name in required if not shutil.which(name))
             warnings = []
             unbounded = sorted(name for name, lane in config.get("lanes", {}).items()
@@ -872,8 +874,8 @@ def perform(argv, report):
             for check in extensions.DOCTOR: warnings += check(root, config)
             test_lanes = lane_coverage.report(root, config)  # a warning at most, and never a failure (#289)
             warnings += lane_coverage.doctor_warnings(test_lanes)
-            print(json.dumps({"project": config["name"], "toolkit": str(TOOLKIT_ROOT),
-                "source": source_identity(TOOLKIT_ROOT), "capabilities": config.get("capabilities", []),
+            print(json.dumps({"project": config["name"], "queuekeeper": str(TOOLKIT_ROOT),
+                "source": source_identity(TOOLKIT_ROOT), "extensions": list(extensions.LOADED),
                 "missingCommands": missing, "warnings": warnings, "testLanes": test_lanes, "offload": hosts}, indent=2))
             return int(bool(missing or hosts["errors"]))
         elif args.action == "admit": return admit(root, args, config, device_window=device_window)

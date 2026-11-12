@@ -4,6 +4,7 @@ The core never imports an extension. Each name here is a hook point: an extensio
 `load` imports the extensions it is given and calls each one's `register`."""
 import contextlib
 import importlib
+import sys
 
 
 class Unavailable(RuntimeError):
@@ -26,6 +27,8 @@ POLICY = []
 DOCTOR = []
 # Each (root, config) -> [warning]: what a landing warns of after its result, beside the gate's budget.
 LANDING_WARNINGS = []
+# Each (config) -> the commands doctor requires on this Mac for the project, beside its own.
+REQUIRED_COMMANDS = []
 # Each (root, hosts) -> hosts: what `doctor` fixes of the hosts' comparison itself.
 HOST_FIXES = []
 LOADED = []
@@ -155,9 +158,12 @@ def command_environment():
     return values
 
 
-def load(names):
-    """Import each extension named and call its `register`, once."""
-    for name in names:
+def load(named):
+    """Import each extension named and call its `register`, once. Each is a module's name, or (name, folder) for a
+    module whose package is in folder, which goes on the import path."""
+    for entry in named:
+        name, folder = (entry, None) if isinstance(entry, str) else entry
         if name in LOADED: continue
+        if folder and folder not in sys.path: sys.path.insert(0, folder)
         importlib.import_module(name).register()
         LOADED.append(name)

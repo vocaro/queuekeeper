@@ -163,7 +163,7 @@ class Declared(Project):
         config.parse(json.dumps({"schemaVersion": 1, "name": "P", "testLanes": {"skip": {"a/": "why"}, "selects": {"x": []}}}))
 
     def test_the_schema_names_the_setting(self):
-        schema = json.loads((config.TOOLKIT_ROOT / "schemas/engineering.schema.json").read_text())
+        schema = json.loads((config.TOOLKIT_ROOT / "schemas/queuekeeper.schema.json").read_text())
         self.assertEqual(set(schema["properties"]["testLanes"]["properties"]), {"skip", "selects"})
 
 
@@ -309,7 +309,7 @@ class Finding(Project):
 
 class Doctor(Project):
     def doctor(self, lanes):
-        (self.root / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "P", "integration": "direct-main",
+        (self.root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "P", "integration": "direct-main",
                                                                 "lanes": lanes}))
         subprocess.run(["git", "init", "-q", str(self.root)], check=True)
         subprocess.run(["git", "-C", str(self.root), "add", "."], check=True)
