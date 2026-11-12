@@ -13,7 +13,7 @@ import unittest
 from unittest import mock
 import uuid
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
-from queuekeeper import evidence, stale_modules
+from queuekeeper import lane_results, stale_modules
 from queuekeeper.apple import devices
 from queuekeeper.apple.simulators import matrix
 import host_isolation
@@ -363,13 +363,13 @@ class SimulatorMatrixTests(unittest.TestCase):
         self.assertIn("Repeat series: asked 3 repeats of iPhone-17-Pro (3 runs); runs: 3 passed, 0 failed, 0 skipped, "
                       "0 unmeasured; tests: 9 passed, 0 failed, 0 skipped, 0 unmeasured", output)
         self.assertIn("SERIES iPhone-17-Pro run 2 of 3: PASSED on Project iPhone 17 Pro 1", output)
-        self.assertEqual(evidence.series_reported(output), 3)
+        self.assertEqual(lane_results.series_reported(output), 3)
 
     def test_a_series_counts_iphone_and_ipad_tests_once_per_repeat(self):
         status, output = self.run_matrix("--repeat", "2")
         self.assertEqual(status, 0, output)
         self.assertEqual(self.series_record()["tests"]["passed"], 12)
-        self.assertEqual(evidence.require_tests(output, expected=12), 12)
+        self.assertEqual(lane_results.require_tests(output, expected=12), 12)
 
     def test_each_of_a_series_runs_keeps_its_own_log_and_load_words(self):
         status, output = self.run_series("--repeat", "2")
@@ -392,7 +392,7 @@ class SimulatorMatrixTests(unittest.TestCase):
     def test_an_unmeasured_run_leaves_a_series_unmeasured_and_never_passes_it(self):
         self.add("Project iPhone 17 Pro 1")
         status, output = self.run_series("--repeat", "3", "--erase", FAKE_UNMEASURED_RUN="iPhone-17-Pro:2")
-        self.assertEqual(status, evidence.UNMEASURED, output)
+        self.assertEqual(status, lane_results.UNMEASURED, output)
         record = self.series_record()
         self.assertEqual([run["outcome"] for run in record["eachRun"]], ["passed", "unmeasured", "passed"])
         self.assertEqual(record["runs"]["unmeasured"], 1)
@@ -434,7 +434,7 @@ class SimulatorMatrixTests(unittest.TestCase):
 
     def test_a_series_that_asks_for_a_template_copy_and_gets_an_erase_runs_no_test(self):
         status, output = self.run_series("--repeat", "1", "--template")
-        self.assertEqual(status, evidence.UNMEASURED, output)
+        self.assertEqual(status, lane_results.UNMEASURED, output)
         record = self.series_record()
         self.assertEqual(record["eachRun"][0]["outcome"], "unmeasured")
         self.assertIn("was asked for and the member was", record["eachRun"][0]["detail"])
@@ -467,7 +467,7 @@ class SimulatorMatrixTests(unittest.TestCase):
         self.assertNotIn("Repeat series", output)
         self.assertNotIn("SERIES", output)
         self.assertFalse((self.root / ".build/simulator-tests/logs/series.json").exists())
-        self.assertIsNone(evidence.series_reported(output))
+        self.assertIsNone(lane_results.series_reported(output))
 
     def test_a_run_that_could_not_take_a_member_is_unmeasured_and_the_series_goes_on(self):
         from queuekeeper.apple.simulators.pool import Lease
@@ -489,7 +489,7 @@ class SimulatorMatrixTests(unittest.TestCase):
         run.device = lambda kind, device, built: run.finish(kind, 0, "Executed 1 tests")
         with mock.patch.object(matrix, "taken", wraps=matrix.taken) as taking:
             status = matrix.series(run, Pool(), args, ["iPhone-17-Pro"])
-        self.assertEqual(status, evidence.UNMEASURED)
+        self.assertEqual(status, lane_results.UNMEASURED)
         self.assertEqual(taking.call_count, 3, "the failed take does not stop the series")
         self.assertEqual(len(taken), 2)
         record = json.loads((run.logs / "series.json").read_text())
@@ -537,7 +537,7 @@ class SimulatorMatrixTests(unittest.TestCase):
     def test_one_build_serves_every_device_and_the_devices_test_side_by_side(self):
         status, output = self.run_matrix("--", "-only-testing:T/C", FAKE_MEET="2")
         self.assertEqual(status, 0, output)
-        self.assertEqual(evidence.executed_tests(output), 6, output)
+        self.assertEqual(lane_results.executed_tests(output), 6, output)
         self.assertIn("PASS iPhone-17-Pro: Executed 3 tests", output)
         self.assertIn("PASS iPad-Air-13-inch-M4: Executed 3 tests", output)
         builds = [call for call in self.calls() if call[0] == "build-for-testing"]
@@ -639,7 +639,7 @@ class SimulatorMatrixTests(unittest.TestCase):
         logs = self.root / ".build/simulator-tests/logs"
         self.assertIn("has been modified since the module file", (logs / "build-stale-modules.log").read_text())
         self.assertNotIn("has been modified", (logs / "build.log").read_text())
-        self.assertEqual(evidence.executed_tests(output), 6, output)
+        self.assertEqual(lane_results.executed_tests(output), 6, output)
         self.assert_every_device_returned()
 
     def test_a_stale_module_rebuild_that_fails_otherwise_is_that_failure(self):
@@ -947,7 +947,7 @@ class SimulatorMatrixTests(unittest.TestCase):
         # The full run after it builds into the same derived data and tests on every device.
         status, output = self.run_matrix(FAKE_MEET="2")
         self.assertEqual(status, 0, output)
-        self.assertEqual(evidence.executed_tests(output), 6, output)
+        self.assertEqual(lane_results.executed_tests(output), 6, output)
 
     def test_a_failed_build_only_run_fails(self):
         self.add("Project iPhone 17 Pro 1")
@@ -959,7 +959,7 @@ class SimulatorMatrixTests(unittest.TestCase):
 
     def test_any_device_failure_fails_the_run_and_otherwise_an_unmeasured_test_leaves_it_unmeasured(self):
         cases = [
-            ({"FAKE_UNMEASURED": "iPhone-17-Pro"}, evidence.UNMEASURED,
+            ({"FAKE_UNMEASURED": "iPhone-17-Pro"}, lane_results.UNMEASURED,
              "UNMEASURED iPhone-17-Pro: Executed 3 tests", "PASS iPad-Air-13-inch-M4: Executed 3 tests"),
             ({"FAKE_UNMEASURED": "iPhone-17-Pro", "FAKE_TEST_FAIL": "iPad-Air-13-inch-M4"}, 1,
              "UNMEASURED iPhone-17-Pro: Executed 3 tests", "FAIL iPad-Air-13-inch-M4: the tests failed with status 65"),
@@ -974,7 +974,7 @@ class SimulatorMatrixTests(unittest.TestCase):
                 self.assertEqual(status, expected, output)
                 self.assertIn(iphone_outcome, output)
                 self.assertIn(ipad_outcome, output)
-                self.assertEqual(len(evidence.unmeasured_tests(output)), int("FAKE_UNMEASURED" in environment), output)
+                self.assertEqual(len(lane_results.unmeasured_tests(output)), int("FAKE_UNMEASURED" in environment), output)
                 self.assert_every_device_returned()
 
     def test_a_stop_ends_every_device_run_and_returns_every_device_to_the_pool(self):
@@ -1063,7 +1063,7 @@ class SimulatorMatrixTests(unittest.TestCase):
         status, output = self.run_matrix(FAKE_SKIPPED="2", FAKE_SKIPPED_ON="iPad-Air-13-inch-M4")
         self.assertEqual(status, 0, output)
         self.assertIn("PASS iPad-Air-13-inch-M4: Executed 1 tests, 2 skipped", output)
-        self.assertEqual(evidence.executed_tests(output), 4, output)
+        self.assertEqual(lane_results.executed_tests(output), 4, output)
         for path in [*self.state.glob("testing-*"), self.state / "simctl.log"]: path.unlink()
         status, output = self.run_matrix(FAKE_SKIPPED="3", FAKE_SKIPPED_ON="iPad-Air-13-inch-M4")
         self.assertEqual(status, 1, output)
@@ -1093,12 +1093,12 @@ class SimulatorMatrixTests(unittest.TestCase):
         status, output = self.run_matrix("--workers", "2", FAKE_BUNDLE="1")
         self.assertEqual(status, 0, output)
         self.assertIn("PASS iPhone-17-Pro: Executed 2 tests, 1 skipped", output)
-        self.assertEqual(evidence.executed_tests(output), 4, output)
+        self.assertEqual(lane_results.executed_tests(output), 4, output)
 
     def test_with_parallel_workers_an_unmeasured_skip_the_console_does_not_name_leaves_the_run_unmeasured(self):
         status, output = self.run_matrix("--workers", "2", FAKE_BUNDLE="1", FAKE_UNMEASURED="iPad-Air-13-inch-M4")
-        self.assertEqual(status, evidence.UNMEASURED, output)
-        self.assertEqual(evidence.unmeasured_tests(output),
+        self.assertEqual(status, lane_results.UNMEASURED, output)
+        self.assertEqual(lane_results.unmeasured_tests(output),
                          ["iPad-Air-13-inch-M4: -[T/testA()] : Test skipped - Unmeasured: the host was busy"])
         self.assertIn("PASS iPhone-17-Pro", output)
 
@@ -1110,8 +1110,8 @@ class SimulatorMatrixTests(unittest.TestCase):
 
     def test_a_skip_both_the_console_and_the_bundle_name_is_listed_once(self):
         status, output = self.run_matrix(FAKE_BUNDLE="1", FAKE_UNMEASURED="iPhone-17-Pro")
-        self.assertEqual(status, evidence.UNMEASURED, output)
-        self.assertEqual(evidence.unmeasured_tests(output),
+        self.assertEqual(status, lane_results.UNMEASURED, output)
+        self.assertEqual(lane_results.unmeasured_tests(output),
                          ["iPhone-17-Pro: -[T/testA()] : Test skipped - Unmeasured: the host was busy"])
 
     SHARDED = ["T/A/testA()", "T/A/testB()", "T/B/testC()", "T/C/testD()", "T/D/testE()"]
@@ -1140,7 +1140,7 @@ class SimulatorMatrixTests(unittest.TestCase):
                              ["-only-testing:T/A", "-only-testing:T/B", "-only-testing:T/C", "-only-testing:T/D"])
         self.assertIn("PASS iPhone-17-Pro: Executed 5 tests in 2 shards", output)
         # A lane counts each device once, not its shards.
-        self.assertEqual(evidence.executed_tests(output), 10, output)
+        self.assertEqual(lane_results.executed_tests(output), 10, output)
         listings = [call for call in self.calls() if "-enumerate-tests" in call]
         self.assertEqual(len(listings), 1)
         # The listing has its own derived data and result bundle, both gone once the run ends.

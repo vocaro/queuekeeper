@@ -11,7 +11,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
-from queuekeeper import cli, evidence, parallel
+from queuekeeper import cli, lane_results, parallel
 from queuekeeper.apple import run_results
 from queuekeeper.apple.simulators import matrix
 import host_isolation
@@ -173,7 +173,7 @@ class KeepTests(unittest.TestCase):
                                       (empty, "records no test case", [])):
             with self.subTest(bundle.name):
                 status, output = self.keep("--results", str(self.results), name=bundle.stem, bundle=bundle)
-                self.assertEqual(status, evidence.UNMEASURED, output)
+                self.assertEqual(status, lane_results.UNMEASURED, output)
                 self.assertRegex(output, rf"UNMEASURED {bundle.stem}: no test's outcome is known, whatever xcodebuild's status 0 says: .*{reason}")
                 self.assertNotIn(" passed,", output)
                 record = self.record(bundle.stem)

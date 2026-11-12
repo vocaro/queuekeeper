@@ -13,7 +13,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 import host_isolation  # noqa: F401 (keeps the tests off the real hosts)
 from host_isolation import stretched
-from queuekeeper import cli, evidence, lane_report, merge_queue
+from queuekeeper import cli, lane_results, lane_report, merge_queue
 from vocaro_engineering import failure_records
 
 SOURCE = Path(__file__).resolve().parents[1] / "src/python"
@@ -136,8 +136,8 @@ class Parsing(unittest.TestCase):
     def test_nothing_that_reads_a_lanes_log_reads_a_summary_as_a_result(self):
         summary = ("eng run gate: failed (exit 1), on this Mac\n  tests: 3 passed, 2 failed, 1 skipped, 1 unmeasured\n"
                    "  failed: tests.test_x.X.test_b at /project/tests/test_x.py:7\n  details: /p/failures.txt\n")
-        self.assertIsNone(evidence.counted(summary))
-        self.assertEqual(evidence.unmeasured_tests(summary), [])
+        self.assertIsNone(lane_results.counted(summary))
+        self.assertEqual(lane_results.unmeasured_tests(summary), [])
         self.assertEqual(merge_queue.FAILED_TEST.findall(summary), [])
         self.assertIsNone(merge_queue.UNITTEST_SUMMARY.search(summary))
         with tempfile.TemporaryDirectory() as directory:
@@ -224,7 +224,7 @@ class Summary(unittest.TestCase):
         text = "test_a (m.T.test_a) ... skipped 'Unmeasured: no model'\nRan 2 tests in 0.1s\n\nOK (skipped=1)"
         self.configure(lane=self.printing(text))
         status, lines = self.eng("lane")
-        self.assertEqual(status, evidence.UNMEASURED)
+        self.assertEqual(status, lane_results.UNMEASURED)
         self.assertEqual(lines[-3:-1], ["eng run lane: unmeasured (exit 3), on this Mac",
                                         "  tests: 1 passed, 0 failed, 0 skipped, 1 unmeasured"])
 
@@ -232,7 +232,7 @@ class Summary(unittest.TestCase):
         self.configure(lane={"command": self.command("print('Ran 2 tests in 0.1s\\n\\nOK', flush=True)\nimport time\ntime.sleep(60)"),
                              "timeout": 1})
         status, lines = self.eng("lane")
-        self.assertEqual(status, evidence.UNMEASURED)
+        self.assertEqual(status, lane_results.UNMEASURED)
         self.assertEqual(lines[-4], "eng run lane: unmeasured (exit 3), on this Mac")
         self.assertEqual(lines[-3], "  tests: no counts, as the run did not finish and its log is incomplete")
         self.assertIn("  why: ", lines[-2])
@@ -269,8 +269,8 @@ class Summary(unittest.TestCase):
     def test_a_lane_that_failed_before_any_test_is_told_apart_from_a_test_failure(self):
         self.configure(lane=self.printing(SETUP_FAILED, 1))
         status, lines = self.eng("lane")
-        self.assertEqual(status, evidence.BEFORE_TESTS)
-        self.assertNotIn(status, (1, evidence.UNMEASURED))
+        self.assertEqual(status, lane_results.BEFORE_TESTS)
+        self.assertNotIn(status, (1, lane_results.UNMEASURED))
         self.assertEqual(lines[-4:], ["eng run lane: failed before any test ran (exit 4), on this Mac",
                                       "  tests: none ran; the last error in its log: "
                                       "Failed: project generation or canonical package-lock seeding failed",
@@ -280,9 +280,9 @@ class Summary(unittest.TestCase):
         self.assertEqual((receipt["outcome"], receipt["exitStatus"], receipt["beforeTests"]),
                          ("failed", 1, "Failed: project generation or canonical package-lock seeding failed"))
         # It is a failure to the queue, as it was: whether it gives no verdict is the owner's call.
-        self.assertNotIn(evidence.BEFORE_TESTS, merge_queue.NO_VERDICT)
+        self.assertNotIn(lane_results.BEFORE_TESTS, merge_queue.NO_VERDICT)
         summary = "\n".join(lines[-4:])
-        self.assertIsNone(evidence.counted(summary))
+        self.assertIsNone(lane_results.counted(summary))
         self.assertEqual(merge_queue.FAILED_TEST.findall(summary), [])
 
     def test_a_lane_whose_tests_crashed_before_their_counts_stays_failed(self):
@@ -298,8 +298,8 @@ class Summary(unittest.TestCase):
                 self.assertNotIn("beforeTests", json.loads((self.lane_dir / "source.json").read_text()))
 
     def test_a_lane_that_exits_unmeasured_or_a_failed_build_keeps_its_status(self):
-        self.configure(lane=self.printing(SETUP_FAILED, evidence.UNMEASURED))
-        self.assertEqual(self.eng("lane")[0], evidence.UNMEASURED)
+        self.configure(lane=self.printing(SETUP_FAILED, lane_results.UNMEASURED))
+        self.assertEqual(self.eng("lane")[0], lane_results.UNMEASURED)
         self.configure(lane={**self.printing("Ran 1 test in 0.1s\n\nOK"),
                              "compileFirst": self.printing("error: cannot find 'x' in scope", 65)["command"]})
         status, lines = self.eng("lane")
@@ -363,7 +363,7 @@ class Summary(unittest.TestCase):
                 patch.object(cli, "source_identity", return_value={}), \
                 contextlib.redirect_stdout(stream), contextlib.redirect_stderr(stream):
             status = cli.main(["--project", str(self.root), "run", "--here", "lane"])
-        self.assertEqual(status, evidence.UNMEASURED)
+        self.assertEqual(status, lane_results.UNMEASURED)
         self.assertEqual(stream.getvalue().splitlines()[-1], "eng run lane: unmeasured (exit 3); no tests ran")
 
     def test_the_second_macs_own_run_leaves_the_summary_to_the_mac_that_sent_it(self):

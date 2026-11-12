@@ -25,7 +25,7 @@ from pathlib import Path
 import re
 import sys
 
-from .. import evidence
+from .. import lane_results
 from ..parallel import RESULTS_VARIABLE
 from .simulators import matrix
 
@@ -117,7 +117,7 @@ def keep(log, bundle, name, status, results=None, out=print, *, activity_prefixe
     if results and folder is None: return 1
     for line in lines({"run": name, "status": status, "tests": cases, "bundleUnread": unread}): out(line)
     out(f"{name}: kept in {folder}" if folder else f"{name}: not kept: no lane gave it a results directory ({RESULTS_VARIABLE} is unset)")
-    return evidence.UNMEASURED if unread is not None else 0
+    return lane_results.UNMEASURED if unread is not None else 0
 
 
 def main(argv):

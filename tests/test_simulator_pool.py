@@ -15,7 +15,7 @@ from unittest import mock
 import uuid
 from xml.parsers.expat import ExpatError
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
-from queuekeeper import evidence, offload_host, resources
+from queuekeeper import lane_results, offload_host, resources
 from queuekeeper.apple import devices
 import host_isolation
 from queuekeeper.apple.simulators import pool as simulator_pool
@@ -555,7 +555,7 @@ class PoolTests(unittest.TestCase):
         count = len(lines())
         self.simctl.fail["bootstatus"] = lambda rest: (124, "", "timed out")
         self.assertEqual(self.pool_command("take", "--device", "iPhone-Duo", "--runtime", "iOS-27-1")[0],
-                         evidence.UNMEASURED)
+                         lane_results.UNMEASURED)
         del self.simctl.fail["bootstatus"]
         run = simulator_pool.Pool("Project", owner="me", record=devices.Record(self.path), run=self.simctl,
                                   log=self.log.append, warm=None, alone=True)
@@ -808,7 +808,7 @@ class PoolTests(unittest.TestCase):
         self.assertEqual(self.simctl.devices[udid.strip()]["state"], "Shutdown")
         self.simctl.fail["bootstatus"] = lambda rest: (124, "", "timed out")
         status, _, error = command("take", "--device", "iPhone-Duo", "--runtime", "iOS-27-1")
-        self.assertEqual(status, evidence.UNMEASURED)
+        self.assertEqual(status, lane_results.UNMEASURED)
         self.assertIn("did not finish booting", error)
         self.assertEqual(devices.Record(self.path).entry("Project Duo 1")["state"], "released")
         # The lowest member is never pruned, even when asked for by UDID.
@@ -927,7 +927,7 @@ class PoolTests(unittest.TestCase):
 
     def test_a_bootstatus_past_its_limit_is_named_and_stays_unmeasured(self):
         code, lines = self.failed_take("bootstatus", 124, "timed out after 600 s")
-        self.assertEqual(code, evidence.UNMEASURED)
+        self.assertEqual(code, lane_results.UNMEASURED)
         self.assertEqual(self.boot_failure_line(lines),
                          "Project Duo 1: BOOT FAILED: `simctl bootstatus -b` exited 124: timed out after 600 s")
 

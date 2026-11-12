@@ -31,7 +31,7 @@ import shutil
 import subprocess
 import tempfile
 
-from .. import evidence, host_context, offload_host, remote
+from .. import lane_results, host_context, offload_host, remote
 
 DEFAULT = "~/Library/Keychains/login.keychain-db"
 # Seconds each of the check's commands, and the question to the second Mac, may take.
@@ -314,7 +314,7 @@ def execute(args, out=print):
         return keep_unlocked(args.identity, out)
     record = check(args.keychain, args.identity, args.timeout)
     out(json.dumps(record, indent=2))
-    return {PASSED: 0, FAILED: 1}.get(record["outcome"], evidence.UNMEASURED)
+    return {PASSED: 0, FAILED: 1}.get(record["outcome"], lane_results.UNMEASURED)
 
 
 def add_arguments(parser):

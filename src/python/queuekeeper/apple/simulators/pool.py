@@ -43,7 +43,7 @@ import uuid
 from xml.parsers.expat import ExpatError
 
 from .. import devices as device_record
-from ... import evidence, offload_host
+from ... import lane_results, offload_host
 from ...resources import process_start
 from . import lifecycle, speech, template as warmed
 
@@ -1130,7 +1130,7 @@ def member(name, device_type, runtime, *, purpose, owner=None, boot_timeout=600,
     status = "stopped"
     try:
         booted = boot(pool, lease, boot_timeout, app_accessibility=app_accessibility)
-        if booted == evidence.UNMEASURED:
+        if booted == lane_results.UNMEASURED:
             status = "the boot reached its limit"
             raise BootTimedOut(f"{lease.key} did not finish booting within {boot_timeout}s")
         if booted is not None:
@@ -1203,7 +1203,7 @@ def boot(pool, lease, timeout, *, app_accessibility=False):
     finished = pool.run("bootstatus", lease.udid, "-b", timeout=timeout)
     if finished.returncode != 0:
         pool.log(f"{lease.key}: {boot_failure('bootstatus -b', finished)}")
-        return evidence.UNMEASURED if finished.returncode == 124 else finished.returncode
+        return lane_results.UNMEASURED if finished.returncode == 124 else finished.returncode
     why = set_app_accessibility(pool.run, lease.udid, app_accessibility, kept=lease.kept)
     if why is not None:
         pool.log(f"APP ACCESSIBILITY {lease.key}: " + ("could not be switched on, so a hosted test reads no system "
@@ -1283,7 +1283,7 @@ def main(argv, project=None):
                       "views (guides/simulator-testing.md, App accessibility); a setting that does not read on fails "
                       "the take")
     take.add_argument("--boot-timeout", type=int, default=600, help="seconds the boot may take (default 600); "
-                      f"past it the member is released and the command exits {evidence.UNMEASURED}")
+                      f"past it the member is released and the command exits {lane_results.UNMEASURED}")
     take.add_argument("--hold", type=int, default=int(TAKE_HOLD.total_seconds() // 60), metavar="MINUTES",
                       help=f"minutes the member is held before reap may release it once its session has gone "
                            f"(default {int(TAKE_HOLD.total_seconds() // 60)}); `extend` moves it later")
@@ -1384,7 +1384,7 @@ def main(argv, project=None):
                 print(f"eng simulator-pool: {lease.key} did not finish booting (status {status})" +
                       (", or its app accessibility could not be switched on (APP ACCESSIBILITY, above)"
                        if args.app_accessibility and status == 1 else ""), file=sys.stderr)
-                return status if status != 124 else evidence.UNMEASURED
+                return status if status != 124 else lane_results.UNMEASURED
             entry = pool.record.entry(lease.key) or {}
             pool.log_hold("take", lease.key, entry, after=entry.get("expectedReleaseBy"), expectedReleaseBefore=None)
             print(lease.udid)

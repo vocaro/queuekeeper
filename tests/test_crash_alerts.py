@@ -14,7 +14,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 import host_isolation
 from host_isolation import stretched
-from queuekeeper import cli, evidence, offload_host, remote
+from queuekeeper import cli, lane_results, offload_host, remote
 from queuekeeper.apple import crash_alerts, devices, foreground
 from queuekeeper.apple.voiceover import state as voiceover_state
 
@@ -238,7 +238,7 @@ class GuardTests(HostTest):
             while not run.left and time.monotonic() < deadline: threading.Event().wait(0.01)
         self.assertEqual(self.host.alerts, [PASSWORD])
         with contextlib.redirect_stderr(StringIO()) as error:
-            self.assertEqual(run.judged(5), evidence.UNMEASURED)
+            self.assertEqual(run.judged(5), lane_results.UNMEASURED)
             self.assertEqual(run.judged(0), 0)
         self.assertIn("unmeasured: the run ended with status 5 while a password", error.getvalue())
 
@@ -247,7 +247,7 @@ class GuardTests(HostTest):
         with contextlib.redirect_stderr(StringIO()):
             self.assertEqual(crash_alerts.main(["check"]), 0)
             self.host.alerts = [PASSWORD]
-            self.assertEqual(crash_alerts.main(["check"]), evidence.UNMEASURED)
+            self.assertEqual(crash_alerts.main(["check"]), lane_results.UNMEASURED)
             with patch.object(crash_alerts, "run", return_value=None):
                 self.assertEqual(crash_alerts.main(["check"]), 1)
             self.assertEqual(crash_alerts.main([]), 2)
@@ -377,7 +377,7 @@ class ClearedAlertTests(HostTest):
 
     def test_another_process_s_alert_that_stood_longer_than_one_look_makes_a_failure_unmeasured(self):
         status, error, summary = self.judged(OTHER, 17)
-        self.assertEqual(status, evidence.UNMEASURED)
+        self.assertEqual(status, lane_results.UNMEASURED)
         self.assertIn("eng: unmeasured: the run ended with status 65 after eng cleared a crash-report alert during it "
                       "that was for Crasher944, not the app under test (EPUBLib), and stood 17.0 s from "
                       "2026-11-07T04:46:44+00:00, longer than one look (2 s)", error)
@@ -387,7 +387,7 @@ class ClearedAlertTests(HostTest):
                                                "duringRun": True}])
         self.assertEqual(summary["appsUnderTest"], ["EPUBLib"])
         # The app under test is matched as the alert names it, in any case.
-        self.assertEqual(self.judged(OTHER, 17, apps=("epublib",))[0], evidence.UNMEASURED)
+        self.assertEqual(self.judged(OTHER, 17, apps=("epublib",))[0], lane_results.UNMEASURED)
 
     def test_a_failure_stands_under_a_short_alert_one_for_the_app_under_test_or_one_eng_cannot_name(self):
         for alert, stood, apps, why in (
@@ -424,7 +424,7 @@ class ClearedAlertTests(HostTest):
         self.assertEqual((status, error), (65, ""))
         self.assertFalse(summary["cleared"][0]["duringRun"])
         # An unmeasured run stays unmeasured.
-        self.assertEqual(self.judged(OTHER, 30, status=evidence.UNMEASURED)[0], evidence.UNMEASURED)
+        self.assertEqual(self.judged(OTHER, 30, status=lane_results.UNMEASURED)[0], lane_results.UNMEASURED)
 
     def test_an_alert_stands_from_the_first_look_that_listed_it_and_afresh_once_it_has_gone(self):
         now = [START]
@@ -498,7 +498,7 @@ class LaneTests(HostTest):
                           ("admit", "--foreground", "--", sys.executable, "-c", f"open({str(self.ran)!r}, 'a')")):
             with self.subTest(arguments[0]):
                 status, error = self.eng(*arguments)
-                self.assertEqual(status, evidence.UNMEASURED, error)
+                self.assertEqual(status, lane_results.UNMEASURED, error)
                 self.assertIn("password, permission or keychain prompt", error)
                 self.assertIn("SecurityAgent's window at x 600, y 300, 400×220", error)
                 self.assertFalse(self.ran.exists())
@@ -516,7 +516,7 @@ class LaneTests(HostTest):
             return left
         with patch.object(crash_alerts.Run, "look", look):
             status, error = self.eng("run", "--here", "broken-mac")
-            self.assertEqual(status, evidence.UNMEASURED, error)
+            self.assertEqual(status, lane_results.UNMEASURED, error)
             self.assertIn("ended with status 1 while a system alert eng cannot dismiss", error)
             receipt = json.loads((self.project / ".build/engineering/broken-mac/source.json").read_text())
             self.assertEqual(receipt["outcome"], "unmeasured")
@@ -535,7 +535,7 @@ class LaneTests(HostTest):
             now[0] += 17
             self.host.alerts = []
             return True
-        for alert, lane, outcome in ((OTHER, "tested-mac", evidence.UNMEASURED), (UNDER_TEST, "tested-mac", 1),
+        for alert, lane, outcome in ((OTHER, "tested-mac", lane_results.UNMEASURED), (UNDER_TEST, "tested-mac", 1),
                                      (OTHER, "broken-mac", 1)):
             with self.subTest(alert=alert["texts"][0], lane=lane), \
                     patch.object(crash_alerts, "clock", lambda: now[0]), patch.object(crash_alerts, "press", press), \
@@ -549,7 +549,7 @@ class LaneTests(HostTest):
                 self.assertEqual([(entry["process"], entry["stoodSeconds"], entry["duringRun"]) for entry in cleared],
                                  [(crash_alerts.crashed(alert), 17.0, True)])
                 self.assertEqual(receipt["crashAlerts"]["appsUnderTest"], ["EPUBLib"] if lane == "tested-mac" else [])
-                if outcome == evidence.UNMEASURED:
+                if outcome == lane_results.UNMEASURED:
                     self.assertIn("after eng cleared a crash-report alert during it that was for Crasher944", error)
                     self.assertEqual(receipt["outcome"], "unmeasured")
                 else:
@@ -588,7 +588,7 @@ class LaneTests(HostTest):
         with patch.object(crash_alerts, "clock", lambda: now[0]), patch.object(crash_alerts, "press", press), \
                 patch.object(crash_alerts.Run, "look", look):
             status, error = self.eng("admit", "--foreground", "--app", "EPUBLib", "--", *failing)
-            self.assertEqual(status, evidence.UNMEASURED, error)
+            self.assertEqual(status, lane_results.UNMEASURED, error)
             self.assertIn("not the app under test (EPUBLib)", error)
             receipt = json.loads((self.project / ".build/engineering/admit/source.json").read_text())
             self.assertEqual(receipt["crashAlerts"]["cleared"], [{

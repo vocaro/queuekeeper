@@ -65,7 +65,7 @@ import threading
 import time
 import uuid
 
-from . import disk, evidence, lane_wait, offload_host, parallel, processes, resources, toolkit_copy
+from . import disk, lane_results, lane_wait, offload_host, parallel, processes, resources, toolkit_copy
 from .apple import capture_approvals, devices, run_results
 from .config import TOOLKIT_ROOT, unlocked_screen
 from .resources import BUSY, FREE_WAIT
@@ -1582,7 +1582,7 @@ def detached_seconds(config, lane, work):
         if "parallel" in entry: return sum(own(member) for member in entry["parallel"])
         return entry.get("timeout", processes.DEFAULT_LIMIT)
     head = work[:work.index("--")] if "--" in work else work
-    limit = own(lane) * (evidence.repeats_asked(work) or 1) if lane is not None else \
+    limit = own(lane) * (lane_results.repeats_asked(work) or 1) if lane is not None else \
         float(head[head.index("--time-limit") + 1]) if "--time-limit" in head else processes.DEFAULT_LIMIT
     return limit + (own("provision") if "provision" in lanes and lane != "provision" else 0) + UNATTENDED_WAIT
 
@@ -1824,7 +1824,7 @@ def progress_text(data):
     that no reader of a log takes it for a test count or an unmeasured test, or only its first word if it still would."""
     text = CONTROL_CHARACTERS.sub(" ", data.decode(errors="replace")).strip()[:PROGRESS_WIDTH]
     text = COUNTED_PHRASE.sub(lambda match: match.group(0).lower(), text)
-    return text.split()[0] if evidence.counted(text) is not None or evidence.unmeasured_tests(text) else text
+    return text.split()[0] if lane_results.counted(text) is not None or lane_results.unmeasured_tests(text) else text
 
 
 def spelled_seconds(seconds):

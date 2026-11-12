@@ -75,7 +75,7 @@ import time
 
 from . import device_notifications
 from .. import offload_host, processes
-from ..evidence import UNMEASURED
+from ..lane_results import UNMEASURED
 from ..resources import process_start
 
 SCHEMA = 1

@@ -51,7 +51,7 @@ import time
 import urllib.request
 
 from .apple import app_builds
-from . import budgets, disk, evidence, landing, lane_progress, lane_report, lane_wait, offload_host, parallel, processes, remote, \
+from . import budgets, disk, lane_results, landing, lane_progress, lane_report, lane_wait, offload_host, parallel, processes, remote, \
     resources
 from .config import DOCS, DOCS_FILES, DOCS_FOLDERS, IMPLICIT_DOCS, IMPLICIT_SPELLING, SPELLING, SPELLING_LIMIT, \
     TOOLKIT_ROOT, lane_to_run, load, parse, stays, unlocked_screen
@@ -73,7 +73,7 @@ WAITING = {QUEUED, TESTING, PASSED}
 NO_VERDICT_OUTCOME = "no verdict"
 # What a lane exits with when it says nothing about the commits: unmeasured, no admission, a
 # shared host's configuration, which stops for the owner, and a worker that lost Local Network access (Worker.older).
-NO_VERDICT = {evidence.UNMEASURED, resources.BUSY, remote.MISCONFIGURED, remote.LOST_ACCESS}
+NO_VERDICT = {lane_results.UNMEASURED, resources.BUSY, remote.MISCONFIGURED, remote.LOST_ACCESS}
 # Of those, the exits of a lane that did not run: no Mac admitted it, a shared host's configuration stopped it, or this
 # worker can no longer reach the second Mac.
 UNRUN = {resources.BUSY, remote.MISCONFIGURED, remote.LOST_ACCESS}
@@ -2710,7 +2710,7 @@ class Worker:
                     return WITHDRAWN, log
                 self.timed_out = f"{lane} reached its limit: {error}"
                 self.say(f"{lane}: unmeasured: {error}")
-                return evidence.UNMEASURED, log
+                return lane_results.UNMEASURED, log
             except BaseException:
                 loads.stopped.set()
                 if sampler: sampler.stopped.set()
@@ -3036,7 +3036,7 @@ class Worker:
                                     "origin", url], cwd=self.checkout, log_path=log, timeout=LANE_LIMIT, env=self.environment)
         except processes.TimedOut as error:
             self.say(f"pre-push hook: unmeasured: {error}")
-            return evidence.UNMEASURED, log
+            return lane_results.UNMEASURED, log
         self.say(f"pre-push hook exited {result}")
         return result, log
 
@@ -3871,10 +3871,10 @@ class Worker:
         tests its log reports unmeasured, else the error its receipt records (#288), no admission, or a shared host's
         configuration."""
         if self.timed_out: return f"unmeasured: {self.timed_out}"
-        if result == evidence.UNMEASURED:
+        if result == lane_results.UNMEASURED:
             try: said = log.read_text(errors="replace") if log else ""
             except OSError: said = ""
-            found = evidence.unmeasured_tests(said)
+            found = lane_results.unmeasured_tests(said)
             if not found:
                 error = self.receipt_error()
                 return f"unmeasured: {shortened(error)}" if error else "unmeasured, with no test its log names"

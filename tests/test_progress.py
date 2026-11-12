@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import host_isolation
 from host_isolation import stretched
-from queuekeeper import cli, config, evidence, parallel, processes, progress, resources
+from queuekeeper import cli, config, lane_results, parallel, processes, progress, resources
 
 
 class QuietTests(unittest.TestCase):
@@ -222,7 +222,7 @@ class LaneTests(unittest.TestCase):
             with patch.object(progress, "cpu", side_effect=readings), patch.object(cli, "source_identity", return_value={}), \
                     contextlib.redirect_stdout(StringIO()), contextlib.redirect_stderr(StringIO()) as error:
                 for lane in ("hung", "both"):
-                    self.assertEqual(cli.main(["--project", directory, "run", "--here", lane]), evidence.UNMEASURED,
+                    self.assertEqual(cli.main(["--project", directory, "run", "--here", lane]), lane_results.UNMEASURED,
                                      error.getvalue())
             direct = json.loads((root / ".build/engineering/hung/source.json").read_text())
             self.assertEqual(direct["outcome"], "unmeasured")

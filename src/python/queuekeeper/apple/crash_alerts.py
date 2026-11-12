@@ -25,7 +25,7 @@ import sys
 import threading
 import time
 
-from .. import evidence, offload_host, resources
+from .. import lane_results, offload_host, resources
 
 DOMAIN, KEY = offload_host.CRASH_DIALOG
 OFF = "none"
@@ -316,21 +316,21 @@ class Run:
         alert for a process other than the app under test that stood longer than one look: its clicks may have
         gone to the alert. A crash report cleared during the run for the app under test preserves the failure
         even when another alert could make the run unmeasured."""
-        if status in (0, evidence.UNMEASURED): return status
+        if status in (0, lane_results.UNMEASURED): return status
         self.look()
         cleared_during_run = [entry for entry in self.cleared if entry["during"]]
         app_crashed = any(self.is_app_under_test(crashed(entry["alert"])) for entry in cleared_during_run)
         if self.left and not app_crashed:
             print(f"eng: unmeasured: the run ended with status {status} while {stopping(self.left)}", file=sys.stderr,
                   flush=True)
-            return evidence.UNMEASURED
+            return lane_results.UNMEASURED
         judged = [(entry, *self.verdict(entry)) for entry in cleared_during_run]
         excusing = [(entry, why) for entry, excuses, why in judged if excuses and not app_crashed]
         for entry, why in excusing:
             print(f"eng: unmeasured: the run ended with status {status} after eng cleared a crash-report alert during "
                   f"it that {why}, so its clicks may have gone to the alert: {describe(entry['alert'])}",
                   file=sys.stderr, flush=True)
-        if excusing: return evidence.UNMEASURED
+        if excusing: return lane_results.UNMEASURED
         for entry, _excuses, why in judged:
             print(f"eng: the run's status {status} stands: the crash-report alert eng cleared during it {why}: "
                   f"{describe(entry['alert'])}", file=sys.stderr, flush=True)
@@ -397,7 +397,7 @@ def guarded(purpose, *, said=None, receipt=None, windows=None, watch=None, apps=
 def main(argv=None):
     """`python3 -m queuekeeper.apple.crash_alerts check`: clear this Mac's crash-report alerts, as a driver does
     between steps under the foreground it holds; exit 0 when no system alert is left over the screen,
-    evidence.UNMEASURED when one is, which it names, and 1 when they cannot be read."""
+    lane_results.UNMEASURED when one is, which it names, and 1 when they cannot be read."""
     argv = sys.argv[1:] if argv is None else argv
     if argv != ["check"]:
         print("usage: python3 -m queuekeeper.apple.crash_alerts check", file=sys.stderr)
@@ -409,7 +409,7 @@ def main(argv=None):
         return 1
     if left:
         said(f"eng: unmeasured: {stopping(left)}")
-        return evidence.UNMEASURED
+        return lane_results.UNMEASURED
     return 0
 
 

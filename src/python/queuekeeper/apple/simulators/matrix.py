@@ -73,7 +73,7 @@ import time
 from types import SimpleNamespace
 import uuid
 
-from ... import evidence, processes, resources, stale_modules
+from ... import lane_results, processes, resources, stale_modules
 from ...parallel import RESULTS_VARIABLE, TAIL, combined, outcome
 from . import pool as simulator_pool, speech
 from .pool import DEVICE_TYPE, RUNTIME, qualified
@@ -416,7 +416,7 @@ class Run:
         except processes.TimedOut:
             # A boot still going at its limit says nothing about the tests. A first boot can stall
             # in data migration while other simulators boot.
-            self.finish(kind, evidence.UNMEASURED, f"the boot exceeded its limit, so no test ran", log)
+            self.finish(kind, lane_results.UNMEASURED, f"the boot exceeded its limit, so no test ran", log)
             return False
         if status != 0:
             self.finish(kind, 1, f"the boot failed with status {status}", log)
@@ -584,8 +584,8 @@ class Run:
                                         **system_views(args.app_accessibility, os.environ)})
         except processes.TimedOut:
             kept(kind, log, bundle_record(bundle), None, None)
-            if selection is not None: return evidence.UNMEASURED, 0, 0, [], f"{kind}'s tests exceeded {args.test_timeout}s"
-            return self.finish(kind, evidence.UNMEASURED, f"the tests exceeded {args.test_timeout}s", log)
+            if selection is not None: return lane_results.UNMEASURED, 0, 0, [], f"{kind}'s tests exceeded {args.test_timeout}s"
+            return self.finish(kind, lane_results.UNMEASURED, f"the tests exceeded {args.test_timeout}s", log)
         seconds = round(time.monotonic() - started)
         text = log.read_text(errors="replace")
         # Tests that skipped ran nothing, so they are reported beside the count, not in it. The result
@@ -594,9 +594,9 @@ class Run:
         kept(kind, log, record, status, seconds)
         recorded = bundle_results(bundle, kind, record)
         if recorded is not None: executed, skipped, from_bundle = recorded
-        else: executed, skipped, from_bundle = evidence.executed_tests(text) or 0, evidence.skipped_tests(text), []
+        else: executed, skipped, from_bundle = lane_results.executed_tests(text) or 0, lane_results.skipped_tests(text), []
         counted = f"Executed {executed} tests" + (f", {skipped} skipped" if skipped else "")
-        console = evidence.unmeasured_tests(text)
+        console = lane_results.unmeasured_tests(text)
         # The bundle names each skipped XCTest test once, so the console's lines for them would repeat it.
         if recorded is not None: console = [line for line in console if "Test skipped - Unmeasured:" not in line]
         self.tallies[kind] = tally(status, executed, skipped, len(console) + len(from_bundle), failed_tests(record, text))
@@ -615,7 +615,7 @@ class Run:
             return self.finish(kind, 1, f"no tests ran ({counted})", log, seconds)
         unmeasured = [*console, *from_bundle]
         # The wrapper's "Executed N tests" is what a lane counts: the device's own totals are in its log.
-        self.finish(kind, evidence.UNMEASURED if unmeasured else 0, counted, log, seconds)
+        self.finish(kind, lane_results.UNMEASURED if unmeasured else 0, counted, log, seconds)
         if unmeasured: self.say(*unmeasured)
 
     def listed(self, device, xctestrun):
@@ -687,7 +687,7 @@ class Run:
         counted = f"Executed {executed} tests" + (f", {skipped} skipped" if skipped else "") + \
             f" in {self.args.shards} shards"
         status = combined([r[0] for r in results])
-        if status == 0 and unmeasured: status = evidence.UNMEASURED
+        if status == 0 and unmeasured: status = lane_results.UNMEASURED
         self.finish(kind, status, counted + (f"; {'; '.join(problems)}" if problems else ""))
         if unmeasured: self.say(*unmeasured)
 
@@ -728,7 +728,7 @@ def bundle_results(bundle, kind, record=None):
     """(executed, skipped, unmeasured lines) as a result bundle records them, or None when xcresulttool
     cannot read it. Once parallel testing is on, xcodebuild's console prints each test's outcome but
     no totals and no skip reason (Xcode 27.2, 2026-10-31), so the bundle is what counts, either way.
-    Each skip whose message begins "Test skipped - Unmeasured:" is a line evidence.UNMEASURED_TEST
+    Each skip whose message begins "Test skipped - Unmeasured:" is a line lane_results.UNMEASURED_TEST
     reads, naming the device and the test. record is the bundle's (bundle_record) when read already."""
     record = record if record is not None else bundle_record(bundle)
     if record is None: return None
@@ -823,7 +823,7 @@ def run_outcome(status, tests):
     """A run's outcome: unmeasured when it has no status, as a run that did not happen; skipped when every test it
     ran skipped, which still fails the series; never passed without a status of 0."""
     if status == 0: return "passed"
-    if status is None or status == evidence.UNMEASURED: return "unmeasured"
+    if status is None or status == lane_results.UNMEASURED: return "unmeasured"
     if tests is not None and tests["skipped"] and not (tests["passed"] or tests["failed"] or tests["unmeasured"]):
         return "skipped"
     return "failed"
@@ -856,7 +856,7 @@ def asked_reset(args):
 
 
 def series_line(summary):
-    """The series' summary line, which eng run reads (evidence.SERIES) and a lane's log keeps."""
+    """The series' summary line, which eng run reads (lane_results.SERIES) and a lane's log keeps."""
     runs, tests = summary["runs"], summary["tests"]
     uncounted = summary["runsWithoutTestCounts"]
     return (f"Repeat series: asked {summary['asked']} repeat{'' if summary['asked'] == 1 else 's'} "
@@ -903,7 +903,7 @@ def series(run, pool, args, kinds):
                 for label, lease in leases:
                     how = reset_of(lease)
                     if args.template and how in ("erased", "created") or args.erase and how not in ("erased", "created"):
-                        run.finish(label, evidence.UNMEASURED, f"{asked_reset(args)} was asked for and the member was "
+                        run.finish(label, lane_results.UNMEASURED, f"{asked_reset(args)} was asked for and the member was "
                                    f"{how}, so no test ran")
                     else: futures.append(testers.submit(run.device, label, lease, built))
             errors = [future.exception() for future in futures if future.exception() is not None]
@@ -938,11 +938,11 @@ def series(run, pool, args, kinds):
                 except (OSError, ValueError, RuntimeError, TimeoutError) as error:
                     for kind in kinds:
                         if f"{kind}-run{number}" not in run.results:
-                            run.results[f"{kind}-run{number}"] = evidence.UNMEASURED
+                            run.results[f"{kind}-run{number}"] = lane_results.UNMEASURED
                             run.details[f"{kind}-run{number}"] = f"the run could not start or finish: {error}"
     finally:
         report()
-    return combined([run.results.get(label, evidence.UNMEASURED) for _, _, label in asked])
+    return combined([run.results.get(label, lane_results.UNMEASURED) for _, _, label in asked])
 
 
 def main(argv, project=None):

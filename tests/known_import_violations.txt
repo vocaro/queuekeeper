@@ -2,20 +2,11 @@
 # as extracted from the toolkit (vocaro/vocaro-engineering#403). One line each: KIND: MODULE -> WHAT.
 # This list only shrinks. Delete a line when its import is gone, and lower CEILING in the test.
 # Never add a line. `python3 tests/test_queuekeeper_imports.py --report` prints the current state.
-Apple imports toolkit: queuekeeper.apple.crash_alerts -> vocaro_engineering.evidence
-Apple imports toolkit: queuekeeper.apple.device_pass -> vocaro_engineering.evidence
-Apple imports toolkit: queuekeeper.apple.devices -> vocaro_engineering.evidence
-Apple imports toolkit: queuekeeper.apple.keychain -> vocaro_engineering.evidence
 Apple imports toolkit: queuekeeper.apple.keychain -> vocaro_engineering.host_context
-Apple imports toolkit: queuekeeper.apple.notification_center -> vocaro_engineering.evidence
-Apple imports toolkit: queuekeeper.apple.run_results -> vocaro_engineering.evidence
 Apple imports toolkit: queuekeeper.apple.simulators.duo_pose -> vocaro_engineering.support
-Apple imports toolkit: queuekeeper.apple.simulators.matrix -> vocaro_engineering.evidence
 Apple imports toolkit: queuekeeper.apple.simulators.matrix -> vocaro_engineering.stale_modules
-Apple imports toolkit: queuekeeper.apple.simulators.pool -> vocaro_engineering.evidence
 Apple imports toolkit: queuekeeper.apple.simulators.speech -> vocaro_engineering.voiceover.activation
 Apple imports toolkit: queuekeeper.apple.simulators.template -> vocaro_engineering.support
-Apple imports toolkit: queuekeeper.apple.xctest_shards -> vocaro_engineering.evidence
 core imports Apple: queuekeeper.cli -> queuekeeper.apple.app_builds
 core imports Apple: queuekeeper.cli -> queuekeeper.apple.app_registrations
 core imports Apple: queuekeeper.cli -> queuekeeper.apple.crash_alerts
@@ -59,11 +50,7 @@ core imports toolkit: queuekeeper.disk -> vocaro_engineering.failure_records
 core imports toolkit: queuekeeper.disk -> vocaro_engineering.ignored
 core imports toolkit: queuekeeper.disk -> vocaro_engineering.landing
 core imports toolkit: queuekeeper.disk -> vocaro_engineering.voiceover.activation
-core imports toolkit: queuekeeper.lane_report -> vocaro_engineering.evidence
-core imports toolkit: queuekeeper.merge_queue -> vocaro_engineering.evidence
 core imports toolkit: queuekeeper.merge_queue -> vocaro_engineering.landing
-core imports toolkit: queuekeeper.parallel -> vocaro_engineering.evidence
 core imports toolkit: queuekeeper.parallel -> vocaro_engineering.failure_records
 core imports toolkit: queuekeeper.parallel -> vocaro_engineering.stale_modules
-core imports toolkit: queuekeeper.remote -> vocaro_engineering.evidence
 core imports toolkit: queuekeeper.remote -> vocaro_engineering.toolkit_copy

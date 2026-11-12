@@ -3679,7 +3679,7 @@ class ImplicitSpelling(Fixture):
         self.assertNotIn(self.RUN, started)
 
     def test_no_admission_or_no_measurement_is_no_verdict_and_rejects_nothing(self):
-        for status in (mq.resources.BUSY, mq.evidence.UNMEASURED, mq.remote.MISCONFIGURED):
+        for status in (mq.resources.BUSY, mq.lane_results.UNMEASURED, mq.remote.MISCONFIGURED):
             with self.subTest(status=status):
                 self.commit(f"fix{status}", f"fix{status}", content=BRITISH)
                 [identifier] = self.add(f"fix{status}", checked=False)
@@ -6608,7 +6608,7 @@ class RejectionFacts(Fixture):
         # Load is reported on a rejection only: a run left unmeasured stays as it was, and is queued again.
         self.commit("a", "a")
         [identifier] = self.add("a")
-        self.status.write_text(str(mq.evidence.UNMEASURED))
+        self.status.write_text(str(mq.lane_results.UNMEASURED))
         with self.sampled_while_running() as finish, contextlib.redirect_stdout(io.StringIO()): self.work()
         finish.assert_not_called()
         entry = self.state(identifier)

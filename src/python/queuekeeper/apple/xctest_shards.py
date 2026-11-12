@@ -3,7 +3,7 @@
 `swift test --parallel` reports a skipped XCTest test as passed and prints no total, so a skip,
 an unmeasured result among them, would read as a pass (Swift 6.4, Xcode 27.2, October 2026). Each
 process here runs `xcrun xctest -XCTest CLASSES BUNDLE`, one test at a time, and prints XCTest's
-own lines whole: every skip, failure and suite total, which evidence.counted reads. Swift Testing
+own lines whole: every skip, failure and suite total, which lane_results.counted reads. Swift Testing
 tests run once beside them, in `swift test --skip-build --disable-xctest`, which runs them
 concurrently itself; with --split-swift-testing their suites are packed into the shards as the
 classes are, each shard's in a `swift test --no-parallel` process of its own that runs one test at a
@@ -23,7 +23,7 @@ import subprocess
 import tempfile
 import time
 
-from .. import evidence, parallel, processes
+from .. import lane_results, parallel, processes
 
 # Processes at a time unless --jobs says otherwise, as eng unittest's.
 DEFAULT_JOBS = parallel.DEFAULT_JOBS
@@ -225,7 +225,7 @@ def run(name, command, directory, expected, timeout=parallel.PROCESS_LIMIT, even
                           EVENT_STREAM_VERSION]
     began = time.monotonic()
     status, output = processes.bounded(command, cwd=directory, timeout=timeout)
-    found = evidence.counted(output)
+    found = lane_results.counted(output)
     times = []
     if events:
         try: times = test_times(Path(events).read_text(errors="replace"), name, timed_out=status is None)
@@ -377,7 +377,7 @@ def main(argv):
         kept = keep_test_times(found, directories[0], args.configuration)
         if kept: print(f"eng xctest: {len(found)} Swift Testing tests' start and finish times in {kept}", flush=True)
     # A test the host decided skips with a reason that begins "Unmeasured:"; its process still passes.
-    decided = evidence.unmeasured_tests("\n".join(result["output"] for result in results))
+    decided = lane_results.unmeasured_tests("\n".join(result["output"] for result in results))
     if decided: unmeasured.append(f"{len(decided)} tests the host decided, listed below")
     total = sum(result["ran"] for result in results)
     skipped = sum(result["skipped"] for result in results)
@@ -385,4 +385,4 @@ def main(argv):
     print(f"eng xctest: {total} tests ({skipped} skipped) in {len(results)} processes, {args.jobs} at a time, "
           f"{time.monotonic() - began:.1f}s: " + parallel.verdict(failed, unmeasured), flush=True)
     if decided and not failed: print("\n".join(decided), flush=True)
-    return 1 if failed else evidence.UNMEASURED if unmeasured else 0
+    return 1 if failed else lane_results.UNMEASURED if unmeasured else 0

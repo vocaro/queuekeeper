@@ -11,7 +11,7 @@ import unittest
 from unittest.mock import patch
 SOURCE = Path(__file__).resolve().parents[1] / "src/python"
 sys.path.insert(0, str(SOURCE))
-from queuekeeper import cli, evidence
+from queuekeeper import cli, lane_results
 from queuekeeper.apple import xctest_shards
 import host_isolation
 
@@ -163,7 +163,7 @@ class RunnerTests(unittest.TestCase):
         status, output = self.run_eng("-j", "2")
         self.assertEqual(status, 0, output)
         # As a lane counts the log: each process's totals once, the Swift Testing run's too.
-        self.assertEqual(evidence.counted(output), (6, 1))
+        self.assertEqual(lane_results.counted(output), (6, 1))
         self.assertIn("eng xctest: 6 tests (1 skipped) in 5 processes, 2 at a time", output)
         xctest = [call for call in self.calls() if call[0] == "xcrun"]
         selectors = sorted(s for call in xctest for s in call[1].split(","))
@@ -190,7 +190,7 @@ class RunnerTests(unittest.TestCase):
 
     def test_a_test_the_host_decided_leaves_the_run_unmeasured_not_passed(self):
         status, output = self.run_eng("--skip-build", FAKE_UNMEASURED="1")
-        self.assertEqual(status, evidence.UNMEASURED, output)
+        self.assertEqual(status, lane_results.UNMEASURED, output)
         self.assertIn("UNMEASURED: 1 tests the host decided", output)
         self.assertTrue(output.rstrip().endswith("Test skipped - Unmeasured: the 80 s backstop passed"), output)
 
@@ -207,7 +207,7 @@ class RunnerTests(unittest.TestCase):
         status, output = self.run_eng("-C", str(second), "-j", "1", FAKE_TESTS=json.dumps(tests))
         self.assertEqual(status, 0, output)
         # Five XCTest tests and two, and each package's one Swift Testing test.
-        self.assertEqual(evidence.counted(output), (9, 1))
+        self.assertEqual(lane_results.counted(output), (9, 1))
         builds = [call[-1] for call in self.calls() if call[:3] == ["swift", "build", "--build-tests"]]
         self.assertEqual(builds, ["package", "second"])
         xctest = [call[1] for call in self.calls() if call[0] == "xcrun"]
@@ -225,7 +225,7 @@ class RunnerTests(unittest.TestCase):
         # Fixed: the 5 s limit is the behavior under test. A sibling shard that load held past it would be left
         # unmeasured too, which none of these assertions rules out, so it cannot fail the test.
         status, output = self.run_eng("--skip-build", "--timeout", "5", FAKE_HANG="Beta")
-        self.assertEqual(status, evidence.UNMEASURED, output)
+        self.assertEqual(status, lane_results.UNMEASURED, output)
         self.assertRegex(output, r"== shard \d+ of \d+, Beta .*: timed out after 5s")
         self.assertRegex(output, r"eng xctest: .*UNMEASURED: shard \d+ of \d+, Beta .*\(timed out after 5s\)")
         self.assertNotIn("FAILED", output)
@@ -240,7 +240,7 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(status, 0, output)
         self.assertEqual([call[1] for call in self.calls() if call[0] == "xcrun"], ["Alpha.DoublingTests/testTwo"])
         self.assertFalse([call for call in self.calls() if call[:2] == ["swift", "test"] and "list" not in call])
-        self.assertEqual(evidence.counted(output), (1, 0))
+        self.assertEqual(lane_results.counted(output), (1, 0))
 
     def test_a_filter_that_matches_nothing_runs_nothing(self):
         status, output = self.run_eng("--skip-build", "--filter", "NoSuchTest")
@@ -298,7 +298,7 @@ class SplitSwiftTestingTests(unittest.TestCase):
         # A suite goes whole into one process, and every Swift Testing test runs exactly once.
         self.assertEqual(self.selected(), sorted(self.SUITES))
         self.assertIn("--filter=^Alpha\\.SuiteA/", [argument for call in runs for argument in call])
-        self.assertEqual(evidence.counted(output), (9, 1))
+        self.assertEqual(lane_results.counted(output), (9, 1))
         self.assertRegex(output, r"== shard \d+ of \d+, Swift Testing \(about \d+s\): PASS")
 
     def test_without_the_option_swift_testing_runs_once_concurrently(self):
@@ -309,14 +309,14 @@ class SplitSwiftTestingTests(unittest.TestCase):
         self.assertNotIn("--no-parallel", runs[0])
         self.assertNotIn("--ignore-lock", runs[0])
         self.assertFalse([argument for argument in runs[0] if argument.startswith("--filter")])
-        self.assertEqual(evidence.counted(output), (9, 1))
+        self.assertEqual(lane_results.counted(output), (9, 1))
 
     def test_a_filter_selects_single_tests_of_a_suite(self):
         status, output = self.run_eng("--skip-build", "--split-swift-testing", "--filter", "SuiteA/one")
         self.assertEqual(status, 0, output)
         self.assertEqual(self.selected(), ["Alpha.SuiteA/one()"])
         self.assertFalse([call for call in self.calls() if call[0] == "xcrun"])
-        self.assertEqual(evidence.counted(output), (1, 0))
+        self.assertEqual(lane_results.counted(output), (1, 0))
 
     def test_a_process_that_runs_fewer_swift_testing_tests_than_it_was_given_fails(self):
         status, output = self.run_eng("--skip-build", "--split-swift-testing", "--filter", "SuiteA",
@@ -380,7 +380,7 @@ class SwiftTestingTimesTests(unittest.TestCase):
     def test_a_test_whose_process_times_out_keeps_its_start(self):
         status, output = self.run_eng("--skip-build", "--split-swift-testing", "--filter", "SuiteB", "--timeout", "5",
                                       FAKE_EVENTS_HANG="three")
-        self.assertEqual(status, evidence.UNMEASURED, output)
+        self.assertEqual(status, lane_results.UNMEASURED, output)
         [entry] = self.kept()
         self.assertEqual(entry["test"], "Alpha.SuiteB/three()")
         self.assertEqual(entry["verdict"], "unmeasured")

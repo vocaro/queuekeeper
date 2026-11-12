@@ -20,7 +20,7 @@ import threading
 import time
 import unittest
 
-from . import evidence, processes, stale_modules
+from . import lane_results, processes, stale_modules
 
 # Lines of a failed lane's log printed under its result.
 TAIL = 40
@@ -44,18 +44,18 @@ REASON_WIDTH = 300
 
 
 def outcome(status):
-    return "PASS" if status == 0 else "UNMEASURED" if status == evidence.UNMEASURED else "FAIL"
+    return "PASS" if status == 0 else "UNMEASURED" if status == lane_results.UNMEASURED else "FAIL"
 
 
 def lane_timeout(lane, arguments=()):
     """The direct lane's command limit, scaled by the requested number of repeats."""
-    return lane.get("timeout", processes.DEFAULT_LIMIT) * (evidence.repeats_asked(arguments) or 1)
+    return lane.get("timeout", processes.DEFAULT_LIMIT) * (lane_results.repeats_asked(arguments) or 1)
 
 
 def combined(statuses):
     """1 when any status failed, else UNMEASURED when any was unmeasured, else 0."""
-    if any(status not in (0, evidence.UNMEASURED) for status in statuses): return 1
-    return evidence.UNMEASURED if evidence.UNMEASURED in statuses else 0
+    if any(status not in (0, lane_results.UNMEASURED) for status in statuses): return 1
+    return lane_results.UNMEASURED if lane_results.UNMEASURED in statuses else 0
 
 
 def results_environment(directory, base=None):
@@ -108,7 +108,7 @@ def lanes(root, members, directory, jobs, judge, receipt, on_stop=None, results_
         """Record a lane's end in the group's receipt and in its own, beside its log, with the tests
         its log counts, so that its counts read from its files wherever they are copied."""
         seconds = round(time.monotonic() - began)
-        found = evidence.counted(log.read_text(errors="replace")) if log.exists() else None
+        found = lane_results.counted(log.read_text(errors="replace")) if log.exists() else None
         result = {"status": status, "outcome": verdict, "seconds": seconds, "log": str(log),
                   "executedTests": None if found is None else found[0] - found[1],
                   "skippedTests": None if found is None else found[1], **({"error": detail} if detail else {})}
@@ -134,7 +134,7 @@ def lanes(root, members, directory, jobs, judge, receipt, on_stop=None, results_
             status = judge(lane, status, log.read_text(errors="replace"))
         except processes.TimedOut as error:
             # A lane's timeout is its backstop, so a run a busy host slowed past it is unmeasured.
-            status, detail = evidence.UNMEASURED, str(error)
+            status, detail = lane_results.UNMEASURED, str(error)
         except processes.NotStarted as error:
             status, detail = 2, str(error)
         except ValueError as error:
@@ -148,7 +148,7 @@ def lanes(root, members, directory, jobs, judge, receipt, on_stop=None, results_
             raise
         else:
             detail = None
-        verdict = "passed" if status == 0 else "unmeasured" if status == evidence.UNMEASURED else "failed"
+        verdict = "passed" if status == 0 else "unmeasured" if status == lane_results.UNMEASURED else "failed"
         seconds = conclude(name, lane, log, began, status, verdict, detail)
         lines = [f"{outcome(status)} {name} ({seconds}s, status {status}): {log}"]
         if detail: lines.append(f"    {detail}")
@@ -465,14 +465,14 @@ def unittest_main(argv):
             # A shard that ran other than the tests discovery found for it did not run what it was given.
             fail(result, f"ran {result['ran']} of {expected[result['name']]} tests")
     total = sum(result["ran"] for result in results)
-    skipped = sum(evidence.skipped_tests(result["output"]) for result in results)
+    skipped = sum(lane_results.skipped_tests(result["output"]) for result in results)
     # Not "Ran N tests": the shards' own lines already count every test once.
     summary = (f"eng unittest: {total} tests ({skipped} skipped) in {len(results)} processes, {args.jobs} at a time, "
                f"{time.monotonic() - began:.1f}s: " + verdict(failed, unmeasured))
     print(summary, flush=True)
     if failed:
         for line in reason_lines(reasons, saved_output(report + [summary], reasons)): print(line, flush=True)
-    return 1 if failed else evidence.UNMEASURED if unmeasured else 0
+    return 1 if failed else lane_results.UNMEASURED if unmeasured else 0
 
 
 def saved_output(report, reasons):

@@ -24,7 +24,7 @@ import sys
 import time
 
 from . import crash_alerts, devices, foreground
-from .. import evidence, offload_host
+from .. import lane_results, offload_host
 
 # The process whose windows these are, by its executable, which the window list's owner name (on macOS 27.2,
 # "Notification Center", with a space) does not establish alone; and the layer its notifications show at.
@@ -318,9 +318,9 @@ def dismiss(said=None, *, owner=None, record=None, wait=GONE):
 
 def main(argv=None):
     """`python3 -m queuekeeper.apple.notification_center list|check`: list says which Notification Center windows
-    are over this Mac's screen, exiting 0 when none is and evidence.UNMEASURED when one is; check, under the
+    are over this Mac's screen, exiting 0 when none is and lane_results.UNMEASURED when one is; check, under the
     second Mac's foreground lease the caller holds, closes their notifications as a run does before it starts,
-    exiting 0 once none is left, evidence.UNMEASURED naming one it could not clear, and 1 without a lease."""
+    exiting 0 once none is left, lane_results.UNMEASURED naming one it could not clear, and 1 without a lease."""
     argv = sys.argv[1:] if argv is None else argv
     if argv not in (["list"], ["check"]):
         print("usage: python3 -m queuekeeper.apple.notification_center list|check", file=sys.stderr)
@@ -333,7 +333,7 @@ def main(argv=None):
             return 1
         for window in found: print(describe(window))
         if not found: print("no Notification Center window is over the screen")
-        return evidence.UNMEASURED if found else 0
+        return lane_results.UNMEASURED if found else 0
     try:
         report = dismiss(said)
     except devices.Refused as error:
@@ -341,7 +341,7 @@ def main(argv=None):
         return 1
     except Blocked as error:
         said(f"eng: unmeasured: {error} ({GUIDE}, {SECTION})")
-        return evidence.UNMEASURED
+        return lane_results.UNMEASURED
     if not report["found"]: said("eng: no Notification Center window is over the screen")
     return 0
 

@@ -9,7 +9,7 @@ whose log counts no test says so rather than printing zeros.
 
 The lines go to stderr with eng's other notes, after stdout is flushed, so that they are last however the two are
 joined. They begin `eng run LANE:` or are indented, and quote no line of a test's own, since a lane's log is read
-again by what runs it: the merge queue's log, evidence.counted and failure_records read none of them as a result. The
+again by what runs it: the merge queue's log, lane_results.counted and failure_records read none of them as a result. The
 second Mac's own run prints none: the Mac that sent it prints the summary from what came back.
 """
 import contextlib
@@ -20,7 +20,7 @@ import re
 import sys
 import time
 
-from . import evidence, remote
+from . import lane_results, remote
 
 # The failing tests a summary names; the rest are in its failures.txt or log.
 SHOWN = 20
@@ -64,9 +64,9 @@ def failed_tests(text):
     """(the tests a log reports failed, or None when its totals say some failed but name none, the errors pytest
     counts apart from its tests)."""
     total, errors = 0, 0
-    for match in evidence.RAN.finditer(text):
+    for match in lane_results.RAN.finditer(text):
         total += sum(int(n) for n in re.findall(r"\b(?:failures|errors)=(\d+)", match.group(2) or ""))
-    for match in evidence.PYTEST_SUMMARY.finditer(text):
+    for match in lane_results.PYTEST_SUMMARY.finditer(text):
         items = {word: int(n) for n, word in re.findall(r"(\d+) (\w+)", match.group(1))}
         total += items.get("failed", 0) + items.get("error", 0) + items.get("errors", 0)
         errors += items.get("error", 0) + items.get("errors", 0)
@@ -77,13 +77,13 @@ def failed_tests(text):
 
 
 def unmeasured_count(text):
-    return sum(int(FOLDED.match(line).group(1)) if FOLDED.match(line) else 1 for line in evidence.unmeasured_tests(text))
+    return sum(int(FOLDED.match(line).group(1)) if FOLDED.match(line) else 1 for line in lane_results.unmeasured_tests(text))
 
 
 def counts(text):
     """A log's {passed, failed, skipped, unmeasured}, passed and failed None when it cannot tell them apart, or None
     when it counts no test. An unmeasured test is reported as a skip, so it comes out of the skipped."""
-    found = evidence.counted(text)
+    found = lane_results.counted(text)
     if found is None or found[0] == 0: return None
     ran, skipped = found
     failed, errors = failed_tests(text)
@@ -120,7 +120,7 @@ def before_tests(text):
     no test, names no failing or unmeasured test, and has no line in which a test, suite or session started or a
     process crashed (STARTED). None when a test may have run, or when no line says what failed, as a run whose tests
     crashed before printing counts can leave neither (vocaro-engineering#393). eng's own lines are not quoted."""
-    if evidence.counted(text) is not None or evidence.unmeasured_tests(text) or failing(text) or STARTED.search(text):
+    if lane_results.counted(text) is not None or lane_results.unmeasured_tests(text) or failing(text) or STARTED.search(text):
         return None
     errors = [line.strip() for line in ERROR_LINE.findall(text) if not line.startswith("eng:")]
     return errors[-1][:QUOTED] if errors else None
@@ -220,7 +220,7 @@ class Report:
         where, directory = self.source()
         known = isinstance(status, int) and error is None
         if not known: verdict = "stopped" if error is not None else "not run"
-        elif status == evidence.UNMEASURED: verdict = "unmeasured"
+        elif status == lane_results.UNMEASURED: verdict = "unmeasured"
         elif directory is None: verdict = "not run"
         else: verdict = "passed" if status == 0 else "failed"
         ending = f" (exit {status})" if isinstance(status, int) and status else ""
@@ -234,7 +234,7 @@ class Report:
         kept = records(directory / "results")
         joined = "\n".join(texts.values())
         # eng run's status for a lane that stopped before its tests, which a command can also exit with itself.
-        quoted = before_tests(joined) if verdict == "failed" and status == evidence.BEFORE_TESTS and self.group is None \
+        quoted = before_tests(joined) if verdict == "failed" and status == lane_results.BEFORE_TESTS and self.group is None \
             and not kept else None
         if quoted is not None:
             lines[0] = f"eng run {self.lane}: failed before any test ran{ending}, {where}"

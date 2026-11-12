@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 import host_isolation
-from queuekeeper import cli, evidence
+from queuekeeper import cli, lane_results
 from queuekeeper.apple import devices, foreground, notification_center
 from queuekeeper.apple.voiceover import state as voiceover_state
 
@@ -234,7 +234,7 @@ class DismissTests(HostTest):
     def test_the_module_lists_and_checks(self):
         self.host.windows, self.host.notifications = [WINDOW], [BANNER]
         with contextlib.redirect_stdout(StringIO()) as out, contextlib.redirect_stderr(StringIO()) as error:
-            self.assertEqual(notification_center.main(["list"]), evidence.UNMEASURED)
+            self.assertEqual(notification_center.main(["list"]), lane_results.UNMEASURED)
             self.assertIn("window 29", out.getvalue())
             # check with no lease refuses and closes nothing.
             with patch.object(devices, "Record", return_value=self.record):
@@ -289,7 +289,7 @@ class LaneTests(HostTest):
                           ("admit", "--foreground", "--", sys.executable, "-c", f"open({str(self.ran)!r}, 'a')")):
             with self.subTest(arguments[0]):
                 status, error = self.eng(*arguments)
-                self.assertEqual(status, evidence.UNMEASURED, error)
+                self.assertEqual(status, lane_results.UNMEASURED, error)
                 self.assertIn("Notification Center's window 29 (pid 754, layer 23)", error)
                 self.assertIn("nothing ran", error)
                 self.assertFalse(self.ran.exists())
@@ -306,7 +306,7 @@ class LaneTests(HostTest):
 
     def test_eng_host_notifications_lists_and_dismisses_only_under_the_lease(self):
         self.host.windows, self.host.notifications = [WINDOW], [BANNER]
-        self.assertEqual(self.eng("host", "notifications")[0], evidence.UNMEASURED)
+        self.assertEqual(self.eng("host", "notifications")[0], lane_results.UNMEASURED)
         status, error = self.eng("host", "notifications", "--dismiss")
         self.assertEqual(status, 1, error)
         self.assertEqual(self.host.pressed, [])

@@ -35,7 +35,7 @@ import sys
 
 from . import devices
 from .. import processes
-from ..evidence import UNMEASURED
+from ..lane_results import UNMEASURED
 from ..parallel import RESULTS_VARIABLE
 
 PASSED, FAILED, NOT_RUN, UNMEASURED_PART = "passed", "failed", "not run", "unmeasured"

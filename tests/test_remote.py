@@ -24,7 +24,7 @@ import uuid
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
-from queuekeeper import budgets, cli, config, evidence, merge_queue, offload_host, processes, remote, resources
+from queuekeeper import budgets, cli, config, lane_results, merge_queue, offload_host, processes, remote, resources
 from queuekeeper.apple import device_notifications, devices
 from vocaro_engineering import release
 from queuekeeper import disk as disk_module
@@ -778,10 +778,10 @@ class RemoteTests(unittest.TestCase):
         results = self.project / ".build/engineering/remote/narrated"
         log, output = (results / "run.log").read_text(), (results / "output.log").read_text()
         self.assertIn("Passed: iPhone-17-Pro, narrated: Executed 6 tests", log)
-        self.assertEqual(evidence.counted(log), (6, 0))
+        self.assertEqual(lane_results.counted(log), (6, 0))
         for kind in ("progress", "heartbeat", "clock"): self.assertNotIn(f"remote: {kind} ", log + output)
-        self.assertIsNone(evidence.counted(error), error)
-        self.assertEqual(evidence.unmeasured_tests(error), [])
+        self.assertIsNone(lane_results.counted(error), error)
+        self.assertEqual(lane_results.unmeasured_tests(error), [])
 
     def test_a_run_whose_log_stops_growing_claims_no_progress(self):
         # The negative control: the lane runs on, connected, and writes nothing more.
@@ -893,8 +893,8 @@ class RemoteTests(unittest.TestCase):
                             (b"Testing: \x1b[1mbold\r", "Testing:  [1mbold")]:
             with self.subTest(text):
                 self.assertEqual(remote.progress_text(text), shown)
-                self.assertIsNone(evidence.counted(shown))
-                self.assertEqual(evidence.unmeasured_tests(shown), [])
+                self.assertIsNone(lane_results.counted(shown))
+                self.assertEqual(lane_results.unmeasured_tests(shown), [])
         # The queue's reader of a gate's parts ignores these lines beside the lines it counts.
         table = "== left: PASS (2 tests, 1.5s)\n"
         for line in ["remote: heartbeat 2026-11-09T06:19:31Z: gate on fake, 5m 00s in: its log grew by 1 line, the latest 1s ago",
@@ -2129,7 +2129,7 @@ class RemoteTests(unittest.TestCase):
         try:
             status, output, error, _ = self.outlasting("outlast-overdue")
             lane = int((self.checkout(0) / ".build/outlast.pid").read_text())
-            self.assertEqual(status, evidence.UNMEASURED, output + error)
+            self.assertEqual(status, lane_results.UNMEASURED, output + error)
             self.all_ended(lane)
             self.assertEqual(self.eng("remote", "passed", "outlast-overdue")[0], 1)
         finally:
@@ -2190,7 +2190,7 @@ class RemoteTests(unittest.TestCase):
                     patch.object(remote, "REATTACH_PAUSE", 0.1), patch.object(remote, "REATTACH_GRACE", 1):
                 status, output, error = self.eng("remote", "run", "linger")
             lane = int(marker.read_text())
-            self.assertEqual(status, evidence.UNMEASURED, output + error)
+            self.assertEqual(status, lane_results.UNMEASURED, output + error)
             self.assertRegex(error, r"eng: No result from fake \(ssh exited 255: Timeout, server fake not responding\.\); "
                                     r"dispatched at \d{4}-\d\d-\d\d \d\d:\d\d:\d\d UTC and lost at \d{4}-\d\d-\d\d "
                                     r"\d\d:\d\d:\d\d UTC, and this Mac slept for 300 s of that\. The run is unmeasured: no "
@@ -2212,7 +2212,7 @@ class RemoteTests(unittest.TestCase):
             with self.dropping(marker, FAKE_KILL_RUNNER=str(self.home / remote.ROOT / "checkouts/example/0.lock")):
                 status, output, error = self.eng("remote", "run", "linger")
             lane = int(marker.read_text())
-            self.assertEqual(status, evidence.UNMEASURED, output + error)
+            self.assertEqual(status, lane_results.UNMEASURED, output + error)
             self.assertIn("The run is unmeasured: it ended on fake and left no result in ", error)
             self.assertFalse((self.project / ".build/engineering/remote/linger/source.json").exists())
             self.assertEqual(self.eng("remote", "passed", "linger")[0], 1)
@@ -2238,7 +2238,7 @@ class RemoteTests(unittest.TestCase):
                 status, output, error = self.eng("remote", "admit", "--device", "iPhone", "--device-owner", "session-a",
                                                  "--", sys.executable, "-c", command)
             lane = int(marker.read_text())
-            self.assertEqual(status, evidence.UNMEASURED, output + error)
+            self.assertEqual(status, lane_results.UNMEASURED, output + error)
             self.assertIn("The run is unmeasured, and fake stops it once its end of the connection closes.", error)
             self.assertFalse(connections.exists())
             self.all_ended(lane, self.runner())
@@ -2442,7 +2442,7 @@ class RemoteTests(unittest.TestCase):
                 status, output, error = self.eng("remote", "admit", "--device", "iPhone", "--device-owner", "session-a",
                                                  "--", sys.executable, "-c", command)
             lane = int(marker.read_text())
-            self.assertEqual(status, evidence.UNMEASURED, output + error)
+            self.assertEqual(status, lane_results.UNMEASURED, output + error)
             self.assertIn(f"nothing from the dispatcher for {silence}s", output)
             self.assertIn("No result from fake", error)
             self.assertFalse((self.project / ".build/engineering/remote/admit/source.json").exists())
@@ -2458,7 +2458,7 @@ class RemoteTests(unittest.TestCase):
         with self.silent_connection(marker), patch.object(remote, "HEARTBEAT_SECONDS", 0.2), \
                 patch.object(remote, "HEARTBEAT_SILENCE", silence):
             status, output, error = self.eng("remote", "run", "slow")
-        self.assertEqual(status, evidence.UNMEASURED, output + error)
+        self.assertEqual(status, lane_results.UNMEASURED, output + error)
         self.assertIn(f"nothing from the dispatcher for {silence}s", output)
         self.assertFalse((self.project / ".build/engineering/remote/slow/source.json").exists())
         with patch.object(remote, "configured", return_value="another-mac"):
@@ -2933,7 +2933,7 @@ class RemoteTests(unittest.TestCase):
                                   "skippedTests": 0, "log": "left.log"})
                 # A lane's counts read here, from its log and from its receipt.
                 log, receipt = self.lane_files("pair", "right")
-                self.assertEqual((evidence.executed_tests(log), evidence.skipped_tests(log)), (2, 1))
+                self.assertEqual((lane_results.executed_tests(log), lane_results.skipped_tests(log)), (2, 1))
                 self.assertEqual((receipt["executedTests"], receipt["skippedTests"], receipt["outcome"]),
                                  (2, 1, "passed"))
                 kept = json.loads((results / "source.json").read_text())
@@ -2983,7 +2983,7 @@ class RemoteTests(unittest.TestCase):
         for lane, observation in (("quiet", "results/progress.json"),
                                   ("quiet-group", "results/quiet/progress.json")):
             status, output, error = self.eng("remote", "run", lane)
-            self.assertEqual(status, evidence.UNMEASURED, output + error)
+            self.assertEqual(status, lane_results.UNMEASURED, output + error)
             directory = self.project / ".build/engineering/remote" / lane
             retained = json.loads((directory / observation).read_text())
             self.assertEqual((retained["phase"], retained["state"]), ("ended", "Stalled"))
@@ -3184,7 +3184,7 @@ class RemoteTests(unittest.TestCase):
         settings["lanes"]["corpus-gate"] = {"command": ["env", "FAKE_CORPUS=pinned", sys.executable, "-c", tests],
                                             "resource": "heavy"}
         (self.project / "engineering.json").write_text(json.dumps(settings))
-        for lane, expect, code, outcome in [("corpus", "2", evidence.UNMEASURED, "unmeasured"),
+        for lane, expect, code, outcome in [("corpus", "2", lane_results.UNMEASURED, "unmeasured"),
                                             ("corpus-gate", "2", 0, "passed"), ("corpus", "3", 2, "failed")]:
             with self.subTest(lane=lane, expect=expect):
                 status, output, error = self.run_here("--expect", expect, lane, "--", "--filter", "Corpus")
@@ -3192,7 +3192,7 @@ class RemoteTests(unittest.TestCase):
                 receipt = json.loads((self.project / ".build/engineering/remote" / lane / "source.json").read_text())
                 self.assertEqual((receipt["ranOn"], receipt["result"]["receipt"]["outcome"]), ("second Mac", outcome))
                 self.assertFalse((self.project / ".build/engineering" / lane).exists())
-                if code == evidence.UNMEASURED:
+                if code == lane_results.UNMEASURED:
                     cause = receipt["result"]["receipt"]["unmeasured"]
                     self.assertEqual(cause[0], "Expected exactly 2 executed tests; observed 0 (2 skipped, which do not count)")
                     self.assertIn("Set FAKE_CORPUS for the admitted corpus.", cause[1])
@@ -3675,7 +3675,7 @@ class RemoteTests(unittest.TestCase):
                 status, output, error = self.run_here("slow")
             lane = int(marker.read_text())
             runner = self.runner()
-            self.assertEqual(status, evidence.UNMEASURED, output + error)
+            self.assertEqual(status, lane_results.UNMEASURED, output + error)
             self.assertIn("eng: No result from fake (ssh exited 255: Timeout, server fake not responding.)", error)
             self.assertIn("The run is unmeasured", error)
             self.assertNotIn("running slow on this Mac", error)

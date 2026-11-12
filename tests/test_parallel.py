@@ -13,7 +13,7 @@ import unittest
 from unittest.mock import patch
 SOURCE = Path(__file__).resolve().parents[1] / "src/python"
 sys.path.insert(0, str(SOURCE))
-from queuekeeper import cli, evidence, merge_queue, parallel, resources
+from queuekeeper import cli, lane_results, merge_queue, parallel, resources
 from vocaro_engineering import failure_records
 from queuekeeper.parallel import SPLITS
 import host_isolation
@@ -175,7 +175,7 @@ class UnittestRunnerTests(unittest.TestCase):
         with concurrent.futures.ThreadPoolExecutor(2) as pool:
             alone, beside = [pool.submit(self.run_suite, suite, "--timeout", str(limit)) for suite in (root, failing)]
             (status, output), failed = alone.result(), beside.result()
-        self.assertEqual(status, evidence.UNMEASURED, output)
+        self.assertEqual(status, lane_results.UNMEASURED, output)
         self.assertIn(f"== test_hung: timed out after {limit}s (0 tests", output)
         self.assertIn("== test_quick: OK (1 tests", output)
         self.assertIn(f"UNMEASURED: test_hung (timed out after {limit}s)", output)
@@ -205,7 +205,7 @@ class UnittestRunnerTests(unittest.TestCase):
         self.assertIn("FAILED: test_broken (FAILED (errors=1), status 1), test_fail (FAILED (failures=1), status 1)", output)
         self.assertIn("No module named 'a_module_that_does_not_exist'", output)
         # The runner's own summary is not a "Ran N tests" line, so a lane counts each test once.
-        self.assertEqual(evidence.executed_tests(output), 4)
+        self.assertEqual(lane_results.executed_tests(output), 4)
 
     def test_a_passing_suite_reports_its_unmeasured_skips_and_its_count(self):
         root = self.suite(module("test_mixed", """
@@ -216,9 +216,9 @@ class UnittestRunnerTests(unittest.TestCase):
         status, output = self.run_suite(root, "-v")
         self.assertEqual(status, 0, output)
         # The skipped test ran nothing, so only the measured one counts.
-        self.assertEqual((evidence.executed_tests(output), evidence.skipped_tests(output)), (1, 1))
+        self.assertEqual((lane_results.executed_tests(output), lane_results.skipped_tests(output)), (1, 1))
         self.assertIn("eng unittest: 2 tests (1 skipped) in 1 processes", output)
-        self.assertEqual(len(evidence.unmeasured_tests(output)), 1, output)
+        self.assertEqual(len(lane_results.unmeasured_tests(output)), 1, output)
 
     def after_summary(self, output):
         """The lines eng unittest prints after its summary, which comes once."""
@@ -279,7 +279,7 @@ class UnittestRunnerTests(unittest.TestCase):
     def test_a_run_left_unmeasured_adds_nothing_after_its_summary(self):
         root = self.suite(module("test_hung", "class H(unittest.TestCase):\n    def test_hung(self): time.sleep(600)\n"))
         status, output = self.run_suite(root, "--timeout", "1")
-        self.assertEqual(status, evidence.UNMEASURED, output)
+        self.assertEqual(status, lane_results.UNMEASURED, output)
         self.assertEqual(self.after_summary(output), [])
         self.assertFalse((root / ".build").exists())
 
@@ -346,7 +346,7 @@ class UnittestRunnerTests(unittest.TestCase):
                 self.assertEqual(merge_queue.failed_tests(log), (ids, None))
                 self.assertEqual(merge_queue.UNITTEST_SUMMARY.findall(log), merge_queue.UNITTEST_SUMMARY.findall(without))
                 self.assertEqual(merge_queue.REFUSAL.findall(log), [])
-                self.assertEqual(evidence.counted(log), evidence.counted(without))
+                self.assertEqual(lane_results.counted(log), lane_results.counted(without))
         # The negative control: the same lines not indented do change what the queue reads, so the test can fail.
         unindented = without + "\n".join(decoys) + "\n"
         self.assertNotEqual(merge_queue.failed_tests(unindented), (ids, None))
@@ -602,15 +602,15 @@ class UnittestRunnerTests(unittest.TestCase):
             module("test_gamma", "class G(unittest.TestCase):\n    def test_g(self): self.fail('not asked for')\n"))
         status, output = self.run_suite(root, "-p", "test_alpha.py", "-p", "test_beta.py")
         self.assertEqual(status, 0, output)
-        self.assertEqual(evidence.executed_tests(output), 3)
+        self.assertEqual(lane_results.executed_tests(output), 3)
         self.assertIn("3 tests (0 skipped) in 2 processes", output)
         # Overlapping patterns run a module once.
         status, output = self.run_suite(root, "-p", "test_beta.py", "-p", "test_b*.py")
-        self.assertEqual((status, evidence.executed_tests(output)), (0, 2), output)
+        self.assertEqual((status, lane_results.executed_tests(output)), (0, 2), output)
         # Negative controls: one pattern alone is as before, and the default still finds every module.
-        self.assertEqual(evidence.executed_tests(self.run_suite(root, "-p", "test_alpha.py")[1]), 1)
+        self.assertEqual(lane_results.executed_tests(self.run_suite(root, "-p", "test_alpha.py")[1]), 1)
         status, output = self.run_suite(root)
-        self.assertEqual((status, evidence.executed_tests(output)), (1, 4), output)
+        self.assertEqual((status, lane_results.executed_tests(output)), (1, 4), output)
         # A pattern that matches nothing names every pattern asked for.
         status, output = self.run_suite(root, "-p", "test_none.py", "-p", "test_nada.py")
         self.assertEqual(status, 5, output)

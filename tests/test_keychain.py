@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
-from queuekeeper import cli, evidence, offload_host, remote
+from queuekeeper import cli, lane_results, offload_host, remote
 from queuekeeper.apple import keychain
 from vocaro_engineering import host_context
 import host_isolation
@@ -663,7 +663,7 @@ class CommandLineTests(unittest.TestCase):
     def test_eng_keychain_needs_no_project_and_exits_by_the_check_s_outcome(self):
         empty = Path(tempfile.mkdtemp())
         self.addCleanup(lambda: subprocess.run(["rm", "-rf", str(empty)]))
-        for outcome, status in [("passed", 0), ("failed", 1), ("unmeasured", evidence.UNMEASURED)]:
+        for outcome, status in [("passed", 0), ("failed", 1), ("unmeasured", lane_results.UNMEASURED)]:
             with self.subTest(outcome), patch.object(keychain, "check", return_value={"outcome": outcome}) as made, \
                     patch("sys.stdout", new_callable=StringIO) as printed:
                 self.assertEqual(cli.main(["--project", str(empty), "keychain", "check", "--identity", NAME,
