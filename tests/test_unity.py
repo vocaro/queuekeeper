@@ -17,7 +17,7 @@ import host_isolation  # first, as every test module
 
 from queuekeeper import config, disk, extensions, unity
 from queuekeeper.lane_results import UNMEASURED, executed_tests
-from queuekeeper.unity import batch, commands, disk as unity_disk, doctor, editor, lane, licensing, project, settings
+from queuekeeper.unity import batch, commands, disk as unity_disk, doctor, editor, host, lane, licensing, project, settings
 
 unity.register()
 
@@ -598,6 +598,37 @@ class LaneKeyTests(unittest.TestCase):
         with patch.dict(extensions.LANE_KEYS, {}, clear=True), patch.object(extensions, "LOADED", ["queuekeeper.unity"]), \
                 self.assertRaisesRegex(ValueError, "gate.unity is the queuekeeper.unity extension's key"):
             self.parse(listed=())
+
+
+class HostReadTests(Folder):
+    HUB = "/Applications/Unity/Hub/Editor/6000.6.0f1/Unity.app/Contents/MacOS/Unity"
+
+    def read(self, editors, json_output=False):
+        import argparse
+        lines = []
+        for version in ("6000.10.0f1", "6000.6.0f1"):
+            if not (self.folder / "hub" / version).exists(): fake_editor(self.folder / "hub", version)
+        with patch.object(editor, "HUB", self.folder / "hub"), patch.object(project, "editors", editors):
+            status = host.read(argparse.Namespace(json=json_output), out=lines.append)
+        return status, lines
+
+    def test_it_lists_each_editor_with_its_project_and_the_versions_installed(self):
+        running = [(11, f"{self.HUB} -projectPath /w/one/lab"),
+                   (12, f"{self.HUB} -batchMode -projectPath /w/My Game/lab -runTests -testPlatform EditMode")]
+        status, lines = self.read(lambda: running)
+        self.assertEqual(status, 0)
+        self.assertEqual(lines, ["installed: 6000.6.0f1, 6000.10.0f1",
+                                 "PID 11: editor, Unity 6000.6.0f1, on /w/one/lab",
+                                 "PID 12: batch run, Unity 6000.6.0f1, on /w/My Game/lab"])
+        found = json.loads(self.read(lambda: running, json_output=True)[1][0])
+        self.assertEqual(found["editors"][1], {"pid": 12, "project": "/w/My Game/lab", "version": "6000.6.0f1", "batch": True})
+
+    def test_it_says_when_none_runs_and_when_the_processes_cannot_be_read(self):
+        self.assertEqual(self.read(lambda: [])[1][1], "no Unity editor is running")
+        def denied(): raise project.Unreadable("cannot inspect processes")
+        status, lines = self.read(denied)
+        self.assertEqual((status, lines), (2, ["queuekeeper: cannot inspect processes"]))
+        self.assertIs(extensions.HOST_READS["editors"][2], host.read)
 
 
 if __name__ == "__main__":
