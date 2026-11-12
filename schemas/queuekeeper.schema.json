@@ -101,7 +101,8 @@
                 "compileFirst",
                 "deviceRunMinutes",
                 "stall",
-                "unity"
+                "unity",
+                "chips"
               ]
             }
           },
@@ -240,6 +241,15 @@
           "unity": {
             "description": "The Unity extension's key, which a project gets with queuekeeper.unity. A lane whose command runs the project's Unity editor: queuekeeper run runs its command under queuekeeper unity ready --, which checks on the Mac that runs it that an editor is installed, that no editor has the project open, that no stale lock is left and that no orphaned licensing helper remains, and ends the lane unmeasured, with nothing run, when one of them does not hold",
             "type": "boolean"
+          },
+          "chips": {
+            "description": "The Mac hardware extension's key, which a project gets with queuekeeper.mac_hardware. The chips the lane's results are valid on, such as [\"apple-m5-max\"], for a lane whose output differs by GPU. queuekeeper run runs the lane only on a Mac with one of them, waits for that Mac when it is busy, and never runs it on another. A lane without the key runs on either Mac. queuekeeper host chip prints a Mac's",
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+            }
           },
           "budgetMinutes": {
             "description": "The gate lane's time budget in minutes, from its measured time. When the median wall time of its recent passing runs in the merge queue exceeds it, qk land and qk doctor warn and name its slowest parts (guides/releasing.md, Keeping the split). Only the gate lane takes it",

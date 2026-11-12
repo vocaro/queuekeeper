@@ -189,6 +189,11 @@ class LaneKey:
         """The command the lane runs, given the one it would run otherwise."""
         return command
 
+    def placement(self, lane):
+        """(HERE, why) for a lane that must run on this Mac, (THERE, why) for one that must run on the second Mac,
+        or None for one either may run. ValueError says that neither Mac can run it."""
+        return None
+
 
 # key -> LaneKey: the keys extensions add to a lane.
 LANE_KEYS = {}
@@ -199,6 +204,25 @@ def lane_command(lane, command):
     for key, added in LANE_KEYS.items():
         if key in lane: command = added.command(lane, command)
     return command
+
+
+# Where a key an extension added says its lane must run (LaneKey.placement): on this Mac, or only on the second Mac.
+HERE, THERE = "here", "there"
+
+
+def placement(lanes, name):
+    """(HERE or THERE, why) when a key an extension added says the lane name, or a lane of its group, must run on
+    one Mac, else None. A group runs its lanes on one Mac, so lanes of it that must run apart are refused."""
+    found = {}
+    for member in [name, *lanes[name].get("parallel", [])]:
+        for key, added in LANE_KEYS.items():
+            if key not in lanes[member]: continue
+            try: placed = added.placement(lanes[member])
+            except ValueError as error: raise ValueError(f"{member}.{key}: {error}") from None
+            if placed: found.setdefault(placed[0], f"{member}.{key}: {placed[1]}")
+    if len(found) > 1:
+        raise ValueError(f"{name} runs its lanes on one Mac, and they must run apart ({found[HERE]}; {found[THERE]})")
+    return next(iter(found.items()), None)
 
 
 def reads_screen(lane):

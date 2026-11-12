@@ -2329,6 +2329,18 @@ def foreground_lane(root, config, lane, arguments, expect):
                              lambda: execute(root, config, host, work, lane=lane, arguments=arguments, expect=expect))
 
 
+def there_lane(root, config, lane, arguments, expect, why):
+    """Run a lane that must run on the second Mac there, as `queuekeeper remote run` does, where it waits for its
+    admission. It never falls back to this Mac: a second Mac that cannot be reached stops the lane."""
+    host = configured()
+    if host is None: raise ValueError(f"{lane} runs only on the second Mac ({why}), and none is configured")
+    print(f"queuekeeper: {lane} runs only on the second Mac ({why})", file=sys.stderr, flush=True)
+    work = ["run", "--here", *(["--expect", str(expect)] if expect else []), lane,
+            *(["--", *arguments] if arguments else [])]
+    with processes.forwarding_signals():
+        return execute(root, config, host, work, lane=lane, arguments=arguments, expect=expect)
+
+
 def offering_here(here, send):
     """send()'s status, for foreground work bound for the second Mac. When the second Mac cannot be reached,
     the Unreachable it raises also says that the owner can approve a window on this Mac's foreground, within
