@@ -1,0 +1,13 @@
+#!/usr/bin/env python3
+"""Set an iPhone Duo simulator's pose: duo-pose UDID DEGREES, or duo-pose UDID orientation NAME.
+
+One executable, so a project's Duo lane can take it as its hinge script and run it with the UDID
+and the pose as its arguments. queuekeeper.apple.simulators.duo_pose says what it does.
+"""
+from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
+from queuekeeper.apple.simulators.duo_pose import main
+
+raise SystemExit(main())

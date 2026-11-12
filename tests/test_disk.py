@@ -205,7 +205,7 @@ class KeptResultsTests(Fixture):
         self.assertEqual(item.status, disk.CANDIDATE, item.reason)
         self.assertIn(f"gate at {len(young) + len(old)} commits; {len(old)} past the rule", item.reason)
         self.assertIn(self.remote.KEPT_RESULTS_RULE, item.reason)
-        self.assertEqual(item.command, ["python3", str(disk.TOOLKIT_ROOT / "bin/eng"), "remote", "prune-results",
+        self.assertEqual(item.command, ["python3", str(disk.TOOLKIT_ROOT / "bin/qk"), "remote", "prune-results",
                                         str(self.main)])
         # In use, it is kept.
         processes = [disk.Process(301, "grep", paths=(str(old[0] / "suites/shard.log"),))]

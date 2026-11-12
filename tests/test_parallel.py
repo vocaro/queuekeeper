@@ -14,12 +14,11 @@ from unittest.mock import patch
 SOURCE = Path(__file__).resolve().parents[1] / "src/python"
 sys.path.insert(0, str(SOURCE))
 from queuekeeper import cli, lane_results, merge_queue, parallel, resources
-from vocaro_engineering import failure_records
 from queuekeeper.parallel import SPLITS
 import host_isolation
 from host_isolation import stretched
 
-ENG = Path(__file__).resolve().parents[1] / "scripts/eng"
+ENG = Path(__file__).resolve().parents[1] / "scripts/qk"
 
 # Waits until the file named by its second argument exists, writing the first: two such commands
 # end only when both run at once. The third argument bounds the wait in seconds.
@@ -262,11 +261,10 @@ class UnittestRunnerTests(unittest.TestCase):
             "    test_fail.F.test_planted: AssertionError: the planted reason"]))
         # The rest can be read afterwards, in a record the kept-failure rule prunes.
         log = Path(after[0].split("the whole output is in ", 1)[1][:-1])
-        self.assertTrue(log.is_relative_to((root / ".build/failures/unittest").resolve()), log)
+        self.assertTrue(log.is_relative_to((root / parallel.FAILED_RUNS).resolve()), log)
         saved = log.read_text()
         self.assertIn("its second line", saved)
         self.assertIn("eng unittest: ", saved)
-        self.assertIn(log.parent.name, [path.name for path in failure_records.records(root).get("unittest", [])])
         self.assertIn("Failed: test_fail.F.test_planted", (log.parent / "failures.txt").read_text())
 
     def test_a_passing_run_adds_nothing_after_its_summary_and_keeps_nothing(self):

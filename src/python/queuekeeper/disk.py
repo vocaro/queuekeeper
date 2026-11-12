@@ -165,7 +165,7 @@ def runners(processes, root, apart=(), placed=lambda process: True):
     file or an argument is below root, not at root itself and not below any of apart, where an argument relative to
     its working directory counts when it names a file there, or a folder by a path with a slash. A process whose only tie is root itself, a
     session's project root passed as an argument or a helper it started there, runs nothing from the tree; a run
-    from root, such as `python3 scripts/eng`, names a file below it (vocaro-engineering#182). A working directory
+    from root, such as `python3 scripts/qk`, names a file below it (vocaro-engineering#182). A working directory
     counts only for a process placed says may load code from it; its relative arguments still resolve there."""
     top = canonical(root)
     def below(value):
@@ -357,7 +357,7 @@ def kept_results(host, usage, sizes):
         elif gone:
             items.append(Item("kept-results", str(base), CANDIDATE, f"{counted}; {len(gone)} past the rule, which "
                               f"{remote.KEPT_RESULTS_RULE}", sum(sizes.of(folder) for folder in gone),
-                              ["python3", str(TOOLKIT_ROOT / "bin/eng"), "remote", "prune-results", str(main)], idle))
+                              ["python3", str(TOOLKIT_ROOT / "bin/qk"), "remote", "prune-results", str(main)], idle))
         else:
             items.append(Item("kept-results", str(base), KEPT, f"{counted}; none past the rule, which "
                               f"{remote.KEPT_RESULTS_RULE}", sum(sizes.of(folder) for folders in found.values() for folder in folders),

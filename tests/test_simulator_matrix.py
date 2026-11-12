@@ -19,7 +19,7 @@ from queuekeeper.apple.simulators import matrix
 import host_isolation
 from host_isolation import stretched
 
-ENG = Path(__file__).resolve().parents[1] / "scripts/eng"
+ENG = Path(__file__).resolve().parents[1] / "scripts/qk"
 
 
 class Followed:

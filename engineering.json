@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "name": "queuekeeper",
+  "toolkit": {"path": "../vocaro-engineering"},
+  "integration": "direct-main",
+  "lanes": {
+    "gate": {
+      "command": ["python3", "scripts/qk", "unittest", "-s", "tests", "--split", "class", "--batch-size", "4", "--jobs", "8", "-v"],
+      "resource": "heavy",
+      "minimumTests": 40,
+      "timeout": 2400,
+      "budgetMinutes": 15
+    }
+  },
+  "spelling": {
+    "skip": {
+      "LICENSE": "the Apache License 2.0, retained verbatim",
+      "tests/test_spelling.py": "plants British spellings as the check's negative controls"
+    },
+    "exemptPhrases": {
+      "was cancelled after": "Swift Testing's own line for a canceled test, which Queuekeeper reads in lane logs"
+    }
+  },
+  "exceptions": []
+}

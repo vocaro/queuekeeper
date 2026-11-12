@@ -160,7 +160,7 @@ subprocess.run(["true"],
                timeout=120.5)
 def simctl(*arguments, timeout=600): pass
 fake = lambda *arguments, timeout=30: None
-command = ["eng", "unittest", "--timeout=60"]
+command = ["qk", "unittest", "--timeout=60"]
 Admission("gate", timeout=60)
 threading.Event().wait(timeout=LIMIT)
 subprocess.check_output(["true"],  # wall-clock: says why on its first line

@@ -1,9 +1,6 @@
 """The proofs that a commit's work is in a base branch, against throwaway repositories.
 
-The cases for a negated closing claim, and for the merges a branch brings in, are in test_merge_queue.py.
-
-This module does not import `host_isolation` yet, as every test module does: that helper does not
-import until `cli` is split (vocaro/vocaro-engineering#403). It runs git in a temporary folder only."""
+The cases for a negated closing claim, and for the merges a branch brings in, are in test_merge_queue.py."""
 import os
 from pathlib import Path
 import shutil
@@ -13,6 +10,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
+import host_isolation  # noqa: F401 -- first, as every test module
 from queuekeeper import landing_proofs
 
 

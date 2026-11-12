@@ -1841,7 +1841,7 @@ def clock_line(config, lane, arguments=()):
     if not isinstance(words, list): words = []
     if words and re.fullmatch(r"python(?:3(?:\.\d+)?)?", Path(words[0]).name):
         words = words[1:]
-    if len(words) >= 2 and Path(words[0]).name == "eng" and words[1] == "simulator-tests":
+    if len(words) >= 2 and Path(words[0]).name == "qk" and words[1] == "simulator-tests":
         from .apple.simulators.matrix import default_test_allowance
         allowance = default_test_allowance([*words[2:], *arguments])
         if allowance is not None:
@@ -3960,6 +3960,6 @@ def compare_hosts():
         report["errors"].append(f"the simulator runtimes of the Xcode at {developer} differ: {'; '.join(differences)}; "
                                 "`eng doctor` evens them out itself, deleting a runtime that no simulator but Xcode's "
                                 "defaults uses and copying any other to the Mac that lacks it, and it could not here: "
-                                "see its `runtimes:` lines, or run `python3 scripts/eng remote setup --runtimes` "
+                                "see its `runtimes:` lines, or run `python3 scripts/qk remote setup --runtimes` "
                                 "(guides/shared-host.md, Setting up the second Mac)")
     return report

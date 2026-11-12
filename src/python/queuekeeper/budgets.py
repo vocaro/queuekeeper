@@ -1,13 +1,13 @@
-"""The warnings that keep the split between the landing gate and the release gate (guides/releasing.md,
-Keeping the split and Checkpoints, vocaro-engineering#135), which `eng land` prints after its result and
-`eng doctor` gives:
+"""The warnings about the landing gate's time budget (guides/releasing.md, Keeping the split,
+vocaro-engineering#135), which a landing prints after its result and `doctor` gives:
 
 - the gate's median wall time over its recent passing runs in the merge queue made on an unloaded host exceeds the
   gate lane's budgetMinutes, naming its slowest parts and how many loaded runs it left out;
-- origin/main holds more than release.maxCommits commits since the last commit that passed every lane
-  in release.lanes, a release or a checkpoint;
-- and, from eng doctor alone, a direct-main gate with no budget, a gate that takes a physical device, and a
+- and, from doctor alone, a direct-main gate with no budget, a gate that takes a physical device, and a
   device pass's lane that would go to the second Mac.
+
+A project's own tooling adds what else a landing warns of, such as a release gate's commit limit
+(extensions.LANDING_WARNINGS).
 
 The queue's worker records each landed entry's gate run (Worker.gate): its wall time as the queue saw
 it, wherever the lane ran, any wait for admission included, the parts its log reports with their
@@ -21,7 +21,7 @@ import statistics
 import subprocess
 from pathlib import Path
 
-from . import git_state
+from . import extensions
 
 GATE = "gate"
 # The passing gate runs the median is taken over, newest first, and the fewest that judge a budget.
@@ -30,14 +30,12 @@ FEWEST_RUNS = 3
 # The parts a landed entry keeps, and those a warning names.
 KEPT_PARTS = 10
 NAMED_PARTS = 5
-DEFAULT_MAX_COMMITS = 100
 # What eng unittest and eng xctest print for each process, "== NAME: OK (3 tests, 1.2s)", and what a
 # lane group prints for each of its lanes under "Lane times (...)": "  NAME     12s  PASS".
 SHARD = re.compile(r"^== (.+?): .*\((?:[^()]*, )?(\d+(?:\.\d+)?)s\)$")
 LANE_TIME = re.compile(r"^  (\S+)\s+(\d+(?:\.\d+)?)s\s+(?:PASS|FAIL|UNMEASURED)$")
 SPLIT = "guides/releasing.md, Keeping the split"
 PASS = "guides/releasing.md, The device pass"
-CHECKPOINTS = "guides/releasing.md, Checkpoints"
 
 
 def parts(log):
@@ -176,85 +174,13 @@ def doctor_warnings(config):
     return warnings
 
 
-def git(root, *arguments):
-    return subprocess.run(["git", "-C", str(root), *arguments], capture_output=True, text=True, timeout=120,
-                          stdin=subprocess.DEVNULL)
-
-
-def checkouts(root):
-    """Usable worktrees of the repository, each with its own lane receipts in .build/engineering."""
-    paths = [Path(entry["worktree"]) for entry in git_state.worktrees(root) if "prunable" not in entry]
-    return [path for path in paths if path.is_dir()] or [Path(root)]
-
-
-def passed_lanes(root, places, lanes, commit):
-    """The lanes of lanes with a pass of the whole lane at commit, as eng release counts one."""
-    from . import release
-    found = []
-    for lane in lanes:
-        for place in places:
-            try:
-                release.lane_passed(place, lane, commit)
-            except release.NoPass:
-                continue
-            found.append(lane)
-            break
-    return found
-
-
-def candidates(root, places, lanes):
-    """The commits any receipt of a release lane is of: the second Mac's, kept in the common Git directory,
-    and each checkout's last run of each lane."""
-    import json
-    from . import remote
-    found = set()
-    store = remote.store(root)
-    if store.is_dir():
-        found |= {path.name for path in store.iterdir() if re.fullmatch(r"[0-9a-f]{40}", path.name)
-                  and any((path / f"{lane}.json").is_file() for lane in lanes)}
-    for place in places:
-        for lane in lanes:
-            try: revision = json.loads((place / ".build/engineering" / lane / "source.json").read_text())["project"]["revision"]
-            except (OSError, ValueError, KeyError, TypeError): continue
-            if isinstance(revision, str): found.add(revision)
-    return found
-
-
-def commit_warnings(root, config, main="refs/remotes/origin/main"):
-    """A warning when main, as last fetched, holds more than release.maxCommits commits since the last
-    commit that passed every lane in release.lanes. None without release lanes or a main to count."""
-    lanes = [lane for lane in config.get("release", {}).get("lanes", []) if lane in config.get("lanes", {})]
-    if not lanes: return []
-    limit = config.get("release", {}).get("maxCommits", DEFAULT_MAX_COMMITS)
-    listed = git(root, "rev-list", main)
-    if listed.returncode: return []
-    order = {commit: index for index, commit in enumerate(listed.stdout.split())}
-    places = checkouts(root)
-    full, partial = None, None
-    # Newest first: the first that passed every lane ends the search, and a newer one that passed some is
-    # the checkpoint still missing lanes.
-    for commit in sorted((c for c in candidates(root, places, lanes) if c in order), key=order.get):
-        passed = passed_lanes(root, places, lanes, commit)
-        if len(passed) == len(lanes):
-            full = commit
-            break
-        if passed and partial is None: partial = (commit, [lane for lane in lanes if lane not in passed])
-    count = int(git(root, "rev-list", "--count", f"{full}..{main}" if full else main).stdout.strip() or 0)
-    if count <= limit: return []
-    since = f"since {full[:12]}, the last commit that passed every release lane" if full \
-        else "and none since adoption passed every release lane"
-    missing = (f"; {partial[0][:12]}, a newer commit, has not passed {', '.join(partial[1])}") if partial else ""
-    return [f"origin/main holds {count} commits {since} ({', '.join(lanes)}), over release.maxCommits, {limit}"
-            f"{missing}. Run a checkpoint, `eng checkpoint`: each lane in release.lanes on main's tip, one after "
-            f"another, with no version, changelog edit or tag ({CHECKPOINTS})"]
-
-
 def landing_warnings(root, config, entries):
-    """What eng land prints after its result, and eng doctor warns of too: the gate over its budget, and
-    main past its commit limit. A check that cannot be made says so rather than stopping the land."""
+    """What a landing prints after its result, and doctor warns of too: the gate over its budget, and what the
+    project's tooling adds (extensions.LANDING_WARNINGS). A check that cannot be made says so rather than stopping
+    the landing."""
     warnings = []
-    for check in (lambda: gate_warnings(config, entries), lambda: commit_warnings(root, config)):
+    for check in (lambda: gate_warnings(config, entries), *(lambda added=added: added(root, config) for added in extensions.LANDING_WARNINGS)):
         try: warnings += check()
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
-            warnings.append(f"could not check the gate's budget and the release commit limit: {error}")
+            warnings.append(f"could not check the gate's budget: {error}")
     return warnings

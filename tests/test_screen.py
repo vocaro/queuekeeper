@@ -423,7 +423,7 @@ class MessageTests(unittest.TestCase):
                            "eng: screen: locked (console user trevorharmon, CGSSessionScreenIsLocked yes, "
                            "IOConsoleLocked no) on this Mac (Trevors-MacBook-Pro-715) at 01:58:02\n")
             worker = Namespace(timed_out=None)
-            with patch.object(mq.evidence, "unmeasured_tests", return_value=["Test case 'ReaderTests/scroll()' "
+            with patch.object(mq.lane_results, "unmeasured_tests", return_value=["Test case 'ReaderTests/scroll()' "
                               "Unmeasured: the screen is locked"]):
                 said = mq.Worker.no_verdict_cause(worker, 3, log)
         self.assertTrue(said.endswith("; the last reading screen: locked (console user trevorharmon, "

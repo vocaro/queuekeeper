@@ -9,14 +9,13 @@ rules in many places. `known_import_violations.txt`, beside this file, lists eve
 only shrinks: a new violation fails, and so does a line whose violation is gone, until the line is
 deleted and its kind's number in CEILING lowered. When the list is empty, delete it and CEILING.
 
-`python3 tests/test_queuekeeper_imports.py --report` prints what the source holds now, by kind.
-
-This module does not import `host_isolation`, as every other test module here does: that helper
-imports the toolkit until the port rewrites it, and this test reads source files only."""
+`python3 tests/test_queuekeeper_imports.py --report` prints what the source holds now, by kind."""
 import ast
 from pathlib import Path
 import sys
 import unittest
+
+import host_isolation  # noqa: F401 -- first, as every test module
 
 SOURCE = Path(__file__).resolve().parents[1] / "src/python"
 KNOWN = Path(__file__).resolve().with_name("known_import_violations.txt")
@@ -35,7 +34,7 @@ APPLE_TOOLKIT = "Apple imports toolkit"
 OLD_NAME = "old name"
 KINDS = (CORE_TOOLKIT, CORE_APPLE, APPLE_TOOLKIT, OLD_NAME)
 # The most lines of each kind the list may hold. Lower a number as its kind shrinks; never raise it.
-CEILING = {CORE_TOOLKIT: 17, CORE_APPLE: 18, APPLE_TOOLKIT: 0, OLD_NAME: 0}
+CEILING = {CORE_TOOLKIT: 0, CORE_APPLE: 18, APPLE_TOOLKIT: 0, OLD_NAME: 0}
 
 
 def within(module, package):

@@ -78,9 +78,9 @@ def check_commands(location, path, identity, sender=None):
     """The post-check's commands: in the automation's context on the second Mac, through eng remote
     from the Mac that sends work there, and in a shell on the target, which checks that shell's
     session only. sender names the Mac that sends work to the target when the target is this Mac."""
-    check = ["python3", "scripts/eng", "keychain", "check", "--keychain", path,
+    check = ["python3", "scripts/qk", "keychain", "check", "--keychain", path,
              *(["--identity", identity] if identity else [])]
-    through = shlex.join(["python3", "scripts/eng", "remote", "admit", "--", *check])
+    through = shlex.join(["python3", "scripts/qk", "remote", "admit", "--", *check])
     lines = []
     if location.where == "second Mac":
         lines.append((f"from this Mac, as eng remote runs work on {location.mac}", through))
@@ -155,7 +155,7 @@ def recover(path=DEFAULT, target=None, identity=None, out=print, ask=None):
         out(f"  {where}:\n    {command}")
     if location.where == "second Mac" or sender:
         out(f"An unlock in a Terminal reaches that Terminal's session only, never an eng remote run. For every run on "
-            f"{location.mac} to unlock its login keychain itself, run `python3 scripts/eng keychain keep-unlocked` "
+            f"{location.mac} to unlock its login keychain itself, run `python3 scripts/qk keychain keep-unlocked` "
             "once instead.")
     return 0
 

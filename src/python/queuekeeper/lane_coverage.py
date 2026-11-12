@@ -280,7 +280,7 @@ def read_command(root, command):
         while words and words[0] in ("-B", "-u", "-E", "-I", "-s", "-S"): words = words[1:]
         if words[:3] == ["-m", "unittest", "discover"]: return unittest_discovery(root, words[3:], True)
         tool = posixpath.basename(words[0]) if words else ""
-    if tool == "eng" and len(words) > 1: return eng_command(root, words[1:])
+    if tool == "qk" and len(words) > 1: return eng_command(root, words[1:])
     raise Unread(f"this cannot read which tests `{described}` selects")
 
 

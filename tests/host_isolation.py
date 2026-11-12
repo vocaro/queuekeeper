@@ -158,14 +158,6 @@ os.environ["VOCARO_EVIDENCE_RETRY"] = "off"
 # of the reap clears it.
 os.environ[cli.REAP_SWITCH] = "off"
 
-# Nor does any doctor a test runs list this host's own leftover worktrees of the toolkit
-# (toolkit_copy.leftover_worktrees), which come and go with other sessions. A test of the list clears it.
-os.environ[cli.toolkit_copy.LEFTOVER_SWITCH] = "off"
-# Nor does any name the gap between the toolkit copy running the tests and origin/main (toolkit_copy.gap_line), which
-# a session worktree opens as others land, so that its doctor tests fail only at their own warnings (#224). A test of
-# the gap clears it.
-os.environ[cli.toolkit_copy.GAP_SWITCH] = "off"
-
 
 def unfixed(root, hosts):
     hosts.pop("runtimesDiffer", None)

@@ -180,7 +180,7 @@ def admission_warnings(root, at=None):
         if not record or record.get("kind") != ADMISSION: continue
         since = record.get("since")
         waited = f" {int((at or time.time()) - since)}s" if isinstance(since, (int, float)) else ""
-        found.append(f"lane {path.stem} has waited{waited} for {words(record)}; `python3 scripts/eng admissions now` "
+        found.append(f"lane {path.stem} has waited{waited} for {words(record)}; `python3 scripts/qk admissions now` "
                      "shows who holds and who waits for admission on each Mac")
     return found
 

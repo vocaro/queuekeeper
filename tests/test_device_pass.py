@@ -12,7 +12,6 @@ from unittest.mock import patch
 import host_isolation  # noqa: F401  (first: keeps every test out of the host's admission)
 from queuekeeper import budgets, cli
 from queuekeeper.apple import device_notifications, device_pass, devices
-from vocaro_engineering import release
 from test_devices import BANNER, Devicectl, PHONE, TABLET, Watches, approval, later, scratch
 
 SOURCE = Path(__file__).resolve().parents[1] / "src/python"
@@ -248,7 +247,7 @@ class ReleaseLane(Fixture):
         return root, commit
 
     def run_lane(self, root):
-        with patch.object(release.remote, "passed", return_value=None), \
+        with patch.object(cli.remote, "passed", return_value=None), \
                 contextlib.redirect_stdout(StringIO()), contextlib.redirect_stderr(StringIO()) as error:
             code = cli.main(["--project", str(root), "run", "device-voiceover"])
         return code, error.getvalue()
@@ -263,8 +262,6 @@ class ReleaseLane(Fixture):
         # The pass's summary is in the lane's results.
         summary = json.loads((root / ".build/engineering/device-voiceover/results" / device_pass.SUMMARY).read_text())
         self.assertEqual([part["outcome"] for part in summary["devices"]], ["passed", "passed"])
-        with patch.object(release.remote, "passed", return_value=None):
-            self.assertIn("in this checkout", release.lane_passed(root, "device-voiceover", commit))
 
     def test_a_device_lane_with_the_iphone_not_run_is_no_pass(self):
         self.hold_iphone(owner="session-b")
@@ -273,14 +270,11 @@ class ReleaseLane(Fixture):
         self.assertEqual(code, device_pass.UNMEASURED, error)
         receipt = json.loads((root / ".build/engineering/device-voiceover/source.json").read_text())
         self.assertEqual(receipt["outcome"], "unmeasured")
-        with patch.object(release.remote, "passed", return_value=None), \
-                self.assertRaisesRegex(release.NoPass, "records unmeasured, not passed"):
-            release.lane_passed(root, "device-voiceover", commit)
 
 
 class Placement(unittest.TestCase):
     def test_a_device_pass_lane_needs_here_and_a_gate_that_runs_one_warns(self):
-        command = ["python3", "scripts/eng", "device-pass", "--device", "iPad", "--", "run"]
+        command = ["python3", "scripts/qk", "device-pass", "--device", "iPad", "--", "run"]
         budgeted = {"budgetMinutes": 30, "timeout": 60}
         gate = {"command": ["true"], **budgeted}
         heavy = {"command": command, "resource": "heavy", "timeout": 60}

@@ -1,13 +1,11 @@
-"""The environment that puts the build-tool wrappers first on a lane's PATH.
-
-This module does not import `host_isolation` yet, as every test module does: that helper does not
-import until `cli` is split (vocaro/vocaro-engineering#403). It reads no host state."""
+"""The environment that puts the build-tool wrappers first on a lane's PATH."""
 import os
 from pathlib import Path
 import sys
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
+import host_isolation  # noqa: F401 -- first, as every test module
 from queuekeeper import shims
 
 

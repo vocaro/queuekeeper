@@ -471,7 +471,7 @@ class ReapTests(unittest.TestCase):
 
     def test_a_live_admission_that_names_the_owner_keeps_it(self):
         before = self.early()
-        self.process(106100, 100900, "python3 scripts/eng admit -- swift test")
+        self.process(106100, 100900, "python3 scripts/qk admit -- swift test")
         self.process(106101, 106100, "swift test")
         self.environments[106101] = f"PATH=/usr/bin CLAUDE_CODE_SESSION_ID={self.OWNER}"
         self.guard.write_text(json.dumps({"vocaroEngineering": 1, "owners": {"a" * 32: {
@@ -480,7 +480,7 @@ class ReapTests(unittest.TestCase):
 
     def test_an_unended_admission_in_the_log_that_names_the_owner_keeps_it(self):
         before = self.early()
-        self.process(106100, 100900, "python3 scripts/eng run gate", age=600)
+        self.process(106100, 100900, "python3 scripts/qk run gate", age=600)
         self.environments[106100] = f"VOCARO_DEVICE_OWNER={self.OWNER}"
         (self.slots / "admissions.jsonl").write_text(json.dumps({
             "event": "admitted", "identity": "b" * 32, "pid": 106100,
@@ -572,7 +572,7 @@ class ReapTests(unittest.TestCase):
             self.record.write_text(json.dumps(entry))
             self.process(HOLDER, 1, "python3 -m queuekeeper.apple.simulators.matrix", start=ago(600))
         def live_admission():
-            self.process(106100, 100900, "python3 scripts/eng admit -- swift test")
+            self.process(106100, 100900, "python3 scripts/qk admit -- swift test")
             self.environments[106100] = f"PATH=/usr/bin CLAUDE_CODE_SESSION_ID={self.OWNER}"
             self.guard.write_text(json.dumps({"vocaroEngineering": 1, "owners": {"a" * 32: {
                 "pid": 106100, "start": self.table[106100][2], "label": "swift test"}}}))

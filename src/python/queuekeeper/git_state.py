@@ -1,5 +1,6 @@
 """What Git says of a checkout: how far it is behind origin/main, and its worktrees."""
 import os
+from pathlib import Path
 import subprocess
 
 UPSTREAM = "refs/remotes/origin/main"
@@ -45,3 +46,24 @@ def worktrees(checkout):
         fields = dict((line.split(" ", 1) + [""])[:2] for line in block.splitlines() if line.strip())
         if "worktree" in fields: entries.append(fields)
     return entries
+
+
+def main_checkout(root):
+    """The main checkout of the repository that root is a linked worktree of, or None.
+
+    A linked worktree's .git is a file naming its directory inside the repository's .git, whose
+    commondir file leads back to that .git: the parent of `git rev-parse --git-common-dir`.
+    It is read without running Git, which script tests may replace with fake commands on PATH.
+    """
+    try:
+        line = (Path(root) / ".git").read_text().strip()
+    except OSError:  # the main checkout's .git is a directory
+        return None
+    if not line.startswith("gitdir:"):
+        return None
+    private = Path(root) / line.removeprefix("gitdir:").strip()
+    try:
+        common = private / (private / "commondir").read_text().strip()
+    except OSError:  # a submodule's .git file names a repository of its own
+        return None
+    return common.resolve().parent

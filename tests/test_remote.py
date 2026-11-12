@@ -26,7 +26,6 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 from queuekeeper import budgets, cli, config, lane_results, merge_queue, offload_host, processes, remote, resources
 from queuekeeper.apple import device_notifications, devices
-from vocaro_engineering import release
 from queuekeeper import disk as disk_module
 from queuekeeper import waiting
 import host_isolation
@@ -458,7 +457,7 @@ class RemoteTests(unittest.TestCase):
             "notes": {"parallel": ["noted", "left"], "resource": "heavy"},
             # Runs noted inside itself, as a gate's script runs its suites with `eng run --here suites` (#218).
             # A shell, as the gate's script is, keeps the admission's descriptor open for the nested run.
-            "nesting": {"command": ["sh", "-c", '"$0" "$VOCARO_ENGINEERING_ROOT/bin/eng" --project . run --here noted',
+            "nesting": {"command": ["sh", "-c", '"$0" "$VOCARO_ENGINEERING_ROOT/bin/qk" --project . run --here noted',
                                     python], "resource": "heavy"},
             # Outlives any test that holds it, which stops it: on a loaded Mac a test that expected a
             # 60 s lane to be running found it ended (#111).
@@ -506,7 +505,7 @@ class RemoteTests(unittest.TestCase):
             "second": {"command": [python, "-c", "import pathlib; print('first running:', "
                                    "pathlib.Path('.build/first.running').exists()); print('Ran 1 tests')"]},
             "turns": {"parallel": ["first", "second"], "resource": "heavy"},
-            # Imports a module of the project's, as a project's scripts/eng imports scripts/_engineering.py,
+            # Imports a module of the project's, as a project's scripts/qk imports scripts/_engineering.py,
             # and says whether its Python may write bytecode. Force adjacent caching so the dirty-checkout
             # negative control also exercises its intended path on Apple's system Python (#368).
             "imports": {"command": [python, "-c", "import sys; sys.pycache_prefix = None; "
@@ -585,7 +584,7 @@ class RemoteTests(unittest.TestCase):
     def make_toolkit(self, root):
         """A committed copy of this toolkit, as the second Mac receives it. Its origin is the toolkit's
         upstream URL, which Git on both Macs reads as the copy itself, so no test fetches the network."""
-        for part in ["bin", "integrations", "policies", "agents", "src/python"]:
+        for part in ["bin", "scripts", "src/python"]:
             shutil.copytree(config.TOOLKIT_ROOT / part, root / part, ignore=shutil.ignore_patterns("__pycache__"))
         # Its .gitignore keeps out the bytecode that running it writes beside its source.
         shutil.copyfile(config.TOOLKIT_ROOT / ".gitignore", root / ".gitignore")
@@ -828,7 +827,7 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual(seconds("--", "--repeat", "3"), 300 + remote.UNATTENDED_WAIT)
 
     def test_the_clock_line_names_a_lanes_timeout_and_only_a_stated_test_allowance(self):
-        command = ["python3", "scripts/eng", "simulator-tests", "--scheme", "A",
+        command = ["python3", "scripts/qk", "simulator-tests", "--scheme", "A",
                    "--runtime", "iOS-27-2", "--device", "iPhone-17-Pro"]
         lanes = {"plain": {"command": ["sh", "scripts/test-ios.sh", "simulator-tests"], "timeout": 12300},
                  "pool": {"command": command, "timeout": 900},
@@ -856,12 +855,12 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual(output.getvalue() + error.getvalue(), "")
 
     def test_the_remote_clock_reports_the_scaled_limit_and_appended_simulator_allowance(self):
-        launcher = self.project / "scripts/eng"
+        launcher = self.project / "scripts/qk"
         launcher.parent.mkdir()
         launcher.write_text("print('TEST simulated')\nprint('Repeat series: asked 3 repeats')\n")
         settings = self.project / "engineering.json"
         config = json.loads(settings.read_text())
-        config["lanes"]["pool"] = {"command": [sys.executable, "scripts/eng", "simulator-tests", "--scheme", "A",
+        config["lanes"]["pool"] = {"command": [sys.executable, "scripts/qk", "simulator-tests", "--scheme", "A",
                                               "--runtime", "iOS-27-2", "--device", "iPhone-17-Pro"],
                                    "timeout": 900}
         settings.write_text(json.dumps(config))
@@ -1619,7 +1618,7 @@ class RemoteTests(unittest.TestCase):
         """A dispatcher of its own, whose output goes to a file, and that file."""
         log = Path(tempfile.mkstemp(dir=self.temp.name, suffix=".log")[1])
         with log.open("wb") as output:
-            process = subprocess.Popen([sys.executable, str(self.toolkit / "bin/eng"), "--project", str(self.project),
+            process = subprocess.Popen([sys.executable, str(self.toolkit / "bin/qk"), "--project", str(self.project),
                                         *arguments], stdout=output, stderr=subprocess.STDOUT, preexec_fn=host_isolation.default_signals)
 
         def stop():
@@ -1906,7 +1905,7 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual(slot("imports"), 1)
 
     def test_a_stop_ends_the_second_mac_run_and_releases_its_checkout_and_admission(self):
-        command = [sys.executable, str(self.toolkit / "bin/eng"), "--project", str(self.project), "remote", "run",
+        command = [sys.executable, str(self.toolkit / "bin/qk"), "--project", str(self.project), "remote", "run",
                    "resident"]
         marker = self.checkout(0) / ".build/resident.pid"
         root = self.home / remote.ROOT
@@ -1981,7 +1980,7 @@ class RemoteTests(unittest.TestCase):
             "marker.rename('.build/linger.processes'); time.sleep(3600)"]
         settings.write_text(json.dumps(project))
         self.commit = commit_all(self.project)
-        command = [sys.executable, str(self.toolkit / "bin/eng"), "--project", str(self.project), "remote", "run",
+        command = [sys.executable, str(self.toolkit / "bin/qk"), "--project", str(self.project), "remote", "run",
                    "linger"]
         dispatcher = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         marker = self.checkout(0) / ".build/linger.processes"
@@ -1997,7 +1996,7 @@ class RemoteTests(unittest.TestCase):
             checkout = self.checkout(0).resolve()
             uid, start = os.getuid(), record["start"]
             lane_row = f"{lane} {supervisor} {uid} {start} python3 -c linger\n"
-            command = f"python3 bin/eng --project {checkout} run --here linger"
+            command = f"python3 bin/qk --project {checkout} run --here linger"
             lsof.write_text(f"p{supervisor}\nn{checkout}\n")
             ps.write_text(launchd + f"{record['pid']} 1 {uid} {start} python3 offload_host.py\n"
                           + f"{supervisor} {record['pid']} {uid} {start} {command}\n" + lane_row)
@@ -2156,7 +2155,7 @@ class RemoteTests(unittest.TestCase):
         marker = self.checkout(0) / ".build/slow.pid"
         connections = Path(self.temp.name) / "connections"
         with self.dropping(marker, FAKE_CONNECTIONS=str(connections)):
-            dispatcher = subprocess.Popen([sys.executable, str(self.toolkit / "bin/eng"), "--project", str(self.project),
+            dispatcher = subprocess.Popen([sys.executable, str(self.toolkit / "bin/qk"), "--project", str(self.project),
                                            "remote", "run", "slow"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                           preexec_fn=host_isolation.default_signals)
         lane = None
@@ -2345,7 +2344,7 @@ class RemoteTests(unittest.TestCase):
         """A resident lane running on the second Mac under a dispatcher in a process of its own, killed as a crash
         kills it unless kill is false, and the lane's PID."""
         marker = self.checkout(0) / ".build/resident.pid"
-        dispatcher = subprocess.Popen([sys.executable, str(self.toolkit / "bin/eng"), "--project", str(self.project),
+        dispatcher = subprocess.Popen([sys.executable, str(self.toolkit / "bin/qk"), "--project", str(self.project),
                                        "remote", "run", "resident"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         lane = None
         try:
@@ -2636,7 +2635,7 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual(status, 2, output + error)
         login = self.home / offload_host.KEYCHAINS / offload_host.LOGIN_KEYCHAIN
         self.assertIn(f"{kept} holds the password of {login}, which is not there", error)
-        self.assertIn("`python3 scripts/eng keychain keep-unlocked`", error)
+        self.assertIn("`python3 scripts/qk keychain keep-unlocked`", error)
         self.assertNotIn("the work ran", output)
 
     def run_here(self, *arguments):
@@ -2770,7 +2769,6 @@ class RemoteTests(unittest.TestCase):
                 status, output, _error = self.eng("remote", "passed", "gate")
                 self.assertEqual(status, 0)
                 self.assertIn(f"gate passed at {self.commit}", output)
-                self.assertTrue(release.gate_passed(self.project, self.commit).startswith("on the second Mac, "))
         # The negative control: a receipt of a run that failed counts for nothing.
         receipt["result"]["exitStatus"] = 1
         kept.write_text(json.dumps(receipt))
@@ -3024,7 +3022,7 @@ class RemoteTests(unittest.TestCase):
         run on the second Mac, and return its output once it has ended."""
         markers = [self.checkout(0) / f".build/{lane}.pid" for lane in ("napper", "dozer")]
         for marker in markers: marker.unlink(missing_ok=True)
-        command = [sys.executable, str(self.toolkit / "bin/eng"), "--project", str(self.project), "run", "stalled"]
+        command = [sys.executable, str(self.toolkit / "bin/qk"), "--project", str(self.project), "run", "stalled"]
         dispatcher = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, preexec_fn=host_isolation.default_signals)
         try:
             # A bound for a busy host, not a measure: the markers end the wait.
@@ -3147,7 +3145,7 @@ class RemoteTests(unittest.TestCase):
         once it has ended."""
         log = Path(self.temp.name) / "dispatch.log"
         with log.open("w") as output:
-            dispatcher = subprocess.Popen([sys.executable, str(self.toolkit / "bin/eng"), "--project", str(self.project),
+            dispatcher = subprocess.Popen([sys.executable, str(self.toolkit / "bin/qk"), "--project", str(self.project),
                                            "run", lane], stdout=output, stderr=subprocess.STDOUT)
         try:
             # A bound for a busy host, not a measure: the phrase ends the wait.
@@ -3243,7 +3241,7 @@ class RemoteTests(unittest.TestCase):
         with self.busy_here(), log.open("w") as output:
             try:
                 with self.busy_second_mac():
-                    dispatcher = subprocess.Popen([sys.executable, str(self.toolkit / "bin/eng"), "--project",
+                    dispatcher = subprocess.Popen([sys.executable, str(self.toolkit / "bin/qk"), "--project",
                                                    str(self.project), "run", "gate"], stdout=output, stderr=subprocess.STDOUT,
                                                   preexec_fn=host_isolation.default_signals)
                     deadline, found = time.monotonic() + stretched(120), None
@@ -4331,7 +4329,7 @@ exec {shlex.quote(real)} "$@"
                          [".gitignore", "edited.txt", "engineering.json", "new.txt", "pkg/README.md"])
 
     def test_nested_work_runs_its_lane_inside_the_admission_it_inherits(self):
-        inner = [sys.executable, str(self.toolkit / "bin/eng"), "--project", str(self.project), "run", "gate"]
+        inner = [sys.executable, str(self.toolkit / "bin/qk"), "--project", str(self.project), "run", "gate"]
         with patch.object(cli, "refresh_policy", return_value="policy"):
             self.assertEqual(self.eng("admit", "--", "/bin/sh", "-c", f"exec {shlex.join(inner)} >/dev/null 2>&1")[0], 0)
         self.assertIn(f"Ran 2 tests in {self.project.resolve()}",
@@ -4520,7 +4518,7 @@ exec {shlex.quote(real)} "$@"
         # Nested in an admission, it runs inside it, here, with --verify or without.
         for options in (["--verify"], []):
             with self.subTest(nested=options):
-                inner = [sys.executable, str(self.toolkit / "bin/eng"), "admit", *options, "--", *probe]
+                inner = [sys.executable, str(self.toolkit / "bin/qk"), "admit", *options, "--", *probe]
                 status, output, error = self.admit_in(self.project, "--here", "--", "/bin/sh", "-c",
                                                       f"exec {shlex.join(inner)} 2>/dev/null")
                 self.assertEqual(status, 0, output + error)
@@ -4576,7 +4574,7 @@ exec {shlex.quote(real)} "$@"
         for words, said in [(["/tmp/x"], f"it names /tmp/x, {outside}"),
                             (["/private/tmp/claude-501/scratchpad/run.py"],
                              f"it names /private/tmp/claude-501/scratchpad/run.py, {outside}"),
-                            ([str(self.toolkit.resolve() / "bin/eng")], f"it names {self.toolkit.resolve() / 'bin/eng'}, {outside}"),
+                            ([str(self.toolkit.resolve() / "bin/qk")], f"it names {self.toolkit.resolve() / 'bin/qk'}, {outside}"),
                             (["~/notes.txt"], "it names ~/notes.txt, under this Mac's home"),
                             (["--output=/tmp/out"], f"it names /tmp/out, {outside}"),
                             (["sh", "-c", "cat /tmp/in > out.txt"], f"it names /tmp/in, {outside}"),
@@ -4710,7 +4708,7 @@ exec {shlex.quote(real)} "$@"
     def self_lane(self, name, inner):
         """Add a self lane whose script runs `eng admit` with inner's words twice, as a build and a run of it."""
         settings = json.loads((self.project / "engineering.json").read_text())
-        admit = shlex.join([sys.executable, str(self.toolkit / "bin/eng"), "admit", *inner])
+        admit = shlex.join([sys.executable, str(self.toolkit / "bin/qk"), "admit", *inner])
         settings["lanes"][name] = {"resource": "self", "command": ["/bin/sh", "-c", f"{admit} && {admit}"]}
         (self.project / "engineering.json").write_text(json.dumps(settings))
         commit_all(self.project)
@@ -4839,7 +4837,7 @@ exec {shlex.quote(real)} "$@"
         )
         log = Path(self.temp.name) / "admit.log"
         with log.open("w") as output:
-            admitting = subprocess.Popen([sys.executable, "-c", launch, str(self.toolkit / "bin/eng"),
+            admitting = subprocess.Popen([sys.executable, "-c", launch, str(self.toolkit / "bin/qk"),
                                           "--project", str(self.project), "admit", "--", *words],
                                          cwd=directory or self.project / "pkg",
                                          stdout=output, stderr=subprocess.STDOUT,
@@ -5212,7 +5210,7 @@ exec {shlex.quote(real)} "$@"
     def test_a_stop_during_a_push_ends_it_at_once_and_runs_nothing(self):
         commit, marker = self.throttled()
         with self.relaying(FAKE_THROTTLE=str(32 << 10), FAKE_THROTTLED=str(marker)):
-            dispatcher = subprocess.Popen([sys.executable, str(self.toolkit / "bin/eng"), "--project", str(self.project),
+            dispatcher = subprocess.Popen([sys.executable, str(self.toolkit / "bin/qk"), "--project", str(self.project),
                                            "remote", "run", "check"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                           preexec_fn=host_isolation.default_signals)
             try:
@@ -6376,9 +6374,9 @@ class LeftoverCensusTests(unittest.TestCase):
         """An ios-tests lane's run in the checkout, admitted at LATER, as the second Mac runs one: eng
         simulator-tests names its devices by their kind, and CoreSimulator starts the reserved member's
         launchd_sim under launchd, with the simulator's processes below it."""
-        self.process(5000, 900, f"/usr/bin/python3 {self.checkout.parent}/vocaro-engineering/bin/eng --project "
+        self.process(5000, 900, f"/usr/bin/python3 {self.checkout.parent}/vocaro-engineering/bin/qk --project "
                      f"{self.checkout} run ios-tests", cwd=str(self.checkout), start=LATER)
-        self.process(5010, 5000, "/usr/bin/python3 scripts/eng simulator-tests --scheme Example --runtime "
+        self.process(5010, 5000, "/usr/bin/python3 scripts/qk simulator-tests --scheme Example --runtime "
                      "com.apple.CoreSimulator.SimRuntime.iOS-27-0 --device iPhone-17-Pro", cwd=str(self.checkout), start=LATER)
         devices = self.home / offload_host.DEVICES
         self.process(7000, 1, f"launchd_sim {devices}/{DEVICE}/data/var/run/launchd_bootstrap.plist", start=BOOTED)
@@ -6417,7 +6415,7 @@ class LeftoverCensusTests(unittest.TestCase):
         self.assertEqual(list(self.census()), [4242])
 
     def test_an_admitted_runs_processes_are_not_listed_until_its_admission_ends(self):
-        self.process(5000, 1, f"/usr/bin/python3 {self.checkout.parent}/vocaro-engineering/bin/eng admit -- swift build",
+        self.process(5000, 1, f"/usr/bin/python3 {self.checkout.parent}/vocaro-engineering/bin/qk admit -- swift build",
                      cwd=str(self.checkout), start=PADDED)
         self.process(5001, 5000, f"swift-build --package-path {self.checkout}", start=PADDED, written=5 << 30)
         with self.subTest("guard"):

@@ -912,7 +912,7 @@ class Admission:
         value = self._recorded()
         if value is None:
             self.refusal, self.waiting = "guard", (f"the guard {self.guard} is unreadable or not in admission's format "
-                                                   "and requires inspection; `python3 scripts/eng admissions recover` lists it")
+                                                   "and requires inspection; `python3 scripts/qk admissions recover` lists it")
             return None
         # Never reclaim a disappeared owner without a census: its children may still use a different session.
         for identity, owner in list(value["owners"].items()):
@@ -961,7 +961,7 @@ class Admission:
         described = [f"the guard entry of {str(owner.get('label') or 'an unnamed owner')[:LABEL_LIMIT]}, PID {owner['pid']}, is "
                      f"{'uncertain' if owner.get('uncertain') else 'dead'} and requires inspection ({why}), and is "
                      f"counted as {held(slots, model)}" for _identity, owner, why, slots, model in self.counted]
-        return "; ".join(described) + (f"; `python3 scripts/eng admissions recover` lists "
+        return "; ".join(described) + (f"; `python3 scripts/qk admissions recover` lists "
                                        f"{'it' if len(described) == 1 else 'them'}")
 
     def _refused_beside_stranded(self):
@@ -1950,7 +1950,7 @@ def now_lines(reading, at=None):
                                       + [f"slot {slot} (beyond the guaranteed)" for slot in holder["extra"]]) or "no slot"
                 held = f"held {duration(holder['heldSeconds'])}" if holder.get("heldSeconds") is not None else "held for an unknown time"
                 status = ("; stranded: its process has ended, and admission counts it until it is recovered "
-                          "(`python3 scripts/eng admissions recover`)" if holder.get("stranded") and holder["process"] == "ended"
+                          "(`python3 scripts/qk admissions recover`)" if holder.get("stranded") and holder["process"] == "ended"
                           else "; stranded: uncertain, counted until recovered" if holder.get("stranded")
                           else "; its process could not be checked" if holder["process"] == "unknown" else "")
                 lines.append(f"    {holder['label']}: {kind}, {where}, PID {holder['pid']}, {held}{status}")
@@ -2004,7 +2004,7 @@ def now_main(argv=None, out=print, read=None):
 
 
 # What recovery tells a person to do about an entry it leaves.
-BY_HAND = ("check by hand that nothing its owner started still runs, then remove its entry with `python3 scripts/eng "
+BY_HAND = ("check by hand that nothing its owner started still runs, then remove its entry with `python3 scripts/qk "
            "admissions remove OWNER --why TEXT` (guides/shared-host.md, Lock reclamation)")
 # Why recovery leaves an entry it cannot prove finished, as reclaim says it: the entries `eng admissions remove` may
 # remove once a person has checked them, unlike one whose owner or a process it names still runs.
@@ -2200,7 +2200,7 @@ def recover(owner=None, out=print):
                              "uncertain, and its owner has ended" if entry.get("uncertain") else "its owner has ended")
                 out(f"  {identity} {shown(entry)}: PID {entry['pid']}, {entry_age(entry)}, {condition}; "
                     f"{'a' if recorded(identity) else 'no'} process record")
-            out("Recover one with `python3 scripts/eng admissions recover OWNER`, OWNER its PID or identity.")
+            out("Recover one with `python3 scripts/qk admissions recover OWNER`, OWNER its PID or identity.")
             return 0
         identity = named(guard, owners, owner, out)
         if identity is None:

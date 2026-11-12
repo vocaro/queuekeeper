@@ -103,7 +103,7 @@ def last_used(device, directory, now):
 
 def prune_command(pool, udid):
     """Pruning reserves the member, checks it again and records the deletion (guides/simulator-testing.md)."""
-    return ["python3", str(TOOLKIT_ROOT / "bin/eng"), "simulator-pool", "--pool", pool, "--owner", "eng disk",
+    return ["python3", str(TOOLKIT_ROOT / "bin/qk"), "simulator-pool", "--pool", pool, "--owner", "eng disk",
             "prune", udid]
 
 

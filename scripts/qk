@@ -1,0 +1,10 @@
+#!/usr/bin/env python3
+"""Queuekeeper's own launcher: it runs this checkout's code on this checkout as the project."""
+from pathlib import Path
+import sys
+
+root = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(root / "src/python"))
+from queuekeeper.cli import main
+
+raise SystemExit(main(["--project", str(root), *sys.argv[1:]]))

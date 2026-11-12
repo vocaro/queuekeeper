@@ -300,10 +300,10 @@ class RecoverTests(unittest.TestCase):
         self.assertEqual((asked, checked, read_here), ([("build-host", {"keychain": keychain.DEFAULT})], 1, 0))
         for words in [f"This Mac: {WORKSTATION}", f"Target: {SECOND}", f"Keychain: {LOGIN}, present on {SECOND}",
                       f"On {WORKSTATION}, this Mac:", f"On {SECOND}:", "ssh -t build-host",
-                      shlex.join(["python3", "scripts/eng", "remote", "admit", "--", "python3", "scripts/eng", "keychain",
+                      shlex.join(["python3", "scripts/qk", "remote", "admit", "--", "python3", "scripts/qk", "keychain",
                                   "check", "--keychain", LOGIN, "--identity", NAME]),
                       # An unlock in a Terminal does not reach a run, so it says what does.
-                      "never an eng remote run", "`python3 scripts/eng keychain keep-unlocked`"]:
+                      "never an eng remote run", "`python3 scripts/qk keychain keep-unlocked`"]:
             self.assertIn(words, said)
 
     def test_on_the_second_mac_it_gives_the_local_command_and_never_the_alias(self):
@@ -531,7 +531,7 @@ class KeepUnlockedTests(unittest.TestCase):
             with self.subTest(said), self.assertRaises(offload_host.Refusal) as refused:
                 offload_host.unlock_for_run(self.root, unlock)
             self.assertIn(said, str(refused.exception))
-            self.assertIn("`python3 scripts/eng keychain keep-unlocked`", refused.exception.fix)
+            self.assertIn("`python3 scripts/qk keychain keep-unlocked`", refused.exception.fix)
             self.assertFalse(refused.exception.busy)
         self.login.unlink()
         unlock = Unlocks()
@@ -635,7 +635,7 @@ class KeepUnlockedTests(unittest.TestCase):
         script = shlex.split(shlex.split(command[-1])[-1])
         self.assertEqual(script[:2], ["python3", "-c"])
         self.assertEqual(json.loads(script[-1]), {"keepUnlocked": {"root": remote.ROOT, "mac": SECOND}})
-        self.assertIn(shlex.join(["python3", "scripts/eng", "remote", "admit", "--", "python3", "scripts/eng", "keychain",
+        self.assertIn(shlex.join(["python3", "scripts/qk", "remote", "admit", "--", "python3", "scripts/qk", "keychain",
                                   "check", "--keychain", LOGIN, "--identity", NAME]), said)
         # When the second Mac's half did not keep it, nothing more is said.
         status, said, *_ = self.from_mac(WORKSTATION, WORKSTATION_VIEW, answer=present, interacted=1)

@@ -706,7 +706,7 @@ def unlock_for_run(root, unlock=security_unlock):
     kept = root / KEYCHAIN_PASSWORD
     if not kept.is_file(): return None
     path = Path.home() / KEYCHAINS / LOGIN_KEYCHAIN
-    fix = (f"on the Mac that sends work here, run `python3 scripts/eng keychain keep-unlocked` and type this Mac's "
+    fix = (f"on the Mac that sends work here, run `python3 scripts/qk keychain keep-unlocked` and type this Mac's "
            f"login password at its prompt, or delete {kept} to send work without the unlock "
            "(guides/shared-host.md, Keychains on the right Mac)")
     if not path.is_file(): raise Refusal(f"{kept} holds the password of {path}, which is not there", fix)
@@ -3814,7 +3814,7 @@ def main(plan):
         # Where the work comes from on the sending Mac, which this Mac's admissions name (resources.ORIGIN).
         if isinstance(plan.get("origin"), dict): environment["VOCARO_ADMISSION_ORIGIN"] = json.dumps(plan["origin"])
         if (root / "git-credentials").is_file(): credentials(environment, root / "git-credentials")
-        eng = [sys.executable, str(kit / "bin/eng"), "--project", str(checkout)]
+        eng = [sys.executable, str(kit / "bin/qk"), "--project", str(checkout)]
         # The provision lane is admitted here as every lane is, and runs here, never offered on. Offered work that
         # declines when it cannot start now has it decline too, rather than wait for a slot with the checkout held.
         provision = [*eng, "run", "--here", *(["--if-free"] if plan.get("decline") else []), "provision"]

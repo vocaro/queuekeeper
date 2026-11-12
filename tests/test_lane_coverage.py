@@ -54,7 +54,7 @@ class Answers(Project):
     def test_a_test_no_lane_selects_is_named_once_every_lane_was_read(self):
         self.package()
         self.write("Examples/Host/UITests/Stale.swift", XCTEST.format(name="Stale"))
-        result = self.report({"tests": lane("swift", "test"), "docs": lane("python3", "scripts/eng", "docs", "check")})
+        result = self.report({"tests": lane("swift", "test"), "docs": lane("python3", "scripts/qk", "docs", "check")})
         self.assertEqual(result["result"], TESTS_WITHOUT_A_LANE)
         self.assertEqual(result["noLane"], ["Examples/Host/UITests/Stale.swift: Stale"])
         self.assertEqual(result["undetermined"], {})
@@ -180,7 +180,7 @@ class Reading(Project):
 
     def test_eng_xctest_reads_as_swift_test_does(self):
         self.package()
-        self.assertEqual(self.selected("python3", "scripts/eng", "xctest", "--jobs", "6")["result"], EVERY_TEST_HAS_A_LANE)
+        self.assertEqual(self.selected("python3", "scripts/qk", "xctest", "--jobs", "6")["result"], EVERY_TEST_HAS_A_LANE)
 
     def test_a_filter_selects_the_classes_it_matches_and_skip_removes_them(self):
         self.package()
@@ -217,7 +217,7 @@ class Reading(Project):
 
     def test_eng_simulator_tests_reads_its_named_classes_as_xcodebuild_does(self):
         self.write("App/AUITests/Flow.swift", XCTEST.format(name="Flow"))
-        run = ("python3", "scripts/eng", "simulator-tests", "--scheme", "P", "--device", "iPhone-17-Pro", "--")
+        run = ("python3", "scripts/qk", "simulator-tests", "--scheme", "P", "--device", "iPhone-17-Pro", "--")
         self.assertEqual(self.selected(*run, "-only-testing:AUITests/Flow")["result"], EVERY_TEST_HAS_A_LANE)
         self.assertEqual(self.selected(*run, "-only-testing:AUITests/Elsewhere")["result"], TESTS_WITHOUT_A_LANE)
         # Negative controls: what a scheme holds, a whole target and a skip are not spelled out class by class.
@@ -228,7 +228,7 @@ class Reading(Project):
     def test_commands_that_run_no_test_select_none_and_are_read(self):
         self.write("App/AUITests/Flow.swift", XCTEST.format(name="Flow"))
         for command in (["xcodebuild", "build", "-scheme", "A"], ["swift", "build"], ["swift", "run", "Tool"],
-                        ["python3", "scripts/eng", "spelling"], ["python3", "scripts/eng", "run", "--serial", "group"]):
+                        ["python3", "scripts/qk", "spelling"], ["python3", "scripts/qk", "run", "--serial", "group"]):
             with self.subTest(command):
                 self.assertEqual(self.selected(*command)["result"], TESTS_WITHOUT_A_LANE)
 
@@ -243,12 +243,12 @@ class Reading(Project):
     def test_unittest_selects_by_start_directory_and_pattern(self):
         self.python()
         self.write("tools/test_b.py", "def test_y(): pass\n")
-        for command in (["python3", "scripts/eng", "unittest", "-s", "tests", "--split", "test", "-v"],
-                        ["python3", "scripts/eng", "unittest", "-s", "tests", "--split", "class", "--batch-size", "4"],
+        for command in (["python3", "scripts/qk", "unittest", "-s", "tests", "--split", "test", "-v"],
+                        ["python3", "scripts/qk", "unittest", "-s", "tests", "--split", "class", "--batch-size", "4"],
                         ["python3", "-B", "-m", "unittest", "discover", "-s", "tests", "-v"]):
             with self.subTest(command):
                 self.assertEqual(self.selected(*command)["noLane"], ["tools/test_b.py: tools.test_b"])
-        self.assertEqual(self.selected("python3", "scripts/eng", "unittest", "-s", "tests", "-p", "other*.py")["withLane"], 0)
+        self.assertEqual(self.selected("python3", "scripts/qk", "unittest", "-s", "tests", "-p", "other*.py")["withLane"], 0)
 
     def test_unittest_discovery_does_not_reach_a_folder_that_is_no_package(self):
         self.python()
@@ -261,12 +261,12 @@ class Reading(Project):
     def test_eng_unittest_names_select_their_module(self):
         self.python()
         self.write("tests/test_b.py", "def test_y(): pass\n")
-        result = self.selected("python3", "scripts/eng", "unittest", "-s", "tests", "test_a.T")
+        result = self.selected("python3", "scripts/qk", "unittest", "-s", "tests", "test_a.T")
         self.assertEqual(result["noLane"], ["tests/test_b.py: tests.test_b"])
 
     def test_a_name_pattern_cannot_be_read(self):
         self.python()
-        self.assertEqual(self.selected("python3", "scripts/eng", "unittest", "-s", "tests", "-k", "x")["result"], COULD_NOT_TELL)
+        self.assertEqual(self.selected("python3", "scripts/qk", "unittest", "-s", "tests", "-k", "x")["result"], COULD_NOT_TELL)
 
     def test_a_python_file_named_for_tests_that_holds_none_is_no_test(self):
         self.write("tests/testing_support.py", "def helper(): pass\n")

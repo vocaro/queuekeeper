@@ -8,6 +8,7 @@ group fails when any lane failed, and is otherwise unmeasured when any lane was.
 import argparse
 import ast
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 import fnmatch
 import glob
 import json
@@ -475,11 +476,32 @@ def unittest_main(argv):
     return 1 if failed else lane_results.UNMEASURED if unmeasured else 0
 
 
+# Where a failed run's whole output is kept, below the directory it ran in, and how many runs' stay.
+FAILED_RUNS = ".build/engineering/unittest-failed"
+KEPT_FAILED_RUNS = 5
+
+
+def keep_output(root, lines, reasons, now=None):
+    """Keep lines, the whole output of a failed run, in a folder of its own under root's FAILED_RUNS, with its
+    failed tests and why in failures.txt, and remove all but the newest KEPT_FAILED_RUNS; return the path of its
+    log. A run in the same second has its own process's folder. reasons is [(failed test, why)]. Raises OSError
+    when it could not be written."""
+    now = now or datetime.now(timezone.utc)
+    kept = Path(root) / FAILED_RUNS
+    directory = kept / f"{now.strftime('%Y%m%dT%H%M%SZ')}-{os.getpid()}"
+    directory.mkdir(parents=True, exist_ok=False)
+    log = directory / "test.log"
+    log.write_text("\n".join(lines) + "\n")
+    (directory / "failures.txt").write_text("".join(f"Failed: {test}\n    {why}\n" for test, why in reasons))
+    for old in sorted(path for path in kept.iterdir() if path.is_dir())[:-KEPT_FAILED_RUNS]:
+        shutil.rmtree(old, ignore_errors=True)
+    return log
+
+
 def saved_output(report, reasons):
-    """Keep report, a failed run's lines, as a failure record of the directory eng runs in, which the record's rule
-    prunes, and return words saying where it is, or why it is not: either way the run's result stands."""
-    from . import failure_records  # failure_records imports this module
-    try: return f"the whole output is in {failure_records.keep_output(Path.cwd(), 'unittest', report, reasons)}"
+    """Keep report, a failed run's lines, below the directory the run started in (keep_output), and return words
+    saying where it is, or why it is not: either way the run's result stands."""
+    try: return f"the whole output is in {keep_output(Path.cwd(), report, reasons)}"
     except (OSError, ValueError) as error: return f"the whole output was not saved: {error}"
 
 

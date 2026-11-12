@@ -1,7 +1,6 @@
-"""Shared engineering entry point. Initialization never starts a build or hosted job."""
+"""Queuekeeper's command: a merge queue and build farm for one developer's agents, on that developer's own Macs."""
 import argparse
 import contextlib
-import importlib.util
 import json
 import os
 from pathlib import Path
@@ -11,143 +10,28 @@ import subprocess
 import sys
 import time
 
-from . import __version__, app_builds, app_registrations, budgets, checkpoint, crash_alerts, device_pass, devices, disk, docs, evidence, evidence_offload, failure_records, foreground, github_artifacts, keychain, lane_coverage, lane_report, lane_wait, merge_queue, run_results, \
-    notification_center, offload_host, parallel, processes, release, remote, resources, setup, skills, spelling, stale_modules, storekit_config, toolkit_copy, xctest_shards
-from .config import TOOLKIT_ROOT, CAPABILITIES, DEFAULT_TOOLKIT, admission as admission_of, lane_to_run, load, source_identity, \
+from . import __version__, budgets, disk, extensions, git_state, lane_coverage, lane_report, lane_results, lane_wait, merge_queue, offload_host, \
+    parallel, processes, remote, resources, shims, spelling
+from .apple import app_builds, app_registrations, crash_alerts, device_pass, devices, foreground, keychain, notification_center, \
+    run_results, xctest_shards
+from .apple.simulators import matrix, pool as simulator_pool
+from .config import TOOLKIT_ROOT, admission as admission_of, lane_to_run, load, source_identity, \
     display_lane_warnings, lane_devices, self_lane_warnings, stays, unadmitted, unlocked_screen
 from .resources import BUSY, FREE_WAIT
-from . import project as project_support
-from .simulators import matrix, pool as simulator_pool
 
-
-def project_adapter(toolkit):
-    """The toolkit's project adapter, integrations/shared.py, which init installs as
-    scripts/_engineering.py and the launcher imports."""
-    spec = importlib.util.spec_from_file_location("_engineering", toolkit / "integrations/shared.py")
-    adapter = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(adapter)
-    return adapter
-
-
-def named_checkout(toolkit):
-    """The toolkit checkout a new project names: the main checkout when toolkit is a linked
-    worktree, such as a session's, which is removed with its session. The project adapter's
-    main_checkout finds it, as the launcher does."""
-    main = project_adapter(toolkit).main_checkout(toolkit)
-    return main if main and (main / "src/python/vocaro_engineering").is_dir() else toolkit
-
-
-# Where pinned model weights and other verified downloads live, outside every checkout and outside
-# /private/tmp, which a reboot empties (guides/shared-host.md, Scratch and result directories).
-MODEL_STORAGE = "~/Development/models"
-# Commands that start a background retry of evidence offloads that found the second Mac unreachable.
-OFFLOAD_RETRIES = {"run", "admit", "remote", "land", "queue", "disk"}
-# A path under /tmp or /private/tmp, and the variable it is assigned to when that variable names a model.
-TEMPORARY_PATH = re.compile(r"(\b[A-Z][A-Z0-9_]*MODEL[A-Z0-9_]*=)?(?<![\w.~/-])((?:/private)?/tmp/[^\s`'\"<>()\[\]{},;|]+)")
-MODEL_WORDS = re.compile(r"(?<![a-z])(?:models|weights)(?![a-z])", re.IGNORECASE)
-
-
-def temporary_model_storage(root, config):
-    """A warning when the project's tracked Markdown keeps model storage under /tmp or /private/tmp:
-    a path there that names models or weights, or that a MODEL variable is set to. A reboot empties
-    /private/tmp, and every model kept there with it. Records under a measurements or evidence
-    folder keep the paths their runs used, so they are not read."""
-    try:
-        listed = subprocess.run(["git", "-C", str(root), "ls-files", "-z", "--", *(f"*{s}" for s in sorted(docs.MARKDOWN))],
-                                capture_output=True, text=True, timeout=60, check=True).stdout
-    except (OSError, subprocess.SubprocessError):
-        return []
-    places = []
-    for relative in sorted(filter(None, listed.split("\0"))):
-        if disk.EVIDENCE_NAMES & set(Path(relative).parts[:-1]): continue
-        try: text = (root / relative).read_text(errors="replace")
-        except OSError: continue
-        paths, lines = {}, []
-        for number, line in enumerate(text.splitlines(), 1):
-            for match in TEMPORARY_PATH.finditer(line):
-                path = match.group(2).rstrip(".:")
-                if match.group(1) or MODEL_WORDS.search(path):
-                    paths[path] = None
-                    if number not in lines: lines.append(number)
-        if paths:
-            places.append(f"{relative} (line{'s' if len(lines) > 1 else ''} {', '.join(map(str, lines))}: "
-                          f"{', '.join(paths)})")
-    if not places: return []
-    return [f"{'; '.join(places)} name{'s' if len(places) == 1 else ''} model storage under /tmp, which a reboot "
-            "empties: every model there is gone after a restart and must be downloaded and verified again. Keep "
-            f"pinned models and other verified downloads in {MODEL_STORAGE}/{config['name']}/ "
-            "(guides/shared-host.md, Scratch and result directories)"]
-
-
-# The Swift manifests that can name a toolkit package by a path relative to themselves.
-MANIFESTS = ("Package.swift", "project.yml", "project.pbxproj")
-
-
-def unlinked_packages(root, config):
-    """Warnings for toolkit packages that the project's tracked Swift manifests name by a relative
-    path that does not resolve from this checkout, as from a linked worktree with no toolkit beside
-    it. The launcher falls back to the main checkout's sibling; Xcode and SwiftPM do not."""
-    name = re.escape(Path(config.get("toolkit", {}).get("path", DEFAULT_TOOLKIT)).name)
-    try:
-        listed = subprocess.run(["git", "-C", str(root), "ls-files", "-z", "--", *(f"*{m}" for m in MANIFESTS)],
-                                capture_output=True, text=True, timeout=60, check=True).stdout
-    except (OSError, subprocess.SubprocessError):
-        return []
-    links = {}
-    for relative in filter(None, listed.split("\0")):
-        manifest = root / relative
-        if manifest.name not in MANIFESTS: continue
-        # An Xcode project's paths are relative to the folder that holds the .xcodeproj.
-        base = manifest.parent.parent if manifest.name == "project.pbxproj" else manifest.parent
-        try: text = manifest.read_text(errors="replace")
-        except OSError: continue
-        for match in re.finditer(rf"((?:\.\./)+{name})/src/swift/[\w.-]+", text):
-            if not (base / match.group(0)).exists():
-                links.setdefault(Path(os.path.normpath(base / match.group(1))), set()).add(relative)
-    return [f"{', '.join(sorted(manifests))} name{'s' if len(manifests) == 1 else ''} toolkit packages under {link}, "
-            "which does not exist from this checkout: link the toolkit there with "
-            f"`ln -s {named_checkout(TOOLKIT_ROOT)} {link}` (guides/adoption.md)"
-            for link, manifests in sorted(links.items())]
-
-
-# The files init copies into a project, by the toolkit file each one copies.
-COPIES = {"scripts/eng": "integrations/eng.py", "scripts/_engineering.py": "integrations/shared.py"}
-
-
-def stale_copies(root):
-    """Warnings for a project's launcher and adapter that differ from this toolkit's. The
-    toolkit's own checkout, which has integrations/, keeps a launcher of its own."""
-    if (root / "integrations/shared.py").is_file():
-        return []
-    # Either checkout may be the one behind; copying from a toolkit behind its origin installs an older file.
-    return [f"{copy} differs from the toolkit's {source}: pull whichever checkout is behind its origin, and if "
-            f"they still differ, replace it with `cp {TOOLKIT_ROOT / source} {root / copy}` (guides/adoption.md)"
-            for copy, source in COPIES.items()
-            if (root / copy).is_file() and (root / copy).read_bytes() != (TOOLKIT_ROOT / source).read_bytes()]
+# The extensions every project gets, until a project's configuration names its own.
+EXTENSIONS = ("queuekeeper.apple",)
+# The commands that reach the hosts, before each of which extensions.HOST_COMMAND runs.
+HOST_COMMANDS = {"run", "admit", "remote", "land", "queue", "disk"}
 
 
 def fix_hosts(root, hosts):
-    """What `eng doctor` fixes of remote.compare_hosts' report itself, the owner's no longer (the owner's
-    decision, 2026-11-03): runtimes that differ, which it evens out (remote.match_runtimes) and then
-    compares again, and stale pool simulators on both Macs, which it shuts down (simulators.pool.reap_reports)
-    and lists in reaped, and Xcode's default simulators on this Mac, which it deletes as `eng disk --delete`
-    does, checking each again first, and lists in deletedDefaults, and the second Mac's own toolkit checkout,
+    """What `doctor` fixes of remote.compare_hosts' report itself, the owner's no longer (the owner's decision,
+    2026-11-03): what each extension fixes (extensions.HOST_FIXES), and the second Mac's own toolkit checkout,
     which it fast-forwards to origin/main when it can and reports in toolkitCheckout, an error when it cannot
-    (remote.update_there, vocaro-engineering#203). Its progress goes to standard error, so
-    that standard output stays the report. tests/host_isolation.py replaces it, so that no test changes
+    (remote.update_there, vocaro-engineering#203). tests/host_isolation.py replaces it, so that no test changes
     either Mac."""
-    if hosts.pop("runtimesDiffer", False):
-        with contextlib.redirect_stdout(sys.stderr): remote.match_runtimes(hosts["host"], check=False)
-        hosts = remote.compare_hosts()
-        hosts.pop("runtimesDiffer", None)
-    # The second Mac only when it answered the comparison: one away is no error, and is not waited for.
-    # A diagnostic stops no leftover process: it lists those reap would stop (vocaro-engineering#353).
-    reaped = simulator_pool.reap_reports(None, root, dry_run=False, here="remote" not in hosts, stop_leftovers=False)
-    # With each held entry whose process is gone that reap could not release, and why, so that no leftover
-    # waits unseen behind an empty leftovers (vocaro-engineering#156).
-    hosts["reaped"] = [line for where, report in reaped
-                       for line in remote.reap_lines(where, report, listing=False, held=True)]
-    hosts["deletedDefaults"] = delete_defaults()
+    for fix in extensions.HOST_FIXES: hosts = fix(root, hosts)
     # The second Mac's own toolkit checkout, which it fast-forwards to origin/main when it can; one it must
     # leave as it is is an error, the owner's to decide (vocaro-engineering#203).
     if "remote" in hosts:
@@ -163,136 +47,6 @@ def fix_hosts(root, hosts):
     return hosts
 
 
-def delete_defaults(run=subprocess.run):
-    """Delete Xcode's default simulators on this Mac that `eng disk` finds deletable, each checked again
-    first and recorded in its ledger, and return what was said of each."""
-    def defaults():
-        found = disk.Host.current(0, None, run)
-        return found, [item for item in disk.inventory(found, disk.Sizes(run, False), ["simulator"])
-                       if item.status == disk.CANDIDATE and item.reason.startswith("Xcode's default device")]
-    try:
-        host, items = defaults()
-        if not items: return []
-        said = []
-        disk.delete(items, lambda category: defaults()[1], disk.ledger_path(host.home), out=said.append, run=run)
-        return said
-    except (OSError, RuntimeError, subprocess.SubprocessError, ValueError) as error:
-        return [f"could not delete Xcode's default simulators: {type(error).__name__}: {error}"]
-
-
-def default_simulators(config):
-    """A warning when Xcode's default simulators exist on this Mac and the project uses simulators.
-
-    A script or Xcode run that picks a device by name, or `booted`, finds one of them instead of a
-    pool member and fills it with the project's apps (vocaro-engineering#91). Xcode makes them again
-    when it installs a runtime. `eng doctor` deletes each one first (fix_hosts), so this names only
-    those still there: booted, in use or named by a process."""
-    if not any(capability.startswith("simulator") for capability in config.get("capabilities", [])):
-        return []
-    try:
-        result = simulator_pool.simctl("list", "devices", "-j", timeout=120)
-        found = simulator_pool.listed_defaults(json.loads(result.stdout)) if result.returncode == 0 else []
-    except (OSError, subprocess.SubprocessError, ValueError, AttributeError):
-        return []
-    if not found:
-        return []
-    shown = ", ".join(found[:5]) + (f" and {len(found) - 5} more" if len(found) > 5 else "")
-    return [f"{len(found)} of Xcode's default simulators exist on this Mac: {shown}. A script or Xcode run that "
-            "picks a device by name or `booted` installs on one instead of a pool member; `eng doctor` deletes each "
-            "one that is shut down and unused, and `eng disk` says why it kept these (guides/simulator-testing.md, "
-            "Reserved simulator pool)"]
-
-
-def initialize(root, args):
-    root.mkdir(parents=True, exist_ok=True)
-    config_path = root / "engineering.json"
-    if config_path.exists(): load(root)
-    if not config_path.exists():
-        name = args.name or root.name
-        # A pool's members are named after it, as `NAME iPhone 17 Pro 1`.
-        pool = {"simulatorPool": name} if "simulator-pool" in args.capability else {}
-        # The launcher tries toolkit.path beside the checkout it runs in, then beside the main
-        # checkout, so a path relative to the main checkout resolves from every worktree of it.
-        base = project_adapter(TOOLKIT_ROOT).main_checkout(root) or root
-        config_path.write_text(json.dumps({"schemaVersion": 1, "name": name,
-            "toolkit": {"path": os.path.relpath(named_checkout(TOOLKIT_ROOT), base)}, "integration": "direct-main",
-            "capabilities": args.capability, **pool, "lanes": {}, "exceptions": []}, indent=2) + "\n")
-    ignored = root / ".gitignore"
-    if not ignored.exists():
-        ignored.write_text(".build/\n__pycache__/\n*.pyc\n")
-    scripts = root / "scripts"
-    scripts.mkdir(exist_ok=True)
-    launcher = scripts / "eng"
-    if not launcher.exists():
-        shutil.copyfile(TOOLKIT_ROOT / "integrations/eng.py", launcher)
-        launcher.chmod(0o755)
-    # The launcher finds the toolkit through this adapter, also from a linked worktree.
-    adapter = scripts / "_engineering.py"
-    if not adapter.exists():
-        shutil.copyfile(TOOLKIT_ROOT / "integrations/shared.py", adapter)
-    agents = root / "AGENTS.md"
-    if not agents.exists():
-        agents.write_text("# Contributor instructions\n\n" + (TOOLKIT_ROOT / SHARED_GUIDANCE).read_text() + "\n"
-                          + "".join(f"{line}\n" for line in claude_imports(load(root)))
-                          + "\nRecord project-specific product rules and justified exceptions here.\n")
-    # Claude Code loads an imported AGENTS.md at session start, and the imports in it; it may not follow a link.
-    bridge = root / "CLAUDE.md"
-    if not bridge.exists(): bridge.write_text(f"{CLAUDE_ENTRY}\n")
-    load(root)
-    print(f"Initialized {root}; existing instructions and commands were preserved")
-
-
-# The pointer every direct-main project's AGENTS.md holds word for word. The rules stay in the
-# toolkit: AGENTS.md imports them for Claude Code, and the pointer sends any other agent to eng instructions.
-SHARED_GUIDANCE = "agents/shared-guidance.md"
-# A project's CLAUDE.md holds this line alone, beside any comment lines (owner's decision, 2026-11-01).
-CLAUDE_ENTRY = "@AGENTS.md"
-# The toolkit's main checkout, under the home path both Macs share, which AGENTS.md imports from.
-SHARED_TOOLKIT = "~/Development/vocaro-engineering"
-
-
-def claude_imports(config):
-    """The lines a project's AGENTS.md imports: the common rules and each enabled capability's.
-    Claude Code follows them through CLAUDE.md's import of AGENTS.md, so every Claude Code agent, a
-    subagent included, has them without running eng instructions; other agents read them as text
-    beside the pointer. The toolkit is named at SHARED_TOOLKIT, under the home folder both Macs share,
-    because a path relative to the project does not reach it from a worktree under .claude/worktrees.
-    It is never the checkout running eng: a queue gate on the second Mac runs from a toolkit checkout
-    of its own, which no project names (#106)."""
-    return [f"@{SHARED_TOOLKIT}/agents/core.md",
-            *(f"@{SHARED_TOOLKIT}/agents/capabilities/{name}.md" for name in config.get("capabilities", []))]
-
-
-def claude_entry_lines(text):
-    """CLAUDE.md's lines other than blank lines and HTML comments, which may span lines."""
-    return [line.strip() for line in re.sub(r"<!--.*?-->", "", text, flags=re.S).splitlines() if line.strip()]
-
-
-def agent_entry(root, config):
-    """Problems with a direct-main project's AGENTS.md and CLAUDE.md: the shared section copied
-    other than word for word, an import of the common rules missing from AGENTS.md, or a CLAUDE.md
-    that holds more than `@AGENTS.md`. The toolkit's own checkout, which has integrations/, keeps
-    instructions of its own."""
-    if (root / "integrations/shared.py").is_file() or config.get("integration", "direct-main") != "direct-main":
-        return []
-    problems = []
-    agents = root / "AGENTS.md"
-    text = agents.read_text() if agents.is_file() else ""
-    if (TOOLKIT_ROOT / SHARED_GUIDANCE).read_text() not in text:
-        problems.append(f"AGENTS.md does not hold the toolkit's {SHARED_GUIDANCE} word for word: put that section "
-                        "in place of its own, and keep this project's rules after it (guides/adoption.md)")
-    lines = text.splitlines()
-    missing = [line for line in claude_imports(config) if line not in lines]
-    if missing:
-        problems.append(f"AGENTS.md does not import {', '.join(missing)}: add each on a line of its own after the "
-                        "shared section (guides/adoption.md)")
-    claude = root / "CLAUDE.md"
-    if claude_entry_lines(claude.read_text() if claude.is_file() else "") != [CLAUDE_ENTRY]:
-        problems.append(f"CLAUDE.md does not hold {CLAUDE_ENTRY} alone: make it that line, keeping any comment "
-                        "lines, and move any other import into AGENTS.md (guides/adoption.md)")
-    return problems
-
-
 def split_warnings(root, config):
     """The gate over its budget and main past its release commit limit, as eng land warns after its result,
     in a project with a Git repository (budgets.py)."""
@@ -305,75 +59,10 @@ def split_warnings(root, config):
     return budgets.landing_warnings(root, config, budgets.entries(Path(common.stdout.strip()) / "eng-queue/entries"))
 
 
-def behind_main(root):
-    """How many commits of origin/main, as last fetched, the checkout at root lacks. It never fetches."""
-    try:
-        count = subprocess.run(["git", "-C", str(root), "rev-list", "--count", "HEAD..refs/remotes/origin/main"],
-                               capture_output=True, text=True, timeout=30)
-    except (OSError, subprocess.SubprocessError):
-        return 0
-    return int(count.stdout) if count.returncode == 0 else 0
-
-
-# The start of the last line eng instructions prints, which its first line tells the reader to look for.
-INSTRUCTIONS_END = "End of instructions"
-
-
-def instructions(config):
-    """Print the common rules, the enabled capabilities and the project's exceptions, between a first line that gives
-    their length and a last line that says they ended. A cut read loses the last line, and only the first line, which
-    every read keeps, can say that line should be there: `| head -150` once lost most of core.md unnoticed (#294)."""
-    parts = []
-    behind = behind_main(TOOLKIT_ROOT)
-    if behind:
-        parts.append(f"Note: the toolkit checkout {TOOLKIT_ROOT} lacks {behind} commit(s) of origin/main as last fetched, "
-                     f"so these rules may be out of date. Print the current ones with `git -C {TOOLKIT_ROOT} show "
-                     "origin/main:agents/core.md`, or update the checkout (guides/adoption.md, Updating and rolling back).\n")
-    parts.append((TOOLKIT_ROOT / "agents/core.md").read_text())
-    for capability in config.get("capabilities", []):
-        parts.append((TOOLKIT_ROOT / "agents/capabilities" / f"{capability}.md").read_text())
-    for exception in config.get("exceptions", []):
-        parts.append(f"Project exception — {exception['rule']}: {exception['reason']}")
-    body = "".join(f"{part}\n" for part in parts)
-    # The first line, the blank line after it and the last line, beside the body's own.
-    lines, size = body.count("\n") + 3, round(len(body.encode()) / 1024)
-    print(f'Read all of this: {lines} lines, about {size} KB, and the last line starts "{INSTRUCTIONS_END}". Without '
-          "that line you were shown only part, and the rest still applies: write the output to a file and read every "
-          f"part.\n\n{body}{INSTRUCTIONS_END}: {lines} lines, about {size} KB.")
-
-
-class PolicyUnavailable(RuntimeError):
-    """The toolkit's main could not be fetched, which says nothing of the work: unmeasured, not failed."""
-
-
-# The tries of the policy's fetch, and the seconds between them. Runs that start together fetch into one toolkit
-# checkout, as a bisect's two halves do (merge_queue.Beside): when main has moved, all but one of them fail to lock
-# origin/main, which the first has already moved, and a second try finds it current (vocaro-engineering#249).
-POLICY_TRIES, POLICY_RETRY_SECONDS = 3, 0.5
-
-
 def refresh_policy(root, stream=None):
-    for tried in range(1, POLICY_TRIES + 1):
-        try:
-            subprocess.run(["git", "-C", str(TOOLKIT_ROOT), "fetch", "origin",
-                            "refs/heads/main:refs/remotes/origin/main"], check=True, timeout=120)
-            break
-        except subprocess.CalledProcessError as error:
-            if tried == POLICY_TRIES:
-                tries = f" in {tried} tries" if tried > 1 else ""
-                raise PolicyUnavailable(f"the current policy could not be fetched{tries}, so nothing ran: "
-                                        f"{error}") from error
-            print(f"eng: the policy's fetch exited {error.returncode}, perhaps beside another run's fetch: trying "
-                  f"again ({tried + 1} of {POLICY_TRIES})", file=sys.stderr, flush=True)
-            time.sleep(POLICY_RETRY_SECONDS)
-        except subprocess.SubprocessError as error:
-            # A fetch that ran out of time is not retried, so that an unreachable origin costs one wait, not three.
-            raise PolicyUnavailable(f"the current policy could not be fetched, so nothing ran: {error}") from error
-    commit = subprocess.check_output(["git", "-C", str(TOOLKIT_ROOT), "rev-parse", "origin/main"], text=True).strip()
-    text = subprocess.check_output(["git", "-C", str(TOOLKIT_ROOT), "show", f"{commit}:policies/shared-host.md"], text=True)
-    # Flushed now, or a redirected stdout holds it until eng exits, after all the work's output (#274).
-    print(f"Policy source: {commit}\n\n{text}", file=stream, flush=True)
-    return commit
+    """What the project's policy reader read before a run, for its receipt, or None when none is registered
+    (extensions.POLICY)."""
+    return extensions.policy(root, stream)
 
 
 def record(directory, receipt, work):
@@ -399,7 +88,7 @@ def compile_failed(receipt):
 
 def compile_first(lane, root, directory, receipt, limit, env, on_stop, kill_after):
     """A lane's "compileFirst" command, run inside the lane's one admission and environment, so that its xcodebuild or
-    swift has the stale-module rebuild the lane's own has (stale_modules.py). Returns (status, seconds left): the
+    swift has the stale-module rebuild the lane's own has (shims.py). Returns (status, seconds left): the
     status of a failed build with None, its output staying in run.log, or None with what remains of limit for the
     lane's command, which shares the lane's one timeout. The step's output moves to compile.log once it has passed, so
     that run.log holds only the tests eng reads. A build that fails never reads as unmeasured, whatever status it
@@ -422,13 +111,13 @@ def compile_first(lane, root, directory, receipt, limit, env, on_stop, kill_afte
     with log.open("a") as file:
         print(f"eng: the build failed: compileFirst exited {status}, and no test ran", file=file)
     print(f"eng: the build failed: compileFirst exited {status}, and no test ran; its log is {log}", file=sys.stderr, flush=True)
-    return (1 if status == evidence.UNMEASURED else status), None
+    return (1 if status == lane_results.UNMEASURED else status), None
 
 
 def conclude(directory, receipt, status, **fields):
     """Record a completed run's verdict, the status eng run returns, beside its command's exit
     status: passed only for 0, so a zero exit that ran too few tests is failed."""
-    outcome = "passed" if status == 0 else "unmeasured" if status == evidence.UNMEASURED else \
+    outcome = "passed" if status == 0 else "unmeasured" if status == lane_results.UNMEASURED else \
         "build-failed" if compile_failed(receipt) else "failed"
     receipt.update(outcome=outcome, **fields)
     (directory / "source.json").write_text(json.dumps(receipt, indent=2) + "\n")
@@ -437,38 +126,38 @@ def conclude(directory, receipt, status, **fields):
 def judge(lane, result, log, extra=(), expect=None):
     """A lane's status and unmeasured tests from its command's status and its log. A completed run
     that executed too few tests raises ValueError."""
-    measured = result in (0, evidence.UNMEASURED)
+    measured = result in (0, lane_results.UNMEASURED)
     not_run = []
-    repeats = evidence.repeats_asked(extra)
+    repeats = lane_results.repeats_asked(extra)
     # --expect counts one run's tests, and a series' log adds up all of its runs.
     expect = expect * repeats if repeats and expect else expect
-    if repeats is not None and measured and evidence.series_reported(log) != repeats:
+    if repeats is not None and measured and lane_results.series_reported(log) != repeats:
         # The command ignored --repeat, or stopped before its series ended: however it ended, the series did not happen.
         cause = f"--repeat {repeats} was asked for, and the lane's log reports no series of {repeats} runs"
         print(f"eng: unmeasured: {cause}", file=sys.stderr)
-        return evidence.UNMEASURED, [cause]
+        return lane_results.UNMEASURED, [cause]
     if measured and (lane.get("minimumTests") or expect):
         # Arguments such as a filter select part of the lane, which must still run a test.
         minimum = 1 if extra or expect else lane["minimumTests"]
         try:
-            evidence.require_tests(log, minimum, expected=expect)
-        except evidence.NotRun as error:
+            lane_results.require_tests(log, minimum, expected=expect)
+        except lane_results.NotRun as error:
             # Such as a corpus test canceled for a variable this lane's command does not set on its Mac
             # (vocaro-engineering#285). The lines give each test's reason: the cause an unmeasured run records.
-            not_run = [str(error), *evidence.canceled_tests(log)]
+            not_run = [str(error), *lane_results.canceled_tests(log)]
             print("eng: unmeasured:", *not_run, sep="\n", file=sys.stderr)
         except ValueError as error:
             # An unmeasured part may not have run at all, so the run stays unmeasured. A test the
             # host left unmeasured ran nothing, so it can also be what leaves a run short.
-            if result == 0 and not evidence.unmeasured_tests(log): raise
+            if result == 0 and not lane_results.unmeasured_tests(log): raise
             print(f"eng: {error}", file=sys.stderr)
-    unmeasured = evidence.unmeasured_tests(log) if measured else []
-    if unmeasured or not_run or result == evidence.UNMEASURED:
+    unmeasured = lane_results.unmeasured_tests(log) if measured else []
+    if unmeasured or not_run or result == lane_results.UNMEASURED:
         # A skip or cancellation leaves the command's own status at 0, and unmeasured is never green.
         if unmeasured:
             print(f"eng: unmeasured: {len(unmeasured)} test(s) reported unmeasured:", *unmeasured,
                   sep="\n", file=sys.stderr)
-        return evidence.UNMEASURED, list(dict.fromkeys([*not_run, *unmeasured]))
+        return lane_results.UNMEASURED, list(dict.fromkeys([*not_run, *unmeasured]))
     return result, []
 
 
@@ -496,7 +185,7 @@ def lane_label(root, config, lane):
     command line; no configured project name or lane has one, and a colon would read as one more field
     after the `: ` that waiting messages put before a label. The name is engineering.json's, else the
     checkout's; a linked worktree's directory is named for its session, so it takes its main checkout's."""
-    name = config.get("name") or (project_adapter(TOOLKIT_ROOT).main_checkout(root) or root).name
+    name = config.get("name") or (git_state.main_checkout(root) or root).name
     return f"{name} {lane}"
 
 
@@ -782,7 +471,7 @@ def provision_sent(root, config, checkout, toolkit, variables, limit, on_stop=No
     the second Mac's checkout before the command; otherwise its status, after saying where its log is."""
     if "provision" not in config.get("lanes", {}): return 0
     log = Path(root) / ".build/engineering/admit/provision.log"
-    status = processes.run([sys.executable, str(toolkit / "bin/eng"), "--project", str(checkout), "run", "--here",
+    status = processes.run([sys.executable, str(toolkit / "bin/qk"), "--project", str(checkout), "run", "--here",
                             "provision"], cwd=checkout, log_path=log, timeout=limit, env=variables,
                             on_stop=on_stop)
     if status:
@@ -800,7 +489,7 @@ def guarded_alerts(stack, purpose, receipt, apps=()):
     except crash_alerts.Blocked as error:
         print(f"eng: unmeasured: {error}; nothing ran ({crash_alerts.GUIDE}, Crash-report alerts)", file=sys.stderr)
         receipt["outcome"] = "unmeasured"
-        return evidence.UNMEASURED
+        return lane_results.UNMEASURED
 
 
 def cleared_notifications(receipt):
@@ -816,7 +505,7 @@ def cleared_notifications(receipt):
               file=sys.stderr)
         receipt["notificationCenter"] = {"left": str(error)}
         receipt["outcome"] = "unmeasured"
-        return evidence.UNMEASURED
+        return lane_results.UNMEASURED
 
 
 def here_because(args, inherited):
@@ -926,7 +615,7 @@ def admit(root, args, config=None, *, device_window=None):
                 # The second Mac's Notification Center windows, under the foreground eng holds there (#204).
                 blocked = cleared_notifications(receipt) if second else None
                 if blocked is not None: return blocked
-                github_artifacts.configured(root, config)
+                for prepare in extensions.PREPARE_LANE: prepare(root, config)
                 directory, variables = Path.cwd(), None
                 if tree is not None:
                     # In the worktree's directory that matches the current one, as on the second Mac, after its
@@ -952,14 +641,14 @@ def admit(root, args, config=None, *, device_window=None):
         except processes.TimedOut as error:
             # A backstop for a hang that a busy host can also reach, so the command is unmeasured.
             print(f"eng: unmeasured: {error}", file=sys.stderr)
-            return evidence.UNMEASURED
+            return lane_results.UNMEASURED
 
 
 def main(argv=None):
     report = lane_report.Report()
     try:
         # XcodeGen expands this selected, host-local path before generating its project (#373).
-        with patch_environment({project_support.PACKAGE_ROOT_VARIABLE: str(TOOLKIT_ROOT.resolve())}):
+        with patch_environment(extensions.command_environment()):
             status = perform(argv, report)
     except Exception as error:
         report.finish(None, error)
@@ -970,28 +659,12 @@ def main(argv=None):
 
 def perform(argv, report):
     """Run the command argv names, telling report of a lane run's progress for the summary that ends it."""
+    extensions.load(EXTENSIONS)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project", type=Path, default=Path.cwd())
     parser.add_argument("--version", action="version", version=__version__)
     commands = parser.add_subparsers(dest="action", required=True)
-    init = commands.add_parser("init")
-    init.add_argument("--name")
-    init.add_argument("--capability", action="append", choices=sorted(CAPABILITIES), default=[])
     commands.add_parser("doctor")
-    local_setup = commands.add_parser("setup", help="check Mac readiness and offer supported owner-run setup changes")
-    local_setup.add_argument("--check", action="store_true", help="report readiness without applying changes")
-    local_setup.add_argument("--local", action="store_true", help="check only this Mac")
-    local_setup.add_argument("--step", choices=["claude-permissions"], help="run just the named setup step")
-    local_setup.add_argument("--xcode-mcp", action="store_true", help="include this Mac's Xcode headless MCP service")
-    local_setup.add_argument("--signing", action="store_true", help="include the build host's kept keychain setup")
-    commands.add_parser("instructions")
-    artifacts = commands.add_parser("github-artifacts", help="prepare checksum-pinned GitHub binary artifacts "
-        "through authenticated API downloads in SwiftPM's artifact cache")
-    artifacts.add_argument("--package", help="read this dependency's manifest at its Package.resolved commit")
-    artifacts.add_argument("--cache-path", type=Path, help="SwiftPM or Xcode package cache root; default is the "
-                           "user's standard SwiftPM cache")
-    policy = commands.add_parser("policy")
-    policy.add_argument("operation", choices=["refresh"])
     run = commands.add_parser("run", usage="%(prog)s [-h] [--expect N] [--repeat N [--erase|--template] [--only TEST]] "
         "lane [-- ARGUMENTS ...]",
         help="run a configured lane, admitting a heavy or exclusive one, on whichever Mac has spare capacity for "
@@ -1044,9 +717,6 @@ def perform(argv, report):
     commands.add_parser("simulator-pool", help="list, take, release, prune, reap or check members of the project's "
         "simulator pool under device-record reservations: eng simulator-pool list|take|release|prune|reap|check; "
         "-h for the rest")
-    commands.add_parser("failures", help="keep a failed test run's log, result bundle and failure messages in a "
-        "record under .build/failures/ that no later run replaces, with a copy in the lane's results/, and list or "
-        "prune the records by their rule: eng failures keep|list|prune; -h for the rest")
     commands.add_parser("results", help="keep a test run's per-test outcomes and seconds in the lane's results/ and "
         "print them, for a script that runs xcodebuild itself: eng results keep; -h for the rest")
     commands.add_parser("unittest", help="run a unittest suite's modules in processes of their own, side by side: "
@@ -1093,7 +763,7 @@ def perform(argv, report):
     admission.add_argument("--timeout", type=float, default=5400, help="seconds to wait for admission (default 5400)")
     admission.add_argument("--time-limit", type=float, default=processes.DEFAULT_LIMIT, metavar="SECONDS",
         help=f"seconds the command may run once admitted before it and its processes are stopped and it exits "
-        f"{evidence.UNMEASURED}, unmeasured (default {processes.DEFAULT_LIMIT}); a backstop for a hang")
+        f"{lane_results.UNMEASURED}, unmeasured (default {processes.DEFAULT_LIMIT}); a backstop for a hang")
     admission.add_argument("command", nargs=argparse.REMAINDER, help="the command and its arguments, after --; "
         "it runs in the current directory")
     logged = commands.add_parser("admissions", usage="%(prog)s [-h] [--since WHEN] [--until WHEN] [log ...]\n"
@@ -1191,44 +861,9 @@ def perform(argv, report):
         "(guides/maintenance.md, The merge queue)"))
     merge_queue.land_arguments(commands.add_parser("land", help="land a finished commit through the merge queue of this "
         "repository, or with --repo of another, and return at once: the queue gates it on origin/main and pushes it"))
-    publication = commands.add_parser("release", help="tag a library's release and publish it on GitHub once its "
-        "gate and each lane in engineering.json's release.lanes passed at the commit and origin/main holds it: "
-        "eng release X.Y.Z COMMIT --notes NOTES.md; each step "
-        "stops the rest when it fails, and a run that stopped part way can run again (guides/releasing.md)")
-    publication.add_argument("version", metavar="X.Y.Z")
-    publication.add_argument("commit", metavar="COMMIT")
-    publication.add_argument("--notes", required=True, type=Path, help="the release notes, in a file in the checkout "
-                             "that Git does not ignore, which eng spelling must pass")
-    publication.add_argument("--waive", action="append", metavar="LANE=ISSUE", help="the owner's waiver of a release "
-                             "lane's failure, filed in ISSUE, which the tag's message records; only the owner passes it")
-    checkpointing = commands.add_parser("checkpoint", help="run each lane in engineering.json's release.lanes one "
-        "after another on main's tip, a device pass first, each through eng run's admission and placement, and say "
-        "which passed, failed, were unmeasured or did not run; exit 0 only when every one passed (guides/releasing.md, "
-        "Checkpoints)")
-    checkpointing.add_argument("--leave-out", action="append", metavar="LANE=WHY", help="leave a release lane out of "
-        "this run, reported as not run with the reason, such as a device lane the owner has not agreed to")
-    evid = commands.add_parser("evidence", help="verify an evidence receipt, or move a durable evidence folder "
-                               "to the second Mac, deleting it here once every file verified there (guides/evidence.md)")
-    evid.add_argument("operation", choices=["verify", "offload"])
-    evid.add_argument("directory", type=Path, nargs="?", help="offload: with no folder, offer every folder that an "
-                      "offload found the second Mac unreachable for to it again")
-    evid.add_argument("--to", help="offload: the path on the second Mac, relative to its home directory "
-                      "(default: the folder's path relative to this Mac's home)")
-    evid.add_argument("--keep", action="store_true", help="offload: keep the folder here after it verified there")
-    documentation = commands.add_parser("docs")
-    documentation.add_argument("operation", choices=["check"])
-    documentation.add_argument("paths", nargs="*")
-    commands.add_parser("storekit", help="check StoreKit configuration files against App Store Connect's limits "
-        "before a product is created (check)")
     spell = commands.add_parser("spelling", help="find British spellings in the project's text, identifiers "
         "included, and file names; exit 1 on any, 2 when nothing was checked")
     spell.add_argument("paths", nargs="*", help="files or directories; untracked files under them are read too")
-    knowledge = commands.add_parser("knowledge")
-    knowledge.add_argument("query", nargs="?", default="")
-    source = commands.add_parser("source")
-    source.add_argument("name", choices=["voiceover-ax-observer.swift", "voiceover-link-verbosity.swift",
-                                        "background-mac-probe.swift", "probe-simulator-voiceover-activation.m",
-                                        "duo-pose-helper.c"])
     disk.add_arguments(commands.add_parser("disk", help="inventory reclaimable disk space; changes nothing without --delete"))
     keychain.add_arguments(commands.add_parser("keychain", help="before the owner unlocks a keychain, say which Mac's "
         "keychain the work needs and print commands that run only there (recover); keep the second Mac's login "
@@ -1247,10 +882,6 @@ def perform(argv, report):
         "starts (exit 0, 3 naming a window left, 1 without a lease)")
     notices.add_argument("--dismiss", action="store_true", help="close the windows' notifications; needs the second "
                          "Mac's mac-foreground lease, named by VOCARO_DEVICE_OWNER")
-    linking = commands.add_parser("skills", help="check that Claude Code and Codex load the toolkit's agent skills "
-        "through links to its main checkout; changes nothing without --link")
-    linking.add_argument("--link", action="store_true", help="link each installed host's missing skills, and those "
-                         "that link elsewhere; a copy is never replaced")
     # Everything after the first -- belongs to the command. Python 3.9's argparse rejects options
     # before it and drops a later --, so argparse never sees it.
     argv = sys.argv[1:] if argv is None else list(argv)
@@ -1262,9 +893,7 @@ def perform(argv, report):
     if argv[first:first + 1] == ["simulator-tests"]: return matrix.main(argv[first + 1:], project)
     if argv[first:first + 1] == ["simulator-pool"]: return simulator_pool.main(argv[first + 1:], project)
     if argv[first:first + 1] == ["device-pass"]: return device_pass.main(argv[first + 1:], project)
-    if argv[first:first + 1] == ["failures"]: return failure_records.main(argv[first + 1:], project)
     if argv[first:first + 1] == ["results"]: return run_results.main(argv[first + 1:])
-    if argv[first:first + 1] == ["storekit"]: return storekit_config.main(argv[first + 1:], project)
     # Recovery, like the admission log, covers the whole host and reads no project.
     if argv[first:first + 2] == ["admissions", "recover"]: return resources.recover_main(argv[first + 2:])
     if argv[first:first + 2] == ["admissions", "remove"]: return resources.remove_main(argv[first + 2:])
@@ -1273,15 +902,6 @@ def perform(argv, report):
     if argv[first:first + 2] == ["admissions", "now"]: return resources.now_main(argv[first + 2:])
     split = argv.index("--") if "--" in argv else len(argv)
     args = parser.parse_args(argv[:split])
-    if args.action == "setup":
-        if split < len(argv):
-            parser.error("setup takes no arguments after --")
-        if args.step and (args.local or args.xcode_mcp or args.signing):
-            parser.error("--step runs one step and takes no other setup selection flags")
-        if args.local and args.signing:
-            parser.error("--signing checks the build host and requires omitting --local")
-        # This check must not recover crash-alert settings or start any host work.
-        return setup.main(args)
     # Only the remote work itself reports its admission. Provisioning and nested commands do not.
     window = os.environ.pop(devices.WINDOW, None)
     device_window = json.loads(window) if window is not None else None
@@ -1289,35 +909,24 @@ def perform(argv, report):
     if args.passed is not None and (args.action, getattr(args, "operation", None)) not in {
             ("run", None), ("admit", None), ("remote", "run"), ("remote", "admit")}:
         parser.error("only run and admit take arguments after --")
-    if args.action == "evidence" and args.operation == "verify" and args.directory is None:
-        parser.error("evidence verify needs a directory")
-    # The commands that check the second Mac again on every run offer it the evidence that an offload
-    # found it unreachable for, in the background (guides/evidence.md).
-    if args.action in OFFLOAD_RETRIES: evidence_offload.retry_soon()
+    # What the project's tooling does before each command that reaches the hosts, such as offering the second Mac
+    # the evidence an offload found it unreachable for (extensions.HOST_COMMAND).
+    if args.action in HOST_COMMANDS:
+        for started in extensions.HOST_COMMAND: started()
     root = args.project.resolve()
     # A foreground run whose eng died left crash-report dialogs off; the next eng command puts them back.
     crash_alerts.recover()
     try:
-        if args.action == "init":
-            initialize(root, args)
-            return 0
         # The inventory, the skill links and the admission log cover the whole host, so they need no project
         # configuration.
         if args.action == "disk": return disk.execute(args)
         # A keychain's Mac and its session are the host's, not a project's.
         if args.action == "keychain": return keychain.execute(args)
-        if args.action == "skills": return skills.main(named_checkout(TOOLKIT_ROOT), args.link)
         # A Mac's screen is the host's, not a project's.
         if args.action == "host" and args.operation == "notifications":
             return notification_center.main(["check" if args.dismiss else "list"])
         if args.action == "host": return host_screen(args)
         if args.action == "admissions": return resources.report(args.logs or None, args.since, args.until)
-        # Offloaded evidence goes to the host's second Mac, whatever project holds it.
-        if args.action == "evidence" and args.operation == "offload":
-            if args.directory is None:
-                if args.to or args.keep: raise ValueError("--to and --keep name a folder's offload; name the folder")
-                return evidence_offload.retry()
-            return evidence_offload.offload(args.directory, to=args.to, keep=args.keep)
         # The queue reads a project's settings from its commits, and never from this working tree,
         # which for its worker is a main checkout that may lag.
         if args.action == "land": return merge_queue.land(root, args, Path.cwd())
@@ -1327,18 +936,14 @@ def perform(argv, report):
             return remote.prune_results_main(args.checkout or root, args.dry_run)
         config = load(root)
         if args.action in {"run", "admit"} or (args.action == "remote" and args.operation in {"run", "admit"}):
-            project_support.check_package_paths(root, TOOLKIT_ROOT)
+            for check in extensions.BEFORE_LANE: check(root, config)
         if args.action == "app": return app_builds.execute(root, args, config)
-        if args.action == "instructions": instructions(config)
-        elif args.action == "doctor":
+        if args.action == "doctor":
             required = {"git", "python3"}
             if any(c.startswith("simulator") or c == "packaging" for c in config.get("capabilities", [])):
                 required |= {"xcrun", "xcodebuild"}
             missing = sorted(name for name in required if not shutil.which(name))
             warnings = []
-            if "integration" not in config:
-                warnings.append("engineering.json declares no integration: add \"integration\": \"direct-main\", "
-                                "or \"pull-request\" for a project that takes changes only by pull request (agents/core.md)")
             unbounded = sorted(name for name, lane in config.get("lanes", {}).items()
                                if "command" in lane and "timeout" not in lane)
             if unbounded:
@@ -1349,59 +954,25 @@ def perform(argv, report):
                     and config.get("integration", "direct-main") == "direct-main":
                 warnings.append("no lane is named gate, which eng land and eng release run: name the lane holding "
                                 "what a commit must pass before it lands gate (guides/adoption.md, Lane names)")
-            strays = [name for name in config.get("release", {}).get("lanes", []) if name not in config.get("lanes", {})]
-            if strays:
-                warnings.append(f"release.lanes names {', '.join(strays)}, which is no lane in lanes, so eng release "
-                                "finds no pass of it and stops: add the lane or correct the name (guides/releasing.md, "
-                                "Two gates)")
             warnings += budgets.doctor_warnings(config)
             warnings += self_lane_warnings(root, config)
             warnings += display_lane_warnings(config)
             warnings += split_warnings(root, config)
-            warnings += temporary_model_storage(root, config)
-            warnings += unlinked_packages(root, config)
-            warnings += stale_copies(root)
-            warnings += toolkit_copy.doctor_warnings(TOOLKIT_ROOT)
-            warnings += agent_entry(root, config)
             from .waiting import doctor_warnings as fixed_wait_warnings  # #284
             warnings += fixed_wait_warnings(root)
             warnings += lane_wait.admission_warnings(root)
-            warnings += skills.warnings(named_checkout(TOOLKIT_ROOT))
             # A difference between the two Macs is an error; a second Mac that cannot be reached is unchecked.
             hosts = fix_hosts(root, remote.compare_hosts())
-            warnings += default_simulators(config)
+            for check in extensions.DOCTOR: warnings += check(root, config)
             test_lanes = lane_coverage.report(root, config)  # a warning at most, and never a failure (#289)
             warnings += lane_coverage.doctor_warnings(test_lanes)
             print(json.dumps({"project": config["name"], "toolkit": str(TOOLKIT_ROOT),
                 "source": source_identity(TOOLKIT_ROOT), "capabilities": config.get("capabilities", []),
                 "missingCommands": missing, "warnings": warnings, "testLanes": test_lanes, "offload": hosts}, indent=2))
             return int(bool(missing or hosts["errors"]))
-        elif args.action == "github-artifacts": github_artifacts.prepare(root, args.package, args.cache_path)
-        elif args.action == "policy": refresh_policy(root)
         elif args.action == "admit": return admit(root, args, config, device_window=device_window)
         elif args.action == "remote": return remote.main(root, config, args)
-        elif args.action == "release": return release.main(root, config, args)
-        elif args.action == "checkpoint": return checkpoint.main(root, config, args)
-        elif args.action == "source":
-            from .support import source_path
-            print(source_path(args.name))
-        elif args.action == "docs":
-            failures = docs.check(root, args.paths or None)
-            if not args.paths or {"AGENTS.md", "CLAUDE.md"} & {Path(path).name for path in args.paths}:
-                failures += agent_entry(root, config)
-            # The speech predictor's rules cite knowledge entries; a project without the rules has none to check.
-            if not args.paths or any(Path(path).suffix == ".json" or "knowledge" in Path(path).parts for path in args.paths):
-                from .voiceover import speech
-                failures += speech.check_rules(root)
-            print("\n".join(failures) if failures else "Documentation checks passed")
-            return int(bool(failures))
         elif args.action == "spelling": return spelling.check(root, config, args.paths)
-        elif args.action == "evidence": print(f"Verified {evidence.verify(args.directory)} evidence files")
-        elif args.action == "knowledge":
-            entries = json.loads((TOOLKIT_ROOT / "knowledge/index.json").read_text())["entries"]
-            for item in entries:
-                if args.query.lower() in (item["title"] + " " + item["path"]).lower():
-                    print(f"{item['id']}: {item['title']} — {TOOLKIT_ROOT / item['path']}")
         elif args.action == "run":
             report.begin(root, args.lane)
             if args.build_host_only:
@@ -1498,7 +1069,8 @@ def perform(argv, report):
                 # The lane finds the directory in ENG_RESULTS_DIR, and a group's lanes each find one of their own in it.
                 shutil.rmtree(directory / "results", ignore_errors=True)
                 report.ran_here(directory)
-                if resource != "self": github_artifacts.configured(root, config)
+                if resource != "self":
+                    for prepare in extensions.PREPARE_LANE: prepare(root, config)
                 commands = [config["lanes"][name]["command"] for name in group] if group is not None else \
                     [lane["command"], *([lane["compileFirst"]] if "compileFirst" in lane else [])]
                 try:
@@ -1511,7 +1083,7 @@ def perform(argv, report):
                 receipt.update(command=command, arguments=extra, timeout=limit)
                 def execute(on_stop=None):
                     def work():
-                        env = stale_modules.environment(parallel.results_environment(directory / "results"), root)
+                        env = shims.environment(parallel.results_environment(directory / "results"), root)
                         kill_after = processes.FOREGROUND_KILL_AFTER if lane.get("foreground") else processes.KILL_AFTER
                         failed, left = compile_first(lane, root, directory, receipt, limit,
                                                      env, on_stop, kill_after)
@@ -1600,10 +1172,10 @@ def perform(argv, report):
                 # unmeasured (guides/measurement.md). Its log is incomplete and counts nothing.
                 print(f"eng: unmeasured: {error}", file=sys.stderr)
                 report.explain(error, complete=False)
-                return evidence.UNMEASURED
+                return lane_results.UNMEASURED
             # A group's lanes were each judged by their own logs.
             if "parallel" in lane:
-                if reads_screen and result == evidence.UNMEASURED: unmeasured_screen(args.lane, receipt)
+                if reads_screen and result == lane_results.UNMEASURED: unmeasured_screen(args.lane, receipt)
                 concluded(result)
                 return result
             # The command has a confirmed terminal result. Coverage validation cannot turn
@@ -1614,7 +1186,7 @@ def perform(argv, report):
             except ValueError as error:
                 concluded(2, error=str(error))
                 raise
-            if status == evidence.UNMEASURED and (reads_screen or SCREEN_LOCKED.search(log)):
+            if status == lane_results.UNMEASURED and (reads_screen or SCREEN_LOCKED.search(log)):
                 unmeasured_screen(args.lane, receipt)
             # A failure whose log shows no test started, such as a project that could not be generated, exits apart
             # from a test's failure, and stays a failure (vocaro-engineering#393). A compileFirst build that failed
@@ -1622,17 +1194,17 @@ def perform(argv, report):
             # results is a test's. A command that refused its usage, status 2, already says so apart from a test.
             before = lane_report.before_tests(log) if status > 0 and status != USAGE and status not in merge_queue.NO_VERDICT \
                 and not compile_failed(receipt) and not lane_report.records(directory / "results") else None
-            if before is not None: status = evidence.BEFORE_TESTS
-            concluded(status, **({"unmeasured": unmeasured} if status == evidence.UNMEASURED else {}),
+            if before is not None: status = lane_results.BEFORE_TESTS
+            concluded(status, **({"unmeasured": unmeasured} if status == lane_results.UNMEASURED else {}),
                       **({"beforeTests": before} if before is not None else {}))
             if status == 0 and whole and keys and admission is not None and device_pass.passed(directory / "results", keys):
                 admission.device_lane_passed(keys)
             return status
         return 0
-    except (remote.Lost, PolicyUnavailable) as error:
+    except (remote.Lost, extensions.Unavailable) as error:
         print(f"eng: {error}", file=sys.stderr)
         report.explain(error)
-        return evidence.UNMEASURED
+        return lane_results.UNMEASURED
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
         print(f"eng: {error}", file=sys.stderr)
         report.explain(error)

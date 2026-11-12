@@ -16,7 +16,7 @@ from queuekeeper.apple import run_results
 from queuekeeper.apple.simulators import matrix
 import host_isolation
 
-ENG = Path(__file__).resolve().parents[1] / "scripts/eng"
+ENG = Path(__file__).resolve().parents[1] / "scripts/qk"
 # xcresulttool, printing the summary.json and tests.json a fixture bundle holds; without them, a failure.
 FAKE_XCRUN = r'''
 import json, pathlib, sys

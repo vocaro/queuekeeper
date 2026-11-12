@@ -17,7 +17,6 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src/python"))
 from queuekeeper import budgets, cli, config as configuration, merge_queue as mq
-from vocaro_engineering import release
 import host_isolation  # noqa: F401
 from test_merge_queue import Fixture, run
 
@@ -167,8 +166,8 @@ class DoctorChecks(unittest.TestCase):
     def test_a_gate_that_takes_a_physical_device_warns(self):
         budgeted = {"budgetMinutes": 30, "timeout": 60}
         taking = [["xcodebuild", "test", "--device", "iPad"], ["tool", "--device=iPhone"],
-                  ["python3", "scripts/eng", "devices", "take", "iPad", "--", "run"],
-                  ["python3", "scripts/eng", "devices", "reserve", "iPhone"]]
+                  ["python3", "scripts/qk", "devices", "take", "iPad", "--", "run"],
+                  ["python3", "scripts/qk", "devices", "reserve", "iPhone"]]
         for command in taking:
             with self.subTest(command=command):
                 [warning] = budgets.doctor_warnings({"lanes": {"gate": {"command": command, **budgeted}}})
@@ -178,7 +177,7 @@ class DoctorChecks(unittest.TestCase):
                            "gate": {"parallel": ["unit", "device"], "budgetMinutes": 30}}}
         self.assertEqual(len(budgets.doctor_warnings(group)), 1)
         # The negative controls: a simulator destination, devices named but not taken, a device lane outside gate.
-        for command in [["xcodebuild", "test", "-destination", "id=ABC"], ["python3", "scripts/eng", "devices", "status"],
+        for command in [["xcodebuild", "test", "-destination", "id=ABC"], ["python3", "scripts/qk", "devices", "status"],
                         ["tool", "--devices-list"]]:
             with self.subTest(command=command):
                 self.assertEqual(budgets.doctor_warnings({"lanes": {"gate": {"command": command, **budgeted}}}), [])
@@ -197,110 +196,6 @@ class DoctorChecks(unittest.TestCase):
             warnings = json.loads(output.getvalue())["warnings"]
             self.assertTrue(any("gate has no budgetMinutes" in warning for warning in warnings), warnings)
             self.assertTrue(any("gate takes a physical device" in warning for warning in warnings), warnings)
-
-
-class CommitLimit(unittest.TestCase):
-    """main's commits since the last commit that passed every release lane, by the receipts eng release reads."""
-
-    def setUp(self):
-        self.root = Path(tempfile.mkdtemp()).resolve()
-        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
-        environment = patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_AUTHOR_NAME": "t",
-                                              "GIT_AUTHOR_EMAIL": "t@example.com", "GIT_COMMITTER_NAME": "t",
-                                              "GIT_COMMITTER_EMAIL": "t@example.com", "VOCARO_OFFLOAD_HOST": "none"})
-        environment.start()
-        self.addCleanup(environment.stop)
-        run(self.root, "git", "init", "-q", "-b", "main")
-        self.commits = []
-        for number in range(10):
-            run(self.root, "git", "commit", "-q", "--allow-empty", "-m", f"commit {number}")
-            self.commits.append(run(self.root, "git", "rev-parse", "HEAD"))
-        run(self.root, "git", "update-ref", "refs/remotes/origin/main", self.commits[-1])
-
-    def config(self, lanes=("device", "corpus"), limit=3):
-        return {"name": "Example", "lanes": {"gate": GATE, "device": GATE, "corpus": GATE},
-                "release": {"lanes": list(lanes), "maxCommits": limit}}
-
-    def passed_remotely(self, commit, lane, status=0):
-        directory = self.root / ".git/vocaro-engineering/remote" / commit
-        directory.mkdir(parents=True, exist_ok=True)
-        (directory / f"{lane}.json").write_text(json.dumps({"commit": commit, "lane": lane, "arguments": [],
-            "result": {"exitStatus": status, "host": {"name": "second"}}}))
-
-    def passed_here(self, commit, lane, outcome="passed", *, checkout=None):
-        directory = (checkout or self.root) / ".build/engineering" / lane
-        directory.mkdir(parents=True, exist_ok=True)
-        (directory / "source.json").write_text(json.dumps({"project": {"revision": commit,
-            "workingChangesSHA256": release.CLEAN}, "arguments": [], "outcome": outcome}))
-
-    def test_under_the_limit_gives_no_warning(self):
-        # commits[6] passed both: three commits since, at the limit.
-        self.passed_remotely(self.commits[6], "device")
-        self.passed_here(self.commits[6], "corpus")
-        self.assertEqual(budgets.commit_warnings(self.root, self.config()), [])
-
-    def test_over_the_limit_names_the_count_and_the_last_commit_that_passed_every_lane(self):
-        self.passed_remotely(self.commits[5], "device")
-        self.passed_remotely(self.commits[5], "corpus")
-        [warning] = budgets.commit_warnings(self.root, self.config())
-        self.assertIn(f"origin/main holds 4 commits since {self.commits[5][:12]}, the last commit that passed every "
-                      "release lane (device, corpus), over release.maxCommits, 3", warning)
-        self.assertIn("Run a checkpoint", warning)
-        self.assertIn("guides/releasing.md, Checkpoints", warning)
-        self.assertNotIn("has not passed", warning)
-
-    def test_a_prunable_worktree_is_left_registered_and_live_worktree_receipts_count(self):
-        checkouts = Path(tempfile.mkdtemp()).resolve()
-        self.addCleanup(shutil.rmtree, checkouts, ignore_errors=True)
-        stale, live = checkouts / "stale checkout", checkouts / "live checkout"
-        for checkout in (stale, live):
-            run(self.root, "git", "worktree", "add", "-q", "--detach", str(checkout))
-        (stale / ".git").unlink()
-        listing = run(self.root, "git", "worktree", "list", "--porcelain")
-        stale_entry = next(entry for entry in listing.split("\n\n") if entry.startswith(f"worktree {stale}\n"))
-        self.assertIn("\nprunable ", stale_entry)
-        self.passed_here(self.commits[5], "device", checkout=live)
-        self.passed_here(self.commits[5], "corpus", checkout=live)
-        self.passed_remotely(self.commits[8], "device")
-        [warning] = budgets.commit_warnings(self.root, self.config())
-        self.assertIn(f"origin/main holds 4 commits since {self.commits[5][:12]}", warning)
-        self.assertIn(f"{self.commits[8][:12]}, a newer commit, has not passed corpus", warning)
-        self.assertEqual(run(self.root, "git", "worktree", "list", "--porcelain"), listing)
-        self.assertTrue(stale.is_dir())
-
-    def test_no_release_lanes_gives_no_warning(self):
-        self.assertEqual(budgets.commit_warnings(self.root, self.config(lanes=())), [])
-        # Nor do names that are no lane, which eng doctor warns of on its own.
-        self.assertEqual(budgets.commit_warnings(self.root, self.config(lanes=("absent",))), [])
-
-    def test_no_passing_commit_yet_counts_all_of_main(self):
-        # A failure and a run that passed only part of the lanes' commits are no pass.
-        self.passed_remotely(self.commits[8], "device", status=1)
-        self.passed_here(self.commits[8], "corpus", outcome="failed")
-        [warning] = budgets.commit_warnings(self.root, self.config())
-        self.assertIn("origin/main holds 10 commits and none since adoption passed every release lane", warning)
-        self.assertEqual(budgets.commit_warnings(self.root, self.config(limit=10)), [])
-
-    def test_a_checkpoint_that_passed_every_lane_but_one_names_the_lane_still_to_run(self):
-        self.passed_remotely(self.commits[2], "device")
-        self.passed_remotely(self.commits[2], "corpus")
-        # The checkpoint on commits[8] passed device, and corpus has not run there.
-        self.passed_remotely(self.commits[8], "device")
-        [warning] = budgets.commit_warnings(self.root, self.config())
-        self.assertIn(f"origin/main holds 7 commits since {self.commits[2][:12]}", warning)
-        self.assertIn(f"{self.commits[8][:12]}, a newer commit, has not passed corpus", warning)
-        # Once corpus passes there, the checkpoint counts and main is under its limit.
-        self.passed_here(self.commits[8], "corpus")
-        self.assertEqual(budgets.commit_warnings(self.root, self.config()), [])
-
-    def test_a_pass_off_main_does_not_count(self):
-        run(self.root, "git", "checkout", "-q", "-b", "side", self.commits[1])
-        run(self.root, "git", "commit", "-q", "--allow-empty", "-m", "side")
-        side = run(self.root, "git", "rev-parse", "HEAD")
-        self.passed_remotely(side, "device")
-        self.passed_remotely(side, "corpus")
-        [warning] = budgets.commit_warnings(self.root, self.config())
-        self.assertIn("none since adoption", warning)
 
 
 class Landing(Fixture):

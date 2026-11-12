@@ -345,7 +345,7 @@ def build(root, store, config, platform, commit, *, admit=None):
     say(f"building {platform} at {commit[:12]}; log {log}")
     # --here: the build's product is this Mac's, kept in the store and run here (eng admit offers a command to the
     # second Mac first otherwise).
-    admit = admit or (lambda words: [sys.executable, str(source / "scripts/eng"), "admit", "--here", "--time-limit",
+    admit = admit or (lambda words: [sys.executable, str(source / "scripts/qk"), "admit", "--here", "--time-limit",
                                      str(BUILD_LIMIT), "--", *words])
     try:
         status = processes.run(admit(command), cwd=directory, log_path=log, timeout=BUILD_LIMIT * 4)
@@ -536,7 +536,7 @@ def spawn_keep(checkout, commit, log, env=None):
     log = Path(log)
     log.parent.mkdir(parents=True, exist_ok=True)
     with log.open("a") as handle:
-        return subprocess.Popen([sys.executable, str(Path(checkout) / "scripts/eng"), "app", "keep", "--after-landing",
+        return subprocess.Popen([sys.executable, str(Path(checkout) / "scripts/qk"), "app", "keep", "--after-landing",
                                  "--commit", commit], cwd=checkout, stdin=subprocess.DEVNULL, stdout=handle,
                                 stderr=subprocess.STDOUT, start_new_session=True, env=env)
 

@@ -1,7 +1,4 @@
-"""What git_state reads of a checkout, against throwaway repositories.
-
-This module does not import `host_isolation` yet, as every test module does: that helper does not
-import until `cli` is split (vocaro/vocaro-engineering#403). It runs git in a temporary folder only."""
+"""What git_state reads of a checkout, against throwaway repositories."""
 import os
 from pathlib import Path
 import shutil
@@ -12,6 +9,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
+import host_isolation  # noqa: F401 -- first, as every test module
 from queuekeeper import git_state
 
 

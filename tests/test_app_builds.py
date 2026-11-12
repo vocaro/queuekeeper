@@ -485,7 +485,7 @@ class Queue(Fixture):
         self.addCleanup(temp.cleanup)
         checkout = Path(temp.name)
         (checkout / "scripts").mkdir()
-        (checkout / "scripts/eng").write_text("import sys; print(' '.join(sys.argv[1:]))\n")
+        (checkout / "scripts/qk").write_text("import sys; print(' '.join(sys.argv[1:]))\n")
         process = app_builds.spawn_keep(checkout, "c" * 40, checkout / "logs/keep.log")
         self.assertEqual(process.wait(timeout=host_isolation.stretched(30)), 0)
         self.assertEqual((checkout / "logs/keep.log").read_text(), f"app keep --after-landing --commit {'c' * 40}\n")

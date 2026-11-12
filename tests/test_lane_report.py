@@ -14,7 +14,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 import host_isolation  # noqa: F401 (keeps the tests off the real hosts)
 from host_isolation import stretched
 from queuekeeper import cli, lane_results, lane_report, merge_queue
-from vocaro_engineering import failure_records
 
 SOURCE = Path(__file__).resolve().parents[1] / "src/python"
 RULE = "=" * 70
@@ -140,10 +139,6 @@ class Parsing(unittest.TestCase):
         self.assertEqual(lane_results.unmeasured_tests(summary), [])
         self.assertEqual(merge_queue.FAILED_TEST.findall(summary), [])
         self.assertIsNone(merge_queue.UNITTEST_SUMMARY.search(summary))
-        with tempfile.TemporaryDirectory() as directory:
-            log = Path(directory) / "log"
-            log.write_text(summary)
-            self.assertEqual((failure_records.logged_failures(log), failure_records.failing_tests(log)), ([], []))
 
 
 class BeforeTests(unittest.TestCase):

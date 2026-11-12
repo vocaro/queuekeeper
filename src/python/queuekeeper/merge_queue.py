@@ -615,7 +615,7 @@ def carry_checks(config, moved, base):
     moved, then each of queue.carryOverChecks whose paths include a moved file, or that has none. {base} in
     a command is the commit the result passed on, so a check that compares with origin/main, which the
     batch now sits on, can read what main's new commits added."""
-    commands = [["python3", "scripts/eng", "docs", "check"]] if any(path.endswith(".md") for path in moved) else []
+    commands = [["python3", "scripts/qk", "docs", "check"]] if any(path.endswith(".md") for path in moved) else []
     for check in config.get("queue", {}).get("carryOverChecks", []):
         if "paths" not in check or any(named(path, key) for path in moved for key in check["paths"]):
             commands.append([word.replace("{base}", base) for word in check["command"]])
@@ -629,7 +629,7 @@ def rerun_command(command):
     option the rerun cannot carry, which then bisects as before; a group's eng unittest lane is unittest_member's."""
     if not isinstance(command, list) or not all(isinstance(word, str) for word in command): return None
     at = next((index for index, word in enumerate(command[:-1])
-               if Path(word).name == "eng" and command[index + 1] == "unittest"), None)
+               if Path(word).name == "qk" and command[index + 1] == "unittest"), None)
     if at is None: return None
     kept, words, index = command[:at + 2], command[at + 2:], 0
     while index < len(words):
@@ -1078,7 +1078,7 @@ def stuck(gate, at=None):
     if not isinstance(since, (int, float)) or not gate.get("stranded") or (at or time.time()) - since < STUCK_SECONDS:
         return None
     return (f"stuck: the gate has waited {ago(since, at)} for admission held up by dead or uncertain guard entries that "
-            "admission has not recovered; `python3 scripts/eng admissions recover` lists them (guides/shared-host.md, "
+            "admission has not recovered; `python3 scripts/qk admissions recover` lists them (guides/shared-host.md, "
             "Lock reclamation)")
 
 
@@ -1334,12 +1334,12 @@ def land(root, args, directory=None):
     worker take it exactly as they take that repository's own sessions' commits. With another
     repository's main checkout HEAD would be whatever it has checked out, so the commit is named.
     directory, the command's current directory, must be in this repository unless --repo names one:
-    each project's launcher lands its own repository, so another project's `scripts/eng land` run from
+    each project's launcher lands its own repository, so another project's `scripts/qk land` run from
     here would queue that project's HEAD, or report it landed (vocaro-engineering#210)."""
     elsewhere = None if args.repo or directory is None else other_repository(root, directory)
     if elsewhere is not None:
         print(f"eng: this eng lands {root}, but the current directory is in {elsewhere}: run that "
-              "checkout's own scripts/eng land, or name the commit with --repo", file=sys.stderr)
+              "checkout's own scripts/qk land, or name the commit with --repo", file=sys.stderr)
         return 1
     target = root
     if args.repo:
@@ -1480,7 +1480,7 @@ def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False
     queue.start()
     if not quiet_wait:
         print("nothing else is needed for it to land; to be told at once if it comes back, run as a background "
-              f"command: python3 {shlex.quote(str(root))}/scripts/eng queue wait {identifier}")
+              f"command: python3 {shlex.quote(str(root))}/scripts/qk queue wait {identifier}")
     return identifier
 
 
@@ -1746,7 +1746,7 @@ def admission_hints(root, at=None):
         since = gate.get("waitingSince")
         waited = f" {ago(since, at)}" if isinstance(since, (int, float)) else ""
         hints.append(f"the {role} gate's {gate.get('lane') or 'lane'} has waited{waited} for {gate.get('waiting')}; "
-                     "`python3 scripts/eng admissions now` shows who holds and who waits for admission on each Mac")
+                     "`python3 scripts/qk admissions now` shows who holds and who waits for admission on each Mac")
     return hints
 
 
@@ -2045,7 +2045,7 @@ def wait_for(root, identifiers, limit=WAIT_LIMIT):
 
 
 def running():
-    """The commit the worker's own code came from: HEAD of the toolkit checkout that scripts/eng resolved, or
+    """The commit the worker's own code came from: HEAD of the toolkit checkout that scripts/qk resolved, or
     None where that is no repository."""
     head = git(TOOLKIT_ROOT, "rev-parse", "--verify", "-q", "HEAD")
     return head.stdout.strip() if head.returncode == 0 and head.stdout.strip() else None
@@ -2685,7 +2685,7 @@ class Worker:
             self.sent_unlocked = bool(screen)
             if screen: self.say(f"{lane}: only on a Mac whose screen reads unlocked, since a locked screen left its "
                                 "last run without a verdict")
-            command = ["python3", "scripts/eng", "run", *where, *screen, lane]
+            command = ["python3", "scripts/qk", "run", *where, *screen, lane]
             if lane == SPELLING and not self.has_lane(lane):
                 self.say(f"{lane}: the project has no spelling lane, so eng run runs the toolkit's: "
                          f"{shlex.join(IMPLICIT_SPELLING)}")
@@ -4440,7 +4440,7 @@ def refusal(tip, found, base, root):
     if found["touching"]:
         many = len(found["touching"]) > 1
         words += (f". To be told when {'they leave' if many else 'it leaves'} the queue, run as a background command: "
-                  f"python3 {shlex.quote(str(root))}/scripts/eng queue wait {' '.join(found['touching'])}, which says "
+                  f"python3 {shlex.quote(str(root))}/scripts/qk queue wait {' '.join(found['touching'])}, which says "
                   f"whether {'they all' if many else 'it'} landed, so rebase, or came back, so `eng land` may apply it "
                   "as it is" + (f"; `eng land --wait` waits for {'them' if many else 'it'} itself and checks again"
                                 if found["waits"] else ""))

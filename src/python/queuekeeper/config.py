@@ -222,7 +222,7 @@ def resource_of(name, lane):
     return "heavy" if resource == "light" else resource
 
 
-# A call of eng admit, as a shell script or a command's own words write it (`scripts/eng admit`), or as a
+# A call of eng admit, as a shell script or a command's own words write it (`scripts/qk admit`), or as a
 # Python list of a command's words does (`[*eng, "admit", ...]`).
 ADMIT_CALL = re.compile(r"""\beng\b["' ,\])]*admit\b|["']admit["']""")
 
@@ -337,9 +337,9 @@ SPELLING = "spelling"
 # ungated landing and before a docs-only batch's lanes, unless main's queue.spelling is false, so that a British spelling
 # fails in a minute, not after a full gate and a bisect (vocaro-engineering, 2026-11-07). eng run admits and places it
 # as any lane (lane_to_run).
-IMPLICIT_SPELLING = ["python3", "scripts/eng", SPELLING]
+IMPLICIT_SPELLING = ["python3", "scripts/qk", SPELLING]
 DOCS = "docs"
-IMPLICIT_DOCS = ["python3", "scripts/eng", "docs", "check"]
+IMPLICIT_DOCS = ["python3", "scripts/qk", "docs", "check"]
 # Conventional prose only; configuration, agent policy, source and test fixtures keep their code gates.
 DOCS_FILES = {"README.md", "CONTRIBUTING.md", "CHANGELOG.md"}
 DOCS_FOLDERS = ("doc/", "docs/", "guides/", "knowledge/")

@@ -139,7 +139,7 @@ class StopTests(Fixture):
     def test_a_live_admission_accounts_for_it_and_nothing_is_signaled(self):
         # A live admission whose owner works in the slot, admitted before the extension started, holds it.
         owner = 104000
-        self.process(owner, 1, "python3 bin/eng run ui-tests", cwd=str(self.slot / "Example"), start=ago(7100))
+        self.process(owner, 1, "python3 bin/qk run ui-tests", cwd=str(self.slot / "Example"), start=ago(7100))
         Path(os.environ["SW_GATE_LOCK_FILE"] + ".warm-push-guard").write_text(json.dumps({
             "vocaroEngineering": 1, "owners": {"a" * 32: {"pid": owner, "start": ago(7100), "label": "ui-tests",
                                                           "exclusive": False}}}))

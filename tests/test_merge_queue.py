@@ -94,7 +94,7 @@ def local_toolkit():
     with patch.dict(os.environ, GIT_ALONE):
         run(base, "git", "init", "-q", "--bare", "-b", "main", str(origin))
         run(base, "git", "init", "-q", "-b", "main", str(checkout))
-        for part in ("src/python", "policies", "agents", "integrations", "bin", "schemas"):
+        for part in ("src/python", "bin", "scripts"):
             shutil.copytree(ROOT / part, checkout / part, ignore=shutil.ignore_patterns("__pycache__"))
         for name in ("engineering.json", ".gitignore"):
             shutil.copy(ROOT / name, checkout / name)
@@ -158,7 +158,7 @@ class Fixture(unittest.TestCase):
         self.repo = self.base / "project"
         run(self.base, "git", "clone", "-q", str(self.origin), str(self.repo))
         (self.repo / "scripts").mkdir()
-        shutil.copy(ROOT / "scripts/eng", self.repo / "scripts/eng")
+        shutil.copy(ROOT / "scripts/qk", self.repo / "scripts/qk")
         (self.repo / "lane.py").write_text(LANE)
         # The agent entry a direct-main project keeps, which `eng docs check` reads.
         (self.repo / "AGENTS.md").write_text("# Fixture\n\n" + (ROOT / cli.SHARED_GUIDANCE).read_text() + "\n"
@@ -761,7 +761,7 @@ class CheckedWhenQueued(Fixture):
         ahead = self.add("one", "o")
         identifier, _, error = self.land("two")
         self.assertIsNone(identifier)
-        self.assertIn(f"/scripts/eng queue wait {ahead[0]}, which says whether it landed, so rebase, or came back",
+        self.assertIn(f"/scripts/qk queue wait {ahead[0]}, which says whether it landed, so rebase, or came back",
                       error)
         self.assertNotIn(f"queue wait {ahead[0]} {ahead[1]}", error)
         self.assertIn("`eng land --wait` waits for it itself and checks again", error)
@@ -859,12 +859,14 @@ class LandWaitsForAhead(Fixture):
                 mq.config_at(root, mq.MAIN)
             return result
 
-        with patch.object(mq, "wait", wait), \
+        # What the project's tooling warns of after a landing reads the configuration main holds.
+        warned = lambda root, read: [f"release lanes on main: {', '.join(read['release']['lanes'])}"]
+        with patch.object(mq, "wait", wait), patch.object(mq.budgets.extensions, "LANDING_WARNINGS", [warned]), \
                 patch.object(configuration, "LANE_KEYS", configuration.LANE_KEYS - {"deviceRunMinutes"}):
             result, said, _ = self.land("fix")
         self.assertEqual(result, 0, said)
         self.assertIn("landed:", said)
-        self.assertIn("(device-voiceover), over release.maxCommits, 1", said)
+        self.assertIn("release lanes on main: device-voiceover", said)
 
     def test_behind_an_entry_in_its_gate_that_fails_it_is_queued_and_lands_without_a_second_command(self):
         self.commit("same", "one", "one"); self.commit("bad", "one", "bad", start="one")
@@ -971,7 +973,7 @@ class UnittestGate(Fixture):
     def setUp(self):
         super().setUp()
         config = self.config()
-        config["lanes"]["gate"] = {"command": ["python3", "scripts/eng", "unittest", "-s", "tests", "--split", "test",
+        config["lanes"]["gate"] = {"command": ["python3", "scripts/qk", "unittest", "-s", "tests", "--split", "test",
                                                "-v"]}
         (self.repo / "tests").mkdir()
         (self.repo / "tests/host_isolation.py").write_text("")
@@ -1069,11 +1071,11 @@ class CheckedBeforeRunning(UnittestGate):
         self.assertIsNone(self.land("bare")[2])
 
     def test_the_suites_of_a_lanes_command(self):
-        self.assertEqual(mq.suite_of(["python3", "scripts/eng", "unittest", "-s", "tests", "--split", "test", "-v"]),
+        self.assertEqual(mq.suite_of(["python3", "scripts/qk", "unittest", "-s", "tests", "--split", "test", "-v"]),
                          ("tests", None))
-        self.assertEqual(mq.suite_of(["python3", "scripts/eng", "unittest", "--start-directory=t", "-p", "a*.py",
+        self.assertEqual(mq.suite_of(["python3", "scripts/qk", "unittest", "--start-directory=t", "-p", "a*.py",
                                       "--pattern=b*.py", "-j", "4"]), ("t", ["a*.py", "b*.py"]))
-        self.assertEqual(mq.suite_of(["python3", "scripts/eng", "unittest"]), (".", None))
+        self.assertEqual(mq.suite_of(["python3", "scripts/qk", "unittest"]), (".", None))
         self.assertIsNone(mq.suite_of(["python3", "lane.py"]))
 
 
@@ -1155,7 +1157,7 @@ class Doctor(UnittestGate):
         self.assertEqual((status_, found["healthy"], found["findings"]), (0, True, []))
         self.assertIn("eng queue doctor: healthy", said)
         self.assertIn("note: the main gate's gate has waited 2m", said)
-        self.assertIn("`python3 scripts/eng admissions now`", found["hints"][0])
+        self.assertIn("`python3 scripts/qk admissions now`", found["hints"][0])
         # The negative control: a gate waiting for something else, or with no worker, has no pointer.
         queue.note(lambda state: state["gates"]["main"].update(waitingKind="screen"))
         self.assertEqual(self.doctor()[2]["hints"], [])
@@ -1492,7 +1494,7 @@ class NoVerdict(Fixture):
 
     def lane_runs(self, ran):
         """The eng run commands of ran but the spelling lane's, which comes before the lane these tests judge."""
-        return [command for command in ran if command[:3] == ["python3", "scripts/eng", "run"] and command[-1] != mq.SPELLING]
+        return [command for command in ran if command[:3] == ["python3", "scripts/qk", "run"] and command[-1] != mq.SPELLING]
 
     def test_a_run_a_locked_screen_voided_does_not_count_and_the_next_goes_only_to_an_unlocked_mac(self):
         """vocaro-engineering#293, the owner's decision of 2026-11-08: more runs than the bound, each unmeasured behind
@@ -1525,8 +1527,8 @@ class NoVerdict(Fixture):
                          r"user trevorharmon, CGSSessionScreenIsLocked yes, IOConsoleLocked no\) on this Mac \(\S+\) at ")
         self.assertNotIn("of at most", said.getvalue())
         runs = self.lane_runs(ran)
-        self.assertEqual(runs[0], ["python3", "scripts/eng", "run", "gate"])
-        self.assertEqual(runs[1:], [["python3", "scripts/eng", "run", "--unlocked-screen", "gate"]] * (len(runs) - 1))
+        self.assertEqual(runs[0], ["python3", "scripts/qk", "run", "gate"])
+        self.assertEqual(runs[1:], [["python3", "scripts/qk", "run", "--unlocked-screen", "gate"]] * (len(runs) - 1))
         self.assertIn("gate: only on a Mac whose screen reads unlocked", said.getvalue())
 
     def test_a_run_whose_last_reading_is_unlocked_or_that_ran_nothing_still_counts(self):
@@ -1698,8 +1700,8 @@ class NoVerdict(Fixture):
                       "queue.noVerdictRuns does not count", said.getvalue())
         self.assertNotIn("of at most", said.getvalue())
         runs = self.lane_runs(ran)
-        self.assertEqual(runs[0], ["python3", "scripts/eng", "run", "gate"])
-        self.assertEqual(runs[1:], [["python3", "scripts/eng", "run", "--unlocked-screen", "gate"]] * (len(runs) - 1))
+        self.assertEqual(runs[0], ["python3", "scripts/qk", "run", "gate"])
+        self.assertEqual(runs[1:], [["python3", "scripts/qk", "run", "--unlocked-screen", "gate"]] * (len(runs) - 1))
 
     def test_a_second_mac_run_its_receipt_reads_unlocked_counts_though_its_log_says_locked(self):
         """The negative control: the receipt's last reading wins over a log line saying locked, so the run counts."""
@@ -3411,30 +3413,6 @@ class DocsOnly(Fixture):
         self.assertEqual(self.state(identifier)["state"], "landed")
         self.assertEqual(len(PrePushHooks.runs(self)), 0)
 
-    def test_a_docs_only_landing_is_no_gate_eng_release_takes(self):
-        from vocaro_engineering import release
-        # As a real project does, so that the spelling lane's own directory is no uncommitted change under the gate.
-        (self.repo / ".gitignore").write_text(".build/\n")
-        run(self.repo, "git", "add", ".gitignore")
-        run(self.repo, "git", "commit", "-qm", "Ignore .build")
-        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
-        self.commit("code", "code")
-        [code] = self.add("code")
-        self.work()
-        checkout = mq.Queue(self.repo).checkout
-        # The control: a batch that ran every lane leaves a receipt of the gate at the commit it pushed.
-        landed = self.state(code)["landedAs"]
-        self.assertRegex(release.gate_passed(checkout, landed), rf"in this checkout|on this Mac \(.*\), in {checkout}")
-        # And keeps it by commit, where a session's own checkout reads it (vocaro-engineering#198), as the toolkit
-        # that ran it, the fixture's, has no working changes, as a run on the second Mac counts.
-        self.assertEqual(release.gate_passed(self.repo, landed), f"on this Mac ({offload_host.mac_name()}), in {checkout}")
-        self.commit("doc/guide.md", "guide")
-        [docs] = self.add("guide")
-        self.work()
-        self.assertEqual(self.state(docs)["state"], "landed")
-        with self.assertRaisesRegex(release.Stop, "no pass of the whole gate lane"):
-            release.gate_passed(checkout, self.state(docs)["landedAs"])
-
     def test_the_configuration_is_checked(self):
         config = self.configured
         good = {"paths": {"doc/": "why"}, "lanes": ["docs"]}
@@ -3619,7 +3597,7 @@ class DefaultDocsOnly(Fixture):
 class ImplicitSpelling(Fixture):
     """The toolkit's spelling check, which the queue runs before the gate in a project with no spelling lane, through
     eng run, as any lane, unless main's queue.spelling is false; a project's own spelling lane runs in its place."""
-    RUN = ["python3", "scripts/eng", "run", "spelling"]
+    RUN = ["python3", "scripts/qk", "run", "spelling"]
 
     def rounds(self):
         said = []
@@ -3641,7 +3619,7 @@ class ImplicitSpelling(Fixture):
         [identifier] = self.add("fix")
         with self.lanes_run() as started: said = self.rounds()
         self.assertEqual(self.state(identifier)["state"], "landed")
-        self.assertEqual(started[:2], [self.RUN, ["python3", "scripts/eng", "run", "gate"]])
+        self.assertEqual(started[:2], [self.RUN, ["python3", "scripts/qk", "run", "gate"]])
         self.assertNotIn(mq.IMPLICIT_SPELLING, started)
         # The round says where it ran, as it does of a lane, from the receipt eng run wrote once it was admitted.
         self.assertTrue(any(words.startswith("spelling exited 0 on this Mac (") for words in said), said)
@@ -3664,7 +3642,7 @@ class ImplicitSpelling(Fixture):
         [identifier] = self.add("fix")
         with self.lanes_run() as started: self.rounds()
         self.assertEqual(self.state(identifier)["state"], "landed")
-        self.assertEqual(started[:2], [self.RUN, ["python3", "scripts/eng", "run", "docs"]])
+        self.assertEqual(started[:2], [self.RUN, ["python3", "scripts/qk", "run", "docs"]])
         self.assertEqual(self.gates(), 0)
 
     def test_turned_off_the_queue_asks_eng_run_for_no_spelling_lane(self):
@@ -3699,7 +3677,7 @@ class ImplicitSpelling(Fixture):
         said = self.rounds()
         self.assertEqual(self.state(identifier)["state"], "landed")
         self.assertEqual(self.gates(), 1)
-        self.assertTrue(any("runs the toolkit's: python3 scripts/eng spelling" in words for words in said), said)
+        self.assertTrue(any("runs the toolkit's: python3 scripts/qk spelling" in words for words in said), said)
         logs = sorted(path.name for path in mq.Queue(self.repo).logs.glob("*.log"))
         self.assertTrue(any(name.endswith("-spelling.log") for name in logs), logs)
 
@@ -4097,7 +4075,7 @@ class SpelledBeforeQueued(Fixture):
         self.assertIsNone(identifier)
         self.assertEqual(mq.Queue(self.repo).all(), [])
         self.assertEqual(run(self.repo, "git", "for-each-ref", "refs/eng-queue"), "")
-        self.assertIn("is not queued: python3 scripts/eng spelling fails on it replayed onto origin/main", error)
+        self.assertIn("is not queued: python3 scripts/qk spelling fails on it replayed onto origin/main", error)
         self.assertIn("fix:1: British spelling", error)
         self.assertIn("Checked before it is queued", error)
 
@@ -4108,7 +4086,7 @@ class SpelledBeforeQueued(Fixture):
         self.assertIsNone(error)
         self.assertEqual(self.state(identifier)["state"], "queued")
         self.assertIn("spelling checked in", said)
-        self.assertIn("python3 scripts/eng spelling passes on it", said)
+        self.assertIn("python3 scripts/qk spelling passes on it", said)
 
     def test_an_entry_behind_main_is_checked_replayed_onto_it(self):
         old = run(self.repo, "git", "rev-parse", "origin/main")
@@ -4138,7 +4116,7 @@ class SpelledBeforeQueued(Fixture):
         self.assertIsNone(error)
         self.assertEqual(self.state(identifier)["state"], "queued")
         self.assertIn("passes on it", said)
-        self.assertNotIn("scripts/eng spelling", said)
+        self.assertNotIn("scripts/qk spelling", said)
 
     def test_a_finding_of_a_projects_own_lane_refuses_the_entry(self):
         self.own_lane(1)
@@ -4159,7 +4137,7 @@ class SpelledBeforeQueued(Fixture):
         run(self.repo, "git", "commit", "-qm", "Drop the spelling lane")
         identifier, _, error = self.land("drop")
         self.assertIsNone(identifier)
-        self.assertIn("python3 scripts/eng spelling fails on it", error)
+        self.assertIn("python3 scripts/qk spelling fails on it", error)
 
     def test_a_lane_that_fails_with_no_finding_queues_the_entry(self):
         self.own_lane(2)
@@ -4347,7 +4325,7 @@ class AheadOfTheQueue(Fixture):
         self.assertEqual(self.state(identifier)["state"], "landed")
         self.assertEqual((self.gates(), self.light()), (0, 0))
         self.assertEqual(self.state(identifier)["ungated"]["lanes"], ["spelling"])
-        self.assertTrue(any("runs the toolkit's: python3 scripts/eng spelling" in words for words in said), said)
+        self.assertTrue(any("runs the toolkit's: python3 scripts/qk spelling" in words for words in said), said)
 
     def test_a_project_without_a_spelling_lane_that_turned_the_toolkits_off_runs_no_lane(self):
         config = json.loads(json.dumps(self.configured))
@@ -4470,8 +4448,8 @@ class LaggingCheckout(Fixture):
         (other / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "dependent"}))
         run(other, "git", "init", "-q")
         (other / "scripts").mkdir()
-        shutil.copy(ROOT / "scripts/eng", other / "scripts/eng")
-        return subprocess.run(["python3", "scripts/eng", "land", "--repo", "project", "fix", "--wait",
+        shutil.copy(ROOT / "scripts/qk", other / "scripts/qk")
+        return subprocess.run(["python3", "scripts/qk", "land", "--repo", "project", "fix", "--wait",
                                "--limit", str(stretched(120))], cwd=other, capture_output=True, text=True)
 
     def test_a_gate_lane_only_origin_main_has_lets_the_commit_in(self):
@@ -4523,7 +4501,7 @@ class LaggingCheckout(Fixture):
         """The worker's --project is the main checkout, whose configuration must not even be checked."""
         worktree = self.session({"schemaVersion": 1, "name": "fixture", "hostedRepositories": []})
         with self.assertRaises(ValueError): configuration.load(self.repo)
-        done = subprocess.run(["python3", "scripts/eng", "land", "fix", "--wait", "--limit", str(stretched(120))],
+        done = subprocess.run(["python3", "scripts/qk", "land", "fix", "--wait", "--limit", str(stretched(120))],
                               cwd=worktree, capture_output=True, text=True)
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         self.assertIn("fix", self.main_files())
@@ -4767,13 +4745,12 @@ class LanePolicy(Fixture):
         self.assertNotIn("remote-http", self.traced(*fetch))
 
     def test_the_lanes_toolkit_is_a_clean_copy_whose_origin_is_local(self):
-        from vocaro_engineering import release
         kit, origin = local_toolkit()
         self.assertEqual(os.environ["VOCARO_ENGINEERING_ROOT"], str(kit))
         self.assertNotEqual(kit.resolve(), ROOT.resolve())
         self.assertEqual(run(kit, "git", "remote", "get-url", "origin"), str(origin))
         self.assertEqual(run(kit, "git", "rev-parse", "origin/main"), run(kit, "git", "rev-parse", "HEAD"))
-        self.assertEqual(cli.source_identity(kit)["workingChangesSHA256"], release.remote.CLEAN)
+        self.assertEqual(cli.source_identity(kit)["workingChangesSHA256"], mq.remote.CLEAN)
 
 
 class ToolkitCopy(Fixture):
@@ -4798,8 +4775,6 @@ class ToolkitCopy(Fixture):
         run(self.base, "git", "clone", "-q", str(self.kit_origin), str(self.kit))
         shutil.copytree(ROOT / "src/python", self.kit / "src/python", ignore=shutil.ignore_patterns("__pycache__"))
         shutil.copy(ROOT / ".gitignore", self.kit)
-        # The policy every admitted lane reads, as the toolkit's origin holds it (cli.refresh_policy).
-        shutil.copytree(ROOT / "policies", self.kit / "policies")
         run(self.kit, "git", "add", ".")
         run(self.kit, "git", "commit", "-qm", "Toolkit")
         run(self.kit, "git", "push", "-q", "origin", "HEAD:main")
@@ -5172,8 +5147,6 @@ class ToolkitsOwnWorker(Fixture):
     def setUp(self):
         super().setUp()
         shutil.copytree(ROOT / "src/python", self.repo / "src/python", ignore=shutil.ignore_patterns("__pycache__"))
-        # The policy every admitted lane reads, as the toolkit's origin holds it (cli.refresh_policy).
-        shutil.copytree(ROOT / "policies", self.repo / "policies")
         # Its own toolkit, as the toolkit's engineering.json names it, with the toolkit's spelling exemptions, which
         # its Python needs to pass the spelling check the queue runs before the gate.
         config = json.loads((self.repo / "engineering.json").read_text())
@@ -5182,7 +5155,7 @@ class ToolkitsOwnWorker(Fixture):
             **spelling.get("exemptPhrases", {}), **config["spelling"]["exemptPhrases"]}}
         (self.repo / "engineering.json").write_text(json.dumps(
             {**config, "toolkit": {"path": "."}, "spelling": spelling}))
-        run(self.repo, "git", "add", "src", "policies", "engineering.json")
+        run(self.repo, "git", "add", "src", "engineering.json")
         run(self.repo, "git", "commit", "-qm", "Toolkit")
         run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
         self.started = self.base / "started"
@@ -5550,7 +5523,7 @@ class SharedCheckout(Fixture):
         # The negative controls: such a program that names a file there by a relative argument, and a Python left
         # there, still hold it back, each by what ties it.
         cases = {"relative argument": (lambda: self.held(["sh", "-c", "sleep 300; exit 0", "eng"], self.repo / "scripts"),
-                                       r"argument \S*/scripts/eng"),
+                                       r"argument \S*/scripts/qk"),
                  "python": (lambda: self.python(self.repo / "scripts"), r"working directory \S*/scripts")}
         for name, (start, how) in cases.items():
             with self.subTest(name):
@@ -5562,10 +5535,10 @@ class SharedCheckout(Fixture):
                 started[0].wait()
 
     def test_a_toolkit_run_from_the_checkouts_root_holds_it_back_and_is_named(self):
-        def started(): self.runner = self.held(["sh", "-c", "sleep 300; exit 0", "scripts/eng"], self.repo)
+        def started(): self.runner = self.held(["sh", "-c", "sleep 300; exit 0", "scripts/qk"], self.repo)
         before, after, main, said = self.land(started)
         self.assertEqual(after, before)
-        self.assertRegex(said, rf"may still run its toolkit: PID {self.runner.pid} \(\w+\), argument \S*/scripts/eng; "
+        self.assertRegex(said, rf"may still run its toolkit: PID {self.runner.pid} \(\w+\), argument \S*/scripts/qk; "
                                "tried again once nothing waits")
 
     def test_a_checkout_left_for_a_run_from_it_follows_once_the_run_ends(self):
@@ -5945,7 +5918,7 @@ class LostLocalNetwork(Fixture):
         (cli's run; test_remote's RemoteTests). Yields the environments of those runs."""
         real, ran = mq.processes.run, []
         def lane(command, *arguments, **options):
-            if command[:3] != ["python3", "scripts/eng", "run"]: return real(command, *arguments, **options)
+            if command[:3] != ["python3", "scripts/qk", "run"]: return real(command, *arguments, **options)
             ran.append(options["env"])
             return status
         with patch.object(mq.remote, "configured", return_value="fake-mac"), \
@@ -6477,11 +6450,11 @@ class Refusals(Fixture):
         (other / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "dependent"}))
         run(other, "git", "init", "-q")
         (other / "scripts").mkdir()
-        shutil.copy(ROOT / "scripts/eng", other / "scripts/eng")
+        shutil.copy(ROOT / "scripts/qk", other / "scripts/qk")
         self.commit("fix", "fix")
         self.commit("own", "own")
         [own] = self.add("own")
-        done = subprocess.run(["python3", "scripts/eng", "land", "--repo", "project", "fix", "--wait",
+        done = subprocess.run(["python3", "scripts/qk", "land", "--repo", "project", "fix", "--wait",
                                "--limit", str(stretched(120))], cwd=other, capture_output=True, text=True)
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         self.assertLessEqual({"fix", "own"}, self.main_files())
@@ -6495,11 +6468,11 @@ class Refusals(Fixture):
         other = self.base / "dependent"
         other.mkdir()
         (other / "scripts").mkdir()
-        shutil.copy(ROOT / "scripts/eng", other / "scripts/eng")
+        shutil.copy(ROOT / "scripts/qk", other / "scripts/qk")
         (other / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "dependent"}))
         run(other, "git", "init", "-q")
         for words, said in ((["land", "--repo", "project"], "you name"), (["land", "--repo", "absent", "x"], "names no project")):
-            done = subprocess.run(["python3", "scripts/eng", *words], cwd=other, capture_output=True, text=True)
+            done = subprocess.run(["python3", "scripts/qk", *words], cwd=other, capture_output=True, text=True)
             self.assertNotEqual(done.returncode, 0)
             self.assertIn(said, done.stderr)
         self.assertEqual(mq.Queue(self.repo).all(), [])
@@ -6689,7 +6662,7 @@ class FlakyReruns(Fixture):
         config = self.config()
         # This gate intentionally consumes docs/*.md as test inputs, so its documents keep the code gate.
         config["queue"]["docsOnly"] = False
-        config["lanes"]["gate"] = {"command": ["python3", "scripts/eng", "unittest", "-s", "tests", "-v"], "timeout": 600}
+        config["lanes"]["gate"] = {"command": ["python3", "scripts/qk", "unittest", "-s", "tests", "-v"], "timeout": 600}
         (self.repo / "engineering.json").write_text(json.dumps(config))
         run(self.repo, "git", "add", ".")
         run(self.repo, "git", "commit", "-qm", "Gate on an eng unittest suite")
@@ -7224,22 +7197,22 @@ class FlakyParts(unittest.TestCase):
                 self.assertFalse(mq.named_in(path, output))
 
     def test_the_rerun_keeps_the_suites_options_and_names_its_own_test(self):
-        own = ["python3", "scripts/eng", "unittest", "-s", "tests", "--split", "test", "-v"]
-        self.assertEqual(mq.rerun_command(own), ["python3", "scripts/eng", "unittest", "-s", "tests", "--split", "test", "-j", "1", "-v"])
-        self.assertEqual(mq.rerun_command(["eng", "unittest", "-p", "test_x*.py", "-j", "8", "-k", "slow", "--timeout=60",
+        own = ["python3", "scripts/qk", "unittest", "-s", "tests", "--split", "test", "-v"]
+        self.assertEqual(mq.rerun_command(own), ["python3", "scripts/qk", "unittest", "-s", "tests", "--split", "test", "-j", "1", "-v"])
+        self.assertEqual(mq.rerun_command(["qk", "unittest", "-p", "test_x*.py", "-j", "8", "-k", "slow", "--timeout=60",
                                            "-t", ".", "test_x.Selected"]),
-                         ["eng", "unittest", "-p", "test_x*.py", "--timeout=60", "-t", ".", "-j", "1", "-v"])
-        batched = ["eng", "unittest", "--split", "class", "--batch-size", "4"]
+                         ["qk", "unittest", "-p", "test_x*.py", "--timeout=60", "-t", ".", "-j", "1", "-v"])
+        batched = ["qk", "unittest", "--split", "class", "--batch-size", "4"]
         self.assertEqual(mq.rerun_command(batched + ["-j", "8"]), batched + ["-j", "1", "-v"])
         # Negative controls: a lane that is not eng unittest, an option the rerun cannot carry, a value left out.
-        for command in (["python3", "lane.py"], ["python3", "scripts/eng", "xctest"], ["python3", "-m", "unittest"],
-                        ["python3", "scripts/eng", "unittest", "--failfast"], ["python3", "scripts/eng", "unittest", "-s"],
-                        None, "python3 scripts/eng unittest"):
+        for command in (["python3", "lane.py"], ["python3", "scripts/qk", "xctest"], ["python3", "-m", "unittest"],
+                        ["python3", "scripts/qk", "unittest", "--failfast"], ["python3", "scripts/qk", "unittest", "-s"],
+                        None, "python3 scripts/qk unittest"):
             with self.subTest(command=command):
                 self.assertIsNone(mq.rerun_command(command))
 
     def test_a_group_counts_as_its_one_eng_unittest_lane(self):
-        suite = {"command": ["python3", "scripts/eng", "unittest", "-s", "tests", "-p", "test_a*.py"]}
+        suite = {"command": ["python3", "scripts/qk", "unittest", "-s", "tests", "-p", "test_a*.py"]}
         other = {"command": ["swift", "test"]}
         lanes = {"suite": suite, "suite2": suite, "other": other, "plain": suite,
                  "gate": {"parallel": ["suite", "other"]}, "two": {"parallel": ["suite", "suite2"]},
@@ -8070,7 +8043,7 @@ class RoundAccount(Fixture):
 
     DEAD = ("admission on this Mac: a whole-host lane needs every guaranteed slot (HEAVY_SLOTS=3) free, and 3 are busy; "
             "the guard entry of BreezEPUB ways-in, PID 8645, is dead and requires inspection (it has no process record), "
-            "and is counted as slot 1; `python3 scripts/eng admissions recover` lists it")
+            "and is counted as slot 1; `python3 scripts/qk admissions recover` lists it")
 
     def test_a_gate_held_up_by_dead_entries_past_the_threshold_is_stuck(self):
         # BreezEPUB's gate waited 86 min behind three dead entries while status said only "waiting" (#315).
@@ -8078,7 +8051,7 @@ class RoundAccount(Fixture):
         late, early = at - mq.STUCK_SECONDS - 60, at - mq.STUCK_SECONDS + 60
         said = mq.stuck({"waitingSince": late, "stranded": True}, at)
         self.assertEqual(said, "stuck: the gate has waited 16m00s for admission held up by dead or uncertain guard "
-                               "entries that admission has not recovered; `python3 scripts/eng admissions recover` lists "
+                               "entries that admission has not recovered; `python3 scripts/qk admissions recover` lists "
                                "them (guides/shared-host.md, Lock reclamation)")
         # Negative controls: before the threshold; a wait on no stranded entry; a gate with no wait recorded.
         self.assertIsNone(mq.stuck({"waitingSince": early, "stranded": True}, at))
@@ -8409,7 +8382,7 @@ class FailedGateEvidence(Fixture):
         run_command = mq.processes.run
 
         def run_gate(command, **options):
-            if command[:3] == ["python3", "scripts/eng", "run"] and command[-1] == "gate":
+            if command[:3] == ["python3", "scripts/qk", "run"] and command[-1] == "gate":
                 options["log_path"].write_text(report)
                 return 1
             return run_command(command, **options)
