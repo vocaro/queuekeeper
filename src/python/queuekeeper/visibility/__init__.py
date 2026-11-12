@@ -48,8 +48,7 @@ def settings_path():
 
 def chosen():
     """What the owner turned on or off, as name -> bool. A file that cannot be read turns nothing on."""
-    try: features = json.loads(settings_path().read_text()).get("features", {})
-    except (OSError, ValueError, AttributeError): return {}
+    features = settings().get("features")
     return {name: on for name, on in features.items() if isinstance(on, bool)} if isinstance(features, dict) else {}
 
 
@@ -64,21 +63,36 @@ def enabled():
     return [name for name in sorted(available()) if choices.get(name)]
 
 
-def switch(name, on):
-    """Turn the feature name on or off in the owner's settings, keeping whatever else the file holds."""
-    if name not in available():
-        raise ValueError(f"no visibility feature is named {name}: " + (", ".join(sorted(available())) or "none is installed"))
+def settings():
+    """The owner's settings file as an object: {} for one that is missing or cannot be read. `features` is the
+    switch's; a feature keeps its own settings under its own name."""
+    try: found = json.loads(settings_path().read_text())
+    except (OSError, ValueError): return {}
+    return found if isinstance(found, dict) else {}
+
+
+def section(found, name):
+    """The object found holds under name, made there when it holds none or something else."""
+    if not isinstance(found.get(name), dict): found[name] = {}
+    return found[name]
+
+
+def update(change):
+    """Apply change to the owner's settings and write them, keeping whatever else the file holds."""
+    found = settings()
+    change(found)
     path = settings_path()
-    try: settings = json.loads(path.read_text())
-    except (OSError, ValueError): settings = {}
-    if not isinstance(settings, dict): settings = {}
-    features = settings.get("features") if isinstance(settings.get("features"), dict) else {}
-    features[name] = on
-    settings["features"] = features
     path.parent.mkdir(parents=True, exist_ok=True)
     staged = path.with_suffix(f".{os.getpid()}.tmp")
-    staged.write_text(json.dumps(settings, indent=2) + "\n")
+    staged.write_text(json.dumps(found, indent=2) + "\n")
     os.replace(staged, path)
+
+
+def switch(name, on):
+    """Turn the feature name on or off in the owner's settings."""
+    if name not in available():
+        raise ValueError(f"no visibility feature is named {name}: " + (", ".join(sorted(available())) or "none is installed"))
+    update(lambda found: section(found, "features").__setitem__(name, on))
 
 
 def load(say=lambda words: print(words, file=sys.stderr)):

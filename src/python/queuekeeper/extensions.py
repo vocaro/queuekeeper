@@ -31,6 +31,9 @@ LANDING_WARNINGS = []
 REQUIRED_COMMANDS = []
 # Each (root, hosts) -> hosts: what `doctor` fixes of the hosts' comparison itself.
 HOST_FIXES = []
+# Each (directory, event): called after the queue kept in directory wrote event to its journal (events.emit), by
+# the process that wrote it. What one raises is dropped, and none may wait: the journal never holds the queue up.
+AFTER_EVENT = []
 LOADED = []
 
 class Lane:

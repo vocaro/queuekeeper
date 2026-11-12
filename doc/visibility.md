@@ -13,7 +13,7 @@ the queue.
 | `queuekeeper queue events` | The journal in the terminal | Built |
 | `queuekeeper visibility` | The switch that turns features on and off | Built |
 | `watch` feature | A live status view in the terminal | Built |
-| `notify` feature | Banners, a command hook and webhooks | Planned |
+| `notify` feature | Banners, a command hook and webhooks | Built |
 | `dashboard` feature | A read-only web page on this Mac | Planned |
 
 ## The event journal
@@ -41,7 +41,7 @@ Every event has these keys, and its kind's own beside them:
 
 | Kind | When | Its own keys |
 |---|---|---|
-| `entry.queued` | A commit range joined the queue | `entry`, `subject`, `commits`, `branch`, `note`, `front`, `noGate`, `why` |
+| `entry.queued` | A commit range joined the queue | `entry`, `subject`, `commits`, `branch`, `note`, `front`, `noGate`, `aheadWhy` |
 | `entry.landed` | An entry is on `main` | `entry`, `subject`, `landedAs`, `landedTip`, `landedCommits`, `docsOnly`, `ungated` |
 | `entry.failed` | An entry came back from its gate | `entry`, `subject`, `why`, `log` |
 | `entry.conflict` | An entry came back with a conflict | `entry`, `subject`, `why` |
@@ -72,8 +72,9 @@ that keep one feature's faults and changes to itself:
 
 - **A feature is a module or package of its own** in `queuekeeper.visibility`, found by its name.
   Adding one changes no other file, and deleting its folder removes it.
-- **A feature reads only the journal and the snapshot.** The worker never calls a feature, so a
-  feature that is slow or broken cannot slow or stop a round.
+- **A feature reads only the journal and the snapshot.** A feature that wants to act on an event
+  registers a hook that the journal calls after writing it. The hook must return at once, and
+  what it raises is dropped, so a feature that is slow or broken cannot slow or stop a round.
 - **A feature imports the core and never another feature**, and the core imports none of them. A
   test fails a change that breaks this.
 - **A feature that is off is never imported**, and adds no command.
@@ -111,6 +112,71 @@ queuekeeper watch --interval 5 --events 20
 
 Where its output is not a terminal, it prints the view once and exits, as with `--once`.
 
+## The notify feature
+
+Notify tells you when the queue needs you. Each time the queue journals an event that a rule is on
+for, a separate process reads the journal from where the last one stopped and sends a notice
+through every channel that is on. The queue does not wait for it.
+
+```sh
+queuekeeper visibility enable notify
+queuekeeper notify status          # each rule and channel, and whether it is on
+queuekeeper notify test            # send a test notice through each channel that is on
+```
+
+**Rules** decide which events you are told of:
+
+| Rule | Tells you when | Default |
+|---|---|---|
+| `held-owner` | The queue stopped for a cause only you can fix | On |
+| `held-session` | The queue stopped for a cause an agent fixes | Off |
+| `came-back` | An entry failed its gate, or conflicts with `main` | On |
+| `flaky` | A failed test passed alone | On |
+| `ungated` | An entry landed without the gate | On |
+| `landed` | An entry landed | Off |
+| `resumed` | A hold was cleared | Off |
+
+**Channels** are the ways of telling you:
+
+| Channel | What it does | On when |
+|---|---|---|
+| `banner` | Posts a macOS notification | On a Mac, unless turned off |
+| `command` | Runs your command with the notice as JSON on its standard input | Its `argv` is set |
+| `webhook` | Posts the notice as JSON to your URL | Its `url` is set |
+
+```sh
+queuekeeper notify enable landed                     # a rule
+queuekeeper notify disable banner                    # a channel
+queuekeeper notify set webhook url https://example.com/hook
+queuekeeper notify set command argv '["/usr/local/bin/tell-me", "--queue"]'
+queuekeeper notify unset webhook url
+```
+
+The settings are the `notify` object of `visibility.json`. The `command` channel's `argv` is an
+argument list and never shell source; the notice's title and body follow it as two more arguments.
+The `webhook` channel's object has a `text` key, the notice in one line, which Slack-compatible
+webhooks post as it is, and takes `headers` for a token. The `banner` channel takes a `sound`, the
+name of a system sound.
+
+What to expect:
+
+- **Each event is told at most once.** Where a delivery stopped is kept beside the journal, and
+  moves on before anything is sent, so a channel that fails or hangs is not tried again for the
+  same event.
+- **A channel that refuses a notice does not hold up the others.** The refusal is written to
+  `notify.log`, beside `visibility.json`.
+- **A burst is gathered.** More than five notices at once go as four and one that counts the rest.
+- **History is not news.** The first delivery tells of nothing older than two minutes.
+- **Banners come from Script Editor.** macOS attributes a banner posted with `osascript` to it:
+  the banner carries its icon, its notifications must be allowed in System Settings, and clicking
+  the banner opens Script Editor. A banner shows for a few seconds and then stays in Notification
+  Center.
+- **A queue that is stuck without an event is not told.** `queuekeeper queue doctor` still finds
+  that.
+
+A rule is an entry in `rules.py`; a channel is a module of its own in `notify/channels/`, with a
+`ready(config)` and a `send(notice, config)`. Adding either changes no other file.
+
 ## Writing a feature
 
 A feature is a module `queuekeeper/visibility/NAME.py`, or a package `queuekeeper/visibility/NAME/`,
@@ -120,10 +186,6 @@ queue, a feature calls `events.read`, `events.follow` and `merge_queue.snapshot`
 
 ## Planned features
 
-- **`notify`**: a process that reads the journal from where it last stopped and tells the owner of
-  what needs them: a hold for the owner, an entry that came back, a flaky test, an ungated landing.
-  Each channel (a macOS banner, a command given the event on its standard input, a webhook) is a
-  file of its own and can be turned off by itself.
 - **`dashboard`**: `queuekeeper serve`, a read-only web page served on this Mac alone. Home says
   what the queue is doing and whether it needs its owner; Queue, Farm, Logs and History hold the
   detail. Each tab is a panel in a file of its own, and a header picker switches between

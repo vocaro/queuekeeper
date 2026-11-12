@@ -24,6 +24,8 @@ import os
 from pathlib import Path
 import time
 
+from . import extensions
+
 VERSION = 1
 FILE, PREVIOUS, LOCK, LIMIT = "events.jsonl", "events.1.jsonl", "events.lock", 4 << 20
 # Each kind, and what its line says in words: the keys in braces are the kind's own, which a line may lack.
@@ -70,9 +72,11 @@ def emit(directory, kind, **fields):
             fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NONBLOCK, 0o644)
             try: os.write(fd, line)
             finally: os.close(fd)
-        return event
     except Exception:  # noqa: BLE001
         return None
+    for told in extensions.AFTER_EVENT:
+        with contextlib.suppress(Exception): told(directory, event)
+    return event
 
 
 def parsed(line):

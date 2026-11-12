@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 import host_isolation  # noqa: F401 -- first, as every test module
-from queuekeeper import cli, events, merge_queue as mq
+from queuekeeper import cli, events, extensions, merge_queue as mq
 import test_merge_queue
 
 
@@ -53,6 +53,18 @@ class Journal(unittest.TestCase):
         # The generation before the previous one is gone; what is kept is the newest, in order.
         self.assertEqual(kept, [str(number) for number in range(12 - len(kept), 12)])
         self.assertGreater(len(kept), 3)
+
+    def test_each_hook_is_told_of_an_event_once_it_is_written_and_one_that_raises_stops_nothing(self):
+        told = []
+        def raising(directory, event): raise RuntimeError("a hook's fault")
+        def reading(directory, event): told.append((directory, event, events.read(directory)))
+        with patch.object(extensions, "AFTER_EVENT", [raising, reading]):
+            event = events.emit(self.directory, "queue.resumed")
+        self.assertEqual(told, [(self.directory, event, [event])])
+        # An event that was not written is told to none.
+        with patch.object(extensions, "AFTER_EVENT", [reading]):
+            self.assertIsNone(events.emit(self.directory / "missing", "queue.resumed"))
+        self.assertEqual(len(told), 1)
 
     def test_a_line_that_is_not_an_event_is_skipped(self):
         events.emit(self.directory, "queue.resumed")
