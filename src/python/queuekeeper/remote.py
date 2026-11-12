@@ -7,7 +7,7 @@ sent along and run there by the host's own Python, checks them out in a persiste
 so builds stay warm, and runs `queuekeeper run` or `queuekeeper admit` under the second Mac's own heavy-work
 admission: that host's queue, not a private pool beside this one. A push sends only what the
 second Mac's checkouts lack, which their refs name there. The log and the result come back to
-this checkout's .build/engineering/remote, each dispatch's in a directory of its own as well, with
+this checkout's .build/queuekeeper/remote, each dispatch's in a directory of its own as well, with
 what its preparation cost, and a lane group's lanes' logs and receipts with them once the run
 there ends. A whole lane's result at a commit is also kept by commit in
 the repository's Git directory, where every worktree of the repository can find it, and so is a
@@ -37,7 +37,7 @@ second Mac it cannot reach as unchecked, and gives both the same simulator runti
 `queuekeeper remote setup --runtimes` does, without asking the owner (the owner's decision, 2026-11-03).
 Before it sends work, and
 in `queuekeeper doctor`, it lists the processes there that earlier runs left running, which nothing
-stops, and fast-forwards the second Mac's own toolkit checkout, ~/Development/vocaro-engineering, to
+stops, and fast-forwards the second Mac's own toolkit checkout, ~/Development/queuekeeper, to
 origin/main when that checkout is on main with no uncommitted changes, saying why it leaves it otherwise:
 a dispatch goes on, and `queuekeeper doctor` reports an error (offload_host.update_toolkit, vocaro-engineering#203).
 """
@@ -69,7 +69,7 @@ from . import disk, extensions, lane_results, lane_wait, offload_host, parallel,
 from .config import TOOLKIT_ROOT, unlocked_screen
 from .resources import BUSY, FREE_WAIT
 
-# The SSH destinations tried in turn when neither --host nor VOCARO_OFFLOAD_HOST names one: aliases the
+# The SSH destinations tried in turn when neither --host nor QUEUEKEEPER_OFFLOAD_HOST names one: aliases the
 # owner defines in ~/.ssh/config, so no machine's name is written here. build-host, which the owner
 # defined first, stays the default; second-mac serves once it is the one defined (guides/shared-host.md,
 # Earlier names).
@@ -77,15 +77,15 @@ DEFAULT_HOST = "build-host"
 ALIASES = (DEFAULT_HOST, "second-mac")
 # The variable that names the second Mac's SSH destination, or none for this Mac only, and the name it
 # had until vocaro-engineering#58, which queuekeeper refuses (named_host).
-HOST_VARIABLE, OLD_HOST_VARIABLE = "VOCARO_OFFLOAD_HOST", "VOCARO_BUILD_HOST"
-GATE_HOSTS = "VOCARO_GATE_HOSTS"
+HOST_VARIABLE, OLD_HOST_VARIABLE = "QUEUEKEEPER_OFFLOAD_HOST", "VOCARO_BUILD_HOST"
+GATE_HOSTS = "QUEUEKEEPER_GATE_HOSTS"
 GATE_HOSTS_FILE = "gate-hosts"
 # The second Mac's directory for repositories and checkouts, relative to its home. It keeps the build
 # host's name: another would leave every warm checkout there behind.
 ROOT = "Development/build-host"
 # Persistent checkouts per project on the second Mac; more wait for one to come free.
 CHECKOUTS = 4
-# Where each dispatch's own results stay, unique to it, under .build/engineering/remote/DISPATCHES/NAME/,
+# Where each dispatch's own results stay, unique to it, under .build/queuekeeper/remote/DISPATCHES/NAME/,
 # beside NAME/, the latest; and how many of each name's stay: two for each run that can overlap another.
 DISPATCHES = ".dispatches"
 DISPATCH_HOST = "dispatch-host"
@@ -110,7 +110,7 @@ NO_BANNER = "Connection timed out during banner exchange"
 TIMED_OUT = re.compile(r"^Connection to \S+ port \d+ timed out$")
 # The refs that carry a commit into the second Mac's repositories. They keep the build host's name, as
 # ROOT does: those repositories hold refs under it, which another name would orphan.
-REF = "refs/vocaro/build-host/"
+REF = "refs/queuekeeper/hosts/"
 # Seconds a push of one commit to the second Mac may take before queuekeeper stops it. A push there once ran
 # for over 50 minutes before it failed (vocaro-engineering#67); one that sends only what the second
 # Mac lacks takes seconds, and a lost connection ends within ssh's two minutes.
@@ -153,7 +153,7 @@ HEARTBEAT_SECONDS, HEARTBEAT_SILENCE = 20, 180
 # Seconds one connection may take to stop a dead dispatcher's run (stop_dead_dispatches).
 STOP_DEAD_WAIT = 30
 # The toolkit's repository, which its origin names for the second Mac's policy refresh.
-UPSTREAM = "https://github.com/vocaro/vocaro-engineering.git"
+UPSTREAM = "https://github.com/vocaro/queuekeeper.git"
 # What a Git hook exports for its own repository must not reach another.
 GIT_LOCATION = {"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
                 "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_PREFIX"}
@@ -164,8 +164,8 @@ MISCONFIGURED = 78
 LOST_ACCESS = 69
 # Set by a queue worker on the `queuekeeper run` of a gate's lane, the one `queuekeeper run` that stops for LOST_ACCESS. That `queuekeeper run`
 # takes it out of its environment, so that no lane it runs here, nor what that lane starts, stops for it.
-QUEUE_GATE = "VOCARO_QUEUE_GATE"
-QUEUE_GATE_EXCLUDE = "VOCARO_QUEUE_GATE_EXCLUDE"
+QUEUE_GATE = "QUEUEKEEPER_QUEUE_GATE"
+QUEUE_GATE_EXCLUDE = "QUEUEKEEPER_QUEUE_GATE_EXCLUDE"
 # Seconds the check before a dispatch gives each address of the second Mac's name to answer on its ssh
 # port, and then `ssh true` to finish there, login shell included: an offline second Mac costs a few
 # seconds, where ssh's ConnectTimeout would take ten for each address.
@@ -197,7 +197,7 @@ RENAMED = {}
 # ssh under that were asked for its key, none presenting it (rediscover).
 UNFOUND = {}
 # Set by offload_host.py for the work it runs: the name of the Mac that sent it, which a receipt records.
-DISPATCHER = "VOCARO_DISPATCHED_FROM"
+DISPATCHER = "QUEUEKEEPER_DISPATCHED_FROM"
 # Seconds `queuekeeper doctor` waits for the second Mac to report its Xcodes and runtimes.
 SURVEY_TIMEOUT = 180
 # Seconds `queuekeeper doctor` waits for the census of the second Mac's leftover processes.
@@ -206,8 +206,8 @@ CENSUS_TIMEOUT = 60
 LEFTOVER_GUIDE = "guides/shared-host.md, Processes left over from runs"
 # The author and committer of a snapshot commit, which records a working tree rather than anyone's
 # work, and needs no identity configured in the session's git.
-SNAPSHOT_IDENTITY = {"GIT_AUTHOR_NAME": "queuekeeper snapshot", "GIT_AUTHOR_EMAIL": "snapshot@vocaro-engineering.invalid",
-                     "GIT_COMMITTER_NAME": "queuekeeper snapshot", "GIT_COMMITTER_EMAIL": "snapshot@vocaro-engineering.invalid"}
+SNAPSHOT_IDENTITY = {"GIT_AUTHOR_NAME": "queuekeeper snapshot", "GIT_AUTHOR_EMAIL": "snapshot@queuekeeper.invalid",
+                     "GIT_COMMITTER_NAME": "queuekeeper snapshot", "GIT_COMMITTER_EMAIL": "snapshot@queuekeeper.invalid"}
 
 
 # What every project's gates use on the second Mac (guides/shared-host.md, Setting up the second Mac).
@@ -225,7 +225,7 @@ HERE = "this Mac"
 # under ~/Development/build-host, and here among the toolkit's durable state, never in /private/tmp,
 # which a reboot empties. Both are relative to the Mac's home.
 RUNTIME_STAGING = f"{ROOT}/runtimes"
-LOCAL_RUNTIME_STAGING = "Library/Application Support/vocaro-engineering/runtimes"
+LOCAL_RUNTIME_STAGING = "Library/Application Support/queuekeeper/runtimes"
 # Free bytes a runtime's copy or download must leave on the volume that receives it: room for simctl
 # to copy the image once more where it cannot clone it, as its help says it may, and for the 8-14 GB
 # building worktrees of the sessions that share the volume (agents/core.md, Concurrent work).
@@ -567,7 +567,7 @@ def no_toolkit(host, status, detail):
 def configured():
     """The second Mac that `queuekeeper run` and `queuekeeper admit` send work to, or None for this Mac only.
 
-    VOCARO_OFFLOAD_HOST names it, and `none` turns it off (named_host). Otherwise it is the ssh alias
+    QUEUEKEEPER_OFFLOAD_HOST names it, and `none` turns it off (named_host). Otherwise it is the ssh alias
     that ~/.ssh/config defines (alias).
     """
     host = named_host()
@@ -598,7 +598,7 @@ def gate_hosts():
 
 
 def named_host():
-    """What VOCARO_OFFLOAD_HOST names, or None when it is unset.
+    """What QUEUEKEEPER_OFFLOAD_HOST names, or None when it is unset.
 
     VOCARO_BUILD_HOST, its name until vocaro-engineering#58, is refused when it is set at all, beside the
     new name too: it may say none, to keep work on this Mac, and ignoring it would let that work go to the
@@ -1103,7 +1103,7 @@ def held(root, commits):
 
 
 def store(root):
-    return common_directory(root) / "vocaro-engineering/remote"
+    return common_directory(root) / "queuekeeper/remote"
 
 
 @contextlib.contextmanager
@@ -1372,7 +1372,7 @@ CHANGES = "changes.patch"
 # applied here: the tree here changed after it was sent, the patch does not apply, or it did not come back. The
 # patch is kept under UNAPPLIED_DIRECTORY. sysexits' EX_CANTCREAT, which no other queuekeeper status uses.
 UNAPPLIED = 73
-UNAPPLIED_DIRECTORY = ".build/engineering/remote/unapplied"
+UNAPPLIED_DIRECTORY = ".build/queuekeeper/remote/unapplied"
 
 
 def brought_back(root, sent, status):
@@ -1400,7 +1400,7 @@ def brought_back(root, sent, status):
     named = ", ".join(files[:5]) + (f" and {len(files) - 5} more" if len(files) > 5 else "")
     if not ran.get("returned") or not patch.is_file():
         print(f"queuekeeper: the command changed {named} on the second Mac, and the patch did not come back; the second "
-              f"Mac's copy is {ran.get('checkout')}/.build/engineering/admit/{CHANGES}", file=sys.stderr, flush=True)
+              f"Mac's copy is {ran.get('checkout')}/.build/queuekeeper/admit/{CHANGES}", file=sys.stderr, flush=True)
         return UNAPPLIED
     return apply_changes(root, sent["commit"], patch, named, "on the second Mac", Path(ran["results"]).name, status)
 
@@ -1821,7 +1821,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     toolkit = Path(TOOLKIT_ROOT).resolve()
     dispatch = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + f"-{os.getpid()}"
     name = lane if lane is not None else "admit"
-    base = Path(root) / ".build/engineering/remote"
+    base = Path(root) / ".build/queuekeeper/remote"
     if sent:
         commit, head, project, kit, developer, local = (sent[key] for key in ("commit", "head", "project", "kit",
                                                                              "developer", "local"))
@@ -1864,11 +1864,11 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
             "unlockedScreen": lane is not None and unlocked_screen(config.get("lanes", {}), lane),
             "provision": "provision" in config.get("lanes", {}) and lane != "provision",
             "developerDir": developer, "xcode": local["xcode"],
-            "log": f".build/engineering/{lane}/run.log" if lane is not None else None,
+            "log": f".build/queuekeeper/{lane}/run.log" if lane is not None else None,
             "wait": lane_wait.relative(lane) if lane is not None else None,
-            "receipt": f".build/engineering/{name}/source.json",
-            "returns": {"directory": f".build/engineering/{name}", "paths": returns} if returns else None,
-            "changes": f".build/engineering/{name}/{CHANGES}" if changes else None,
+            "receipt": f".build/queuekeeper/{name}/source.json",
+            "returns": {"directory": f".build/queuekeeper/{name}", "paths": returns} if returns else None,
+            "changes": f".build/queuekeeper/{name}/{CHANGES}" if changes else None,
             "deviceRecord": local["name"], "lease": lease.plan(local["name"]) if lease is not None else None,
             "dispatcher": local["name"], "subdirectory": subdirectory, "silence": HEARTBEAT_SILENCE,
             # Its admissions there name the repository, branch, worktree and session here (resources.work_origin).
@@ -3427,7 +3427,7 @@ def dispatched(root, name, since):
 def dispatch(root, name, since):
     """(the directory of the newest dispatch of name from root that started at or after since and ran on the second
     Mac, that Mac), or (None, None): dispatched, with the directory whose run.log holds what the lane printed there."""
-    try: runs = sorted((Path(root) / ".build/engineering/remote" / DISPATCHES / name).iterdir(), reverse=True)
+    try: runs = sorted((Path(root) / ".build/queuekeeper/remote" / DISPATCHES / name).iterdir(), reverse=True)
     except OSError: return None, None
     for run in runs:
         try: started = calendar.timegm(time.strptime(run.name[:16], "%Y%m%dT%H%M%SZ"))

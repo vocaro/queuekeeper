@@ -36,7 +36,7 @@ class Fixture(unittest.TestCase):
         self.slots.mkdir()
         self.environment = patch.dict(os.environ, {
             "HOME": str(self.home), "TMPDIR": "/var/folders/zz/fake/T/", "HEAVY_SLOT_DIR": str(self.slots),
-            "SW_GATE_LOCK_FILE": str(base / "gate"), "VOCARO_DEVICE_RECORD": str(base / "device-handoff.json")})
+            "QUEUEKEEPER_GATE_LOCK_FILE": str(base / "gate"), "QUEUEKEEPER_DEVICE_RECORD": str(base / "device-handoff.json")})
         self.environment.start()
         self.uid = os.getuid()
         self.table, self.directories, self.killed = {}, {}, []
@@ -140,7 +140,7 @@ class StopTests(Fixture):
         # A live admission whose owner works in the slot, admitted before the extension started, holds it.
         owner = 104000
         self.process(owner, 1, "python3 bin/qk run ui-tests", cwd=str(self.slot / "Example"), start=ago(7100))
-        Path(os.environ["SW_GATE_LOCK_FILE"] + ".warm-push-guard").write_text(json.dumps({
+        Path(os.environ["QUEUEKEEPER_GATE_LOCK_FILE"] + ".warm-push-guard").write_text(json.dumps({
             "vocaroEngineering": 1, "owners": {"a" * 32: {"pid": owner, "start": ago(7100), "label": "ui-tests",
                                                           "exclusive": False}}}))
         report = self.stop()

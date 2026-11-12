@@ -35,7 +35,7 @@ SECOND = "Trevors-MacBook-Pro-715"
 
 def setUpModule():
     # No test reaches the owner's second Mac, its device record or this host's admission.
-    environment = patch.dict(os.environ, {"VOCARO_OFFLOAD_HOST": "none"})
+    environment = patch.dict(os.environ, {"QUEUEKEEPER_OFFLOAD_HOST": "none"})
     environment.start()
     unittest.addModuleCleanup(environment.stop)
 
@@ -362,7 +362,7 @@ class RoutingTests(unittest.TestCase):
         self.record = devices.Record(self.root / "device-handoff.json")
         self.during = self.root / "during.json"
         script = ("import json, os, sys; entry = json.load(open(sys.argv[1]))['devices']['mac-foreground']; "
-                  "json.dump({'owner': os.environ.get('VOCARO_DEVICE_OWNER'), 'entry': entry}, open(sys.argv[2], 'w'));"
+                  "json.dump({'owner': os.environ.get('QUEUEKEEPER_DEVICE_OWNER'), 'entry': entry}, open(sys.argv[2], 'w'));"
                   " print('Ran 1 tests')")
         self.lanes = {"voiceover-mac": {"command": [sys.executable, "-c", script, str(self.record.path),
                                                     str(self.during)], "resource": "heavy", "foreground": True}}
@@ -370,7 +370,7 @@ class RoutingTests(unittest.TestCase):
                                                                    "lanes": self.lanes}))
         for patcher in (patch.dict(os.environ, {devices.OVERRIDE: str(self.record.path),
                                                 "HEAVY_SLOT_DIR": str(self.root / "slots"), "HEAVY_POLL_SECONDS": "0.01",
-                                                "SW_GATE_LOCK_FILE": str(self.root / "gate")}),
+                                                "QUEUEKEEPER_GATE_LOCK_FILE": str(self.root / "gate")}),
                         patch.object(cli, "source_identity", return_value={}),
                         patch.object(cli, "refresh_policy", return_value=None),
                         patch.object(voiceover_state, "_read", return_value=False),
@@ -499,13 +499,13 @@ class ResultsTests(unittest.TestCase):
     def test_every_run_of_a_lane_begins_with_its_results_empty(self):
         with tempfile.TemporaryDirectory() as directory:
             project = Path(directory)
-            # The command finds its results/ in ENG_RESULTS_DIR, made for it.
+            # The command finds its results/ in QUEUEKEEPER_RESULTS_DIR, made for it.
             write = ("import os, pathlib, sys\nif sys.argv[1:] != ['skip']:\n"
-                     "    folder = pathlib.Path(os.environ['ENG_RESULTS_DIR'])\n"
+                     "    folder = pathlib.Path(os.environ['QUEUEKEEPER_RESULTS_DIR'])\n"
                      "    (folder / 'transcript.txt').write_text('VO')\nprint('Ran 1 tests')")
             (project / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "P", "lanes": {
                 "note": {"command": [sys.executable, "-c", write]}}}))
-            results = project / ".build/engineering/note/results"
+            results = project / ".build/queuekeeper/note/results"
             with patch.object(cli, "source_identity", return_value={}), contextlib.redirect_stdout(StringIO()), \
                  contextlib.redirect_stderr(StringIO()):
                 self.assertEqual(cli.main(["--project", directory, "run", "note"]), 0)

@@ -8,7 +8,7 @@ from pathlib import Path
 
 SHIMS = Path(__file__).resolve().parents[3] / "bin/shims"
 # The checkout a lane runs in: only a folder inside it is removed.
-ROOT_VARIABLE = "ENG_STALE_MODULES_ROOT"
+ROOT_VARIABLE = "QUEUEKEEPER_STALE_MODULES_ROOT"
 
 
 def environment(base, root):

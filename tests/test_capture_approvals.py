@@ -32,7 +32,7 @@ def make_runner(root, marker):
 class StableRunnerTests(unittest.TestCase):
     def test_path_is_per_project_outside_checkouts(self):
         self.assertEqual(capture_approvals.stable_runner_path("App", RUNNER, "/Users/someone"),
-                         Path("/Users/someone/Library/Application Support/VocaroEngineering/foreground-runners/App")
+                         Path("/Users/someone/Library/Application Support/queuekeeper/foreground-runners/App")
                          / RUNNER)
 
     def test_rebind_moves_the_runner_and_its_contents_only(self):

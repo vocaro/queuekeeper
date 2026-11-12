@@ -58,7 +58,7 @@ from .. import processes
 from ..config import APP_PLATFORMS, DEFAULT_TOOLKIT, TOOLKIT_ROOT, load
 
 # Names an isolated store for tests; sessions use the default.
-OVERRIDE = "VOCARO_APP_STORE"
+OVERRIDE = "QUEUEKEEPER_APP_STORE"
 # The kept builds of each platform: the newest, and the one before it to go back to.
 KEPT = 2
 MAIN = "refs/remotes/origin/main"
@@ -99,8 +99,8 @@ def store_root():
     """The account's store of kept builds. A HOME private to one session must not start another."""
     if os.environ.get(OVERRIDE): return Path(os.environ[OVERRIDE])
     home = Path(pwd.getpwuid(os.getuid()).pw_dir)
-    if sys.platform == "darwin": return home / "Library/Application Support/vocaro-engineering/apps"
-    return home / ".local/state/vocaro-engineering/apps"
+    if sys.platform == "darwin": return home / "Library/Application Support/queuekeeper/apps"
+    return home / ".local/state/queuekeeper/apps"
 
 
 def git_environment():
@@ -553,7 +553,7 @@ def add_arguments(parser):
                          "nothing")
     running.add_argument("--replace", action="store_true", help="on this Mac, quit another copy of the app that runs "
                          "from elsewhere, such as a test run's, before opening the kept one")
-    running.add_argument("--owner", help="the session the device's reservation names (default: VOCARO_DEVICE_OWNER, "
+    running.add_argument("--owner", help="the session the device's reservation names (default: QUEUEKEEPER_DEVICE_OWNER, "
                          "else the agent session, else this account)")
     running.add_argument("--wait", type=float, default=device_pass.WAIT, metavar="SECONDS", help="how long to wait "
                          f"in the device's line (default {device_pass.WAIT})")

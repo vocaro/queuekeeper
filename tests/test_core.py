@@ -30,7 +30,7 @@ def setUpModule():
     # never reaches the owner's; test_remote's doctor tests reach a fake one. It also checks the
     # account's agent skill links: these tests install no agent host, and test_skills installs some.
     nowhere = str(Path(tempfile.gettempdir()) / f"no-agent-host-{uuid.uuid4()}")
-    environment = patch.dict(os.environ, {"VOCARO_OFFLOAD_HOST": "none", "CLAUDE_CONFIG_DIR": nowhere,
+    environment = patch.dict(os.environ, {"QUEUEKEEPER_OFFLOAD_HOST": "none", "CLAUDE_CONFIG_DIR": nowhere,
                                           "CODEX_HOME": nowhere})
     environment.start()
     unittest.addModuleCleanup(environment.stop)
@@ -488,7 +488,7 @@ class ConfigurationTests(unittest.TestCase):
                      (["check", "--", "x"], 0, ["x"])]  # a lane without minimumTests counts no tests
             for arguments, status, passed in cases:
                 with self.subTest(arguments):
-                    receipt = root / ".build/engineering" / arguments[arguments[0] == "--expect" and 2] / "source.json"
+                    receipt = root / ".build/queuekeeper" / arguments[arguments[0] == "--expect" and 2] / "source.json"
                     receipt.unlink(missing_ok=True)
                     with patch.object(cli, "source_identity", return_value={}), contextlib.redirect_stderr(StringIO()) as error:
                         self.assertEqual(cli.main(["--project", directory, "run", *arguments]), status, error.getvalue())
@@ -518,7 +518,7 @@ class ConfigurationTests(unittest.TestCase):
                     return cli.main(["--project", directory, "run", "--here", *arguments]), error.getvalue()
             status, error = run("--repeat", "3", "--erase", "--only", "T/a", "series")
             self.assertEqual(status, 0, error)
-            receipt = json.loads((root / ".build/engineering/series/source.json").read_text())
+            receipt = json.loads((root / ".build/queuekeeper/series/source.json").read_text())
             self.assertEqual(receipt["arguments"], ["--repeat", "3", "--erase", "--only", "T/a"])
             self.assertEqual(receipt["timeout"], 300, "a series' lane has N times its limit")
             status, error = run("--repeat", "2", "--expect", "3", "series")
@@ -526,7 +526,7 @@ class ConfigurationTests(unittest.TestCase):
             status, error = run("--repeat", "3", "once")
             self.assertEqual(status, lane_results.UNMEASURED, error)
             self.assertIn("reports no series of 3 runs", error)
-            self.assertEqual(json.loads((root / ".build/engineering/once/source.json").read_text())["outcome"], "unmeasured")
+            self.assertEqual(json.loads((root / ".build/queuekeeper/once/source.json").read_text())["outcome"], "unmeasured")
             status, error = run("once")
             self.assertEqual(status, 0, error)
             self.assertNotIn("series", error)
@@ -535,11 +535,11 @@ class ConfigurationTests(unittest.TestCase):
                                        (["--erase", "series"], "give --repeat N too"),
                                        (["--only", "T/a", "series"], "give --repeat N too")):
                 with self.subTest(arguments):
-                    (root / ".build/engineering/series/source.json").unlink(missing_ok=True)
+                    (root / ".build/queuekeeper/series/source.json").unlink(missing_ok=True)
                     status, error = run(*arguments)
                     self.assertEqual(status, 2, error)
                     self.assertIn(refusal, error)
-                    self.assertFalse((root / ".build/engineering/series/source.json").exists())
+                    self.assertFalse((root / ".build/queuekeeper/series/source.json").exists())
 
     def run_lane(self, directory, *arguments):
         with patch.object(cli, "source_identity", return_value={}), contextlib.redirect_stderr(StringIO()) as error:
@@ -564,11 +564,11 @@ class ConfigurationTests(unittest.TestCase):
                             contextlib.redirect_stderr(StringIO()) as error:
                         self.assertEqual(cli.main(["--project", directory, "run", name]), status, error.getvalue())
             stopped = f"timed out after {limit:g}s"
-            recorded = json.loads((root / ".build/engineering/hung/source.json").read_text())
+            recorded = json.loads((root / ".build/queuekeeper/hung/source.json").read_text())
             self.assertEqual((recorded["outcome"], recorded["timeout"]), ("unmeasured", limit))
             self.assertIn(stopped, recorded["error"])
-            self.assertEqual(json.loads((root / ".build/engineering/quick/source.json").read_text())["outcome"], "passed")
-            members = {name: json.loads((root / f".build/engineering/both/lanes/{name}.json").read_text())
+            self.assertEqual(json.loads((root / ".build/queuekeeper/quick/source.json").read_text())["outcome"], "passed")
+            members = {name: json.loads((root / f".build/queuekeeper/both/lanes/{name}.json").read_text())
                        for name in ("hung", "quick")}
             self.assertEqual({name: member["outcome"] for name, member in members.items()},
                              {"hung": "unmeasured", "quick": "passed"})
@@ -599,12 +599,12 @@ class ConfigurationTests(unittest.TestCase):
                 with self.subTest(name):
                     with patch.object(cli, "source_identity", return_value={}), contextlib.redirect_stderr(StringIO()) as error:
                         self.assertEqual(cli.main(["--project", directory, "run", name]), status, error.getvalue())
-                    recorded = json.loads((root / ".build/engineering" / name / "source.json").read_text())
+                    recorded = json.loads((root / ".build/queuekeeper" / name / "source.json").read_text())
                     self.assertEqual(recorded.get("outcome"), outcome)
-            recorded = json.loads((root / ".build/engineering/unmeasured/source.json").read_text())
+            recorded = json.loads((root / ".build/queuekeeper/unmeasured/source.json").read_text())
             self.assertEqual((recorded["exitStatus"], recorded["unmeasured"]), (0, [unmeasured]))
-            self.assertIn("timed out after 1s", json.loads((root / ".build/engineering/slow/source.json").read_text())["error"])
-            recorded = json.loads((root / ".build/engineering/short-passed/source.json").read_text())
+            self.assertIn("timed out after 1s", json.loads((root / ".build/queuekeeper/slow/source.json").read_text())["error"])
+            recorded = json.loads((root / ".build/queuekeeper/short-passed/source.json").read_text())
             self.assertEqual(recorded["exitStatus"], 0)
             self.assertIn("Expected at least 2 executed tests; observed 1", recorded["error"])
             self.assertIn("Expected at least 2 executed tests; observed 1", self.run_lane(directory, "short"))
@@ -634,7 +634,7 @@ class ResourceTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         root = Path(self.temp.name)
         self.env = patch.dict(os.environ, {"HEAVY_SLOT_DIR": str(root / "slots"), "HEAVY_SLOTS": "2",
-            "HEAVY_SLOTS_MAX": "3", "HEAVY_POLL_SECONDS": "0.01", "SW_GATE_LOCK_FILE": str(root / "gate")})
+            "HEAVY_SLOTS_MAX": "3", "HEAVY_POLL_SECONDS": "0.01", "QUEUEKEEPER_GATE_LOCK_FILE": str(root / "gate")})
         self.env.start()
         self.saved = os.environ.pop(resources.TOKEN, None)
         # The CPU reads as mostly idle unless a test says otherwise: no test depends on the host's real reading, and
@@ -945,8 +945,8 @@ class ResourceTests(unittest.TestCase):
             self.assertIsNone(resources.take_slot(resources.slot_directory(), 3))
             with resources.Admission("nested", timeout=0) as nested:
                 self.assertTrue(nested.reused)
-            self.assertTrue(Path(os.environ["SW_GATE_LOCK_FILE"] + ".warm-push-guard").exists())
-        self.assertFalse(Path(os.environ["SW_GATE_LOCK_FILE"] + ".warm-push-guard").exists())
+            self.assertTrue(Path(os.environ["QUEUEKEEPER_GATE_LOCK_FILE"] + ".warm-push-guard").exists())
+        self.assertFalse(Path(os.environ["QUEUEKEEPER_GATE_LOCK_FILE"] + ".warm-push-guard").exists())
 
     def test_exclusive_escalation_inside_shared_work_fails_instead_of_deadlocking(self):
         with resources.Admission("shared", timeout=0):
@@ -1596,7 +1596,7 @@ class ResourceTests(unittest.TestCase):
         self.assertEqual((generate.wait(timeout=stretched(30)), exclusive.wait(timeout=stretched(30))), (0, 0))
 
     def test_a_model_run_inside_heavy_admission_is_refused_and_inside_model_or_exclusive_admission_reuses_it(self):
-        guard = Path(os.environ["SW_GATE_LOCK_FILE"] + ".warm-push-guard")
+        guard = Path(os.environ["QUEUEKEEPER_GATE_LOCK_FILE"] + ".warm-push-guard")
         with contextlib.redirect_stderr(StringIO()), resources.Admission("heavy", timeout=0):
             with self.assertRaisesRegex(RuntimeError, "on-device model"):
                 with resources.Admission("generate", model=True, timeout=0): self.fail("admitted without the model")
@@ -1651,7 +1651,7 @@ class ResourceTests(unittest.TestCase):
                 contextlib.redirect_stdout(StringIO()), contextlib.redirect_stderr(StringIO()):
             for lane in ["generate", "build", "both"]:
                 self.assertEqual(cli.main(["--project", str(root), "run", lane]), 0, lane)
-        logs = root / ".build/engineering"
+        logs = root / ".build/queuekeeper"
         for log, held in [("generate/run.log", True), ("build/run.log", False), ("both/lanes/generate.log", True),
                           ("both/lanes/build.log", True)]:
             self.assertIn(f"model {held}", (logs / log).read_text(), log)
@@ -1671,7 +1671,7 @@ class ResourceTests(unittest.TestCase):
                  "suites": {"parallel": ["mac", "ios"], "resource": "heavy", "jobs": 1}}
         (root / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Display", "lanes": lanes}))
         held = lambda name: f"caffeinate -d -- sh -c {lanes[name]['command'][2]}"
-        receipts = root / ".build/engineering"
+        receipts = root / ".build/queuekeeper"
         with patch.dict(os.environ, {"PATH": f"{tools}{os.pathsep}{os.environ['PATH']}", "RECORD": str(record)}), \
                 patch.object(cli, "refresh_policy", return_value="policy"), patch.object(cli, "source_identity", return_value={}), \
                 contextlib.redirect_stdout(StringIO()), contextlib.redirect_stderr(StringIO()):
@@ -1701,7 +1701,7 @@ class ResourceTests(unittest.TestCase):
             self.assertEqual(record.read_text().splitlines(), ["caffeinate -u -t 1", f"{held('mac')} extra", "mac"])
 
     def test_an_unreadable_unknown_or_uncertain_guard_is_never_reclaimed(self):
-        guard = Path(os.environ["SW_GATE_LOCK_FILE"] + ".warm-push-guard")
+        guard = Path(os.environ["QUEUEKEEPER_GATE_LOCK_FILE"] + ".warm-push-guard")
         # Whatever wrote a guard admission cannot read may still run what it records, so admission waits and
         # leaves its bytes as they are: a torn write, JSON that is no guard, another version's, another program's
         # such as an older push keeper's, and owners without admission's marker.
@@ -1729,7 +1729,7 @@ class ResourceTests(unittest.TestCase):
         # Such a guard made admission raise AttributeError or KeyError, or admit work beside an entry it could not
         # read, where it refuses a guard it cannot parse (#72). Each attempt, nested work and a job's own stop or
         # end now treat it alike, and leave its bytes as they are.
-        guard = Path(os.environ["SW_GATE_LOCK_FILE"] + ".warm-push-guard")
+        guard = Path(os.environ["QUEUEKEEPER_GATE_LOCK_FILE"] + ".warm-push-guard")
         refused = f"the guard {guard} is unreadable or not in admission's format"
         waiting = f"({refused} and requires inspection; `python3 scripts/qk admissions recover` lists it); no lock was reclaimed"
         with contextlib.redirect_stderr(StringIO()), resources.Admission("held", timeout=0) as held:
@@ -1790,7 +1790,7 @@ class ResourceTests(unittest.TestCase):
     def test_a_gate_lock_held_at_the_namespaces_path_neither_holds_admission_back_nor_is_touched(self):
         # Admission took StudyWright's former host gate lock at each attempt, so that a gate holding it refused
         # every session's heavy work. No checkout runs that gate any more, and admission ignores the lock (#25).
-        lock = Path(os.environ["SW_GATE_LOCK_FILE"])
+        lock = Path(os.environ["QUEUEKEEPER_GATE_LOCK_FILE"])
         if Path("/usr/bin/shlock").is_file():
             subprocess.run(["/usr/bin/shlock", "-f", str(lock), "-p", str(os.getppid())], check=True)
         else:
@@ -1812,7 +1812,7 @@ class ResourceTests(unittest.TestCase):
         # A job admitted beside one killed by SIGKILL changes only its own entry when it leaves.
         # Changing nothing stranded the queue for 80 minutes (2026-10-22): every job that finished
         # while the killed job's entry stood became another dead owner.
-        guard = Path(os.environ["SW_GATE_LOCK_FILE"] + ".warm-push-guard")
+        guard = Path(os.environ["QUEUEKEEPER_GATE_LOCK_FILE"] + ".warm-push-guard")
         holder = ("import sys\nfrom queuekeeper import resources\n"
                   "with resources.Admission('killed', timeout=0):\n    print(flush=True)\n    sys.stdin.read()\n")
         environment = {**os.environ, "PYTHONPATH": str(config.TOOLKIT_ROOT / "src/python")}
@@ -1842,7 +1842,7 @@ class ResourceTests(unittest.TestCase):
         # An agent's task stop sent queuekeeper admit SIGTERM, which ended it without leaving admission
         # while its command ran on in its own session (2026-10-22).
         root = Path(self.temp.name)
-        guard = Path(os.environ["SW_GATE_LOCK_FILE"] + ".warm-push-guard")
+        guard = Path(os.environ["QUEUEKEEPER_GATE_LOCK_FILE"] + ".warm-push-guard")
         marker = root / "command.pid"
         command = [sys.executable, "-c", f"import os, pathlib, time\npathlib.Path({str(marker)!r}).write_text(str(os.getpid()))\ntime.sleep(120)"]
         (root / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Stop",
@@ -1877,7 +1877,7 @@ class ResourceTests(unittest.TestCase):
                     self.assertFalse(guard.exists())
                     if entry != "resources":
                         receipts = {"admit": "admit", "run": "stopped"}
-                        receipt = json.loads((root / ".build/engineering" / receipts[entry] / "source.json").read_text())
+                        receipt = json.loads((root / ".build/queuekeeper" / receipts[entry] / "source.json").read_text())
                         self.assertEqual(receipt["outcome"], "failed-or-interrupted")
                         self.assertIn(f"Stopped by {number.name} after its command", receipt["error"])
                 finally:
@@ -1893,7 +1893,7 @@ class ResourceTests(unittest.TestCase):
         # it, finishing normally while that entry stood, left its own: two dead entries refused
         # every session's heavy work until attended recovery.
         root = Path(self.temp.name)
-        guard = Path(os.environ["SW_GATE_LOCK_FILE"] + ".warm-push-guard")
+        guard = Path(os.environ["QUEUEKEEPER_GATE_LOCK_FILE"] + ".warm-push-guard")
         marker = root / "command.pids"
         # The command ends on SIGTERM, as the lane's script did, and has a child in its own session.
         command = [sys.executable, "-c", "import os, pathlib, subprocess, sys, time\n"
@@ -1934,7 +1934,7 @@ class ResourceTests(unittest.TestCase):
                     with contextlib.suppress(ProcessLookupError): os.kill(pid, signal.SIGKILL)
 
     def test_a_stop_that_cannot_confirm_every_process_ended_leaves_the_entry_uncertain(self):
-        guard = Path(os.environ["SW_GATE_LOCK_FILE"] + ".warm-push-guard")
+        guard = Path(os.environ["QUEUEKEEPER_GATE_LOCK_FILE"] + ".warm-push-guard")
         real, roots, marked = processes.snapshot, [], []
         # Above macOS's PID limit, so no signal reaches a real process: it never ends.
         phantom = 99999999
@@ -1958,7 +1958,7 @@ class ResourceTests(unittest.TestCase):
         self.assertTrue(json.loads(guard.read_text())["owners"][admission.identity]["uncertain"])
 
     def test_a_timed_out_run_releases_admission_once_its_command_ended(self):
-        guard = Path(os.environ["SW_GATE_LOCK_FILE"] + ".warm-push-guard")
+        guard = Path(os.environ["QUEUEKEEPER_GATE_LOCK_FILE"] + ".warm-push-guard")
         with contextlib.redirect_stderr(StringIO()), self.assertRaises(processes.TimedOut):
             with resources.Admission("timed out", timeout=0):
                 processes.supervise([sys.executable, "-c", "import time; time.sleep(30)"], cwd=self.temp.name, timeout=0.2)
@@ -1966,7 +1966,7 @@ class ResourceTests(unittest.TestCase):
         with contextlib.redirect_stderr(StringIO()), resources.Admission("next", timeout=0): pass
 
     def test_a_timeout_that_cannot_confirm_every_process_ended_leaves_the_entry_uncertain(self):
-        guard = Path(os.environ["SW_GATE_LOCK_FILE"] + ".warm-push-guard")
+        guard = Path(os.environ["QUEUEKEEPER_GATE_LOCK_FILE"] + ".warm-push-guard")
         real, roots = processes.snapshot, []
         # Above macOS's PID limit, so no signal reaches a real process: it never ends.
         phantom = 99999999
@@ -1984,7 +1984,7 @@ class ResourceTests(unittest.TestCase):
         self.assertTrue(json.loads(guard.read_text())["owners"][admission.identity]["uncertain"])
 
     def test_a_stop_before_the_command_starts_leaves_no_entry(self):
-        guard = Path(os.environ["SW_GATE_LOCK_FILE"] + ".warm-push-guard")
+        guard = Path(os.environ["QUEUEKEEPER_GATE_LOCK_FILE"] + ".warm-push-guard")
         self.addCleanup(processes._stops.clear)
         processes.request_stop(signal.SIGTERM)
         with self.subTest("admitted"), contextlib.redirect_stderr(StringIO()):
@@ -2009,7 +2009,7 @@ class ResourceTests(unittest.TestCase):
             return 0
         with patch.object(cli, "refresh_policy", return_value="policy"), patch.object(cli, "source_identity", return_value={}), patch.object(cli.processes, "run", side_effect=finished), contextlib.redirect_stderr(StringIO()):
             self.assertEqual(cli.main(["--project", str(root), "run", "empty"]), 2)
-        self.assertFalse(Path(os.environ["SW_GATE_LOCK_FILE"] + ".warm-push-guard").exists())
+        self.assertFalse(Path(os.environ["QUEUEKEEPER_GATE_LOCK_FILE"] + ".warm-push-guard").exists())
 
     def test_a_shared_owner_cannot_forge_exclusive_admission(self):
         with resources.Admission("shared", timeout=0):
@@ -2026,7 +2026,7 @@ class ResourceTests(unittest.TestCase):
     def admit(self, *arguments):
         root = Path(self.temp.name)
         (root / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Admit"}))
-        receipt = root / ".build/engineering/admit/source.json"
+        receipt = root / ".build/queuekeeper/admit/source.json"
         receipt.unlink(missing_ok=True)
         with patch.object(cli, "refresh_policy", return_value="policy") as policy, patch.object(cli, "source_identity", return_value={}), contextlib.redirect_stderr(StringIO()) as error:
             result = cli.main(["--project", str(root), "admit", *arguments])
@@ -2064,7 +2064,7 @@ class ResourceTests(unittest.TestCase):
                  "for kind in ['exclusive', 'model']:\n"
                  "    try: resources.inherited(**{kind: True})\n    except RuntimeError: pass\n    else: held.append(kind)\n"
                  "Path('admitted').write_text(' '.join(held) or 'shared')\nraise SystemExit(7)")
-        guard = Path(os.environ["SW_GATE_LOCK_FILE"] + ".warm-push-guard")
+        guard = Path(os.environ["QUEUEKEEPER_GATE_LOCK_FILE"] + ".warm-push-guard")
         for options, held in [([], "shared"), (["--model"], "model"), (["--exclusive"], "exclusive model")]:
             with self.subTest(held), patch.dict(os.environ, {"PYTHONPATH": str(config.TOOLKIT_ROOT / "src/python")}):
                 result, policy, receipt = self.admit(*options, "--", sys.executable, "-c", probe)
@@ -2093,7 +2093,7 @@ class ResourceTests(unittest.TestCase):
         self.assertFalse(resources.slot_directory().exists())
 
     def test_a_command_that_cannot_start_releases_admission(self):
-        guard = Path(os.environ["SW_GATE_LOCK_FILE"] + ".warm-push-guard")
+        guard = Path(os.environ["QUEUEKEEPER_GATE_LOCK_FILE"] + ".warm-push-guard")
         unexecutable = Path(self.temp.name) / "check-all.sh"
         unexecutable.write_text("#!/bin/sh\nexit 0\n")
         for command in [str(Path(self.temp.name) / "swfit-typo"), str(unexecutable)]:
@@ -2235,7 +2235,7 @@ class AdmissionLogTests(unittest.TestCase):
     def test_the_default_log_is_in_the_accounts_durable_state_whatever_home_a_session_sets(self):
         os.environ.pop("HEAVY_SLOT_DIR")
         state = "Library/Application Support" if sys.platform == "darwin" else ".local/state"
-        expected = Path(pwd.getpwuid(os.getuid()).pw_dir) / state / "vocaro-engineering/admissions.jsonl"
+        expected = Path(pwd.getpwuid(os.getuid()).pw_dir) / state / "queuekeeper/admissions.jsonl"
         with patch.dict(os.environ, {"HOME": self.temp.name}):
             self.assertEqual(resources.log_path(), expected)
 
@@ -2262,7 +2262,7 @@ class AdmissionLogTests(unittest.TestCase):
                 self.assertEqual(ended["outcome"], "released")
 
     def test_each_end_is_logged_with_the_outcome_that_settled_its_guard_entry(self):
-        guard = Path(os.environ["SW_GATE_LOCK_FILE"] + ".warm-push-guard")
+        guard = Path(os.environ["QUEUEKEEPER_GATE_LOCK_FILE"] + ".warm-push-guard")
         cases = [("released", None), ("not-started", processes.NotStarted("Command did not start")),
                  ("stopped", processes.Interrupted(signal.SIGTERM, "after its command")),
                  ("timed-out", processes.TimedOut("Command timed out")), ("uncertain", RuntimeError("children may remain"))]
@@ -2310,7 +2310,7 @@ class AdmissionLogTests(unittest.TestCase):
                 self.assertFalse(queue.exists())
 
     def test_a_log_that_cannot_be_written_never_fails_or_holds_up_admission(self):
-        log, guard = resources.log_path(), Path(os.environ["SW_GATE_LOCK_FILE"] + ".warm-push-guard")
+        log, guard = resources.log_path(), Path(os.environ["QUEUEKEEPER_GATE_LOCK_FILE"] + ".warm-push-guard")
         log.parent.mkdir(parents=True)
         # A FIFO no process reads, which a plain open would wait on for a reader. In a process of its
         # own, so that a wait fails the test instead of hanging the suite.
@@ -2444,7 +2444,7 @@ class AdmissionLogTests(unittest.TestCase):
         # The log recorded no refusal, so an audit rebuilt why requests waited from the holders logged, and a
         # waiting message named a threshold but not which limit it was, or no value at all (#49).
         os.environ["HEAVY_BUSY_LIMIT"] = "40"
-        guard = Path(os.environ["SW_GATE_LOCK_FILE"] + ".warm-push-guard")
+        guard = Path(os.environ["QUEUEKEEPER_GATE_LOCK_FILE"] + ".warm-push-guard")
         queue, born = resources.slot_directory() / "exclusive-queue.json", resources.process_start(os.getpid())
 
         def hold(*slots):
@@ -2610,7 +2610,7 @@ class AdmissionLogTests(unittest.TestCase):
             # A slot file naming an entry that is gone from the guard vouches for nothing.
             with self.subTest("a slot naming an admission the guard no longer holds"), contextlib.ExitStack() as stack:
                 for label in ("gate A", "gate B", "docs"): held(stack, label)
-                guard = Path(os.environ["SW_GATE_LOCK_FILE"] + ".warm-push-guard")
+                guard = Path(os.environ["QUEUEKEEPER_GATE_LOCK_FILE"] + ".warm-push-guard")
                 written = guard.read_text()
                 stack.callback(guard.write_text, written)
                 recorded = json.loads(written)
@@ -2884,7 +2884,7 @@ class RecoveryTests(unittest.TestCase):
 
     @property
     def guard(self):
-        return Path(os.environ["SW_GATE_LOCK_FILE"] + ".warm-push-guard")
+        return Path(os.environ["QUEUEKEEPER_GATE_LOCK_FILE"] + ".warm-push-guard")
 
     def owners(self):
         return json.loads(self.guard.read_text())["owners"] if self.guard.exists() else {}
@@ -3832,7 +3832,7 @@ class LaneLabelTests(unittest.TestCase):
         gate.wait(timeout=stretched(30))
 
     def test_the_guard_records_each_projects_lane_apart_beside_older_entries(self):
-        guard = Path(os.environ["SW_GATE_LOCK_FILE"] + ".warm-push-guard")
+        guard = Path(os.environ["QUEUEKEEPER_GATE_LOCK_FILE"] + ".warm-push-guard")
         copy = Path(self.temp.name) / "guard.json"
         snapshot = [sys.executable, "-c", f"import shutil; shutil.copy({str(guard)!r}, {str(copy)!r})"]
         alpha = self.project("Alpha", gate={"command": self.held("Alpha", "gate"), "resource": "heavy"})
@@ -3991,7 +3991,7 @@ class LaneLabelTests(unittest.TestCase):
         self.admit(root, self.QUICK, "--here")
         self.admit(root, self.QUICK)
         # Work the second Mac runs for another Mac says which sent it.
-        with patch.dict(os.environ, {"VOCARO_DISPATCHED_FROM": "Sender"}):
+        with patch.dict(os.environ, {"QUEUEKEEPER_DISPATCHED_FROM": "Sender"}):
             self.assertEqual(self.run_lane(root, "--here", "gate")[0], 0)
         # The negative control: a caller's own admission names no placement.
         with contextlib.redirect_stderr(StringIO()), resources.Admission("warm push 0123abc", timeout=0): pass
@@ -4082,7 +4082,7 @@ class DeviceWindowWaitTests(unittest.TestCase):
         self.assertIn("queuekeeper: device stopped waiting: the window on iPhone ends ", error)
         self.assertIn("No device result was recorded", error)
         self.assertFalse(ran.exists())
-        self.assertFalse((root / ".build/engineering/device/source.json").exists())
+        self.assertFalse((root / ".build/queuekeeper/device/source.json").exists())
 
     def test_if_free_caps_its_direct_probe_at_the_last_start_in_the_device_window(self):
         root, ran = self.lane(devices=["iPhone"])
@@ -4117,7 +4117,7 @@ class DeviceWindowWaitTests(unittest.TestCase):
                 self.assertEqual("queuekeeper: device stopped waiting: the window on iPhone ends " in said, remaining is not None)
                 self.assertEqual("No device result was recorded" in said, remaining is not None)
                 self.assertFalse(ran.exists())
-                self.assertFalse((root / ".build/engineering/device/source.json").exists())
+                self.assertFalse((root / ".build/queuekeeper/device/source.json").exists())
 
     def test_a_default_timeout_inside_a_window_with_time_left_blames_no_window(self):
         root, ran = self.lane(devices=["iPhone"])
@@ -4260,7 +4260,7 @@ class DeviceWindowWaitTests(unittest.TestCase):
         self.assertIn("its full-pass budget of 5400s", error)
         self.assertIn("165s kept for cleanup", error)
         self.assertFalse(ran.exists())
-        self.assertFalse((root / ".build/engineering/device/results/device-pass.json").exists())
+        self.assertFalse((root / ".build/queuekeeper/device/results/device-pass.json").exists())
 
     def test_a_longer_passing_sample_overrides_the_configured_budget(self):
         keys = ["iPad", "iPhone"]
@@ -4297,7 +4297,7 @@ class DeviceWindowWaitTests(unittest.TestCase):
 from pathlib import Path
 keys = ["iPad"] if os.environ.get("PARTIAL") else ["iPad", "iPhone"]
 parts = [{"key": key, "outcome": "passed"} for key in keys]
-(Path(os.environ["ENG_RESULTS_DIR"]) / "device-pass.json").write_text(json.dumps({"status": 0, "devices": parts}))
+(Path(os.environ["QUEUEKEEPER_RESULTS_DIR"]) / "device-pass.json").write_text(json.dumps({"status": 0, "devices": parts}))
 print("Ran " + os.environ.get("TEST_COUNT", "12") + " tests")
 sys.exit(int(os.environ.get("EXIT", "0")))
 """

@@ -657,7 +657,7 @@ class ShardAdmissionTests(unittest.TestCase):
         (self.here / "suite").mkdir()
         (self.here / "suite/test_probe.py").write_text(PROBE)
         # Admission here and in the module's process uses these slots and this guard, never the host's.
-        self.isolated = {"HEAVY_SLOT_DIR": str(self.here / "slots"), "SW_GATE_LOCK_FILE": str(self.here / "gate")}
+        self.isolated = {"HEAVY_SLOT_DIR": str(self.here / "slots"), "QUEUEKEEPER_GATE_LOCK_FILE": str(self.here / "gate")}
         variables = patch.dict(os.environ, self.isolated)
         variables.start()
         self.addCleanup(variables.stop)
@@ -759,11 +759,11 @@ class LaneGroupTests(unittest.TestCase):
         self.assertEqual(status, 0, output)
         self.assertIn("PASS left", output)
         self.assertIn("PASS right", output)
-        receipt = json.loads((self.root / ".build/engineering/both/source.json").read_text())
+        receipt = json.loads((self.root / ".build/queuekeeper/both/source.json").read_text())
         self.assertEqual((receipt["exitStatus"], receipt["jobs"], sorted(receipt["lanes"])), (0, 2, ["left", "right"]))
-        self.assertIn("Ran 1 test", (self.root / ".build/engineering/both/lanes/left.log").read_text())
+        self.assertIn("Ran 1 test", (self.root / ".build/queuekeeper/both/lanes/left.log").read_text())
         # Each lane's receipt sits beside its log, with the tests its log counts.
-        own = json.loads((self.root / ".build/engineering/both/lanes/left.json").read_text())
+        own = json.loads((self.root / ".build/queuekeeper/both/lanes/left.json").read_text())
         self.assertEqual({key: own[key] for key in ("lane", "status", "outcome", "executedTests", "skippedTests", "log")},
                          {"lane": "left", "status": 0, "outcome": "passed", "executedTests": 1, "skippedTests": 0,
                           "log": "left.log"})
@@ -775,7 +775,7 @@ class LaneGroupTests(unittest.TestCase):
         status, output = self.run_lane("--serial", "both")
         self.assertEqual(status, 1, output)
         self.assertIn("never never appeared", output)
-        self.assertEqual(json.loads((self.root / ".build/engineering/both/source.json").read_text())["jobs"], 1)
+        self.assertEqual(json.loads((self.root / ".build/queuekeeper/both/source.json").read_text())["jobs"], 1)
 
     def test_any_failure_fails_the_group_and_otherwise_any_unmeasured_lane_leaves_it_unmeasured(self):
         say = lambda text, status=0, **lane: {"command": [sys.executable, "-c", f"print({text!r}); raise SystemExit({status})"],
@@ -792,21 +792,21 @@ class LaneGroupTests(unittest.TestCase):
                 self.configure({**lanes, "group": {"parallel": list(members)}})
                 status, output = self.run_lane("group")
                 self.assertEqual(status, expected, output)
-                receipt = json.loads((self.root / ".build/engineering/group/source.json").read_text())
+                receipt = json.loads((self.root / ".build/queuekeeper/group/source.json").read_text())
                 # Every lane runs to its own end, whatever the others did.
                 self.assertEqual(sorted(receipt["lanes"]), sorted(members))
                 self.assertEqual(receipt["outcome"], {0: "passed", 1: "failed", 3: "unmeasured"}[expected])
                 for member in members:
-                    own = json.loads((self.root / f".build/engineering/group/lanes/{member}.json").read_text())
+                    own = json.loads((self.root / f".build/queuekeeper/group/lanes/{member}.json").read_text())
                     self.assertEqual(own["outcome"], {"pass": "passed", "fail": "failed", "short": "failed",
                                                       "unmeasured": "unmeasured", "slow": "unmeasured"}[member])
         self.assertIn("Expected at least 2 executed tests; observed 1", output)
         self.assertIn("FAIL short", output)
         # A lane too short for its minimum, and one its timeout ended, say why beside their counts.
-        short = json.loads((self.root / ".build/engineering/group/lanes/short.json").read_text())
+        short = json.loads((self.root / ".build/queuekeeper/group/lanes/short.json").read_text())
         self.assertEqual((short["status"], short["executedTests"], short["error"]),
                          (2, 1, "Expected at least 2 executed tests; observed 1"))
-        slow = json.loads((self.root / ".build/engineering/group/lanes/slow.json").read_text())
+        slow = json.loads((self.root / ".build/queuekeeper/group/lanes/slow.json").read_text())
         self.assertEqual((slow["status"], slow["executedTests"]), (3, None))
         self.assertIn("timed out after 1s", slow["error"])
 
@@ -821,7 +821,7 @@ class LaneGroupTests(unittest.TestCase):
                                 "resource": "self"},
                         "two": {"command": [sys.executable, "-c", "print('Ran 1 test')"], "minimumTests": 1}})
         for lane in ["one"]:
-            with self.subTest(lane), patch.dict(os.environ, {"VOCARO_RESOURCE_TOKEN": token}):
+            with self.subTest(lane), patch.dict(os.environ, {"QUEUEKEEPER_RESOURCE_TOKEN": token}):
                 status, output = self.run_lane(lane)
                 self.assertEqual(status, 0, output)
                 self.assertNotIn("did not start", output)
@@ -831,7 +831,7 @@ class LaneGroupTests(unittest.TestCase):
         for arguments in (["group", "--", "x"], ["--expect", "1", "group"], ["--serial", "one"]):
             with self.subTest(arguments):
                 self.assertEqual(self.run_lane(*arguments)[0], 2)
-        self.assertFalse((self.root / ".build/engineering/group").exists())
+        self.assertFalse((self.root / ".build/queuekeeper/group").exists())
 
     def test_a_group_names_runnable_lanes_and_holds_their_heaviest_resource(self):
         command = {"command": ["true"]}

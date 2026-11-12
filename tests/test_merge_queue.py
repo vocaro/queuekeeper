@@ -50,7 +50,7 @@ screen = pathlib.Path(sys.argv[2] + ".screen")
 if screen.exists(): print(screen.read_text(), flush=True)
 # A screen that locks during the run: the reading queuekeeper takes once the lane ends (#293).
 if os.environ.get("FIXTURE_LOCK_DURING_RUN"):
-    shutil.copy(os.environ["FIXTURE_LOCK_DURING_RUN"], os.environ["VOCARO_SCREEN_IOREG"])
+    shutil.copy(os.environ["FIXTURE_LOCK_DURING_RUN"], os.environ["QUEUEKEEPER_SCREEN_IOREG"])
 if status.exists(): sys.exit(int(status.read_text()))
 # A tree with a file named hold gates until the test releases this run, or has gone (Stacked).
 released = pathlib.Path(f"{sys.argv[1]}.release.{run}")
@@ -126,8 +126,8 @@ class Fixture(unittest.TestCase):
         guard = patch.object(mq, "execute", never_exec)
         guard.start()
         self.addCleanup(guard.stop)
-        patcher = patch.dict(os.environ, {"VOCARO_OFFLOAD_HOST": "none", **GIT_ALONE,
-                                          "VOCARO_ENGINEERING_ROOT": str(local_toolkit()[0])})
+        patcher = patch.dict(os.environ, {"QUEUEKEEPER_OFFLOAD_HOST": "none", **GIT_ALONE,
+                                          "QUEUEKEEPER_ROOT": str(local_toolkit()[0])})
         patcher.start()
         self.addCleanup(patcher.stop)
         # A settled host unless a test says otherwise, so that no retry waits on this Mac's real load.
@@ -280,7 +280,7 @@ class Landing(Fixture):
         # A dispatch record of a run on the second Mac names it; a receipt an earlier run wrote here does not.
         worker = mq.Worker.__new__(mq.Worker)
         worker.checkout = self.base / "checkout"
-        receipt = worker.checkout / ".build/engineering/gate/source.json"
+        receipt = worker.checkout / ".build/queuekeeper/gate/source.json"
         receipt.parent.mkdir(parents=True)
         receipt.write_text(json.dumps({"ranOn": "this Mac", "hereBecause": "the second Mac is loaded (load 719.0, at or "
                                                                             "above its HEAVY_LOAD_LIMIT=7.5)"}))
@@ -334,7 +334,7 @@ class Landing(Fixture):
         self.assertEqual(log[:3], ["Add c", "Add b", "Add a"])
         self.assertEqual(run(self.repo, "git", "rev-list", "--merges", "origin/main"), "")
         # What was pushed is what was tested: nothing else moved, and the ref is gone.
-        self.assertEqual(run(self.repo, "git", "for-each-ref", "refs/eng-queue"), "")
+        self.assertEqual(run(self.repo, "git", "for-each-ref", "refs/queuekeeper/queue"), "")
 
     def test_the_branch_moving_after_add_changes_nothing(self):
         self.commit("a", "a")
@@ -356,7 +356,7 @@ class Landing(Fixture):
         self.assertIn("bad: ['bad']", Path(failed["log"]).read_text())
         # all four fail, [a bad] fail, [a] passes, [bad] fails, then [c d] pass: not one gate per commit plus.
         self.assertEqual(self.gates(), 5)
-        self.assertTrue(run(self.repo, "git", "rev-parse", "--verify", f"refs/eng-queue/{ids[1]}"))
+        self.assertTrue(run(self.repo, "git", "rev-parse", "--verify", f"refs/queuekeeper/queue/{ids[1]}"))
 
     def test_two_that_pass_alone_and_fail_together(self):
         self.commit("left", "left"); self.commit("right", "right")
@@ -585,8 +585,8 @@ class CheckedWhenQueued(Fixture):
         self.assertIsNone(identifier)
         self.assertEqual([e["id"] for e in mq.Queue(self.repo).all()], ahead)
         # for-each-ref sorts by name, and two entries made in one second sort by their random suffix, not their order.
-        self.assertEqual(sorted(run(self.repo, "git", "for-each-ref", "--format=%(refname)", "refs/eng-queue").split()),
-                         sorted(f"refs/eng-queue/{i}" for i in ahead))
+        self.assertEqual(sorted(run(self.repo, "git", "for-each-ref", "--format=%(refname)", "refs/queuekeeper/queue").split()),
+                         sorted(f"refs/queuekeeper/queue/{i}" for i in ahead))
         # The files and the entries: all it was checked against, in order, and the one that changes the file.
         self.assertIn("is not queued", error)
         # Only the entry that changes the file, since origin/main holds it as the commit's parent did (#247).
@@ -999,7 +999,7 @@ class CheckedBeforeRunning(UnittestGate):
         identifier, _, error = self.land("forgot")
         self.assertIsNone(identifier)
         self.assertEqual(mq.Queue(self.repo).all(), [])
-        self.assertEqual(run(self.repo, "git", "for-each-ref", "refs/eng-queue"), "")
+        self.assertEqual(run(self.repo, "git", "for-each-ref", "refs/queuekeeper/queue"), "")
         self.assertIn("is not queued: queuekeeper unittest would refuse every gate holding it before running anything", error)
         self.assertIn(f"queuekeeper unittest: test_forgot.py must import host_isolation at its top level, as every test module "
                       f"beside {self.repo}/tests/host_isolation.py does; nothing ran", error)
@@ -1556,7 +1556,7 @@ class NoVerdict(Fixture):
     def test_the_receipts_screen_after_decides_over_the_log(self):
         """The last reading: a fresh receipt's screenAfter, which queuekeeper writes once a lane that depends on the screen
         ends unmeasured; else the log's last `screen:` line. A receipt older than the run is not the run's."""
-        receipt = self.base / ".build/engineering/gate/source.json"
+        receipt = self.base / ".build/queuekeeper/gate/source.json"
         receipt.parent.mkdir(parents=True)
         log = self.base / "gate.log"
         log.write_text(f"{self.UNLOCKED}\n")
@@ -1595,7 +1595,7 @@ class NoVerdict(Fixture):
         """(a worker whose last gate began a minute ago, the source.json of that gate's dispatch, the log) laid out where
         the real remote.dispatch finds them."""
         began = time.time() - 60
-        ran = (self.base / ".build/engineering/remote" / mq.remote.DISPATCHES / "gate"
+        ran = (self.base / ".build/queuekeeper/remote" / mq.remote.DISPATCHES / "gate"
                / time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()))
         ran.mkdir(parents=True)
         worker = type("Runner", (), {"checkout": self.base, "lane_now": ("gate", began, ())})()
@@ -1629,7 +1629,7 @@ class NoVerdict(Fixture):
             + [{**base, "result": {"exitStatus": 3}}, {"host": "far-mac"}, base] \
             + [self.dispatch_receipt(value) for value in ("locked", 7, [], {}, {"state": ""})] \
             + [{**base, "screenAfter": self.FAR_LOCKED}]
-        local = self.base / ".build/engineering/gate/source.json"
+        local = self.base / ".build/queuekeeper/gate/source.json"
         local.parent.mkdir(parents=True)
         for shape in malformed:
             with self.subTest(shape=shape):
@@ -1651,7 +1651,7 @@ class NoVerdict(Fixture):
     def test_a_local_receipt_is_read_at_its_top_level_only(self):
         """A run on this Mac has no dispatch; its receipt holds screenAfter at the top level, and a result in it is
         not a dispatch's."""
-        receipt = self.base / ".build/engineering/gate/source.json"
+        receipt = self.base / ".build/queuekeeper/gate/source.json"
         receipt.parent.mkdir(parents=True)
         log = self.base / "gate.log"
         log.write_text(f"{self.UNLOCKED}\n")
@@ -1677,7 +1677,7 @@ class NoVerdict(Fixture):
         ran.mkdir(parents=True)
         def dispatch(root, name, since):
             with contextlib.suppress(FileNotFoundError):
-                (Path(root) / ".build/engineering" / name / "run.log").rename(ran / "run.log")
+                (Path(root) / ".build/queuekeeper" / name / "run.log").rename(ran / "run.log")
             (ran / "source.json").write_text(json.dumps(self.dispatch_receipt(reading)))
             return ran, "far-mac"
         with patch.dict(os.environ, {offload_host.SCREEN_RECORDING: str(recording)}), \
@@ -1983,14 +1983,14 @@ class NoVerdict(Fixture):
         worker.checkout, worker.timed_out, worker.lane_now = checkout, None, ("gate", time.time() - 60, ())
         log = checkout / "gate.log"
         log.write_text("test_last (m.Passed) ... ok\n")
-        receipt = checkout / ".build/engineering/gate/source.json"
+        receipt = checkout / ".build/queuekeeper/gate/source.json"
         receipt.parent.mkdir(parents=True)
         return worker, log, receipt
 
     def dispatch_of(self, worker, said):
         """The second Mac's dispatch of the worker's gate, whose receipt holds said, or which has none for None."""
         stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
-        run = worker.checkout / f".build/engineering/remote/.dispatches/gate/{stamp}-1"
+        run = worker.checkout / f".build/queuekeeper/remote/.dispatches/gate/{stamp}-1"
         run.mkdir(parents=True)
         if said is not None: (run / "source.json").write_text(said)
         return run
@@ -2285,7 +2285,7 @@ class HoldKinds(Fixture):
 
     def test_what_a_session_can_fix_holds_for_a_session_not_the_owner(self):
         """A path where the worker's checkout goes, and a hook that refuses what the gate passed."""
-        checkout = self.base / "vocaro-queue/project/project"
+        checkout = self.base / "queuekeeper-workers/project/project"
         checkout.mkdir(parents=True)
         (checkout / "kept").write_text("x")
         self.commit("a", "a")
@@ -2332,14 +2332,14 @@ class HoldKinds(Fixture):
 
 
 # Files, as `queuekeeper run` does for a lane the second Mac ran, a dispatch record in the checkout's
-# .build/engineering/remote/.dispatches/LANE/, named for the second it started unless the receipt names
+# .build/queuekeeper/remote/.dispatches/LANE/, named for the second it started unless the receipt names
 # one, and holding the receipt that sys.argv[1] holds, if any; then runs lane.py with the rest.
 DISPATCHING_LANE = """import json, os, pathlib, runpy, sys, time
 receipt = pathlib.Path(sys.argv[1])
 if receipt.exists():
     said = json.loads(receipt.read_text())
     name = said.pop("name", None) or time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + f"-{os.getpid()}"
-    run = pathlib.Path(".build/engineering/remote/.dispatches/gate") / name
+    run = pathlib.Path(".build/queuekeeper/remote/.dispatches/gate") / name
     run.mkdir(parents=True, exist_ok=True)
     if said: (run / "source.json").write_text(json.dumps(said))
 sys.argv = ["lane.py", *sys.argv[2:]]
@@ -2749,7 +2749,7 @@ class SecondMacReading(unittest.TestCase):
     def test_only_a_dispatch_that_ran_there_since_the_lane_began_names_its_mac(self):
         root = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, root, ignore_errors=True)
-        runs = root / ".build/engineering/remote/.dispatches/gate"
+        runs = root / ".build/queuekeeper/remote/.dispatches/gate"
         def dispatch(name, receipt):
             (runs / name).mkdir(parents=True)
             if receipt is not None: (runs / name / "source.json").write_text(json.dumps(receipt))
@@ -2765,9 +2765,9 @@ class SecondMacReading(unittest.TestCase):
         self.assertEqual(mq.remote.dispatched(root, "gate", since), "fake-mac")
         # One lost, with no receipt, ran on the configured second Mac.
         dispatch("20270115T080200Z-4", None)
-        with patch.dict(os.environ, {"VOCARO_OFFLOAD_HOST": "configured-mac"}):
+        with patch.dict(os.environ, {"QUEUEKEEPER_OFFLOAD_HOST": "configured-mac"}):
             self.assertEqual(mq.remote.dispatched(root, "gate", since), "configured-mac")
-        with patch.dict(os.environ, {"VOCARO_OFFLOAD_HOST": "none"}):
+        with patch.dict(os.environ, {"QUEUEKEEPER_OFFLOAD_HOST": "none"}):
             self.assertIsNone(mq.remote.dispatched(root, "gate", since))
         self.assertIsNone(mq.remote.dispatched(root, "other-lane", since))
 
@@ -3835,7 +3835,7 @@ class ClaimsBeforeQueued(Fixture):
             identifier, _, error = self.land("fix")
         self.assertIsNone(identifier)
         self.assertEqual(mq.Queue(self.repo).all(), [])
-        self.assertEqual(run(self.repo, "git", "for-each-ref", "refs/eng-queue"), "")
+        self.assertEqual(run(self.repo, "git", "for-each-ref", "refs/queuekeeper/queue"), "")
         trial.assert_not_called()
         unittest_checks.assert_not_called()
         self.assertIn(f"{tip[:12]} is not queued", error)
@@ -3956,7 +3956,7 @@ class SpellingStoppedByRemoval(Fixture):
 import os, pathlib, signal, sys, time
 
 ready, release, stopped, first_done, next_done = map(pathlib.Path, sys.argv[1:])
-assert os.environ["VOCARO_RESOURCE_TOKEN"]
+assert os.environ["QUEUEKEEPER_RESOURCE_TOKEN"]
 
 def stop(signum, frame):
     stopped.touch()
@@ -4073,7 +4073,7 @@ class SpelledBeforeQueued(Fixture):
         identifier, _, error = self.land("fix")
         self.assertIsNone(identifier)
         self.assertEqual(mq.Queue(self.repo).all(), [])
-        self.assertEqual(run(self.repo, "git", "for-each-ref", "refs/eng-queue"), "")
+        self.assertEqual(run(self.repo, "git", "for-each-ref", "refs/queuekeeper/queue"), "")
         self.assertIn("is not queued: python3 scripts/qk spelling fails on it replayed onto origin/main", error)
         self.assertIn("fix:1: British spelling", error)
         self.assertIn("Checked before it is queued", error)
@@ -4731,7 +4731,7 @@ class LanePolicy(Fixture):
 
     def test_the_lanes_toolkit_is_a_clean_copy_whose_origin_is_local(self):
         kit, origin = local_toolkit()
-        self.assertEqual(os.environ["VOCARO_ENGINEERING_ROOT"], str(kit))
+        self.assertEqual(os.environ["QUEUEKEEPER_ROOT"], str(kit))
         self.assertNotEqual(kit.resolve(), ROOT.resolve())
         self.assertEqual(run(kit, "git", "remote", "get-url", "origin"), str(origin))
         self.assertEqual(run(kit, "git", "rev-parse", "origin/main"), run(kit, "git", "rev-parse", "HEAD"))
@@ -4745,7 +4745,7 @@ class ToolkitCopy(Fixture):
         self.seen = self.base / "seen"
         (self.repo / "report.py").write_text(
             "import os, pathlib, subprocess, sys\n"
-            "root = os.environ.get('VOCARO_ENGINEERING_ROOT', '')\n"
+            "root = os.environ.get('QUEUEKEEPER_ROOT', '')\n"
             "head = subprocess.run(['git', '-C', root, 'rev-parse', 'HEAD'], capture_output=True, text=True).stdout.strip() if root else ''\n"
             "dirty = subprocess.run(['git', '-C', root, 'status', '--porcelain'], capture_output=True, text=True).stdout.strip() if root else ''\n"
             "pathlib.Path(sys.argv[1]).write_text('\\n'.join([root, head, dirty]))\n")
@@ -4764,12 +4764,12 @@ class ToolkitCopy(Fixture):
         run(self.kit, "git", "commit", "-qm", "Toolkit")
         run(self.kit, "git", "push", "-q", "origin", "HEAD:main")
         # This Mac's queue folder, laid out as the second Mac's checkouts are (vocaro-engineering#104).
-        self.checkout = self.base / "vocaro-queue/project/project"
-        self.copy = self.base / "vocaro-queue/project/toolkit"
+        self.checkout = self.base / "queuekeeper-workers/project/project"
+        self.copy = self.base / "queuekeeper-workers/project/toolkit"
         variables = patch.dict(os.environ)
         variables.start()
         self.addCleanup(variables.stop)
-        del os.environ["VOCARO_ENGINEERING_ROOT"]
+        del os.environ["QUEUEKEEPER_ROOT"]
         # Let subprocesses write bytecode even if the calling shell turns it off. Apple's Python 3.9
         # defaults to a central cache rather than an adjacent __pycache__; keep both interpreters'
         # caches inside this fixture and check the copied checkout's path below (#368).
@@ -4795,7 +4795,7 @@ class ToolkitCopy(Fixture):
             except Replaced as moved:
                 self.moves.append(moved)
                 self.assertEqual(moved.command, mq.Queue(self.repo).command(self.copy))
-                self.assertNotIn("VOCARO_ENGINEERING_ROOT", moved.env)
+                self.assertNotIn("QUEUEKEEPER_ROOT", moved.env)
                 mq.TOOLKIT_ROOT = self.copy
                 mq.load = self.code_of(self.copy).load
                 os.environ[mq.PROGRESS_VARIABLE] = moved.env[mq.PROGRESS_VARIABLE]
@@ -5095,7 +5095,7 @@ class ToolkitCopy(Fixture):
         with patch.object(mq, "TOOLKIT_ROOT", self.repo):
             worker = mq.Worker(mq.Queue(self.repo))
             worker.toolkit()
-        self.assertNotIn("VOCARO_ENGINEERING_ROOT", worker.environment)
+        self.assertNotIn("QUEUEKEEPER_ROOT", worker.environment)
         self.assertFalse(self.copy.exists())
 
     def test_a_toolkit_at_origin_that_does_not_start_is_not_moved_to(self):
@@ -5116,7 +5116,7 @@ class ToolkitCopy(Fixture):
         self.assertEqual(self.seen.read_text().split("\n"), [str(self.copy), behind, ""])
 
     def test_an_explicit_toolkit_stands(self):
-        with patch.dict(os.environ, {"VOCARO_ENGINEERING_ROOT": str(self.kit)}):
+        with patch.dict(os.environ, {"QUEUEKEEPER_ROOT": str(self.kit)}):
             identifier, status = self.gate_once("a")
         self.assertEqual(status, 0)
         self.assertEqual(self.seen.read_text().split("\n")[0], str(self.kit))
@@ -5145,11 +5145,11 @@ class ToolkitsOwnWorker(Fixture):
         run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
         self.started = self.base / "started"
         run(self.repo, "git", "worktree", "add", "-q", "--detach", str(self.started), "origin/main")
-        self.copy = self.base / "vocaro-queue/project/project-toolkit"
+        self.copy = self.base / "queuekeeper-workers/project/project-toolkit"
         variables = patch.dict(os.environ)
         variables.start()
         self.addCleanup(variables.stop)
-        del os.environ["VOCARO_ENGINEERING_ROOT"]
+        del os.environ["QUEUEKEEPER_ROOT"]
         for patcher in (patch.object(mq, "TOOLKIT_ROOT", self.started), patch.object(mq, "execute", self.execute),
                         patch.object(mq, "load", mq.load)):
             patcher.start()
@@ -5222,7 +5222,7 @@ class ToolkitsOwnWorker(Fixture):
         self.assertIsNone(mq.Queue(self.repo).held())
         self.assertEqual(len(self.moves), 1)
         self.assertIn(f"moving to the toolkit at {knows[:12]}, origin/main, from {code[:12]}", said)
-        self.assertNotIn("VOCARO_ENGINEERING_ROOT", self.moves[0].env)
+        self.assertNotIn("QUEUEKEEPER_ROOT", self.moves[0].env)
         self.assertEqual(run(self.copy, "git", "rev-parse", "HEAD"), knows)
         # The worker the move started finished a round, so the move is forgotten.
         self.assertFalse((mq.Queue(self.repo).directory / mq.MOVED).exists())
@@ -5670,7 +5670,7 @@ class SharedCheckout(Fixture):
 
 # What git prints, over HTTPS and SSH, when it did not reach GitHub.
 UNREACHED = {
-    "https name": "fatal: unable to access 'https://github.com/vocaro/vocaro-engineering.git/': Could not resolve host: "
+    "https name": "fatal: unable to access 'https://github.com/vocaro/queuekeeper.git/': Could not resolve host: "
                   "github.com",
     "ssh name": "ssh: Could not resolve hostname github.com: nodename nor servname provided, or not known\n"
                 "fatal: Could not read from remote repository.\n\nPlease make sure you have the correct access rights",
@@ -6714,7 +6714,7 @@ class FlakyReruns(Fixture):
         see no dispatch, so they cannot move the log before the worker collects it (#331)."""
         dispatches = self.base / "dispatches"
         def dispatch(root, name, since):
-            own = Path(root) / ".build/engineering" / name / "run.log"
+            own = Path(root) / ".build/queuekeeper" / name / "run.log"
             if not own.exists() or "queuekeeper unittest: " not in own.read_text(errors="replace"): return None, None
             ran = dispatches / f"{len(list(dispatches.glob('*'))) if dispatches.exists() else 0}"
             ran.mkdir(parents=True)
@@ -6779,7 +6779,7 @@ class FlakyReruns(Fixture):
         dispatch's lanes/, as queuekeeper files them, and none is left in the worker's checkout."""
         dispatches = self.base / "dispatches"
         def dispatch(root, name, since):
-            own = Path(root) / ".build/engineering" / name / "lanes"
+            own = Path(root) / ".build/queuekeeper" / name / "lanes"
             if not own.is_dir(): return None, None
             ran = dispatches / f"{len(list(dispatches.glob('*'))) if dispatches.exists() else 0}"
             ran.mkdir(parents=True)
@@ -6853,7 +6853,7 @@ class FlakyReruns(Fixture):
         self.commit("a", "a"); self.commit("b", "b")
         ids = self.add("a", "b")
         def lost(root, name, since):
-            own = Path(root) / ".build/engineering" / name / "run.log"
+            own = Path(root) / ".build/queuekeeper" / name / "run.log"
             if not own.exists() or "queuekeeper unittest: " not in own.read_text(errors="replace"): return None, None
             own.unlink()
             return self.base, "fake-mac"
@@ -7890,7 +7890,7 @@ class RemovedWhileTesting(Fixture):
 
 
 class RoundAccount(Fixture):
-    """The worker's account of its round in eng-queue (ROUND_FILE), which `queuekeeper queue status` shows so that nobody has
+    """The worker's account of its round in queuekeeper-queue (ROUND_FILE), which `queuekeeper queue status` shows so that nobody has
     to read worker.log to learn why entries wait: a bisect's halves, each gate's lane, Mac and time, and what it waits
     for."""
     UNREACHABLE = ("queuekeeper: gate waits for this Mac, and asks the second Mac again at the next offer: build-host cannot "
@@ -8152,7 +8152,7 @@ class GateResultsNamed(Fixture):
         real remote.dispatch, with the files results names sent back under its results/."""
         real = mq.remote.dispatch
         def dispatch(root, name, since):
-            ran = Path(root) / ".build/engineering/remote" / mq.remote.DISPATCHES / name \
+            ran = Path(root) / ".build/queuekeeper/remote" / mq.remote.DISPATCHES / name \
                 / (time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + "-1")
             ran.mkdir(parents=True, exist_ok=True)
             (ran / "source.json").write_text(json.dumps({"host": "fake-mac"}))
@@ -8219,13 +8219,13 @@ class GateResultsNamed(Fixture):
         # The same gap: nothing named them here either, and the next run here replaces them.
         config = self.config()
         config["lanes"]["gate"]["command"] = [
-            "sh", "-c", f'mkdir -p "$ENG_RESULTS_DIR/{self.SUITE}" && echo "{self.DETAIL}" > '
-                        f'"$ENG_RESULTS_DIR/{self.SUITE}/mac.log" && printf x >> "{self.counter}"']
+            "sh", "-c", f'mkdir -p "$QUEUEKEEPER_RESULTS_DIR/{self.SUITE}" && echo "{self.DETAIL}" > '
+                        f'"$QUEUEKEEPER_RESULTS_DIR/{self.SUITE}/mac.log" && printf x >> "{self.counter}"']
         self.publish(config)
         entry, log, waited, _ = self.landed()
         line = entry["gate"]["results"]
         self.assertIn(f"gate per-test results: 1 file ({self.SUITE}: 1) in ", line)
-        self.assertIn(".build/engineering/gate/results, on this Mac; its next run here replaces them", line)
+        self.assertIn(".build/queuekeeper/gate/results, on this Mac; its next run here replaces them", line)
         self.assertNotIn("second Mac", line)
         self.assertTrue((Path(line.split(") in ", 1)[1].split(",", 1)[0]) / self.SUITE / "mac.log").is_file())
         self.assertIn(f"{line}\n", log)
@@ -8242,7 +8242,7 @@ class GateResultsNamed(Fixture):
     def test_results_an_earlier_run_left_here_are_not_named(self):
         # A lane that ended here without writing its results leaves the last run's folder: not this gate's.
         root = self.base / "checkout"
-        results = root / ".build/engineering/gate/results"
+        results = root / ".build/queuekeeper/gate/results"
         (results / "suites").mkdir(parents=True)
         (results / "suites/old.log").write_text("old\n")
         old = time.time() - 60

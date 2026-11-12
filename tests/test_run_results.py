@@ -223,7 +223,7 @@ class KeepTests(unittest.TestCase):
         (project / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "P", "lanes": {"smoke": {"command": list(command)}}}))
         finished = subprocess.run([sys.executable, str(ENG), "--project", str(project), "run", "smoke"], cwd=project,
                                   capture_output=True, text=True, env=os.environ)
-        return finished, project / ".build/engineering/smoke/results"
+        return finished, project / ".build/queuekeeper/smoke/results"
 
     def test_a_lane_that_calls_it_shows_each_test_in_eng_runs_output_and_keeps_them_in_its_results(self):
         self.fixture([case("testOpens", "Passed", 1.25)])

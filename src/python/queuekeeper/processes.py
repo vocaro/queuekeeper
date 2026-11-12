@@ -183,7 +183,7 @@ def held_locks(environment):
     nested admission in it refuses the token rather than taking a slot.
     """
     try:
-        locks = json.loads(environment.get("VOCARO_RESOURCE_TOKEN") or "{}").get("locks", [])
+        locks = json.loads(environment.get("QUEUEKEEPER_RESOURCE_TOKEN") or "{}").get("locks", [])
     except (ValueError, AttributeError):
         return ()
     held = []

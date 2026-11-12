@@ -96,7 +96,7 @@ class LiveProgress(unittest.TestCase):
             newer = lane_progress.destinations("new", "same-evidence-path")
             self.assertEqual(first, newer)
             with patch.dict(os.environ, {resources.TOKEN: json.dumps({"guard": str(Path(folder)/"held-guard"),
-                    "locks": [{"nonce": "owned"}]}), "SW_GATE_LOCK_FILE": str(Path(folder)/"different") } ):
+                    "locks": [{"nonce": "owned"}]}), "QUEUEKEEPER_GATE_LOCK_FILE": str(Path(folder)/"different") } ):
                 inherited = lane_progress.destinations("new", "same-evidence-path")
                 self.assertTrue(any(str(path).startswith(str(Path(folder)/"held-guard.progress")) for path in inherited))
                 self.assertFalse(any("different" in str(path) for path in inherited))
@@ -230,7 +230,7 @@ class LiveProgress(unittest.TestCase):
             born = lane_progress.start(os.getpid())
             owner = {"pid": os.getpid(), "start": born, "label": "project gate", "exclusive": False}
             guard.write_text(json.dumps({"vocaroEngineering": 1, "owners": {"owned": owner}}))
-            environment = {"SW_GATE_LOCK_FILE": str(Path(folder)/"gate"), "HEAVY_SLOT_DIR": str(Path(folder)/"slots"),
+            environment = {"QUEUEKEEPER_GATE_LOCK_FILE": str(Path(folder)/"gate"), "HEAVY_SLOT_DIR": str(Path(folder)/"slots"),
                            resources.TOKEN: json.dumps({"locks": [{"nonce": "owned"}]})}
             log = Path(folder)/"pytest.log"
             log.touch()

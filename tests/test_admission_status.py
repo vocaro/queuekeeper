@@ -36,7 +36,7 @@ class Namespace(unittest.TestCase):
         self.directory, self.guard = root / "slots", root / "gate.warm-push-guard"
         environment = patch.dict(os.environ, {"HEAVY_SLOT_DIR": str(self.directory), "HEAVY_SLOTS": "2",
                                               "HEAVY_SLOTS_MAX": "3", "HEAVY_POLL_SECONDS": "0.01",
-                                              "HEAVY_SETTLE_SECONDS": "0", "SW_GATE_LOCK_FILE": str(root / "gate")})
+                                              "HEAVY_SETTLE_SECONDS": "0", "QUEUEKEEPER_GATE_LOCK_FILE": str(root / "gate")})
         environment.start()
         self.addCleanup(environment.stop)
         saved = os.environ.pop(resources.TOKEN, None)
@@ -324,7 +324,7 @@ class OriginTests(Namespace):
                                                        "process": "running", "origin": self.SENT}],
                                        unattributed=[1, 2], slots=[{"slot": 0, "guaranteed": True, "holder": "a"}])
         lines = []
-        with patch.dict(os.environ, {"HEAVY_SLOT_DIR": "", "SW_GATE_LOCK_FILE": ""}):
+        with patch.dict(os.environ, {"HEAVY_SLOT_DIR": "", "QUEUEKEEPER_GATE_LOCK_FILE": ""}):
             resources.now_main([], out=lines.append, read=lambda here_only: {"hosts": [{**reading, "name": "this Mac"}]})
         self.assertIn("      from repository BreezEPUB, branch codex/issue-6, worktree /Users/x/.codex/worktrees/ab/BreezEPUB, "
                       "session local_1234, mac Trevors-MacBook-Pro-715", lines)
@@ -406,7 +406,7 @@ class CommandTests(unittest.TestCase):
         self.assertEqual((there["state"], there["holders"], there["waiters"]), ("unknown", None, None))
         self.assertIn("build-host did not answer", there["reasons"][0])
         lines = []
-        with patch.dict(os.environ, {"HEAVY_SLOT_DIR": "", "SW_GATE_LOCK_FILE": ""}):
+        with patch.dict(os.environ, {"HEAVY_SLOT_DIR": "", "QUEUEKEEPER_GATE_LOCK_FILE": ""}):
             status = resources.now_main([], out=lines.append, read=lambda here_only: found)
         self.assertEqual(status, 1)
         self.assertTrue(any(line.startswith("second Mac (build-host): unknown: build-host did not answer") for line in lines))
@@ -417,7 +417,7 @@ class CommandTests(unittest.TestCase):
         found = resources.admissions_now(read_here=self.reading, read_there=lambda *_: asked.append(1),
                                          configured=lambda: None)
         self.assertEqual(found["hosts"][1]["state"], "notConfigured")
-        with patch.dict(os.environ, {"HEAVY_SLOT_DIR": "", "SW_GATE_LOCK_FILE": ""}):
+        with patch.dict(os.environ, {"HEAVY_SLOT_DIR": "", "QUEUEKEEPER_GATE_LOCK_FILE": ""}):
             self.assertEqual(resources.now_main(["--json"], out=lambda text: None, read=lambda here_only: found), 0)
         only = resources.admissions_now(here_only=True, read_here=self.reading, read_there=lambda *_: asked.append(1))
         self.assertEqual((len(only["hosts"]), asked), (1, []))
@@ -429,7 +429,7 @@ class CommandTests(unittest.TestCase):
     def test_eng_doctor_points_a_lane_waiting_for_admission_to_the_report(self):
         from queuekeeper import lane_wait
         with tempfile.TemporaryDirectory() as root:
-            folder = Path(root) / ".build/engineering" / lane_wait.WAITS
+            folder = Path(root) / ".build/queuekeeper" / lane_wait.WAITS
             folder.mkdir(parents=True)
             record = {"schemaVersion": 1, "kind": "admission", "reason": "all 3 guaranteed slots are busy", "mac": "this Mac",
                       "offer": None, "stranded": False, "pid": os.getpid(), "admitted": False, "since": time.time() - 90,

@@ -80,13 +80,13 @@ PLATFORMS = {"com.apple.platform.iphonesimulator": "iOS", "com.apple.platform.ap
 # Where heavy-work admission keeps its guard and its log, as resources.py names them, which this
 # file cannot import: the guard beside the legacy gate lock, and the log's two generations, older
 # first, in the account's durable state unless HEAVY_SLOT_DIR names a namespace of its own.
-GATE_LOCK = "/tmp/studywright-gate-suite.lock"
-ADMISSION_STATE = "Library/Application Support/vocaro-engineering"
+GATE_LOCK = "/tmp/queuekeeper-gate-suite.lock"
+ADMISSION_STATE = "Library/Application Support/queuekeeper"
 ADMISSION_LOGS = ("admissions.1.jsonl", "admissions.jsonl")
 # The host's admission limits file, beside its log, and its slot files' directory: the legacy user-temp
 # namespace unless HEAVY_SLOT_DIR names one, as resources.py names them (#49).
 ADMISSION_LIMITS = "admission-limits.json"
-SLOTS = "pdfreflow-heavy-slots"
+SLOTS = "queuekeeper-heavy-slots"
 # The queue of exclusive and whole-host requests in the slot directory, and HEAVY_PLACE_SECONDS's default, how
 # long a whole-host request that last asked then keeps the guaranteed slots, as resources.QUEUE and
 # resources.PLACE_SECONDS have them (vocaro-engineering#174, #186).
@@ -103,17 +103,17 @@ LIMIT_KEYS = {
 # The simulators' devices, relative to the home: a booted device's processes name its directory.
 DEVICES = "Library/Developer/CoreSimulator/Devices"
 DEVICE = re.compile(r"[0-9A-F]{8}-(?:[0-9A-F]{4}-){3}[0-9A-F]{12}", re.IGNORECASE)
-# The device record, relative to the home, as devices.py finds it, which VOCARO_DEVICE_RECORD
+# The device record, relative to the home, as devices.py finds it, which QUEUEKEEPER_DEVICE_RECORD
 # overrides for a test's; its key for the Mac it defers physical devices to; and a physical
 # device's hardware UDID, as devices.PHYSICAL matches it.
-DEVICE_RECORD = "Library/Application Support/vocaro-engineering/device-handoff.json"
+DEVICE_RECORD = "Library/Application Support/queuekeeper/device-handoff.json"
 DEFERRED = "physicalDevicesRecordedOn"
 # Device records older toolkits left, which devices.LEGACY names and disk still reads.
 LEGACY_RECORDS = "/private/tmp/*device-handoff*.json"
 # The setting that shows an app's "quit unexpectedly" alert, and where a foreground run that has it off
 # keeps its value from before the run, relative to the home (crash_alerts.py).
 CRASH_DIALOG = ("com.apple.CrashReporter", "DialogType")
-CRASH_DIALOG_RECORD = "Library/Application Support/vocaro-engineering/crash-dialog.json"
+CRASH_DIALOG_RECORD = "Library/Application Support/queuekeeper/crash-dialog.json"
 # The processes whose windows are system alerts over a foreground run's windows: macOS's crash-report and
 # other user notification alerts, and the password, keychain and permission prompts that stay the owner's.
 ALERT_PROCESSES = ("UserNotificationCenter", "Problem Reporter", "CrashReporter", "SecurityAgent", "coreautha",
@@ -139,7 +139,7 @@ HOLDER = "holderProcess"
 # release (release_dead; vocaro-engineering#156).
 ALONE = "heldOnlyWhileHolderRuns"
 # What ps lists for an early release's census: each process's environment after its command line, which
-# carries the session a command runs for (CLAUDE_CODE_SESSION_ID, CODEX_THREAD_ID, VOCARO_DEVICE_OWNER).
+# carries the session a command runs for (CLAUDE_CODE_SESSION_ID, CODEX_THREAD_ID, QUEUEKEEPER_DEVICE_OWNER).
 ENVIRONMENTS = ("ps", "-axwwE", "-o", "pid=,ppid=,uid=,lstart=,args=")
 # A program inside an Xcode, such as the DTServiceHub that xcodebuild starts for a test run,
 # which launchd adopts once xcodebuild has ended.
@@ -158,7 +158,7 @@ NO_BYTECODE = {"PYTHONDONTWRITEBYTECODE": "1"}
 # The refs under which a repository here names each commit a checkout of it holds. A push learns what
 # the second Mac has from its refs alone, and a detached checkout's HEAD is none of them, so without
 # these a push sends the commit's whole history (vocaro-engineering#67).
-CACHE = "refs/vocaro/checkouts/"
+CACHE = "refs/queuekeeper/checkouts/"
 COMMIT = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 
 # Seconds a pool simulator's launchd_sim must have run before reap may shut it down.
@@ -201,7 +201,7 @@ SIMULATORS = ("xcrun", "simctl", "list", "devices", "-j")
 # The toolkit's own checkout on each Mac, relative to its home, which update_toolkit keeps at origin/main
 # there (vocaro-engineering#203); and its src/python as a shell path from the home, where a recovery that the
 # second Mac's record needs runs.
-TOOLKIT_CHECKOUT = "Development/vocaro-engineering"
+TOOLKIT_CHECKOUT = "Development/queuekeeper"
 TOOLKIT = f"~/{TOOLKIT_CHECKOUT}/src/python"
 # Seconds one update_toolkit may take in all, the bound it adds to the connection that prepares a dispatch,
 # and at most for its fetch; and its lock beside the second Mac's repositories, under ROOT.
@@ -453,7 +453,7 @@ def mac_name():
 SCREEN_GUIDE = "guides/background-mac-testing.md, Checking a Mac's screen"
 SCREEN_KEYS = ("CGSSessionScreenIsLocked", "IOConsoleLocked")
 # A recorded `ioreg -n Root -d1 -a` to read in place of the IORegistry, for tests, which never lock a real screen.
-SCREEN_RECORDING = "VOCARO_SCREEN_IOREG"
+SCREEN_RECORDING = "QUEUEKEEPER_SCREEN_IOREG"
 
 
 def screen(found=None, mac=None, at=None):
@@ -522,7 +522,7 @@ def screen_declined(plan, read=None):
 SCROLL_BARS_KEY = "AppleShowScrollBars"
 # A JSON file to read in place of the two commands, for tests: {"defaults": [exit status, standard output, standard
 # error], "ioreg": [the same]}. The readings are parsed as the commands' own output is.
-SCROLL_BARS_RECORDING = "VOCARO_SCROLL_BARS_RECORDING"
+SCROLL_BARS_RECORDING = "QUEUEKEEPER_SCROLL_BARS_RECORDING"
 SCROLL_BARS_COMMANDS = {"defaults": ["defaults", "read", "-g", SCROLL_BARS_KEY],
                         "ioreg": ["ioreg", "-a", "-r", "-c", "IOHIDDevice", "-d", "1"]}
 # What `defaults read` says of a key no one set: the first on macOS 27.2, the second on earlier macOS.
@@ -632,7 +632,7 @@ def identity(developer_dir):
 
 
 def record_path():
-    return Path(os.environ.get("VOCARO_DEVICE_RECORD") or Path(pwd.getpwuid(os.getuid()).pw_dir) / DEVICE_RECORD)
+    return Path(os.environ.get("QUEUEKEEPER_DEVICE_RECORD") or Path(pwd.getpwuid(os.getuid()).pw_dir) / DEVICE_RECORD)
 
 
 def device_record():
@@ -871,7 +871,7 @@ def foreground_problems():
 
 
 CAPTURE_APPROVALS = "Library/Group Containers/group.com.apple.replayd/ScreenCaptureApprovals.plist"
-CAPTURE_RUNNERS = "Library/Application Support/VocaroEngineering/foreground-runners"
+CAPTURE_RUNNERS = "Library/Application Support/queuekeeper/foreground-runners"
 # The programs a command started over SSH runs under: Remote Login's commands' own captures prompt for them.
 CAPTURE_SSH_HOSTS = ("/usr/libexec/sshd-keygen-wrapper", "/usr/libexec/sshd-session", "com.apple.sshd-session")
 
@@ -916,8 +916,8 @@ def crash_dialog(run=output):
 
 def crash_dialog_record():
     """The file a foreground run keeps DialogType's value from before it in while the run has it off, as
-    crash_alerts.py writes it, which VOCARO_CRASH_DIALOG_RECORD overrides for a test's."""
-    return Path(os.environ.get("VOCARO_CRASH_DIALOG_RECORD")
+    crash_alerts.py writes it, which QUEUEKEEPER_CRASH_DIALOG_RECORD overrides for a test's."""
+    return Path(os.environ.get("QUEUEKEEPER_CRASH_DIALOG_RECORD")
                 or Path(pwd.getpwuid(os.getuid()).pw_dir) / CRASH_DIALOG_RECORD)
 
 
@@ -1363,7 +1363,7 @@ def identities(records):
 def guard_owners():
     """The owners heavy-work admission's guard records, as resources.guard_owners reads them."""
     try:
-        state = json.loads(Path(os.environ.get("SW_GATE_LOCK_FILE", GATE_LOCK) + ".warm-push-guard").read_text())
+        state = json.loads(Path(os.environ.get("QUEUEKEEPER_GATE_LOCK_FILE", GATE_LOCK) + ".warm-push-guard").read_text())
     except (OSError, ValueError):
         return []
     owners = state.get("owners") if isinstance(state, dict) and state.get("vocaroEngineering") == 1 else None
@@ -1524,7 +1524,7 @@ def memory_level():
 def guard_entries():
     """The owners heavy-work admission's guard records, as it writes them, each with its identity."""
     try:
-        state = json.loads(Path(os.environ.get("SW_GATE_LOCK_FILE", GATE_LOCK) + ".warm-push-guard").read_text())
+        state = json.loads(Path(os.environ.get("QUEUEKEEPER_GATE_LOCK_FILE", GATE_LOCK) + ".warm-push-guard").read_text())
     except (OSError, ValueError):
         return []
     owners = state.get("owners") if isinstance(state, dict) and state.get("vocaroEngineering") == 1 else None
@@ -1726,8 +1726,8 @@ def admissions_now(at=None):
     cannot be observed is never reported idle. state is observed, partial or unknown."""
     at = time.time() if at is None else at
     reasons = []
-    isolated = {name: os.environ[name] for name in ("HEAVY_SLOT_DIR", "SW_GATE_LOCK_FILE") if os.environ.get(name)}
-    guard = Path(os.environ.get("SW_GATE_LOCK_FILE", GATE_LOCK) + ".warm-push-guard")
+    isolated = {name: os.environ[name] for name in ("HEAVY_SLOT_DIR", "QUEUEKEEPER_GATE_LOCK_FILE") if os.environ.get(name)}
+    guard = Path(os.environ.get("QUEUEKEEPER_GATE_LOCK_FILE", GATE_LOCK) + ".warm-push-guard")
     reading = {"schemaVersion": NOW_SCHEMA, "mac": mac_name(), "observedAt": at, "state": "observed", "reasons": reasons,
                "namespace": {"shared": not isolated, **isolated, "guard": str(guard)}, "limits": None, "slots": None,
                "model": None, "holders": None, "unattributed": None, "waiters": None}
@@ -2423,7 +2423,7 @@ def template_marker(device):
     if not isinstance(udid, str) or not DEVICE.fullmatch(udid) or not isinstance(data, str): return None
     path = Path(data)
     if not path.is_absolute() or path.name != "data" or path.parent.name.upper() != udid.upper(): return None
-    return path.parent / ".vocaro-pool-template.json"
+    return path.parent / ".queuekeeper-pool-template.json"
 
 
 def template_provenance(device):
@@ -2465,7 +2465,7 @@ def device_entries():
 def require_admissions():
     """Raise unless the guard and the admission log can be read, which the census otherwise reads as
     no admission at all. Neither exists until something is admitted."""
-    guard = Path(os.environ.get("SW_GATE_LOCK_FILE", GATE_LOCK) + ".warm-push-guard")
+    guard = Path(os.environ.get("QUEUEKEEPER_GATE_LOCK_FILE", GATE_LOCK) + ".warm-push-guard")
     try:
         state = json.loads(guard.read_text())
         if not isinstance(state, dict) or state.get("vocaroEngineering") != 1 or not isinstance(state.get("owners"), dict):
@@ -3179,7 +3179,7 @@ def gather_changes(checkout, path):
         files = run("diff", "--cached", "--name-only", "--no-renames", "-z", "HEAD", variables=variables,
                     text=True).split("\0")
     files = [name for name in files if name]
-    # The patch first, under .build/engineering, which every project ignores (guides/adoption.md), so the clean
+    # The patch first, under .build/queuekeeper, which every project ignores (guides/adoption.md), so the clean
     # below leaves it.
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(patch)
@@ -3310,7 +3310,7 @@ def place(repository, checkout, commit, ref, origin=None):
     if origin and local_url(origin):
         raise Refusal(f"the toolkit's origin is {origin}, a path on the sending Mac, from which no checkout here "
                       "can fetch the policy",
-                      "set the sending checkout's origin to https://github.com/vocaro/vocaro-engineering.git and "
+                      "set the sending checkout's origin to https://github.com/vocaro/queuekeeper.git and "
                       "send the work again (guides/adoption.md, Locating the toolkit from a worktree)")
     if origin:
         # Different checkout slots can place the toolkit at once. Hold the shared lock only for its config.
@@ -3802,23 +3802,23 @@ def main(plan):
         timed("place", began)
         result.update(checkout=str(checkout), slot=index)
         say(f"{checkout} at {project['commit'][:12]}")
-        environment = {**os.environ, "VOCARO_ENGINEERING_ROOT": str(kit), **NO_BYTECODE}
+        environment = {**os.environ, "QUEUEKEEPER_ROOT": str(kit), **NO_BYTECODE}
         if "requestAge" in plan:
-            environment["VOCARO_ADMISSION_REQUEST_STARTED"] = str(result["requestStarted"])
+            environment["QUEUEKEEPER_ADMISSION_REQUEST_STARTED"] = str(result["requestStarted"])
         if plan.get("deviceRecord"): defer_devices(kit, plan["deviceRecord"])
         # The reservations, held in the sending Mac's record, that this run may use (devices.LEASE).
-        if plan.get("lease"): environment["VOCARO_DEVICE_LEASE"] = json.dumps(plan["lease"])
+        if plan.get("lease"): environment["QUEUEKEEPER_DEVICE_LEASE"] = json.dumps(plan["lease"])
         if plan.get("developerDir"): environment["DEVELOPER_DIR"] = plan["developerDir"]
         # A receipt the work writes here says that it ran on the second Mac, sent from this Mac (remote.DISPATCHER).
-        if plan.get("dispatcher"): environment["VOCARO_DISPATCHED_FROM"] = plan["dispatcher"]
+        if plan.get("dispatcher"): environment["QUEUEKEEPER_DISPATCHED_FROM"] = plan["dispatcher"]
         # Where the work comes from on the sending Mac, which this Mac's admissions name (resources.ORIGIN).
-        if isinstance(plan.get("origin"), dict): environment["VOCARO_ADMISSION_ORIGIN"] = json.dumps(plan["origin"])
+        if isinstance(plan.get("origin"), dict): environment["QUEUEKEEPER_ADMISSION_ORIGIN"] = json.dumps(plan["origin"])
         if (root / "git-credentials").is_file(): credentials(environment, root / "git-credentials")
         qk = [sys.executable, str(kit / "bin/qk"), "--project", str(checkout)]
         # The provision lane is admitted here as every lane is, and runs here, never offered on. Offered work that
         # declines when it cannot start now has it decline too, rather than wait for a slot with the checkout held.
         provision = [*qk, "run", "--here", *(["--if-free"] if plan.get("decline") else []), "provision"]
-        steps = [("provision", provision, checkout / ".build/engineering/provision/run.log",
+        steps = [("provision", provision, checkout / ".build/queuekeeper/provision/run.log",
                   checkout)] if plan.get("provision") else []
         # `queuekeeper admit --verify` runs its command in the checkout's directory that matches the sender's.
         steps.append(("work", [*qk, *plan["work"]], checkout / plan["log"] if plan.get("log") else None,
@@ -3826,8 +3826,8 @@ def main(plan):
         # The lane's wait record (lane_wait) is shared by provision and work.
         wait = checkout / plan["wait"] if plan.get("wait") else None
         if wait is not None:
-            environment["VOCARO_LANE_WAIT"] = str(wait)
-            environment["VOCARO_LANE_PROGRESS_RUN"] = os.urandom(16).hex()
+            environment["QUEUEKEEPER_LANE_WAIT"] = str(wait)
+            environment["QUEUEKEEPER_LANE_PROGRESS_RUN"] = os.urandom(16).hex()
             wait.unlink(missing_ok=True)
         returns = plan.get("returns")
         if returns:
@@ -3843,7 +3843,7 @@ def main(plan):
             begun, began = True, time.monotonic()
             work_environment = environment
             if stage == "work" and "cleanupSeconds" in (plan.get("lease") or {}):
-                work_environment = {**environment, "VOCARO_DEVICE_WINDOW": environment["VOCARO_DEVICE_LEASE"]}
+                work_environment = {**environment, "QUEUEKEEPER_DEVICE_WINDOW": environment["QUEUEKEEPER_DEVICE_LEASE"]}
             result.update(stage=stage, exitStatus=step(command, directory, work_environment, lock, log, wait,
                                                        stage == "work", launches))
             timed(stage, began)

@@ -185,7 +185,7 @@ class KeptResultsTests(Fixture):
     def setUp(self):
         super().setUp()
         from queuekeeper import remote
-        self.remote, self.store, self.now = remote, self.main / ".git/vocaro-engineering/remote", time.time()
+        self.remote, self.store, self.now = remote, self.main / ".git/queuekeeper/remote", time.time()
 
     def kept(self, commit, days, lane="gate"):
         folder = self.store / commit / f"{lane}.results"

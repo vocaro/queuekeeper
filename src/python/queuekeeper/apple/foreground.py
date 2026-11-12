@@ -5,7 +5,7 @@ its whole foreground, screen, keyboard, pointer, focus and speech, without askin
 decisions, 2026-10-30 and 2026-11-06, vocaro-engineering#207). queuekeeper takes it for a run as admission takes
 a slot: it waits while another run holds the second Mac's mac-foreground entry, reserves the entry,
 which records no approval, runs the work with
-VOCARO_DEVICE_OWNER naming the reservation, so that drivers' `devices check` passes, and releases it.
+QUEUEKEEPER_DEVICE_OWNER naming the reservation, so that drivers' `devices check` passes, and releases it.
 This Mac is the owner's workstation. Its foreground needs a window the owner agreed beforehand, which
 the session reserves itself (guides/shared-host.md, Attended Mac sessions), and queuekeeper never sends
 foreground work to it.
@@ -71,7 +71,7 @@ def slot(purpose, *, timeout, expected=EXPECTED, record=None, poll=POLL, ready=N
     the foreground. An orphaned or uncertain entry needs attended recovery. Only after acquisition, the run captures and preserves the actual VoiceOver state.
     A passive driver explicitly opts into voiceover.state.preserved(target=False) inside this lease.
     The entry records this process as its active run, so that the entry outlives a run that
-    dies only as an orphan, and VOCARO_DEVICE_OWNER names it for the block. The release records the
+    dies only as an orphan, and QUEUEKEEPER_DEVICE_OWNER names it for the block. The release records the
     block's outcome and whether the application in front before the run is in front after it."""
     record = record or devices.Record()
     said = said or (lambda text: print(text, file=sys.stderr, flush=True))
@@ -92,7 +92,7 @@ def slot(purpose, *, timeout, expected=EXPECTED, record=None, poll=POLL, ready=N
             release_by = (datetime.now(timezone.utc) + timedelta(seconds=expected)).isoformat()
             try:
                 entry = record.reserve(devices.FOREGROUND, owner=owner, revision=(entry or {}).get("revision", 0),
-                                       purpose=purpose, release_by=release_by, title=os.environ.get("VOCARO_DISPATCHED_FROM"))
+                                       purpose=purpose, release_by=release_by, title=os.environ.get("QUEUEKEEPER_DISPATCHED_FROM"))
                 break
             except devices.Stale:
                 continue

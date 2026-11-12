@@ -23,12 +23,12 @@ cause is dealt with or gone, after the tries a cause that clears by itself gets 
 The state is in the repository's common Git directory, so every worktree shares it, and a ref holds
 each waiting commit, so a branch that moves or goes takes nothing with it:
 
-    <common>/eng-queue/entries/ID.json   one commit range and its state
-    <common>/eng-queue/logs/             what each round's lanes printed
-    <common>/eng-queue/hold              why the queue stopped, until `queuekeeper queue resume`
-    refs/eng-queue/ID                    the range's tip, until it lands or is removed
-    ../vocaro-queue/NAME/NAME            the worker's checkout, in a folder beside the main checkouts
-    ../vocaro-queue/NAME/TOOLKIT         its copy of the toolkit, which ../TOOLKIT names from the checkout
+    <common>/queuekeeper-queue/entries/ID.json   one commit range and its state
+    <common>/queuekeeper-queue/logs/             what each round's lanes printed
+    <common>/queuekeeper-queue/hold              why the queue stopped, until `queuekeeper queue resume`
+    refs/queuekeeper/queue/ID                    the range's tip, until it lands or is removed
+    ../queuekeeper-workers/NAME/NAME            the worker's checkout, in a folder beside the main checkouts
+    ../queuekeeper-workers/NAME/TOOLKIT         its copy of the toolkit, which ../TOOLKIT names from the checkout
 """
 import ast
 import collections
@@ -57,7 +57,7 @@ from .config import DOCS, DOCS_FILES, DOCS_FOLDERS, IMPLICIT_DOCS, IMPLICIT_SPEL
 
 MAIN = "refs/remotes/origin/main"
 FETCH = ["fetch", "--no-tags", "origin", f"refs/heads/main:{MAIN}"]
-LAUNCHER_BUNDLE = "com.vocaro.eng.queue-launcher"
+LAUNCHER_BUNDLE = "com.vocaro.queuekeeper.launcher"
 LAUNCHER_PROGRAM = "QueueLauncher"
 LAUNCHER_REQUIREMENT = f'-R=anchor apple generic and identifier "{LAUNCHER_BUNDLE}"'
 # The signed launcher's executable at the start of its arguments, and the app that holds it.
@@ -147,9 +147,9 @@ IN_USE = "a process started from it may still run its toolkit"
 UNKNOWN_USE = "whether a process started from it still runs is unknown"
 SHOWN_USERS = 5
 # What a project's launcher reads first to find the toolkit.
-TOOLKIT_VARIABLE = "VOCARO_ENGINEERING_ROOT"
+TOOLKIT_VARIABLE = "QUEUEKEEPER_ROOT"
 # What carries a worker's bisect progress to the worker that replaces it on a newer toolkit (Worker.move_to).
-PROGRESS_VARIABLE = "VOCARO_QUEUE_PROGRESS"
+PROGRESS_VARIABLE = "QUEUEKEEPER_QUEUE_PROGRESS"
 # The file in the queue's directory that names the toolkit commit a worker moved to (Worker.move_to) until the
 # worker started from it finishes a round (Worker.arrived): one that died or held first is not moved to again.
 MOVED = "moved"
@@ -224,7 +224,7 @@ BUSY_SAMPLE = 60
 # How many failed tests, and changed files, a rejection names (Worker.touched_words).
 REJECTION_SHOWN = 5
 GH_ENV = {"GH_PROMPT_DISABLED": "1", "GH_NO_UPDATE_NOTIFIER": "1"}
-# The worker's account of the round it runs, in eng-queue, which `queuekeeper queue status` shows so that nobody has to read
+# The worker's account of the round it runs, in queuekeeper-queue, which `queuekeeper queue status` shows so that nobody has to read
 # worker.log to learn why entries wait: the bisect's halves, each gate's lane, Mac and start, and what each waits for
 # (Queue.note, GateWatch). Each running gate's wait record (lane_wait) is read for that this often.
 ROUND_FILE = "round.json"
@@ -243,7 +243,7 @@ GIT_TIMEOUT = 600
 # toolkit's copy, so that a project's ../vocaro-engineering finds that copy (owner's decision,
 # vocaro-engineering#104). The folders beside the main checkout it replaces, NAME-queue and NAME-queue-toolkit,
 # move there once nothing uses them.
-QUEUES = "vocaro-queue"
+QUEUES = "queuekeeper-workers"
 # What locks queuekeeper land's scratch worktrees while its trial integration (trial) or its replay of a branch's own
 # commits (linear) lasts, so that no sweep takes them.
 TRIAL_REASON = "queuekeeper land's trial integration of a new entry, removed when it ends"
@@ -396,7 +396,7 @@ def on_github(url):
 
 def git_operations():
     """(status, None) of GitHub's Git Operations, such as operational or partial_outage, or (None, why not)."""
-    asked = urllib.request.Request(GITHUB_STATUS, headers={"User-Agent": "vocaro-engineering", "Accept": "application/json"})
+    asked = urllib.request.Request(GITHUB_STATUS, headers={"User-Agent": "queuekeeper", "Accept": "application/json"})
     try:
         with urllib.request.urlopen(asked, timeout=20) as answer: components = json.load(answer)["components"]
         status = next((part.get("status") for part in components if part.get("name") == GIT_OPERATIONS), None)
@@ -1134,7 +1134,7 @@ class Queue:
         self.root = Path(root)
         common = Path(text(root, "rev-parse", "--path-format=absolute", "--git-common-dir"))
         self.main_checkout = common.parent
-        self.directory = common / "eng-queue"
+        self.directory = common / "queuekeeper-queue"
         self.entries = self.directory / "entries"
         self.logs = self.directory / "logs"
         self.hold_file = self.directory / "hold"
@@ -1182,7 +1182,7 @@ class Queue:
             if current["state"] not in WAITING: return current
             current.update(state=state, settled=time.time(), **fields)
             self.save(current)
-        if state in (LANDED, REMOVED): git(self.root, "update-ref", "-d", f"refs/eng-queue/{entry['id']}")
+        if state in (LANDED, REMOVED): git(self.root, "update-ref", "-d", f"refs/queuekeeper/queue/{entry['id']}")
         return current
 
     def record(self, entry, **fields):
@@ -1276,7 +1276,7 @@ class Queue:
                                  capture_output=True, text=True, timeout=10)
         if checked.returncode: raise ValueError(f"the queue launcher needs an Apple signing identity: {checked.stderr.strip()}")
         toolkit = Path(text(TOOLKIT_ROOT, "rev-parse", "--path-format=absolute", "--git-common-dir")).parent
-        variables = {key: os.environ[key] for key in ("PATH", "VOCARO_OFFLOAD_HOST") if key in os.environ}
+        variables = {key: os.environ[key] for key in ("PATH", "QUEUEKEEPER_OFFLOAD_HOST") if key in os.environ}
         log = str(self.directory / "worker.log")
         return {
             "Label": self.launcher_label(),
@@ -1469,7 +1469,7 @@ def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False
     entry = {"id": identifier, "tip": tip, "base": base, "commits": commits, "branch": branch or None, "note": note,
              "subject": text(root, "log", "-1", "--format=%s", tip), "submitted": now, "state": QUEUED,
              "directory": str(root), **({"replays": replays} if merges else {}), **flags}
-    text(root, "update-ref", f"refs/eng-queue/{identifier}", tip)
+    text(root, "update-ref", f"refs/queuekeeper/queue/{identifier}", tip)
     with queue.locked(): queue.save(entry)
     print(f"queued {identifier}: {len(commits)} commit(s), {entry['subject']}")
     for name in OPTIONS:
@@ -1539,7 +1539,7 @@ def remove(queue, identifier, quiet=False):
     entry = queue.read(identifier)
     if entry is None: raise ValueError(f"The queue has no entry {identifier}")
     if entry["state"] in WAITING: queue.settle(entry, REMOVED)
-    else: git(queue.root, "update-ref", "-d", f"refs/eng-queue/{identifier}")
+    else: git(queue.root, "update-ref", "-d", f"refs/queuekeeper/queue/{identifier}")
     if not quiet:
         print(f"removed {identifier}")
         if entry["state"] == TESTING: print(stopping(queue, entry))
@@ -2083,7 +2083,7 @@ def starts(toolkit, commit):
                              capture_output=True, stdin=subprocess.DEVNULL, env=environment(), timeout=GIT_TIMEOUT)
     if archive.returncode:
         return f"`git archive` of it failed: {archive.stderr.decode(errors='replace').strip() or 'no output'}"
-    with tempfile.TemporaryDirectory(prefix="eng-queue-toolkit-") as folder:
+    with tempfile.TemporaryDirectory(prefix="queuekeeper-toolkit-") as folder:
         # By tar rather than tarfile, whose safe extraction Python 3.9 lacks; the archive is the toolkit's own.
         unpacked = subprocess.run(["tar", "-x", "-f", "-", "-C", folder], input=archive.stdout, capture_output=True,
                                   timeout=GIT_TIMEOUT)
@@ -2308,7 +2308,7 @@ class Worker:
         """Run this round's lanes on the toolkit at origin/main, in a copy no session edits: a shared
         checkout that lags, or holds a session's changes, says nothing of the commits (guides/maintenance.md,
         The merge queue). Each worker has its own, so that moving it changes no other project's running
-        gate. The toolkit's own queue tests its batch, and an explicit VOCARO_ENGINEERING_ROOT stands.
+        gate. The toolkit's own queue tests its batch, and an explicit QUEUEKEEPER_ROOT stands.
         A copy that cannot be made or moved holds the queue, as a fetch of the project that keeps failing does.
         A copy at another commit than this worker's own code then replaces the worker with one started from it
         (move_to): what judges main, config.load among it, is the copy's code too, not the older code the worker was
@@ -2669,7 +2669,7 @@ class Worker:
             log = self.queue.logs / f"{round_name}-{lane}.log"
             # A lane run here logs to its own file, and one on the second Mac to its dispatch's run.log. What an
             # earlier round left in the lane's own file is not this one's.
-            lane_log = self.checkout / ".build/engineering" / lane / "run.log"
+            lane_log = self.checkout / ".build/queuekeeper" / lane / "run.log"
             with contextlib.suppress(OSError): lane_log.unlink()
             lane_wait.remove(lane_wait.path_of(self.checkout, lane))
             shutil.rmtree(lane_log.parent / "lanes", ignore_errors=True)
@@ -2797,7 +2797,7 @@ class Worker:
         on the second Mac, by its dispatch's record, or on this Mac, with why, by the receipt the run wrote here
         since began (cli.placement); nothing when neither says."""
         if self.ran_on: return f" on {self.ran_on}"
-        receipt = self.checkout / ".build/engineering" / lane / "source.json"
+        receipt = self.checkout / ".build/queuekeeper" / lane / "source.json"
         try:
             if receipt.stat().st_mtime < began: return ""
             said = json.loads(receipt.read_text())
@@ -2811,7 +2811,7 @@ class Worker:
         dispatch's record, ` on this Mac (NAME)` by the receipt the run wrote here since began, or nothing when
         neither says."""
         if self.ran_on: return f" on the second Mac ({self.ran_on})"
-        receipt = self.checkout / ".build/engineering" / lane / "source.json"
+        receipt = self.checkout / ".build/queuekeeper" / lane / "source.json"
         try:
             if receipt.stat().st_mtime < began: return ""
             said = json.loads(receipt.read_text())
@@ -2832,7 +2832,7 @@ class Worker:
                 return f"{lane} per-test results: none: the second Mac ({self.ran_on}) sent none back to {folder}, on this Mac"
             return (f"{lane} per-test results: {kept} in {folder}, on this Mac, sent back by the second Mac ({self.ran_on}); "
                     f"queuekeeper keeps the newest {remote.DISPATCHES_KEPT} dispatches of a lane")
-        folder = self.checkout / ".build/engineering" / lane / "results"
+        folder = self.checkout / ".build/queuekeeper" / lane / "results"
         try:
             if folder.stat().st_mtime < int(began): return None  # an earlier run's
         except OSError:
@@ -3894,7 +3894,7 @@ class Worker:
         lane, began = self.lane_now[0], self.lane_now[1]
         ran = remote.dispatch(self.checkout, lane, began)[0]
         paths = ([ran / "source.json"] if ran is not None else []) \
-            + [self.checkout / ".build/engineering" / lane / "source.json"]
+            + [self.checkout / ".build/queuekeeper" / lane / "source.json"]
         for path in paths:
             try:
                 if path.stat().st_mtime < began: continue
@@ -3917,7 +3917,7 @@ class Worker:
         lane, began = self.lane_now[0], self.lane_now[1]
         ran = remote.dispatch(self.checkout, lane, began)[0]
         receipts = ([(ran / "source.json", "the second Mac", ("result", "receipt"))] if ran is not None else []) \
-            + [(self.checkout / ".build/engineering" / lane / "source.json", HERE_MAC, ())]
+            + [(self.checkout / ".build/queuekeeper" / lane / "source.json", HERE_MAC, ())]
         for receipt, mac, within in receipts:
             try:
                 if receipt.stat().st_mtime < began: continue

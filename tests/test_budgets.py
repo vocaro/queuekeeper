@@ -188,7 +188,7 @@ class DoctorChecks(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             (Path(directory) / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
                 "integration": "direct-main", "lanes": {"gate": {"command": ["tool", "--device", "iPad"], "timeout": 60}}}))
-            with patch.dict(os.environ, {"VOCARO_OFFLOAD_HOST": "none"}), \
+            with patch.dict(os.environ, {"QUEUEKEEPER_OFFLOAD_HOST": "none"}), \
                     patch.object(cli.shutil, "which", return_value="/usr/bin/true"), \
                     patch.object(cli, "source_identity", return_value={}), \
                     contextlib.redirect_stdout(io.StringIO()) as output:

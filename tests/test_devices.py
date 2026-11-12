@@ -130,7 +130,7 @@ class DeviceRecordTests(unittest.TestCase):
             del os.environ[devices.OVERRIDE]
             chosen = devices.record_path()
         base = "Library/Application Support" if sys.platform == "darwin" else ".local/state"
-        self.assertEqual(chosen, account / base / "vocaro-engineering/device-handoff.json")
+        self.assertEqual(chosen, account / base / "queuekeeper/device-handoff.json")
         self.assertFalse(devices.restart_emptied(chosen))
         temporary = [Path(tempfile.gettempdir()).resolve()]
         if sys.platform == "darwin":
@@ -764,7 +764,7 @@ class DeviceRecordTests(unittest.TestCase):
             # On this Mac, only with --here: otherwise a foreground lane goes to the second Mac (test_foreground).
             with patch.dict(os.environ, {devices.OWNER: owner} if owner else {}), \
                  patch.dict(os.environ, {"HEAVY_SLOT_DIR": str(self.root / "slots"),
-                                         "SW_GATE_LOCK_FILE": str(self.root / "gate")}), \
+                                         "QUEUEKEEPER_GATE_LOCK_FILE": str(self.root / "gate")}), \
                  patch.object(cli, "source_identity", return_value={}), \
                  patch.object(cli, "refresh_policy", return_value=None), contextlib.redirect_stderr(StringIO()) as error:
                 return cli.main(["--project", str(project), "run", "--here", "ui"]), error.getvalue()

@@ -3,11 +3,11 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleIdentifier</key>
-    <string>com.vocaro.eng.queue-launcher</string>
+    <string>com.vocaro.queuekeeper.launcher</string>
     <key>CFBundleExecutable</key>
     <string>QueueLauncher</string>
     <key>CFBundleName</key>
-    <string>Vocaro Queue Launcher</string>
+    <string>Queuekeeper Launcher</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleVersion</key>

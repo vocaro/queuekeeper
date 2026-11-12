@@ -32,16 +32,16 @@ DEFAULT_JOBS = parallel.DEFAULT_JOBS
 SHARDS_PER_JOB = 3
 # Each class's seconds in the last run of a configuration, which orders and packs the next one's
 # shards, relative to the package.
-TIMINGS = ".build/engineering/xctest/timings-{configuration}.json"
+TIMINGS = ".build/queuekeeper/xctest/timings-{configuration}.json"
 CASE = re.compile(r"^Test Case '-\[(\S+) (\S+)\]' (?:passed|failed|skipped) \((\d+(?:\.\d+)?) seconds\)", re.M)
 # Swift Testing's line for a suite that ended, named by its type or, in quotes, its display name.
 SUITE = re.compile(r"Suite (\S+|\"[^\"]*\") (?:passed|failed) after (\d+(?:\.\d+)?) seconds", re.M)
 # Each Swift Testing test's wall-clock start and finish, from its process's event stream, which records an
 # event as it happens whatever order the processes' output is printed in (vocaro-engineering#367). In the
 # lane's results/ when queuekeeper run gives it one, so it comes back and is kept by commit with them (#218);
-# otherwise in the first package's .build/engineering/xctest/.
+# otherwise in the first package's .build/queuekeeper/xctest/.
 TEST_TIMES = "xctest/swift-testing-times.json"
-LOCAL_TEST_TIMES = ".build/engineering/xctest/swift-testing-times-{configuration}.json"
+LOCAL_TEST_TIMES = ".build/queuekeeper/xctest/swift-testing-times-{configuration}.json"
 EVENT_STREAM_VERSION = "0"
 # A test's id in the event stream goes on past the one `swift test list` prints with its source location.
 SOURCE_LOCATION = re.compile(r"/[^/]+\.swift:\d+:\d+$")

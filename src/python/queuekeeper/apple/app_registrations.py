@@ -42,7 +42,7 @@ LSREGISTER = ("/System/Library/Frameworks/CoreServices.framework/Versions/Curren
               "LaunchServices.framework/Versions/Current/Support/lsregister")
 PLUGINKIT = "/usr/bin/pluginkit"
 # Marks a nested run, whose outermost run does the work; the value is that run's PID.
-RUN = "VOCARO_APP_REGISTRATIONS_RUN"
+RUN = "QUEUEKEEPER_APP_REGISTRATIONS_RUN"
 JOURNALS = "app-registrations"
 # The folder under the journals of each run's list of what it left registered, and how long such a list is kept.
 DETAILS = "left"

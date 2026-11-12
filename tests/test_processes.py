@@ -87,7 +87,7 @@ raise SystemExit(5)
 STUCK_OWNER = READY + """import json, subprocess
 signal.signal(signal.SIGTERM, signal.SIG_IGN)
 start = subprocess.run(["ps", "-p", str(os.getpid()), "-o", "lstart="], capture_output=True, text=True).stdout.strip()
-Path(os.environ["SW_GATE_LOCK_FILE"] + ".warm-push-guard").write_text(json.dumps(
+Path(os.environ["QUEUEKEEPER_GATE_LOCK_FILE"] + ".warm-push-guard").write_text(json.dumps(
     {"vocaroEngineering": 1, "owners": {"stuck": {"pid": os.getpid(), "start": start, "label": "stuck"}}}))
 (here / f'ready-{os.getpid()}').touch()
 time.sleep(120)
@@ -96,7 +96,7 @@ time.sleep(120)
 # itself in the guard. Once the supervisor has sampled that child twice, it leaves the guard and ends.
 SAMPLES = READY + """import json, subprocess
 role = "ROLE"
-guard = Path(os.environ["SW_GATE_LOCK_FILE"] + ".warm-push-guard")
+guard = Path(os.environ["QUEUEKEEPER_GATE_LOCK_FILE"] + ".warm-push-guard")
 def stop(*_):
     sample = subprocess.Popen([sys.executable, "-c", "import sys, time\\nfrom pathlib import Path\\n"
                                "while Path(sys.argv[1]).exists(): time.sleep(0.05)", str(here)])
@@ -470,7 +470,7 @@ class ProcessTests(unittest.TestCase):
             script = f"(/usr/bin/yes; echo $? >{directory}/pipe) | /usr/bin/head -n 1 >/dev/null; " \
                      f"/usr/bin/env >{directory}/env; /bin/ls /dev/fd >{directory}/fds; echo \"$0 $*\" >{ran}"
             command = ["sh", "-c", script, "zero", "one two"]
-            environment = {"PATH": "/bin:/usr/bin", "VOCARO_TEST": "kept"}
+            environment = {"PATH": "/bin:/usr/bin", "QUEUEKEEPER_TEST": "kept"}
             def run(**options):
                 self.assertEqual(processes.supervise(command, cwd=directory, env=environment, **options), 0)
                 return {name: (Path(directory) / name).read_text() for name in ("pipe", "env", "fds", "ran")}
@@ -711,7 +711,7 @@ class ProcessTests(unittest.TestCase):
         self.addCleanup(cleanup)
         with patch.object(processes, "snapshot", observed), patch.object(processes.os, "kill", recorded), \
              patch.multiple(processes, create=True, LINGER=linger, SETTLE_WAIT=waits), \
-             patch.dict(os.environ, {"SW_GATE_LOCK_FILE": str(here / "gate")}), \
+             patch.dict(os.environ, {"QUEUEKEEPER_GATE_LOCK_FILE": str(here / "gate")}), \
              contextlib.redirect_stderr(StringIO()) as error:
             command = [sys.executable, "-c", ROOT, directory, STUCK_OWNER]
             if how == "stop":
@@ -782,7 +782,7 @@ class ProcessTests(unittest.TestCase):
                 kill(pid, number)
             with patch.object(processes, "snapshot", observed), \
                  patch.object(processes, "SETTLE_WAIT", stretched(60), create=True), patch.object(processes.os, "kill", recorded), \
-                 patch.dict(os.environ, {"SW_GATE_LOCK_FILE": str(here / "gate")}), contextlib.redirect_stderr(StringIO()):
+                 patch.dict(os.environ, {"QUEUEKEEPER_GATE_LOCK_FILE": str(here / "gate")}), contextlib.redirect_stderr(StringIO()):
                 with self.assertRaises(processes.Interrupted):
                     processes.supervise([sys.executable, "-c", ROOT, directory, *(SAMPLES.replace("ROLE", role)
                                          for role in ["owner", "plain"])], cwd=directory, kill_after=0.5)
@@ -880,8 +880,8 @@ class NestedAdmissionTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         here = Path(temporary.name)
         guard = here / "gate.warm-push-guard"
-        environment = {name: value for name, value in os.environ.items() if name != "VOCARO_RESOURCE_TOKEN"}
-        environment.update(PYTHONPATH=str(SOURCE), HEAVY_SLOT_DIR=str(here / "slots"), SW_GATE_LOCK_FILE=str(here / "gate"))
+        environment = {name: value for name, value in os.environ.items() if name != "QUEUEKEEPER_RESOURCE_TOKEN"}
+        environment.update(PYTHONPATH=str(SOURCE), HEAVY_SLOT_DIR=str(here / "slots"), QUEUEKEEPER_GATE_LOCK_FILE=str(here / "gate"))
         nested = [sys.executable, "-c", SLOW_TO_END, str(here), how]
         admission = ([sys.executable, "-m", "queuekeeper.resources", "--", *nested] if how == "ends"
                      else [sys.executable, "-c", UNOBSERVING, str(here), "--", *nested])
@@ -991,7 +991,7 @@ class InheritedDescriptorTests(unittest.TestCase):
         self.here = Path(temporary.name)
         # The caller's own token is restored afterward.
         variables = patch.dict(os.environ, {"PYTHONPATH": str(SOURCE), "HEAVY_SLOT_DIR": str(self.here / "slots"),
-                                            "SW_GATE_LOCK_FILE": str(self.here / "gate")})
+                                            "QUEUEKEEPER_GATE_LOCK_FILE": str(self.here / "gate")})
         variables.start()
         self.addCleanup(variables.stop)
         os.environ.pop(resources.TOKEN, None)

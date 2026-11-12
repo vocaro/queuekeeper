@@ -91,7 +91,7 @@ def ask(key):
 # The relay of a device's log, from libimobiledevice, which guides/device-testing.md already uses to read the
 # test daemons; "off" in WATCH starts none, as tests set it for every process they start (host_isolation).
 RELAY = "idevicesyslog"
-WATCH = "VOCARO_DEVICE_LOG_WATCH"
+WATCH = "QUEUEKEEPER_DEVICE_LOG_WATCH"
 # A line as idevicesyslog prints it: the device's clock, then the process, with the library that logged in
 # parentheses, its pid and the level: `Nov  5 17:03:47.851141 SpringBoard(UserNotificationsKit)[27395] <Notice>: …`,
 # as it printed the owner's iPhone's on iOS 27.2 (2026-11-05). Some versions put the device's name, which may
@@ -169,7 +169,7 @@ class Watch:
             self.failure = f"{RELAY} is not installed (brew install libimobiledevice)"
             return
         # mkdtemp makes it readable by this account alone, and each file in it is made so too.
-        self.directory = tempfile.mkdtemp(prefix="vocaro-device-log-")
+        self.directory = tempfile.mkdtemp(prefix="queuekeeper-device-log-")
         for network in (False, True):
             path = os.path.join(self.directory, "network" if network else "usb")
             descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)

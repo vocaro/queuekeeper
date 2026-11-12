@@ -4,7 +4,7 @@
 
 A script calls `keep` once per run, on a pass as on a failure. It writes what `queuekeeper simulator-tests` keeps of
 a run (matrix.kept), simulator-tests/NAME.log and NAME.json, in DIRECTORY, or else the lane's results/ that
-`queuekeeper run` names in ENG_RESULTS_DIR and brings back from the second Mac, and prints one line per test case.
+`queuekeeper run` names in QUEUEKEEPER_RESULTS_DIR and brings back from the second Mac, and prints one line per test case.
 STATUS is the exit status of the script's xcodebuild. A lane's output goes to its log, so `queuekeeper run` prints
 these lines again from results/ when the lane ends, here or, for a run on the second Mac, once its results
 have come back (report); it leaves out what `queuekeeper simulator-tests` kept, whose lanes print their own.

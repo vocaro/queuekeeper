@@ -175,7 +175,7 @@ class Summary(unittest.TestCase):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name).resolve()
-        self.lane_dir = self.root / ".build/engineering/lane"
+        self.lane_dir = self.root / ".build/queuekeeper/lane"
 
     def configure(self, **lanes):
         (self.root / "engineering.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example", "lanes": lanes}))
@@ -235,7 +235,7 @@ class Summary(unittest.TestCase):
     def test_a_failure_record_gives_the_failing_tests_their_places_and_the_path(self):
         script = textwrap.dedent(f"""\
             import json, os, pathlib
-            directory = pathlib.Path(os.environ['ENG_RESULTS_DIR']) / 'failures/one'
+            directory = pathlib.Path(os.environ['QUEUEKEEPER_RESULTS_DIR']) / 'failures/one'
             directory.mkdir(parents=True)
             (directory / 'failures.txt').write_text('what failed')
             (directory / 'failures.json').write_text(json.dumps({{'counts': {{'passed': 7, 'failed': 1, 'skipped': 2}},
@@ -304,7 +304,7 @@ class Summary(unittest.TestCase):
     def test_a_lane_with_a_failure_record_is_a_test_failure_whatever_its_log_says(self):
         script = textwrap.dedent("""\
             import json, os, pathlib
-            directory = pathlib.Path(os.environ['ENG_RESULTS_DIR']) / 'failures/one'
+            directory = pathlib.Path(os.environ['QUEUEKEEPER_RESULTS_DIR']) / 'failures/one'
             directory.mkdir(parents=True)
             (directory / 'failures.json').write_text(json.dumps({'failingTests': ['Pages/testTurn()']}))
             print('error: the test bundle stopped')

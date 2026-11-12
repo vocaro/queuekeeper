@@ -1,7 +1,7 @@
 """Heavy-work admission interoperating with the existing PDF slot locks.
 
 Admission records each job it admits in a guard, named by StudyWright's former host gate lock:
-SW_GATE_LOCK_FILE, `/tmp/studywright-gate-suite.lock` by default, with `.warm-push-guard`
+QUEUEKEEPER_GATE_LOCK_FILE, `/tmp/queuekeeper-gate-suite.lock` by default, with `.warm-push-guard`
 appended. StudyWright's gate checks an inherited admission against that path, and tests isolate
 admission by redirecting it; admission takes no lock there (#25). Exclusive work holds every old
 PDF slot. Crashed owners retain their guard for explicit inspection rather than treating a
@@ -80,7 +80,7 @@ import uuid
 
 from . import lane_wait
 
-TOKEN = "VOCARO_RESOURCE_TOKEN"
+TOKEN = "QUEUEKEEPER_RESOURCE_TOKEN"
 # `queuekeeper run --if-free` waits this many seconds for admission, then exits with BUSY (EX_TEMPFAIL)
 # without running: how the second Mac says it cannot take a lane now.
 FREE_WAIT, BUSY = 5, 75
@@ -91,8 +91,8 @@ LOG, PREVIOUS_LOG, LOG_LIMIT = "admissions.jsonl", "admissions.1.jsonl", 8 << 20
 MEASURED_RUNS = 5
 # The characters of a label that logs, queues and messages keep; the guard records it whole.
 LABEL_LIMIT = 160
-# The path that names the guard's namespace, unless SW_GATE_LOCK_FILE names another.
-GATE_LOCK = "/tmp/studywright-gate-suite.lock"
+# The path that names the guard's namespace, unless QUEUEKEEPER_GATE_LOCK_FILE names another.
+GATE_LOCK = "/tmp/queuekeeper-gate-suite.lock"
 # The admissions this process holds, by identity: only the owner's own supervision writes an entry's
 # process record. Nested work in another process reuses the admission and writes nothing to it.
 _held = {}
@@ -152,7 +152,7 @@ def running(record):
 
 def guard_path(environment):
     """Admission's guard in this environment's namespace."""
-    return Path(environment.get("SW_GATE_LOCK_FILE", GATE_LOCK) + ".warm-push-guard")
+    return Path(environment.get("QUEUEKEEPER_GATE_LOCK_FILE", GATE_LOCK) + ".warm-push-guard")
 
 
 # The fields of a guard entry as admission writes it, each with its type. Every toolkit has written the first
@@ -162,7 +162,7 @@ FIELDS, LATER = {"pid": int, "start": str, "label": str, "exclusive": bool}, {"m
                                                                                 "wholeHost": bool, "origin": dict}
 # Where work that asks for admission comes from, as JSON: the second Mac's runs of a dispatch read it from the Mac that
 # sent them (remote.dispatch), since their own checkout is a copy that names no session (work_origin).
-ORIGIN = "VOCARO_ADMISSION_ORIGIN"
+ORIGIN = "QUEUEKEEPER_ADMISSION_ORIGIN"
 # The fields of an origin, each a string, and the longest each keeps.
 ORIGIN_FIELDS, ORIGIN_LIMIT = ("repository", "branch", "worktree", "session", "mac"), 300
 
@@ -260,8 +260,8 @@ def slot_directory():
         base = subprocess.check_output(["/usr/bin/getconf", "DARWIN_USER_TEMP_DIR"], text=True, timeout=5).strip()
         if not base:
             raise RuntimeError("Cannot establish the host resource directory")
-        return Path(base) / "pdfreflow-heavy-slots"
-    return Path("/tmp/pdfreflow-heavy-slots")
+        return Path(base) / "queuekeeper-heavy-slots"
+    return Path("/tmp/queuekeeper-heavy-slots")
 
 
 def log_path():
@@ -271,7 +271,7 @@ def log_path():
     if os.environ.get("HEAVY_SLOT_DIR"):
         return Path(os.environ["HEAVY_SLOT_DIR"]) / LOG
     state = "Library/Application Support" if sys.platform == "darwin" else ".local/state"
-    return Path(pwd.getpwuid(os.getuid()).pw_dir) / state / "vocaro-engineering" / LOG
+    return Path(pwd.getpwuid(os.getuid()).pw_dir) / state / "queuekeeper" / LOG
 
 
 def append_log(entry):
@@ -619,7 +619,7 @@ def publish_guard(path, state):
     """Readers authenticate without the coordination lock, so publication is atomic."""
     temporary = None
     try:
-        with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, prefix=".vocaro-guard-", delete=False) as stream:
+        with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, prefix=".queuekeeper-guard-", delete=False) as stream:
             temporary = Path(stream.name)
             json.dump(state, stream)
             stream.write("\n")
@@ -696,7 +696,7 @@ def sweep_waits(folder):
                 with contextlib.suppress(OSError): (folder / name).unlink()
 
 
-REQUEST_STARTED = "VOCARO_ADMISSION_REQUEST_STARTED"
+REQUEST_STARTED = "QUEUEKEEPER_ADMISSION_REQUEST_STARTED"
 _request_started = contextvars.ContextVar("admission_request_started", default=None)
 
 
@@ -1992,7 +1992,7 @@ def now_main(argv=None, out=print, read=None):
     parser.add_argument("--json", action="store_true", help="print the readings as JSON")
     parser.add_argument("--here", action="store_true", help="read this Mac only, in this process's namespace")
     args = parser.parse_args(argv)
-    isolated = [name for name in ("HEAVY_SLOT_DIR", "SW_GATE_LOCK_FILE") if os.environ.get(name)]
+    isolated = [name for name in ("HEAVY_SLOT_DIR", "QUEUEKEEPER_GATE_LOCK_FILE") if os.environ.get(name)]
     if isolated and not args.here:
         parser.error(f"{' and '.join(isolated)} name{'s' if len(isolated) == 1 else ''} an isolated namespace on this "
                      "Mac alone: add --here to read it")

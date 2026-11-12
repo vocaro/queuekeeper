@@ -115,7 +115,7 @@ class Lane(extensions.Lane):
 
 def notifications_arguments(parser):
     parser.add_argument("--dismiss", action="store_true", help="close the windows' notifications; needs the second "
-                        "Mac's mac-foreground lease, named by VOCARO_DEVICE_OWNER")
+                        "Mac's mac-foreground lease, named by QUEUEKEEPER_DEVICE_OWNER")
 
 
 def register():

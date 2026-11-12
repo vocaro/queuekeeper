@@ -18,9 +18,9 @@ SOURCE = Path(__file__).resolve().parents[1] / "src/python"
 # A command that records the device it was given, by its words and its environment, then exits with STATUS,
 # printing an executed test as xcodebuild does.
 PROBE = ("import json, os, sys; open(sys.argv[1], 'a').write(json.dumps({'words': sys.argv[2:], "
-         "'key': os.environ.get('ENG_DEVICE_KEY'), 'udid': os.environ.get('ENG_DEVICE_UDID'), "
-         "'results': os.environ.get('ENG_RESULTS_DIR')}) + '\\n'); print('Executed 1 test, with 0 failures'); "
-         "raise SystemExit(int(os.environ.get('STATUS_' + os.environ['ENG_DEVICE_KEY'], '0')))")
+         "'key': os.environ.get('QUEUEKEEPER_DEVICE_KEY'), 'udid': os.environ.get('QUEUEKEEPER_DEVICE_UDID'), "
+         "'results': os.environ.get('QUEUEKEEPER_RESULTS_DIR')}) + '\\n'); print('Executed 1 test, with 0 failures'); "
+         "raise SystemExit(int(os.environ.get('STATUS_' + os.environ['QUEUEKEEPER_DEVICE_KEY'], '0')))")
 
 
 class Fixture(unittest.TestCase):
@@ -37,7 +37,7 @@ class Fixture(unittest.TestCase):
                         patch.object(device_notifications, "watch", self.watches)):
             patcher.start()
             self.addCleanup(patcher.stop)
-        for name in (devices.OWNER, devices.LEASE, "CODEX_THREAD_ID", "CLAUDE_CODE_SESSION_ID", "ENG_RESULTS_DIR"):
+        for name in (devices.OWNER, devices.LEASE, "CODEX_THREAD_ID", "CLAUDE_CODE_SESSION_ID", "QUEUEKEEPER_RESULTS_DIR"):
             os.environ.pop(name, None)
         # Each paired device's first reservation records its device.
         for key, device in (("iPad", TABLET), ("iPhone", PHONE)):
@@ -257,10 +257,10 @@ class ReleaseLane(Fixture):
         root, commit = self.project("iPad", "iPhone")
         code, error = self.run_lane(root)
         self.assertEqual(code, 0, error)
-        receipt = json.loads((root / ".build/engineering/device-voiceover/source.json").read_text())
+        receipt = json.loads((root / ".build/queuekeeper/device-voiceover/source.json").read_text())
         self.assertEqual(receipt["outcome"], "passed")
         # The pass's summary is in the lane's results.
-        summary = json.loads((root / ".build/engineering/device-voiceover/results" / device_pass.SUMMARY).read_text())
+        summary = json.loads((root / ".build/queuekeeper/device-voiceover/results" / device_pass.SUMMARY).read_text())
         self.assertEqual([part["outcome"] for part in summary["devices"]], ["passed", "passed"])
 
     def test_a_device_lane_with_the_iphone_not_run_is_no_pass(self):
@@ -268,7 +268,7 @@ class ReleaseLane(Fixture):
         root, commit = self.project("iPad", "iPhone")
         code, error = self.run_lane(root)
         self.assertEqual(code, device_pass.UNMEASURED, error)
-        receipt = json.loads((root / ".build/engineering/device-voiceover/source.json").read_text())
+        receipt = json.loads((root / ".build/queuekeeper/device-voiceover/source.json").read_text())
         self.assertEqual(receipt["outcome"], "unmeasured")
 
 

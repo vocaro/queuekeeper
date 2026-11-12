@@ -61,8 +61,8 @@ class ReapTests(unittest.TestCase):
         self.slots.mkdir()
         self.record = base / "device-handoff.json"
         environment = patch.dict(os.environ, {"HOME": str(self.home), "TMPDIR": "/var/folders/zz/fake/T/",
-                                              "HEAVY_SLOT_DIR": str(self.slots), "SW_GATE_LOCK_FILE": str(base / "gate"),
-                                              "VOCARO_DEVICE_RECORD": str(self.record)})
+                                              "HEAVY_SLOT_DIR": str(self.slots), "QUEUEKEEPER_GATE_LOCK_FILE": str(base / "gate"),
+                                              "QUEUEKEEPER_DEVICE_RECORD": str(self.record)})
         environment.start()
         self.addCleanup(environment.stop)
         # Any path past these fakes fails rather than reaching this host's simulators.
@@ -70,7 +70,7 @@ class ReapTests(unittest.TestCase):
             guard = patch.object(offload_host, name, side_effect=AssertionError(f"{name} reached this host"))
             guard.start()
             self.addCleanup(guard.stop)
-        self.guard = Path(os.environ["SW_GATE_LOCK_FILE"] + ".warm-push-guard")
+        self.guard = Path(os.environ["QUEUEKEEPER_GATE_LOCK_FILE"] + ".warm-push-guard")
         self.log = self.slots / offload_host.REAP_LOG
         self.uid = os.getuid()
         self.table, self.directories, self.names, self.runtimes = {}, {}, {UDID: NAME}, {}
@@ -481,7 +481,7 @@ class ReapTests(unittest.TestCase):
     def test_an_unended_admission_in_the_log_that_names_the_owner_keeps_it(self):
         before = self.early()
         self.process(106100, 100900, "python3 scripts/qk run gate", age=600)
-        self.environments[106100] = f"VOCARO_DEVICE_OWNER={self.OWNER}"
+        self.environments[106100] = f"QUEUEKEEPER_DEVICE_OWNER={self.OWNER}"
         (self.slots / "admissions.jsonl").write_text(json.dumps({
             "event": "admitted", "identity": "b" * 32, "pid": 106100,
             "time": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime())}) + "\n")
@@ -727,7 +727,7 @@ class ReapTests(unittest.TestCase):
         self.names[UDID], self.runtimes[UDID] = name, RUNTIME
         path = self.home / offload_host.DEVICES / UDID
         path.mkdir(parents=True, exist_ok=True)
-        marker = path / ".vocaro-pool-template.json"
+        marker = path / ".queuekeeper-pool-template.json"
         marker.write_text(json.dumps({"version": 1, "pool": "Lost", "udid": UDID, "name": name,
                                       "runtime": RUNTIME, "holder": {"pid": HOLDER, "start": ago(4 * 3600)}, **changes}))
         return name
@@ -1087,7 +1087,7 @@ class ReapBeforeRunTests(unittest.TestCase):
                                                   "own": {"command": ran, "resource": "self"}}}))
         # patch.dict puts back the whole environment when it stops, the switch host_isolation set among it.
         environment = patch.dict(os.environ, {"HEAVY_SLOT_DIR": str(self.root / "slots"),
-                                              "SW_GATE_LOCK_FILE": str(self.root / "gate")})
+                                              "QUEUEKEEPER_GATE_LOCK_FILE": str(self.root / "gate")})
         environment.start()
         self.addCleanup(environment.stop)
         # host_isolation turns the reap off for every other test; these turn it back on, over the fake below.

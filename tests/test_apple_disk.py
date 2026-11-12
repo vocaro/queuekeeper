@@ -173,7 +173,7 @@ class SimulatorTests(Fixture):
         reserved, unnamed = device(f"P-{uuid.uuid4()}"), device(f"P-{uuid.uuid4()}")
         record = self.root / "isolated-record.json"
         record.write_text(json.dumps({"devices": {"a": {"device": reserved["udid"]}}}))
-        with patch.dict(os.environ, {"VOCARO_DEVICE_RECORD": str(record)}):
+        with patch.dict(os.environ, {"QUEUEKEEPER_DEVICE_RECORD": str(record)}):
             items = self.simulators([reserved, unnamed], records=apple_disk.device_records())
         self.assertEqual(items[reserved["udid"]].status, disk.KEPT)
         self.assertIn(f"named in the device record {record}", items[reserved["udid"]].reason)
@@ -184,7 +184,7 @@ class SimulatorTests(Fixture):
         moved, legacy = self.root / "moved/device-handoff.json", self.root / "old-device-handoff.json"
         moved.parent.mkdir()
         for path in [moved, legacy]: path.write_text("{}")
-        environment = {key: value for key, value in os.environ.items() if key != "VOCARO_DEVICE_RECORD"}
+        environment = {key: value for key, value in os.environ.items() if key != "QUEUEKEEPER_DEVICE_RECORD"}
         with patch.dict(os.environ, environment, clear=True), patch.object(devices, "default_path", return_value=moved), \
              patch.object(devices, "LEGACY", str(self.root / "*device-handoff*.json")):
             records = apple_disk.device_records()

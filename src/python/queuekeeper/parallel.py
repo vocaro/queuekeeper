@@ -36,7 +36,7 @@ NO_TESTS = 5
 PROCESS_LIMIT = 1800
 # The variable that gives a lane's command the absolute path of its results/ directory, which `queuekeeper run` empties
 # before each run and brings back from the second Mac (guides/parallel-tests.md, A lane's results).
-RESULTS_VARIABLE = "ENG_RESULTS_DIR"
+RESULTS_VARIABLE = "QUEUEKEEPER_RESULTS_DIR"
 # What queuekeeper unittest repeats after its summary, so that output cut by `tail` still says why each test failed
 # (vocaro-engineering#264): at most this many failures, each name and reason at most this many characters. Together
 # they stay well under the TAIL lines a failed lane shows, and that lane's summary stays among them.
@@ -477,7 +477,7 @@ def unittest_main(argv):
 
 
 # Where a failed run's whole output is kept, below the directory it ran in, and how many runs' stay.
-FAILED_RUNS = ".build/engineering/unittest-failed"
+FAILED_RUNS = ".build/queuekeeper/unittest-failed"
 KEPT_FAILED_RUNS = 5
 
 

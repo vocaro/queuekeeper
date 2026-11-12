@@ -79,7 +79,7 @@ from ..lane_results import UNMEASURED
 from ..resources import process_start
 
 SCHEMA = 1
-OVERRIDE = "VOCARO_DEVICE_RECORD"
+OVERRIDE = "QUEUEKEEPER_DEVICE_RECORD"
 ABOUT = ("Device reservations on this Mac. Change entries only through "
          "`python3 -m queuekeeper.apple.devices` (vocaro-engineering guides/shared-host.md).")
 # Earlier ad hoc records. Status names one whose current bytes were never imported.
@@ -99,9 +99,9 @@ OBJECT_TIMEOUT = 10
 SIGNING = re.compile(r"""(?:IDENTITY=|--IDENTITY\s+|\bCODESIGN\b[^;&|\n]*?\s(?:-S|--SIGN)(?:=|\s+))["']?\Z""")
 # The reservations a run on the second Mac may use, held in the sending Mac's record, as JSON:
 # {"record": MAC, "devices": {KEY: UDID}, "until": the reservations' end}. offload_host.py sets it for the run.
-LEASE = "VOCARO_DEVICE_LEASE"
+LEASE = "QUEUEKEEPER_DEVICE_LEASE"
 # A lease's timing report, passed only to the top-level work on the second Mac.
-WINDOW = "VOCARO_DEVICE_WINDOW"
+WINDOW = "QUEUEKEEPER_DEVICE_WINDOW"
 # Seconds a bounded run keeps before its reservation ends for its own end once its bound expires:
 # supervision's wait for descendants that outlive the command, then its SIGTERM, settling and
 # SIGKILL waits (processes.py).
@@ -131,7 +131,7 @@ POLL = 10
 # The owner's screen, keyboard, pointer, focus and speech, held like a device.
 FOREGROUND = "mac-foreground"
 # The session a foreground driver acts for, as its reservation names it.
-OWNER = "VOCARO_DEVICE_OWNER"
+OWNER = "QUEUEKEEPER_DEVICE_OWNER"
 # The process that reserved a simulator pool member and holds it, {"pid", "start"}: while it runs
 # as one of a live run's processes, the second Mac's census of leftover processes counts the
 # member's simulator as that run's (offload_host.leftovers).
@@ -158,12 +158,12 @@ def default_path():
     """The account's record. A HOME or TMPDIR private to one session must not start another."""
     home = Path(pwd.getpwuid(os.getuid()).pw_dir)
     if sys.platform == "darwin":
-        return home / "Library/Application Support/vocaro-engineering/device-handoff.json"
-    return home / ".local/state/vocaro-engineering/device-handoff.json"
+        return home / "Library/Application Support/queuekeeper/device-handoff.json"
+    return home / ".local/state/queuekeeper/device-handoff.json"
 
 
 def record_path():
-    """VOCARO_DEVICE_RECORD names an isolated record for tests; sessions use the default."""
+    """QUEUEKEEPER_DEVICE_RECORD names an isolated record for tests; sessions use the default."""
     return Path(os.environ[OVERRIDE]) if os.environ.get(OVERRIDE) else default_path()
 
 
@@ -836,7 +836,7 @@ def require_foreground(owner, record=None):
 
     Drivers call it before acting, on either Mac. On this Mac the window is the reservation's expected
     release, which the session agreed with the owner. On the second Mac, whose record defers physical
-    devices, queuekeeper holds the entry for the run and names it in VOCARO_DEVICE_OWNER (foreground.slot), and
+    devices, queuekeeper holds the entry for the run and names it in QUEUEKEEPER_DEVICE_OWNER (foreground.slot), and
     the run may outlast its expected release."""
     if not owner:
         raise Refused(f"name the session whose {FOREGROUND} reservation covers this work (--owner or {OWNER})")

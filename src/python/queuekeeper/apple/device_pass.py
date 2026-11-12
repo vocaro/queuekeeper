@@ -16,7 +16,7 @@ For each device named, in the order named, the pass:
 2. runs COMMAND once on it, as `devices run` does: bounded by the reservation, refused when it names any
    other device, and watched for a notification banner, after which it runs once more. `{udid}` and
    `{key}` in COMMAND's words become the device's hardware UDID and its entry's key, and the command finds
-   them in ENG_DEVICE_UDID and ENG_DEVICE_KEY too, with its own results directory in ENG_RESULTS_DIR when
+   them in QUEUEKEEPER_DEVICE_UDID and QUEUEKEEPER_DEVICE_KEY too, with its own results directory in QUEUEKEEPER_RESULTS_DIR when
    the lane's run gives one.
 
 The pass exits 0 when every device's command exited 0; 1 when any failed; and otherwise UNMEASURED (3), so
@@ -40,7 +40,7 @@ from ..parallel import RESULTS_VARIABLE
 
 PASSED, FAILED, NOT_RUN, UNMEASURED_PART = "passed", "failed", "not run", "unmeasured"
 # The variables the command finds its device in.
-KEY_VARIABLE, UDID_VARIABLE = "ENG_DEVICE_KEY", "ENG_DEVICE_UDID"
+KEY_VARIABLE, UDID_VARIABLE = "QUEUEKEEPER_DEVICE_KEY", "QUEUEKEEPER_DEVICE_UDID"
 # Minutes a device the pass takes is reserved for, unless --minutes says otherwise: its expected release,
 # which bounds the command's run.
 MINUTES = 60

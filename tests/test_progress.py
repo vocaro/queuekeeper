@@ -224,16 +224,16 @@ class LaneTests(unittest.TestCase):
                 for lane in ("hung", "both"):
                     self.assertEqual(cli.main(["--project", directory, "run", "--here", lane]), lane_results.UNMEASURED,
                                      error.getvalue())
-            direct = json.loads((root / ".build/engineering/hung/source.json").read_text())
+            direct = json.loads((root / ".build/queuekeeper/hung/source.json").read_text())
             self.assertEqual(direct["outcome"], "unmeasured")
             self.assertIn("stalled", direct["error"])
-            members = json.loads((root / ".build/engineering/both/source.json").read_text())["lanes"]
+            members = json.loads((root / ".build/queuekeeper/both/source.json").read_text())["lanes"]
             self.assertEqual(members["hung"]["outcome"], "unmeasured")
             self.assertEqual(members["quick"]["outcome"], "passed")
             self.assertEqual(resources.ending(processes.Stalled), "timed-out")
             self.assertEqual(resources.guard_owners(os.environ), set(), "confirmed cleanup must release the admission")
             for path in ("hung/results/progress.json", "both/results/hung/progress.json"):
-                self.assertEqual(json.loads((root / ".build/engineering" / path).read_text())["state"], "Stalled")
+                self.assertEqual(json.loads((root / ".build/queuekeeper" / path).read_text())["state"], "Stalled")
 
     def test_report_only_quiet_work_and_work_with_output_complete_normally(self):
         with tempfile.TemporaryDirectory() as directory:

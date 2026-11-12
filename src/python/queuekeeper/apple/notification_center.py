@@ -8,7 +8,7 @@ UserNotificationCenter's and crash_alerts.py's (#118); this module is about Noti
 
 queuekeeper finds the window by the window list, which needs no permission: an on-screen window at layer 23 whose owner
 process runs NotificationCenter.app's executable. Only inside the second Mac's foreground lease, held by the run
-VOCARO_DEVICE_OWNER names, it closes each notification the window presents with that notification's own Close
+QUEUEKEEPER_DEVICE_OWNER names, it closes each notification the window presents with that notification's own Close
 action through the accessibility API, the action its close button performs, and then looks at the window list
 again until the window has left the screen. It never presses a notification, which would open it, never uses
 Clear All on a stack, and never touches a notification that asks for a password, permission or access: those
@@ -244,7 +244,7 @@ def close(pid, notification):
 
 
 def lease(owner=None, record=None):
-    """Refuse, with devices.Refused, unless this is the second Mac and owner, by default VOCARO_DEVICE_OWNER,
+    """Refuse, with devices.Refused, unless this is the second Mac and owner, by default QUEUEKEEPER_DEVICE_OWNER,
     holds its mac-foreground lease: queuekeeper closes the owner's notifications only on a Mac nobody works at, and only
     for the run that holds its screen."""
     record = record or devices.Record()

@@ -134,11 +134,11 @@ class HostIsolationTests(unittest.TestCase):
         token = '{"schemaVersion": 1, "locks": []}'
         source = str(Path(resources.__file__).resolve().parents[1])
         record = host_isolation.remote.lane_wait.VARIABLE
-        environment = {**os.environ, resources.TOKEN: token, "VOCARO_OFFLOAD_HOST": "build-host", record: "gate.json"}
+        environment = {**os.environ, resources.TOKEN: token, "QUEUEKEEPER_OFFLOAD_HOST": "build-host", record: "gate.json"}
         seen = {}
         for mode, imports in (("isolated", "import host_isolation; "), ("control", "")):
             code = (f"import os, sys; sys.path.insert(0, sys.argv[1]); {imports}"
-                    "print(os.environ.get(sys.argv[2]), os.environ.get('VOCARO_OFFLOAD_HOST'), os.environ.get(sys.argv[3]))")
+                    "print(os.environ.get(sys.argv[2]), os.environ.get('QUEUEKEEPER_OFFLOAD_HOST'), os.environ.get(sys.argv[3]))")
             result = subprocess.run([sys.executable, "-c", code, source, resources.TOKEN, record], env=environment, cwd=TESTS,
                                     capture_output=True, text=True, timeout=stretched(60))
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -149,7 +149,7 @@ class HostIsolationTests(unittest.TestCase):
         # On 2026-11-09 fixtures wrote into the real gate's results/, and its summary named a fixture's test as failed (#289).
         cli = host_isolation.cli
         names = (cli.parallel.RESULTS_VARIABLE, shims.ROOT_VARIABLE, cli.SELF_LANE, host_isolation.app_registrations.RUN,
-                 host_isolation.devices.WINDOW, host_isolation.devices.OWNER, "VOCARO_ENGINEERING_ROOT", "VOCARO_LANE_PROGRESS_RUN")
+                 host_isolation.devices.WINDOW, host_isolation.devices.OWNER, "QUEUEKEEPER_ROOT", "QUEUEKEEPER_LANE_PROGRESS_RUN")
         source = str(Path(resources.__file__).resolve().parents[1])
         for name in names:
             for mode, imports, expected in (("isolated", "import host_isolation; ", "None"), ("control", "", "outer")):
@@ -163,7 +163,7 @@ class HostIsolationTests(unittest.TestCase):
         # The inherited namespace stands in for the host's: a test must never admit into the real one.
         with tempfile.TemporaryDirectory() as directory:
             host = Path(directory).resolve()
-            environment = {**os.environ, "HEAVY_SLOT_DIR": str(host / "slots"), "SW_GATE_LOCK_FILE": str(host / "gate"),
+            environment = {**os.environ, "HEAVY_SLOT_DIR": str(host / "slots"), "QUEUEKEEPER_GATE_LOCK_FILE": str(host / "gate"),
                            "HEAVY_SLOTS": "1", "HEAVY_POLL_SECONDS": "0.01"}
             environment.pop(resources.TOKEN, None)
             source = str(Path(resources.__file__).resolve().parents[1])
@@ -183,7 +183,7 @@ class HostIsolationTests(unittest.TestCase):
             # With it, the admission went elsewhere, and its namespace went with the process.
             for key in ("guard", "slots"):
                 self.assertFalse(Path(outcomes["isolated"][key]).is_relative_to(host))
-                self.assertIn("vocaro-test-host-", outcomes["isolated"][key])
+                self.assertIn("queuekeeper-test-host-", outcomes["isolated"][key])
                 self.assertFalse(Path(outcomes["isolated"][key]).exists())
 
 

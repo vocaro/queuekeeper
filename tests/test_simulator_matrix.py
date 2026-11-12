@@ -285,8 +285,8 @@ class SimulatorMatrixTests(unittest.TestCase):
         # reaping switches in the child, and give each case a fresh admission guard and slot directory (#336).
         self.environment = {**os.environ,
                             "PATH": f"{tools}:{Path(sys.executable).parent}:/usr/bin:/bin", "FAKE_STATE": str(self.state),
-                            "HEAVY_SLOT_DIR": str(self.root / "slots"), "SW_GATE_LOCK_FILE": str(self.root / "gate"),
-                            "VOCARO_DEVICE_RECORD": str(self.record), "VOCARO_DEVICE_OWNER": "matrix-tests",
+                            "HEAVY_SLOT_DIR": str(self.root / "slots"), "QUEUEKEEPER_GATE_LOCK_FILE": str(self.root / "gate"),
+                            "QUEUEKEEPER_DEVICE_RECORD": str(self.record), "QUEUEKEEPER_DEVICE_OWNER": "matrix-tests",
                             # Devices that should meet wait for each other this long, stretched by load.
                             "FAKE_MEET_LIMIT": str(stretched(60))}
 
@@ -775,7 +775,7 @@ class SimulatorMatrixTests(unittest.TestCase):
 
     def add_holder(self, key, udid, revision):
         """Another session's reservation of a member."""
-        with mock.patch.dict(os.environ, {"VOCARO_DEVICE_RECORD": str(self.record)}):
+        with mock.patch.dict(os.environ, {"QUEUEKEEPER_DEVICE_RECORD": str(self.record)}):
             devices.Record().reserve(key, owner="another session", revision=revision, device=udid,
                                      purpose="Its own tests", release_by=(datetime.datetime.now(datetime.timezone.utc)
                                                                           + datetime.timedelta(hours=1)).isoformat())
@@ -1212,7 +1212,7 @@ class SimulatorMatrixTests(unittest.TestCase):
         results = self.root / "lane-results"
         status, output = self.run_matrix("--shards", "2", FAKE_TESTS=json.dumps(self.SHARDED), FAKE_BUNDLE="1",
                                          FAKE_RESULT_LINES="1", FAKE_TEST_FAIL="iPad-Air-13-inch-M4",
-                                         ENG_RESULTS_DIR=str(results))
+                                         QUEUEKEEPER_RESULTS_DIR=str(results))
         self.assertEqual(status, 1, output)
         kept = results / "simulator-tests"
         runs = ["iPad-Air-13-inch-M4-1", "iPad-Air-13-inch-M4-2", "iPhone-17-Pro-1", "iPhone-17-Pro-2"]
@@ -1278,7 +1278,7 @@ class SimulatorMatrixTests(unittest.TestCase):
         finished = run("unseparated")
         self.assertEqual(finished.returncode, 2, finished.stdout + finished.stderr)
         self.assertIn("a lane whose command runs simulator-tests ends with \"--\"",
-                      (self.root / ".build/engineering/unseparated/run.log").read_text())
+                      (self.root / ".build/queuekeeper/unseparated/run.log").read_text())
         self.assertFalse((self.state / "simctl.log").exists())
         records = (self.root / "slots/admissions.jsonl").read_text().splitlines()
         self.assertIn("Project unseparated", {json.loads(line)["label"] for line in records})

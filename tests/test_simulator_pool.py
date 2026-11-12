@@ -719,7 +719,7 @@ class PoolTests(unittest.TestCase):
         self.assertEqual(command(held), (0, held + "\n", ""))
         self.assertEqual(command(held.lower())[:2], (0, held + "\n"))
         self.assertEqual(command(elsewhere)[:2], (0, elsewhere + "\n"))
-        # The owner comes from VOCARO_DEVICE_OWNER or the session when --owner is absent.
+        # The owner comes from QUEUEKEEPER_DEVICE_OWNER or the session when --owner is absent.
         self.assertEqual(command(held, owner=None, environment="me")[:2], (0, held + "\n"))
         status, output, error = command(held, owner="someone else")
         self.assertEqual((status, output), (1, ""))
@@ -1272,7 +1272,7 @@ class PoolTests(unittest.TestCase):
 
         def killed_while_warming(udid, runtime, *, simctl, **limits):
             # Provenance is outside the copied data and exists before the first boot.
-            marker = self.simctl.data(udid).parent / ".vocaro-pool-template.json"
+            marker = self.simctl.data(udid).parent / ".queuekeeper-pool-template.json"
             origin = offload_host.template_provenance({**self.simctl.devices[udid], "udid": udid})
             self.assertEqual(json.loads(marker.read_text()), origin)
             self.assertEqual((origin["pool"], origin["name"], origin["holder"]["pid"]),

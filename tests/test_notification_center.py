@@ -259,7 +259,7 @@ class LaneTests(HostTest):
                                                                    "lanes": {"ui-mac": lane}}))
         for patcher in (patch.dict(os.environ, {devices.OVERRIDE: str(self.record.path),
                                                 "HEAVY_SLOT_DIR": str(self.root / "slots"), "HEAVY_POLL_SECONDS": "0.01",
-                                                "SW_GATE_LOCK_FILE": str(self.root / "gate")}),
+                                                "QUEUEKEEPER_GATE_LOCK_FILE": str(self.root / "gate")}),
                         patch.object(notification_center, "GONE", 0.05),
                         patch.object(cli, "source_identity", return_value={}),
                         patch.object(cli, "refresh_policy", return_value=None),
@@ -277,7 +277,7 @@ class LaneTests(HostTest):
         self.assertEqual(status, 0, error)
         self.assertTrue(self.ran.exists())
         self.assertIn("closed a Notification Center banner", error)
-        receipt = json.loads((self.project / ".build/engineering/ui-mac/source.json").read_text())
+        receipt = json.loads((self.project / ".build/queuekeeper/ui-mac/source.json").read_text())
         self.assertEqual(len(receipt["notificationCenter"]["closed"]), 1)
         # The unrelated window stays.
         self.assertEqual([w["number"] for w in self.host.windows], [50])
@@ -301,7 +301,7 @@ class LaneTests(HostTest):
         status, error = self.qk("run", "--here", "ui-mac")
         self.assertEqual(status, 0, error)
         self.assertEqual(self.host.pressed, [])
-        receipt = json.loads((self.project / ".build/engineering/ui-mac/source.json").read_text())
+        receipt = json.loads((self.project / ".build/queuekeeper/ui-mac/source.json").read_text())
         self.assertEqual(receipt["notificationCenter"], {"found": [], "closed": []})
 
     def test_eng_host_notifications_lists_and_dismisses_only_under_the_lease(self):

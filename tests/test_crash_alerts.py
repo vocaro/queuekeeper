@@ -88,7 +88,7 @@ class HostTest(unittest.TestCase):
         self.root = Path(temp.name)
         self.host = Host("basic")
         self.said = []
-        for patcher in (patch.dict(os.environ, {"VOCARO_CRASH_DIALOG_RECORD": str(self.root / "crash-dialog.json")}),
+        for patcher in (patch.dict(os.environ, {"QUEUEKEEPER_CRASH_DIALOG_RECORD": str(self.root / "crash-dialog.json")}),
                         patch.object(crash_alerts, "run", side_effect=lambda *a, **k: self.host.run(*a, **k)),
                         patch.object(crash_alerts, "change", side_effect=lambda value: self.host.change(value))):
             patcher.start()
@@ -461,7 +461,7 @@ class LaneTests(HostTest):
             "ui-mac": lane(0), "broken-mac": lane(1), "tested-mac": {**lane(1), "apps": ["EPUBLib"]}}}))
         for patcher in (patch.dict(os.environ, {devices.OVERRIDE: str(self.device_record.path),
                                                 "HEAVY_SLOT_DIR": str(self.root / "slots"), "HEAVY_POLL_SECONDS": "0.01",
-                                                "SW_GATE_LOCK_FILE": str(self.root / "gate")}),
+                                                "QUEUEKEEPER_GATE_LOCK_FILE": str(self.root / "gate")}),
                         patch.object(cli, "source_identity", return_value={}),
                         patch.object(cli, "refresh_policy", return_value=None),
                         patch.object(voiceover_state, "_read", return_value=False),
@@ -485,7 +485,7 @@ class LaneTests(HostTest):
         self.assertEqual(status, 0, error)
         self.assertIn("dismissed a crash-report alert with Ignore", error)
         self.assertEqual((self.host.value, self.host.changes), ("basic", [crash_alerts.OFF, "basic"]))
-        receipt = json.loads((self.project / ".build/engineering/ui-mac/source.json").read_text())
+        receipt = json.loads((self.project / ".build/queuekeeper/ui-mac/source.json").read_text())
         self.assertEqual(receipt["crashAlerts"]["dialogTypeBefore"], "basic")
         self.assertTrue(receipt["crashAlerts"]["restored"])
         # A failing lane fails, and dialogs are back.
@@ -518,7 +518,7 @@ class LaneTests(HostTest):
             status, error = self.qk("run", "--here", "broken-mac")
             self.assertEqual(status, lane_results.UNMEASURED, error)
             self.assertIn("ended with status 1 while a system alert queuekeeper cannot dismiss", error)
-            receipt = json.loads((self.project / ".build/engineering/broken-mac/source.json").read_text())
+            receipt = json.loads((self.project / ".build/queuekeeper/broken-mac/source.json").read_text())
             self.assertEqual(receipt["outcome"], "unmeasured")
             # A lane that passes under it passed.
             self.host.alerts = []
@@ -544,7 +544,7 @@ class LaneTests(HostTest):
                 self.host.alerts = []
                 status, error = self.qk("run", "--here", lane)
                 self.assertEqual(status, outcome, error)
-                receipt = json.loads((self.project / f".build/engineering/{lane}/source.json").read_text())
+                receipt = json.loads((self.project / f".build/queuekeeper/{lane}/source.json").read_text())
                 cleared = receipt["crashAlerts"]["cleared"]
                 self.assertEqual([(entry["process"], entry["stoodSeconds"], entry["duringRun"]) for entry in cleared],
                                  [(crash_alerts.crashed(alert), 17.0, True)])
@@ -590,7 +590,7 @@ class LaneTests(HostTest):
             status, error = self.qk("admit", "--foreground", "--app", "EPUBLib", "--", *failing)
             self.assertEqual(status, lane_results.UNMEASURED, error)
             self.assertIn("not the app under test (EPUBLib)", error)
-            receipt = json.loads((self.project / ".build/engineering/admit/source.json").read_text())
+            receipt = json.loads((self.project / ".build/queuekeeper/admit/source.json").read_text())
             self.assertEqual(receipt["crashAlerts"]["cleared"], [{
                 "alert": crash_alerts.describe(OTHER), "process": "Crasher944",
                 "start": "2026-11-07T04:46:44+00:00", "stoodSeconds": 17.0, "duringRun": True

@@ -337,13 +337,13 @@ def project_workspace(host, workspace):
 
 
 def kept_results(host, usage, sizes):
-    """Each repository's lane results kept by commit beside its receipts, .git/vocaro-engineering/remote/COMMIT/
+    """Each repository's lane results kept by commit beside its receipts, .git/queuekeeper/remote/COMMIT/
     LANE.results/ (remote.keep), counted, with those past their rule (remote.KEPT_RESULTS_RULE) as one candidate,
     which `queuekeeper remote prune-results` removes, leaving every receipt (vocaro-engineering#218)."""
     from . import remote  # remote imports this module
     items = []
     for main in main_checkouts(host):
-        base = main / ".git/vocaro-engineering/remote"
+        base = main / ".git/queuekeeper/remote"
         found = remote.all_kept_results(base)
         if not found: continue
         counted = ", ".join(f"{lane} at {len(folders)} commit{'s' if len(folders) != 1 else ''}"
@@ -434,7 +434,7 @@ def plan(items, out=print):
 
 
 def ledger_path(home):
-    return Path(home) / "Library/Application Support/vocaro-engineering/disk-reclaimed.jsonl"
+    return Path(home) / "Library/Application Support/queuekeeper/disk-reclaimed.jsonl"
 
 
 def outside_checkouts(path):

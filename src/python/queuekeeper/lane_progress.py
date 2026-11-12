@@ -14,7 +14,7 @@ import time
 from . import lane_wait
 
 LIMIT, MAX_BYTES, FRESH = 128, 65536, 15
-VARIABLE = "VOCARO_LANE_PROGRESS_RUN"
+VARIABLE = "QUEUEKEEPER_LANE_PROGRESS_RUN"
 
 
 def directory(wait, namespace=None):

@@ -115,7 +115,7 @@ def carrying(lease, root, host, work, name, send):
     said = lambda text: print(text, file=sys.stderr, flush=True)
     try:
         return devices.watched_run(lease, list(lease.devices), send, {
-            "host": host, "work": work, "results": str(Path(root) / ".build/engineering/remote" / name)}, said)
+            "host": host, "work": work, "results": str(Path(root) / ".build/queuekeeper/remote" / name)}, said)
     except devices.Unmeasured:
         print(f"remote: the run is unmeasured; {' and '.join(lease.devices)} "
               f"{'stays' if len(lease.devices) == 1 else 'stay'} reserved", file=sys.stderr)

@@ -33,7 +33,7 @@ UNBUILT = frozenset({"Logs", "SourcePackages", "TestResults"})
 # xcodebuild test-without-building without -derivedDataPath leaves one per run (vocaro-engineering#158).
 COVERAGE_ONLY = frozenset({"ProfileData"})
 # queuekeeper app's store of kept builds under the account's home (app_builds.store_root).
-APP_STORE = "Library/Application Support/vocaro-engineering/apps"
+APP_STORE = "Library/Application Support/queuekeeper/apps"
 
 
 def _json(run, *arguments):

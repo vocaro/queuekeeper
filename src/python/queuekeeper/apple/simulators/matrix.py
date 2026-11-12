@@ -41,7 +41,7 @@ booting it, only to name the build's destination, and returns it once the build 
 build while its earlier stages run, and the full run that follows finds the build up to date
 (vocaro/EPUBLib#958).
 
-Under a lane, whose command finds its results/ in ENG_RESULTS_DIR, each test run, a shard or a device,
+Under a lane, whose command finds its results/ in QUEUEKEEPER_RESULTS_DIR, each test run, a shard or a device,
 also keeps there, in simulator-tests/, the lines of its log that give each test's and suite's outcome and
 seconds, KIND.log, and its result bundle's summary and each class's or suite's seconds, KIND.json: they
 come back from the second Mac with the lane's dispatch, and are kept by commit beside its receipt, where

@@ -1,6 +1,6 @@
 """What a lane waits for now, in a small record beside its results, for `queuekeeper queue status` to read (#309).
 
-`queuekeeper run` names the record, .build/engineering/.waits/LANE.json, in VARIABLE for itself and everything it starts, and
+`queuekeeper run` names the record, .build/queuekeeper/.waits/LANE.json, in VARIABLE for itself and everything it starts, and
 removes it when it ends. A lane on the second Mac has its own there, which offload_host sends back as it changes, as
 `W` frames that the dispatcher writes to the lane's record here (relayed), so that the one file says it on either Mac.
 The queue reads the record and no printed line: rewording what a wait prints changes nothing in status.
@@ -17,7 +17,7 @@ import time
 import uuid
 
 # Set by the outermost `queuekeeper run` for itself and all it starts, and by offload_host for the run it starts.
-VARIABLE = "VOCARO_LANE_WAIT"
+VARIABLE = "QUEUEKEEPER_LANE_WAIT"
 WAITS = ".waits"
 HERE = "this Mac"
 SCHEMA = 1
@@ -41,8 +41,8 @@ _offer = None  # why this run waits for this Mac instead of the second Mac, unti
 
 
 def relative(lane):
-    """Where a checkout keeps LANE's record: apart from .build/engineering/LANE, which a run here alone creates."""
-    return f".build/engineering/{WAITS}/{lane}.json"
+    """Where a checkout keeps LANE's record: apart from .build/queuekeeper/LANE, which a run here alone creates."""
+    return f".build/queuekeeper/{WAITS}/{lane}.json"
 
 
 def path_of(root, lane):
@@ -57,7 +57,7 @@ def begin(root, lane):
     _owned, _offer = path_of(root, lane), None
     remove(_owned)
     os.environ[VARIABLE] = str(_owned)
-    os.environ["VOCARO_LANE_PROGRESS_RUN"] = uuid.uuid4().hex
+    os.environ["QUEUEKEEPER_LANE_PROGRESS_RUN"] = uuid.uuid4().hex
 
 
 def finish():
@@ -66,7 +66,7 @@ def finish():
     if _owned is None: return
     remove(_owned)
     os.environ.pop(VARIABLE, None)
-    os.environ.pop("VOCARO_LANE_PROGRESS_RUN", None)
+    os.environ.pop("QUEUEKEEPER_LANE_PROGRESS_RUN", None)
     _owned = None
 
 
@@ -91,15 +91,15 @@ def write(record):
         ignored = path.parent / ".gitignore"
         if not ignored.exists(): ignored.write_text("*\n")
         staged.write_text(json.dumps({"schemaVersion": SCHEMA, **record, "written": time.time(),
-                                       **({"progressRun": os.environ["VOCARO_LANE_PROGRESS_RUN"]}
-                                          if os.environ.get("VOCARO_LANE_PROGRESS_RUN") else {})}) + "\n")
+                                       **({"progressRun": os.environ["QUEUEKEEPER_LANE_PROGRESS_RUN"]}
+                                          if os.environ.get("QUEUEKEEPER_LANE_PROGRESS_RUN") else {})}) + "\n")
         os.replace(staged, path)
     except OSError: remove(staged)
 
 
 def same(found, record):
     return (found is not None and all(found.get(key) == record[key] for key in STATE)
-            and found.get("progressRun") == os.environ.get("VOCARO_LANE_PROGRESS_RUN"))
+            and found.get("progressRun") == os.environ.get("QUEUEKEEPER_LANE_PROGRESS_RUN"))
 
 
 def waiting(kind, reason, mac=HERE, stranded=False):
@@ -173,7 +173,7 @@ def admission_warnings(root, at=None):
     """queuekeeper doctor's pointer for each lane of this checkout waiting for admission now: to `queuekeeper admissions now`, which
     shows who holds and who waits on each Mac (vocaro-engineering#342). Doctor neither runs that report nor fails on it."""
     found = []
-    try: paths = sorted((Path(root) / ".build/engineering" / WAITS).glob("*.json"))
+    try: paths = sorted((Path(root) / ".build/queuekeeper" / WAITS).glob("*.json"))
     except OSError: return []
     for path in paths:
         record = current(path)

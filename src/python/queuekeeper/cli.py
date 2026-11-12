@@ -53,7 +53,7 @@ def split_warnings(root, config):
     except (OSError, subprocess.SubprocessError):
         return []
     if common.returncode: return []
-    return budgets.landing_warnings(root, config, budgets.entries(Path(common.stdout.strip()) / "eng-queue/entries"))
+    return budgets.landing_warnings(root, config, budgets.entries(Path(common.stdout.strip()) / "queuekeeper-queue/entries"))
 
 
 def refresh_policy(root, stream=None):
@@ -350,7 +350,7 @@ def host_screen(args):
 
 # Set to off, work that runs on this Mac does not reap first (reap_here). tests/host_isolation sets it, so that no
 # run a test makes, in its process or a child, stops a simulator or releases a reservation of this Mac.
-REAP_SWITCH = "VOCARO_REAP_BEFORE_RUN"
+REAP_SWITCH = "QUEUEKEEPER_REAP_BEFORE_RUN"
 # The status of a command that refused how it was called, as argparse's does: lane_report.before_tests leaves it as it
 # is, since it already tells a refusal apart from a test's failure (vocaro-engineering#393).
 USAGE = 2
@@ -428,7 +428,7 @@ def provision_sent(root, config, checkout, toolkit, variables, limit, on_stop=No
     """0 once the project's provision lane, if it has one, has run in the worktree of what was sent, as it runs in
     the second Mac's checkout before the command; otherwise its status, after saying where its log is."""
     if "provision" not in config.get("lanes", {}): return 0
-    log = Path(root) / ".build/engineering/admit/provision.log"
+    log = Path(root) / ".build/queuekeeper/admit/provision.log"
     status = processes.run([sys.executable, str(toolkit / "bin/qk"), "--project", str(checkout), "run", "--here",
                             "provision"], cwd=checkout, log_path=log, timeout=limit, env=variables,
                             on_stop=on_stop)
@@ -455,7 +455,7 @@ def here_because(args, inherited):
 
 # Set by queuekeeper run for the command of a self lane, to the lane's name: each `queuekeeper admit` its script runs stays on the
 # Mac where the lane runs, since one part builds what the next runs (config.unadmitted).
-SELF_LANE = "VOCARO_SELF_LANE"
+SELF_LANE = "QUEUEKEEPER_SELF_LANE"
 
 
 @contextlib.contextmanager
@@ -552,7 +552,7 @@ def admit(root, args, config=None, *, device_window=None):
                     # provision lane, with the toolkit beside it (remote.sent_tree).
                     checkout, toolkit = tree
                     directory = checkout / matching_directory(root)
-                    variables = {**os.environ, "VOCARO_ENGINEERING_ROOT": str(toolkit)}
+                    variables = {**os.environ, "QUEUEKEEPER_ROOT": str(toolkit)}
                     provisioned = provision_sent(root, config, checkout, toolkit, variables, args.time_limit,
                                                  admission.interrupted)
                     if provisioned: return provisioned
@@ -567,7 +567,7 @@ def admit(root, args, config=None, *, device_window=None):
                 if tree is not None: status = remote.brought_back_here(root, sent["commit"], tree[0], status)
                 return status
         try:
-            return record(root / ".build/engineering/admit", receipt, work)
+            return record(root / ".build/queuekeeper/admit", receipt, work)
         except processes.TimedOut as error:
             # A backstop for a hang that a busy host can also reach, so the command is unmeasured.
             print(f"queuekeeper: unmeasured: {error}", file=sys.stderr)
@@ -957,7 +957,7 @@ def perform(argv, report):
             needs = unlocked_screen(config["lanes"], args.lane)
             reads_screen = needs or any(config["lanes"][name].get("display") for name in (group or [args.lane]))
             policy_commit = refresh_policy(root) if resource != "self" else None
-            directory = root / ".build/engineering" / args.lane
+            directory = root / ".build/queuekeeper" / args.lane
             receipt = {"project": source_identity(root), "toolkit": source_identity(TOOLKIT_ROOT),
                        "policy": policy_commit, **placement(reason)}
             # A run of the whole lane, which a pass of counts for its commit once kept (concluded).
@@ -976,7 +976,7 @@ def perform(argv, report):
                 if not os.environ.get(remote.DISPATCHER): extensions.LANE.report_results(directory / "results")
             def prepared(work):
                 # What an earlier run left in results/ is not this run's, here as on the second Mac (remote.RESULTS).
-                # The lane finds the directory in ENG_RESULTS_DIR, and a group's lanes each find one of their own in it.
+                # The lane finds the directory in QUEUEKEEPER_RESULTS_DIR, and a group's lanes each find one of their own in it.
                 shutil.rmtree(directory / "results", ignore_errors=True)
                 report.ran_here(directory)
                 if resource != "self":

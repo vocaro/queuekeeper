@@ -393,7 +393,7 @@ class SwiftTestingTimesTests(unittest.TestCase):
         results = self.root / "results"
         for _ in range(2):
             status, output = self.run_eng("--skip-build", "--filter", "SuiteA", FAKE_EVENTS_FAIL="two",
-                                          ENG_RESULTS_DIR=str(results))
+                                          QUEUEKEEPER_RESULTS_DIR=str(results))
         self.assertEqual({entry["test"]: entry["verdict"] for entry in self.kept(results)},
                          {"Alpha.SuiteA/one()": "passed", "Alpha.SuiteA/two()": "failed"})
         self.assertTrue((results / "xctest/swift-testing-times-2.json").is_file())
