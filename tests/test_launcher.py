@@ -28,9 +28,10 @@ class OlderInterpreterTests(unittest.TestCase):
         return subprocess.run([OLD, str(ROOT / "scripts/qk"), "--version"], env={**environment, "PATH": path},
                               capture_output=True, text=True, timeout=stretched(60))
 
-    def test_it_hands_over_to_the_python3_on_the_path(self):
-        # As a project does that runs its lanes' launcher under a pinned environment's interpreter.
-        result = self.run_launcher(os.pathsep.join([str(Path(sys.executable).parent), "/usr/bin", "/bin"]))
+    def test_it_hands_over_to_the_first_python3_on_the_path_that_is_new_enough(self):
+        # As a project does that runs its lanes' launcher under a pinned environment's interpreter, whose folder
+        # is first on the PATH: the older python3 there is passed over.
+        result = self.run_launcher(os.pathsep.join(["/usr/bin", str(Path(sys.executable).parent), "/bin"]))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertRegex(result.stdout.strip(), r"^\d+\.\d+")
 
