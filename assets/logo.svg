@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="t d">
   <title id="t">Queuekeeper logo</title>
-  <desc id="d">A stone crypt arch with an open doorway that glows faintly green. A commit line enters grey on the left and leaves green on the right.</desc>
+  <desc id="d">A stone crypt arch with an open doorway that glows faintly green. A commit line enters gray on the left and leaves green on the right.</desc>
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#0b0e15"/>
@@ -19,7 +19,7 @@
 
   <rect width="256" height="256" rx="48" fill="url(#bg)"/>
 
-  <!-- commit line: in grey, out green -->
+  <!-- commit line: in gray, out green -->
   <path d="M24 196h60" stroke="#8b93a7" stroke-width="6" stroke-linecap="round"/>
   <path d="M172 196h60" stroke="#7dea8a" stroke-width="6" stroke-linecap="round"/>
 
