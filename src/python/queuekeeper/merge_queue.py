@@ -4596,13 +4596,16 @@ def run(root, *, if_waiting=False):
 def journal(root, as_json=False, since=None, kinds=(), following=False, out=print):
     """`queuekeeper queue events`: the journal's events (events), oldest first, as a line of words each or, with
     as_json, as the journal's own lines; then, when following, each new one as it is written, until interrupted."""
-    queue = Queue(root)
+    queue, since, shown = Queue(root), since.timestamp() if since else None, set()
     def show(event):
+        shown.add(event.get("id"))
         out(json.dumps(event) if as_json else events.words(event), flush=True)
-    for event in events.read(queue.directory, since.timestamp() if since else None, kinds): show(event)
+    for event in events.read(queue.directory, since, kinds): show(event)
     if following:
         with contextlib.suppress(KeyboardInterrupt):
-            for event in events.follow(queue.directory, kinds): show(event)
+            # From the journal's start, less what is shown, so that nothing written since the reading is missed.
+            for event in events.follow(queue.directory, kinds, whole=True):
+                if event.get("id") not in shown and events.wanted(event, since): show(event)
     return 0
 
 

@@ -101,11 +101,14 @@ def wanted(event, since=None, kinds=None):
                             for kind in kinds)
 
 
-def follow(directory, kinds=None, poll=0.5, stop=lambda: False):
+def follow(directory, kinds=None, poll=0.5, stop=lambda: False, whole=False):
     """Yield each event written to the journal from now on, until stop() is true. A journal that starts a new
-    generation is followed into it: whatever the old one held unread is yielded first."""
+    generation is followed into it: whatever the old one held unread is yielded first. With whole, what the
+    journal's current generation holds already is yielded first, for a reader that has read it and wants nothing
+    written since to slip between its reading and its following; it tells the ones it has by their IDs."""
     path, stream, rest = path_of(directory), None, b""
-    skip = path.exists()  # what the journal holds already is not new; one that starts later is, from its first line
+    # What the journal holds already is not new; one that starts later is, from its first line.
+    skip = path.exists() and not whole
     try:
         while not stop():
             if stream is None:

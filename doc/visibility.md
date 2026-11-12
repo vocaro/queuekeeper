@@ -12,7 +12,7 @@ the queue.
 | Event journal | One line for each change of the queue's state | Built |
 | `queuekeeper queue events` | The journal in the terminal | Built |
 | `queuekeeper visibility` | The switch that turns features on and off | Built |
-| `watch` feature | A live status view in the terminal | Planned |
+| `watch` feature | A live status view in the terminal | Built |
 | `notify` feature | Banners, a command hook and webhooks | Planned |
 | `dashboard` feature | A read-only web page on this Mac | Planned |
 
@@ -96,6 +96,21 @@ What is on belongs to the owner and the Mac, not to a project, so it is kept in
 `QUEUEKEEPER_VISIBILITY=off` in the environment turns every feature off for the commands that see
 it, whatever the file says.
 
+## The watch feature
+
+`queuekeeper watch` shows the queue in the terminal and draws it again every two seconds until
+interrupted: what the queue is doing in one line, each running gate, the entries waiting, the last
+few settled and the journal's last events.
+
+```sh
+queuekeeper visibility enable watch
+queuekeeper watch                  # live, until Ctrl-C
+queuekeeper watch --once           # print the view once
+queuekeeper watch --interval 5 --events 20
+```
+
+Where its output is not a terminal, it prints the view once and exits, as with `--once`.
+
 ## Writing a feature
 
 A feature is a module `queuekeeper/visibility/NAME.py`, or a package `queuekeeper/visibility/NAME/`,
@@ -105,7 +120,6 @@ queue, a feature calls `events.read`, `events.follow` and `merge_queue.snapshot`
 
 ## Planned features
 
-- **`watch`**: `queuekeeper queue watch`, the queue's status redrawn in the terminal as it changes.
 - **`notify`**: a process that reads the journal from where it last stopped and tells the owner of
   what needs them: a hold for the owner, an entry that came back, a flaky test, an ungated landing.
   Each channel (a macOS banner, a command given the event on its standard input, a webhook) is a
