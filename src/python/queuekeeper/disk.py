@@ -1,8 +1,9 @@
-"""Inventory of disk space on the shared host, and removal only of what nobody owns.
+"""Inventory of the disk space Queuekeeper's own files take on a host, and removal only of what nobody owns.
 
-`eng disk` measures what the projects in ~/Development leave on the host: their linked worktrees,
-simulators and runtimes, the build caches their builds fill, and the scratch builds and results
-their sessions leave in the temporary directories. It reads nothing else, and classifies each item:
+`qk disk` measures what Queuekeeper leaves: each repository's lane results kept by commit, and what an extension
+adds (the Apple extension: simulators and runtimes, Xcode's DerivedData, the SwiftPM cache and kept app builds).
+What sessions and the owner's workflow leave (worktrees, scratch folders, failure records, evidence archives) is
+the toolkit's `eng disk` (decision E of vocaro/vocaro-engineering#403). It classifies each item:
 
 - candidate: the rules prove that no session's live work is in it. `--delete` removes it, checking
   it again first, without asking and on a terminal or not: any session runs it when the volume
@@ -10,26 +11,18 @@ their sessions leave in the temporary directories. It reads nothing else, and cl
   for every category but simulators and runtimes). `--yes WHO` only names, in the ledger, who
   asked for the run.
 - owner: nothing shows a session using it, but only the owner can say whether it is still
-  wanted. The command that would remove it is printed; `--delete` never runs it. An evidence
-  archive's command moves it to the second Mac, and eng's offload retry runs it by itself once the
-  archive is quiet and unused (evidence_offload).
+  wanted. The command that would remove it is printed; `--delete` never runs it.
 - kept: it is in use, owned, of unclear ownership, or holds work or evidence.
-- archive: with `--archive-worktrees`, a landed, idle Claude worktree that can go only after a
-  verified copy of its ignored evidence and unknown files reaches the second Mac.
 
 `--dry-run` lists what `--delete` would remove. Without --delete nothing is changed.
 guides/shared-host.md § Reclaiming disk space has the rules.
 """
 import argparse
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import asdict, dataclass, field
 import datetime
-import fcntl
-import glob
-import hashlib
 import json
 import os
 from pathlib import Path
-import plistlib
 import pwd
 import re
 import shlex
@@ -37,53 +30,22 @@ import shutil
 import stat
 import subprocess
 import sys
-import tempfile
 import time
 
-from . import app_builds as kept_apps, devices as device_record, failure_records as failures, ignored, landing
 from .config import TOOLKIT_ROOT
-from .simulators import pool as simulator_pool
 
-CANDIDATE, ARCHIVE, OWNER, KEPT = "candidate", "archive", "owner", "kept"
-STATUS_ORDER = {CANDIDATE: 0, ARCHIVE: 1, OWNER: 2, KEPT: 3}
-CATEGORIES = {"worktree": "Linked worktrees", "simulator": "Simulators", "runtime": "Simulator runtimes",
-              "derived-data": "Xcode DerivedData", "scratch": "Scratch builds outside checkouts",
-              "swiftpm-cache": "SwiftPM shared cache", "results": "Result directories",
-              "failures": "Kept failure records (pruned by their rule)",
-              "kept-results": "Lane results kept by commit beside the receipts (pruned by their rule)",
-              "evidence": "Evidence archives (offload to the second Mac)",
-              "app-builds": "Kept app builds and their build caches (eng app)"}
+CANDIDATE, OWNER, KEPT = "candidate", "owner", "kept"
+STATUS_ORDER = {CANDIDATE: 0, OWNER: 1, KEPT: 2}
+# The categories, in the order a report lists them and --delete removes them. An extension adds its own (extend).
+CATEGORIES = {"kept-results": "Lane results kept by commit beside the receipts (pruned by their rule)"}
 # --delete removes every candidate category without asking (the owner's decision, 2026-11-05, widening that
 # of 2026-11-03 from simulators and runtimes to every candidate): a candidate is what the rules prove nobody
 # owns, so it needs no second judgment; what only the owner can judge is an owner item, never removed.
-# A runtime no device uses is removed once it has gone unused this long, as a pool member is pruned: a
-# lane may make its devices on it next.
-RUNTIME_IDLE_DAYS = 14
-UUID = re.compile(r"[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}", re.IGNORECASE)
 SEPARATORS = re.compile(r"[\s=,;\"']+")
-# Xcode names a workspace's DerivedData folder NAME-<28 letters>; other folders are shared caches.
-WORKSPACE_FOLDER = re.compile(r".+-[a-z]{28}")
-# What an xcodebuild leaves in a folder it writes no info.plist for, when it resolves packages or tests
-# without building: logs, resolved package checkouts and test results, and no build products to lose.
-UNBUILT = frozenset({"Logs", "SourcePackages", "TestResults"})
-# A Build folder that holds nothing but ProfileData holds a test run's coverage data, not build products:
-# xcodebuild test-without-building without -derivedDataPath leaves one per run (vocaro-engineering#158).
-COVERAGE_ONLY = frozenset({"ProfileData"})
-# Ignored files under a directory of one of these names may be evidence; ignored.py, which Closeout
-# reads too, says which ignored files are caches a tool rebuilds and keeps a worktree for any other.
-EVIDENCE_NAMES = ignored.EVIDENCE_NAMES
-# A durable evidence archive in the projects directory, such as pdfreflowlib-measurements, or the
-# archive Closeout used to keep in a main checkout; each belongs on the second Mac.
-EVIDENCE_ARCHIVE = re.compile(r".+-(evidence|measurements)|session-evidence")
 DATA_VOLUME = "/System/Volumes/Data"
-# The Claude desktop app's session records, under the account's home: each names its folder (cwd) and
-# whether the session is archived.
-SESSION_RECORDS = "Library/Application Support/Claude/claude-code-sessions"
 # The lock reason the merge queue gives a checkout of its old layout that it could not move while a process
 # used it, once it has made the checkout afresh in its place (merge_queue.Worker.place).
 RETIRED = "retired by the merge queue"
-# eng app's store of kept builds under the account's home (app_builds.store_root).
-APP_STORE = "Library/Application Support/vocaro-engineering/apps"
 
 
 @dataclass
@@ -259,144 +221,47 @@ class Sizes:
 
 @dataclass
 class Host:
-    """Everything the inventory reads from the machine, so tests can supply it."""
+    """Everything the inventory reads from the machine, so tests can supply it. An extension's items read more,
+    from a subclass it names in extend."""
     home: Path
     development: Path
     now: float
     min_idle: float
     processes: list
-    simulators: dict = None
-    runtimes: dict = None
-    default_devices: frozenset = frozenset()
-    device_directory: Path = None
-    records: dict = field(default_factory=dict)
     temp_roots: list = field(default_factory=list)
-    session_scratch: Path = None
-    pools: frozenset = frozenset()
     offload_host: str = None  # the second Mac, when this Mac sends work to one
     run: object = subprocess.run
-    sessions: dict = field(default_factory=dict)  # the desktop app's session records: path to record, None if unreadable
-    matches: dict = None  # `simctl runtime match list -j`: the runtime build chosen for each SDK
-    pinned: dict = field(default_factory=dict)  # runtime builds the toolkit names, each with where
-    # The second Mac's runtime images as `eng remote setup --runtimes` reads them (remote.runtime_images), or
-    # {"error": why} when they cannot be read; None without a second Mac.
-    remote_runtimes: dict = None
-    strict_idle: bool = False  # an explicit --min-idle-hours also applies to archived sessions
 
     @classmethod
     def current(cls, min_idle, development=None, run=subprocess.run):
         home = account_home()
-        devices = home / "Library/Developer/CoreSimulator/Devices"
         temp = [(Path("/private/tmp"), 6)]
         user_temp = run(["getconf", "DARWIN_USER_TEMP_DIR"], capture_output=True, text=True).stdout.strip()
         if user_temp: temp.append((Path(os.path.realpath(user_temp)), 2))
-        second = second_mac()
         return cls(home=home, development=Path(development or home / "Development"), now=time.time(),
-                   min_idle=min_idle, processes=census(run), simulators=_json(run, "list", "-j"),
-                   runtimes=_json(run, "runtime", "list", "-j"), default_devices=default_devices(devices),
-                   device_directory=devices, records=device_records(), temp_roots=temp,
-                   session_scratch=Path(f"/private/tmp/claude-{os.getuid()}"),
-                   pools=pools(development or home / "Development", run),
-                   offload_host=second, run=run, sessions=desktop_sessions(home),
-                   matches=_json(run, "runtime", "match", "list", "-j"), pinned=pinned_builds(),
-                   remote_runtimes=runtimes_there(second))
+                   min_idle=min_idle, processes=census(run), temp_roots=temp, offload_host=second_mac(), run=run)
 
 
-def _json(run, *arguments):
-    try:
-        result = run(["xcrun", "simctl", *arguments], capture_output=True, text=True, timeout=300)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    try:
-        return json.loads(result.stdout) if result.returncode == 0 else None
-    except ValueError:
-        return None
+# What an extension adds to the inventory (extend): the functions that list its items, those that name the
+# folders one du pass measures, and the Host its items read.
+EXTENSION_ITEMS, EXTENSION_PRIMES, EXTENSION_HOSTS = [], [], []
 
 
-def pools(development, run=subprocess.run):
-    """The simulator pools the projects' main checkouts name in engineering.json, in the working
-    tree or at origin/main, since a main checkout can lag the project's main."""
-    if not Path(development).is_dir(): return frozenset()
-    found = set()
-    for path in Path(development).iterdir():
-        if not (path / ".git").is_dir(): continue
-        found.add(simulator_pool.configured(path))
-        try:
-            text = git(run, path, "show", "origin/main:engineering.json", timeout=30).stdout
-            found.add(json.loads(text).get("simulatorPool"))
-        except (OSError, subprocess.SubprocessError, ValueError, AttributeError):
-            pass
-    return frozenset(filter(None, found))
+def extend(categories, items, prime=None, host=None):
+    """Add an extension's disk items: `categories` maps each of its categories to its title; `items(host, usage,
+    sizes, wanted)` lists the items of those in `wanted`; `prime(host)` gives the (folder, depth) pairs worth one
+    du pass each; `host` is a subclass of Host that reads what its items need. Adding the same items twice
+    changes nothing."""
+    if items in EXTENSION_ITEMS: return
+    CATEGORIES.update(categories)
+    EXTENSION_ITEMS.append(items)
+    if prime: EXTENSION_PRIMES.append(prime)
+    if host: EXTENSION_HOSTS.append(host)
 
 
-def default_devices(directory):
-    """The devices CoreSimulator made for each runtime, which any session may use."""
-    return simulator_pool.default_devices(directory)
-
-
-def device_records():
-    """Every device reservation record's text, or None when a record exists but cannot be read.
-
-    The devices module owns the paths. The account's record is read even under an override, so an
-    isolated record never hides a real reservation, and legacy records still count."""
-    paths = list(dict.fromkeys([device_record.record_path(), device_record.default_path()]))
-    paths += sorted(map(Path, glob.glob(device_record.LEGACY)))
-    records = {}
-    for path in paths:
-        if not path.exists(): continue
-        try: records[str(path)] = path.read_text(errors="replace")
-        except OSError: records[str(path)] = None
-    return records
-
-
-def desktop_sessions(home):
-    """Every Claude desktop session record, by path: the record, or None when it cannot be read."""
-    found = {}
-    for path in sorted(glob.glob(str(Path(home) / SESSION_RECORDS / "*/*/local_*.json"))):
-        try:
-            record = json.loads(Path(path).read_text())
-            found[path] = record if isinstance(record, dict) else None
-        except (OSError, ValueError):
-            found[path] = None
-    return found
-
-
-def live_sessions(host, path):
-    """Why a worktree is the folder of a desktop session not yet archived, if it is; a record that cannot be
-    read keeps every worktree, as nothing then shows which session works where."""
-    unreadable = [record for record, value in host.sessions.items() if value is None]
-    if unreadable: return "a desktop session record could not be read: " + ", ".join(unreadable[:3])
-    for value in host.sessions.values():
-        cwd = value.get("cwd")
-        if cwd and not value.get("isArchived") and (within(cwd, path) or within(os.path.realpath(cwd), os.path.realpath(path))):
-            return f"the folder of the desktop session {value.get('sessionId', '?')} ({value.get('title', 'untitled')}), not archived"
-    return None
-
-
-def session_activity(host, path):
-    """When a Claude Code session working in path last wrote its transcript or its desktop record, or 0."""
-    times = []
-    try: times += [entry.stat().st_mtime for entry in os.scandir(host.home / ".claude/projects" / encoded(path))]
-    except OSError: pass
-    for value in host.sessions.values():
-        if value and value.get("cwd") and within(value["cwd"], path) and isinstance(value.get("lastActivityAt"), (int, float)):
-            times.append(value["lastActivityAt"] / 1000)
-    return max(times, default=0.0)
-
-
-def archived_owner(host, path, activity):
-    """A desktop session that belongs to this checkout and was archived after its last activity."""
-    try: created = Path(path).stat().st_birthtime
-    except (AttributeError, OSError): return False
-    target = canonical(os.path.realpath(path))
-    for record in host.sessions.values():
-        if not record or record.get("isArchived") is not True: continue
-        cwd, started, latest = (record.get(key) for key in ("cwd", "createdAt", "lastActivityAt"))
-        if not isinstance(cwd, str) or canonical(os.path.realpath(cwd)) != target: continue
-        if (type(started) in (int, float) and type(latest) in (int, float)
-                and 0 < created <= started / 1000 <= latest / 1000 <= host.now and activity <= latest / 1000):
-            return True
-    return False
+def host_class():
+    """The Host the inventory reads: the last an extension named, or this module's."""
+    return EXTENSION_HOSTS[-1] if EXTENSION_HOSTS else Host
 
 
 def git_environment():
@@ -451,463 +316,10 @@ def last_activity(path):
     return max(times) if times else 0.0
 
 
-# Linked worktrees
-
-def parse_worktrees(text):
-    entries = []
-    for line in text.splitlines():
-        if line.startswith("worktree "): entries.append({"worktree": line[len("worktree "):]})
-        elif entries and line:
-            key, _, value = line.partition(" ")
-            entries[-1][key] = value
-    return entries
-
-
-def landing_base(run, main):
-    """The commit origin/main named when this inventory read it, read once per repository."""
-    for ref in ("refs/remotes/origin/HEAD", "refs/remotes/origin/main"):
-        result = git(run, main, "rev-parse", "--verify", "--quiet", ref + "^{commit}")
-        if result.returncode == 0 and result.stdout.strip():
-            name = git(run, main, "rev-parse", "--abbrev-ref", ref).stdout.strip() or ref
-            return result.stdout.strip(), name
-    return None, None
-
-
-def landed(run, main, head, base, name):
-    """(whether HEAD's work is in BASE, why, how), by the proof Closeout's landed.sh uses
-    (landing.contained): contained in it, an equal patch there for every commit, a merge that
-    would change nothing, or for each commit one that adds and removes its very lines where a
-    conflict resolution kept both sides. The inventory never fetches, so it has no pull request
-    proof."""
-    short = f"HEAD {head[:10]}"
-    how = landing.contained(lambda *arguments: git(run, main, *arguments), base, head)
-    if how == landing.ANCESTOR: return True, f"{short} is in {name} {base[:10]}", how
-    if how == landing.CONTENT_MERGED:
-        return True, f"merging {short} into {name} {base[:10]} would change nothing", how
-    # The rest only says why, or how many: the verdict is how's.
-    merges = git(run, main, "rev-list", "--merges", f"{base}..{head}")
-    marks = git(run, main, "rev-list", "--cherry-mark", "--right-only", "--no-merges", f"{base}...{head}")
-    commits = marks.stdout.split()
-    if how == landing.PATCH_EQUIVALENT:
-        return True, f"each of the {len(commits)} commits on {short} has an equal patch in {name}", how
-    if how == landing.RESOLVED:
-        return True, (f"each of the {len(commits)} commits on {short} is in {name}, some with their lines among other "
-                      "neighbors after a conflict resolution kept both sides"), how
-    if merges.returncode or marks.returncode: return False, f"could not compare {short} with {name}", how
-    if merges.stdout.strip(): return False, f"merge commits on {short} are not in {name} {base[:10]}", how
-    pending = [commit for commit in commits if not commit.startswith("=")]
-    return False, f"{len(pending)} commits on {short} are not in {name} {base[:10]}", how
-
-
-def session_root(host, main, path):
-    for root in (Path(main) / ".claude/worktrees", Path(main) / ".codex/worktrees", host.home / ".codex/worktrees"):
-        if within(path, root) and canonical(path) != canonical(root): return root
-    return None
-
-
-def worktree(host, usage, sizes, main, entry, base, name, archive_worktrees=False):
-    path = entry["worktree"]
-    def item(status, reason, command=None, idle=None):
-        return Item("worktree", path, status, reason, sizes.of(path) if os.path.isdir(path) else 0, command, idle)
-    if "prunable" in entry or not os.path.isdir(path):
-        return item(OWNER, "registered, but its directory is gone; `git worktree prune` forgets every such entry",
-                    ["git", "-C", str(main), "worktree", "prune"])
-    if "locked" in entry and entry["locked"].startswith(RETIRED):
-        use = usage.of(path)
-        if use: return item(KEPT, f"{entry['locked']}, but still in use: " + described(use))
-        return item(OWNER, f"{entry['locked']}, and no process uses it; it holds only what the queue's lanes "
-                           "left, each round's logs being in the queue's own", ["git", "-C", str(main), "worktree",
-                                                                              "remove", "--force", "--force", path])
-    if "locked" in entry: return item(KEPT, "locked" + (f": {entry['locked']}" if entry["locked"] else ""))
-    use = usage.of(path)
-    if use: return item(KEPT, "in use: " + described(use))
-    status = git(host.run, path, "status", "--porcelain", "--untracked-files=normal")
-    if status.returncode: return item(KEPT, "git status failed: " + status.stderr.strip()[:200])
-    changed = status.stdout.splitlines()
-    if changed: return item(KEPT, f"dirty: {len(changed)} modified or untracked paths")
-    session_dir = session_root(host, main, path)
-    claude_worktree = session_dir == Path(main) / ".claude/worktrees"
-    archive = archive_worktrees and host.offload_host and claude_worktree
-    try: evidence, results, blockers = ignored.held(path, verify_caches=archive)
-    except (ignored.Refusal, OSError) as error: return item(KEPT, f"could not list its ignored files: {error}")
-    if archive and blockers:
-        return item(KEPT, "worktree archive blocked: " + "; ".join(blockers[:3]))
-    if evidence and not archive:
-        return item(KEPT, "ignored files that may be evidence: " + ", ".join(evidence[:3]))
-    if not entry.get("HEAD") or not base: return item(KEPT, "no HEAD or no origin/main to compare it with")
-    done, why, how = landed(host.run, main, entry["HEAD"], base, name)
-    if not done:
-        return item(KEPT, "unlanded: " + why + (f"; its lane results {', '.join(results[:3])} stay with it" if results else ""))
-    # Removing a detached worktree removes the last ref to commits origin/main holds only under other
-    # IDs. Whether evidence cites them takes the project's open issues, which the inventory never reads.
-    if how != landing.ANCESTOR and "branch" not in entry:
-        return item(KEPT, f"landed ({why}), but its detached HEAD is the last ref to commits origin/main does not "
-                          "reach, and whether the project's open issues cite them takes the network; Closeout's "
-                          "landed.sh checks")
-    session = live_sessions(host, path)
-    if session: return item(KEPT, f"landed ({why}), but {session}")
-    activity = max(last_activity(path), session_activity(host, path))
-    idle = host.now - activity
-    idle_reason = f"idle {age(idle)}"
-    if idle < host.min_idle:
-        if host.strict_idle or not claude_worktree or not archived_owner(host, path, activity):
-            return item(KEPT, f"clean and landed ({why}), but changed {age(idle)} ago", idle=idle)
-        idle_reason = "owning desktop session is archived"
-    # eng's results go with a worktree whose HEAD is landed: its work is on origin/main, where a lane runs it
-    # again, and what a result showed that matters is on its issue (vocaro-engineering#187). Git removes
-    # ignored files with the worktree, and without --force refuses one that gained a change since.
-    command = ["git", "-C", str(main), "worktree", "remove", path]
-    reason = f"clean, unlocked, no process or live session; {why}; {idle_reason}"
-    if archive and (evidence or results):
-        return item(ARCHIVE, reason + f"; verify an archive on {host.offload_host} before removal; "
-                    + ", ".join((evidence + results)[:3]), command, idle)
-    if results: reason += f"; its lane results ({', '.join(results[:3])}) go with it, the work being landed"
-    if session_dir is None:
-        return item(OWNER, reason + "; outside the session worktree directories, so a persistent or shared checkout",
-                    command, idle)
-    return item(CANDIDATE, reason, command, idle)
-
-
-def unregistered(host, usage, sizes, mains, registered):
-    """Directories in the session worktree directories that no repository has registered."""
-    directories = []
-    for root in [main / ".claude/worktrees" for main in mains] + [main / ".codex/worktrees" for main in mains]:
-        if root.is_dir(): directories += [child for child in root.iterdir() if child.is_dir() and not child.is_symlink()]
-    codex = host.home / ".codex/worktrees"
-    if codex.is_dir():
-        for group in codex.iterdir():
-            if group.is_dir() and not group.is_symlink():
-                directories += [child for child in group.iterdir() if child.is_dir() and not child.is_symlink()]
-    items = []
-    for directory in directories:
-        key = canonical(os.path.realpath(directory))
-        if key in registered or any(within(path, key) for path in registered): continue
-        def item(status, reason, command=None):
-            return Item("worktree", str(directory), status, reason, sizes.of(directory), command,
-                        host.now - last_activity(directory))
-        use = usage.of(directory)
-        if use:
-            items.append(item(KEPT, "not a registered worktree, but in use: " + described(use)))
-            continue
-        gitdir = None
-        try:
-            text = (directory / ".git").read_text()
-            gitdir = Path(text.split(":", 1)[1].strip()) if text.startswith("gitdir:") else None
-        except OSError: pass
-        if (directory / ".git").is_dir():
-            items.append(item(KEPT, "a separate repository, not a linked worktree"))
-        elif gitdir is not None and gitdir.exists():
-            items.append(item(KEPT, f"registered with a repository outside {host.development}: {gitdir}"))
-        else:
-            items.append(item(OWNER, "no repository has registered it, so Git cannot show whether it holds "
-                                     "uncommitted work", ["rm", "-rf", "--", str(directory)]))
-    return items
-
-
 def main_checkouts(host):
     if not host.development.is_dir(): return []
     return sorted(path for path in host.development.iterdir() if (path / ".git").is_dir())
 
-
-def checkouts(host):
-    """Every main checkout in the projects directory and every registered worktree on disk."""
-    paths = main_checkouts(host)
-    for main in list(paths):
-        listing = git(host.run, main, "worktree", "list", "--porcelain")
-        paths += [Path(entry["worktree"]) for entry in parse_worktrees(listing.stdout)[1:]
-                  if os.path.isdir(entry["worktree"])]
-    return paths
-
-
-def encoded(path):
-    """Claude Code names a session's scratch directory after its checkout, each other character a hyphen."""
-    return re.sub(r"[^A-Za-z0-9-]", "-", str(path))
-
-
-def worktrees(host, usage, sizes, archive_worktrees=False):
-    mains = main_checkouts(host)
-    items, registered = [], set()
-    for main in mains:
-        listing = git(host.run, main, "worktree", "list", "--porcelain")
-        if listing.returncode:
-            items.append(Item("worktree", str(main), KEPT, "git worktree list failed: " + listing.stderr.strip()[:200]))
-            continue
-        entries = parse_worktrees(listing.stdout)[1:]  # the first is the main worktree
-        base, name = landing_base(host.run, main)
-        for entry in entries:
-            registered.add(canonical(os.path.realpath(entry["worktree"])))
-            items.append(worktree(host, usage, sizes, main, entry, base, name, archive_worktrees))
-    return items + unregistered(host, usage, sizes, mains, registered)
-
-
-# Simulators and runtimes
-
-def disposable_name(name):
-    """A disposable device carries a UUID in its unique name; a pool or default device never does."""
-    return bool(UUID.search(name))
-
-
-def idle_since(stamp, now):
-    """Seconds since an ISO 8601 stamp such as simctl's lastUsedAt, or None when there is none to read."""
-    if not stamp: return None
-    try: return now - datetime.datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp()
-    except (ValueError, AttributeError): return None
-
-
-def last_used(device, directory, now):
-    idle = idle_since(device.get("lastUsedAt") or device.get("lastBootedAt"), now)
-    if idle is not None: return idle
-    return now - last_activity(directory) if directory and os.path.isdir(directory) else None
-
-
-def prune_command(pool, udid):
-    """Pruning reserves the member, checks it again and records the deletion (guides/simulator-testing.md)."""
-    return ["python3", str(TOOLKIT_ROOT / "bin/eng"), "simulator-pool", "--pool", pool, "--owner", "eng disk",
-            "prune", udid]
-
-
-def pool_members(host):
-    """Each pool member's UDID: its pool, the member and the pool's members."""
-    found = {}
-    for pool in host.pools:
-        every = simulator_pool.members(pool, host.simulators)
-        found.update({member.udid: (pool, member, every) for member in every})
-    return found
-
-
-def pool_templates(host):
-    """Each pool's warmed templates by UDID: the pool and the template."""
-    return {template.udid: (pool, template) for pool in host.pools
-            for template in simulator_pool.templates(pool, host.simulators)}
-
-
-def record_entries(host):
-    """Every readable record's entries, as one record for the pruning rule."""
-    entries = {}
-    for text in host.records.values():
-        try: value = json.loads(text) if text else {}
-        except ValueError: continue
-        if isinstance(value, dict) and isinstance(value.get("devices"), dict): entries.update(value["devices"])
-    return {"devices": entries}
-
-
-def simulators(host, usage, sizes):
-    if host.simulators is None:
-        return [Item("simulator", "simctl", KEPT, "`xcrun simctl list -j` failed, so no simulator can be shown unowned")]
-    unreadable = [path for path, text in host.records.items() if text is None]
-    pooled, entries, templated = pool_members(host), record_entries(host), pool_templates(host)
-    now = datetime.datetime.fromtimestamp(host.now, datetime.timezone.utc)
-    items, listed = [], set()
-    for runtime, devices in host.simulators.get("devices", {}).items():
-        for device in devices:
-            udid, name = device["udid"].upper(), device.get("name", "")
-            listed.add(udid)
-            data = device.get("dataPath")
-            directory = os.path.dirname(data) if data else (str(host.device_directory / udid) if host.device_directory else "")
-            size = sizes.of(directory) if directory and os.path.isdir(directory) else \
-                int(device.get("dataPathSize") or 0) + int(device.get("logPathSize") or 0)
-            idle = last_used(device, directory, host.now)
-            label = f"{udid} {name} ({runtime.rsplit('.', 1)[-1]})"
-            def item(status, reason, command=None):
-                return Item("simulator", label, status, reason, size, command, idle, directory or None)
-            command = ["xcrun", "simctl", "delete", udid]
-            # A record names a device by UDID or by its name as a JSON string.
-            record = next((path for path, text in host.records.items() if text and (udid in text.upper() or
-                          (name and json.dumps(name).upper() in text.upper()))), None)
-            use = usage.of(directory) if directory else None
-            process = usage.naming(udid)
-            if device.get("state") != "Shutdown": items.append(item(KEPT, f"{device.get('state')}: a session is using it"))
-            elif unreadable: items.append(item(KEPT, "a device record could not be read: " + ", ".join(unreadable)))
-            elif use: items.append(item(KEPT, "in use: " + described(use)))
-            elif process: items.append(item(KEPT, f"named in the arguments of PID {process.pid}"))
-            # The pruning rule reads the record's entries for a member itself.
-            elif udid in pooled:
-                pool, member, every = pooled[udid]
-                allowed, why = simulator_pool.prunable(member, every, simulator_pool.entries_for(member, entries), now)
-                items.append(item(CANDIDATE, f"a member of the {pool} pool eligible for pruning: {why}",
-                                  prune_command(pool, udid)) if allowed else
-                             item(KEPT, f"a member of the {pool} pool, kept: {why}"))
-            elif udid in templated:
-                pool, template = templated[udid]
-                items.append(item(KEPT, f"the {pool} pool's warmed template of its kind, which members are reset "
-                                        "from and new members cloned from") if device.get("isAvailable", True) else
-                             item(CANDIDATE, f"the {pool} pool's warmed template of its kind, unavailable, its runtime "
-                                             "gone; the next new member of the kind warms another",
-                                  prune_command(pool, udid)))
-            elif record: items.append(item(KEPT, f"named in the device record {record}"))
-            elif disposable_name(name):
-                if idle is not None and idle >= host.min_idle:
-                    gone = "" if device.get("isAvailable", True) else "; unavailable, its runtime is gone"
-                    items.append(item(CANDIDATE, f"a disposable device (unique name) left shut down and unreferenced; "
-                                                 f"last used {age(idle)} ago{gone}", command))
-                else: items.append(item(KEPT, "a disposable device with no recorded use" if idle is None
-                                        else f"a disposable device last used {age(idle)} ago"))
-            elif not device.get("isAvailable", True):
-                items.append(item(CANDIDATE, f"unavailable ({device.get('availabilityError', 'runtime missing')}), "
-                                             "so nothing can run on it", command))
-            elif udid in host.default_devices:
-                items.append(item(CANDIDATE, "Xcode's default device for its runtime, which Xcode makes again; a "
-                                             "script that picks a device by name fills it instead of a pool member",
-                                  command))
-            else:
-                items.append(item(KEPT, "a named device in no project's pool, perhaps made by hand; "
-                                        "only its owner removes it"))
-    if host.device_directory and host.device_directory.is_dir():
-        for directory in host.device_directory.iterdir():
-            if directory.is_dir() and UUID.fullmatch(directory.name) and directory.name.upper() not in listed:
-                use = usage.of(directory)
-                items.append(Item("simulator", str(directory), KEPT if use else CANDIDATE,
-                                  "in use: " + described(use) if use else "a device directory CoreSimulator no longer lists",
-                                  sizes.of(directory), None if use else ["rm", "-rf", "--", str(directory)],
-                                  host.now - last_activity(directory)))
-    return items
-
-
-def runtimes_there(second):
-    """The second Mac's runtime images, read as `eng remote setup --runtimes` reads them, each with its build and
-    the simulators on its runtime identifier there (users); {"error": why} when they cannot be read, and None
-    without a second Mac."""
-    if not second: return None
-    from . import remote  # remote imports this module
-    try:
-        developer = remote.developer_directory()
-        if developer is None: return {"error": "this Mac has no Xcode selected"}
-        found = remote.runtime_images(second, second, developer)
-    except Exception as error:  # an unreachable or misconfigured second Mac, whatever it raises
-        return {"error": str(error).splitlines()[0][:200] if str(error) else type(error).__name__}
-    if not isinstance(found, dict) or not isinstance(found.get("images"), list):
-        return {"error": "simctl did not list its runtime images"}
-    return {"images": found["images"]}
-
-
-def across(host, item, build):
-    """A runtime candidate as the second Mac's copy of it leaves it. The two Macs keep the same runtimes
-    (vocaro-engineering#123): `eng remote setup --runtimes` deletes a runtime only one Mac lists from that Mac
-    when no simulator on its identifier uses it there, and copies it to the other Mac otherwise. So a build
-    removed here while the second Mac's copy counts as used would only be copied back."""
-    if not host.offload_host or item.status != CANDIDATE: return item
-    there, second = host.remote_runtimes or {"error": "not read"}, host.offload_host
-    def kept(why): return Item(item.category, item.path, KEPT, f"{item.reason}; but {why}", item.size, None, item.idle)
-    if "error" in there:
-        return kept(f"{second}'s runtimes could not be read ({there['error']}), so whether `eng remote setup "
-                    "--runtimes` would copy it back is unknown")
-    copies = [image for image in there["images"] if isinstance(image, dict) and image.get("build") == build]
-    if not copies:
-        item.reason += f"; {second} holds no copy, so removing it here also leaves the two Macs alike"
-    elif any(image.get("users") is None for image in copies):
-        return kept(f"{second} holds a copy whose simulators could not be listed, so whether `eng remote setup "
-                    "--runtimes` would copy it back is unknown")
-    elif any(image["users"] for image in copies):
-        users = max(len(image["users"]) for image in copies)
-        return kept(f"{second} holds a copy, which the {users} simulators on its identifier there count as used, so "
-                    f"`eng remote setup --runtimes` would copy it back here; it can go once {second}'s copy can")
-    else:
-        item.reason += (f"; {second} holds a copy no simulator uses there, which `eng remote setup --runtimes` then "
-                        "deletes, leaving the two Macs alike")
-    return item
-
-
-def pinned_builds():
-    """The runtime builds the toolkit names, each with where: those qualified for guarded VoiceOver activation."""
-    try: from .voiceover import activation
-    except ImportError: return {}
-    return {build: "qualified for guarded VoiceOver activation (voiceover/activation.py QUALIFIED)"
-            for build in activation.QUALIFIED}
-
-
-def recorded_builds(text):
-    """Every string a device record holds but under installedBuilds, the census of builds installed when a
-    template was warmed: a build the census names runs nothing, and leaving it only makes the pool warm that
-    template again (simulators.pool.template_current). A record that is not JSON is taken whole, word by word."""
-    try: value = json.loads(text)
-    except ValueError: return set(re.findall(r"[A-Za-z0-9]+", text))
-    found, stack = set(), [value]
-    while stack:
-        value = stack.pop()
-        if isinstance(value, dict): stack += [item for key, item in value.items() if key != "installedBuilds"]
-        elif isinstance(value, list): stack += value
-        elif isinstance(value, str): found.update(re.findall(r"[A-Za-z0-9]+", value))
-    return found
-
-
-def chosen_builds(host):
-    """For each runtime identifier with several installed builds, the build CoreSimulator resolves its devices
-    to and how that is known: the build `simctl runtime match list` chooses for an installed SDK, else the build
-    whose image CoreSimulator last used. An identifier whose choice neither shows is left out."""
-    groups = {}
-    for image in host.runtimes.values():
-        groups.setdefault(image.get("runtimeIdentifier", ""), []).append(image)
-    sdks = {}
-    for sdk, match in (host.matches or {}).items():
-        if isinstance(match, dict) and match.get("chosenRuntimeBuild"): sdks.setdefault(match["chosenRuntimeBuild"], sdk)
-    chosen = {}
-    for identifier, images in groups.items():
-        builds = {image.get("build") for image in images}
-        if len(images) < 2 or None in builds or len(builds) < len(images): continue
-        matched = [image for image in images if image["build"] in sdks]
-        if len(matched) == 1:
-            build = matched[0]["build"]
-            chosen[identifier] = (build, f"`simctl runtime match list` chooses for the {sdks[build]} SDK")
-            continue
-        if matched: continue
-        stamps = sorted(((idle_since(image.get("lastUsedAt"), host.now), image["build"]) for image in images
-                         if idle_since(image.get("lastUsedAt"), host.now) is not None))
-        if stamps and (len(stamps) == 1 or stamps[0][0] != stamps[1][0]):
-            chosen[identifier] = (stamps[0][1], "CoreSimulator used last, no installed SDK choosing a build")
-    return chosen
-
-
-def runtimes(host):
-    if host.runtimes is None or host.simulators is None: return []
-    used = {}
-    for runtime, devices in host.simulators.get("devices", {}).items():
-        used[runtime] = used.get(runtime, 0) + len(devices)
-    chosen = chosen_builds(host)
-    unreadable = [path for path, text in host.records.items() if text is None]
-    items = []
-    for key, image in host.runtimes.items():
-        identifier = image.get("runtimeIdentifier", "")
-        label = f"{image.get('identifier', key)} {identifier.rsplit('.', 1)[-1]} ({image.get('build', '?')})"
-        size, stamp, build = int(image.get("sizeBytes") or 0), image.get("lastUsedAt"), image.get("build")
-        command = ["xcrun", "simctl", "runtime", "delete", image.get("identifier", key)]
-        idle = idle_since(stamp, host.now)
-        if identifier in chosen and chosen[identifier][0] != build:
-            # A superseded build: CoreSimulator resolves the identifier's devices to another build, so none runs
-            # on this one (vocaro-engineering#188), unless the toolkit or a reservation names it.
-            other, how = chosen[identifier]
-            superseded = f"superseded by {other}, the build of {identifier.rsplit('.', 1)[-1]} {how}"
-            record = next((path for path, text in host.records.items() if text and build in recorded_builds(text)), None)
-            if build in host.pinned: items.append(Item("runtime", label, KEPT, f"{superseded}, but {host.pinned[build]}", size))
-            elif unreadable:
-                items.append(Item("runtime", label, KEPT, f"{superseded}, but a device record could not be read: "
-                                  + ", ".join(unreadable), size))
-            elif record: items.append(Item("runtime", label, KEPT, f"{superseded}, but the device record {record} names it", size))
-            elif image.get("deletable") is False:
-                items.append(Item("runtime", label, KEPT, f"{superseded}, but not deletable: it came with Xcode", size))
-            elif idle is not None and idle < RUNTIME_IDLE_DAYS * 86400:
-                items.append(Item("runtime", label, KEPT, f"{superseded}, but used {age(idle)} ago, within "
-                                  f"{RUNTIME_IDLE_DAYS} days", size, idle=idle))
-            else:
-                items.append(across(host, Item("runtime", label, CANDIDATE, f"{superseded}, so no device runs on it; "
-                                  f"no pin or reservation names it; last used {stamp or 'never'}, over "
-                                  f"{RUNTIME_IDLE_DAYS} days ago or never", size, command, idle), build))
-        elif used.get(identifier):
-            items.append(Item("runtime", label, KEPT, f"{used[identifier]} devices use it" +
-                              (f": the build of its identifier {chosen[identifier][1]}" if identifier in chosen else ""), size))
-        elif build in host.pinned: items.append(Item("runtime", label, KEPT, f"no device uses it, but {host.pinned[build]}", size))
-        elif image.get("deletable") is False:
-            items.append(Item("runtime", label, KEPT, "not deletable: it came with Xcode", size))
-        elif idle is not None and idle < RUNTIME_IDLE_DAYS * 86400:
-            items.append(Item("runtime", label, KEPT, f"no device uses it, but it was used {age(idle)} ago, within "
-                              f"{RUNTIME_IDLE_DAYS} days; a lane may create its devices on it next", size, idle=idle))
-        else:
-            items.append(across(host, Item("runtime", label, CANDIDATE, f"no device uses it; last used "
-                                           f"{stamp or 'never'}, over {RUNTIME_IDLE_DAYS} days ago or never; xcodebuild "
-                                           "downloads it again", size, command, idle), build))
-    return items
-
-
-# Build caches and results
 
 def cache_item(host, usage, sizes, category, path, reason):
     idle = host.now - last_activity(path)
@@ -922,154 +334,6 @@ def cache_item(host, usage, sizes, category, path, reason):
 def project_workspace(host, workspace):
     """Whether a workspace lies where the projects build: their checkouts or the temporary roots."""
     return any(within(workspace, root) for root in [host.development, *(root for root, _ in host.temp_roots)])
-
-
-def derived_data(host, usage, sizes):
-    root = host.home / "Library/Developer/Xcode/DerivedData"
-    if not root.is_dir(): return []
-    items = []
-    for child in sorted(root.iterdir()):
-        if not child.is_dir() or child.is_symlink(): continue
-        if not WORKSPACE_FOLDER.fullmatch(child.name):
-            items.append(Item("derived-data", str(child), KEPT, "shared by every Xcode build", sizes.of(child)))
-            continue
-        try:
-            with open(child / "info.plist", "rb") as handle:
-                workspace = plistlib.load(handle).get("WorkspacePath")
-        except (OSError, plistlib.InvalidFileException, ValueError):
-            workspace = None
-        if workspace and not project_workspace(host, workspace): continue  # another workspace's build
-        if not workspace:
-            names = sorted(entry.name for entry in child.iterdir())
-            held = ", ".join(names[:5]) or "nothing"
-            built = sorted(entry.name for entry in (child / "Build").iterdir()) if "Build" in names \
-                and (child / "Build").is_dir() and not (child / "Build").is_symlink() else None
-            if set(names) - {"Build"} <= UNBUILT and ("Build" not in names or built == sorted(COVERAGE_ONLY)):
-                # No project to trace it to, but nothing in it a build could need again: a candidate once
-                # idle and unused, as a folder whose workspace is gone.
-                what = "no build products" if "Build" not in names else "Build holding only coverage data"
-                items.append(cache_item(host, usage, sizes, "derived-data", child,
-                                        f"records no workspace; holds only {held}, {what}"))
-                continue
-            use = usage.of(child)
-            items.append(Item("derived-data", str(child), KEPT if use else OWNER,
-                              "in use: " + described(use) if use else f"records no workspace; holds {held}",
-                              sizes.of(child), None if use else ["rm", "-rf", "--", str(child)],
-                              host.now - last_activity(child)))
-        elif os.path.exists(workspace):
-            items.append(Item("derived-data", str(child), KEPT, f"its workspace {workspace} exists", sizes.of(child)))
-        else:
-            items.append(cache_item(host, usage, sizes, "derived-data", child, f"its workspace {workspace} is gone"))
-    return items
-
-
-def app_builds(host, usage, sizes):
-    """eng app's store (app_builds.py): each project's kept builds, which stay, being what `eng app run` opens, and
-    its DerivedData for each platform, which only makes the next keep incremental and goes once idle."""
-    root = host.home / APP_STORE
-    if not root.is_dir(): return []
-    items = []
-    for project in sorted(child for child in root.iterdir() if child.is_dir() and not child.is_symlink()):
-        if (project / "kept").is_dir():
-            items.append(Item("app-builds", str(project / "kept"), KEPT, "the last good builds `eng app run` opens, "
-                              "the newest two of each platform", sizes.of(project / "kept")))
-        derived = project / "derived"
-        if derived.is_dir() and kept_apps.Store(project.name, root).busy():
-            # The census reads a build's arguments word by word, and this path has a space in it: the lock says.
-            items += [Item("app-builds", str(child), KEPT, "a keep is building with it now", sizes.of(child))
-                      for child in sorted(derived.iterdir()) if child.is_dir() and not child.is_symlink()]
-        elif derived.is_dir():
-            items += [cache_item(host, usage, sizes, "app-builds", child, "eng app's build cache, which the next keep "
-                                 "builds again in full") for child in sorted(derived.iterdir())
-                      if child.is_dir() and not child.is_symlink()]
-    return items
-
-
-def swiftpm_cache(host, usage, sizes):
-    root = host.home / "Library/Caches/org.swift.swiftpm"
-    items = []
-    for kind, what in (("repositories", "a cached clone"), ("artifacts", "a cached binary artifact")):
-        directory = root / kind
-        if directory.is_dir():
-            items += [cache_item(host, usage, sizes, "swiftpm-cache", child, what + " SwiftPM fetches again when needed")
-                      for child in sorted(directory.iterdir()) if child.is_dir() and not child.is_symlink()]
-    return items
-
-
-def archive_folders(development):
-    """The durable evidence archives in development that belong on the second Mac, each with the path
-    `eng evidence offload --to` names for it there, or None for the same path under its home: a folder
-    named as EVIDENCE_ARCHIVE says that is not a Git checkout, and a main checkout's
-    .build/session-evidence, which goes to the shared session-evidence folder there, not into that
-    project's checkout. `eng disk` lists them, and the offload's retry offers them unasked."""
-    development = Path(development)
-    if not development.is_dir(): return []
-    folders = [(path, None) for path in sorted(development.iterdir())
-               if path.is_dir() and not path.is_symlink() and EVIDENCE_ARCHIVE.fullmatch(path.name)
-               and not (path / ".git").exists()]
-    return folders + [(path, f"Development/session-evidence/{main.name}")
-                      for main in sorted(path for path in development.iterdir() if (path / ".git").is_dir())
-                      for path in [main / ".build/session-evidence"] if path.is_dir() and not path.is_symlink()]
-
-
-def evidence_archives(host, sizes):
-    """Durable evidence kept here when a second Mac could hold it. Offloading deletes it here only once
-    every file verified there, and eng's retry offloads each by itself once it is quiet and unused
-    (evidence_offload.retry)."""
-    if not host.offload_host or not host.development.is_dir(): return []
-    command = ["python3", "scripts/eng", "evidence", "offload"]
-    folders = [(path, [*command, str(path), *(["--to", to] if to else [])])
-               for path, to in archive_folders(host.development)]
-    # A folder whose offload found the second Mac unreachable is listed wherever it is, with what eng does next.
-    from . import evidence_offload  # it imports remote, which imports this module
-    try: queued = evidence_offload.Queue(host.home).read()["folders"]
-    except (OSError, ValueError): queued = {}
-    listed = {canonical(path) for path, _ in folders}
-    folders += [(Path(path), [*command, path, *(["--to", entry["to"]] if entry.get("to") else []),
-                              *(["--keep"] if entry.get("keep") else [])])
-                for path, entry in sorted(queued.items()) if canonical(path) not in listed and Path(path).is_dir()]
-    queued = {canonical(path): entry for path, entry in queued.items()}
-
-    def reason(path):
-        said = (f"durable evidence; it belongs on {host.offload_host} (guides/evidence.md): offloading moves it, "
-                "deleting it here once it verified there")
-        entry = queued.get(canonical(path))
-        if not entry:
-            return (f"{said}; eng offloads it by itself once nothing in it has changed for "
-                    f"{evidence_offload.QUIET // 3600} h and no process uses it")
-        if evidence_offload.reoffered(entry):
-            return f"{said}; a retry of its offload found the second Mac away, and eng offers it again once it answers: {entry['failed']}"
-        if entry.get("failed"): return f"{said}; a retry of its offload failed, so it waits for a person: {entry['failed']}"
-        return f"{said}; its offload found the second Mac unreachable on {entry.get('queued')}, and eng retries it"
-    return [Item("evidence", str(path), OWNER, reason(path), sizes.of(path), offload, host.now - last_activity(path))
-            for path, offload in folders]
-
-
-def failure_records(host, usage, sizes):
-    """Each checkout's kept failure records, .build/failures/NAME/RECORD/, counted, with those past their
-    rule (failure_records.RULE) as one candidate, which `eng failures prune` removes. `eng failures keep`
-    prunes by the same rule as it keeps a record, on either Mac."""
-    items = []
-    for checkout in checkouts(host):
-        found = failures.records(checkout)
-        if not found: continue
-        path = Path(checkout) / failures.FAILURES
-        kept = [record for records in found.values() for record in records]
-        names = ", ".join(f"{name} ({len(records)})" for name, records in found.items())
-        counted = f"{len(kept)} record{'s' if len(kept) != 1 else ''} of {names}"
-        gone = failures.past_rule(checkout, host.now)
-        idle = host.now - last_activity(path)
-        use = usage.of(path)
-        if use: items.append(Item("failures", str(path), KEPT, f"{counted}; in use: {described(use)}", sizes.of(path),
-                                  None, idle))
-        elif gone:
-            items.append(Item("failures", str(path), CANDIDATE, f"{counted}; {len(gone)} past the rule, which "
-                              f"{failures.RULE}", sum(sizes.of(record) for record in gone),
-                              ["python3", str(TOOLKIT_ROOT / "bin/eng"), "failures", "prune", str(checkout)], idle))
-        else:
-            items.append(Item("failures", str(path), KEPT, f"{counted}; none past the rule, which {failures.RULE}",
-                              sizes.of(path), None, idle))
-    return items
 
 
 def kept_results(host, usage, sizes):
@@ -1108,96 +372,12 @@ def second_mac():
     except ValueError: return None
 
 
-def shape(names):
-    if "workspace-state.json" in names: return "SwiftPM scratch"
-    if "Build" in names and names & {"info.plist", "Logs", "SourcePackages", "Index.noindex", "ModuleCache.noindex"}:
-        return "Xcode derived data"
-    return None
-
-
-def owner_record(directory):
-    """The PID and start time a results directory records for its run, if it records one."""
-    try: pid, _, started = (Path(directory) / "owner").read_text().strip().partition(" ")
-    except (OSError, UnicodeDecodeError): return None
-    return (int(pid), started.strip()) if pid.isdigit() else None
-
-
-def run_is_live(run, pid, started):
-    current = " ".join(run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True).stdout.split())
-    # A reused PID has another start time. A record without one keeps a running PID's run live.
-    return bool(current) and (not started or current == " ".join(started.split()))
-
-
-def live_session(host, sessions, path):
-    """Why a path in a Claude Code session's scratch may still be that session's, if it may."""
-    if not host.session_scratch or not within(path, host.session_scratch): return None
-    relative = os.path.relpath(canonical(path), canonical(host.session_scratch)).split(os.sep)
-    name = relative[0] if relative and relative[0] != "." else ""
-    if name in sessions: return sessions[name]
-    # A session whose worktree was removed can still be running in its old directory.
-    for process in host.processes:
-        cwd = encoded(process.cwd) if process.cwd else ""
-        if name and (cwd == name or cwd.startswith(name + "-")):
-            return f"whose PID {process.pid} ({process.command}) still works in its checkout"
-    return None
-
-
-def temp_items(host, usage, sizes):
-    """Scratch builds and results found under the temporary roots, outside every checkout."""
-    found = []
-    def walk(directory, depth):
-        try: entries = list(os.scandir(directory))
-        except OSError: return
-        names = {entry.name for entry in entries}
-        kind = shape(names)
-        if ".git" in names: pass  # a checkout: the worktree rules decide about it
-        elif kind: found.append(("scratch", directory, kind))
-        elif "owner" in names and owner_record(directory): found.append(("results", directory, "record"))
-        elif depth > 0:
-            for entry in entries:
-                if not entry.is_dir(follow_symlinks=False): continue
-                if entry.name.endswith(".xcresult"): found.append(("results", entry.path, "bundle"))
-                else: walk(entry.path, depth - 1)
-    for root, depth in host.temp_roots:
-        walk(str(root), depth)
-    sessions = {encoded(checkout): f"whose checkout {checkout} still exists"
-                for checkout in checkouts(host)} if host.session_scratch and found else {}
-    items = []
-    for category, path, kind in found:
-        session = live_session(host, sessions, path)
-        if category == "scratch" and session:
-            items.append(Item("scratch", path, KEPT, f"{kind} in the scratch of a session {session}",
-                              sizes.of(path), None, host.now - last_activity(path)))
-        elif category == "scratch":
-            items.append(cache_item(host, usage, sizes, "scratch", path, f"{kind} outside every checkout"))
-        if category == "scratch": continue
-        use = usage.of(path)
-        record = owner_record(path) if kind == "record" else None
-        idle = host.now - last_activity(path)
-        if use: items.append(Item("results", path, KEPT, "in use: " + described(use), sizes.of(path), None, idle))
-        elif record and run_is_live(host.run, *record):
-            items.append(Item("results", path, KEPT, f"its run, PID {record[0]}, is still in progress", sizes.of(path), None, idle))
-        else:
-            what = "a finished run's results directory; its project prunes these by count" if record else "a test result bundle"
-            items.append(Item("results", path, OWNER, f"{what}; keep it while it is worth reading", sizes.of(path),
-                              ["rm", "-rf", "--", path], idle))
-    return items
-
-
-def inventory(host, sizes, categories=None, archive_worktrees=False):
+def inventory(host, sizes, categories=None):
     usage = Usage(host.processes)
     wanted = set(categories or CATEGORIES)
     items = []
-    if "worktree" in wanted: items += worktrees(host, usage, sizes, archive_worktrees)
-    if "simulator" in wanted: items += simulators(host, usage, sizes)
-    if "runtime" in wanted: items += runtimes(host)
-    if "derived-data" in wanted: items += derived_data(host, usage, sizes)
-    if "swiftpm-cache" in wanted: items += swiftpm_cache(host, usage, sizes)
-    if "app-builds" in wanted: items += app_builds(host, usage, sizes)
-    if "evidence" in wanted: items += evidence_archives(host, sizes)
-    if "failures" in wanted: items += failure_records(host, usage, sizes)
     if "kept-results" in wanted: items += kept_results(host, usage, sizes)
-    if wanted & {"scratch", "results"}: items += [item for item in temp_items(host, usage, sizes) if item.category in wanted]
+    for listed in EXTENSION_ITEMS: items += listed(host, usage, sizes, wanted)
     return items
 
 
@@ -1222,7 +402,7 @@ def report(items, volume, unreadable, min_size, out=print):
                 continue
             out(f"  {item.status:9} {human(item.size):>10}  {item.path}")
             out(f"            {item.reason}")
-            if item.command and item.status != ARCHIVE: out(f"            $ {shlex.join(item.command)}")
+            if item.command: out(f"            $ {shlex.join(item.command)}")
         for status, (count, size) in hidden.items():
             out(f"  {status:9} {human(size):>10}  and {count} smaller items")
         out("")
@@ -1233,30 +413,25 @@ def report(items, volume, unreadable, min_size, out=print):
             roots[str(Path(*parts[:5]))] = roots.get(str(Path(*parts[:5])), 0) + 1
         top = sorted(roots.items(), key=lambda pair: -pair[1])[:8]
         out("Unreadable during measurement: " + "; ".join(f"{root} ({count})" for root, count in top))
-    for status, label in ((CANDIDATE, "Candidates"), (ARCHIVE, "Archive before removal"),
-                          (OWNER, "Owner decisions"), (KEPT, "Kept")):
+    for status, label in ((CANDIDATE, "Candidates"), (OWNER, "Owner decisions"), (KEPT, "Kept")):
         chosen = [item for item in items if item.status == status]
-        if status == ARCHIVE and not chosen: continue
         out(f"{label}: {len(chosen)} items, {human(sum(item.size for item in chosen))}.")
 
 
 def plan(items, out=print):
     """What --delete would remove, category by category: every candidate and its command."""
-    chosen = [item for item in items if item.status in (CANDIDATE, ARCHIVE)]
+    chosen = [item for item in items if item.status == CANDIDATE]
     out("Dry run: nothing was removed. Each item is checked again before removal.\n")
     for category, title in CATEGORIES.items():
         group = sorted((item for item in chosen if item.category == category), key=lambda item: -item.size)
         if not group: continue
         out(f"{title}: {len(group)} items, {human(sum(item.size for item in group))}")
         for item in group:
-            action = " (verify archive before removal)" if item.status == ARCHIVE else ""
-            out(f"  {human(item.size):>10}  {item.path}{action}")
-            if item.status != ARCHIVE: out(f"            $ {shlex.join(item.command)}")
+            out(f"  {human(item.size):>10}  {item.path}")
+            out(f"            $ {shlex.join(item.command)}")
         out("")
     out(f"In all: {len(chosen)} items, {human(sum(item.size for item in chosen))}.")
 
-
-# Removal
 
 def ledger_path(home):
     return Path(home) / "Library/Application Support/vocaro-engineering/disk-reclaimed.jsonl"
@@ -1310,118 +485,26 @@ def delete(items, fresh, ledger, out=print, run=subprocess.run, approval=None):
     return removed
 
 
-def fresh_archive_item(host, item):
-    """Read just this registration again, with current process and desktop-session ownership."""
-    current = replace(host, now=time.time(), processes=census(host.run), sessions=desktop_sessions(host.home))
-    main = Path(item.command[2])
-    listing = git(host.run, main, "worktree", "list", "--porcelain")
-    if listing.returncode: return None
-    entry = next((entry for entry in parse_worktrees(listing.stdout)[1:] if entry["worktree"] == item.path), None)
-    if entry is None: return None
-    base, name = landing_base(host.run, main)
-    return worktree(current, Usage(current.processes), Sizes(host.run, False), main, entry, base, name,
-                    archive_worktrees=True)
-
-
-def archive_snapshot(path):
-    entries, blockers = ignored.inventory(path, verify_caches=True)
-    if blockers: raise ignored.Refusal("; ".join(blockers[:3]))
-    return {entry["path"]: entry for entry in entries}
-
-
-def archive_slug(name):
-    return re.sub(r"[^A-Za-z0-9._-]", "-", name)[:80].strip(".") or "worktree"
-
-
-def archive_one(item, host, ledger, entry, fresh, out):
-    from . import evidence_offload  # it imports disk
-
-    current = fresh(host, item)
-    if current is None or current.status != ARCHIVE or current.command != item.command:
-        return "skipped: " + (current.reason if current else "could no longer verify its registration")
-    path = Path(item.path)
-    if path.resolve() != path: raise ignored.Refusal("the worktree path is behind a link")
-    identity = ignored.identity(path)
-    snapshot = archive_snapshot(path)
-    files = {name: file for name, file in snapshot.items()
-             if file["type"] != "dir" and file["kind"] not in ignored.DISPOSABLE}
-    if not files: return "skipped: no ignored evidence remains"
-    metadata = json.dumps({**identity, "files": {name: file["sha256"] for name, file in files.items()}},
-                          sort_keys=True, indent=2) + "\n"
-    digest = hashlib.sha256(metadata.encode()).hexdigest()[:20]
-    project = archive_slug(Path(item.command[2]).name)
-    target = f"Development/session-evidence/{project}/disk-{archive_slug(path.name)}-{digest}"
-    entry["archive"] = f"{host.offload_host}:~/{target}"
-    with tempfile.TemporaryDirectory(prefix="disk-worktree-", dir=ledger.parent) as staged:
-        payload = Path(staged) / "files"
-        payload.mkdir()
-        for name, file in files.items():
-            parent = (path / name).parent
-            if parent.resolve() != parent: raise ignored.Refusal(f"{name}: a folder above it is now a link")
-            why = ignored.copy(path, payload, file)
-            if why: raise ignored.Refusal(why)
-        (Path(staged) / "worktree.json").write_text(metadata)
-        status = evidence_offload.offload(staged, host=host.offload_host, home=host.home, to=target, keep=True,
-                                          run=host.run, out=out, defer=False)
-        if status != 0: return f"failed: offload returned {status}; worktree kept"
-        entry["archiveVerified"] = True
-        current = fresh(host, item)
-        if current is None or current.status != ARCHIVE or current.command != item.command:
-            return "skipped after archiving: " + (current.reason if current else "registration changed")
-        if archive_snapshot(path) != snapshot or ignored.identity(path) != identity:
-            return "skipped after archiving: the worktree or its ignored files changed"
-        result = git(host.run, item.command[2], *item.command[3:], timeout=3600)
-        return "removed" if result.returncode == 0 else f"failed ({result.returncode}): {result.stderr.strip()[:300]}"
-
-
-def archive_worktrees(items, host, ledger, out=print, approval=None, fresh=fresh_archive_item):
-    """Archive only the opt-in candidates, with one transfer/removal pass at a time."""
-    candidates = [item for item in items if item.status == ARCHIVE]
-    if not candidates: return True
-    ledger.parent.mkdir(parents=True, exist_ok=True)
-    answered = None if approval is None else "--yes" + (f": {approval}" if approval else "")
-    with open(ledger.with_name("disk-worktree-archive.lock"), "a") as lock:
-        try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            out("Another disk worktree archive pass is running.")
-            return False
-        with open(ledger, "a"): pass  # prove the record is writable before any removal
-        removed = 0
-        for item in candidates:
-            entry = removal_entry(item, answered)
-            try:
-                entry["outcome"] = archive_one(item, host, ledger, entry, fresh, out)
-            except (ignored.Refusal, OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
-                entry["outcome"] = f"failed: {error}"
-            record_removal(ledger, entry, out)
-            removed += entry["outcome"] == "removed"
-        out(f"Archived and removed {removed} of {len(candidates)} worktrees; decisions are in {ledger}.")
-        return removed == len(candidates)
-
-
 def add_arguments(parser):
     action = parser.add_mutually_exclusive_group()
     action.add_argument("--dry-run", action="store_true", help="list only what --delete would remove, and remove nothing")
     action.add_argument("--delete", action="store_true", help="remove every candidate, checking each again first, "
                         "without asking; owner items are only listed, with their commands")
-    parser.add_argument("--archive-worktrees", action="store_true",
-                        help="include idle landed Claude worktrees that need a verified archive on the second Mac "
-                             "before removal; requires --delete to transfer or remove anything")
     parser.add_argument("--yes", nargs="?", const="", metavar="WHO",
                         help="with --delete, name in each ledger entry who asked for this run (such as 'owner, "
                         "2026-11-05 chat'); --delete asks nobody since 2026-11-05, so this only records the ask")
     parser.add_argument("--json", action="store_true", help="print the items as JSON")
     parser.add_argument("--min-idle-hours", type=float,
-                        help="require this many unchanged hours even for archived sessions (default 24 without retirement proof)")
+                        help="count an item idle only after this many unchanged hours (default 24)")
     parser.add_argument("--min-size-mb", type=float, default=100.0, help="list smaller items only as totals")
     parser.add_argument("--development", type=Path, help="directory holding the projects (default ~/Development)")
 
 
 def prime_items(host, sizes):
     """One du pass over each folder that holds many small items; everything else is measured alone."""
-    for root, depth in ((host.home / "Library/Developer/Xcode/DerivedData", 1), (host.device_directory, 1),
-                        (host.home / "Library/Caches/org.swift.swiftpm", 2)):
-        if root: sizes.prime(root, depth)
+    for prime in EXTENSION_PRIMES:
+        for root, depth in prime(host):
+            if root: sizes.prime(root, depth)
 
 
 def execute(args, run=subprocess.run, out=print):
@@ -1430,35 +513,29 @@ def execute(args, run=subprocess.run, out=print):
         return 2
     def collect(categories=None, measure=True):
         idle_hours = 24.0 if args.min_idle_hours is None else args.min_idle_hours
-        host = replace(Host.current(idle_hours * 3600, args.development, run),
-                       strict_idle=args.min_idle_hours is not None)
+        host = host_class().current(idle_hours * 3600, args.development, run)
         sizes = Sizes(run, measure)
         if measure:
             print("Measuring the items listed.", file=sys.stderr)
             prime_items(host, sizes)
-        return host, sizes, inventory(host, sizes, categories, archive_worktrees=args.archive_worktrees)
+        return host, sizes, inventory(host, sizes, categories)
     host, sizes, items = collect()
     try:
         usage = shutil.disk_usage(DATA_VOLUME)
         volume = (usage.total, usage.used, usage.free)
     except OSError:
         volume = None
-    if args.dry_run: items = [item for item in items if item.status in (CANDIDATE, ARCHIVE)]
+    if args.dry_run: items = [item for item in items if item.status == CANDIDATE]
     if args.json:
         out(json.dumps({"volume": volume, "items": [asdict(item) for item in items]}, indent=2))
     elif args.dry_run:
         plan(items, out)
     else:
         report(items, volume, sizes.unreadable, args.min_size_mb * 1024 * 1024, out)
-    if args.archive_worktrees and not host.offload_host:
-        print("eng disk: no second Mac is configured; worktrees requiring an archive are kept", file=sys.stderr)
     if args.delete:
         ledger = ledger_path(host.home)
         delete(items, lambda category: collect([category], measure=False)[2], ledger, out=out, run=run,
                approval=args.yes)
-        if args.archive_worktrees:
-            if not host.offload_host or not archive_worktrees(items, host, ledger, out=out, approval=args.yes):
-                return 1
     return 0
 
 

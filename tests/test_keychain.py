@@ -12,7 +12,7 @@ from unittest.mock import Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 from queuekeeper import cli, lane_results, offload_host, remote
 from queuekeeper.apple import keychain
-from vocaro_engineering import host_context
+from queuekeeper import host_context
 import host_isolation
 from host_isolation import stretched
 

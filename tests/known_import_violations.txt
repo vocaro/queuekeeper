@@ -2,10 +2,6 @@
 # as extracted from the toolkit (vocaro/vocaro-engineering#403). One line each: KIND: MODULE -> WHAT.
 # This list only shrinks. Delete a line when its import is gone, and lower CEILING in the test.
 # Never add a line. `python3 tests/test_queuekeeper_imports.py --report` prints the current state.
-Apple imports toolkit: queuekeeper.apple.keychain -> vocaro_engineering.host_context
-Apple imports toolkit: queuekeeper.apple.simulators.duo_pose -> vocaro_engineering.support
-Apple imports toolkit: queuekeeper.apple.simulators.speech -> vocaro_engineering.voiceover.activation
-Apple imports toolkit: queuekeeper.apple.simulators.template -> vocaro_engineering.support
 core imports Apple: queuekeeper.cli -> queuekeeper.apple.app_builds
 core imports Apple: queuekeeper.cli -> queuekeeper.apple.app_registrations
 core imports Apple: queuekeeper.cli -> queuekeeper.apple.crash_alerts
@@ -18,9 +14,6 @@ core imports Apple: queuekeeper.cli -> queuekeeper.apple.run_results
 core imports Apple: queuekeeper.cli -> queuekeeper.apple.simulators.matrix
 core imports Apple: queuekeeper.cli -> queuekeeper.apple.simulators.pool
 core imports Apple: queuekeeper.cli -> queuekeeper.apple.xctest_shards
-core imports Apple: queuekeeper.disk -> queuekeeper.apple.app_builds
-core imports Apple: queuekeeper.disk -> queuekeeper.apple.devices
-core imports Apple: queuekeeper.disk -> queuekeeper.apple.simulators.pool
 core imports Apple: queuekeeper.merge_queue -> queuekeeper.apple.app_builds
 core imports Apple: queuekeeper.remote -> queuekeeper.apple.capture_approvals
 core imports Apple: queuekeeper.remote -> queuekeeper.apple.devices
@@ -43,9 +36,4 @@ core imports toolkit: queuekeeper.cli -> vocaro_engineering.storekit_config
 core imports toolkit: queuekeeper.cli -> vocaro_engineering.support
 core imports toolkit: queuekeeper.cli -> vocaro_engineering.toolkit_copy
 core imports toolkit: queuekeeper.cli -> vocaro_engineering.voiceover.speech
-core imports toolkit: queuekeeper.disk -> vocaro_engineering.evidence_offload
-core imports toolkit: queuekeeper.disk -> vocaro_engineering.failure_records
-core imports toolkit: queuekeeper.disk -> vocaro_engineering.ignored
-core imports toolkit: queuekeeper.disk -> vocaro_engineering.landing
-core imports toolkit: queuekeeper.disk -> vocaro_engineering.voiceover.activation
 core imports toolkit: queuekeeper.parallel -> vocaro_engineering.failure_records

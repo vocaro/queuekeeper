@@ -23,7 +23,7 @@ import subprocess
 import sys
 import tempfile
 
-from ..support import ROOT, source_path
+from ..sources import ROOT, source_path
 
 BUILD = ROOT / ".build" / "duo-pose"
 FLAGS = ("-target", "arm64-apple-ios27.0-simulator", "-O2", "-Wall",

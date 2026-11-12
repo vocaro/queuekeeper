@@ -10,7 +10,6 @@ import subprocess
 import time
 from xml.parsers.expat import ExpatError
 from . import __name__ as _package_name
-from vocaro_engineering.voiceover import activation
 
 TEST_ENDED = re.compile(r"^Test Case '.*testCaptureNavigation\]' (passed|failed) \(([\d.]+) seconds\)", re.M)
 FAILURES = re.compile(r"^.* error: (?:-\[.*?\] : )?(.*)$", re.M)
@@ -178,6 +177,11 @@ def events(text):
     return [line.removeprefix("VOICEOVER_EVENT ") for line in text.splitlines() if line.startswith("VOICEOVER_EVENT ")]
 
 
+# What checks a run that turned VoiceOver on, by its `evidence_failures(log, vot[, guest])`: the toolkit's
+# VoiceOver framework names its activation module here, since the extension never imports the toolkit.
+ACTIVATION = None
+
+
 def staged(bundle):
     """The probe's output as an unfinished result bundle holds it, for an xcodebuild that will not end."""
     found = [events(path.read_text(errors="replace"))
@@ -185,9 +189,9 @@ def staged(bundle):
     return max(found, key=len, default=[])
 
 
-def report(session, *, state_reader=None, test_ended=TEST_ENDED, failure_pattern=FAILURES, activation_module=activation):
+def report(session, *, state_reader=None, test_ended=TEST_ENDED, failure_pattern=FAILURES, activation_module=None):
     state = state_reader or globals()["state"]
-    activation = activation_module
+    activation = activation_module or ACTIVATION
     """Confirm a simulator's VoiceOver is off, write its transcript and print the outcome."""
     log = session.log.read_text(errors="replace") if session.log.exists() else ""
     heard, source = events(log), "xcodebuild's output"
@@ -198,7 +202,10 @@ def report(session, *, state_reader=None, test_ended=TEST_ENDED, failure_pattern
     counts = re.findall(r"Executed (\d+) tests?[, ]", log)
     if not counts or any(count != "1" for count in counts):
         failures.append("the filtered run did not confirm exactly one executed test")
-    if session.activation:
+    if session.activation and activation is None:
+        failures.append("the run turned VoiceOver on, and nothing that checks its activation is registered "
+                        "(simulators.speech.ACTIVATION)")
+    elif session.activation:
         vot = session.vot.read_text(errors="replace") if session.vot.exists() else ""
         # The guest build the runner read from the booted member (activation.guest_identity).
         guest = getattr(session, "guest_build", None)

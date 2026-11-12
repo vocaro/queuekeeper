@@ -27,7 +27,7 @@ import subprocess
 import tempfile
 import time
 
-from ..support import ROOT, source_path
+from ..sources import ROOT, source_path
 from . import runtime_identity
 from .speech import CUE_DOMAIN, CUE_KEY
 

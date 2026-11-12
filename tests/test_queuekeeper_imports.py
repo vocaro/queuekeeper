@@ -35,7 +35,7 @@ APPLE_TOOLKIT = "Apple imports toolkit"
 OLD_NAME = "old name"
 KINDS = (CORE_TOOLKIT, CORE_APPLE, APPLE_TOOLKIT, OLD_NAME)
 # The most lines of each kind the list may hold. Lower a number as its kind shrinks; never raise it.
-CEILING = {CORE_TOOLKIT: 22, CORE_APPLE: 21, APPLE_TOOLKIT: 4, OLD_NAME: 0}
+CEILING = {CORE_TOOLKIT: 17, CORE_APPLE: 18, APPLE_TOOLKIT: 0, OLD_NAME: 0}
 
 
 def within(module, package):

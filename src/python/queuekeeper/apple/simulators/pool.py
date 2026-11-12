@@ -1229,7 +1229,8 @@ def reap_reports(pool, project, *, dry_run, here, stop_leftovers=True):
     see name. Without stop_leftovers, as for `eng doctor`, the second Mac only lists the leftover processes
     it would stop (offload_host.stop_leftovers)."""
     # remote and disk import this module.
-    from ... import disk, offload_host, remote
+    from ... import offload_host, remote
+    from .. import disk
     if pool: pools = [pool]
     else:
         pools = sorted({*disk.pools(Path.home() / "Development"), *filter(None, [configured(project or Path.cwd())])})

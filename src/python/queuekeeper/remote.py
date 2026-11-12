@@ -2587,10 +2587,14 @@ def runtime_images(host, side, developer, clear=False):
     return ask(host, {"images": developer, "staging": RUNTIME_STAGING, "clear": clear, "pinned": runtime_pins()})
 
 
+# What names runtime builds to keep: each returns {build: where}. The Apple extension adds its disk items' pins.
+PINNED_BUILDS = []
+
+
 def runtime_pins():
-    """The runtime builds the toolkit pins (disk.pinned_builds), which offload_host cannot read on the
-    second Mac, since it imports nothing from the toolkit there: a superseded one keeps its users."""
-    return sorted(disk.pinned_builds())
+    """The runtime builds something pins (PINNED_BUILDS), which offload_host cannot read on the
+    second Mac, since it imports nothing but itself there: a superseded one keeps its users."""
+    return sorted({build for pinned in PINNED_BUILDS for build in pinned()})
 
 
 def runtime_lock():
