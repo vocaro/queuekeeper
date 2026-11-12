@@ -1,0 +1,103 @@
+# Imports in src/python/queuekeeper that break the rules tests/test_queuekeeper_imports.py holds,
+# as extracted from the toolkit (vocaro/vocaro-engineering#403). One line each: KIND: MODULE -> WHAT.
+# This list only shrinks. Delete a line when its import is gone, and lower CEILING in the test.
+# Never add a line. `python3 tests/test_queuekeeper_imports.py --report` prints the current state.
+Apple imports toolkit: queuekeeper.apple.crash_alerts -> vocaro_engineering.evidence
+Apple imports toolkit: queuekeeper.apple.device_pass -> vocaro_engineering.evidence
+Apple imports toolkit: queuekeeper.apple.devices -> vocaro_engineering.evidence
+Apple imports toolkit: queuekeeper.apple.keychain -> vocaro_engineering.evidence
+Apple imports toolkit: queuekeeper.apple.keychain -> vocaro_engineering.host_context
+Apple imports toolkit: queuekeeper.apple.notification_center -> vocaro_engineering.evidence
+Apple imports toolkit: queuekeeper.apple.run_results -> vocaro_engineering.evidence
+Apple imports toolkit: queuekeeper.apple.simulators.duo_pose -> vocaro_engineering.support
+Apple imports toolkit: queuekeeper.apple.simulators.matrix -> vocaro_engineering.evidence
+Apple imports toolkit: queuekeeper.apple.simulators.matrix -> vocaro_engineering.stale_modules
+Apple imports toolkit: queuekeeper.apple.simulators.pool -> vocaro_engineering.evidence
+Apple imports toolkit: queuekeeper.apple.simulators.speech -> vocaro_engineering.voiceover.activation
+Apple imports toolkit: queuekeeper.apple.simulators.template -> vocaro_engineering.support
+Apple imports toolkit: queuekeeper.apple.xctest_shards -> vocaro_engineering.evidence
+core imports Apple: queuekeeper.cli -> queuekeeper.apple.app_builds
+core imports Apple: queuekeeper.cli -> queuekeeper.apple.app_registrations
+core imports Apple: queuekeeper.cli -> queuekeeper.apple.crash_alerts
+core imports Apple: queuekeeper.cli -> queuekeeper.apple.device_pass
+core imports Apple: queuekeeper.cli -> queuekeeper.apple.devices
+core imports Apple: queuekeeper.cli -> queuekeeper.apple.foreground
+core imports Apple: queuekeeper.cli -> queuekeeper.apple.keychain
+core imports Apple: queuekeeper.cli -> queuekeeper.apple.notification_center
+core imports Apple: queuekeeper.cli -> queuekeeper.apple.run_results
+core imports Apple: queuekeeper.cli -> queuekeeper.apple.simulators.matrix
+core imports Apple: queuekeeper.cli -> queuekeeper.apple.simulators.pool
+core imports Apple: queuekeeper.cli -> queuekeeper.apple.xctest_shards
+core imports Apple: queuekeeper.disk -> queuekeeper.apple.app_builds
+core imports Apple: queuekeeper.disk -> queuekeeper.apple.devices
+core imports Apple: queuekeeper.disk -> queuekeeper.apple.simulators.pool
+core imports Apple: queuekeeper.merge_queue -> queuekeeper.apple.app_builds
+core imports Apple: queuekeeper.remote -> queuekeeper.apple.capture_approvals
+core imports Apple: queuekeeper.remote -> queuekeeper.apple.devices
+core imports Apple: queuekeeper.remote -> queuekeeper.apple.run_results
+core imports Apple: queuekeeper.remote -> queuekeeper.apple.simulators.matrix
+core imports Apple: queuekeeper.remote -> queuekeeper.apple.simulators.pool
+core imports toolkit: queuekeeper.budgets -> vocaro_engineering.release
+core imports toolkit: queuekeeper.budgets -> vocaro_engineering.toolkit_copy
+core imports toolkit: queuekeeper.cli -> vocaro_engineering.checkpoint
+core imports toolkit: queuekeeper.cli -> vocaro_engineering.docs
+core imports toolkit: queuekeeper.cli -> vocaro_engineering.evidence
+core imports toolkit: queuekeeper.cli -> vocaro_engineering.evidence_offload
+core imports toolkit: queuekeeper.cli -> vocaro_engineering.failure_records
+core imports toolkit: queuekeeper.cli -> vocaro_engineering.github_artifacts
+core imports toolkit: queuekeeper.cli -> vocaro_engineering.project
+core imports toolkit: queuekeeper.cli -> vocaro_engineering.release
+core imports toolkit: queuekeeper.cli -> vocaro_engineering.setup
+core imports toolkit: queuekeeper.cli -> vocaro_engineering.skills
+core imports toolkit: queuekeeper.cli -> vocaro_engineering.stale_modules
+core imports toolkit: queuekeeper.cli -> vocaro_engineering.storekit_config
+core imports toolkit: queuekeeper.cli -> vocaro_engineering.support
+core imports toolkit: queuekeeper.cli -> vocaro_engineering.toolkit_copy
+core imports toolkit: queuekeeper.cli -> vocaro_engineering.voiceover.speech
+core imports toolkit: queuekeeper.disk -> vocaro_engineering.evidence_offload
+core imports toolkit: queuekeeper.disk -> vocaro_engineering.failure_records
+core imports toolkit: queuekeeper.disk -> vocaro_engineering.ignored
+core imports toolkit: queuekeeper.disk -> vocaro_engineering.landing
+core imports toolkit: queuekeeper.disk -> vocaro_engineering.voiceover.activation
+core imports toolkit: queuekeeper.lane_report -> vocaro_engineering.evidence
+core imports toolkit: queuekeeper.merge_queue -> vocaro_engineering.evidence
+core imports toolkit: queuekeeper.merge_queue -> vocaro_engineering.landing
+core imports toolkit: queuekeeper.parallel -> vocaro_engineering.evidence
+core imports toolkit: queuekeeper.parallel -> vocaro_engineering.failure_records
+core imports toolkit: queuekeeper.parallel -> vocaro_engineering.stale_modules
+core imports toolkit: queuekeeper.remote -> vocaro_engineering.evidence
+core imports toolkit: queuekeeper.remote -> vocaro_engineering.toolkit_copy
+old name: queuekeeper.apple.app_builds -> queuekeeper.config
+old name: queuekeeper.apple.app_builds -> queuekeeper.processes
+old name: queuekeeper.apple.app_registrations -> queuekeeper.offload_host
+old name: queuekeeper.apple.app_registrations -> queuekeeper.resources
+old name: queuekeeper.apple.capture_approvals -> queuekeeper.offload_host
+old name: queuekeeper.apple.crash_alerts -> queuekeeper.offload_host
+old name: queuekeeper.apple.crash_alerts -> queuekeeper.resources
+old name: queuekeeper.apple.device_pass -> queuekeeper.parallel
+old name: queuekeeper.apple.device_pass -> queuekeeper.processes
+old name: queuekeeper.apple.devices -> queuekeeper.offload_host
+old name: queuekeeper.apple.devices -> queuekeeper.processes
+old name: queuekeeper.apple.devices -> queuekeeper.remote
+old name: queuekeeper.apple.devices -> queuekeeper.resources
+old name: queuekeeper.apple.foreground -> queuekeeper.lane_wait
+old name: queuekeeper.apple.foreground -> queuekeeper.offload_host
+old name: queuekeeper.apple.foreground -> queuekeeper.processes
+old name: queuekeeper.apple.keychain -> queuekeeper.offload_host
+old name: queuekeeper.apple.keychain -> queuekeeper.remote
+old name: queuekeeper.apple.notification_center -> queuekeeper.offload_host
+old name: queuekeeper.apple.run_results -> queuekeeper.parallel
+old name: queuekeeper.apple.simulators.matrix -> queuekeeper.parallel
+old name: queuekeeper.apple.simulators.matrix -> queuekeeper.processes
+old name: queuekeeper.apple.simulators.matrix -> queuekeeper.resources
+old name: queuekeeper.apple.simulators.pool -> queuekeeper.disk
+old name: queuekeeper.apple.simulators.pool -> queuekeeper.offload_host
+old name: queuekeeper.apple.simulators.pool -> queuekeeper.remote
+old name: queuekeeper.apple.simulators.pool -> queuekeeper.resources
+old name: queuekeeper.apple.xctest_shards -> queuekeeper.parallel
+old name: queuekeeper.apple.xctest_shards -> queuekeeper.processes
+old name: queuekeeper.processes -> queuekeeper.resources
+old name: queuekeeper.resources -> queuekeeper.offload_host
+old name: queuekeeper.resources -> queuekeeper.processes
+old name: queuekeeper.resources -> queuekeeper.remote
+old name: queuekeeper.resources -> queuekeeper.resources
