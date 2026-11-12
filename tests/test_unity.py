@@ -15,9 +15,9 @@ from unittest.mock import patch
 
 import host_isolation  # first, as every test module
 
-from queuekeeper import config, extensions, unity
+from queuekeeper import config, disk, extensions, unity
 from queuekeeper.lane_results import UNMEASURED, executed_tests
-from queuekeeper.unity import batch, commands, doctor, editor, licensing, project, settings
+from queuekeeper.unity import batch, commands, disk as unity_disk, doctor, editor, licensing, project, settings
 
 unity.register()
 
@@ -501,6 +501,62 @@ class DoctorTests(Folder):
         self.assertIn("pins no editor version", self.warnings()[0])
         self.config["unity"] = {"project": "elsewhere"}
         self.assertIn("there is no Unity project at", self.warnings()[0])
+
+
+class DiskTests(Folder):
+    NOW = 2_000_000_000
+
+    def setUp(self):
+        super().setUp()
+        self.development = self.folder / "Development"
+        self.main = self.development / "Game"
+        self.lab = self.checkout(self.main)
+        subprocess.run(["git", "init", "-q", "-b", "main", str(self.main)], check=True)
+        (self.main / "queuekeeper.json").write_text(json.dumps({
+            "schemaVersion": 1, "name": "Game", "extensions": ["queuekeeper.unity"], "unity": {"project": "lab"}}))
+
+    def checkout(self, root):
+        lab = root / "lab"
+        for name in ("ProjectSettings", "Library", "Temp", "Logs"): (lab / name).mkdir(parents=True)
+        for path in lab.rglob("*"): os.utime(path, (self.NOW - 10 * 86400,) * 2)
+        os.utime(lab, (self.NOW - 10 * 86400,) * 2)
+        return lab
+
+    def items(self, processes=(), worktrees=()):
+        host = disk.Host(home=self.folder, development=self.development, now=self.NOW, min_idle=86400,
+                         processes=list(processes))
+        listed = [{"worktree": str(self.main)}, *({"worktree": str(root)} for root in worktrees)]
+        with patch.object(unity_disk.git_state, "worktrees", lambda checkout: listed):
+            found = unity_disk.items(host, disk.Usage(host.processes), disk.Sizes(measure=False), {unity_disk.CATEGORY})
+        return {item.path: item for item in found}
+
+    def test_each_checkout_s_generated_folders_are_candidates_once_idle(self):
+        other = self.folder / "worktrees/w"
+        linked = self.checkout(other)
+        found = self.items(worktrees=[other])
+        self.assertEqual(set(found), {str(lab / name) for lab in (self.lab, linked) for name in ("Library", "Temp", "Logs")})
+        library = found[str(self.lab / "Library")]
+        self.assertEqual((library.status, library.command), (disk.CANDIDATE, ["rm", "-rf", "--", str(self.lab / "Library")]))
+        self.assertIn("rebuilds on its next open", library.reason)
+
+    def test_a_project_an_editor_has_open_keeps_its_folders_and_another_s_editor_does_not_count(self):
+        mine = disk.Process(41, "Unity", args=f"/x/Unity.app/Contents/MacOS/Unity -projectPath {self.lab}")
+        self.assertEqual({item.status for item in self.items([mine]).values()}, {disk.KEPT})
+        self.assertIn("PID 41 has the project open", self.items([mine])[str(self.lab / "Library")].reason)
+        theirs = disk.Process(42, "Unity", args="/x/Unity.app/Contents/MacOS/Unity -projectPath /elsewhere/lab")
+        self.assertEqual({item.status for item in self.items([theirs]).values()}, {disk.CANDIDATE})
+
+    def test_a_folder_changed_lately_is_kept(self):
+        os.utime(self.lab / "Library", (self.NOW - 60,) * 2)
+        found = self.items()
+        self.assertEqual(found[str(self.lab / "Library")].status, disk.KEPT)
+        self.assertEqual(found[str(self.lab / "Temp")].status, disk.CANDIDATE)
+
+    def test_a_project_that_does_not_switch_the_extension_on_lists_nothing(self):
+        (self.main / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Game"}))
+        self.assertEqual(self.items(), {})
+        self.assertEqual(unity_disk.items(None, None, None, {"simulator"}), [])
+        self.assertIn(unity_disk.CATEGORY, disk.CATEGORIES)
 
 
 if __name__ == "__main__":
