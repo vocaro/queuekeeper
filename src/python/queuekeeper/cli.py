@@ -10,8 +10,8 @@ import subprocess
 import sys
 import time
 
-from . import __version__, budgets, disk, docs, extensions, git_state, lane_coverage, lane_report, lane_results, lane_wait, merge_queue, offload_host, \
-    parallel, processes, remote, resources, shims, spelling
+from . import __version__, budgets, disk, docs, extensions, git_hooks, git_state, lane_coverage, lane_report, lane_results, lane_wait, merge_queue, offload_host, \
+    parallel, pre_push, processes, remote, resources, shims, spelling
 from .config import FILE as CONFIG_FILE, TOOLKIT_ROOT, admission as admission_of, exclusive_refusal, extensions_of, lane_to_run, load, \
     source_identity, lane_devices, self_lane_warnings, stays, unadmitted, unlocked_screen
 from .resources import BUSY, FREE_WAIT
@@ -654,6 +654,10 @@ def perform(argv, report):
     parser.add_argument("--version", action="version", version=__version__)
     commands = parser.add_subparsers(dest="action", required=True)
     commands.add_parser("doctor")
+    hook = commands.add_parser("pre-push", help="a pre-push hook: run the lanes the project names for the paths a push "
+        "changes, the docs lanes for a docs-only push and queue.lanes or gate for any other, and refuse the push "
+        "when one fails or is unmeasured; a project's hook is `exec python3 scripts/qk pre-push \"$@\"`")
+    hook.add_argument("remote", nargs="*", help="the remote's name and URL, as Git gives a pre-push hook")
     run = commands.add_parser("run", usage="%(prog)s [-h] [--expect N] [--repeat N [--erase|--template] [--only TEST]] "
         "lane [-- ARGUMENTS ...]",
         help="run a configured lane, admitting a heavy or exclusive one, on whichever Mac has spare capacity for "
@@ -933,6 +937,8 @@ def perform(argv, report):
             from .waiting import doctor_warnings as fixed_wait_warnings  # #284
             warnings += fixed_wait_warnings(root)
             warnings += lane_wait.admission_warnings(root)
+            # What a push by hand from this checkout runs, put right where it can be (git_hooks).
+            warnings += git_hooks.check(root)
             # A difference between the two Macs is an error; a second Mac that cannot be reached is unchecked.
             hosts = fix_hosts(root, remote.compare_hosts())
             for check in extensions.DOCTOR: warnings += check(root, config)
@@ -942,6 +948,7 @@ def perform(argv, report):
                 "source": source_identity(TOOLKIT_ROOT), "extensions": list(extensions.LOADED),
                 "missingCommands": missing, "warnings": warnings, "testLanes": test_lanes, "offload": hosts}, indent=2))
             return int(bool(missing or hosts["errors"]))
+        elif args.action == "pre-push": return pre_push.main(root, config, args.remote)
         elif args.action == "admit": return admit(root, args, config, device_window=device_window)
         elif args.action == "remote": return remote.main(root, config, args)
         elif args.action == "docs":

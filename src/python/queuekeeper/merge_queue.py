@@ -52,7 +52,7 @@ import urllib.request
 
 from . import budgets, disk, extensions, lane_results, landing_proofs, lane_progress, lane_report, lane_wait, offload_host, parallel, processes, remote, \
     resources
-from . import events
+from . import events, pre_push
 from .config import DOCS, DOCS_FILES, DOCS_FOLDERS, IMPLICIT_DOCS, IMPLICIT_SPELLING, SPELLING, SPELLING_LIMIT, \
     TOOLKIT_ROOT, lane_to_run, load, parse, stays, unlocked_screen
 
@@ -3124,7 +3124,8 @@ class Worker:
         self.say(f"pre-push hook on {head[:12]}")
         try:
             result = processes.run(["git", "hook", "run", "--ignore-missing", f"--to-stdin={told}", "pre-push", "--",
-                                    "origin", url], cwd=self.checkout, log_path=log, timeout=LANE_LIMIT, env=self.environment)
+                                    "origin", url], cwd=self.checkout, log_path=log, timeout=LANE_LIMIT,
+                                   env={**self.environment, pre_push.QUEUE_VARIABLE: "1"})
         except processes.TimedOut as error:
             self.say(f"pre-push hook: unmeasured: {error}")
             return lane_results.UNMEASURED, log

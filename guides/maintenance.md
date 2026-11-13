@@ -610,6 +610,44 @@ The lanes must be ones the queue runs, so their passing is what the worker just 
 admission there is a lane's no verdict. The worker then does not run the hook, and its log says so.
 Keep the opt-in only while it is true: a hook that checks something no lane does stays a hook. A person's own `git push` still runs the hook.
 
+**Queuekeeper supplies a hook that runs the lanes.** A project whose hook would only repeat its
+lanes can make the hook one line:
+
+```sh
+#!/bin/sh
+exec python3 scripts/qk pre-push "$@"
+```
+
+`qk pre-push` reads what Git gives a hook and finds the paths the push changes. A push that changes
+only the paths of `queue.docsOnly`, or only conventional Markdown in a project without it, runs the
+docs lanes. Any other push runs `queue.lanes`, or `gate`. So the hook holds no second copy of what
+the configuration says. The lanes run with `qk run` in the checkout being pushed from, and are
+admitted and placed as always.
+
+| Hook's exit | Meaning |
+|---|---|
+| 0 | Every lane passed, or the push deletes a branch |
+| 1 | A lane failed |
+| 3 | A lane was unmeasured: nothing ran, which is not a pass, so the push is refused |
+
+`QUEUEKEEPER_PREPUSH=skip git push` runs nothing and says that nothing was verified. Under the
+queue's worker the hook runs nothing, since the worker has just run the lanes for what it pushes.
+Such a project does not need `queue.hookCoveredBy`.
+
+**`qk doctor` keeps `core.hooksPath` right.** A project that tracks its hooks points
+`core.hooksPath` at their folder, as a path relative to the checkout. Git resolves a relative path
+in whichever worktree runs the hook, so each worktree runs its own branch's copy. Three states break
+that, and Git reports none of them:
+
+| State | What happens | What `doctor` does |
+|---|---|---|
+| The repository's value is an absolute path into one checkout | Every worktree runs that checkout's hooks, not its own branch's | Makes it relative |
+| A linked worktree has a value of its own, which hides the repository's. Claude Code writes one, aimed at the main checkout, in each worktree it creates | A push from that worktree runs the main checkout's hooks | Clears it when it names the same folder, and warns when it names another |
+| The path names a folder that does not exist, or a hook is not executable | Git runs no hook, prints nothing, and the push succeeds | Warns |
+
+Each repair is listed among `doctor`'s warnings. A project with no `core.hooksPath`, or with one
+outside the repository such as a person's own global hooks, is left alone.
+
 **A gate that fails on a test the change cannot reach.** On an `qk unittest` gate the queue does this
 itself when the test passes alone ([a failed test that passes alone is a flake](#the-merge-queue)).
 Otherwise, record the failure on that test's issue,
