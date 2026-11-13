@@ -526,7 +526,12 @@ with where each one's work comes from: its repository, branch, worktree, agent s
 stands beside it. `--json` gives the same; `--here` reads only this Mac, and is required under an
 isolated `HEAVY_SLOT_DIR` or `QUEUEKEEPER_GATE_LOCK_FILE`. What it reads, and what it marks partial, is in
 `offload_host.admissions_now`; each waiter's record is `resources.Admission._observe`
-([#342](https://github.com/vocaro/vocaro-engineering/issues/342)). It does not yet flag a wait as
+([#342](https://github.com/vocaro/vocaro-engineering/issues/342)). It checks the processes named with one
+`ps`; when that fails or takes 5 seconds, it asks the kernel PID by PID, which reads no process's arguments, so
+that one bad PID or one failed `ps` does not leave every holder unchecked. A holder whose PID is gone, or runs
+another process, is ended and shown stranded. One whose PID runs but whose start neither can read is shown as
+could not be checked, not as ended: a holder alive but slow to confirm is not freed on a guess. Recovery reads
+an owner's end the same way ([#23](https://github.com/vocaro/queuekeeper/issues/23)). It does not yet flag a wait as
 too long: the owner deferred that until there is history to calibrate it.
 
 Under each running holder, a `progress:` line gives each of its leaves' live quiet-interval

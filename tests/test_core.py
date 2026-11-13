@@ -3389,9 +3389,14 @@ class RecoveryTests(unittest.TestCase):
                         self.assertIn(f"live (PID {os.getpid()}) still runs, so its entry stays", output)
                         self.assertEqual(self.owners(), owners)
         self.assertFalse(self.guard.exists())
-        # An owner that ps cannot read is taken as running; one whose PID another process has, as ended.
+        # An owner that neither ps nor the kernel can read is taken as running; one whose PID another process has,
+        # as ended, whether ps or, when ps cannot say, the kernel reads the other start (vocaro/queuekeeper#23).
         with patch.object(resources.subprocess, "run", return_value=subprocess.CompletedProcess([], 1, "", "")):
-            self.assertFalse(resources.ended({"pid": os.getpid(), "start": "Thu Jan  1 00:00:00 1970"}))
+            with patch.object(resources, "kernel_start", side_effect=OSError("the kernel would not say")):
+                self.assertFalse(resources.ended({"pid": os.getpid(), "start": "Thu Jan  1 00:00:00 1970"}))
+            if sys.platform == "darwin":
+                self.assertTrue(resources.ended({"pid": os.getpid(), "start": "Thu Jan  1 00:00:00 1970"}))
+                self.assertFalse(resources.ended({"pid": os.getpid(), "start": resources.kernel_start(os.getpid())}))
         self.assertTrue(resources.ended({"pid": os.getpid(), "start": "Thu Jan  1 00:00:00 1970"}))
         self.assertTrue(resources.ended({"pid": self.ended_process()[0], "start": "Thu Jan  1 00:00:00 1970"}))
 

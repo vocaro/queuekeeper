@@ -2048,15 +2048,31 @@ def entry_age(owner):
         return "admitted at an unknown time"
 
 
+# Seconds ended gives ps to read an owner's start before it asks the kernel instead.
+ENDED_PS_SECONDS = 5
+
+
 def ended(owner):
-    """Whether an entry's owner has certainly ended: its PID is gone, or ps reads another start there. A ps
-    that cannot say leaves the owner running, so that recovery never takes a live owner's entry."""
+    """Whether an entry's owner has certainly ended: its PID is gone, or ps reads another start there. A ps that
+    fails or takes ENDED_PS_SECONDS hands the question to the kernel (kernel_start), which reads no process's
+    arguments, so that a ps that cannot say does not keep a dead owner's entry when its PID was reused
+    (vocaro/queuekeeper#23). When neither can say the owner is left running, so that recovery never takes a live owner's
+    entry: its PID still runs, and a holder slow to confirm is not a holder gone."""
     try: os.kill(owner["pid"], 0)
     except ProcessLookupError: return True
     except PermissionError: pass
-    listed = subprocess.run(["ps", "-p", str(owner["pid"]), "-o", "lstart="], capture_output=True, text=True)
-    start = " ".join(listed.stdout.split())
-    return listed.returncode == 0 and bool(start) and start != " ".join(owner["start"].split())
+    try:
+        listed = subprocess.run(["ps", "-p", str(owner["pid"]), "-o", "lstart="], capture_output=True, text=True,
+                                timeout=ENDED_PS_SECONDS, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError): listed = None
+    start = " ".join(listed.stdout.split()) if listed is not None and listed.returncode == 0 else ""
+    if not start:
+        if sys.platform != "darwin": return False
+        try: start = kernel_start(owner["pid"])
+        except OSError: return False
+        if start is None: return True
+        start = " ".join(start.split())
+    return start != " ".join(owner["start"].split())
 
 
 class Unrecorded(ValueError):

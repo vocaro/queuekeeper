@@ -122,7 +122,7 @@ class HoldersTests(Namespace):
             reading = self.read()
         self.assertEqual((reading["state"], reading["holders"][0]["process"], reading["holders"][0]["stranded"]),
                          ("partial", "unknown", False))
-        self.assertIn("ps could not say", reading["reasons"][0])
+        self.assertIn("neither ps nor the kernel could say", reading["reasons"][0])
 
     def test_reading_changes_nothing(self):
         self.holders({"a": self.owner("Alpha")}, slots=[(0, "a"), (2, "released")], model="a")
@@ -195,6 +195,76 @@ class HoldersTests(Namespace):
         cut = offload_host.bounded(reading)
         self.assertLessEqual(len(json.dumps(cut)), offload_host.NOW_BYTES)
         self.assertEqual(cut["state"], "partial")
+
+
+class FailedCensusTests(Namespace):
+    """A ps that fails or times out is retried PID by PID with the kernel, so that it hides no holder whose state the
+    kernel can give, and a holder whose start no one can read is unknown, never freed (vocaro/queuekeeper#23)."""
+
+    def setUp(self):
+        super().setUp()
+        if sys.platform != "darwin": self.skipTest("the kernel's record of a process is read on macOS")
+        gone = subprocess.Popen(["true"])
+        gone.wait()
+        self.gone = gone.pid
+        self.holders({"live": self.owner("Live"), "gone": self.owner("Gone", pid=self.gone),
+                      "reused": self.owner("Reused", start="Thu Jan  1 00:00:00 1970")},
+                     slots=[(0, "live"), (1, "gone"), (2, "reused")])
+
+    def failing(self, error):
+        """subprocess.run, but the census's `ps -p` raises error."""
+        real = subprocess.run
+        def run(command, *args, **kwargs):
+            if command[:2] == ["ps", "-p"]: raise error
+            return real(command, *args, **kwargs)
+        return patch.object(offload_host.subprocess, "run", side_effect=run)
+
+    def test_a_ps_that_fails_or_times_out_hides_no_holder_the_kernel_can_place(self):
+        for error in [subprocess.TimeoutExpired(["ps"], 5), OSError("ps could not start")]:
+            with self.subTest(type(error).__name__), self.failing(error):
+                reading = self.read()
+            found = {holder["label"]: holder for holder in reading["holders"]}
+            self.assertEqual((reading["state"], reading["reasons"]), ("observed", []))
+            self.assertEqual((found["Live"]["process"], found["Live"]["stranded"]), ("running", False))
+            # A PID gone and a PID that now runs another process are both ended, so stranded as admission counts them.
+            self.assertEqual((found["Gone"]["process"], found["Gone"]["stranded"]), ("ended", True))
+            self.assertEqual((found["Reused"]["process"], found["Reused"]["stranded"]), ("ended", True))
+
+    def test_a_live_pid_whose_start_cannot_be_read_is_unknown_alone(self):
+        real = offload_host.kernel_start
+        def kernel(pid):
+            if pid == os.getpid(): raise OSError("sysctl KERN_PROC_PID: the kernel would not say")
+            return real(pid)
+        with self.failing(subprocess.TimeoutExpired(["ps"], 5)), \
+                patch.object(offload_host, "kernel_start", side_effect=kernel):
+            reading = self.read()
+        found = {holder["label"]: holder for holder in reading["holders"]}
+        # Its PID runs, so the holder may be alive and slow to confirm: it is neither ended nor stranded.
+        self.assertEqual((found["Live"]["process"], found["Live"]["stranded"]), ("unknown", False))
+        self.assertEqual((found["Reused"]["process"], found["Reused"]["stranded"]), ("unknown", False))
+        self.assertEqual((found["Gone"]["process"], found["Gone"]["stranded"]), ("ended", True))
+        self.assertEqual(reading["state"], "partial")
+        self.assertIn(f"the kernel could not say whether PID {os.getpid()} still runs", reading["reasons"][0])
+        # When no PID can be placed at all, the whole census is unknown, as before.
+        with self.failing(OSError("no ps")), patch.object(offload_host, "kernel_start", side_effect=OSError("no")):
+            self.assertIsNone(offload_host.census([os.getpid()]))
+
+    def test_the_kernels_start_reads_as_ps_reads_it(self):
+        self.assertEqual(offload_host.kernel_start(os.getpid()), " ".join(self.start.split()))
+        with self.assertRaises(LookupError): offload_host.kernel_start(self.gone)
+
+    def test_recovery_reads_a_reused_pid_as_ended_when_ps_cannot_say(self):
+        real = subprocess.run
+        def run(command, *args, **kwargs):
+            if command[:2] == ["ps", "-p"]: raise subprocess.TimeoutExpired(command, resources.ENDED_PS_SECONDS)
+            return real(command, *args, **kwargs)
+        live, reused = self.owner("Live"), self.owner("Reused", start="Thu Jan  1 00:00:00 1970")
+        with patch.object(resources.subprocess, "run", side_effect=run):
+            gone = self.owner("Gone", pid=self.gone)
+            self.assertEqual((resources.ended(live), resources.ended(reused), resources.ended(gone)), (False, True, True))
+            # Neither ps nor the kernel can say: the owner is left running, so that no live owner's entry is taken.
+            with patch.object(resources, "kernel_start", side_effect=OSError("no")):
+                self.assertFalse(resources.ended(reused))
 
 
 class WaiterTests(Namespace):

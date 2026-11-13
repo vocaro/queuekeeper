@@ -1660,16 +1660,26 @@ WAITS, NOW_SCHEMA, NOW_RECORDS, NOW_BYTES, NOW_STALE = "admission-waits", 1, 512
 
 
 def census(pids):
-    """{PID: process start with its spacing collapsed} for those of pids that run, from one bounded `ps`, or None when
-    ps cannot answer: an absent PID is proven absent only by an answer, never by a failure (admissions_now)."""
+    """{PID: process start with its spacing collapsed} for those of pids that run, or None when nothing can answer:
+    an absent PID is proven absent only by an answer, never by a failure (admissions_now). One bounded `ps` reads them
+    all; when it fails or times out, each PID is asked of the kernel instead (kernel_start), so that one bad PID or a
+    ps that fails once does not hide every holder (vocaro/queuekeeper#23). A PID the kernel says runs but whose start
+    it will not give maps to None, its process unknown, never ended: a live holder slow to confirm keeps its slot."""
     pids = sorted({pid for pid in pids if type(pid) is int and pid > 0})
     if not pids: return {}
     try:
         found = subprocess.run(["ps", "-p", ",".join(map(str, pids)), "-o", "pid=,lstart="], capture_output=True,
                                text=True, timeout=5, stdin=subprocess.DEVNULL)
-    except (OSError, subprocess.SubprocessError): return None
+    except (OSError, subprocess.SubprocessError): found = None
     # ps exits 1 with nothing said when a PID it was asked about does not run; anything it says is a failure.
-    if found.returncode not in (0, 1) or found.stderr.strip(): return None
+    if found is None or found.returncode not in (0, 1) or found.stderr.strip():
+        listed = {}
+        for pid in pids:
+            try: started = kernel_start(pid)
+            except OSError: started = None
+            except LookupError: continue  # the kernel says no such process runs
+            listed[pid] = started
+        return listed if any(start is not None for start in listed.values()) or len(listed) < len(pids) else None
     listed = {}
     for line in found.stdout.splitlines():
         parts = line.split()
@@ -1677,11 +1687,40 @@ def census(pids):
     return listed
 
 
+def kernel_start(pid):
+    """When pid started, as `ps -o lstart=` prints it with its spacing collapsed, from the kernel's own record of the
+    process (sysctl KERN_PROC_PID), which reads none of its arguments and starts no process: LookupError when no such
+    process runs, OSError when the kernel cannot say. As resources.kernel_start reads it, which this module, run on
+    the second Mac before the toolkit is there, cannot import."""
+    try: os.kill(pid, 0)
+    except ProcessLookupError: raise LookupError(f"no process {pid} runs") from None
+    except PermissionError: pass
+    if sys.platform != "darwin": raise OSError(f"the start of PID {pid} is read only from macOS's kernel")
+    libc = ctypes.CDLL(None, use_errno=True)
+    mib = (ctypes.c_int * 4)(1, 14, 1, pid)  # CTL_KERN, KERN_PROC, KERN_PROC_PID
+    found = ctypes.create_string_buffer(1024)
+    size = ctypes.c_size_t(len(found))
+    if libc.sysctl(mib, 4, found, ctypes.byref(size), None, 0) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, f"sysctl KERN_PROC_PID {pid}: {os.strerror(error)}")
+    if size.value == 0: raise LookupError(f"no process {pid} runs")
+    # A kinfo_proc begins with its extern_proc, whose first field is p_starttime (a timeval, seconds first) and whose
+    # p_pid is at byte 40.
+    if int.from_bytes(found.raw[40:44], sys.byteorder, signed=True) != pid:
+        raise OSError(f"sysctl KERN_PROC_PID {pid} described another process")
+    started = int.from_bytes(found.raw[0:8], sys.byteorder, signed=True)
+    return " ".join(time.strftime("%a %b %e %H:%M:%S %Y", time.localtime(started)).split())
+
+
 def process_state(record, listed):
-    """running, ended (its PID runs no more, or runs another process) or unknown (ps could not say)."""
+    """running, ended (its PID runs no more, or runs another process) or unknown (neither ps nor the kernel could say:
+    the census failed, or its PID runs and its start could not be read)."""
     if listed is None: return "unknown"
-    found = listed.get(record.get("pid"))
-    return "running" if found is not None and found == " ".join(str(record.get("start")).split()) else "ended"
+    pid = record.get("pid")
+    if pid not in listed: return "ended"
+    found = listed[pid]
+    if found is None: return "unknown"
+    return "running" if found == " ".join(str(record.get("start")).split()) else "ended"
 
 
 def read_json(path, limit=NOW_BYTES):
@@ -1746,8 +1785,9 @@ def admissions_now(at=None):
     """Who holds and who waits for heavy-work admission on this Mac now, for `qk admissions now` here and on the second
     Mac (vocaro-engineering#342). It changes nothing: it reads the guard, the queue, the slot files' names and the
     waiters' observation records as they stand, without any of admission's locks, and checks the processes they name
-    with one ps. What it cannot read is null with a reason and makes the reading partial, never empty: a host that
-    cannot be observed is never reported idle. state is observed, partial or unknown."""
+    with one ps, or the kernel PID by PID when ps fails (census). What it cannot read is null with a reason and makes
+    the reading partial, never empty: a host that cannot be observed is never reported idle. state is observed,
+    partial or unknown."""
     at = time.time() if at is None else at
     reasons = []
     isolated = {name: os.environ[name] for name in ("HEAVY_SLOT_DIR", "QUEUEKEEPER_GATE_LOCK_FILE") if os.environ.get(name)}
@@ -1817,7 +1857,12 @@ def admissions_now(at=None):
     pids += [record["pid"] for records in observations.values() for record in records]
     pids += [waiter.get("pid") for waiter in queued or []] + [record["pid"] for record in (observed or {}).values()]
     listed = census(pids)
-    if listed is None and pids: reasons.append("ps could not say which of the processes named still run")
+    if listed is None and pids:
+        reasons.append("neither ps nor the kernel could say which of the processes named still run")
+    elif listed and None in listed.values():
+        unread = sorted(pid for pid, start in listed.items() if start is None)
+        reasons.append(f"ps failed, and the kernel could not say whether PID {', '.join(map(str, unread))} still "
+                       f"run{'s' if len(unread) == 1 else ''} as the process named")
     # Slots: the guaranteed ones, then those beyond them up to HEAVY_SLOTS_MAX, each with the identity its file names.
     count = maximum
     if count is None:
