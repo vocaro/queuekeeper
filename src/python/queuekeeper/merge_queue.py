@@ -3122,6 +3122,8 @@ class Worker:
                 return status_, log
             if lane == budgets.GATE:
                 with contextlib.suppress(OSError):
+                    # A whole-host lane's busy share is its own work, which the budget does not take for a loaded host.
+                    if busy and self.whole_host(lane): busy["wholeHost"] = True
                     self.measured = {**budgets.timed(ended - started, admitted, began),
                                      "parts": budgets.parts(log.read_text(errors="replace"))[:budgets.KEPT_PARTS], **busy}
                 if self.measured: self.say(f"{lane} took {budgets.time_words(self.measured)}; {budgets.busy_words(busy)}")
@@ -3188,6 +3190,12 @@ class Worker:
         runs the toolkit's spelling check as that lane (lane_to_run)."""
         try: return lane in load(self.checkout).get("lanes", {})
         except (OSError, ValueError): return False
+
+    def whole_host(self, lane):
+        """Whether the checkout's own queuekeeper.json makes lane a whole-host lane, beside which admission admits no
+        other heavy work. One that cannot be read says nothing, so no."""
+        try: return load(self.checkout).get("lanes", {}).get(lane, {}).get("wholeHost") is True
+        except (OSError, ValueError, AttributeError): return False
 
     def toolkit_root(self):
         """The toolkit this worker runs the project's lanes with: the copy that QUEUEKEEPER_ROOT names in its

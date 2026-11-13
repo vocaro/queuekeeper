@@ -144,6 +144,10 @@ slowest parts ([#135](https://github.com/vocaro/vocaro-engineering/issues/135)) 
 beside it. A run whose busy share was at or above its Mac's limit
 is left out of that median, and the warning says how many it left out
 ([#235](https://github.com/vocaro/vocaro-engineering/issues/235)). A run with no reading counts.
+A whole-host gate's run is never left out for its busy share, and its record says `wholeHost`:
+admission admits no other heavy work beside it, so the share is its own work. In 23 of the 25 runs
+recorded by 2026-11-13, EPUBLib's and BreezEPUB's gates averaged at or above the limit, with nothing
+else admitted ([#12](https://github.com/vocaro/queuekeeper/issues/12)).
 A run recorded without `workSeconds` is left out of the median and not counted: one recorded before
 2026-11-13, whose wall time holds a wait the budget no longer judges, or one whose admission was not
 seen, as for a lane that ends within a second of it. Until a project has 3 passing runs on an

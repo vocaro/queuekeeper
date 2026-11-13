@@ -21,7 +21,9 @@ most of the wall time, and no check moved out of the gate shortens it. A run rec
 that date or with its admission unseen, is left out of the median, since its wall time holds a wait the budget no
 longer judges. The budget and the owner's under-20-minute goal assume an unloaded machine, so a run whose busy share
 was at or above its limit is left out of the median (owner's decision of 2026-11-07, vocaro-engineering#235); a run
-recorded without a reading counts.
+recorded without a reading counts. A whole-host gate's run is never left out for that (wholeHost in its record): its
+admission keeps other heavy work off the Mac, so the busy share is its own work, and each such gate goes past the limit
+by itself in nearly every run (vocaro/queuekeeper#12).
 """
 import re
 import statistics
@@ -118,7 +120,10 @@ def time_words(run):
 
 def loaded(run):
     """Whether a gate run was made on a loaded host: its CPU busy share over the run at or above the busy limit of the
-    Mac it ran on, the limit at which admission finds no spare capacity. A run without both readings is not."""
+    Mac it ran on, the limit at which admission finds no spare capacity. A run without both readings is not, and
+    neither is a whole-host lane's: no other heavy work is admitted beside it, so its busy share is its own work and
+    says nothing of the host (vocaro/queuekeeper#12)."""
+    if run.get("wholeHost") is True: return False
     return number(run.get("cpuBusy")) and number(run.get("busyLimit")) and run["cpuBusy"] >= run["busyLimit"]
 
 
@@ -129,7 +134,9 @@ def busy_words(busy):
     return (f"the CPU of {busy.get('busyOn', 'the Mac it ran on')} was {busy['cpuBusy']:g}% busy on average over "
             f"{busy.get('busyReadings', 1)} reading(s), at most {busy.get('cpuBusyHighest', busy['cpuBusy']):g}%, against "
             f"its busy limit of {busy['busyLimit']:g}%"
-            + (": a loaded run, which the gate's budget median leaves out" if loaded(busy) else ""))
+            + (": a loaded run, which the gate's budget median leaves out" if loaded(busy)
+               else ": its own work, as a whole-host lane has the Mac's heavy work to itself, so the gate's budget "
+                    "median counts it" if busy.get("wholeHost") is True and busy["cpuBusy"] >= busy["busyLimit"] else ""))
 
 
 def gate_warnings(config, entries):

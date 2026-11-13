@@ -140,6 +140,24 @@ class GateBudget(unittest.TestCase):
         self.assertEqual(said, "the CPU of this Mac was 91.5% busy on average over 29 reading(s), at most 99%, against its "
                                "busy limit of 75%: a loaded run, which the gate's budget median leaves out")
         self.assertNotIn("loaded run", budgets.busy_words({"cpuBusy": 30.0, "busyLimit": 75.0}))
+
+    def test_a_whole_host_gates_run_is_never_left_out_for_its_own_busy_share(self):
+        """Admission admits no other heavy work beside a whole-host lane, so its busy share is its own work
+        (vocaro/queuekeeper#12)."""
+        self.assertFalse(budgets.loaded({"cpuBusy": 91.5, "busyLimit": 70.0, "wholeHost": True}))
+        # Negative controls: the same readings of any other lane are a loaded run, and only true says whole-host.
+        for other in ({}, {"wholeHost": False}, {"wholeHost": "yes"}):
+            self.assertTrue(budgets.loaded({"cpuBusy": 91.5, "busyLimit": 70.0, **other}))
+        whole = [{**entry, "gate": {**entry["gate"], "wholeHost": True}} for entry in (loaded(n, 1740) for n in range(3))]
+        [warning] = budgets.gate_warnings(self.config(budgetMinutes=15), whole)
+        self.assertIn("over its last 3 passing runs in the merge queue is 29.0 min, over its budget of 15 min", warning)
+        self.assertNotIn("leaving out", warning)
+        self.assertEqual(budgets.gate_warnings(self.config(budgetMinutes=15), [loaded(n, 1740) for n in range(3)]), [])
+        said = budgets.busy_words({"cpuBusy": 91.5, "cpuBusyHighest": 99.0, "busyLimit": 70.0, "busyOn": "this Mac",
+                                   "busyReadings": 14, "wholeHost": True})
+        self.assertTrue(said.endswith("against its busy limit of 70%: its own work, as a whole-host lane has the Mac's "
+                                      "heavy work to itself, so the gate's budget median counts it"), said)
+        self.assertNotIn("its own work", budgets.busy_words({"cpuBusy": 30.0, "busyLimit": 70.0, "wholeHost": True}))
         self.assertEqual(budgets.busy_words({}), "the CPU busy share of the Mac it ran on could not be read")
 
     def test_the_budget_judges_the_gates_own_work_and_gives_its_wait_for_admission_apart(self):
@@ -404,6 +422,19 @@ class Landing(Fixture):
         # Beside its wall time, the busy share of the Mac it ran on (#235): the fixture's one reading at the end.
         self.assertEqual({key: entry["gate"][key] for key in ("cpuBusy", "cpuBusyHighest", "busyLimit", "busyOn", "busyReadings")},
                          {"cpuBusy": 25.0, "cpuBusyHighest": 25.0, "busyLimit": 75.0, "busyOn": "this Mac", "busyReadings": 1})
+        # The fixture's gate is no whole-host lane, so its record does not say it is one.
+        self.assertNotIn("wholeHost", entry["gate"])
+
+    def test_a_whole_host_gates_record_says_so(self):
+        declared = json.loads((self.repo / "queuekeeper.json").read_text())
+        declared["lanes"]["gate"].update(resource="heavy", wholeHost=True)
+        self.publish(declared)
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        with contextlib.redirect_stdout(io.StringIO()): self.work()
+        entry = self.state(identifier)
+        self.assertEqual(entry["state"], "landed")
+        self.assertIs(entry["gate"]["wholeHost"], True)
 
     def test_the_busy_share_is_read_while_the_gate_runs_and_of_the_mac_its_dispatch_names(self):
         (self.repo / "lane.py").write_text("import time\ntime.sleep(2)\nprint('== test_slow: OK (1 tests, 2.0s)')\n")
