@@ -55,9 +55,8 @@ one lane, `gate`, which is the command every change must pass:
 
 - `command` is an argument list, not a shell string.
 - `timeout` is in seconds. A lane that reaches it ends as unmeasured, not failed.
-- The queue reads its settings from `main`, so a branch cannot loosen its own gate. That includes
-  the first landing: until [#10](https://github.com/vocaro/queuekeeper/issues/10) is fixed, the queue
-  refuses the commit that adds `queuekeeper.json`, and it goes in by hand
+- The queue reads its settings from `main`, so a branch cannot loosen its own gate. Only the commit
+  that adds `queuekeeper.json` is gated by its own, since `main` has none yet
   ([A project's first landing](../guides/maintenance.md#a-projects-first-landing)).
 
 Then run:

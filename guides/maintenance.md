@@ -50,7 +50,8 @@ commit of its own, and land that in the dependent's queue.
 onto `origin/main` in its own checkout, `~/Development/queuekeeper-workers/NAME/NAME`, and runs the project's queue lanes through
 `qk run`: its `spelling` and `provision` lanes when it has them, and then its `gate` lane, or
 `queue.lanes` in queuekeeper.json for a project that needs others, read from `main`, or from the
-batch until `main` has any, so that the commit naming them can land. A project with no `spelling`
+batch until `main` has any, so that the commit naming them can land
+([A project's first landing](#a-projects-first-landing)). A project with no `spelling`
 lane gets the toolkit's: `qk run spelling` runs `python3 scripts/qk spelling` as a lane like any
 other, admitted and placed as every lane is, before anything else, so that a British spelling fails in
 about a minute instead of after a full gate and a bisect, in every project without each declaring the
@@ -878,26 +879,25 @@ whether each configured build Mac could admit a gate lane now, even when the que
 
 ### A project's first landing
 
-The queue reads a project's lanes from `origin/main`, so it refuses the commit that adds
-`queuekeeper.json`: "refs/remotes/origin/main has no queuekeeper.json"
-([#10](https://github.com/vocaro/queuekeeper/issues/10)). Until that is fixed, the first landing goes
-in by hand, with the owner's approval for the push. All eight of the owner's projects went in this way
-on 2026-11-12:
+The commit that adds a project's `queuekeeper.json` lands through the queue like any other, with
+`qk land --wait`. The queue reads a project's settings from `origin/main`, so that no branch chooses
+its own gate, but `main` has none before this commit. Until it has a `queuekeeper.json` that names
+lanes, the queue reads the entry's when it is queued, and the batch's in a round, for that round
+alone, and says so: `qk land` prints `origin/main has no queuekeeper.json yet, so the queue reads
+COMMIT's for this landing alone`, and the round's log `main at COMMIT has no queuekeeper.json yet:
+this round reads the batch's`. The round runs the lanes it names, its `provision` lane included, as
+it would once they are on `main`.
 
-```sh
-git worktree add --detach ../first-landing BRANCH && cd ../first-landing
-python3 scripts/qk run --here provision   # only if the project has a provision lane
-python3 scripts/qk run gate
-git push origin HEAD:refs/heads/main      # only on a pass, and only as a fast-forward
-```
+This trusts the entry with its own gate only where `main` has no gate for it to loosen. Two settings
+loosen what the queue checks rather than say what it runs, and only `main` gives them, even then:
+`queue.hookCoveredBy`, which skips the pre-push hook, and `queue.docsOnly`, which skips the gate for
+the paths it names. Once the commit lands, every later entry is gated by `main`'s settings, a change to
+`queue.noVerdictRuns` or the lanes included, and a commit that has no `queuekeeper.json` while `main`
+has none is refused before it is queued.
 
-- Run `provision` first and with `--here`. A bare `qk run gate` on this Mac does not run it, and
-  without `--here` it may provision the second Mac instead of this checkout
-  ([#19](https://github.com/vocaro/queuekeeper/issues/19)).
-- Push from a checkout of the commit that passed. A project's pre-push hook runs from the main
-  checkout's hooks path, which still holds the hook from before the change; where it calls a command
-  the change renames, run the push with `git -c core.hooksPath="$PWD/.githooks"` so the new hook runs.
-- If `main` moved meanwhile, merge it into the branch and gate again; never force the push.
+All eight of the owner's projects went in by hand on 2026-11-12, before the queue could do this
+([#10](https://github.com/vocaro/queuekeeper/issues/10)): `qk run gate` on the branch and a
+fast-forward push with the owner's approval, which skipped the `provision` lane a round runs.
 
 ### Changing Queuekeeper while work runs
 

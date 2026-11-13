@@ -63,11 +63,9 @@ qk doctor
 ```
 
 **3. Land the configuration as your first change.** Commit the file on a branch, then queue it
-instead of pushing it. This one landing does not work yet: the queue reads its lanes from `main`,
-which has none until this commit is there ([#10](https://github.com/vocaro/queuekeeper/issues/10)).
-For now, run the gate on the branch and push it yourself
-([A project's first landing](guides/maintenance.md#a-projects-first-landing)); every later change
-lands as shown here:
+instead of pushing it. The queue reads its lanes from `main`, which has none until this commit is
+there, so for this one landing it runs the gate the commit brings
+([A project's first landing](guides/maintenance.md#a-projects-first-landing)):
 
 ```sh
 git switch -c add-queuekeeper

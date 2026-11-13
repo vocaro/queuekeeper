@@ -455,6 +455,22 @@ def config_at(root, commit):
     return parse(config_source(root, commit))
 
 
+def has_config(root, commit):
+    """Whether commit holds a queuekeeper.json, which origin/main lacks until a project's first landing (#10)."""
+    return git(root, "cat-file", "-e", f"{commit}:queuekeeper.json").returncode == 0
+
+
+# The settings only main may give, since each loosens what the queue checks: the pre-push hook a lane covers, and the
+# paths that skip the gate. A batch whose lanes the queue runs, because main names none yet, gives neither (#10).
+MAIN_ONLY = ("hookCoveredBy", "docsOnly")
+
+
+def as_batch(config):
+    """config, a batch's own, with what only main may say (MAIN_ONLY) left out."""
+    for key in MAIN_ONLY: config.get("queue", {}).pop(key, None)
+    return config
+
+
 def blank(line):
     return not line.strip()
 
@@ -1406,6 +1422,8 @@ def warn(root):
     # While this command waited, main may have landed settings validated by a newer toolkit.
     # The advisory checks read their own fields, so the waiter's schema must not reject main.
     try:
+        # A first landing that came back leaves main with no configuration, and so nothing to warn of.
+        if not has_config(root, MAIN): return
         config = json.loads(config_source(root, MAIN))
         if not isinstance(config, dict): raise ValueError("queuekeeper.json must be an object")
     except (OSError, ValueError, subprocess.SubprocessError) as error:
@@ -1423,7 +1441,8 @@ def warn(root):
 def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False, why=None):
     """Put the commits reference has and origin/main lacks in the queue, and return at once with the
     entry's ID, or None when there is nothing to queue. Whether it may be queued is what a round would
-    find: origin/main's settings, and origin/main's lanes or, until it has any, the commit's, and the round's
+    find: origin/main's settings, and origin/main's lanes or, until it has any, the commit's, or the commit's
+    settings while origin/main has no queuekeeper.json, as for a project's first landing (#10), and the round's
     integration of it after the entries ahead of it, which a conflict refuses before it is queued (check). front and
     no_gate, qk land's emergency options --front and --no-gate, and why, the reason --why gives (ahead), go
     in the entry; an entry already queued with the same tip takes them."""
@@ -1431,7 +1450,14 @@ def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False
     queue = Queue(root)
     reach(root, *FETCH, say=lambda words: print(f"queue: {words}", file=sys.stderr), check=True)
     tip = text(root, "rev-parse", "--verify", f"{reference}^{{commit}}")
-    config = config_at(root, MAIN)
+    if has_config(root, MAIN): config = config_at(root, MAIN)
+    elif has_config(root, tip):
+        config = as_batch(config_at(root, tip))
+        print(f"queue: origin/main has no queuekeeper.json yet, so the queue reads {tip[:12]}'s for this landing "
+              "alone, and main's from then on", file=sys.stderr)
+    else:
+        raise ValueError(f"neither origin/main nor {tip[:12]} has a queuekeeper.json, so the queue has nothing to run: "
+                         "commit one with a gate lane and land that first (README, Getting started)")
     if config.get("integration", "direct-main") != "direct-main":
         raise ValueError(f"{config.get('name')} integrates by pull request, which the queue does not push to")
     gating = config
@@ -1870,7 +1896,8 @@ def diagnose(root):
     elif waiting and not working:
         found("no worker", f"{entries_word(len(waiting))} wait and no worker runs, so nothing gates them "
               "(vocaro-engineering#287)", "`qk queue resume` starts one")
-    try: suites = unittest_lanes(config := config_at(root, MAIN))
+    # Before a project's first landing, main has no configuration to be wrong (#10).
+    try: suites = unittest_lanes(config := config_at(root, MAIN)) if has_config(root, MAIN) else {}
     except ValueError as error:
         suites = {}
         found("configuration", f"origin/main's queue lanes cannot be read: {error}", "fix queuekeeper.json on main")
@@ -3561,7 +3588,9 @@ class Worker:
         in a checkout of their own (DOCS_SUFFIX): each one that docs_first takes with applied's paths blocked and
         whose every path a passed batch carries over (carried_over), so that applied's pass then carries over what
         they add to main (Worker.carry). None goes while an entry put first by qk land, or a batch that passed, waits
-        to go first. One whose docs lanes fail waits in line for applied and the older entries (waitsFor)."""
+        to go first. One whose docs lanes fail waits in line for applied and the older entries (waitsFor). None goes
+        beside a project's first landing, since the docs lanes are main's and main has no configuration yet."""
+        if not has_config(self.queue.main_checkout, MAIN): return
         waiting = self.queue.waiting()
         ids = {entry["id"] for entry in applied}
         if not ids <= {entry["id"] for entry in waiting}: return
@@ -4049,25 +4078,27 @@ class Worker:
 
     def settings(self, base, head):
         """The project's lanes and settings as they stand on main at base, so that no branch chooses its own gate,
-        with the checkout left at head. Until main names any lanes, the batch's: the commit that first names a
-        project's lanes has to land."""
+        with the checkout left at head. Until main has a queuekeeper.json that names lanes, the batch's, less what
+        only main may say (as_batch), for this round alone: the commit that adds a project's configuration, or first
+        names its lanes, has to land (#10). Main then had no gate for the batch to loosen."""
         self.reset(base)
-        config = self.judged(f"main at {base[:12]}")
+        config = self.judged(f"main at {base[:12]}") if has_config(self.checkout, base) else None
         self.reset(head)
-        try: lanes_of(config)
-        except ValueError:
-            config = self.judged(f"the batch at {head[:12]}")
-            # The batch may name its lanes, but only main may say the hook need not run, or which paths are docs.
-            config.get("queue", {}).pop("hookCoveredBy", None)
-            config.get("queue", {}).pop("docsOnly", None)
-        return config
+        if config is not None:
+            try: lanes_of(config)
+            except ValueError: why = "names no lanes"
+            else: return config
+        else: why = "has no queuekeeper.json"
+        self.say(f"main at {base[:12]} {why} yet: this round reads the batch's at {head[:12]}, all but its "
+                 f"queue.{' and queue.'.join(MAIN_ONLY)}, and main's from the next landing on")
+        return as_batch(self.judged(f"the batch at {head[:12]}"))
 
     def judged(self, what):
         """The checkout's configuration as this worker's code judges it: the toolkit at origin/main where a copy
         exists (toolkit, move_to), which the hold names. What it refuses, a session fixes, on main or in the
         toolkit, and nobody has to ask the owner."""
         try: return load(self.checkout)
-        except ValueError as error:
+        except (OSError, ValueError) as error:
             raise Hold(SESSION, f"{error}, judging {what} with the toolkit at "
                                 f"{self.code[:12] if self.code else 'no commit'}") from error
 

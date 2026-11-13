@@ -6491,6 +6491,74 @@ class Refusals(Fixture):
         self.assertEqual(self.state(skip)["state"], "failed")
         self.assertNotIn("bad", self.main_files())
 
+    def without_configuration(self):
+        """Main as a project's is before it adopts Queuekeeper, with no queuekeeper.json, and a branch adding one."""
+        run(self.repo, "git", "rm", "-q", "queuekeeper.json")
+        run(self.repo, "git", "commit", "-qm", "Before Queuekeeper")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        run(self.repo, "git", "checkout", "-q", "-B", "adopt", "origin/main")
+        run(self.repo, "git", "checkout", "-q", "HEAD~1", "--", "queuekeeper.json")
+        run(self.repo, "git", "commit", "-qm", "Add Queuekeeper")
+
+    def test_the_commit_that_adds_the_configuration_lands_and_main_decides_after(self):
+        """#10: the queue read main's queuekeeper.json alone, so it refused a project's first landing."""
+        self.without_configuration()
+        said = io.StringIO()
+        with patch.object(mq.Queue, "start"), contextlib.redirect_stderr(said), contextlib.redirect_stdout(io.StringIO()):
+            adopted = mq.add(self.repo, "adopt", quiet_wait=True)
+        self.assertIn("origin/main has no queuekeeper.json yet", said.getvalue())
+        said = io.StringIO()
+        with contextlib.redirect_stdout(said): self.work()
+        self.assertEqual(self.state(adopted)["state"], "landed")
+        self.assertEqual(self.gates(), 1)
+        self.assertIsNone(mq.Queue(self.repo).held())
+        self.assertIn("has no queuekeeper.json yet: this round reads the batch's", said.getvalue())
+        self.assertIn("queuekeeper.json", self.main_files())
+        # Once main has one, a branch cannot choose a gate that passes.
+        self.commit("bad", "skip")
+        config = json.loads((self.repo / "queuekeeper.json").read_text())
+        config["lanes"]["nothing"] = {"command": ["true"]}
+        config["queue"]["lanes"] = ["nothing"]
+        (self.repo / "queuekeeper.json").write_text(json.dumps(config))
+        run(self.repo, "git", "commit", "-qam", "Choose a gate that passes")
+        [skip] = self.add("skip")
+        self.work()
+        self.assertEqual(self.state(skip)["state"], "failed")
+        self.assertNotIn("bad", self.main_files())
+
+    def test_a_first_landing_runs_the_gate_it_brings(self):
+        self.without_configuration()
+        (self.repo / "bad").write_text("x")
+        run(self.repo, "git", "add", "bad")
+        run(self.repo, "git", "commit", "-qm", "Fail the gate")
+        [adopted] = self.add("adopt")
+        self.work()
+        self.assertEqual(self.state(adopted)["state"], "failed")
+        self.assertEqual(self.gates(), 1)
+        self.assertNotIn("queuekeeper.json", self.main_files())
+
+    def test_a_first_landing_cannot_skip_the_gate_by_its_docs_paths(self):
+        """What only main may say, a branch does not say for itself while main has no configuration."""
+        self.without_configuration()
+        config = json.loads((self.repo / "queuekeeper.json").read_text())
+        config["lanes"]["nothing"] = {"command": ["true"]}
+        config["queue"]["docsOnly"] = {"paths": {"queuekeeper.json": "it says so", "bad": "it says so"},
+                                       "lanes": ["nothing"]}
+        (self.repo / "queuekeeper.json").write_text(json.dumps(config))
+        (self.repo / "bad").write_text("x")
+        run(self.repo, "git", "add", "bad", "queuekeeper.json")
+        run(self.repo, "git", "commit", "-qm", "Call everything docs")
+        [adopted] = self.add("adopt")
+        self.work()
+        self.assertEqual(self.state(adopted)["state"], "failed")
+        self.assertNotIn("bad", self.main_files())
+
+    def test_a_commit_is_refused_when_neither_it_nor_main_has_a_configuration(self):
+        self.without_configuration()
+        self.commit("other", "other")
+        with self.assertRaisesRegex(ValueError, "neither origin/main nor .* has a queuekeeper.json"): self.add("other")
+        self.assertEqual(mq.Queue(self.repo).all(), [])
+
     def test_a_session_in_another_repository_lands_here(self):
         """Through the real command line, from another project's checkout, as a session fixing a
         dependency does: this repository's queue takes it, and its own session's entry waits beside it."""
