@@ -6833,6 +6833,19 @@ class Refusals(Fixture):
         self.assertEqual(self.state(adopted)["state"], "failed")
         self.assertNotIn("bad", self.main_files())
 
+    def test_a_first_landing_cannot_turn_off_the_spelling_check_that_judges_it(self):
+        """queue.spelling false is main's to give too (#10, the owner's decision of 2026-11-13): the configuration a
+        first landing brings is read without it, so the toolkit's spelling check still runs on that landing."""
+        self.without_configuration()
+        config = json.loads((self.repo / "queuekeeper.json").read_text())
+        config.setdefault("queue", {})["spelling"] = False
+        config["lanes"].pop("spelling", None)
+        (self.repo / "queuekeeper.json").write_text(json.dumps(config))
+        self.assertIsNone(mq.as_batch(json.loads(json.dumps(config)))["queue"].get("spelling"))
+        self.assertTrue(mq.implicit_spelling(mq.as_batch(json.loads(json.dumps(config)))))
+        # The control: main's own false still turns it off.
+        self.assertFalse(mq.implicit_spelling(config))
+
     def test_a_commit_is_refused_when_neither_it_nor_main_has_a_configuration(self):
         self.without_configuration()
         self.commit("other", "other")

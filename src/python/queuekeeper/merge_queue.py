@@ -476,9 +476,10 @@ def has_config(root, commit):
     return git(root, "cat-file", "-e", f"{commit}:queuekeeper.json").returncode == 0
 
 
-# The settings only main may give, since each loosens what the queue checks: the pre-push hook a lane covers, and the
-# paths that skip the gate. A batch whose lanes the queue runs, because main names none yet, gives neither (#10).
-MAIN_ONLY = ("hookCoveredBy", "docsOnly")
+# The settings only main may give, since each loosens what the queue checks: the pre-push hook a lane covers, the
+# paths that skip the gate, and the toolkit's spelling check turned off. A batch whose lanes the queue runs, because
+# main names none yet, gives none of them (#10); spelling joined them by the owner's decision of 2026-11-13.
+MAIN_ONLY = ("hookCoveredBy", "docsOnly", "spelling")
 
 
 def as_batch(config):

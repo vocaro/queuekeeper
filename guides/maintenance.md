@@ -970,10 +970,12 @@ COMMIT's for this landing alone`, and the round's log `main at COMMIT has no que
 this round reads the batch's`. The round runs the lanes it names, its `provision` lane included, as
 it would once they are on `main`.
 
-This trusts the entry with its own gate only where `main` has no gate for it to loosen. Two settings
+This trusts the entry with its own gate only where `main` has no gate for it to loosen. Three settings
 loosen what the queue checks rather than say what it runs, and only `main` gives them, even then:
-`queue.hookCoveredBy`, which skips the pre-push hook, and `queue.docsOnly`, which skips the gate for
-the paths it names. Once the commit lands, every later entry is gated by `main`'s settings, a change to
+`queue.hookCoveredBy`, which skips the pre-push hook, `queue.docsOnly`, which skips the gate for
+the paths it names, and `queue.spelling: false`, which turns off the toolkit's spelling check (the
+owner's decision, 2026-11-13, [#10](https://github.com/vocaro/queuekeeper/issues/10)). A project that
+wants it off lands its configuration past the check once. Once the commit lands, every later entry is gated by `main`'s settings, a change to
 `queue.noVerdictRuns` or the lanes included, and a commit that has no `queuekeeper.json` while `main`
 has none is refused before it is queued.
 
