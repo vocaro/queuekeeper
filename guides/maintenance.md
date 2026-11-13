@@ -972,6 +972,19 @@ worker. To remove the setup, wait for the queue to be idle, run
 middle of a gate too ([#21](https://github.com/vocaro/queuekeeper/issues/21)): the bootout ends a
 running worker and its gate, as it did to another session's on 2026-11-12.
 
+## The README's screenshots
+
+The README's pictures of the dashboard are taken from the dashboard itself, drawn from made-up data. Retake them
+after a change to how the dashboard looks:
+
+```sh
+python3 tools/dashboard-screenshots.py
+```
+
+It writes `assets/dashboard-home.png`, `dashboard-queue.png` and `dashboard-farm.png`, in the dark theme, and needs
+Google Chrome. The made-up data is in the script. `tests/test_dashboard_screenshots.py` fails when a panel's data
+no longer has the fields the script makes up, which is when to change the script.
+
 ## Spelling check
 
 `python3 scripts/qk spelling [PATHS]` finds British spellings anywhere in a project's text,
