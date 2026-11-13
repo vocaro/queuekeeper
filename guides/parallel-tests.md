@@ -570,3 +570,29 @@ erased both (2 tests counted on each, 43 s). With iPhone 1 held under another ow
 reservation, a third run created `EPUBLib iPhone 17 Pro 2` and took the iPad (2 tests on each,
 125 s, the new member's first boot included). Every member ended shut down and released, and none
 was deleted.
+
+## Repeating a lane's tests
+
+A test that failed only on a freshly erased member under load is not shown fixed by one passing run on
+whatever member and load that run got. Run it as a series, which `qk run` admits and places as it does any lane:
+
+    python3 scripts/qk run tests --repeat 10 --erase --only BreezEPUBTests/QuickLookTests
+
+`--repeat N` runs the lane's `qk simulator-tests` tests N times on one build, every run on a member taken from
+the pool afresh, by the take every run uses. `--erase` erases the member before each run; `--template` copies its
+kind's warmed template, and a run the pool could only erase is unmeasured, so that a comparison of the two resets
+compares only the reset it names. `--only TEST`, repeated for each test, replaces the lane's own selection, for a
+lane that picks its own tests; a project's own wrapper script must pass its arguments on for that lane to take
+one. The options reach `qk simulator-tests` as a lane's arguments, so a lane command that ignores them is
+caught: `qk run` reads a series of the size it asked for from the log, and without one the lane is unmeasured.
+A series holds the lane's one admission for all its runs, with N times the lane's `timeout`; each run's own test
+limit stays `--test-timeout`. It is not a pass of the whole lane. A lane's `--shards` is set aside: each run is one
+test process on each member.
+
+Every run keeps its own outcome: a `SERIES DEVICE run I of N:` line with passed, failed, skipped or unmeasured, its
+member and reset, its tests counted the same four ways, its seconds and its one-minute load at the start and end of
+its tests, read on the Mac that ran it; a load the host gave no reading of says `unread`, not a number. The
+`Repeat series:` line adds them up, and `series.json`, beside the logs and in the lane's `results/simulator-tests/`,
+keeps each run and the totals. One failed run fails the series; otherwise any unmeasured run, or one that did not
+happen, leaves it unmeasured. A failed build ends a series there, its later runs unmeasured. `--repeat 0` is refused
+before anything runs, and a filter that selects no test fails each run.

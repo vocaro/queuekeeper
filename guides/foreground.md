@@ -447,3 +447,42 @@ Checked live on the second Mac (macOS 27.2) on 2026-11-07, under admitted foregr
   at Save File, since the second Mac has no iCloud Drive. Read `~/Library/DoNotDisturb/DB/Assertions.json`
   before changing Focus: on 2026-11-07 a test that assumed Do Not Disturb was still on turned it on again
   for all his devices, and **Vocaro Restore Notifications** run on this Mac turned it back off.
+
+## VoiceOver state and restoration
+
+- Use `queuekeeper.apple.voiceover.state`: `read(owner)` reads the actual running state through
+  the public AppKit `NSWorkspace.isVoiceOverEnabled` getter. The bounded JXA query accepts only
+  an exact boolean; missing, malformed or unreadable state refuses work. The getter follows
+  `com.apple.universalaccess voiceOverOnOffKey`, which VoiceOver quit through AppleScript leaves
+  at 1 (vocaro-engineering#137), so an on also needs this user's system VoiceOver process: an on that no such
+  process confirms within a stretched 5 s reads off. An off is the getter's alone. Do not infer
+  on from a process query, or anything from a missing preference.
+- `preserved(owner, target=None)` captures only after the exact foreground lease is checked and
+  restores that original state before the lease ends, on normal exit, error or a handled stop.
+  Queuekeeper wraps second-Mac foreground work in this context with the default, which leaves the
+  original on/off state in place. A quiet test explicitly uses `target=False`; a speech driver
+  must enter its own local `preserved` scope, use `set_enabled(True, owner)` inside, and close
+  its popup before restoration. Public setters share only that process/context's restoration
+  provenance; Queuekeeper's parent-process guard cannot share it with the child driver.
+  Each state read and toggle rechecks the lease. Never query or toggle while waiting for another
+  holder. No state is changed when the strict initial read fails.
+- The setter sends Command-F5 through System Events only when the known state differs and waits
+  up to 5 s for the public getter to verify it. Every bound here stretches with the one-minute
+  load average per core, at most 24 times (`state.stretched`): a fixed 5 s Command-F5 timed out
+  at loads near 217 (vocaro-engineering#137). Before sending an ON key, a separate readiness
+  check waits up to 20 s for this user's recognized system VoiceOver process to finish quitting,
+  then rereads the public state. This uses the speech runner's existing quitting bound: public
+  off and ready to enable are different observations. Process residence never makes an on by itself:
+  it only confirms the getter's on. Unknown readiness or an expired bound sends no enable key. XCTest's
+  `enable()` timed out on the Mac.
+
+  A failed or timed-out transition inside a `preserved` scope raises `TransitionFailed`, and the
+  scope restores the original state under the same exact lease, then watches it hold for a
+  stretched 5 s so that a late key is seen and undone, up to three times. Verified, the error's
+  `restored` is true and the lease releases. Unverified restoration, unreadable final state and
+  lost ownership retain uncertainty instead of releasing the lease, as does a failed transition
+  with no `preserved` scope to restore it. Queuekeeper's guard around a child driver passes
+  `settle=True`, so it watches its own restoration hold even when the child died without a report.
+
+How a driver ends a session, and what it writes when VoiceOver will not return to its state, is in the
+toolkit's [Mac VoiceOver](https://github.com/vocaro/vocaro-engineering/blob/main/guides/voiceover-mac.md#voiceover-state-and-restoration) guide.

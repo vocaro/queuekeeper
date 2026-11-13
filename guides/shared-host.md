@@ -2478,6 +2478,12 @@ by hand on the second Mac, or Xcode there, reaches the devices without them. A l
 device says so with `"here"`, so sending one to the second Mac is always an explicit
 `qk remote --device`.
 
+The dispatch reports the time left and cleanup allowance before sending the run, then reports them
+again when the work starts on the runner, alongside the admission wait. Checkout preparation also
+consumes the window. The report warns if cleanup and the declared budget exceed the time left. It
+uses an explicit `--time-limit` for an admitted command or an explicit `timeout` for a single lane.
+The warning is advisory. The existing reservation bound still stops the run in time for cleanup.
+
 ## Attended Mac sessions
 
 Mac VoiceOver and foreground UI default to the [second Mac's foreground](https://github.com/vocaro/vocaro-engineering/blob/main/guides/second-mac-foreground.md),

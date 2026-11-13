@@ -134,3 +134,13 @@ physical device.
 What a project does when its gate is over budget is its owner's policy; the toolkit's is in
 [keeping the split](https://github.com/vocaro/vocaro-engineering/blob/main/guides/releasing.md#keeping-the-split).
 
+## Scroll bars in a receipt
+
+Queuekeeper records the kind of scroll bars each Mac run's host gives, read and never set: `scrollBars` in
+a lane's receipt and in a dispatch's host identity, and one `queuekeeper: scroll bars:` line per Mac in the
+lane's log. It reads the global `AppleShowScrollBars` (or `unset`) and any pointing device attached
+other than a built-in one, by its HID usages; under the automatic setting any such device reads
+as legacy. That holds for a mouse; an external Magic Trackpad or Magic Mouse counts by the same
+rule, and what AppKit gives with one has not been measured. A reading that cannot be taken is
+`unknown`, with why, and is never recorded as `unset`. It says what the host gives, so a process
+that pins its own kind differs from it.
