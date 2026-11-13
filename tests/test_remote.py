@@ -3622,20 +3622,43 @@ class RemoteTests(unittest.TestCase):
             self.assertIn("D\tnew.txt", output)
             self.assertFalse(lane.exists(), output)
         (self.project / "new.txt").write_text("new\n")
-        # The toolkit's snapshot is held to what was sent the same way (vocaro-engineering#104).
+        # A change to the toolkit's snapshot (vocaro-engineering#104) does not stop the lane, which runs with the
+        # toolkit that was sent: a session editing Queuekeeper's checkout voided the gate it ran (vocaro/queuekeeper#33).
         settings = self.toolkit / "queuekeeper.json"
         settings.write_text(settings.read_text() + "\n")
+        sent_settings = settings.read_text()
+        project_settings = json.loads((self.project / "queuekeeper.json").read_text())
+        project_settings["lanes"]["gate"]["command"] = [
+            sys.executable, "-c", "import os; root = os.environ['QUEUEKEEPER_ROOT']; print('Ran 2 tests in', os.getcwd()); "
+            "print('toolkit', root); print('settings', repr(open(os.path.join(root, 'queuekeeper.json')).read()))"]
+        (self.project / "queuekeeper.json").write_text(json.dumps(project_settings, indent=2))
         with self.subTest("toolkit changed"), contextlib.ExitStack() as here, contextlib.ExitStack() as there:
             here.enter_context(self.busy_here())
             there.enter_context(self.busy_second_mac())
             def change():
-                settings.write_text(settings.read_text() + "\n")
+                settings.write_text(sent_settings + "\n")
                 here.close()
             status, output = self.waits_there("gate", waiting, change)
-            self.assertEqual(status, 2, output)
-            self.assertIn("queuekeeper: gate not run on this Mac: the toolkit's working tree changed after ", output)
+            self.assertEqual(status, 0, output)
+            self.assertNotIn("not run on this Mac", output)
+            self.assertIn("queuekeeper: gate runs on this Mac with the toolkit that was sent, ", output)
             self.assertIn("M\tqueuekeeper.json", output)
-            self.assertFalse(lane.exists(), output)
+            receipt = self.ran_here()
+            log = (lane / "run.log").read_text()
+            # It read the toolkit as sent, from a worktree of it that is gone once the lane has ended.
+            toolkit = Path(re.search(r"^toolkit (.+)$", log, re.M).group(1))
+            self.assertEqual(toolkit.name, self.toolkit.name)
+            self.assertTrue(toolkit.parent.name.startswith(remote.SENT_TREE_PREFIX), toolkit)
+            self.assertIn(f"settings {sent_settings!r}", log)
+            self.assertFalse(toolkit.parent.exists())
+            self.assertEqual(settings.read_text(), sent_settings + "\n")
+            worktrees = [line for line in git(self.toolkit, "worktree", "list", "--porcelain").splitlines()
+                         if line.startswith("worktree ")]
+            self.assertEqual(worktrees, [f"worktree {self.toolkit.resolve()}"])
+            self.assertEqual(receipt["sentToolkit"]["toolkit"], str(toolkit))
+            self.assertIn("M\tqueuekeeper.json", receipt["sentToolkit"]["changes"])
+            # The project's tree is the one sent, as it stood once admitted.
+            self.assertEqual(receipt["project"], config.source_identity(self.project))
 
     # Fixed: the 8 s overflow wait is the behavior under test, and both Macs stay busy past it.
     @patch.object(remote, "OVERFLOW_TIMEOUT", 8)

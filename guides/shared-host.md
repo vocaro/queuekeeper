@@ -828,10 +828,21 @@ the commit sent to the second Mac. So when a commit was sent, this Mac runs the 
 working tree is still that commit's tree: once admitted it snapshots the tree again, and when the
 two differ it exits 2 without running, `queuekeeper: LANE not run on this Mac: the working tree changed
 after COMMIT was sent` with the changed paths, rather than run a tree other than the one sent
-([vocaro-engineering#79](https://github.com/vocaro/vocaro-engineering/issues/79)). It holds a
-toolkit snapshot it sent to the same rule: `the toolkit's working tree changed after COMMIT was
-sent`. Restore the tree or run the lane again. Its receipt's `sent` names the commit, and `project` the tree as it stood
+([vocaro-engineering#79](https://github.com/vocaro/vocaro-engineering/issues/79)). Restore the
+tree or run the lane again. Its receipt's `sent` names the commit, and `project` the tree as it stood
 once admitted.
+
+The toolkit it sent is not held to that rule. When the toolkit's working tree changed after it was
+sent, the lane runs in this checkout with the toolkit as it was sent: queuekeeper says
+`LANE runs on this Mac with the toolkit that was sent, COMMIT`, with the changed paths, makes a
+detached worktree of the toolkit at that commit in a new temporary directory, and runs the lane
+with `QUEUEKEEPER_ROOT` naming it. The worktree goes when the lane ends, and the toolkit's checkout
+stays as it is. The receipt's `sentToolkit` names the worktree, the commit and the changes. A
+session editing Queuekeeper's checkout, or a landing that moved it, used to end with exit 2 a gate
+that had waited here for a Mac
+([vocaro/queuekeeper#33](https://github.com/vocaro/queuekeeper/issues/33)). The `qk run` process
+itself keeps the code it started with, and a project that reaches the toolkit by a relative path
+rather than through `scripts/qk` still reads the checkout.
 
 `qk admit` instead runs its command from what it sent, so that a wait here is not lost to an edit
 the session made meanwhile: on 2026-11-07 a command the second Mac kept declining waited here
@@ -851,7 +862,8 @@ command ends, however it ends, with the build products and other ignored files t
 there; a build there starts cold, and what a tool writes outside the worktree, such as Xcode's
 default DerivedData, stays. The receipt's `project` is the commit sent and its `sentTree` says
 where it ran and what had changed. Nothing but that patch touches the session's tree. A lane still
-refuses, as above: its results, kept results and logs are the checkout's.
+refuses when the project's tree changed, as above: its results, kept results and logs are the
+checkout's.
 
 Each of this Mac's waits that ends unadmitted is logged as withdrawn, as each
 declined offer is on the second Mac ([admission log](#admission-log)); every request retains

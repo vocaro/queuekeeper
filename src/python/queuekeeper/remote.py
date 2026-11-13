@@ -744,8 +744,12 @@ def changed_since(root, offered):
     """Why work this Mac admitted after offering it to the second Mac would not run what it sent, or None
     (moved_trees). A lane then does not run here; `qk admit` runs its command from what it sent (sent_tree)."""
     moved = moved_trees(root, offered)
-    if not moved: return None
-    _checkout, commit, what, changes = moved[0]
+    return moved_reason(moved[0]) if moved else None
+
+
+def moved_reason(move):
+    """What changed in one of moved_trees's trees after it was sent, with the changed paths."""
+    _checkout, commit, what, changes = move
     return (f"the {what} changed after {commit[:12]} was sent to the second Mac, and a run here would read "
             f"the changed tree, not what was sent:\n{changes}")
 
@@ -796,6 +800,23 @@ def sent_tree(root, sent, toolkit_moved=False):
         yield checkout, toolkit
     finally:
         for repository, path, private in reversed(made): remove_worktree(repository, path, private)
+        shutil.rmtree(base, ignore_errors=True)
+
+
+@contextlib.contextmanager
+def sent_toolkit(sent):
+    """A detached worktree of the toolkit at the commit a lane taken here after sending it would read (moved_trees),
+    in a new temporary directory under the toolkit's name, for a lane to run with once the toolkit's tree here is no
+    longer what was sent (vocaro/queuekeeper#33). The worktree and the directory are removed when the block ends,
+    however it ends."""
+    kit = sent["kit"]
+    base = Path(tempfile.mkdtemp(prefix=SENT_TREE_PREFIX)).resolve()
+    made = None
+    try:
+        made = add_worktree(TOOLKIT_ROOT, base / checkout_name(TOOLKIT_ROOT), kit.get("checkoutHead") or kit["commit"])
+        yield made[1]
+    finally:
+        if made is not None: remove_worktree(*made)
         shutil.rmtree(base, ignore_errors=True)
 
 

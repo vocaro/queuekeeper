@@ -371,16 +371,34 @@ def reap_here(root, inherited):
     return lines
 
 
-def admitted_tree(root, name, offered, receipt):
+def admitted_tree(stack, root, name, offered, receipt):
     """None when work this Mac admitted may run, after recording in receipt the tree it reads, or 2 after
     saying why not. A run here reads the working tree as it is once admitted, not as it was when the
     work was offered or queued: work this Mac takes after sending the second Mac a commit runs only
-    while the tree is still that commit's (remote.changed_since), and receipt's sent names that commit."""
-    changed = remote.changed_since(root, offered)
-    if changed is not None:
-        print(f"queuekeeper: {name} not run on this Mac: {changed}\nqueuekeeper: restore the tree that was sent, or run it again to "
-              "send the tree as it is now", file=sys.stderr, flush=True)
+    while the tree is still that commit's (remote.moved_trees), and receipt's sent names that commit.
+
+    The toolkit's tree is not held to that: once it is no longer what was sent, the work runs with the toolkit as
+    sent, from a temporary worktree of it that QUEUEKEEPER_ROOT names, entered in stack (remote.sent_toolkit), and
+    receipt's sentToolkit says so. A session editing Queuekeeper's checkout, or a landing that moved it, otherwise
+    ended with exit 2 a gate that had waited here for a Mac (vocaro/queuekeeper#33)."""
+    moved = remote.moved_trees(root, offered)
+    project = [move for move in moved if not move[2].startswith("toolkit")]
+    if project:
+        print(f"queuekeeper: {name} not run on this Mac: {remote.moved_reason(project[0])}\nqueuekeeper: restore the tree "
+              "that was sent, or run it again to send the tree as it is now", file=sys.stderr, flush=True)
         return 2
+    for _checkout, commit, what, changes in moved:
+        why = f"the {what} changed after {commit[:12]} was sent to the second Mac:\n{changes}"
+        try: toolkit = stack.enter_context(remote.sent_toolkit(offered.sent))
+        except (OSError, RuntimeError) as error:
+            print(f"queuekeeper: {name} not run on this Mac: {why}\nqueuekeeper: and no worktree of the toolkit that was "
+                  f"sent could be made here: {error}", file=sys.stderr, flush=True)
+            return 2
+        print(f"queuekeeper: {name} runs on this Mac with the toolkit that was sent, {commit[:12]}, from a temporary "
+              f"worktree, {toolkit}, since {why}\nqueuekeeper: the toolkit's checkout stays as it is, and the worktree "
+              "goes when the run ends", file=sys.stderr, flush=True)
+        stack.enter_context(patch_environment({"QUEUEKEEPER_ROOT": str(toolkit)}))
+        receipt["sentToolkit"] = {"toolkit": str(toolkit), "commit": commit, "changes": changes}
     receipt["project"] = source_identity(root)
     if offered is not None and offered.sent.get("commit"): receipt["sent"] = offered.sent["commit"]
     return None
@@ -1131,7 +1149,7 @@ def perform(argv, report):
                                                       needs and not os.environ.get(resources.TOKEN),
                                                       admission_placement(offered, reason))
                             if isinstance(admission, int): return extensions.DEVICES.not_admitted(args.lane, waiting, admission)
-                            stopped = admitted_tree(root, args.lane, offered, receipt)
+                            stopped = admitted_tree(stack, root, args.lane, offered, receipt)
                             if stopped is not None: return stopped
                             # The wait in the queue, apart from what came before it (remote.execute).
                             receipt["queueSeconds"] = round(time.monotonic() - asked, 3)
