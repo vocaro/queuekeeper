@@ -945,6 +945,11 @@ given its simulator runtime in a variable ran on the default iOS 27.0, and only
 the receipt's `Taking:` line showed it. A lane setting meant to reach the second Mac is an
 argument after `--` (`qk run purchases -- --runtime ID`), and the receipt is where to confirm
 it took effect.
+What a project's extensions add to every command's environment (`extensions.COMMAND_ENVIRONMENT`),
+such as the path of the toolkit's Swift package that XcodeGen expands, does reach it: each Mac's `qk`
+sets it from its own checkout of the extension's folder, in place of any value the calling shell
+set, so a path of this Mac's never reaches the second Mac
+([vocaro/queuekeeper#97](https://github.com/vocaro/queuekeeper/issues/97)).
 
 `qk admit -- COMMAND` goes as a lane does, at HEAD or a snapshot commit: to whichever Mac has
 spare capacity for it, the second Mac first, to this Mac while the second Mac has none or cannot

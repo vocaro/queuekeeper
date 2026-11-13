@@ -26,7 +26,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 from queuekeeper import budgets, cli, config, lane_results, merge_queue, offload_host, processes, remote, resources
 from queuekeeper.apple import device_notifications, devices, disk as apple_disk, doctor as apple_doctor, leases
-from queuekeeper import disk as disk_module
+from queuekeeper import disk as disk_module, extensions
 from queuekeeper import waiting
 import host_isolation
 from host_isolation import stretched
@@ -4823,6 +4823,44 @@ exec {shlex.quote(real)} "$@"
         with patch.dict(os.environ, {"EXAMPLE_FLAG": "1"}):
             status, output, error = self.admit_in(self.project, "--", *probe)
         self.assertEqual((status, self.ran_in()), (0, self.checkout(0).resolve()), output + error)
+
+    def test_admit_runs_its_command_with_what_the_extensions_add_on_the_mac_that_runs_it(self):
+        # A project's extension names, for every command, a folder of its own checkout, as the toolkit's hooks name
+        # its Swift package for XcodeGen (vocaro/queuekeeper#97). Each Mac sets it from its own checkout of the
+        # extension, whatever the calling shell set, so a sender's path never reaches the second Mac.
+        hooks = "\n".join(["import pathlib", "from queuekeeper import extensions",
+                           "def added(): return {'EXAMPLE_KIT_ROOT': str(pathlib.Path(__file__).resolve().parents[3])}",
+                           "def register(): extensions.COMMAND_ENVIRONMENT.append(added)", ""])
+        here, there = Path(self.temp.name) / "kit", self.home / "Development/kit"
+        for kit in (here, there):
+            (kit / "src/python/examplekit").mkdir(parents=True)
+            (kit / "src/python/examplekit/__init__.py").write_text("")
+            (kit / "src/python/examplekit/hooks.py").write_text(hooks)
+        settings = json.loads((self.project / "queuekeeper.json").read_text())
+        settings["extensions"] = [{"module": "examplekit.hooks", "path": "../kit/src/python"}]
+        (self.project / "queuekeeper.json").write_text(json.dumps(settings))
+        commit_all(self.project)
+        before, paths = list(extensions.COMMAND_ENVIRONMENT), list(sys.path)
+
+        def restore():
+            extensions.COMMAND_ENVIRONMENT[:] = before
+            extensions.LOADED[:] = [name for name in extensions.LOADED if name != "examplekit.hooks"]
+            sys.path[:] = paths
+            for name in [name for name in sys.modules if name.split(".")[0] == "examplekit"]: del sys.modules[name]
+        self.addCleanup(restore)
+        self.probe()
+        probe = [sys.executable, "-c", "import os; open(os.environ['PROBE_FILE'], 'a').write("
+                 "os.getcwd() + ' ' + os.environ.get('EXAMPLE_KIT_ROOT', 'unset') + '\\n')"]
+        ran = lambda: self.ran.read_text().splitlines()[-1].rsplit(" ", 1)
+        with patch.dict(os.environ, {"EXAMPLE_KIT_ROOT": "/the/calling/shell's/kit"}):
+            status, output, error = self.admit_in(self.project, "--", *probe)
+            self.assertEqual(status, 0, output + error)
+            self.assertEqual(ran(), [str(self.checkout(0).resolve()), str(there.resolve())], output + error)
+            status, output, error = self.admit_in(self.project, "--here", "--", *probe)
+            self.assertEqual(status, 0, output + error)
+            self.assertEqual(ran(), [str(self.project.resolve()), str(here.resolve())], output + error)
+            # The calling shell's own, as it was, once the commands are done.
+            self.assertEqual(os.environ["EXAMPLE_KIT_ROOT"], "/the/calling/shell's/kit")
 
     def self_lane(self, name, inner):
         """Add a self lane whose script runs `qk admit` with inner's words twice, as a build and a run of it."""
