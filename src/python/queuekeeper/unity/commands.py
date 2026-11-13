@@ -1,9 +1,9 @@
-"""`queuekeeper unity`: a Unity project's tests, a command run while its editor is closed, and a worktree's editor.
+"""`qk unity`: a Unity project's tests, a command run while its editor is closed, and a worktree's editor.
 
-    queuekeeper unity test [--platform EditMode|PlayMode] [--results DIR]
-    queuekeeper unity closed -- COMMAND
-    queuekeeper unity ready -- COMMAND
-    queuekeeper unity open [--ensure | --status]
+    qk unity test [--platform EditMode|PlayMode] [--results DIR]
+    qk unity closed -- COMMAND
+    qk unity ready -- COMMAND
+    qk unity open [--ensure | --status]
 
 Each exits 3, unmeasured, when nothing ran for a reason that says nothing of the work: no editor on this Mac, an
 editor holding the project, a licensing helper that would not stop, a run that hung. The merge queue tries such a
@@ -66,7 +66,7 @@ def ready(project):
     except projects.Unreadable as error: return unmeasured(str(error))
     if running:
         return unmeasured(f"Unity is running on {project} (process {', '.join(str(pid) for pid, _ in running)}); close "
-                          "that editor, or run the command under `queuekeeper unity closed --`")
+                          "that editor, or run the command under `qk unity closed --`")
     try: projects.clear_stale_lock(project, say=warn)
     except projects.Held as held: return unmeasured(str(held))
     try: licensing.repair(say=say)
@@ -267,7 +267,7 @@ def main(arguments, project=None):
     if "--" in arguments:
         split = arguments.index("--")
         arguments, command = arguments[:split], arguments[split + 1:]
-    parser = argparse.ArgumentParser(prog="queuekeeper unity", description="Run a Unity project's editor unattended. "
+    parser = argparse.ArgumentParser(prog="qk unity", description="Run a Unity project's editor unattended. "
                                      "Exit 3 means nothing ran, for a reason that says nothing of the work.")
     actions = parser.add_subparsers(dest="action", required=True)
     tests = actions.add_parser("test", help="run the project's tests in a batch editor and report each that failed")
@@ -275,9 +275,9 @@ def main(arguments, project=None):
     tests.add_argument("--results", metavar="DIR", help="where results.xml and tests.log go (default: the lane's "
                        "results folder, or a temporary one)")
     actions.add_parser("closed", help="close the project's editor, run COMMAND, and open the editor again: "
-                       "queuekeeper unity closed -- COMMAND")
+                       "qk unity closed -- COMMAND")
     actions.add_parser("ready", help="run COMMAND once a batch run may start on the project, and exit 3 with nothing "
-                       "run when one may not, as a lane that says \"unity\": true does: queuekeeper unity ready -- COMMAND")
+                       "run when one may not, as a lane that says \"unity\": true does: qk unity ready -- COMMAND")
     opened = actions.add_parser("open", help="open this linked worktree's editor, once; for a post-checkout hook, "
                                 f"which a session declines with {OPEN_VARIABLE}=0")
     how = opened.add_mutually_exclusive_group()
@@ -307,6 +307,6 @@ def register():
     # The batch run is heavy work, so one started outside an admission is admitted first (cli.bare_runner).
     extensions.RUNNERS.add(("unity", "test"))
     extensions.COMMANDS["unity"] = (
-        "run a Unity project's editor unattended: queuekeeper unity test runs its tests in a batch editor, queuekeeper "
-        "unity closed -- COMMAND runs COMMAND with its editor closed and opens it again, and queuekeeper unity open "
+        "run a Unity project's editor unattended: qk unity test runs its tests in a batch editor, queuekeeper "
+        "unity closed -- COMMAND runs COMMAND with its editor closed and opens it again, and qk unity open "
         "opens a linked worktree's editor once; -h for the rest", main)

@@ -1,6 +1,6 @@
 """A lane's "unity": true, which says its command runs the project's Unity editor.
 
-Such a lane's command runs under `queuekeeper unity ready --`, on whichever Mac runs it. That checks, before the
+Such a lane's command runs under `qk unity ready --`, on whichever Mac runs it. That checks, before the
 command starts, that this Mac has an editor, that no editor has the project open, that no stale lock is left and
 that no orphaned licensing helper waits for the next editor. A lane that cannot start so ends unmeasured, with
 nothing run, where its command would have failed or hung for a reason that says nothing of the commit."""

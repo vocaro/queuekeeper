@@ -1,4 +1,4 @@
-"""What `queuekeeper doctor` checks of a Unity project: that its Unity project is where it says, that the editor it
+"""What `qk doctor` checks of a Unity project: that its Unity project is where it says, that the editor it
 pins is installed on this Mac and on the second Mac, and that no lane runs the editor without a graphics device.
 
 Whether Unity Hub is signed in is not checked: nothing on disk was found to say so (this Mac, Unity 6000.6.0f1,

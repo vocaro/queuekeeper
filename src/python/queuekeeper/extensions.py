@@ -237,7 +237,7 @@ CONFIG_KEYS = {}
 COMMANDS = {}
 # The words that start each command of an extension's that runs tests or other heavy work itself, as a lane's command
 # does, such as ("xctest",) or ("unity", "test"). Started outside an admission, such a command is admitted and placed
-# as `queuekeeper admit -- COMMAND` would be (cli.bare_runner).
+# as `qk admit -- COMMAND` would be (cli.bare_runner).
 RUNNERS = set()
 # name -> (help, add_arguments(parser), execute(root, args, config), whether it reads the project's configuration):
 # commands an extension adds to the command's own parser. One that reads no configuration gets None for it.

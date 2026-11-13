@@ -24,7 +24,7 @@ A lane without `chips` is placed as before, on whichever Mac has room.
 | Both Macs | The lane is placed as any other |
 | Only this Mac | It runs here, as a lane that says `here` does, and waits here while this Mac is busy |
 | Only the second Mac | It is sent there and waits there for its admission. It never runs here, and `--here` is refused |
-| Neither Mac | The run is refused, naming each Mac's chip. `queuekeeper doctor` warns of it beforehand |
+| Neither Mac | The run is refused, naming each Mac's chip. `qk doctor` warns of it beforehand |
 
 A lane group runs on one Mac, so it goes where its restricted lane must. A group whose lanes must
 run on different Macs is refused.
