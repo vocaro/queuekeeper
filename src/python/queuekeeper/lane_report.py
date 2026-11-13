@@ -10,7 +10,8 @@ lane is passed only when it ran and returned 0, and a lane whose log counts no t
 The lines go to stderr with queuekeeper's other notes, after stdout is flushed, so that they are last however the two are
 joined. They begin `qk run LANE:` or are indented, and quote no line of a test's own, since a lane's log is read
 again by what runs it: the merge queue's log, lane_results.counted and failure_records read none of them as a result. The
-second Mac's own run prints none: the Mac that sent it prints the summary from what came back.
+second Mac's own run prints none: the Mac that sent it prints the summary from what came back. The merge queue reads a
+summary back by its own lines alone (summary), to name a failed gate's tests in a send-back (vocaro/queuekeeper#83).
 """
 import contextlib
 import json
@@ -61,6 +62,16 @@ STARTED = re.compile(r"^Test (?:Suite|Case) '[^'\n]+' started"
 ERROR_LINE = re.compile(r"^.*\b(?:error|errors|fail|failed|failure|fatal)\b.*$", re.M | re.I)
 # The most of that line a summary quotes.
 QUOTED = 300
+# A summary as Report.lines writes it, for what reads one back (summary): its first line, `qk run LANE: VERDICT...`,
+# or `eng run LANE:` in logs from before the command's rename, and its lines indented by two spaces after it.
+VERDICTS = ("passed", "failed", "stopped", "not run", "unmeasured")
+SUMMARY_HEAD = re.compile(r"^(?:qk|eng) run (\S+): ((?:" + "|".join(VERDICTS) + r")\b.*)$", re.M)
+SUMMARY_TESTS = re.compile(r"^  tests: (?:(\d+) passed, (\d+) failed\b)?")
+SUMMARY_FAILED = re.compile(r"^  failed: (.+?)(?: at (\S[^\n]*:\d+))?$")
+SUMMARY_MORE = re.compile(r"^  \.\.\. and (\d+) more$")
+# The end of the one line a summary is when nothing ran, and the starts of the line that ends any other.
+NOTHING_RAN = "; no tests ran"
+SUMMARY_ENDS = ("  details: ", "  receipt: ")
 
 
 def failed_tests(text):
@@ -186,6 +197,36 @@ def combined(parts, status):
     return {**total, "failed": sum(part["failed"] for part in parts), "passed": sum(part["passed"] for part in parts)}
 
 
+def failed_line(name, place):
+    """A summary's line for one failing test, which summary reads back."""
+    return f"  failed: {name}" + (f" at {place}" if place else "")
+
+
+def summary(text, lane):
+    """The last summary of a run of lane that text, a log, holds, as Report.lines wrote it, or None when it holds
+    none: {"verdict": what follows `LANE: `, "tests": its counts line's words or None, "failed": how many its counts
+    say failed or None, "names": each failing test it names as (name, FILE:LINE or None), "more": how many more it
+    left out (SHOWN)}. It reads only the summary's own lines, never a test's output (vocaro/queuekeeper#83)."""
+    heads = [head for head in SUMMARY_HEAD.finditer(text) if head.group(1) == lane]
+    if not heads: return None
+    found = {"verdict": heads[-1].group(2), "tests": None, "failed": None, "names": [], "more": 0}
+    if found["verdict"].endswith(NOTHING_RAN): return found
+    following = text[heads[-1].end():].removeprefix("\n").splitlines()
+    # Its last line gives the details or the receipt. A why can span lines, so its lines in between that are not
+    # indented are passed over; without that last line, as in a log cut off, only its first indented lines count.
+    end = next((number for number, line in enumerate(following) if line.startswith(SUMMARY_ENDS)), None)
+    if end is None: end = next((number for number, line in enumerate(following) if not line.startswith("  ")), len(following))
+    for line in following[:end + 1]:
+        if not line.startswith("  "): continue
+        tests, failed, more = SUMMARY_TESTS.match(line), SUMMARY_FAILED.match(line), SUMMARY_MORE.match(line)
+        if tests:
+            found["tests"] = line[len("  tests: "):]
+            if tests.group(2) is not None: found["failed"] = int(tests.group(2))
+        elif failed: found["names"].append(failed.groups())
+        elif more: found["more"] = int(more.group(1))
+    return found
+
+
 class Report:
     """One `qk run`'s summary, inert until a lane run begins."""
 
@@ -231,7 +272,7 @@ class Report:
         else: verdict = "passed" if status == 0 else "failed"
         ending = f" (exit {status})" if isinstance(status, int) and status else ""
         # One line when nothing ran: the refusal or reason queuekeeper printed just before it says the rest.
-        if directory is None: return [f"qk run {self.lane}: {verdict}{ending}; no tests ran"]
+        if directory is None: return [f"qk run {self.lane}: {verdict}{ending}{NOTHING_RAN}"]
         lines = [f"qk run {self.lane}: {verdict}{ending}, {where}"]
         why = self.why or (str(error) if error is not None else None)
         if self.group is None: logs = {self.lane: directory / "run.log"}
@@ -256,7 +297,7 @@ class Report:
         if self.group is not None: lines.append(self.lanes_line(directory))
         if why: lines.append(f"  why: {why}")
         names = (recorded_failing(kept) or failing(joined)) if verdict != "passed" else []
-        lines += [f"  failed: {name}" + (f" at {place}" if place else "") for name, place in names[:SHOWN]]
+        lines += [failed_line(name, place) for name, place in names[:SHOWN]]
         if len(names) > SHOWN: lines.append(f"  ... and {len(names) - SHOWN} more")
         if quoted is not None:
             lines.append(f"  the log is {directory / 'run.log'}")
@@ -265,9 +306,9 @@ class Report:
             lines.append(f"  no failing test is named; the log is {log}")
         if kept:
             more = f" (and {len(kept) - 1} more under {directory / 'results'})" if len(kept) > 1 else ""
-            lines.append(f"  details: {kept[0][0].with_name('failures.txt')}{more}")
+            lines.append(f"{SUMMARY_ENDS[0]}{kept[0][0].with_name('failures.txt')}{more}")
         else:
-            lines.append(f"  receipt: {directory / 'source.json'}")
+            lines.append(f"{SUMMARY_ENDS[1]}{directory / 'source.json'}")
         return lines
 
     def finish(self, status, error=None):

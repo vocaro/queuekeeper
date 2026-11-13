@@ -192,6 +192,29 @@ class BeforeTests(unittest.TestCase):
             self.assertIsNone(lane_report.before_tests(text), text)
 
 
+    def test_a_summary_from_before_the_rename_reads_with_its_names_places_and_a_why_over_lines(self):
+        # EPUBLib's gate log of 2026-11-11 (vocaro/queuekeeper#83), with a why of two lines and a summary of SHOWN.
+        log = ("Test run with 4737 tests failed\n"
+               "eng run gate: failed (exit 1), on this Mac\n"
+               "  tests: 4705 passed, 2 failed, 30 skipped, 0 unmeasured\n"
+               "  why: one line\nand its second\n"
+               '  failed: "testCellsTheReaderGoesToHaveTheirHighlightAndSelection" at TableScrolledCellTests.swift:298\n'
+               '  failed: "testHighlightsOnCellRangesReachOnlyTheirCells" at TableCoverageInteractionTests.swift:749\n'
+               "  failed: Pages/testTurn()\n"
+               "  ... and 3 more\n"
+               "  details: /p/failures.txt\n"
+               "  failed: after.the.summary at /later.swift:1\n")
+        self.assertEqual(lane_report.summary(log, "gate"), {
+            "verdict": "failed (exit 1), on this Mac", "tests": "4705 passed, 2 failed, 30 skipped, 0 unmeasured",
+            "failed": 2, "more": 3,
+            "names": [('"testCellsTheReaderGoesToHaveTheirHighlightAndSelection"', "TableScrolledCellTests.swift:298"),
+                      ('"testHighlightsOnCellRangesReachOnlyTheirCells"', "TableCoverageInteractionTests.swift:749"),
+                      ("Pages/testTurn()", None)]})
+        # A log cut off before the summary's last line counts only its first indented lines.
+        cut = "qk run gate: failed (exit 1), on this Mac\n  tests: 1 passed, 1 failed\n  failed: a at A.swift:1\nother\n  failed: b"
+        self.assertEqual(lane_report.summary(cut, "gate")["names"], [("a", "A.swift:1")])
+
+
 class Summary(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
@@ -366,6 +389,28 @@ class Summary(unittest.TestCase):
         self.assertEqual(lines[-6:-3], ["qk run lane: failed (exit 1), on this Mac",
                                         "  tests: 5 passed, 2 failed, 1 skipped, 0 unmeasured; no test counts from build",
                                         "  lanes: 2 passed, 1 failed (bad), 0 unmeasured"])
+
+    def test_a_summary_reads_back_what_it_wrote_and_nothing_its_tests_printed(self):
+        # The lane's own output imitates a summary's lines, which are not this run's (vocaro/queuekeeper#83).
+        printed = "  failed: not.this.test at /nowhere.swift:1\n" + UNITTEST_FAILED
+        self.configure(lane=self.printing(printed, 1))
+        lines = self.qk("lane")[1]
+        said = lane_report.summary("\n".join(["queuekeeper: before", *lines, "what came after"]), "lane")
+        self.assertEqual(said, {"verdict": "failed (exit 1), on this Mac",
+                                "tests": "3 passed, 2 failed, 1 skipped, 0 unmeasured", "failed": 2,
+                                "names": [("tests.test_x.X.test_b", "/project/tests/test_x.py:7"),
+                                          ("tests.test_x.X.test_c", "/project/tests/test_x.py:20")], "more": 0})
+        self.assertIsNone(lane_report.summary("\n".join(lines), "gate"))
+
+    def test_a_summary_that_names_no_test_or_ran_none_reads_back_with_no_names(self):
+        self.configure(lane=self.printing("the build broke", 65))
+        said = lane_report.summary("\n".join(self.qk("lane")[1]), "lane")
+        self.assertEqual((said["verdict"], said["tests"], said["failed"], said["names"]),
+                         ("failed (exit 65), on this Mac", "no test counts in its log", None, []))
+        self.configure()
+        said = lane_report.summary("\n".join(self.qk("nothing")[1]), "nothing")
+        self.assertEqual(said, {"verdict": "not run (exit 2); no tests ran", "tests": None, "failed": None, "names": [],
+                                "more": 0})
 
     def test_a_lane_that_does_not_exist_ends_with_a_summary_that_nothing_ran(self):
         self.configure()

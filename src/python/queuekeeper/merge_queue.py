@@ -942,6 +942,16 @@ def imported_files(checkout, top, test):
     return sorted(path.relative_to(checkout).as_posix() for path in found if path.is_relative_to(checkout))
 
 
+def placed_file(path, files):
+    """The one of files, repository paths, that path, a file as a failed test's summary names it, is: a bare name as
+    Swift Testing gives, a path within the repository, or an absolute path in a checkout of it on whichever Mac ran
+    the test. None when no file or more than one could be it, so that a file is never guessed
+    (vocaro/queuekeeper#83)."""
+    path = path.removeprefix("./")
+    found = {file for file in files if file == path or path.endswith(f"/{file}") or file.endswith(f"/{path}")}
+    return next(iter(found)) if len(found) == 1 else None
+
+
 def named_in(path, output):
     """Whether output, a failing test's, names path, a repository path: whole, not inside a longer path or word,
     and with a directory or an extension, so that a bare word such as a top-level file's name is not taken for it."""
@@ -3404,9 +3414,13 @@ class Worker:
     def touched_words(self, entry, log, config):
         """Whether entry's commits change a file of the tests the failed lane's log, log, names: a test's module or a
         file it imports, as a flake's reach is judged (imported_files); and plainly that it could not be determined
-        when the tests, their modules or the commits cannot be read."""
-        tests, why = failed_tests(Path(log).read_text(errors="replace"))
+        when the tests, their modules or the commits cannot be read. A log with no qk unittest summary is read by the
+        summary qk run ends with instead (summary_words)."""
+        said = Path(log).read_text(errors="replace")
+        tests, why = failed_tests(said)
         unknown = "so whether this entry changes their files is unknown"
+        ended = lane_report.summary(said, self.failed_lane) if UNITTEST_SUMMARY.search(said) is None else None
+        if ended is not None: return self.summary_words(entry, ended)
         if tests is None: return f"Which tests failed could not be determined ({why}), {unknown}"
         more = len(tests) - REJECTION_SHOWN
         named = ", ".join(tests[:REJECTION_SHOWN]) + (f" and {more} more" if more > 0 else "")
@@ -3427,6 +3441,47 @@ class Worker:
             missing = f"The module of {', '.join(lost[:REJECTION_SHOWN])} cannot be found, {unknown}"
             return f"{words}. {missing}" if words else f"{named} failed. {missing}"
         return words or f"This entry changes no file of the failed tests {named}: neither their modules nor what those import"
+
+    def summary_words(self, entry, ended):
+        """touched_words for a failed lane whose log has no qk unittest summary but ends with qk run's
+        (lane_report.summary, ended), as a Swift gate's does (vocaro/queuekeeper#83): each failed test as the summary
+        names it, with the file and line it failed at, and whether entry's commits change that file. Only a Swift
+        test's file is compared, placed in the repository by placed_file; what it tests is not. A test named with no
+        such file, one not placed, and a failure the summary counts but does not name leave it unknown, as they say."""
+        unknown = "so whether this entry changes their files is unknown"
+        lane = self.failed_lane
+        names = ended["names"]
+        unnamed = max(ended["more"], (ended["failed"] or 0) - len(names))
+        if not names:
+            counted = f"; its tests: {ended['tests']}" if ended["tests"] else ""
+            return f"Which tests failed could not be determined ({lane}'s summary names no failed test{counted}), {unknown}"
+        shown = [f"{name} at {place}" if place else name for name, place in names]
+        more = len(shown) - REJECTION_SHOWN + unnamed
+        named = ", ".join(shown[:REJECTION_SHOWN]) + (f" and {more} more" if more > 0 else "")
+        if not entry.get("commits"): return f"{named} failed, but this entry records no commits, {unknown}"
+        changed = self.changed_by(entry)
+        tracked = set(text(self.checkout, "ls-files", "-z").split("\0")) - {""}
+        reached, lost, other = set(), [], []
+        for (_name, place), words in zip(names, shown):
+            path = place.rsplit(":", 1)[0] if place else None
+            if not (path and path.endswith(".swift")):
+                other.append(words)
+                continue
+            found = placed_file(path, tracked | changed)
+            if found is None: lost.append(words)
+            elif found in changed: reached.add(found)
+        words = (f"This entry changes {', '.join(sorted(reached)[:REJECTION_SHOWN])}, a file of the failed tests {named}"
+                 if reached else None)
+        missing = []
+        if lost: missing.append(f"The file of {', '.join(lost[:REJECTION_SHOWN])} cannot be placed in the repository")
+        if other: missing.append(f"No Swift file, the only kind compared, is named for {', '.join(other[:REJECTION_SHOWN])}")
+        if unnamed: missing.append(f"{lane}'s summary does not name {unnamed} more failed "
+                                   + ("test" if unnamed == 1 else "tests"))
+        if missing:
+            missing = f"{'; '.join(missing)}, {unknown}"
+            return f"{words}. {missing}" if words else f"{named} failed. {missing}"
+        return words or (f"This entry changes no file of the failed tests {named}: only the files they failed in are "
+                         "compared, not the code they test")
 
     def rejection_facts(self, entry, log, config):
         """The sentences a rejection of entry adds after its reason, so that its author can tell a change that broke

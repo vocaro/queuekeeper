@@ -6716,8 +6716,9 @@ class RejectionFacts(Fixture):
         entry = self.state(identifier)
         self.assertEqual(entry["state"], "failed")
         self.assertIn("the one-minute load was highest 3", entry["why"])
-        self.assertIn("Which tests failed could not be determined (its log has no qk unittest summary), so whether this "
-                      "entry changes their files is unknown", entry["why"])
+        # The gate's own summary is read when there is no qk unittest summary, and it names no test (#83).
+        self.assertIn("Which tests failed could not be determined (gate's summary names no failed test; its tests: no "
+                      "test counts in its log), so whether this entry changes their files is unknown", entry["why"])
         self.assertNotIn("changes no file", entry["why"])
         self.assertIn("could not be determined", mq.describe(entry))
 
@@ -6750,6 +6751,83 @@ class RejectionFacts(Fixture):
         entry = self.state(identifier)
         self.assertNotEqual(entry["state"], "failed")
         self.assertNotIn("During gate", entry.get("why", ""))
+
+
+class SummaryFacts(Fixture):
+    """A rejection of a lane whose log has no qk unittest summary names the failed tests from the summary qk run ends
+    with, and compares the Swift files they failed in with the entry's (vocaro/queuekeeper#83)."""
+    CELLS = '"testCellsTheReaderGoesToHaveTheirHighlightAndSelection"'
+    RANGES = '"testHighlightsOnCellRangesReachOnlyTheirCells"'
+    # Swift Testing's lines for two failed tests, as EPUBLib's gate printed them on 2026-11-11.
+    SWIFT = (f"✘ Test {CELLS} recorded an issue at TableScrolledCellTests.swift:298:9: Expectation failed: cells\n"
+             f"✘ Test {CELLS} failed after 0.200 seconds with 1 issue.\n"
+             f"✘ Test {RANGES} recorded an issue at TableCoverageInteractionTests.swift:749:9: Expectation failed\n"
+             f"✘ Test {RANGES} failed after 0.100 seconds with 1 issue.\n"
+             "✘ Test run with 30 tests in 4 suites failed after 1.000 seconds with 2 issues.\n")
+    CELLS_FILE = "Tests/EPUBLibTests/TableScrolledCellTests.swift"
+    NAMED = (f"{CELLS} at TableScrolledCellTests.swift:298, {RANGES} at TableCoverageInteractionTests.swift:749")
+
+    def setUp(self):
+        super().setUp()
+        for path in (self.CELLS_FILE, "Tests/EPUBLibTests/TableCoverageInteractionTests.swift"):
+            (self.repo / path).parent.mkdir(parents=True, exist_ok=True)
+            (self.repo / path).write_text("import Testing\n")
+        run(self.repo, "git", "add", ".")
+        run(self.repo, "git", "commit", "-qm", "Add the Swift tests")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+
+    def rejected(self, printed, path, content="changed\n", status=1):
+        """The why of one entry that commits content to path, whose gate prints printed and exits status."""
+        Path(f"{self.status}.screen").write_text(printed)
+        self.status.write_text(str(status))
+        self.commit(path, "branch", content)
+        [identifier] = self.add("branch")
+        with contextlib.redirect_stdout(io.StringIO()): self.assertEqual(self.work(), 0)
+        entry = self.state(identifier)
+        self.assertEqual(entry["state"], "failed")
+        return entry["why"]
+
+    def test_an_entry_that_changes_the_file_a_swift_test_failed_in_is_told_so(self):
+        why = self.rejected(self.SWIFT, self.CELLS_FILE, "import Testing\n// changed\n")
+        self.assertIn(f"This entry changes {self.CELLS_FILE}, a file of the failed tests {self.NAMED}", why)
+        self.assertNotIn("could not be determined", why)
+        self.assertNotIn("cannot be placed", why)
+
+    def test_an_entry_that_changes_no_such_file_is_told_that_and_what_was_compared(self):
+        why = self.rejected(self.SWIFT, "Sources/Reader.swift", "let reader = 1\n")
+        self.assertIn(f"This entry changes no file of the failed tests {self.NAMED}: only the files they failed in are "
+                      "compared, not the code they test", why)
+
+    def test_a_file_named_twice_in_the_repository_is_not_guessed(self):
+        # A second file of the same name leaves the bare name the summary gives two places.
+        why = self.rejected(self.SWIFT, "Tests/Other/TableScrolledCellTests.swift", "import Testing\n")
+        self.assertIn(f"{self.NAMED} failed. The file of {self.CELLS} at TableScrolledCellTests.swift:298 cannot be "
+                      "placed in the repository, so whether this entry changes their files is unknown", why)
+        self.assertNotIn("changes no file", why)
+
+    def test_a_test_named_with_no_file_is_said_to_have_none_to_compare(self):
+        printed = self.SWIFT + '✘ Test "testAlone" failed after 0.100 seconds with 1 issue.\n'
+        why = self.rejected(printed, self.CELLS_FILE, "import Testing\n// changed\n")
+        self.assertIn(f"This entry changes {self.CELLS_FILE}, a file of the failed tests {self.NAMED}", why)
+        self.assertIn('No Swift file, the only kind compared, is named for "testAlone", so whether this entry changes '
+                      "their files is unknown", why)
+
+    def test_a_failed_lane_whose_summary_names_no_test_says_so(self):
+        # As in vocaro/vocaro-engineering#406: devices failed, yet the counts the gate read say none did.
+        printed = "Executed 9831 tests, with 0 failures (0 unexpected) in 100.0 (100.1) seconds\n"
+        why = self.rejected(printed, "Sources/Reader.swift", "let reader = 1\n", status=65)
+        self.assertIn("Which tests failed could not be determined (gate's summary names no failed test; its tests: "
+                      "9831 passed, 0 failed", why)
+        self.assertNotIn("qk unittest summary", why)
+
+    def test_placed_file_takes_a_bare_name_a_path_or_an_absolute_path_and_never_guesses(self):
+        files = {"Tests/A/Cells.swift", "Tests/B/Ranges.swift", "Tests/B/Twice.swift", "Tests/C/Twice.swift"}
+        for path, expected in (("Cells.swift", "Tests/A/Cells.swift"), ("A/Cells.swift", "Tests/A/Cells.swift"),
+                               ("./Tests/A/Cells.swift", "Tests/A/Cells.swift"),
+                               ("/Users/someone/EPUBLib/Tests/B/Ranges.swift", "Tests/B/Ranges.swift"),
+                               ("Twice.swift", None), ("Missing.swift", None), ("ells.swift", None)):
+            with self.subTest(path=path):
+                self.assertEqual(mq.placed_file(path, files), expected)
 
 
 class LoadReadings(unittest.TestCase):
@@ -7518,8 +7596,8 @@ class BothHalves(Fixture):
         self.worked()
         why = self.state(ids[1])["why"]
         self.assertIn("fix it and add it again. During gate on this Mac, the one-minute load was highest 3", why)
-        self.assertIn("Which tests failed could not be determined (its log has no qk unittest summary), so whether this "
-                      "entry changes their files is unknown", why)
+        self.assertIn("Which tests failed could not be determined (gate's summary names no failed test; its tests: no "
+                      "test counts in its log), so whether this entry changes their files is unknown", why)
 
     def test_two_that_pass_alone_land_the_older_and_the_newer_gates_again(self):
         """Each passes alone, and together they fail: the older lands, and the newer, whose result was of the main

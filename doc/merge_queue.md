@@ -59,6 +59,10 @@ The worker tries the cheap explanations before the expensive one:
 Steps 1 and 2 read test names from the output of `qk unittest`, the bundled Python test
 runner. A failure in any other kind of lane goes straight to the bisect.
 
+An entry sent back is told the load during the failed lane, the failed tests, and whether its
+commits change their files. For a lane other than `qk unittest`, such as a Swift gate, the tests and
+the files they failed in come from the summary that ends the lane's `qk run`.
+
 ## While a gate runs
 
 - **Stacked gates.** Entries that arrive during a gate are tested on top of the batch's tip, on

@@ -438,6 +438,22 @@ module the worker cannot find, a failed test that passed alone beside the real f
 that ended with no verdict. On 2026-11-07 a 6-entry batch bisected for about 2 hours over one spelling
 test whose output named a file only one commit changed.
 
+**A send-back says the load and whether the entry changes the failed tests' files.** The reason an
+entry is sent back with ends with the load during the failed lane and with the failed tests
+([#273](https://github.com/vocaro/vocaro-engineering/issues/273)). The tests come from the lane's
+`qk unittest` summary when it has one, and each test's module and what it imports are compared with
+the entry's commits, as for a flake above. Otherwise they come from the summary `qk run LANE:` ends
+with (`eng run LANE:` in older logs), as a Swift gate's does: each failed test is named with the file
+and line it failed at, as that summary printed it ([vocaro/queuekeeper#83](https://github.com/vocaro/queuekeeper/issues/83)).
+A Swift test's file is placed in the repository by its name or path, and only when exactly one
+tracked or changed file can be it; the entry's commits are then compared with that file alone, not
+the code the test exercises. A test whose file cannot be placed, a summary that counts more failed
+tests than it names, and a summary that names none, as when a gate miscounted its devices'
+failures ([vocaro-engineering#406](https://github.com/vocaro/vocaro-engineering/issues/406)), each
+say so, so that the author knows the comparison is incomplete. On 2026-11-11 two of EPUBLib's
+send-backs said only that the log had no `qk unittest` summary, although one gate had named both of
+its failed tests. Reruns of failed tests remain for `qk unittest` lanes alone.
+
 **A gate `qk unittest` refused sends back the one entry that brings the refusal.** When the failed
 lane is `qk unittest`, its log has no summary, and it printed a refusal ending `nothing ran`, nothing
 was tested, and the same tree would be refused again, so the worker reruns nothing (owner's decision,
