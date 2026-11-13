@@ -1694,19 +1694,27 @@ class NoVerdict(Fixture):
     def gated_on_second_mac(self, reading):
         """Every gate reports a dispatch to the second Mac whose receipt, written once the lane has run, reads reading,
         and whose run.log holds what the lane printed, while this Mac's own screen reads unlocked for qk run
-        --unlocked-screen."""
+        --unlocked-screen. The dispatch's results appear once each lane's qk run has ended, as remote.execute
+        returns them; remote.dispatch only looks them up, as the real one does. The gate's watch and samplers look
+        it up while the lane runs, which a busy host makes them do once a lane outlasts WATCH_POLL: here they look
+        all through every lane, so the verdict cannot depend on when they do (vocaro/queuekeeper#17)."""
         screens = Path(__file__).resolve().parent / "fixtures/ScreenState"
         recording = self.base / "screen.plist"
         shutil.copy(screens / "this-mac-unlocked.plist", recording)
         ran = self.base / "dispatches/far"
         ran.mkdir(parents=True)
-        def dispatch(root, name, since):
-            with contextlib.suppress(FileNotFoundError):
-                (Path(root) / ".build/queuekeeper" / name / "run.log").rename(ran / "run.log")
-            (ran / "source.json").write_text(json.dumps(self.dispatch_receipt(reading)))
-            return ran, "far-mac"
+        real = mq.processes.run
+        def returned(command, *arguments, cwd=None, **options):
+            try: return real(command, *arguments, cwd=cwd, **options)
+            finally:
+                if list(command[:3]) == ["python3", "scripts/qk", "run"]:
+                    with contextlib.suppress(FileNotFoundError):
+                        (Path(cwd) / ".build/queuekeeper" / command[-1] / "run.log").rename(ran / "run.log")
+                    (ran / "source.json").write_text(json.dumps(self.dispatch_receipt(reading)))
         with patch.dict(os.environ, {offload_host.SCREEN_RECORDING: str(recording)}), \
-                patch.object(mq.remote, "dispatch", side_effect=dispatch):
+                patch.object(mq.processes, "run", returned), \
+                patch.object(mq.remote, "dispatch", return_value=(ran, "far-mac")), \
+                patch.object(mq, "WATCH_POLL", 0.01), patch.object(mq, "BUSY_SAMPLE", 0.01):
             yield
 
     def test_a_second_mac_run_its_receipt_reads_locked_does_not_count_and_the_next_needs_an_unlocked_mac(self):
@@ -1717,7 +1725,8 @@ class NoVerdict(Fixture):
         with self.gated_on_second_mac(self.FAR_LOCKED), self.no_verdict_for(mq.NO_VERDICT_RUNS + 1), \
                 self.commands() as ran, contextlib.redirect_stdout(io.StringIO()) as said:
             self.assertEqual(self.work(), 0)
-        self.assertEqual(self.gates(), mq.NO_VERDICT_RUNS + 2)
+        # The worker's log says which run went otherwise.
+        self.assertEqual(self.gates(), mq.NO_VERDICT_RUNS + 2, said.getvalue())
         self.assertEqual(self.state(identifier)["state"], "landed")
         self.assertIsNone(mq.Queue(self.repo).held())
         self.assertIn(f"gate ran behind a locked screen, the last reading {self.FAR_READING}, which "
