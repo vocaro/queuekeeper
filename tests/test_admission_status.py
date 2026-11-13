@@ -6,6 +6,7 @@ from io import StringIO
 import json
 import os
 from pathlib import Path
+import re
 import signal
 import subprocess
 import sys
@@ -298,16 +299,21 @@ class WaiterTests(Namespace):
         held = self.hold_slots()
         admission = resources.Admission("Delta unittest", timeout=stretched(30))
         said = StringIO()
+        began = time.monotonic()
         with contextlib.redirect_stderr(said):
             thread, outcome = self.waiting(admission)
             (waiter,) = self.read()["waiters"]
             for fd in held: os.close(fd)
             thread.join(stretched(30))
+        took = time.monotonic() - began
         self.assertTrue(outcome.get("admitted"), outcome)
         self.assertEqual((waiter["label"], waiter["kind"], waiter["refusal"], waiter["process"], waiter["position"]),
                          ("Delta unittest", "ordinary", "slots", "running", None))
-        # The very words the waiter printed.
-        self.assertIn(f"heavy: waiting (0s): {waiter['reason']}\n", said.getvalue())
+        # The very words the waiter printed, and how long it had waited when it printed them: no longer than this
+        # test watched it. On an idle Mac that is 0s; on a loaded one its first refusal takes seconds (#85).
+        printed = re.findall(r"^heavy: waiting \((\d+)s\): (.*)$", said.getvalue(), re.MULTILINE)
+        self.assertEqual([reason for _seconds, reason in printed], [waiter["reason"]], said.getvalue())
+        self.assertLessEqual(int(printed[0][0]), took)
         self.assertIsNotNone(waiter["waitedSeconds"])
         self.assertEqual(self.records(), [])
 
@@ -375,14 +381,32 @@ class WaiterTests(Namespace):
         crashed.kill()
         crashed.wait()
         crashed.stderr.close()
-        self.assertEqual(len(self.records()), 1)
+        (record,) = self.records()
         # Its queue record and its own stay behind, and neither reads as waiting.
         self.assertEqual(self.read()["waiters"], [])
         # The crashed waiter swept when it first wrote; the next sweep is a minute on, or now without its marker.
-        (self.directory / resources.WAITS / ".sweep").unlink()
-        with contextlib.redirect_stderr(StringIO()), self.assertRaises(TimeoutError):
+        # A sweep that nothing can answer, neither ps nor the kernel, leaves the record, since nothing proves its
+        # process ended; the waiter that swept removes its own record either way.
+        marker = self.directory / resources.WAITS / ".sweep"
+        marker.unlink()
+        with patch.object(offload_host, "census", return_value=None), contextlib.redirect_stderr(StringIO()), \
+                self.assertRaises(TimeoutError):
+            with resources.Admission("Unanswered", timeout=0): pass
+        self.assertEqual(self.records(), [record])
+        # On a loaded Mac the sweep's ps can outlast census's 5 s, which left the record until the census asked the
+        # kernel instead (vocaro/queuekeeper#16, #23). Its ps times out here every time, so the sweep is the loaded
+        # one whatever this Mac's load; the kernel proves the crashed waiter's PID gone.
+        marker.unlink()
+        real = subprocess.run
+        def slow(command, *args, **kwargs):
+            # Only the census's ps: the waiter reads its own start with another, which must answer for it to record.
+            if command[:2] == ["ps", "-p"] and "pid=,lstart=" in command:
+                raise subprocess.TimeoutExpired(command, 5)
+            return real(command, *args, **kwargs)
+        with patch.object(offload_host.subprocess, "run", side_effect=slow), contextlib.redirect_stderr(StringIO()), \
+                self.assertRaises(TimeoutError):
             with resources.Admission("Later", timeout=0): pass
-        self.assertEqual(self.records(), [])
+        self.assertEqual(self.records(), [], f"the crashed waiter's record is {record}")
 
     def test_a_record_that_cannot_be_written_changes_no_admission(self):
         held = self.hold_slots()
