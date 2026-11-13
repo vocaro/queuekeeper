@@ -47,14 +47,31 @@ SWIFT = textwrap.dedent("""
             def record(what, **payload):
                 stream.write(json.dumps({"version": 0, "kind": what, "payload": payload}) + "\\n")
                 stream.flush()
+            # An instant's two clocks from one reading, so that a process paused between two reads, as on a
+            # loaded Mac, cannot set them apart (vocaro/queuekeeper#94).
+            since1970 = time.time() - time.monotonic()
             def event(kind, test, **more):
+                now = time.monotonic()
                 record("event", kind=kind, testID=test + "/x.swift:1:2", messages=[],
-                       instant={"absolute": time.monotonic(), "since1970": time.time()}, **more)
+                       instant={"absolute": now, "since1970": since1970 + now}, **more)
+                if kind == "testEnded":
+                    with open(here / "ended.jsonl", "a") as ended: ended.write(json.dumps(test) + "\\n")
             for suite in sorted({test.split("/")[0] for test in chosen if "/" in test}):
                 record("test", kind="suite", id=suite + "/x.swift:1:2", name=suite)
             for test in chosen: record("test", kind="function", id=test + "/x.swift:1:2", name=test)
             delayed = os.environ.get("FAKE_EVENTS_DELAY")
-            if delayed and any(re.search(delayed, test) for test in chosen): time.sleep(1.5)
+            if delayed and any(re.search(delayed, test) for test in chosen):
+                # Not a fixed sleep alone, which a slow start of the other processes, queued behind the xctest
+                # shards on a loaded Mac, could outlast: first every other process's tests end, then 1.5 s more
+                # (vocaro/queuekeeper#94).
+                others = {test for test in json.loads(os.environ["FAKE_SWIFT_TESTING"]) if test not in chosen}
+                deadline = time.monotonic() + 30
+                while time.monotonic() < deadline:
+                    try: ended = {json.loads(line) for line in (here / "ended.jsonl").read_text().splitlines()}
+                    except OSError: ended = set()
+                    if others <= ended: break
+                    time.sleep(0.02)
+                time.sleep(1.5)
             for test in chosen:
                 if "/" in test: event("testStarted", test.split("/")[0])
                 event("testStarted", test)
@@ -354,7 +371,7 @@ class SwiftTestingTimesTests(unittest.TestCase):
         return json.loads(path.read_text())["tests"]
 
     def test_shards_run_in_another_order_than_printed_keep_each_tests_own_times(self):
-        # SuiteA's shard is printed before the others' and starts its tests 1.5 s after them.
+        # SuiteA's shard is printed before the others' and starts its tests 1.5 s after theirs have ended.
         status, output = self.run_eng("--skip-build", "-j", "3", "--split-swift-testing", FAKE_EVENTS_DELAY="SuiteA")
         self.assertEqual(status, 0, output)
         printed = [line for line in output.splitlines() if line.startswith("== ") and "Swift Testing" in line]
