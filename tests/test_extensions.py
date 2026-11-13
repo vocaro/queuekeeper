@@ -161,7 +161,10 @@ class SharedHookTests(unittest.TestCase):
         after = [list(hooks) for hooks in (extensions.RECOVER, extensions.AROUND_RUN, extensions.REPORT_RESULTS,
                                            extensions.TEST_ALLOWANCE)]
         self.assertEqual(before, after)
-        self.assertTrue(all(len(hooks) == 1 for hooks in after), after)
+        # Their own hooks, one in each list; another extension loaded beside them, as Unity's, may add its own.
+        theirs = [[hook for hook in hooks if getattr(hook, "__module__", "").startswith(("queuekeeper.apple", "queuekeeper.mac_desktop"))]
+                  for hooks in after]
+        self.assertTrue(all(len(hooks) == 1 for hooks in theirs), after)
 
 
 class LaneKeyTests(unittest.TestCase):

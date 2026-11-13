@@ -2,7 +2,7 @@
 
     qk unity test [--platform EditMode|PlayMode] [--results DIR]
     qk unity closed -- COMMAND
-    qk unity ready -- COMMAND
+    qk unity ready [--exclusive] -- COMMAND
     qk unity open [--ensure | --status]
 
 Each exits 3, unmeasured, when nothing ran for a reason that says nothing of the work: no editor on this Mac, an
@@ -23,7 +23,7 @@ import xml.etree.ElementTree as ET
 from .. import config as configuration, extensions
 from ..lane_results import UNMEASURED
 from ..parallel import RESULTS_VARIABLE
-from . import batch, editor, licensing, project as projects, settings
+from . import batch, editor, host, licensing, project as projects, results as results_kept, settings
 
 FAILED, USAGE = 1, 2
 COMPILE_ERROR = re.compile(r"error CS\d+: .*")
@@ -76,7 +76,7 @@ def ready(project):
 
 def results_folder(named):
     if named: folder = Path(named)
-    elif os.environ.get(RESULTS_VARIABLE): folder = Path(os.environ[RESULTS_VARIABLE]) / "unity"
+    elif os.environ.get(RESULTS_VARIABLE): folder = Path(os.environ[RESULTS_VARIABLE]) / results_kept.FOLDER
     else: folder = Path(tempfile.mkdtemp(prefix="queuekeeper-unity-"))
     folder.mkdir(parents=True, exist_ok=True)
     return folder
@@ -179,12 +179,25 @@ def replace(command):
     os.execvp(command[0], command)
 
 
-def ready_then(project, command):
+def idle():
+    """None when no editor on this Mac is known to be in Play mode, else the status to exit with, after saying
+    which is. An editor whose Play state cannot be asked is not held against the run."""
+    try: playing = host.in_play()
+    except projects.Unreadable as error: return unmeasured(str(error))
+    if not playing: return None
+    named = ", ".join(f"process {entry['pid']} on {entry['project']}" for entry in playing)
+    return unmeasured(f"a Unity editor is in Play mode ({named}), which uses the GPU this exclusive work measures "
+                      "on; leave Play mode in it")
+
+
+def ready_then(project, command, exclusive=False):
     """Run command once a batch run may start on project (ready), as a lane that says "unity": true does. It ends
-    unmeasured, with command not run, when this Mac has no editor or one may not start."""
+    unmeasured, with command not run, when this Mac has no editor or one may not start, and for exclusive work
+    when an editor on this Mac is in Play mode (idle)."""
     binary, status = found_editor(project)
     if binary is None: return status
     status = ready(project)
+    if status is None and exclusive: status = idle()
     if status is not None: return status
     try: replace(command)
     except OSError as error:
@@ -276,8 +289,11 @@ def main(arguments, project=None):
                        "results folder, or a temporary one)")
     actions.add_parser("closed", help="close the project's editor, run COMMAND, and open the editor again: "
                        "qk unity closed -- COMMAND")
-    actions.add_parser("ready", help="run COMMAND once a batch run may start on the project, and exit 3 with nothing "
-                       "run when one may not, as a lane that says \"unity\": true does: qk unity ready -- COMMAND")
+    readiness = actions.add_parser("ready", help="run COMMAND once a batch run may start on the project, and exit 3 "
+                                   "with nothing run when one may not, as a lane that says \"unity\": true does: "
+                                   "qk unity ready -- COMMAND")
+    readiness.add_argument("--exclusive", action="store_true", help="also exit 3 while an editor on this Mac, on any "
+                           "project, is in Play mode, as an exclusive lane does")
     opened = actions.add_parser("open", help="open this linked worktree's editor, once; for a post-checkout hook, "
                                 f"which a session declines with {OPEN_VARIABLE}=0")
     how = opened.add_mutually_exclusive_group()
@@ -297,7 +313,7 @@ def main(arguments, project=None):
         return USAGE
     if args.action == "test": return test(found, args)
     if args.action == "closed": return closed(found, command)
-    if args.action == "ready": return ready_then(found, command)
+    if args.action == "ready": return ready_then(found, command, args.exclusive)
     return open_editor(root, found, "ensure" if args.ensure else "status" if args.status else "once",
                        settings.layout(root, config))
 

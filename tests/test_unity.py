@@ -17,7 +17,8 @@ import host_isolation  # first, as every test module
 
 from queuekeeper import config, disk, extensions, unity
 from queuekeeper.lane_results import UNMEASURED, executed_tests
-from queuekeeper.unity import batch, commands, disk as unity_disk, doctor, editor, host, lane, licensing, project, settings
+from queuekeeper.unity import batch, commands, disk as unity_disk, doctor, editor, host, lane, licensing, project, \
+    results, settings, unity_cli
 
 unity.register()
 
@@ -418,6 +419,25 @@ class CommandTests(Folder):
         with patch.object(licensing, "repair", side_effect=licensing.Unrepaired("the helper stayed")):
             self.assertEqual(self.unity("ready", "--", "check.sh")[0], UNMEASURED)
 
+    def test_exclusive_readiness_runs_nothing_while_an_editor_on_any_project_is_in_play_mode(self):
+        became = []
+        self.enterContext(patch.object(commands, "replace", became.append))
+        other = (41, f"{self.binary} -projectPath /w/other/lab")
+        self.editors = [other]
+        states = {"/w/other/lab": unity_cli.PLAYING}
+        self.enterContext(patch.object(unity_cli, "play_mode", lambda found: states.get(str(found))))
+        status, _, error = self.unity("ready", "--exclusive", "--", "check.sh")
+        self.assertEqual((status, became), (UNMEASURED, []))
+        self.assertIn("a Unity editor is in Play mode (process 41 on /w/other/lab)", error)
+        # Without --exclusive another project's editor is no concern, and one that cannot be asked is not held
+        # against the run.
+        self.assertIsNone(self.unity("ready", "--", "check.sh")[0])
+        states.clear()
+        self.assertIsNone(self.unity("ready", "--exclusive", "--", "check.sh")[0])
+        states["/w/other/lab"] = unity_cli.PAUSED
+        self.assertIsNone(self.unity("ready", "--exclusive", "--", "check.sh")[0])
+        self.assertEqual(became, [["check.sh"]] * 3)
+
     def worktree(self, linked=True):
         own = self.folder / ("git/worktrees/w" if linked else "git")
         own.mkdir(parents=True, exist_ok=True)
@@ -487,6 +507,8 @@ class DoctorTests(Folder):
         self.there = True
         self.enterContext(patch.object(doctor, "second_mac", lambda: "studio"))
         self.enterContext(patch.object(doctor, "installed_there", lambda host, binary: self.there))
+        self.signed_in = True
+        self.enterContext(patch.object(unity_cli, "signed_in", lambda: self.signed_in))
 
     def warnings(self):
         return doctor.warnings(self.project.parent, self.config)
@@ -506,6 +528,13 @@ class DoctorTests(Folder):
     def test_a_second_mac_that_could_not_be_asked_is_not_warned_of(self):
         fake_editor(self.folder / "hub", "6000.6.0f1")
         self.there = None
+        self.assertEqual(self.warnings(), [])
+
+    def test_a_hub_that_is_signed_out_is_warned_of_and_one_that_cannot_be_read_is_not(self):
+        fake_editor(self.folder / "hub", "6000.6.0f1")
+        self.signed_in = False
+        self.assertIn("Unity Hub is not signed in on this Mac", self.warnings()[0])
+        self.signed_in = None
         self.assertEqual(self.warnings(), [])
 
     def test_a_lane_that_runs_without_a_graphics_device_is_named(self):
@@ -593,6 +622,11 @@ class LaneKeyTests(unittest.TestCase):
         self.assertEqual(extensions.lane_command({}, ["./check.sh"]), ["./check.sh"])
         self.assertFalse(extensions.reads_screen(gate))
 
+    def test_an_exclusive_lane_is_also_checked_for_an_editor_in_play_mode(self):
+        measured = {"command": ["./measure.sh"], "resource": "exclusive", "unity": True}
+        self.assertEqual(extensions.lane_command(measured, measured["command"])[2:],
+                         ["unity", "ready", "--exclusive", "--", "./measure.sh"])
+
     def test_the_key_takes_true_or_false_and_is_refused_by_name_without_the_extension(self):
         with self.assertRaisesRegex(ValueError, "gate.unity must be true or false"): self.parse("yes")
         with patch.dict(extensions.LANE_KEYS, {}, clear=True), patch.object(extensions, "LOADED", ["queuekeeper.unity"]), \
@@ -602,13 +636,16 @@ class LaneKeyTests(unittest.TestCase):
 
 class HostReadTests(Folder):
     HUB = "/Applications/Unity/Hub/Editor/6000.6.0f1/Unity.app/Contents/MacOS/Unity"
+    # project -> the Play state its editor answers with; an editor not here cannot be asked.
+    play = {}
 
     def read(self, editors, json_output=False):
         import argparse
         lines = []
         for version in ("6000.10.0f1", "6000.6.0f1"):
             if not (self.folder / "hub" / version).exists(): fake_editor(self.folder / "hub", version)
-        with patch.object(editor, "HUB", self.folder / "hub"), patch.object(project, "editors", editors):
+        with patch.object(editor, "HUB", self.folder / "hub"), patch.object(project, "editors", editors), \
+                patch.object(unity_cli, "play_mode", lambda found: self.play.get(str(found))):
             status = host.read(argparse.Namespace(json=json_output), out=lines.append)
         return status, lines
 
@@ -623,12 +660,120 @@ class HostReadTests(Folder):
         found = json.loads(self.read(lambda: running, json_output=True)[1][0])
         self.assertEqual(found["editors"][1], {"pid": 12, "project": "/w/My Game/lab", "version": "6000.6.0f1", "batch": True})
 
+    def test_it_says_which_editors_are_in_play_mode_and_asks_no_batch_run(self):
+        running = [(11, f"{self.HUB} -projectPath /w/one/lab"), (12, f"{self.HUB} -projectPath /w/two/lab"),
+                   (13, f"{self.HUB} -projectPath /w/three/lab"), (14, f"{self.HUB} -batchmode -projectPath /w/four/lab")]
+        self.play = {"/w/one/lab": unity_cli.PLAYING, "/w/two/lab": unity_cli.PAUSED, "/w/four/lab": unity_cli.PLAYING}
+        _, lines = self.read(lambda: running)
+        self.assertEqual(lines[1:], ["PID 11: editor, Unity 6000.6.0f1, on /w/one/lab, in Play mode",
+                                     "PID 12: editor, Unity 6000.6.0f1, on /w/two/lab, paused in Play mode",
+                                     "PID 13: editor, Unity 6000.6.0f1, on /w/three/lab",
+                                     "PID 14: batch run, Unity 6000.6.0f1, on /w/four/lab"])
+        found = json.loads(self.read(lambda: running, json_output=True)[1][0])["editors"]
+        self.assertEqual([entry.get("play", "not asked") for entry in found],
+                         [unity_cli.PLAYING, unity_cli.PAUSED, None, "not asked"])
+        with patch.object(project, "editors", lambda: running), \
+                patch.object(unity_cli, "play_mode", lambda found: self.play.get(str(found))):
+            self.assertEqual([entry["pid"] for entry in host.in_play()], [11])
+
     def test_it_says_when_none_runs_and_when_the_processes_cannot_be_read(self):
         self.assertEqual(self.read(lambda: [])[1][1], "no Unity editor is running")
         def denied(): raise project.Unreadable("cannot inspect processes")
         status, lines = self.read(denied)
         self.assertEqual((status, lines), (2, ["queuekeeper: cannot inspect processes"]))
         self.assertIs(extensions.HOST_READS["editors"][2], host.read)
+
+
+class UnityCliTests(Folder):
+    """Unity's own command, a stand-in here that prints the reply a test gives it."""
+
+    def command(self, reply, status=0):
+        (self.folder / "reply").write_text(reply if isinstance(reply, str) else json.dumps(reply))
+        (self.folder / "words").unlink(missing_ok=True)
+        stand_in = host_isolation.executable(self.folder / "unity", "#!/bin/sh\n"
+            f'echo "$@" > "{self.folder}/words"\ncat "{self.folder}/reply"\nexit {status}\n')
+        self.enterContext(patch.dict(os.environ, {unity_cli.VARIABLE: str(stand_in)}))
+
+    def test_the_hub_s_sign_in_is_read_and_one_that_cannot_be_read_is_neither_answer(self):
+        def auth(**found): return {"success": True, "data": {"auth": found}}
+        self.command(auth(loggedIn=True, sessionState="active"))
+        self.assertIs(unity_cli.signed_in(), True)
+        self.assertEqual((self.folder / "words").read_text().split(), ["doctor", "--format", "json"])
+        self.command(auth(loggedIn=False, sessionState="none"))
+        self.assertIs(unity_cli.signed_in(), False)
+        # As the command answers in a session that may not read the keychain (this Mac, 2026-11-12).
+        self.command(auth(loggedIn=False, sessionState="unreadable"))
+        self.assertIsNone(unity_cli.signed_in())
+        for reply in ("not JSON", {"success": True, "data": {}}, []):
+            self.command(reply)
+            self.assertIsNone(unity_cli.signed_in())
+
+    def test_an_editor_s_play_state_is_found_wherever_the_reply_holds_it(self):
+        self.command({"success": True, "data": {"result": {"playMode": "Playing", "isCompiling": False}}})
+        self.assertEqual(unity_cli.play_mode("/w/My Game/lab"), unity_cli.PLAYING)
+        self.assertEqual((self.folder / "words").read_text().strip(),
+                         "command editor_status --project-path /w/My Game/lab --format json")
+        self.command({"success": True, "data": {"result": json.dumps({"playMode": "stopped"})}})
+        self.assertEqual(unity_cli.play_mode("/w/lab"), unity_cli.STOPPED)
+        self.command({"success": True, "data": [{"state": {"playMode": "paused"}}]})
+        self.assertEqual(unity_cli.play_mode("/w/lab"), unity_cli.PAUSED)
+
+    def test_an_editor_that_cannot_be_asked_has_no_play_state(self):
+        self.command({"success": False, "errors": [{"code": "STATUS_NO_INSTANCES"}], "data": {"playMode": "playing"}}, 1)
+        self.assertIsNone(unity_cli.play_mode("/w/lab"))
+        for reply in ({"success": True, "data": {"result": "ok"}}, {"success": True, "data": {"playMode": "dreaming"}}, ""):
+            self.command(reply)
+            self.assertIsNone(unity_cli.play_mode("/w/lab"))
+        with patch.dict(os.environ, {unity_cli.VARIABLE: ""}), patch.object(unity_cli, "INSTALLED", self.folder / "none"), \
+                patch.object(unity_cli.shutil, "which", lambda name: None):
+            self.assertIsNone(unity_cli.binary())
+            self.assertIsNone(unity_cli.play_mode("/w/lab"))
+            self.assertIsNone(unity_cli.signed_in())
+
+
+TIMED = """<?xml version="1.0"?>
+<test-run total="3" passed="1" failed="1" skipped="1">
+  <test-suite name="Lab">
+    <test-case fullname="Lab.Grid.Wraps" result="Passed" duration="0.0123"/>
+    <test-case fullname="Lab.Grid.Skips" result="Skipped"><reason><message>needs a GPU</message></reason></test-case>
+    <test-case fullname="Lab.Grid.Clamps" result="Failed" duration="1.5"><failure><message>  Expected: 4
+  But was: 5</message></failure></test-case>
+  </test-suite>
+</test-run>
+"""
+
+
+class ResultsTests(Folder):
+    def kept(self, lane, text):
+        folder = self.folder / "results" / lane / results.FOLDER
+        folder.mkdir(parents=True)
+        (folder / results.FILE).write_text(text)
+        return folder / results.FILE
+
+    def test_a_lane_s_kept_run_is_printed_a_line_per_test_with_its_seconds_and_totals(self):
+        path = self.kept("gate", TIMED)
+        said = []
+        results.report(self.folder / "results", out=said.append)
+        self.assertEqual(said, [f"queuekeeper: per-test results in {path}:",
+                                "unity: passed 0.012s Lab.Grid.Wraps",
+                                "unity: skipped no time Lab.Grid.Skips (needs a GPU)",
+                                "unity: failed 1.500s Lab.Grid.Clamps (Expected: 4)",
+                                "unity: 1 passed, 1 failed, 1 skipped"])
+        self.assertIn(results.report, extensions.REPORT_RESULTS)
+
+    def test_a_group_s_lanes_are_each_printed_and_a_file_that_cannot_be_read_is_said(self):
+        self.kept("edit", TIMED)
+        broken = self.kept("play", "<test-run>")
+        said = []
+        results.report(self.folder / "results", out=said.append)
+        self.assertEqual(len([line for line in said if "per-test results in" in line]), 1)
+        self.assertIn(f"queuekeeper: {broken} could not be read", said[-1])
+        results.report(self.folder / "none", out=said.append)
+
+    def test_unity_test_keeps_its_run_where_the_report_reads_it(self):
+        self.assertEqual(commands.results_folder(str(self.folder / "named")), self.folder / "named")
+        with patch.dict(os.environ, {commands.RESULTS_VARIABLE: str(self.folder / "lane")}):
+            self.assertEqual(commands.results_folder(None), self.folder / "lane" / results.FOLDER)
 
 
 if __name__ == "__main__":

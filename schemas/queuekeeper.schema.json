@@ -239,7 +239,7 @@
             "type": "boolean"
           },
           "unity": {
-            "description": "The Unity extension's key, which a project gets with queuekeeper.unity. A lane whose command runs the project's Unity editor: qk run runs its command under qk unity ready --, which checks on the Mac that runs it that an editor is installed, that no editor has the project open, that no stale lock is left and that no orphaned licensing helper remains, and ends the lane unmeasured, with nothing run, when one of them does not hold",
+            "description": "The Unity extension's key, which a project gets with queuekeeper.unity. A lane whose command runs the project's Unity editor: qk run runs its command under qk unity ready --, which checks on the Mac that runs it that an editor is installed, that no editor has the project open, that no stale lock is left and that no orphaned licensing helper remains, and ends the lane unmeasured, with nothing run, when one of them does not hold. An exclusive lane also ends unmeasured while an editor on that Mac is in Play mode",
             "type": "boolean"
           },
           "chips": {

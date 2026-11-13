@@ -3,7 +3,11 @@
 Such a lane's command runs under `qk unity ready --`, on whichever Mac runs it. That checks, before the
 command starts, that this Mac has an editor, that no editor has the project open, that no stale lock is left and
 that no orphaned licensing helper waits for the next editor. A lane that cannot start so ends unmeasured, with
-nothing run, where its command would have failed or hung for a reason that says nothing of the commit."""
+nothing run, where its command would have failed or hung for a reason that says nothing of the commit.
+
+An exclusive lane measures, and admission holds off only admitted work: an editor left in Play mode keeps
+simulating on the GPU. So an exclusive lane is also checked for that (`ready --exclusive`), on every project's
+editor, and ends unmeasured while one plays."""
 import sys
 
 from .. import extensions
@@ -18,7 +22,8 @@ class UnityLane(extensions.LaneKey):
 
     def command(self, lane, command):
         if not lane.get(KEY): return command
-        return [sys.executable, str(TOOLKIT_ROOT / "bin/qk"), "unity", "ready", "--", *command]
+        exclusive = ["--exclusive"] if lane.get("resource") == "exclusive" else []
+        return [sys.executable, str(TOOLKIT_ROOT / "bin/qk"), "unity", "ready", *exclusive, "--", *command]
 
 
 def register():

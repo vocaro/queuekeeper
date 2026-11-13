@@ -1,12 +1,14 @@
 """What `qk doctor` checks of a Unity project: that its Unity project is where it says, that the editor it
-pins is installed on this Mac and on the second Mac, and that no lane runs the editor without a graphics device.
+pins is installed on this Mac and on the second Mac, that Unity Hub is signed in on this Mac, and that no lane runs
+the editor without a graphics device.
 
-Whether Unity Hub is signed in is not checked: nothing on disk was found to say so (this Mac, Unity 6000.6.0f1,
-2026-11-12). A run on a Mac that is not signed in ends unmeasured, by its log (licensing.never_started)."""
+The sign-in is read with Unity's own command (unity_cli.signed_in), on this Mac only: over SSH the command may not
+read the keychain that holds the session, so the second Mac's is not asked. A sign-in that cannot be read is not
+warned of. A run on a Mac that is not signed in ends unmeasured, by its log (licensing.never_started)."""
 import shlex
 
 from .. import extensions, remote
-from . import editor, settings
+from . import editor, settings, unity_cli
 
 # Without a graphics device Unity never loads compute shaders, and a project that has them fails to open.
 NO_GRAPHICS = "-nographics"
@@ -43,6 +45,9 @@ def warnings(root, config):
     if editor.resolve(editor.HUB, want) != pinned:
         found.append(f"Unity {want}, which {project.name} pins, is not installed on this Mac ({editor.HUB / want}): a "
                      "run here takes the newest editor instead, which reimports the Library and rewrites the pin")
+    if unity_cli.signed_in() is False:
+        found.append("Unity Hub is not signed in on this Mac, so an editor started here has no license and its run "
+                     "ends unmeasured: sign in with Unity Hub, or `unity auth login`")
     host = second_mac()
     if host and installed_there(host, pinned) is False:
         found.append(f"Unity {want}, which {project.name} pins, is not installed on {host} ({editor.HUB / want}): a "
