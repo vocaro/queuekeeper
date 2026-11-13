@@ -137,6 +137,17 @@ class _Lease:
         # One list per open preserved() scope, innermost last: its transitions that failed, which it restores.
         self.scopes = []
 
+    @classmethod
+    def adopting(cls, owner, record, entry):
+        """A lease for entry's exact identity that adopts the uncertainty at entry's revision as its own, so that
+        it may restore over it and nothing else: any later write to the entry ends that permission."""
+        lease = cls.__new__(cls)
+        lease.owner, lease.record = owner, record
+        lease.identity = cls._identity(entry)
+        lease.uncertainty_revision = entry["revision"]
+        lease.scopes = []
+        return lease
+
     @staticmethod
     def _identity(entry):
         return (entry.get("reservedAt"), entry.get("hostProcessIdentifier"), entry.get("hostProcessStart"))
@@ -168,8 +179,11 @@ class _Lease:
             # Only this instance's own uncertainty may permit a restoration retry. Never
             # adopt a marker written by another state scope or any unrelated run failure.
             if devices.condition(entry) == "uncertain" and entry["revision"] != self.uncertainty_revision: return
+            # The marker names the revision it writes, so that recover_restoration can tell that nothing was
+            # written to the entry after it.
             changed = self.record.update(devices.FOREGROUND, owner=self.owner, revision=entry["revision"],
-                                         uncertain=True, voiceOverRestoration={"verified": False, "reason": reason})
+                                         uncertain=True, voiceOverRestoration={"verified": False, "reason": reason,
+                                                                               "revision": entry["revision"] + 1})
             self.uncertainty_revision = changed["revision"]
         except (devices.Refused, OSError, TimeoutError):
             # The enclosing foreground scope also retains an active/orphan entry if its
@@ -305,6 +319,53 @@ def set_enabled(desired, owner=None, *, record=None):
     The outer queuekeeper process is a separate guard; it does not share a child driver's context.
     """
     _set(_lease(owner, record), desired, _read, _toggle)
+
+
+def recover_restoration(owner=None, *, record=None, by=None, read_state=None, toggle=None):
+    """Set VoiceOver back to the original the run's foreground guard recorded, over the uncertainty a session's own
+    unverified restoration left, so that the run's next session can start (owner's decision, 2026-11-12,
+    vocaro/EPUBLib#416). Returns that original, True for on.
+
+    Only the run that holds the lease may, and only once: it refuses with devices.Refused, changing nothing, unless
+    owner holds mac-foreground and devices.unrecoverable_restoration finds nothing against it, which needs the run's
+    host process alive, the same lease identity, the original recorded under that lease, and no uncertainty but the
+    restoration's. It then restores the original as preserved() does after a failed transition, rechecking the lease
+    before every query and key and watching the state hold for a stretched SETTLE, and on success clears the
+    uncertainty, recording who recovered it and when. A restoration it cannot verify raises TransitionFailed and
+    leaves the entry uncertain, recording the failed attempt, which ends this permission: attended recovery follows.
+    """
+    owner = owner or os.environ.get(devices.OWNER)
+    record = record or devices.Record()
+    by = by or f"{owner} through process {os.getpid()}"
+    if not owner:
+        raise devices.Refused(f"name the session whose {devices.FOREGROUND} reservation covers this work "
+                              f"(--owner or {devices.OWNER})")
+    entry = record.entry(devices.FOREGROUND)
+    if entry is None or entry.get("ownerChatID") != owner or entry.get("state") == "released":
+        raise devices.Refused(f"{devices.FOREGROUND} is not held by {owner}; VoiceOver was not changed")
+    problem = devices.unrecoverable_restoration(entry)
+    if problem:
+        raise devices.Refused(f"{devices.FOREGROUND} cannot be recovered by its run: {problem}. It needs attended "
+                              f"recovery; VoiceOver was not changed")
+    original = entry["voiceOverOriginal"]["enabled"]
+    lease = _Lease.adopting(owner, record, entry)
+    try:
+        with guard.restoring_signals():
+            _restore(lease, original, read_state or _read, toggle or _toggle, settle=True)
+    except (TransitionFailed, UnknownState, devices.Refused) as error:
+        try:
+            current = record.entry(devices.FOREGROUND)
+            if current is not None and current.get("revision") == entry["revision"]:
+                record.update(devices.FOREGROUND, owner=owner, revision=entry["revision"], voiceOverRestoration={
+                    **entry["voiceOverRestoration"], "recoveryFailed": {"by": by, "at": devices.now(),
+                                                                       "reason": str(error)}})
+        except (devices.Refused, OSError, TimeoutError):
+            pass
+        if isinstance(error, devices.Refused): raise
+        raise TransitionFailed(f"VoiceOver's original {'on' if original else 'off'} was not restored and verified; "
+                               f"the foreground stays uncertain for attended recovery: {error}") from error
+    record.restoration_recovered(devices.FOREGROUND, owner=owner, revision=entry["revision"], by=by)
+    return original
 
 
 @contextlib.contextmanager

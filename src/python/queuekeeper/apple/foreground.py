@@ -68,7 +68,9 @@ def slot(purpose, *, timeout, expected=EXPECTED, record=None, poll=POLL, ready=N
     It refuses on any other Mac, and, before taking anything, on a second Mac that problems() finds not
     ready, which is a configuration problem for the owner. While another run holds the entry it waits,
     up to timeout seconds, then raises TimeoutError; a stop raises processes.Interrupted before taking
-    the foreground. An orphaned or uncertain entry needs attended recovery. Only after acquisition, the run captures and preserves the actual VoiceOver state.
+    the foreground. An orphaned or uncertain entry needs attended recovery, except the one case the run's own runner
+    may recover itself, while it runs (voiceover_state.recover_restoration). Only after acquisition, the run captures
+    and preserves the actual VoiceOver state, and records it in the entry as voiceOverOriginal.
     A passive driver explicitly opts into voiceover.state.preserved(target=False) inside this lease.
     The entry records this process as its active run, so that the entry outlives a run that
     dies only as an orphan, and QUEUEKEEPER_DEVICE_OWNER names it for the block. The release records the
@@ -123,7 +125,13 @@ def slot(purpose, *, timeout, expected=EXPECTED, record=None, poll=POLL, ready=N
     try:
         # Always settled: the run's child driver may have died between a failed toggle and its own restoration,
         # and nothing tells this process so. Release only once the original state has held (#137).
-        with voiceover_state.preserved(owner, record=record, read_state=voiceover, said=said, settle=True):
+        with voiceover_state.preserved(owner, record=record, read_state=voiceover, said=said, settle=True) as original:
+            # The original, with the lease it was read under, for the run's own runner to restore over a session's
+            # unverified restoration (voiceover_state.recover_restoration; vocaro/EPUBLib#416).
+            current = record.entry(devices.FOREGROUND)
+            record.update(devices.FOREGROUND, owner=owner, revision=current["revision"], voiceOverOriginal={
+                "enabled": original, "reservedAt": identity[0], "hostProcessIdentifier": identity[1],
+                "hostProcessStart": identity[2]})
             yield owner
         outcome = "the run's work ended"
     except voiceover_state.TransitionFailed as error:

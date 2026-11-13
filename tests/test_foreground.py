@@ -1,4 +1,5 @@
 import contextlib
+import contextvars
 from datetime import datetime, timedelta
 from io import StringIO
 import json
@@ -217,6 +218,38 @@ class SlotTests(unittest.TestCase):
                 raise RuntimeError("driver failed")
         entry = self.record.entry(devices.FOREGROUND)
         self.assertEqual((entry["state"], entry["run"]), ("released", "ended by an exception"))
+
+    def test_a_session_that_leaves_voiceover_on_is_recovered_by_its_run_which_then_releases(self):
+        # vocaro/EPUBLib#416, owner's decision 2026-11-12: a session whose own restoration could not be verified
+        # leaves the lease uncertain; the run's runner sets the original back and its next session starts.
+        self.second_mac()
+        enabled = [False]
+        def toggle(): enabled[0] = not enabled[0]
+        def cannot_toggle(): raise OSError("System Events refused the key")
+        def session():
+            # In a context of its own, as a session driver runs in its own process.
+            with self.assertRaises(voiceover_state.TransitionFailed):
+                with voiceover_state.preserved(None, record=self.record, read_state=lambda: enabled[0],
+                                               toggle=cannot_toggle):
+                    enabled[0] = True
+        with patch.object(voiceover_state, "_ready_to_enable", return_value=True):
+            with self.slot(voiceover=lambda: enabled[0]) as owner:
+                entry = self.record.entry(devices.FOREGROUND)
+                self.assertEqual(entry["voiceOverOriginal"], {"enabled": False, **{
+                    name: entry[name] for name in ("reservedAt", "hostProcessIdentifier", "hostProcessStart")}})
+                contextvars.Context().run(session)
+                with self.assertRaisesRegex(devices.Refused, "uncertain"):
+                    voiceover_state.read(owner, record=self.record)
+                self.assertIs(voiceover_state.recover_restoration(record=self.record, read_state=lambda: enabled[0],
+                                                                  toggle=toggle), False)
+                self.assertIs(enabled[0], False)
+                # The next session's driver passes the lease check it was refused at.
+                self.assertEqual(devices.require_foreground(owner, self.record)["ownerChatID"], owner)
+                self.assertEqual(devices.condition(self.record.entry(devices.FOREGROUND)), "active")
+        entry = self.record.entry(devices.FOREGROUND)
+        self.assertEqual((entry["state"], entry["run"]), ("released", "the run's work ended"))
+        self.assertTrue(entry["voiceOverRestoration"]["verified"])
+        self.assertEqual(entry["voiceOverRestoration"]["recoveredBy"], f"{owner} through process {os.getpid()}")
 
     def test_a_run_waits_while_another_holds_the_foreground_and_takes_it_once_released(self):
         self.second_mac()

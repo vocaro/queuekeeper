@@ -2612,7 +2612,14 @@ uncertain, and, on this Mac, its expected release has not passed. `queuekeeper r
 `"foreground": true` the same way, and `queuekeeper admit --foreground` a command; on the second Mac queuekeeper
 holds the entry for the run itself and names it in `QUEUEKEEPER_DEVICE_OWNER`
 ([running foreground work](https://github.com/vocaro/vocaro-engineering/blob/main/guides/second-mac-foreground.md#running-foreground-work)), and a run there may
-outlast its expected release. On this Mac a passed expected release releases nothing: `status`
+outlast its expected release. An uncertain entry needs attended recovery, with one exception there:
+when a session's own VoiceOver restoration could not be verified, and nothing else is uncertain, the
+run's own runner may set VoiceOver back to the original queuekeeper recorded in the entry
+(`voiceOverOriginal`) with `voiceover.state.recover_restoration(owner)`, once, while the run lives;
+verified, the entry is no longer uncertain and the run's next session starts (owner's decision,
+2026-11-12, [EPUBLib#416](https://github.com/vocaro/EPUBLib/issues/416);
+[recovering the foreground](https://github.com/vocaro/vocaro-engineering/blob/main/guides/second-mac-foreground.md#recovering-the-foreground)).
+On this Mac a passed expected release releases nothing: `status`
 reports it, the check refuses further foreground work, and the session stops, restores and
 releases. A reservation made before 2026-11-06 that recorded an approval also stops once that
 approval ends. Record each app and test runner the session launches
