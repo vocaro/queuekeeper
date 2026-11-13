@@ -115,7 +115,7 @@
   function all() {
     if (!state.repositories.length) {
       return QK.fill(main, QK.h("div", { class: "card hero" }, QK.h("h1", null, "No repository yet"),
-        QK.h("p", null, "Queue a commit with queuekeeper land, or start queuekeeper serve inside a repository.")));
+        QK.h("p", null, "Queue a commit with qk land, or start qk serve inside a repository.")));
     }
     QK.fill(main, QK.h("div", { class: "card" }, QK.h("h2", null, "All repositories"),
       QK.h("ul", { class: "rows lines" }, state.repositories.map(one => QK.h("li", null, QK.h("a", {

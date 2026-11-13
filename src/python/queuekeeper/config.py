@@ -72,7 +72,7 @@ def device_keys(name, lane):
 
 def lane_devices(lane):
     """The device-record entries a lane's run uses (vocaro-engineering#292): its "devices", for a project's script
-    that calls device_pass.run, or each --device of an `queuekeeper device-pass` command, up to that command's own --, which
+    that calls device_pass.run, or each --device of an `qk device-pass` command, up to that command's own --, which
     the words of the command it runs follow. Any other lane uses none."""
     if lane.get("devices"): return list(lane["devices"])
     command = lane.get("command") or []
@@ -177,7 +177,7 @@ def stall(name, lane):
 
 
 def test_lanes(declared):
-    """What queuekeeper doctor's lane coverage (lane_coverage.py, #289) cannot work out for itself: skip, the test paths kept as
+    """What qk doctor's lane coverage (lane_coverage.py, #289) cannot work out for itself: skip, the test paths kept as
     records, each with its reason, and selects, for a lane whose command it cannot read, the paths the lane's tests
     are under, none for a lane that runs no test."""
     if not isinstance(declared, dict) or set(declared) - {"skip", "selects"}:
@@ -209,8 +209,8 @@ def compile_first(name, lane):
 # first (the owner's decision, 2026-11-07, vocaro-engineering#200): heavy, one slot of heavy-work admission, which a
 # lane that gives no resource takes too; light, which once ran unadmitted where it started, now means heavy, so
 # that the queuekeeper.json files that give it keep loading; exclusive, the host to itself; and self, a lane whose
-# script admits each of its parts itself, such as a calibration that builds under `queuekeeper admit` and then times under
-# `queuekeeper admit --exclusive`, which an admission of its own would refuse, so queuekeeper run runs it where it starts, unadmitted
+# script admits each of its parts itself, such as a calibration that builds under `qk admit` and then times under
+# `qk admit --exclusive`, which an admission of its own would refuse, so qk run runs it where it starts, unadmitted
 # (guides/shared-host.md, Heavy-work admission).
 RESOURCES = ["light", "heavy", "exclusive", "self"]
 # How heavily a lane's admission holds its Mac, so that a group's is at least each of its lanes'.
@@ -225,13 +225,13 @@ def resource_of(name, lane):
     return "heavy" if resource == "light" else resource
 
 
-# A call of queuekeeper admit, as a shell script or a command's own words write it (`scripts/qk admit`), or as a
+# A call of qk admit, as a shell script or a command's own words write it (`scripts/qk admit`), or as a
 # Python list of a command's words does (`[*queuekeeper, "admit", ...]`).
 ADMIT_CALL = re.compile(r"""\b(?:qk|queuekeeper)\b["' ,\])]*admit\b|["']admit["']""")
 
 
 def self_lane_warnings(root, config):
-    """queuekeeper doctor's warning for each self lane whose command neither calls queuekeeper admit in its own words nor runs
+    """qk doctor's warning for each self lane whose command neither calls qk admit in its own words nor runs
     a file of the checkout that does: a self lane runs unadmitted, trusted to admit each of its parts, and one
     that admits none runs its work outside admission (owner's decision, 2026-11-07, vocaro-engineering#200).
     The check reads the text and cannot prove that every part is admitted; it catches a lane that admits nothing."""
@@ -251,13 +251,13 @@ def self_lane_warnings(root, config):
         ran = f"the file it runs, {', '.join(path.relative_to(root).as_posix() for path in files)}," if files \
             else "any file of the checkout it runs"
         warnings.append(f"{name} is a self lane, which queuekeeper runs unadmitted, trusting it to admit each of its parts, "
-                        f"but neither its command nor {ran} calls queuekeeper admit, so its work runs outside admission: "
-                        "give it \"resource\": \"heavy\", or admit each part with queuekeeper admit (guides/shared-host.md)")
+                        f"but neither its command nor {ran} calls qk admit, so its work runs outside admission: "
+                        "give it \"resource\": \"heavy\", or admit each part with qk admit (guides/shared-host.md)")
     return warnings
 
 
 def display_lane_warnings(config):
-    """queuekeeper doctor's warning for each "display": true lane that does not say "unlockedScreen": "display" wakes the
+    """qk doctor's warning for each "display": true lane that does not say "unlockedScreen": "display" wakes the
     display and keeps it on, behind a lock too, but unlocks nothing, so queuekeeper may place the lane on a Mac whose screen
     is locked, where a test that reports a lock as unmeasured gives no verdict, and the merge queue sends its gate
     there again until it holds (vocaro-engineering#293). A lane whose tests measure behind a lock says
@@ -284,12 +284,12 @@ def unadmitted(lane):
 
 
 def admission(lane):
-    """The admission queuekeeper run takes for the lane, or group: heavy, exclusive, or self for none."""
+    """The admission qk run takes for the lane, or group: heavy, exclusive, or self for none."""
     return resource_of("the lane", lane)
 
 
 def exclusive_refusal(config, command):
-    """Why `queuekeeper admit --exclusive` or `queuekeeper remote admit --exclusive` refuses command, or None.
+    """Why `qk admit --exclusive` or `qk remote admit --exclusive` refuses command, or None.
 
     A command word for word a heavy lane's own (its command or compileFirst) is that lane's work, which its
     configuration admits as heavy: a gate suite sent as exclusive work held every slot of the second Mac for 33
@@ -304,17 +304,17 @@ def exclusive_refusal(config, command):
         except ValueError:
             continue
         return (f"the command is the {name} lane's, which its configuration admits as heavy work, never exclusive "
-                f"(guides/shared-host.md, Heavy-work admission): run it with `queuekeeper run {name}`, or, if its run "
+                f"(guides/shared-host.md, Heavy-work admission): run it with `qk run {name}`, or, if its run "
                 f"really needs the host to itself, give the lane \"resource\": \"exclusive\"")
     return None
-# The platforms `queuekeeper app` builds an app for, and whether each is kept after every gated landing unless the
+# The platforms `qk app` builds an app for, and whether each is kept after every gated landing unless the
 # project says otherwise: the Mac build is, so that the newest landed app opens at once; a device build is
 # made when a device asks for it (app_builds.py).
 APP_PLATFORMS = {"mac": True, "ios": False}
 
 
 def app(declared):
-    """The app `queuekeeper app` keeps and runs (app_builds.py, guides/app-builds.md)."""
+    """The app `qk app` keeps and runs (app_builds.py, guides/app-builds.md)."""
     if not isinstance(declared, dict) or set(declared) - {"project", "workspace", "directory", "configuration",
                                                           "prepare", "links", *APP_PLATFORMS}:
         raise ValueError("app supports only project or workspace, directory, configuration, prepare, links, mac and ios")
@@ -362,7 +362,7 @@ LANDING_FIRST = ["spelling", "provision"]
 SPELLING = "spelling"
 # The toolkit's spelling check, the spelling lane of a project that has none: the queue runs it before the gate, on an
 # ungated landing and before a docs-only batch's lanes, unless main's queue.spelling is false, so that a British spelling
-# fails in a minute, not after a full gate and a bisect (vocaro-engineering, 2026-11-07). queuekeeper run admits and places it
+# fails in a minute, not after a full gate and a bisect (vocaro-engineering, 2026-11-07). qk run admits and places it
 # as any lane (lane_to_run).
 IMPLICIT_SPELLING = ["python3", "scripts/qk", SPELLING]
 DOCS = "docs"
@@ -370,7 +370,7 @@ IMPLICIT_DOCS = ["python3", "scripts/qk", "docs", "check"]
 # Conventional prose only; configuration, agent policy, source and test fixtures keep their code gates.
 DOCS_FILES = {"README.md", "CONTRIBUTING.md", "CHANGELOG.md"}
 DOCS_FOLDERS = ("doc/", "docs/", "guides/", "knowledge/")
-# Seconds the spelling check may run, as that lane and before queuekeeper land queues an entry (vocaro-engineering#283).
+# Seconds the spelling check may run, as that lane and before qk land queues an entry (vocaro-engineering#283).
 SPELLING_LIMIT = 300
 
 
@@ -399,7 +399,7 @@ def landing_lanes(lanes, queue):
 def release(declared, lanes=None, queue=None):
     """The release gate's settings: lanes, the release checks each a lane of its own, which eng release
     requires a pass of at the release commit, and maxCommits, the checkpoint's limit (guides/releasing.md,
-    Two gates and Checkpoints). A name in lanes that is no lane is queuekeeper doctor's warning, not an error.
+    Two gates and Checkpoints). A name in lanes that is no lane is qk doctor's warning, not an error.
     A release lane that a landing also runs is an error: a release check runs once, on the release
     commit, and no change waits for one to land."""
     if not isinstance(declared, dict) or set(declared) - {"lanes", "maxCommits"}:
@@ -420,7 +420,7 @@ def release(declared, lanes=None, queue=None):
 
 
 def budget(name, lane):
-    """budgetMinutes, the gate's time budget, from its measured time, past which queuekeeper land and queuekeeper doctor warn
+    """budgetMinutes, the gate's time budget, from its measured time, past which qk land and qk doctor warn
     (guides/releasing.md, Keeping the split). Only the gate lane has one."""
     if not isinstance(lane, dict) or "budgetMinutes" not in lane: return
     if name != "gate":
@@ -557,7 +557,7 @@ def unlocked_screen(lanes, name):
 
 
 def lane_to_run(config, name):
-    """The lane queuekeeper run runs as name, or None when there is no such lane: the one config has, or, for spelling and docs in a
+    """The lane qk run runs as name, or None when there is no such lane: the one config has, or, for spelling and docs in a
     project with no such lane, the toolkit's check, added to config's lanes so that the run treats it as any other,
     which is how the merge queue's gate runs it (owner's decision, 2026-11-09, vocaro-engineering#305). queue.spelling
     says only whether the queue asks for it, and main's says that, so a batch's own setting cannot leave a lane unknown."""

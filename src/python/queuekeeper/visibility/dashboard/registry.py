@@ -1,5 +1,5 @@
 """The repositories the dashboard shows: those whose queues have journaled an event while the feature was on, and
-those `queuekeeper serve` was started in or given. They are kept as paths, beside the owner's settings, in
+those `qk serve` was started in or given. They are kept as paths, beside the owner's settings, in
 dashboard-repositories.json; one whose folder or queue is gone is left out when the list is read."""
 import contextlib
 import json

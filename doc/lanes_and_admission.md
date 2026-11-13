@@ -11,7 +11,7 @@ statement of what it needs from the machine:
 ```json
 {
   "lanes": {
-    "unit":    {"command": ["queuekeeper", "unittest", "-s", "tests"], "timeout": 1800},
+    "unit":    {"command": ["qk", "unittest", "-s", "tests"], "timeout": 1800},
     "ui":      {"command": ["scripts/ui-tests.sh"], "timeout": 3600, "unlockedScreen": true},
     "measure": {"command": ["scripts/benchmarks.sh"], "resource": "exclusive"},
     "gate":    {"parallel": ["unit", "ui"], "budgetMinutes": 20}

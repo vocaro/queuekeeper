@@ -1,4 +1,4 @@
-"""`queuekeeper results keep`: a passing run's per-test outcomes and seconds, for a lane that runs xcodebuild itself (#260)."""
+"""`qk results keep`: a passing run's per-test outcomes and seconds, for a lane that runs xcodebuild itself (#260)."""
 import contextlib
 from io import StringIO
 import json
@@ -197,7 +197,7 @@ class KeepTests(unittest.TestCase):
         self.assertIn("were not kept", output)
 
     def test_a_record_already_kept_is_left_alone(self):
-        # The negative control: a run `queuekeeper simulator-tests` kept writes this name itself, in this format.
+        # The negative control: a run `qk simulator-tests` kept writes this name itself, in this format.
         self.fixture()
         record = matrix.bundle_record(self.bundle)
         self.assertEqual(matrix.kept("iPhone-17-Pro-1", self.log, record, 0, 12, self.results), self.kept)
@@ -241,13 +241,13 @@ class KeepTests(unittest.TestCase):
         self.assertNotIn("per-test results", finished.stdout + finished.stderr)
 
     def test_eng_run_does_not_print_a_lanes_own_simulator_tests_records(self):
-        # The negative control: a lane through queuekeeper simulator-tests keeps its lines and JSON, and its gate's output is unchanged.
+        # The negative control: a lane through qk simulator-tests keeps its lines and JSON, and its gate's output is unchanged.
         self.fixture([case("testOpens", "Passed", 1.25)])
         matrix.kept("iPhone-17-Pro-1", self.log, matrix.bundle_record(self.bundle), 0, 12, self.results)
         out = StringIO()
         with contextlib.redirect_stdout(out): run_results.report(self.results)
         self.assertEqual(out.getvalue(), "")
-        self.assertEqual(self.record("iPhone-17-Pro-1")["keptBy"], "queuekeeper simulator-tests")
+        self.assertEqual(self.record("iPhone-17-Pro-1")["keptBy"], "qk simulator-tests")
 
     def test_report_reads_a_groups_lanes_says_when_results_are_unread_and_survives_a_damaged_record(self):
         lanes = {"left": {"run": "iPhone", "keptBy": run_results.KEPT_BY, "status": 0, "bundleUnread": None,

@@ -30,7 +30,7 @@ FEWEST_RUNS = 3
 # The parts a landed entry keeps, and those a warning names.
 KEPT_PARTS = 10
 NAMED_PARTS = 5
-# What queuekeeper unittest and queuekeeper xctest print for each process, "== NAME: OK (3 tests, 1.2s)", and what a
+# What qk unittest and qk xctest print for each process, "== NAME: OK (3 tests, 1.2s)", and what a
 # lane group prints for each of its lanes under "Lane times (...)": "  NAME     12s  PASS".
 SHARD = re.compile(r"^== (.+?): .*\((?:[^()]*, )?(\d+(?:\.\d+)?)s\)$")
 LANE_TIME = re.compile(r"^  (\S+)\s+(\d+(?:\.\d+)?)s\s+(?:PASS|FAIL|UNMEASURED)$")
@@ -134,7 +134,7 @@ def lane_commands(config, name):
 
 def takes_device(command):
     """Whether a command reserves a physical device: a --device option, `devices take` or `reserve`, or a device
-    pass (`queuekeeper device-pass`)."""
+    pass (`qk device-pass`)."""
     if any(word == "--device" or word.startswith("--device=") or word == "device-pass" for word in command):
         return True
     return any(word == "devices" and command[index + 1:index + 2] in (["take"], ["reserve"])
@@ -142,7 +142,7 @@ def takes_device(command):
 
 
 def passes_devices(command):
-    """Whether a command is a device pass, `queuekeeper device-pass`, which takes the paired devices itself."""
+    """Whether a command is a device pass, `qk device-pass`, which takes the paired devices itself."""
     return "device-pass" in command
 
 
@@ -158,10 +158,10 @@ def misplaced_passes(config):
 
 
 def doctor_warnings(config):
-    """queuekeeper doctor's own: a direct-main gate with no budget, a gate that takes a physical device, and a device
+    """qk doctor's own: a direct-main gate with no budget, a gate that takes a physical device, and a device
     pass's lane that would go to the second Mac."""
     lanes = config.get("lanes", {})
-    warnings = [f"{name} runs a device pass with no \"here\", so queuekeeper run sends it to the second Mac, whose device "
+    warnings = [f"{name} runs a device pass with no \"here\", so qk run sends it to the second Mac, whose device "
                 "record defers physical devices to this Mac: give it \"here\": \"a physical device, reserved in "
                 f"this Mac's device record\" ({PASS})" for name in misplaced_passes(config)]
     if GATE not in lanes: return warnings

@@ -1,4 +1,4 @@
-"""`queuekeeper simulator-pool reap` (offload_host.reap) over fake ps, lsof and simctl listings of a Mac whose home
+"""`qk simulator-pool reap` (offload_host.reap) over fake ps, lsof and simctl listings of a Mac whose home
 is a temporary directory, with its own device record, admission guard and log. No test runs simctl."""
 import contextlib
 from contextlib import redirect_stdout
@@ -465,7 +465,7 @@ class ReapTests(unittest.TestCase):
         self.assertFalse(self.log.exists())
 
     def test_a_take_that_its_session_still_holds_is_never_released_early(self):
-        # `queuekeeper simulator-pool take` records no ALONE: its session holds the member by its word between commands.
+        # `qk simulator-pool take` records no ALONE: its session holds the member by its word between commands.
         before = self.early(**{offload_host.ALONE: None})
         self.assertHeldEarly(self.reap(), "does not record that only its holder held it", before)
 
@@ -577,7 +577,7 @@ class ReapTests(unittest.TestCase):
             self.guard.write_text(json.dumps({"vocaroEngineering": 1, "owners": {"a" * 32: {
                 "pid": 106100, "start": self.table[106100][2], "label": "swift test"}}}))
         cases = (
-            ("a take's reservation", {offload_host.ALONE: None, "purpose": "queuekeeper simulator-pool take"}, None,
+            ("a take's reservation", {offload_host.ALONE: None, "purpose": "qk simulator-pool take"}, None,
              "not due for release"),
             ("one not marked held only while its holder runs", {offload_host.ALONE: False}, None, "not due for release"),
             # Its expected release, not yet passed, still holds it: the process that would end that runs.
@@ -785,7 +785,7 @@ class ReapTests(unittest.TestCase):
     # Condition 2: left over.
 
     def test_a_live_admission_that_holds_it_keeps_it_out_of_the_census(self):
-        self.process(HOLDER, 100900, "python3 queuekeeper simulator-tests")
+        self.process(HOLDER, 100900, "python3 qk simulator-tests")
         self.guard.write_text(json.dumps({"vocaroEngineering": 1, "owners": {"a" * 32: {
             "pid": HOLDER, "start": self.table[HOLDER][2]}}}))
         self.reserve(holderProcess={"pid": HOLDER, "start": self.table[HOLDER][2]})
@@ -876,7 +876,7 @@ class ReapTests(unittest.TestCase):
     # The second check.
 
     def taken(self):
-        self.process(HOLDER, 100900, "python3 queuekeeper simulator-pool take")
+        self.process(HOLDER, 100900, "python3 qk simulator-pool take")
         self.reserve(holderProcess={"pid": HOLDER, "start": self.table[HOLDER][2]})
 
     def test_a_device_taken_between_the_two_checks_is_not_stopped(self):
@@ -1036,7 +1036,7 @@ class ReapCommandTests(unittest.TestCase):
         status, output, local, far = self.run_command()
         request = {"pools": ["Example", "Pagepour"], "dry_run": False, "scan": True}
         local.assert_called_once_with(remote.ROOT, **request)
-        # `queuekeeper simulator-pool reap` also stops the leftovers it proves an ended run's; doctor only lists them.
+        # `qk simulator-pool reap` also stops the leftovers it proves an ended run's; doctor only lists them.
         far.assert_called_once_with("fake", request, True)
         self.assertEqual(status, 0)
         self.assertIn("on this Mac, no stale pool simulator", output)
@@ -1118,7 +1118,7 @@ class ReapBeforeRunTests(unittest.TestCase):
         self.assertIn(f"queuekeeper: on {remote.HERE}, released {NAME} ({UDID}), held for owner session-gone", error)
 
     def test_a_command_eng_admit_runs_here_reaps_this_mac_first(self):
-        # --here, since plain queuekeeper admit offers the command to the second Mac first, and says so when it runs here.
+        # --here, since plain qk admit offers the command to the second Mac first, and says so when it runs here.
         status, error = self.qk("admit", "--here", "--", sys.executable, "-c", "open('ran', 'a').write('ran')")
         self.assertEqual(status, 0, error)
         self.assertEqual(self.calls, [((remote.ROOT, {"pools": ["Example"]}), False)])

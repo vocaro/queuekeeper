@@ -11,7 +11,7 @@ record fresh, refuses unless the entry is still at the revision the caller read,
 file whole. The lock covers one change, never a reservation, and the kernel drops it with its
 process. Like a heavy-work guard, an entry is never released by a deadline or a vanished process:
 an active run whose recorded process is gone is an orphan, kept for attended recovery. The one
-exception is a simulator pool's reservation that `queuekeeper simulator-pool reap` proves dead, every process
+exception is a simulator pool's reservation that `qk simulator-pool reap` proves dead, every process
 it records gone and its simulator shut down, which reap releases as a recovery by reap: once its
 expected release has passed, or before then when only its holder held it (ALONE) and nothing accounts
 for its owner, no live admission or other process naming the owner or the device (offload_host.release_dead;
@@ -30,7 +30,7 @@ its own, and says whether the previous frontmost app was restored.
 Each Mac's simulators are its own, but a paired iPhone or iPad is reachable from both Macs, so a
 physical device is reserved in one record only: the Mac that sends runs to the second Mac. The
 second Mac's record defers physical devices to that Mac and refuses to reserve one. A run there
-uses one under a reservation held in the sending Mac's record, which `queuekeeper remote --device` carries.
+uses one under a reservation held in the sending Mac's record, which `qk remote --device` carries.
 
 A physical device's reservation records no approval (owner's decision, 2026-11-06): the record schedules
 the devices, first come first served, one holder at a time, and a session that reserves one has the
@@ -40,7 +40,7 @@ expected release is its window, and a bounded run stops before it.
 A bounded run (`devices run KEY -- COMMAND`, BoundedRun) runs one command on physical devices the
 session holds, refusing a command that names any other device, and
 stops it before the reservation ends, keeping time for its termination and the session's
-restoration. It records the run in the entry and never releases the device. `queuekeeper remote --device`
+restoration. It records the run in the entry and never releases the device. `qk remote --device`
 bounds a run on the second Mac the same way, and there a bounded run takes its reservation from the lease.
 
 `devices take KEY` takes a paired device in turn: it joins the device's queue, waits while another
@@ -55,7 +55,7 @@ runs the owner's silencing shortcut on it, once he has recorded making it there 
 and releasing or recovering the entry runs the restoring one. The entry's `notifications` records each step.
 The Mac reads no device's Focus, so the silencing is never confirmed, and a run without it says so
 (device_notifications). `devices run` watches the device's log while its command runs, and a run a notification
-reached as a banner is unmeasured and run once more; so does `queuekeeper remote --device`, from the sending Mac (#192).
+reached as a banner is unmeasured and run once more; so does `qk remote --device`, from the sending Mac (#192).
 """
 import argparse
 import contextlib
@@ -137,7 +137,7 @@ OWNER = "QUEUEKEEPER_DEVICE_OWNER"
 # member's simulator as that run's (offload_host.leftovers).
 HOLDER = "holderProcess"
 # Set beside HOLDER when that process alone holds the reservation, as a run's pool records it and
-# `queuekeeper simulator-pool take` never does: reap may release such an entry before its expected release once
+# `qk simulator-pool take` never does: reap may release such an entry before its expected release once
 # its processes are gone and nothing accounts for its owner (offload_host.ALONE; vocaro-engineering#156).
 ALONE = offload_host.ALONE
 # How a foreground release left the frontmost app: restored, or no longer the session's to restore.
@@ -188,7 +188,7 @@ def physical(udid):
 
 def deferred_refusal(mac, key):
     return Refused(f"physical devices are reserved in {mac}'s device record, not this one: reserve {key} there and "
-                   f"send the run here with `queuekeeper remote run|admit --device {key}`. Nothing was changed")
+                   f"send the run here with `qk remote run|admit --device {key}`. Nothing was changed")
 
 
 def approval_refusal(key):
@@ -980,7 +980,7 @@ class BoundedRun:
         missing = [key for key in keys if key not in carried]
         if missing:
             raise Refused(f"the run's lease carries {', '.join(carried) or 'no device'}, not {', '.join(missing)}: "
-                          f"send the run from {mac} with `queuekeeper remote run|admit --device {missing[0]}`. Nothing ran")
+                          f"send the run from {mac} with `qk remote run|admit --device {missing[0]}`. Nothing ran")
         if deadline is None:
             raise Refused("the run's lease names no end for its reservations. Nothing ran")
         return {key: carried[key] for key in keys}, deadline

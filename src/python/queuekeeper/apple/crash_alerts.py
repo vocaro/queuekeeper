@@ -301,7 +301,7 @@ class Run:
         if process is None:
             return False, f"names no process queuekeeper can read, so queuekeeper counts it as the app under test's; it {standing}"
         if not self.apps:
-            return False, (f"was for {process}, and the run names no app under test (a lane's \"apps\", or queuekeeper admit "
+            return False, (f"was for {process}, and the run names no app under test (a lane's \"apps\", or qk admit "
                            f"--app), so queuekeeper counts it as the app under test's; it {standing}")
         if self.is_app_under_test(process):
             return False, f"was for {process}, the app under test, whose crash is the run's failure; it {standing}"

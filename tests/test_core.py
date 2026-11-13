@@ -26,7 +26,7 @@ from host_isolation import stretched
 
 
 def setUpModule():
-    # queuekeeper doctor compares this Mac with the second Mac. These tests configure none, so that it
+    # qk doctor compares this Mac with the second Mac. These tests configure none, so that it
     # never reaches the owner's; test_remote's doctor tests reach a fake one. It also checks the
     # account's agent skill links: these tests install no agent host, and test_skills installs some.
     nowhere = str(Path(tempfile.gettempdir()) / f"no-agent-host-{uuid.uuid4()}")
@@ -408,7 +408,7 @@ class ConfigurationTests(unittest.TestCase):
         # BreezEPUB's script and PDFReflowLib's calibration admit their parts as these do (#200).
         shell = "#!/bin/bash\n# runs unadmitted\npython3 scripts/qk admit --exclusive -- xcodebuild test\n"
         python = 'queuekeeper = [sys.executable, "scripts/qk"]\nrun([*queuekeeper, "admit", "--", "swiftc", "probe.swift"])\n'
-        bare = "#!/bin/bash\n# queuekeeper run starts this lane unadmitted\nxcodebuild test\n"
+        bare = "#!/bin/bash\n# qk run starts this lane unadmitted\nxcodebuild test\n"
         cases = [(["bash", "scripts/step.sh"], shell, False), (["python3", "scripts/step.sh"], python, False),
                  (["sh", "-c", "python3 scripts/qk admit -- swift test"], None, False),
                  (["bash", "scripts/step.sh"], bare, True), (["xcodebuild", "test"], None, True),
@@ -423,7 +423,7 @@ class ConfigurationTests(unittest.TestCase):
                     "integration": "direct-main", "lanes": {
                         "gate": {"command": ["true"], "timeout": 60},
                         "step": {"command": command, "resource": "self", "timeout": 60},
-                        # A heavy lane that admits nothing is admitted by queuekeeper run, and is no self lane's concern.
+                        # A heavy lane that admits nothing is admitted by qk run, and is no self lane's concern.
                         "plain": {"command": ["xcodebuild", "test"], "resource": "heavy", "timeout": 60}}}))
                 with patch.object(cli.shutil, "which", return_value="/usr/bin/true"), \
                         patch.object(cli, "source_identity", return_value={}), \
@@ -770,7 +770,7 @@ class ResourceTests(unittest.TestCase):
                 self.assertEqual([slot for slot, _fd in lighter.descriptors], [1])
 
     def test_the_capacity_reading_shows_the_slots_held_the_busy_limit_and_what_runs(self):
-        """offload_host.capacity, which queuekeeper run reads on both Macs before it chooses one (vocaro-engineering#168),
+        """offload_host.capacity, which qk run reads on both Macs before it chooses one (vocaro-engineering#168),
         agrees with admission: the limits admission reads, the slots it holds and the guard entries it writes."""
         from queuekeeper import offload_host
         os.environ["HEAVY_SETTLE_SECONDS"] = "0"
@@ -1444,7 +1444,7 @@ class ResourceTests(unittest.TestCase):
                 with resources.Admission("gate", whole_host=True, timeout=60, place=place): self.fail("admitted")
             processes._stops.clear()
             self.assertEqual(places(), [])
-            # queuekeeper run's admission here keeps a place, and leaves it once it no longer waits here, admitted or not.
+            # qk run's admission here keeps a place, and leaves it once it no longer waits here, admitted or not.
             left = []
             class Recorded(resources.Place):
                 def leave(self):
@@ -1865,7 +1865,7 @@ class ResourceTests(unittest.TestCase):
                     with resources.Admission("blocked", exclusive=True, timeout=0): pass
 
     def test_a_stop_signal_ends_the_command_then_releases_admission(self):
-        # An agent's task stop sent queuekeeper admit SIGTERM, which ended it without leaving admission
+        # An agent's task stop sent qk admit SIGTERM, which ended it without leaving admission
         # while its command ran on in its own session (2026-10-22).
         root = Path(self.temp.name)
         guard = Path(os.environ["QUEUEKEEPER_GATE_LOCK_FILE"] + ".warm-push-guard")
@@ -2355,7 +2355,7 @@ class AdmissionLogTests(unittest.TestCase):
             with resources.Admission("unwritten", timeout=0) as admission:
                 self.assertIn(admission.identity, json.loads(guard.read_text())["owners"])
             self.assertFalse(guard.exists())
-            # A request that stops waiting fails as it would have: `queuekeeper run --if-free` tells a busy host by it.
+            # A request that stops waiting fails as it would have: `qk run --if-free` tells a busy host by it.
             self.hold(0, 1, 2)
             with self.assertRaisesRegex(TimeoutError, "Resource queue busy"):
                 with resources.Admission("refused", timeout=0): self.fail("admitted")
@@ -2655,7 +2655,7 @@ class AdmissionLogTests(unittest.TestCase):
                                  "admission named: model; waited Ns on Mac-A; nothing ran")
 
     def test_a_give_up_whose_locks_cannot_be_read_still_fails_as_a_timeout(self):
-        # `queuekeeper run --if-free` tells a busy host by the TimeoutError (#270).
+        # `qk run --if-free` tells a busy host by the TimeoutError (#270).
         self.hold(0, 1, 2)
         with patch.object(resources.Admission, "_holding", side_effect=PermissionError("no entry")), \
                 contextlib.redirect_stderr(StringIO()), \
@@ -2782,7 +2782,7 @@ class AdmissionLogTests(unittest.TestCase):
 
 
 class UsageTests(unittest.TestCase):
-    """queuekeeper admissions usage: whether the second Mac is used and why work is on this Mac, from fake readings and logs."""
+    """qk admissions usage: whether the second Mac is used and why work is on this Mac, from fake readings and logs."""
     UNTIL = datetime.fromisoformat("2026-11-06T12:00:00+00:00")
     SINCE = UNTIL - timedelta(hours=3)
     IDLE = {"slots": 3, "slotsMax": 9, "busy": [], "load": 1.0, "cpuBusy": 5.0, "busyLimit": 75.0, "wholeHost": [],
@@ -2812,7 +2812,7 @@ class UsageTests(unittest.TestCase):
         busy = {**self.IDLE, "busy": [0, 1, 2, 3], "cpuBusy": 97.0, "memory": 2}
         here_log = (self.job("g", 0, 150, whole=True, placement={"offered": False, "because": "--here"})
                     + self.job("a", 150, 160, label="swift build --jobs 4",
-                               placement={"offered": False, "because": "queuekeeper admit runs here without --verify"})
+                               placement={"offered": False, "because": "qk admit runs here without --verify"})
                     + self.job("d", 170, 180, label="Beta suite", placement={"offered": True,
                                "because": "build-host is busy (CPU 97% busy, at or above its HEAVY_BUSY_LIMIT=75%)"})
                     + self.job("e", 175, 178, label="Beta suite", placement={"offered": True,
@@ -2837,11 +2837,11 @@ class UsageTests(unittest.TestCase):
         placements = lines[lines.index("Why this Mac's admissions made in the period ran here:") + 1:]
         self.assertEqual(placements, [
             "  never offered to the second Mac: 2, held 2h40m",
-            "    queuekeeper run --here: 1, held 2h30m",
-            "    queuekeeper admit without --verify: 1, held 10m00s",
+            "    qk run --here: 1, held 2h30m",
+            "    qk admit without --verify: 1, held 10m00s",
             "  offered to the second Mac and declined: 2, held 13m00s",
             "    build-host is busy (CPU N% busy, at or above its HEAVY_BUSY_LIMIT=N%): 2, held 13m00s",
-            "  placement unrecorded (an older toolkit's line, or a caller's own admission, such as queuekeeper admit's "
+            "  placement unrecorded (an older toolkit's line, or a caller's own admission, such as qk admit's "
             "before it logged placement): 1, held 10m00s",
             "    a lane: 1, held 10m00s",
             "      Gamma gate: held 10m00s",
@@ -2888,7 +2888,7 @@ class UsageTests(unittest.TestCase):
 
 
 class RecoveryTests(unittest.TestCase):
-    """queuekeeper admissions recover removes a dead or uncertain entry once a census against its process record
+    """qk admissions recover removes a dead or uncertain entry once a census against its process record
     finds nothing of its commands still running (#61). A push keeper ended by an agent's task stop had left
     nothing running, and the host admitted no heavy work until its entry was removed by hand (2026-10-27)."""
     setUp, tearDown = ResourceTests.setUp, ResourceTests.tearDown
@@ -2916,7 +2916,7 @@ class RecoveryTests(unittest.TestCase):
         return json.loads(self.guard.read_text())["owners"] if self.guard.exists() else {}
 
     def recover(self, *owner):
-        """queuekeeper admissions recover's status and what it printed."""
+        """qk admissions recover's status and what it printed."""
         with contextlib.redirect_stdout(StringIO()) as output, contextlib.redirect_stderr(StringIO()):
             status = cli.main(["admissions", "recover", *owner])
         return status, output.getvalue()
@@ -3021,7 +3021,7 @@ class RecoveryTests(unittest.TestCase):
                 summary = resources.summarize([entry for entry in entries if entry["identity"] == identity])
                 self.assertTrue(summary[0].endswith("ends recovered 1"), summary)
 
-    # A supervised owner, as queuekeeper run is, killed before its first recorded command: it has started a helper in its own
+    # A supervised owner, as qk run is, killed before its first recorded command: it has started a helper in its own
     # process group, as a lane's setup can, and records nothing of it. Each run leads a session and group of its own.
     BEFORE_FIRST = ("import subprocess, sys, time\nfrom pathlib import Path\nfrom queuekeeper import resources\n"
                     "here = Path(sys.argv[1])\n"
@@ -3100,7 +3100,7 @@ class RecoveryTests(unittest.TestCase):
 
     def test_an_owner_killed_before_its_first_command_is_recovered_once_nothing_it_started_runs(self):
         # On 2026-11-07 three lanes killed between admission and their first recorded command left entries with no
-        # process record, which neither admission nor `queuekeeper admissions recover` would remove, and BreezEPUB's gate
+        # process record, which neither admission nor `qk admissions recover` would remove, and BreezEPUB's gate
         # waited 86 min behind them (#315). Admission now writes the record, with the owner's process group, as it
         # adds the entry, and recovery checks that group for anything the owner started.
         owner, identity, child, child_start = self.killed_before_first_command()
@@ -3444,7 +3444,7 @@ class RecoveryTests(unittest.TestCase):
                 self.guard.unlink()
 
     def remove(self, owner, *why):
-        """queuekeeper admissions remove's status and what it printed."""
+        """qk admissions remove's status and what it printed."""
         with contextlib.redirect_stdout(StringIO()) as output, contextlib.redirect_stderr(StringIO()) as error:
             try: status = cli.main(["admissions", "remove", owner, *why])
             except SystemExit as exit: status = exit.code
@@ -3549,7 +3549,7 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(status, 1, output)
         self.assertIn("has the PID or identity nobody; nothing was changed", output)
         self.guard.unlink()
-        # A provably finished entry is recovered, as `queuekeeper admissions recover` would, and logged as recovery logs it.
+        # A provably finished entry is recovered, as `qk admissions recover` would, and logged as recovery logs it.
         identity = self.stranded([{"command": "a", "argv": ["true"]}, {"command": "a", "settled": "exited"}])
         status, output = self.remove(identity, "--why", "checked")
         self.assertEqual(status, 0, output)
@@ -3772,7 +3772,7 @@ class RecoveryTests(unittest.TestCase):
 
 class LaneLabelTests(unittest.TestCase):
     """A lane run's admission label names its project, so that two projects' lanes of one name stay apart in
-    waiting messages, the guard and the admission log (#51). A label a caller gives, an queuekeeper admit command
+    waiting messages, the guard and the admission log (#51). A label a caller gives, an qk admit command
     line, and entries written before labels named the project are kept as they are."""
     setUp, tearDown = ResourceTests.setUp, ResourceTests.tearDown
     hold, lines = ResourceTests.hold, AdmissionLogTests.lines
@@ -3798,7 +3798,7 @@ class LaneLabelTests(unittest.TestCase):
                 f"while not pathlib.Path({released!r}).exists(): time.sleep(0.01)\n"]
 
     def run_lane(self, root, *arguments):
-        """queuekeeper run here, with --if-free waiting for nothing: its status and what it printed on stderr."""
+        """qk run here, with --if-free waiting for nothing: its status and what it printed on stderr."""
         with patch.object(cli, "refresh_policy", return_value="policy"), \
                 patch.object(cli, "source_identity", return_value={}), patch.object(cli, "FREE_WAIT", 0), \
                 contextlib.redirect_stdout(StringIO()), contextlib.redirect_stderr(StringIO()) as error:
@@ -3875,7 +3875,7 @@ class LaneLabelTests(unittest.TestCase):
         self.release(alpha, "gate", gate)
         # Each run removed its own entry and left the older one.
         self.assertEqual(json.loads(guard.read_text())["owners"], {"older": older})
-        # A label a caller gives, and an queuekeeper admit command line, are recorded as they are.
+        # A label a caller gives, and an qk admit command line, are recorded as they are.
         with contextlib.redirect_stderr(StringIO()), resources.Admission("warm push 0123abc", timeout=0) as push:
             self.assertEqual(json.loads(guard.read_text())["owners"][push.identity]["label"], "warm push 0123abc")
         self.admit(beta, snapshot)
@@ -3899,7 +3899,7 @@ class LaneLabelTests(unittest.TestCase):
 
     def test_a_lane_whose_admission_wait_runs_out_is_busy_not_an_eng_error(self):
         """Seen in the toolkit's queue on 2026-11-07: a gate waited 5104 s behind whole-host gates, and its
-        TimeoutError, an OSError, made queuekeeper run exit 2, which the queue took for a failure (#268)."""
+        TimeoutError, an OSError, made qk run exit 2, which the queue took for a failure (#268)."""
         from queuekeeper import remote
         ran = self.marker(Path("Beta"), "gate", "ran")
         beta = self.project("Beta", gate={"command": [sys.executable, "-c", f"open({str(ran)!r}, 'w')"],
@@ -3934,7 +3934,7 @@ class LaneLabelTests(unittest.TestCase):
         return beta, ran
 
     def admit_foreground(self, root, command):
-        """queuekeeper admit --foreground --here of command, waiting for nothing: its status and what it printed on stderr."""
+        """qk admit --foreground --here of command, waiting for nothing: its status and what it printed on stderr."""
         with patch.object(cli, "refresh_policy", return_value="policy"), \
                 patch.object(cli, "source_identity", return_value={}), \
                 contextlib.redirect_stdout(StringIO()), contextlib.redirect_stderr(StringIO()) as error:
@@ -3942,7 +3942,7 @@ class LaneLabelTests(unittest.TestCase):
                              *command]), error.getvalue()
 
     def test_work_whose_wait_for_the_second_macs_foreground_runs_out_is_busy_not_an_eng_error(self):
-        """Its TimeoutError, an OSError, made queuekeeper run exit 2, which the queue takes for a failure (#297), as an
+        """Its TimeoutError, an OSError, made qk run exit 2, which the queue takes for a failure (#297), as an
         admission wait's did (#268). Waiting for no time reaches it without foreground.POLL's sleep."""
         from queuekeeper import remote
         beta, ran = self.foreground_project()
@@ -4007,9 +4007,9 @@ class LaneLabelTests(unittest.TestCase):
                       "ends released 1", output.getvalue())
 
     def test_each_runs_admission_line_says_whether_eng_offered_it_to_the_second_mac_and_why_it_ran_here(self):
-        # The positive controls: a lane that stays here, queuekeeper run --here, queuekeeper admit --here, and a lane and a plain queuekeeper
+        # The positive controls: a lane that stays here, qk run --here, qk admit --here, and a lane and a plain qk
         # admit that queuekeeper offered first, which with no second Mac configured are declined, each say so on their
-        # admitted line (queuekeeper admit is offered first since the owner's decision of 2026-11-07).
+        # admitted line (qk admit is offered first since the owner's decision of 2026-11-07).
         root = self.project("Alpha", gate={"command": self.QUICK, "resource": "heavy"},
                             device={"command": self.QUICK, "resource": "heavy", "here": "it needs this Mac's iPhone"})
         for arguments in [["device"], ["--here", "gate"], ["gate"]]:
@@ -4027,25 +4027,25 @@ class LaneLabelTests(unittest.TestCase):
         self.assertEqual(placements[:2] + placements[3:4] + placements[5:], [
             {"offered": False, "because": "the lane says: it needs this Mac's iPhone"},
             {"offered": False, "because": "--here"},
-            {"offered": False, "because": "queuekeeper admit --here"},
+            {"offered": False, "because": "qk admit --here"},
             {"dispatchedFrom": "Sender"}, None])
         for placement in offered:
             self.assertEqual(placement, {"offered": True, "because": "no second Mac is configured"})
         entries = [resources.read_entry(json.dumps(line)) for line in admitted]
         self.assertEqual([resources.placed(entry) for entry in entries[:2] + entries[3:4] + entries[5:]], [
-            ("never", "a lane that stays on this Mac"), ("never", "queuekeeper run --here"),
-            ("never", "queuekeeper admit --here"), ("sent", "sent by Sender"), ("unrecorded", "a command")])
+            ("never", "a lane that stays on this Mac"), ("never", "qk run --here"),
+            ("never", "qk admit --here"), ("sent", "sent by Sender"), ("unrecorded", "a command")])
         self.assertEqual([resources.placed(entries[index])[0] for index in (2, 4)], ["declined", "declined"])
-        # A line an earlier toolkit wrote, when queuekeeper admit without --verify ran here, keeps its category.
-        self.assertEqual(resources.placed({"placement": {"offered": False, "because": "queuekeeper admit runs here without "
-                                                         "--verify"}}), ("never", "queuekeeper admit without --verify"))
-        # queuekeeper admissions usage reads this log, and says why it cannot read the second Mac's.
+        # A line an earlier toolkit wrote, when qk admit without --verify ran here, keeps its category.
+        self.assertEqual(resources.placed({"placement": {"offered": False, "because": "qk admit runs here without "
+                                                         "--verify"}}), ("never", "qk admit without --verify"))
+        # qk admissions usage reads this log, and says why it cannot read the second Mac's.
         with contextlib.redirect_stdout(StringIO()) as output:
             self.assertEqual(cli.main(["admissions", "usage"]), 0)
         text = output.getvalue()
         self.assertIn("  never offered to the second Mac: 3, held ", text)
-        self.assertIn("    queuekeeper run --here: 1, held ", text)
-        self.assertIn("    queuekeeper admit --here: 1, held ", text)
+        self.assertIn("    qk run --here: 1, held ", text)
+        self.assertIn("    qk admit --here: 1, held ", text)
         self.assertIn("  offered to the second Mac and declined: 2, held ", text)
         self.assertIn("  second Mac: log unavailable: no second Mac is configured", text)
 

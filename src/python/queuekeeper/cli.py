@@ -44,7 +44,7 @@ def fix_hosts(root, hosts):
 
 
 def split_warnings(root, config):
-    """The gate over its budget and main past its release commit limit, as queuekeeper land warns after its result,
+    """The gate over its budget and main past its release commit limit, as qk land warns after its result,
     in a project with a Git repository (budgets.py)."""
     try:
         common = subprocess.run(["git", "-C", str(root), "rev-parse", "--path-format=absolute", "--git-common-dir"],
@@ -111,7 +111,7 @@ def compile_first(lane, root, directory, receipt, limit, env, on_stop, kill_afte
 
 
 def conclude(directory, receipt, status, **fields):
-    """Record a completed run's verdict, the status queuekeeper run returns, beside its command's exit
+    """Record a completed run's verdict, the status qk run returns, beside its command's exit
     status: passed only for 0, so a zero exit that ran too few tests is failed."""
     outcome = "passed" if status == 0 else "unmeasured" if status == lane_results.UNMEASURED else \
         "build-failed" if compile_failed(receipt) else "failed"
@@ -177,7 +177,7 @@ def awake(lane, extra=()):
 def lane_label(root, config, lane):
     """A lane run's admission label: its project's name, a space and the lane, such as `EPUBLib gate`,
     so that two projects' lanes of one name stay apart in waiting messages, the guard and the admission
-    log (#51). A space, as in the labels callers pass, such as `warm push REV`, and in an `queuekeeper admit`
+    log (#51). A space, as in the labels callers pass, such as `warm push REV`, and in an `qk admit`
     command line; no configured project name or lane has one, and a colon would read as one more field
     after the `: ` that waiting messages put before a label. The name is queuekeeper.json's, else the
     checkout's; a linked worktree's directory is named for its session, so it takes its main checkout's."""
@@ -196,7 +196,7 @@ def placement(reason):
 
 
 def admission_placement(offered, reason):
-    """What a run's admission line says of its placement, which `queuekeeper admissions usage` counts: whether queuekeeper offered it
+    """What a run's admission line says of its placement, which `qk admissions usage` counts: whether queuekeeper offered it
     to the second Mac first (offered) and why it runs here (because), or the Mac that sent it (remote.DISPATCHER)."""
     sender = os.environ.get(remote.DISPATCHER)
     if sender: return {"dispatchedFrom": sender}
@@ -279,7 +279,7 @@ def admitted_here(stack, name, label, timeout, offered=None, once=False, exclusi
                 return None
             seconds = max(seconds - (time.monotonic() - began), 0)
         try:
-            # queuekeeper admit and queuekeeper run start every command they admit through processes.supervise (#315).
+            # qk admit and qk run start every command they admit through processes.supervise (#315).
             return stack.enter_context(resources.Admission(label, exclusive=exclusive, timeout=seconds, model=model,
                                                            whole_host=whole_host, place=place, placement=placement,
                                                            supervised=True))
@@ -291,7 +291,7 @@ def admitted_here(stack, name, label, timeout, offered=None, once=False, exclusi
         if offered is not None and offered.busy is not None:
             return remote.overflow(offered, admit, timeout, once, refused)
         # A wait that runs out is BUSY, as with once: nothing ran, which the merge queue counts as no verdict.
-        # Raised, TimeoutError is an OSError, which queuekeeper run reports as its own error, exit 2 (#268).
+        # Raised, TimeoutError is an OSError, which qk run reports as its own error, exit 2 (#268).
         admission = admit(min(FREE_WAIT, timeout) if once else timeout)
         if admission is None:
             print(f"queuekeeper: {name} not run on {this_mac()}: {refused[-1]}", file=sys.stderr)
@@ -323,7 +323,7 @@ SCREEN_STATUS = {"unlocked": 0, "locked": 1, "unknown": 2}
 
 
 def host_screen(args):
-    """`queuekeeper host screen [--remote]`: one line, or the reading as JSON, saying whether this Mac's or the second
+    """`qk host screen [--remote]`: one line, or the reading as JSON, saying whether this Mac's or the second
     Mac's console screen is locked (offload_host.screen), exiting 0 unlocked, 1 locked and 2 unknown. The
     second Mac is read over SSH by the same code, so either Mac's answer is read, never assumed."""
     if args.host and not args.remote: raise ValueError("--host names the second Mac that --remote reads")
@@ -387,7 +387,7 @@ def admitted_tree(root, name, offered, receipt):
 
 
 def from_sent(stack, root, sent, moved, receipt):
-    """(checkout, toolkit) of the worktrees from which `queuekeeper admit` runs its command on this Mac, entered in stack,
+    """(checkout, toolkit) of the worktrees from which `qk admit` runs its command on this Mac, entered in stack,
     after recording them in receipt; or 2 after saying why not. A command this Mac takes after sending the second
     Mac a commit runs from that commit once the tree here is no longer that commit's (remote.moved_trees), in a
     temporary worktree at it, as the second Mac runs it, rather than from the changed tree or not at all: the
@@ -438,9 +438,9 @@ def provision_sent(root, config, checkout, toolkit, variables, limit, on_stop=No
 
 
 def here_because(args, inherited):
-    """Why `queuekeeper admit` runs its command on this Mac without offering it to the second Mac, or None to offer it there
+    """Why `qk admit` runs its command on this Mac without offering it to the second Mac, or None to offer it there
     first, as a lane is (the owner's decision, 2026-11-07; guides/shared-host.md, Which Mac runs a lane)."""
-    if args.here: return "queuekeeper admit --here"
+    if args.here: return "qk admit --here"
     # Work the second Mac runs for the Mac that sent it runs there, where it was sent.
     if os.environ.get(remote.DISPATCHER): return "sent here by the Mac that dispatched it"
     # Foreground work holds the foreground of the Mac it runs on (foreground.py).
@@ -452,7 +452,7 @@ def here_because(args, inherited):
     return None
 
 
-# Set by queuekeeper run for the command of a self lane, to the lane's name: each `queuekeeper admit` its script runs stays on the
+# Set by qk run for the command of a self lane, to the lane's name: each `qk admit` its script runs stays on the
 # Mac where the lane runs, since one part builds what the next runs (config.unadmitted).
 SELF_LANE = "QUEUEKEEPER_SELF_LANE"
 
@@ -477,20 +477,20 @@ def admit(root, args, config=None, *, device_window=None):
     # self lane's parts keep it here (guides/shared-host.md, Which Mac runs a lane).
     # Without a leading --, argparse collected the command, and a later -- belongs to it.
     command = args.command + ([] if args.passed is None else ["--", *args.passed]) if args.command else args.passed
-    if not command: raise ValueError("Name the command: queuekeeper admit [--exclusive | --model] [--here] -- COMMAND")
+    if not command: raise ValueError("Name the command: qk admit [--exclusive | --model] [--here] -- COMMAND")
     if args.time_limit <= 0: raise ValueError("--time-limit needs a positive number of seconds")
     config = config if config is not None else load(root)
     refused = exclusive_refusal(config, command) if args.exclusive else None
-    if refused: raise ValueError(f"queuekeeper admit --exclusive refused: {refused}")
+    if refused: raise ValueError(f"qk admit --exclusive refused: {refused}")
     kind = ["--exclusive"] if args.exclusive else ["--model"] if args.model else []
     # Only a limit of its own goes to the second Mac, whose toolkit may not take the option.
     if args.time_limit != processes.DEFAULT_LIMIT: kind += ["--time-limit", f"{args.time_limit:g}"]
     # Foreground work holds the foreground of the Mac it runs on: the second Mac's, which queuekeeper takes for it, or this
-    # Mac's, which the session holds within the owner's window. queuekeeper remote admit --foreground sends it there.
+    # Mac's, which the session holds within the owner's window. qk remote admit --foreground sends it there.
     second = args.foreground and extensions.LANE.foreground_mac()
     if args.foreground and args.verify:
         raise ValueError("--verify never sends foreground work: send it to the second Mac with "
-                         "queuekeeper remote admit --foreground -- COMMAND")
+                         "qk remote admit --foreground -- COMMAND")
     if args.app and not args.foreground:
         raise ValueError("--app names the app under test of foreground work, whose crash-report alerts queuekeeper clears: "
                          "add --foreground")
@@ -613,7 +613,7 @@ def perform(argv, report):
         "lane [-- ARGUMENTS ...]",
         help="run a configured lane, admitting a heavy or exclusive one, on whichever Mac has spare capacity for "
         "it now, the second Mac first, and on this Mac while the second Mac has none or cannot be reached, unless "
-        "the lane says why it stays on this Mac: queuekeeper run LANE [-- ARGUMENTS], which appends the arguments, such as "
+        "the lane says why it stays on this Mac: qk run LANE [-- ARGUMENTS], which appends the arguments, such as "
         "a test filter, to the lane's command")
     run.add_argument("--expect", type=int, metavar="N", help="require exactly N executed tests: N selected with "
         "some skipped or canceled is unmeasured, exit 3, and any other count fails; without it, a run with arguments needs at least one in place of the lane's minimumTests")
@@ -634,7 +634,7 @@ def perform(argv, report):
     run.add_argument("--unlocked-screen", action="store_true", help="place the lane only on a Mac whose screen reads "
         "unlocked, and wait for one, as \"unlockedScreen\": true does: the merge queue's next run of a lane whose "
         "run a locked screen left without a verdict (guides/maintenance.md, A run with no verdict)")
-    run.add_argument("--repeat", type=int, metavar="N", help="run a lane of queuekeeper simulator-tests N times, on one build, "
+    run.add_argument("--repeat", type=int, metavar="N", help="run a lane of qk simulator-tests N times, on one build, "
         "each run on a member taken from the pool afresh, and report each run's outcome, test counts and one-minute "
         "load (guides/simulator-testing.md, Repeating a test to show a fix works). Its receipt is not a pass of the "
         "whole lane")
@@ -650,10 +650,10 @@ def perform(argv, report):
     for name, (described, add_arguments, _, _) in extensions.PARSED_COMMANDS.items():
         add_arguments(commands.add_parser(name, help=described))
     commands.add_parser("unittest", help="run a unittest suite's modules in processes of their own, side by side: "
-        "queuekeeper unittest [-s START] [-p PATTERN] [-j JOBS] [-k PATTERN] [-v] [NAME ...]; queuekeeper unittest -h for the rest")
+        "qk unittest [-s START] [-p PATTERN] [-j JOBS] [-k PATTERN] [-v] [NAME ...]; qk unittest -h for the rest")
     admission =commands.add_parser("admit", help="run any other heavy command (a build, swift test, xcodebuild "
         "test, a simulator run, a gate suite) through heavy-work admission on whichever Mac has spare capacity for "
-        "it, the second Mac first, as queuekeeper run places a lane: queuekeeper admit -- COMMAND; what it changes in the "
+        "it, the second Mac first, as qk run places a lane: qk admit -- COMMAND; what it changes in the "
         "checkout's files that Git does not ignore comes back and is applied here, while its build products stay "
         "on the Mac that ran it. Add --here for a command whose products this session uses here afterwards, "
         "--model for a generative-model run, and --exclusive only for work that needs the host to itself")
@@ -683,7 +683,7 @@ def perform(argv, report):
         f"cannot be reached. What it changed there in files Git does not ignore is applied here; exit {remote.UNAPPLIED} "
         "says it could not be, and names the patch kept")
     # The default since the owner's decision of 2026-11-07, still accepted from callers that pass it.
-    placed.add_argument("--verify", action="store_true", help="what queuekeeper admit does without --here: offer the "
+    placed.add_argument("--verify", action="store_true", help="what qk admit does without --here: offer the "
         "command to the second Mac first")
     admission.add_argument("--if-free", action="store_true", help=f"run only if heavy-work admission admits the "
         f"command within {FREE_WAIT}s, on the second Mac or here; otherwise exit {BUSY} without running it")
@@ -698,12 +698,12 @@ def perform(argv, report):
         "       %(prog)s usage [--since WHEN] [--until WHEN] [--there LOG ...]\n       %(prog)s now [--json] [--here]",
         help="summarize this host's heavy-work admission "
         "log: for each kind and label, the requests admitted and withdrawn, how long they waited and held, and how "
-        "admissions ended; queuekeeper admissions recover lists the guard's dead or uncertain entries, and queuekeeper admissions "
+        "admissions ended; qk admissions recover lists the guard's dead or uncertain entries, and qk admissions "
         "recover OWNER removes that owner's once a census against its process record finds nothing it ran still "
-        "running; queuekeeper admissions remove OWNER --why TEXT removes by hand one recovery cannot prove finished once "
-        "nothing its owner may have started is found running; queuekeeper admissions limits prints the admission limits in force and where each comes from; queuekeeper "
+        "running; qk admissions remove OWNER --why TEXT removes by hand one recovery cannot prove finished once "
+        "nothing its owner may have started is found running; qk admissions limits prints the admission limits in force and where each comes from; qk "
         "admissions usage shows both Macs' capacity now, the share of the last 3 hours each spent at each count of "
-        "heavy jobs, and why this Mac's work ran here, never offered to the second Mac or declined by it; queuekeeper admissions "
+        "heavy jobs, and why this Mac's work ran here, never offered to the second Mac or declined by it; qk admissions "
         "now shows who holds and who waits for admission on each Mac now, how long and why",
         description="Summarize the admission log, or, with recover, list the guard's dead or uncertain entries and "
         "recover one: its owner, named by PID or identity, has ended, and nothing of the commands its process "
@@ -716,8 +716,8 @@ def perform(argv, report):
     logged.add_argument("logs", nargs="*", type=Path, metavar="log", help="a copy of a log, such as the second Mac's, "
                         "to read instead of this host's; name the previous generation first")
     distant = commands.add_parser("remote", help="run a lane or other heavy command on the owner's second Mac over "
-        "SSH: queuekeeper remote run LANE [-- ARGUMENTS] or queuekeeper remote admit [--foreground] -- COMMAND; queuekeeper remote passed "
-        "LANE says whether the whole lane passed there at a commit; queuekeeper remote foreground says whether its "
+        "SSH: qk remote run LANE [-- ARGUMENTS] or qk remote admit [--foreground] -- COMMAND; qk remote passed "
+        "LANE says whether the whole lane passed there at a commit; qk remote foreground says whether its "
         "foreground is ready")
     operations = distant.add_subparsers(dest="operation", required=True)
     remote_run = operations.add_parser("run", usage="%(prog)s [-h] [--host HOST] [--serial] [--expect N] "
@@ -728,7 +728,7 @@ def perform(argv, report):
         "root, at HEAD or at a snapshot commit of uncommitted work")
     remote_setup = operations.add_parser("setup", help="install on the second Mac, with Homebrew, the tools "
         f"every project's gates use ({', '.join(remote.SETUP_FORMULAE)}) and the formulae named, then check them as "
-        "queuekeeper remote sees the second Mac; Homebrew itself the owner installs")
+        "qk remote sees the second Mac; Homebrew itself the owner installs")
     remote_setup.add_argument("formulae", nargs="*", metavar="formula", help="a further Homebrew formula to install")
     remote_setup.add_argument("--import", dest="imports", action="append", metavar="MODULE",
                               help="check that the second Mac's python3 imports MODULE (repeatable)")
@@ -737,7 +737,7 @@ def perform(argv, report):
         "Mac VoiceOver and Mac UI tests, started over SSH, each with the owner's fix, and which run holds its "
         f"foreground; exit 0 when it lacks nothing, {remote.MISCONFIGURED} otherwise")
     remote_setup.add_argument("--runtimes", action="store_true", help="instead, give this Mac and the second Mac the "
-        "same simulator runtimes of the Xcode at this Mac's developer directory, as queuekeeper doctor does: a runtime only "
+        "same simulator runtimes of the Xcode at this Mac's developer directory, as qk doctor does: a runtime only "
         "one Mac has is deleted there when no simulator but Xcode's defaults uses it, and otherwise its disk image "
         "is copied over SSH to the Mac that lacks it; it exits 0 only when both list the same")
     for choice in (remote_run, remote_admit, remote_setup, remote_foreground):
@@ -767,9 +767,9 @@ def perform(argv, report):
     remote_admit.add_argument("--foreground", action="store_true", help="hold the second Mac's foreground for the "
         "command, as Mac VoiceOver and Mac UI tests need, waiting while another run holds it")
     remote_admit.add_argument("--app", action="append", metavar="NAME", help="with --foreground, the app under "
-        "test, as queuekeeper admit's")
+        "test, as qk admit's")
     remote_admit.add_argument("--time-limit", type=float, metavar="SECONDS", help="seconds the command may run "
-        f"there once admitted, as queuekeeper admit's (default {processes.DEFAULT_LIMIT})")
+        f"there once admitted, as qk admit's (default {processes.DEFAULT_LIMIT})")
     remote_admit.add_argument("--git-commit", action="append", metavar="REPOSITORY=SHA", help="verify a full "
         "foreign commit hash in a local repository, so its exact positional argument names no hardware device "
         "(repeatable); device options and known device identifiers still require reservations")
@@ -780,7 +780,7 @@ def perform(argv, report):
     remote_passed.add_argument("--commit", default="HEAD")
     remote_prune = operations.add_parser("prune-results", help="remove the lane results kept by commit beside the "
         f"receipts in the repository's Git directory that the rule reclaims, which {remote.KEPT_RESULTS_RULE}; "
-        "queuekeeper disk lists them")
+        "qk disk lists them")
     remote_prune.add_argument("checkout", nargs="?", type=Path, help="a checkout of the repository (default: the project's)")
     remote_prune.add_argument("--dry-run", action="store_true", help="list them; remove nothing")
     merge_queue.add_arguments(commands.add_parser("queue", help="land finished commits through the repository's one "
@@ -855,7 +855,7 @@ def perform(argv, report):
         # which for its worker is a main checkout that may lag.
         if args.action == "land": return merge_queue.land(root, args, Path.cwd())
         if args.action == "queue": return merge_queue.main(root, args)
-        # The store is the repository's, named by any checkout of it, and queuekeeper disk runs this for every project.
+        # The store is the repository's, named by any checkout of it, and qk disk runs this for every project.
         if args.action == "remote" and args.operation == "prune-results":
             return remote.prune_results_main(args.checkout or root, args.dry_run)
         config = load(root)
@@ -875,7 +875,7 @@ def perform(argv, report):
                                 "chosen from its measured time (guides/parallel-tests.md, Bound every run)")
             if config.get("lanes") and "gate" not in config["lanes"] and not config.get("queue", {}).get("lanes") \
                     and config.get("integration", "direct-main") == "direct-main":
-                warnings.append("no lane is named gate, which queuekeeper land runs: name the lane holding "
+                warnings.append("no lane is named gate, which qk land runs: name the lane holding "
                                 "what a commit must pass before it lands gate (guides/adoption.md, Lane names)")
             warnings += budgets.doctor_warnings(config)
             warnings += self_lane_warnings(root, config)
@@ -922,7 +922,7 @@ def perform(argv, report):
             series = [] if args.repeat is None else ["--repeat", str(args.repeat), *(["--erase"] if args.erase else []),
                                                      *(["--template"] if args.template else []),
                                                      *[word for test in args.only for word in ("--only", test)]]
-            # Lane arguments, so that queuekeeper simulator-tests finds them on whichever Mac runs the lane.
+            # Lane arguments, so that qk simulator-tests finds them on whichever Mac runs the lane.
             extra = [*series, *(args.passed or [])]
             # A series' lane runs N times inside its one admission, within N times its limit (guides/simulator-testing.md).
             limit = parallel.lane_timeout(lane, extra)

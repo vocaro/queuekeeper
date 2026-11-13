@@ -1,4 +1,4 @@
-"""The summary that ends every `queuekeeper run` (vocaro-engineering#274): what it reads from a run's own log and records,
+"""The summary that ends every `qk run` (vocaro-engineering#274): what it reads from a run's own log and records,
 that passed, failed, skipped and unmeasured stay apart, and that it is the last thing the run says."""
 import contextlib
 from io import StringIO
@@ -133,7 +133,7 @@ class Parsing(unittest.TestCase):
                                                                ("Other/testAlone()", None)])
 
     def test_nothing_that_reads_a_lanes_log_reads_a_summary_as_a_result(self):
-        summary = ("queuekeeper run gate: failed (exit 1), on this Mac\n  tests: 3 passed, 2 failed, 1 skipped, 1 unmeasured\n"
+        summary = ("qk run gate: failed (exit 1), on this Mac\n  tests: 3 passed, 2 failed, 1 skipped, 1 unmeasured\n"
                    "  failed: tests.test_x.X.test_b at /project/tests/test_x.py:7\n  details: /p/failures.txt\n")
         self.assertIsNone(lane_results.counted(summary))
         self.assertEqual(lane_results.unmeasured_tests(summary), [])
@@ -187,7 +187,7 @@ class Summary(unittest.TestCase):
         return {"command": self.command(f"import sys\nprint({text!r})\nsys.exit({status})")}
 
     def qk(self, *arguments):
-        """queuekeeper run in this process, on a stream that joins stdout and stderr as a pipe to one file does."""
+        """qk run in this process, on a stream that joins stdout and stderr as a pipe to one file does."""
         stream = StringIO()
         with patch.object(cli, "refresh_policy", return_value="policy"), patch.object(cli, "source_identity", return_value={}), \
                 contextlib.redirect_stdout(stream), contextlib.redirect_stderr(stream):
@@ -198,7 +198,7 @@ class Summary(unittest.TestCase):
         self.configure(lane=self.printing(UNITTEST_FAILED, 1))
         status, lines = self.qk("lane")
         self.assertEqual(status, 1)
-        self.assertEqual(lines[-5:], ["queuekeeper run lane: failed (exit 1), on this Mac",
+        self.assertEqual(lines[-5:], ["qk run lane: failed (exit 1), on this Mac",
                                       "  tests: 3 passed, 2 failed, 1 skipped, 0 unmeasured",
                                       "  failed: tests.test_x.X.test_b at /project/tests/test_x.py:7",
                                       "  failed: tests.test_x.X.test_c at /project/tests/test_x.py:20",
@@ -208,19 +208,19 @@ class Summary(unittest.TestCase):
         self.configure(lane=self.printing("Ran 2 tests in 0.1s\n\nOK"))
         status, lines = self.qk("lane")
         self.assertEqual(status, 0)
-        self.assertEqual(lines[-3:], ["queuekeeper run lane: passed, on this Mac", "  tests: 2 passed, 0 failed, 0 skipped, 0 unmeasured",
+        self.assertEqual(lines[-3:], ["qk run lane: passed, on this Mac", "  tests: 2 passed, 0 failed, 0 skipped, 0 unmeasured",
                                       f"  receipt: {self.lane_dir / 'source.json'}"])
 
     def test_a_lane_with_no_test_counts_says_so(self):
         self.configure(lane=self.printing("just a build"))
-        self.assertEqual(self.qk("lane")[1][-3:-1], ["queuekeeper run lane: passed, on this Mac", "  tests: no test counts in its log"])
+        self.assertEqual(self.qk("lane")[1][-3:-1], ["qk run lane: passed, on this Mac", "  tests: no test counts in its log"])
 
     def test_an_unmeasured_lane_is_never_passed(self):
         text = "test_a (m.T.test_a) ... skipped 'Unmeasured: no model'\nRan 2 tests in 0.1s\n\nOK (skipped=1)"
         self.configure(lane=self.printing(text))
         status, lines = self.qk("lane")
         self.assertEqual(status, lane_results.UNMEASURED)
-        self.assertEqual(lines[-3:-1], ["queuekeeper run lane: unmeasured (exit 3), on this Mac",
+        self.assertEqual(lines[-3:-1], ["qk run lane: unmeasured (exit 3), on this Mac",
                                         "  tests: 1 passed, 0 failed, 0 skipped, 1 unmeasured"])
 
     def test_a_lane_past_its_limit_is_unmeasured_and_counts_nothing_from_its_cut_off_log(self):
@@ -228,7 +228,7 @@ class Summary(unittest.TestCase):
                              "timeout": 1})
         status, lines = self.qk("lane")
         self.assertEqual(status, lane_results.UNMEASURED)
-        self.assertEqual(lines[-4], "queuekeeper run lane: unmeasured (exit 3), on this Mac")
+        self.assertEqual(lines[-4], "qk run lane: unmeasured (exit 3), on this Mac")
         self.assertEqual(lines[-3], "  tests: no counts, as the run did not finish and its log is incomplete")
         self.assertIn("  why: ", lines[-2])
 
@@ -245,7 +245,7 @@ class Summary(unittest.TestCase):
         self.configure(lane={"command": [sys.executable, "-c", script]})
         status, lines = self.qk("lane")
         self.assertEqual(status, 65)
-        self.assertEqual(lines[-4:], ["queuekeeper run lane: failed (exit 65), on this Mac",
+        self.assertEqual(lines[-4:], ["qk run lane: failed (exit 65), on this Mac",
                                       "  tests: 7 passed, 1 failed, 2 skipped, 0 unmeasured",
                                       "  failed: Pages/testTurn() at /P.swift:9",
                                       f"  details: {self.lane_dir / 'results/failures/one/failures.txt'}"])
@@ -266,7 +266,7 @@ class Summary(unittest.TestCase):
         status, lines = self.qk("lane")
         self.assertEqual(status, lane_results.BEFORE_TESTS)
         self.assertNotIn(status, (1, lane_results.UNMEASURED))
-        self.assertEqual(lines[-4:], ["queuekeeper run lane: failed before any test ran (exit 4), on this Mac",
+        self.assertEqual(lines[-4:], ["qk run lane: failed before any test ran (exit 4), on this Mac",
                                       "  tests: none ran; the last error in its log: "
                                       "Failed: project generation or canonical package-lock seeding failed",
                                       f"  the log is {self.lane_dir / 'run.log'}",
@@ -288,7 +288,7 @@ class Summary(unittest.TestCase):
                 self.configure(lane=self.printing(text, status))
                 result, lines = self.qk("lane")
                 self.assertEqual(result, status)
-                self.assertEqual(lines[-4:-2], [f"queuekeeper run lane: failed (exit {status}), on this Mac",
+                self.assertEqual(lines[-4:-2], [f"qk run lane: failed (exit {status}), on this Mac",
                                                 "  tests: no test counts in its log"])
                 self.assertNotIn("beforeTests", json.loads((self.lane_dir / "source.json").read_text()))
 
@@ -299,7 +299,7 @@ class Summary(unittest.TestCase):
                              "compileFirst": self.printing("error: cannot find 'x' in scope", 65)["command"]})
         status, lines = self.qk("lane")
         self.assertEqual(status, 65)
-        self.assertIn("queuekeeper run lane: failed (exit 65), on this Mac", lines)
+        self.assertIn("qk run lane: failed (exit 65), on this Mac", lines)
 
     def test_a_lane_with_a_failure_record_is_a_test_failure_whatever_its_log_says(self):
         script = textwrap.dedent("""\
@@ -319,20 +319,20 @@ class Summary(unittest.TestCase):
         self.configure(lane=self.printing(UNITTEST_FAILED, 4))
         status, lines = self.qk("lane")
         self.assertEqual(status, 4)
-        self.assertIn("queuekeeper run lane: failed (exit 4), on this Mac", lines)
+        self.assertIn("qk run lane: failed (exit 4), on this Mac", lines)
 
     def test_a_command_that_refused_its_usage_keeps_status_2(self):
         # simulator-tests refuses a lane command without its separator so, before any test (#393's gate failure).
         self.configure(lane=self.printing("error: a lane whose command runs simulator-tests ends with \"--\"\n", 2))
         status, lines = self.qk("lane")
         self.assertEqual(status, 2)
-        self.assertIn("queuekeeper run lane: failed (exit 2), on this Mac", lines)
+        self.assertIn("qk run lane: failed (exit 2), on this Mac", lines)
 
     def test_a_too_short_run_says_why_in_its_summary(self):
         self.configure(lane={**self.printing("Ran 1 test in 0.1s\n\nOK"), "minimumTests": 2})
         status, lines = self.qk("lane")
         self.assertEqual(status, 2)
-        self.assertEqual(lines[-5], "queuekeeper run lane: failed (exit 2), on this Mac")
+        self.assertEqual(lines[-5], "qk run lane: failed (exit 2), on this Mac")
         self.assertEqual(lines[-3], "  why: Expected at least 2 executed tests; observed 1")
 
     def test_a_group_counts_its_lanes_together_and_names_the_one_that_gave_no_counts(self):
@@ -341,7 +341,7 @@ class Summary(unittest.TestCase):
                        build=self.printing("no tests here"), lane=group)
         status, lines = self.qk("lane")
         self.assertEqual(status, 1)
-        self.assertEqual(lines[-6:-3], ["queuekeeper run lane: failed (exit 1), on this Mac",
+        self.assertEqual(lines[-6:-3], ["qk run lane: failed (exit 1), on this Mac",
                                         "  tests: 5 passed, 2 failed, 1 skipped, 0 unmeasured; no test counts from build",
                                         "  lanes: 2 passed, 1 failed (bad), 0 unmeasured"])
 
@@ -349,7 +349,7 @@ class Summary(unittest.TestCase):
         self.configure()
         status, lines = self.qk("nothing")
         self.assertEqual(status, 2)
-        self.assertEqual(lines[-2:], ["queuekeeper: No configured lane: nothing", "queuekeeper run nothing: not run (exit 2); no tests ran"])
+        self.assertEqual(lines[-2:], ["queuekeeper: No configured lane: nothing", "qk run nothing: not run (exit 2); no tests ran"])
 
     def test_a_policy_that_cannot_be_fetched_is_unmeasured_and_never_passed(self):
         self.configure(lane=self.printing("Ran 1 test in 0.1s\n\nOK"))
@@ -359,27 +359,27 @@ class Summary(unittest.TestCase):
                 contextlib.redirect_stdout(stream), contextlib.redirect_stderr(stream):
             status = cli.main(["--project", str(self.root), "run", "--here", "lane"])
         self.assertEqual(status, lane_results.UNMEASURED)
-        self.assertEqual(stream.getvalue().splitlines()[-1], "queuekeeper run lane: unmeasured (exit 3); no tests ran")
+        self.assertEqual(stream.getvalue().splitlines()[-1], "qk run lane: unmeasured (exit 3); no tests ran")
 
     def test_the_second_macs_own_run_leaves_the_summary_to_the_mac_that_sent_it(self):
         self.configure(lane=self.printing("Ran 1 test in 0.1s\n\nOK"))
         with patch.dict("os.environ", {lane_report.remote.DISPATCHER: "this Mac"}):
             lines = self.qk("lane")[1]
-        self.assertFalse([line for line in lines if line.startswith("queuekeeper run lane:")], lines)
+        self.assertFalse([line for line in lines if line.startswith("qk run lane:")], lines)
 
     def test_only_a_lane_run_gets_a_summary(self):
         self.configure(lane=self.printing(""))
         stream = StringIO()
         with contextlib.redirect_stdout(stream), contextlib.redirect_stderr(stream):
             self.assertIn(cli.main(["--project", str(self.root), "docs", "check"]), (0, 1))
-        self.assertNotIn("queuekeeper run", stream.getvalue())
+        self.assertNotIn("qk run", stream.getvalue())
 
     def test_a_summary_that_cannot_be_made_never_changes_the_status(self):
         self.configure(lane=self.printing(""))
         with patch.object(lane_report.Report, "lines", side_effect=OSError("disk gone")):
             status, lines = self.qk("lane")
         self.assertEqual(status, 0)
-        self.assertEqual(lines[-1], "queuekeeper run lane: exit 0; its summary could not be made: OSError: disk gone")
+        self.assertEqual(lines[-1], "qk run lane: exit 0; its summary could not be made: OSError: disk gone")
 
 
 if __name__ == "__main__":

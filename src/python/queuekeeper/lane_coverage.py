@@ -1,12 +1,12 @@
-"""Whether every test of a project has a lane: queuekeeper doctor's reading of what each lane selects (#289).
+"""Whether every test of a project has a lane: qk doctor's reading of what each lane selects (#289).
 
 A test no lane selects goes stale unseen (guides/app-testing.md, Every test has a lane). This reads the tests from
 the tracked source, without building or running anything, and each lane's selection from its command:
 
-- swift test and queuekeeper xctest select their package's test targets, narrowed by --filter and --skip;
-- queuekeeper unittest and python3 -m unittest discover select the modules their discovery reaches;
-- xcodebuild test and queuekeeper simulator-tests, with -only-testing:Target/Class, select that class;
-- queuekeeper spelling, queuekeeper docs, queuekeeper run (whose lane is read in its own right), swift build, swift run and an xcodebuild
+- swift test and qk xctest select their package's test targets, narrowed by --filter and --skip;
+- qk unittest and python3 -m unittest discover select the modules their discovery reaches;
+- xcodebuild test and qk simulator-tests, with -only-testing:Target/Class, select that class;
+- qk spelling, qk docs, qk run (whose lane is read in its own right), swift build, swift run and an xcodebuild
   that tests nothing select no test.
 
 Any other command, a project's own script most often, cannot be read, and queuekeeper.json's testLanes.selects
@@ -31,7 +31,7 @@ RULE = "guides/app-testing.md, Every test has a lane"
 # Frozen records at the top of a project, and code a project keeps but did not write, anywhere in it.
 RECORDS = ("measurements/", "evidence/")
 VENDORED = {"licenses", "ThirdParty", "Vendor"}
-# How many names one warning spells out; queuekeeper doctor's testLanes holds the rest.
+# How many names one warning spells out; qk doctor's testLanes holds the rest.
 SHOWN = 10
 
 Test = namedtuple("Test", "kind path name")
@@ -115,7 +115,7 @@ def swift_tests(sources):
 
 
 def tracked_files(root):
-    """The checkout's tracked paths: none in a directory that is no repository, which tracks nothing, as queuekeeper doctor's
+    """The checkout's tracked paths: none in a directory that is no repository, which tracks nothing, as qk doctor's
     other checks of a project's history take it. Any other failure of git is the caller's, as nothing was learned."""
     listed = subprocess.run(["git", "-C", str(root), "ls-files", "-z"], capture_output=True, timeout=120,
                             stdin=subprocess.DEVNULL)
@@ -184,7 +184,7 @@ def compiled(patterns):
 
 
 def swift_package(root, words):
-    """swift test's or queuekeeper xctest's selection."""
+    """swift test's or qk xctest's selection."""
     parser = Words()
     parser.add_argument("--package-path", action="append")
     parser.add_argument("--filter", action="append", default=[])
@@ -224,7 +224,7 @@ def only_testing(words):
 
 
 def unittest_discovery(root, words, discover_form):
-    """The modules queuekeeper unittest or python3 -m unittest discover reaches."""
+    """The modules qk unittest or python3 -m unittest discover reaches."""
     parser = Words()
     parser.add_argument("-s", "--start-directory", default=".")
     parser.add_argument("-p", "--pattern", action="append")
@@ -290,7 +290,7 @@ def declared(paths):
 
 
 def report(root, config, tracked=None):
-    """queuekeeper doctor's testLanes: the result, one of the four above, and what it rests on. tracked names the project's
+    """qk doctor's testLanes: the result, one of the four above, and what it rests on. tracked names the project's
     files where git cannot, and otherwise git lists them."""
     root, problems = Path(root).resolve(), []
     settings = config.get("testLanes", {})
@@ -332,7 +332,7 @@ def named(items):
 
 
 def doctor_warnings(result):
-    """queuekeeper doctor's words for a result that is not a pass. They are warnings: nothing here stops a gate."""
+    """qk doctor's words for a result that is not a pass. They are warnings: nothing here stops a gate."""
     if result["result"] == TESTS_WITHOUT_A_LANE:
         return [f"{len(result['noLane'])} test(s) belong to no lane, so nothing runs them and they go stale unseen: "
                 f"{named(result['noLane'])}; give each a lane or delete it, and name a record kept on purpose in "

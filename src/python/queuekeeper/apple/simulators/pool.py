@@ -9,7 +9,7 @@ settled (vocaro-engineering#172); when the pool has no settled template to copy,
 instead and the log says why. When no member of the kind is free, the next one is created under the
 naming scheme, taking the lowest free number, and stays in the pool: a clone of the kind's warmed
 template, `POOL LABEL template (RUNTIME)`, which is made, or remade when the runtime's installed builds
-change or `queuekeeper simulator-pool template --refresh` asks, under its own reservation (template.py). A take
+change or `qk simulator-pool template --refresh` asks, under its own reservation (template.py). A take
 with erase erases the member as before, and one with keep_state reserves and boots it without resetting
 or erasing it. Pruning deletes a member
 unused and released for an hour, never the lowest-numbered of its kind, and a template whose runtime
@@ -21,7 +21,7 @@ Checking a UDID refuses any device outside the pool, such as one of Xcode's defa
 script that picks a device by name finds instead of a member (vocaro-engineering#91); checking it
 as held also refuses a member that the caller holds no live reservation of (vocaro-engineering#122).
 
-    queuekeeper simulator-pool list|take|release|prune|reap|template|check [--pool NAME] ...; queuekeeper simulator-pool -h for the rest
+    qk simulator-pool list|take|release|prune|reap|template|check [--pool NAME] ...; qk simulator-pool -h for the rest
 """
 import argparse
 import contextlib
@@ -71,7 +71,7 @@ RESET = ("Synthetic test state: a copy of the warmed template {template}, made {
 # How long a reservation is expected to last; an overdue one releases nothing. A run's holds its members while
 # its process runs, so this bounds only how long reap waits on one whose process has gone.
 HOLD = timedelta(hours=8)
-# How long a member `queuekeeper simulator-pool take` hands to a session is held: the take/release leases the record kept
+# How long a member `qk simulator-pool take` hands to a session is held: the take/release leases the record kept
 # lasted 2 to 6 min and the longest pool lease of any kind 42 min, so a session that needs longer extends it, and a
 # member a crashed session leaves is released by reap an hour after its take, not eight (vocaro-engineering#179).
 TAKE_HOLD = timedelta(hours=1)
@@ -437,7 +437,7 @@ class Pool:
         instead of cloning them and erases taken ones instead of resetting them. sleep waits for a held template.
         alone says that this process holds what it reserves only while it runs, as a run does that releases its
         members when it ends, so that reap may release one whose holder has gone before its expected release
-        (devices.ALONE); never for `queuekeeper simulator-pool take`, whose session holds a member once it has ended.
+        (devices.ALONE); never for `qk simulator-pool take`, whose session holds a member once it has ended.
         hold_log is the directory of the log of take holds (offload_host.HOLD_LOG), by default the reap log's."""
         if not name:
             raise ValueError("a pool needs its name")
@@ -482,7 +482,7 @@ class Pool:
             else "the pool's warmed template, which is only cloned, never tested on, and a device" \
             if any(template.udid == udid for template in templates(self.name, listing)) else "a device"
         raise RuntimeError(f"{entry.get('name')} ({udid}) is {kind} outside the {self.name} simulator pool: take a "
-                           "member with `queuekeeper simulator-pool take --device TYPE --runtime RUNTIME` and pass its UDID "
+                           "member with `qk simulator-pool take --device TYPE --runtime RUNTIME` and pass its UDID "
                            "(guides/simulator-testing.md, Reserved simulator pool)")
 
     def check_held(self, udid, listing=None, defaults=None):
@@ -509,7 +509,7 @@ class Pool:
         else:
             why = "nobody holds it"
         raise device_record.Refused(f"{member.name} ({member.udid}) is a {self.name} pool member that {self.owner} "
-                                    f"holds no reservation of; {why}. Take one with `queuekeeper simulator-pool take "
+                                    f"holds no reservation of; {why}. Take one with `qk simulator-pool take "
                                     "--device TYPE --runtime RUNTIME` and pass the UDID it prints "
                                     "(guides/simulator-testing.md, Reserved simulator pool)")
 
@@ -566,11 +566,11 @@ class Pool:
         no templates. The caller releases the lease once it has cloned or copied.
 
         settled asks for a template whose voices settled, as a reset does: a current one whose voices did
-        not settle within its limits is left as it is, for `queuekeeper simulator-pool template --refresh`, and why
+        not settle within its limits is left as it is, for `qk simulator-pool template --refresh`, and why
         says so. refresh replaces the template whatever its state. While another session holds the template,
         as for its own copy or clone of a few seconds, this waits up to wait seconds. A take warms within the
         shorter template.TAKE_* limits, so that a kind's first creation or reset does not eat a lane's time;
-        require_voiceover, as `queuekeeper simulator-pool template` passes it with the full limits, also replaces a
+        require_voiceover, as `qk simulator-pool template` passes it with the full limits, also replaces a
         current template whose VoiceOver stayed cold or whose voices did not settle. use, clone or copy,
         names what the caller does with the template, for the reasons."""
         if self.warm is None: return None, None
@@ -594,7 +594,7 @@ class Pool:
             return None, f"{key} is {device_record.condition(current)} by {current.get('ownerChatID')}"
         current_now, why = template_current(existing, current, builds) if existing is not None else (False, None)
         if refresh and existing is not None:
-            current_now, why = False, "queuekeeper simulator-pool template --refresh asked for a new one"
+            current_now, why = False, "qk simulator-pool template --refresh asked for a new one"
         if current_now and require_voiceover and not ((current or {}).get("template") or {}).get("voiceOverWarmed"):
             current_now, why = False, "its VoiceOver was not warmed"
         if current_now and require_voiceover and not template_settled(current)[0]:
@@ -705,7 +705,7 @@ class Pool:
 
     @staticmethod
     def refresh_hint(device_type, runtime):
-        return (f"refresh it with `queuekeeper simulator-pool template --device {device_type.rsplit('.', 1)[-1]} --runtime "
+        return (f"refresh it with `qk simulator-pool template --device {device_type.rsplit('.', 1)[-1]} --runtime "
                 f"{runtime.rsplit('.', 1)[-1]} --refresh`")
 
     def reset(self, lease, source, *, purpose):
@@ -1226,7 +1226,7 @@ def stopped(number, _frame):
 def reap_reports(pool, project, *, dry_run, here, stop_leftovers=True):
     """offload_host.reap's report from this Mac and, unless here, from the second Mac, each with where it
     ran. pool alone when it is named, otherwise every pool the project and the checkouts each Mac can
-    see name. Without stop_leftovers, as for `queuekeeper doctor`, the second Mac only lists the leftover processes
+    see name. Without stop_leftovers, as for `qk doctor`, the second Mac only lists the leftover processes
     it would stop (offload_host.stop_leftovers)."""
     # remote and disk import this module.
     from ... import offload_host, remote
@@ -1242,7 +1242,7 @@ def reap_reports(pool, project, *, dry_run, here, stop_leftovers=True):
 
 
 def reap_command(pool, project, *, dry_run, here):
-    """`queuekeeper simulator-pool reap`: reap_reports, said. It exits 1 when anything failed."""
+    """`qk simulator-pool reap`: reap_reports, said. It exits 1 when anything failed."""
     from ... import remote
     reports = reap_reports(pool, project, dry_run=dry_run, here=here)
     for where, report in reports:
@@ -1262,7 +1262,7 @@ def main(argv, project=None):
         parser.add_argument("--owner", default=default, help=f"the session reservations name (default: "
                             f"${device_record.OWNER}, else the agent's session)")
         return parser
-    parser = scoping(argparse.ArgumentParser(prog="queuekeeper simulator-pool", description=__doc__.split("\n\n")[0]), None)
+    parser = scoping(argparse.ArgumentParser(prog="qk simulator-pool", description=__doc__.split("\n\n")[0]), None)
     commands = parser.add_subparsers(dest="action", required=True)
     def action(name, **options): return scoping(commands.add_parser(name, **options), argparse.SUPPRESS)
     action("list", help="every member, its state and whether pruning may delete it")
@@ -1355,7 +1355,7 @@ def main(argv, project=None):
                 signal.signal(number, stopped)
             device_type, runtime = qualified(DEVICE_TYPE, args.device), qualified(RUNTIME, args.runtime)
             lease, why = pool.template(device_type, runtime, args.label or pool.kind_label(device_type, runtime),
-                                       "queuekeeper simulator-pool template", boot_timeout=600,
+                                       "qk simulator-pool template", boot_timeout=600,
                                        voiceover_limit=warmed.VOICEOVER_LIMIT, voices_limit=warmed.VOICES_LIMIT,
                                        require_voiceover=True, refresh=args.refresh, use="copy")
             if lease is None:

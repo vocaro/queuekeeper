@@ -1,4 +1,4 @@
-"""The visibility features and their switch: `queuekeeper visibility` (doc/visibility.md).
+"""The visibility features and their switch: `qk visibility` (doc/visibility.md).
 
 A feature shows the queue to its owner in some way other than the command line and log files: a notification, a
 web page. Each is a module or package of its own in this one, found by its name, so adding one changes no other
@@ -102,7 +102,7 @@ def load(say=lambda words: print(words, file=sys.stderr)):
         try: extensions.load([available()[name]])
         except Exception as error:  # noqa: BLE001
             say(f"queuekeeper: the visibility feature {name} did not load, and is left out: {error}; "
-                f"`queuekeeper visibility disable {name}` turns it off")
+                f"`qk visibility disable {name}` turns it off")
 
 
 def status(as_json=False, out=print):
@@ -121,7 +121,7 @@ def status(as_json=False, out=print):
 
 
 def main(argv):
-    parser = argparse.ArgumentParser(prog="queuekeeper visibility", description="turn the features that show the "
+    parser = argparse.ArgumentParser(prog="qk visibility", description="turn the features that show the "
                                      "queue to its owner on and off, for this account on this Mac")
     operations = parser.add_subparsers(dest="operation", required=True)
     operations.add_parser("status", help="list each feature and whether it is on").add_argument("--json", action="store_true")

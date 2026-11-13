@@ -1,4 +1,4 @@
-"""The last good build of a project's app, kept and run: `queuekeeper app` (app_builds.py)."""
+"""The last good build of a project's app, kept and run: `qk app` (app_builds.py)."""
 import contextlib
 from io import StringIO
 import json
@@ -19,7 +19,7 @@ from queuekeeper.apple import disk as apple_disk
 from queuekeeper.apple import app_builds, device_pass
 
 BUNDLE = "com.example.demo"
-# A stand-in for `queuekeeper admit -- xcodebuild ...`: it makes the product xcodebuild would, Demo.app with its Info.plist,
+# A stand-in for `qk admit -- xcodebuild ...`: it makes the product xcodebuild would, Demo.app with its Info.plist,
 # in the -derivedDataPath it was given, or exits 65 as a failed build does when FAIL names a file that exists,
 # printing what the file holds.
 BUILDER = f"""
@@ -448,7 +448,7 @@ class Devices(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         root = Path(temp.name)
         (root / "queuekeeper.json").write_text(json.dumps(project({"project": "A.xcodeproj", "mac": {"scheme": "A"}})))
-        # The owner's decision of 2026-11-06: the device's reservation records no approval, so queuekeeper app takes none.
+        # The owner's decision of 2026-11-06: the device's reservation records no approval, so qk app takes none.
         with contextlib.redirect_stderr(StringIO()), self.assertRaises(SystemExit):
             cli.main(["--project", str(root), "app", "run", "--iphone", "--approved-by", "owner"])
         self.assertEqual(cli.main(["--project", str(root), "app", "run", "--ipad"]), 2)

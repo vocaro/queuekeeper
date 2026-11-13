@@ -130,7 +130,7 @@
             }
           },
           "resource": {
-            "description": "The admission the lane takes, first come, first served, the second Mac first (the owner's decision, 2026-11-07): heavy, one slot, which light, the older name of a short check, and no resource mean too; exclusive, the host to itself; or self, for a lane whose script admits each of its parts itself, which queuekeeper run runs where it starts, unadmitted (guides/shared-host.md, Heavy-work admission)",
+            "description": "The admission the lane takes, first come, first served, the second Mac first (the owner's decision, 2026-11-07): heavy, one slot, which light, the older name of a short check, and no resource mean too; exclusive, the host to itself; or self, for a lane whose script admits each of its parts itself, which qk run runs where it starts, unadmitted (guides/shared-host.md, Heavy-work admission)",
             "enum": [
               "light",
               "heavy",
@@ -194,7 +194,7 @@
             ]
           },
           "foreground": {
-            "description": "The lane takes a Mac's screen, keyboard, pointer, focus or speech, as Mac VoiceOver and Mac XCUITest lanes do. It needs a heavy or exclusive resource. queuekeeper run sends it to the second Mac, which queuekeeper takes the foreground of for the run, waiting while another run holds it, and never to this Mac; queuekeeper run --here, or here, runs it on this Mac only for the session holding mac-foreground within the owner's window",
+            "description": "The lane takes a Mac's screen, keyboard, pointer, focus or speech, as Mac VoiceOver and Mac XCUITest lanes do. It needs a heavy or exclusive resource. qk run sends it to the second Mac, which queuekeeper takes the foreground of for the run, waiting while another run holds it, and never to this Mac; qk run --here, or here, runs it on this Mac only for the session holding mac-foreground within the owner's window",
             "type": "boolean"
           },
           "apps": {
@@ -212,15 +212,15 @@
             "minLength": 1
           },
           "model": {
-            "description": "A heavy lane that runs a model: on-device generation, another local generative model on the GPU, or Core ML whose compute units include the GPU. queuekeeper run admits it with one slot and the host's model lock, so model runs exclude each other while other heavy work runs beside them. A lane group that runs it needs model too, or an exclusive resource, and a group that runs two or more needs jobs 1. A model run that is timed or compared with a baseline is exclusive instead, which holds the model already",
+            "description": "A heavy lane that runs a model: on-device generation, another local generative model on the GPU, or Core ML whose compute units include the GPU. qk run admits it with one slot and the host's model lock, so model runs exclude each other while other heavy work runs beside them. A lane group that runs it needs model too, or an exclusive resource, and a group that runs two or more needs jobs 1. A model run that is timed or compared with a baseline is exclusive instead, which holds the model already",
             "type": "boolean"
           },
           "display": {
-            "description": "A heavy or exclusive lane whose tests wait for what the display's refresh times, such as a scroll view's animation: queuekeeper run runs its command, on either Mac and in a lane group too, under a one-second caffeinate -u, which wakes a sleeping display behind a lock too, and then caffeinate -d, which keeps it on for the command's life, and the lane's receipt shows them in its command. Neither unlocks the screen, so a test that reads its tree through the accessibility API still needs an unlocked one",
+            "description": "A heavy or exclusive lane whose tests wait for what the display's refresh times, such as a scroll view's animation: qk run runs its command, on either Mac and in a lane group too, under a one-second caffeinate -u, which wakes a sleeping display behind a lock too, and then caffeinate -d, which keeps it on for the command's life, and the lane's receipt shows them in its command. Neither unlocks the screen, so a test that reads its tree through the accessibility API still needs an unlocked one",
             "type": "boolean"
           },
           "budgetMinutes": {
-            "description": "The gate lane's time budget in minutes, from its measured time. When the median wall time of its recent passing runs in the merge queue exceeds it, queuekeeper land and queuekeeper doctor warn and name its slowest parts (guides/releasing.md, Keeping the split). Only the gate lane takes it",
+            "description": "The gate lane's time budget in minutes, from its measured time. When the median wall time of its recent passing runs in the merge queue exceeds it, qk land and qk doctor warn and name its slowest parts (guides/releasing.md, Keeping the split). Only the gate lane takes it",
             "type": "integer",
             "minimum": 1
           },
@@ -230,11 +230,11 @@
             "minimum": 1
           },
           "wholeHost": {
-            "description": "A heavy lane that is a Mac's work, such as a gate that runs the project's suites side by side: it takes every guaranteed slot of the Mac it runs on, so a second such lane never runs beside it there, and queuekeeper run sends it to the Mac that has them all free, while a lighter heavy lane still shares. A lane group that runs it needs wholeHost too, or an exclusive resource, which holds the host already (guides/shared-host.md, Which Mac runs a lane)",
+            "description": "A heavy lane that is a Mac's work, such as a gate that runs the project's suites side by side: it takes every guaranteed slot of the Mac it runs on, so a second such lane never runs beside it there, and qk run sends it to the Mac that has them all free, while a lighter heavy lane still shares. A lane group that runs it needs wholeHost too, or an exclusive resource, which holds the host already (guides/shared-host.md, Which Mac runs a lane)",
             "type": "boolean"
           },
           "devices": {
-            "description": "The device-record entries, such as iPhone, that a lane's script uses when its command is not queuekeeper device-pass, whose --device options say so: the lane waits for admission only until the last start that can finish within the window the session holds them for (guides/releasing.md, The device pass). It needs an admitted lane",
+            "description": "The device-record entries, such as iPhone, that a lane's script uses when its command is not qk device-pass, whose --device options say so: the lane waits for admission only until the last start that can finish within the window the session holds them for (guides/releasing.md, The device pass). It needs an admitted lane",
             "type": "array",
             "items": {
               "type": "string",
@@ -259,7 +259,7 @@
       }
     },
     "testLanes": {
-      "description": "What queuekeeper doctor's check that every test has a lane cannot work out for itself (guides/app-testing.md, Every test has a lane)",
+      "description": "What qk doctor's check that every test has a lane cannot work out for itself (guides/app-testing.md, Every test has a lane)",
       "type": "object",
       "additionalProperties": false,
       "properties": {
@@ -291,7 +291,7 @@
       }
     },
     "spelling": {
-      "description": "Exemptions from queuekeeper spelling, each mapped to the reason it is kept",
+      "description": "Exemptions from qk spelling, each mapped to the reason it is kept",
       "type": "object",
       "additionalProperties": false,
       "properties": {
@@ -395,7 +395,7 @@
               }
             },
             "lanes": {
-              "description": "The lanes a docs-only batch runs instead, in order; never gate, whose receipt queuekeeper release reads",
+              "description": "The lanes a docs-only batch runs instead, in order; never gate, whose receipt qk release reads",
               "type": "array",
               "minItems": 1,
               "uniqueItems": true,
@@ -430,7 +430,7 @@
           "const": true
         },
         "spelling": {
-          "description": "false stops the queue running the toolkit's spelling check, queuekeeper spelling, before the gate, on an ungated landing and before a docs-only batch's lanes in a project with no spelling lane; a project's own spelling lane runs either way. Read from main (guides/maintenance.md, The merge queue)",
+          "description": "false stops the queue running the toolkit's spelling check, qk spelling, before the gate, on an ungated landing and before a docs-only batch's lanes in a project with no spelling lane; a project's own spelling lane runs either way. Read from main (guides/maintenance.md, The merge queue)",
           "const": false
         },
         "carryOverChecks": {
@@ -467,7 +467,7 @@
       }
     },
     "app": {
-      "description": "The app queuekeeper app keeps and runs: the last good build of each platform, kept on this Mac (guides/app-builds.md)",
+      "description": "The app qk app keeps and runs: the last good build of each platform, kept on this Mac (guides/app-builds.md)",
       "type": "object",
       "additionalProperties": false,
       "oneOf": [
@@ -616,7 +616,7 @@
       "additionalProperties": false,
       "properties": {
         "lanes": {
-          "description": "The release checks, each a lane of its own, which run after gate on the release commit; queuekeeper release requires a pass of each at the commit, or the owner's waiver of its failure. Never gate, which queuekeeper release checks first, nor any lane a landing runs: spelling, provision, queue.lanes or gate, queue.docsOnly.lanes, or a member of a group among them",
+          "description": "The release checks, each a lane of its own, which run after gate on the release commit; qk release requires a pass of each at the commit, or the owner's waiver of its failure. Never gate, which qk release checks first, nor any lane a landing runs: spelling, provision, queue.lanes or gate, queue.docsOnly.lanes, or a member of a group among them",
           "type": "array",
           "uniqueItems": true,
           "items": {

@@ -32,7 +32,7 @@ def fix_hosts(root, hosts):
 
 
 def delete_defaults(run=subprocess.run):
-    """Delete Xcode's default simulators on this Mac that `queuekeeper disk` finds deletable, each checked again
+    """Delete Xcode's default simulators on this Mac that `qk disk` finds deletable, each checked again
     first and recorded in its ledger, and return what was said of each."""
     def defaults():
         found = apple_disk.Host.current(0, None, run)
@@ -53,7 +53,7 @@ def default_simulators(config):
 
     A script or Xcode run that picks a device by name, or `booted`, finds one of them instead of a
     pool member and fills it with the project's apps (vocaro-engineering#91). Xcode makes them again
-    when it installs a runtime. `queuekeeper doctor` deletes each one first (fix_hosts), so this names only
+    when it installs a runtime. `qk doctor` deletes each one first (fix_hosts), so this names only
     those still there: booted, in use or named by a process."""
     if not config.get("simulatorPool"):
         return []
@@ -66,8 +66,8 @@ def default_simulators(config):
         return []
     shown = ", ".join(found[:5]) + (f" and {len(found) - 5} more" if len(found) > 5 else "")
     return [f"{len(found)} of Xcode's default simulators exist on this Mac: {shown}. A script or Xcode run that "
-            "picks a device by name or `booted` installs on one instead of a pool member; `queuekeeper doctor` deletes each "
-            "one that is shut down and unused, and `queuekeeper disk` says why it kept these (guides/simulator-testing.md, "
+            "picks a device by name or `booted` installs on one instead of a pool member; `qk doctor` deletes each "
+            "one that is shut down and unused, and `qk disk` says why it kept these (guides/simulator-testing.md, "
             "Reserved simulator pool)"]
 
 

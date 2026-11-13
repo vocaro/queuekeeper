@@ -31,7 +31,7 @@ QK.panel("queue", {
     QK.fill(element,
       data.held ? h("div", { class: "banner danger" }, h("b", null, "Held "), data.held) : null,
       !data.held && !data.worker && data.waiting.length ? h("div", { class: "banner warning" },
-        h("b", null, "No worker is running. "), "queuekeeper queue resume starts one.") : null,
+        h("b", null, "No worker is running. "), "qk queue resume starts one.") : null,
       round ? h("div", { class: "card" },
         h("h2", null, "Round " + round.name, h("span", { class: "muted" },
           QK.count(round.entries.length, "entry", "entries") + (round.base ? " on " + short(round.base) : ""))),

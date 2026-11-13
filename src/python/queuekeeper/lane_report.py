@@ -1,4 +1,4 @@
-"""The summary that ends every `queuekeeper run` (vocaro-engineering#274).
+"""The summary that ends every `qk run` (vocaro-engineering#274).
 
 A lane's outcome used to be one `remote:` line in the middle of its output, and its counts and failing tests lay only
 in a file. Each run now ends with its verdict, its passed, failed, skipped and unmeasured tests, each failing test
@@ -8,7 +8,7 @@ run's. Passed, failed, skipped and unmeasured stay apart, a lane is passed only 
 whose log counts no test says so rather than printing zeros.
 
 The lines go to stderr with queuekeeper's other notes, after stdout is flushed, so that they are last however the two are
-joined. They begin `queuekeeper run LANE:` or are indented, and quote no line of a test's own, since a lane's log is read
+joined. They begin `qk run LANE:` or are indented, and quote no line of a test's own, since a lane's log is read
 again by what runs it: the merge queue's log, lane_results.counted and failure_records read none of them as a result. The
 second Mac's own run prints none: the Mac that sent it prints the summary from what came back.
 """
@@ -183,7 +183,7 @@ def combined(parts, status):
 
 
 class Report:
-    """One `queuekeeper run`'s summary, inert until a lane run begins."""
+    """One `qk run`'s summary, inert until a lane run begins."""
 
     def __init__(self):
         self.lane = self.root = self.group = self.here = self.why = None
@@ -225,19 +225,19 @@ class Report:
         else: verdict = "passed" if status == 0 else "failed"
         ending = f" (exit {status})" if isinstance(status, int) and status else ""
         # One line when nothing ran: the refusal or reason queuekeeper printed just before it says the rest.
-        if directory is None: return [f"queuekeeper run {self.lane}: {verdict}{ending}; no tests ran"]
-        lines = [f"queuekeeper run {self.lane}: {verdict}{ending}, {where}"]
+        if directory is None: return [f"qk run {self.lane}: {verdict}{ending}; no tests ran"]
+        lines = [f"qk run {self.lane}: {verdict}{ending}, {where}"]
         why = self.why or (str(error) if error is not None else None)
         if self.group is None: logs = {self.lane: directory / "run.log"}
         else: logs = {name: directory / "lanes" / f"{name}.log" for name in self.group}
         texts = {name: path.read_text(errors="replace") if path.is_file() else "" for name, path in logs.items()}
         kept = records(directory / "results")
         joined = "\n".join(texts.values())
-        # queuekeeper run's status for a lane that stopped before its tests, which a command can also exit with itself.
+        # qk run's status for a lane that stopped before its tests, which a command can also exit with itself.
         quoted = before_tests(joined) if verdict == "failed" and status == lane_results.BEFORE_TESTS and self.group is None \
             and not kept else None
         if quoted is not None:
-            lines[0] = f"queuekeeper run {self.lane}: failed before any test ran{ending}, {where}"
+            lines[0] = f"qk run {self.lane}: failed before any test ran{ending}, {where}"
             lines.append(f"  tests: none ran; the last error in its log: {quoted}")
         elif self.complete:
             parts = {name: counts(text) for name, text in texts.items()}
@@ -270,7 +270,7 @@ class Report:
         try:
             lines = self.lines(status, error)
         except Exception as failure:
-            lines = [f"queuekeeper run {self.lane}: exit {status}; its summary could not be made: {type(failure).__name__}: {failure}"]
+            lines = [f"qk run {self.lane}: exit {status}; its summary could not be made: {type(failure).__name__}: {failure}"]
         # A closed stream, as when a reader of the output has gone, must not turn the lane's status into a traceback.
         with contextlib.suppress(OSError, ValueError):
             sys.stdout.flush()

@@ -25,19 +25,19 @@ from . import lane_results, processes, shims
 
 # Lines of a failed lane's log printed under its result.
 TAIL = 40
-# Processes `queuekeeper unittest` runs at a time unless --jobs says otherwise (guides/parallel-tests.md).
+# Processes `qk unittest` runs at a time unless --jobs says otherwise (guides/parallel-tests.md).
 DEFAULT_JOBS = 4
 # unittest's own exit status for a run that found no tests (Python 3.12 and later).
 NO_TESTS = 5
-# Seconds one test process of `queuekeeper unittest` or `queuekeeper xctest` may run before it is stopped and left
+# Seconds one test process of `qk unittest` or `qk xctest` may run before it is stopped and left
 # unmeasured, unless --timeout says otherwise: a backstop for a hang, which would otherwise hold the
 # whole run until its lane's limit. More than twice the slowest of the toolkit's own, test_remote's
 # 817 s at one-minute load averages of 100 to 280 on this Mac (2026-10-31).
 PROCESS_LIMIT = 1800
-# The variable that gives a lane's command the absolute path of its results/ directory, which `queuekeeper run` empties
+# The variable that gives a lane's command the absolute path of its results/ directory, which `qk run` empties
 # before each run and brings back from the second Mac (guides/parallel-tests.md, A lane's results).
 RESULTS_VARIABLE = "QUEUEKEEPER_RESULTS_DIR"
-# What queuekeeper unittest repeats after its summary, so that output cut by `tail` still says why each test failed
+# What qk unittest repeats after its summary, so that output cut by `tail` still says why each test failed
 # (vocaro-engineering#264): at most this many failures, each name and reason at most this many characters. Together
 # they stay well under the TAIL lines a failed lane shows, and that lane's summary stays among them.
 REASONS_SHOWN = 20
@@ -69,7 +69,7 @@ def results_environment(directory, base=None):
 def hand_up(results, lane, environment=None):
     """Copy a nested lane's results/ into results/LANE/ of the lane it runs inside, which RESULTS_VARIABLE
     names in environment (os.environ), and return that folder, or None when there is nothing to copy or
-    no lane outside it. A gate whose script runs `queuekeeper run --here suites` then brings the suites' lanes'
+    no lane outside it. A gate whose script runs `qk run --here suites` then brings the suites' lanes'
     results, such as each iOS shard's per-test lines, back with its own dispatch from the second Mac and
     keeps them by commit with its receipt (vocaro-engineering#218)."""
     outer = (os.environ if environment is None else environment).get(RESULTS_VARIABLE)
@@ -260,7 +260,7 @@ CHAINED = ("During handling of the above exception, another exception occurred:"
 # its second, a JSON list of fnmatch patterns or null, as its loader's testNamePatterns: unlike
 # -k, a pattern is used as it is, so an escaped test id selects that test alone. It first puts SIGINT
 # and SIGQUIT back to Python's defaults, which a background job's shell ignores, so that a test run
-# behaves the same however queuekeeper was started; queuekeeper admit and queuekeeper run still pass on their caller's
+# behaves the same however queuekeeper was started; qk admit and qk run still pass on their caller's
 # (the owner's decision, 2026-11-11, vocaro-engineering#385).
 SHARD = "import json, signal, sys, unittest; signal.signal(signal.SIGINT, signal.default_int_handler); " \
     "signal.signal(signal.SIGQUIT, signal.SIG_DFL); sys.path.insert(0, sys.argv.pop(1)); " \
@@ -350,7 +350,7 @@ def clipped(text, width):
 
 
 def reason_lines(reasons, saved):
-    """What queuekeeper unittest prints after its summary for reasons, [(failed test, why)]; saved says where the whole output
+    """What qk unittest prints after its summary for reasons, [(failed test, why)]; saved says where the whole output
     is. Nothing for no reasons. Each reason is one line, indented, so that nothing in it can start a line the merge
     queue reads as a process's header, a test's failure or a summary (merge_queue.failed_tests, UNITTEST_SUMMARY)."""
     if not reasons: return []
@@ -363,7 +363,7 @@ def reason_lines(reasons, saved):
 
 
 def unittest_main(argv):
-    parser = argparse.ArgumentParser(prog="queuekeeper unittest", description="Discover a unittest suite as `python3 -m "
+    parser = argparse.ArgumentParser(prog="qk unittest", description="Discover a unittest suite as `python3 -m "
         "unittest discover` does, and run its modules in processes of their own, JOBS at a time.")
     parser.add_argument("-s", "--start-directory", default=".")
     # Repeatable: each -p adds the modules it matches. A second -p once replaced the first without a word, so a run
@@ -509,9 +509,9 @@ ISOLATION = "host_isolation.py"
 
 
 def refusals(start, patterns=None):
-    """The lines queuekeeper unittest refuses a suite with before discovery imports any of its modules, each ending `nothing
+    """The lines qk unittest refuses a suite with before discovery imports any of its modules, each ending `nothing
     ran`, or none. In a suite that keeps its tests off the real hosts in host_isolation.py, a module patterns match
-    that does not parse, or that does not import host_isolation at its top level, refuses the run. queuekeeper land and `queuekeeper
+    that does not parse, or that does not import host_isolation at its top level, refuses the run. qk land and `qk
     queue add` run these on an entry's tree before queuing it, as they take seconds and a refusal costs a whole gate
     (merge_queue.prerun, vocaro-engineering#290)."""
     if not (start / ISOLATION).is_file(): return []

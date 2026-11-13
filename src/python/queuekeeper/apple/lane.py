@@ -123,30 +123,30 @@ def register():
     if not isinstance(extensions.LANE, Lane): extensions.LANE = Lane()
     extensions.COMMANDS.update({
         "simulator-tests": ("build a scheme's tests once and run them on several members of the project's simulator "
-                            "pool side by side: queuekeeper simulator-tests --scheme S --runtime R --device T --device T; "
+                            "pool side by side: qk simulator-tests --scheme S --runtime R --device T --device T; "
                             "-h for the rest", matrix.main),
         "device-pass": ("a release's physical-device pass, as a release lane's command: run COMMAND once on each paired "
                         "device named, in turn, under its reservation, taking the iPad in turn and using an iPhone the "
-                        "session reserved within the owner's window: queuekeeper device-pass --device iPad --device "
+                        "session reserved within the owner's window: qk device-pass --device iPad --device "
                         "iPhone -- COMMAND; -h for the rest (guides/releasing.md, The device pass)", device_pass.main),
         "simulator-pool": ("list, take, release, prune, reap or check members of the project's simulator pool under "
-                           "device-record reservations: queuekeeper simulator-pool list|take|release|prune|reap|check; "
+                           "device-record reservations: qk simulator-pool list|take|release|prune|reap|check; "
                            "-h for the rest", simulator_pool.main),
         "results": ("keep a test run's per-test outcomes and seconds in the lane's results/ and print them, for a "
-                    "script that runs xcodebuild itself: queuekeeper results keep; -h for the rest",
+                    "script that runs xcodebuild itself: qk results keep; -h for the rest",
                     lambda arguments, project: run_results.main(arguments)),
         "xctest": ("build a Swift package's tests once and run its XCTest classes in xctest processes of their own, "
-                   "side by side, each reporting its skips: queuekeeper xctest [-j JOBS] [--filter REGEX]; "
-                   "queuekeeper xctest -h for the rest", lambda arguments, project: xctest_shards.main(arguments)),
+                   "side by side, each reporting its skips: qk xctest [-j JOBS] [--filter REGEX]; "
+                   "qk xctest -h for the rest", lambda arguments, project: xctest_shards.main(arguments)),
     })
     extensions.PARSED_COMMANDS.update({
-        "app": ("run the last good build of the project's app: queuekeeper app run opens the newest kept Mac build, and "
-                "queuekeeper app run --iphone or --ipad installs and launches the device build on that paired device, "
-                "building origin/main first when the kept build is older; queuekeeper app keep builds and keeps one, as "
-                "the merge queue does after each gated landing; queuekeeper app status lists them (guides/app-builds.md)",
+        "app": ("run the last good build of the project's app: qk app run opens the newest kept Mac build, and "
+                "qk app run --iphone or --ipad installs and launches the device build on that paired device, "
+                "building origin/main first when the kept build is older; qk app keep builds and keeps one, as "
+                "the merge queue does after each gated landing; qk app status lists them (guides/app-builds.md)",
                 app_builds.add_arguments, app_builds.execute, True),
         "keychain": ("before the owner unlocks a keychain, say which Mac's keychain the work needs and print commands "
-                     "that run only there (recover); keep the second Mac's login keychain unlocked for every queuekeeper "
+                     "that run only there (recover); keep the second Mac's login keychain unlocked for every qk "
                      "remote run (keep-unlocked); where the automation runs, check the keychain, the signing identity "
                      "and signing with it, without a prompt (check)",
                      keychain.add_arguments, lambda root, args, config: keychain.execute(args), False),

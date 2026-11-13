@@ -1,4 +1,4 @@
-"""A read-only web page of the queue, served on this Mac alone: `queuekeeper serve`.
+"""A read-only web page of the queue, served on this Mac alone: `qk serve`.
 
 Home says in a glance what the queue is doing and whether it needs its owner; the other tabs hold the detail.
 Each tab is a panel, a module of its own in `panels` with a script of its own beside it, found by its name: adding

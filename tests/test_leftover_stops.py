@@ -243,7 +243,7 @@ class StopTests(Fixture):
 
 
 class RequestTests(Fixture):
-    """The second Mac's answer to the requests `queuekeeper doctor` and `queuekeeper simulator-pool reap` send there
+    """The second Mac's answer to the requests `qk doctor` and `qk simulator-pool reap` send there
     (simulators.pool.reap_reports), over the same fixture: the sent command is answered here with fakes."""
 
     def reap_reports(self, **options):

@@ -2,7 +2,7 @@
 
 A build folder reused across a dependency change can keep an explicit module built from the old header:
 the build fails with "has been modified since the module file", then with errors for whatever the new
-header added (vocaro-engineering#85, #267). queuekeeper run puts SHIMS first on every lane's PATH, so that a
+header added (vocaro-engineering#85, #267). qk run puts SHIMS first on every lane's PATH, so that a
 lane's own `xcodebuild` or `swift`, however its script calls it by name and wherever it sends the
 output, runs through main: a failed run whose output has that message removes the module-cache folder
 the message names, inside the checkout the lane runs in, and runs once more. It never runs a third time.
@@ -29,7 +29,7 @@ CACHES = ("SwiftExplicitPrecompiledModules", "ModuleCache.noindex", "ModuleCache
 TOOLS = ("xcodebuild", "swift")
 RESULTS_VARIABLE = "QUEUEKEEPER_RESULTS_DIR"
 RECORD = "stale-modules.log"
-# What a wrapped run says when it rebuilds, which queuekeeper simulator-tests reads as handled already.
+# What a wrapped run says when it rebuilds, which qk simulator-tests reads as handled already.
 NOTICE = "queuekeeper: STALE MODULES"
 MARKER = b"queuekeeper.apple import stale_modules"
 

@@ -4,7 +4,7 @@ Nothing here takes a slot on this host. The exact commit, and the toolkit commit
 go to bare repositories on the second Mac by git over SSH, never through GitHub. A working tree
 with uncommitted changes goes as a snapshot commit on HEAD, which no branch holds. offload_host.py,
 sent along and run there by the host's own Python, checks them out in a persistent checkout,
-so builds stay warm, and runs `queuekeeper run` or `queuekeeper admit` under the second Mac's own heavy-work
+so builds stay warm, and runs `qk run` or `qk admit` under the second Mac's own heavy-work
 admission: that host's queue, not a private pool beside this one. A push sends only what the
 second Mac's checkouts lack, which their refs name there. The log and the result come back to
 this checkout's .build/queuekeeper/remote, each dispatch's in a directory of its own as well, with
@@ -14,8 +14,8 @@ the repository's Git directory, where every worktree of the repository can find 
 whole lane's run on this Mac at a commit with no working changes (keep_here); a snapshot's is not,
 and queuekeeper says so when it sends one.
 
-`queuekeeper run` sends every admitted lane to whichever Mac has spare capacity for it now,
-the second Mac first, unless the lane says why it stays on this Mac, and `queuekeeper admit` a
+`qk run` sends every admitted lane to whichever Mac has spare capacity for it now,
+the second Mac first, unless the lane says why it stays on this Mac, and `qk admit` a
 command the same way, unless `--here` or its paths and devices keep it on this Mac; what the command
 changed in the checkout's files that Git does not ignore comes back as a patch and is applied here
 (brought_back), while its build products stay there (the owner's decision, 2026-11-07). Before it
@@ -32,14 +32,14 @@ connect, the work runs on this Mac at once (the owner's decision, 2026-10-27). A
 answers but is misconfigured, such as one that refuses the login or has another Xcode, stops the
 work for the owner's decision (agents/core.md, Shared resources); only `--here` then runs it
 here. A run that was sent and lost its connection is unmeasured and runs nowhere else.
-`queuekeeper doctor` compares the two Macs and times how ssh connects to the second Mac, and reports a
+`qk doctor` compares the two Macs and times how ssh connects to the second Mac, and reports a
 second Mac it cannot reach as unchecked, and gives both the same simulator runtimes, as
-`queuekeeper remote setup --runtimes` does, without asking the owner (the owner's decision, 2026-11-03).
+`qk remote setup --runtimes` does, without asking the owner (the owner's decision, 2026-11-03).
 Before it sends work, and
-in `queuekeeper doctor`, it lists the processes there that earlier runs left running, which nothing
+in `qk doctor`, it lists the processes there that earlier runs left running, which nothing
 stops, and fast-forwards the second Mac's own toolkit checkout, ~/Development/queuekeeper, to
 origin/main when that checkout is on main with no uncommitted changes, saying why it leaves it otherwise:
-a dispatch goes on, and `queuekeeper doctor` reports an error (offload_host.update_toolkit, vocaro-engineering#203).
+a dispatch goes on, and `qk doctor` reports an error (offload_host.update_toolkit, vocaro-engineering#203).
 """
 import base64
 import binascii
@@ -140,7 +140,7 @@ NEGOTIATION_FAILED = "push negotiation failed"
 # Seconds a stopped run has to end on the second Mac before the connection is closed.
 STOP_WAIT = 120
 # Seconds a run the dispatcher lost contact with may wait on the second Mac beyond its own timeouts: for a checkout
-# (offload_host.CLAIM_TIMEOUT) or for its admission, whose wait `queuekeeper run` and `queuekeeper admit` bound by default at this.
+# (offload_host.CLAIM_TIMEOUT) or for its admission, whose wait `qk run` and `qk admit` bound by default at this.
 UNATTENDED_WAIT = 5400 + 300
 # Seconds between tries at a connection to collect a run from, and how long past that run's own bound a
 # dispatcher keeps trying, in this Mac's waking time (time.monotonic stops for sleep on macOS).
@@ -157,12 +157,12 @@ UPSTREAM = "https://github.com/vocaro/queuekeeper.git"
 # What a Git hook exports for its own repository must not reach another.
 GIT_LOCATION = {"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
                 "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_PREFIX"}
-# `queuekeeper run`'s status when the second Mac's configuration stopped a lane: sysexits' EX_CONFIG.
+# `qk run`'s status when the second Mac's configuration stopped a lane: sysexits' EX_CONFIG.
 MISCONFIGURED = 78
-# `queuekeeper run`'s status when a queue worker's gate found its process without Local Network access and ran nothing, here
+# `qk run`'s status when a queue worker's gate found its process without Local Network access and ran nothing, here
 # or there: sysexits' EX_UNAVAILABLE. No verdict, on which the worker exits, holding nothing (vocaro-engineering#300).
 LOST_ACCESS = 69
-# Set by a queue worker on the `queuekeeper run` of a gate's lane, the one `queuekeeper run` that stops for LOST_ACCESS. That `queuekeeper run`
+# Set by a queue worker on the `qk run` of a gate's lane, the one `qk run` that stops for LOST_ACCESS. That `qk run`
 # takes it out of its environment, so that no lane it runs here, nor what that lane starts, stops for it.
 QUEUE_GATE = "QUEUEKEEPER_QUEUE_GATE"
 QUEUE_GATE_EXCLUDE = "QUEUEKEEPER_QUEUE_GATE_EXCLUDE"
@@ -198,9 +198,9 @@ RENAMED = {}
 UNFOUND = {}
 # Set by offload_host.py for the work it runs: the name of the Mac that sent it, which a receipt records.
 DISPATCHER = "QUEUEKEEPER_DISPATCHED_FROM"
-# Seconds `queuekeeper doctor` waits for the second Mac to report its Xcodes and runtimes.
+# Seconds `qk doctor` waits for the second Mac to report its Xcodes and runtimes.
 SURVEY_TIMEOUT = 180
-# Seconds `queuekeeper doctor` waits for the census of the second Mac's leftover processes.
+# Seconds `qk doctor` waits for the census of the second Mac's leftover processes.
 CENSUS_TIMEOUT = 60
 # Where a leftover process is explained.
 LEFTOVER_GUIDE = "guides/shared-host.md, Processes left over from runs"
@@ -362,7 +362,7 @@ def check(host, found=None):
 # What a process that macOS's Local Network privacy denies says ssh does: it connects nowhere on this Mac's network,
 # and its connections fail at once with EHOSTUNREACH, "No route to host" (vocaro-engineering#282).
 LOST_FIX = ("start the process again from a live Claude session, or from Terminal, whose app holds the owner's Local "
-            "Network grant: a queue worker exits for that, and the next `queuekeeper land` or `queuekeeper queue wait` starts another "
+            "Network grant: a queue worker exits for that, and the next `qk land` or `qk queue wait` starts another "
             "(guides/shared-host.md, Local Network access)")
 # The executable names of a Python, as proc_pidpath gives them: Homebrew's Python.app runs .../MacOS/Python, and
 # python3 and python3.14 run themselves.
@@ -559,13 +559,13 @@ def unreachable(host, detail, slept=None):
 
 def no_toolkit(host, status, detail):
     return Misconfigured(f"{host} could not run the toolkit (exit {status}): {detail or 'no output'}",
-                         f"give {host}'s login shell a python3 that runs it: Homebrew's, which `queuekeeper remote setup` "
+                         f"give {host}'s login shell a python3 that runs it: Homebrew's, which `qk remote setup` "
                          "installs, or the system's, which Xcode's command line tools provide "
                          "(guides/shared-host.md, Setting up the second Mac)")
 
 
 def configured():
-    """The second Mac that `queuekeeper run` and `queuekeeper admit` send work to, or None for this Mac only.
+    """The second Mac that `qk run` and `qk admit` send work to, or None for this Mac only.
 
     QUEUEKEEPER_OFFLOAD_HOST names it, and `none` turns it off (named_host). Otherwise it is the ssh alias
     that ~/.ssh/config defines (alias).
@@ -742,7 +742,7 @@ def moved_trees(root, offered):
 
 def changed_since(root, offered):
     """Why work this Mac admitted after offering it to the second Mac would not run what it sent, or None
-    (moved_trees). A lane then does not run here; `queuekeeper admit` runs its command from what it sent (sent_tree)."""
+    (moved_trees). A lane then does not run here; `qk admit` runs its command from what it sent (sent_tree)."""
     moved = moved_trees(root, offered)
     if not moved: return None
     _checkout, commit, what, changes = moved[0]
@@ -750,7 +750,7 @@ def changed_since(root, offered):
             f"the changed tree, not what was sent:\n{changes}")
 
 
-# The prefix of the temporary directory in which `queuekeeper admit` runs a command from what it sent (sent_tree).
+# The prefix of the temporary directory in which `qk admit` runs a command from what it sent (sent_tree).
 SENT_TREE_PREFIX = "eng-sent-"
 
 
@@ -771,7 +771,7 @@ def remove_worktree(repository, path, private):
 
 @contextlib.contextmanager
 def sent_tree(root, sent, toolkit_moved=False):
-    """The trees `queuekeeper admit` sent to the second Mac, laid out here as the second Mac lays them out, for this Mac
+    """The trees `qk admit` sent to the second Mac, laid out here as the second Mac lays them out, for this Mac
     to run the command from once the tree here is no longer what was sent (moved_trees; vocaro-engineering#276):
     (checkout, toolkit). The checkout is a detached worktree of the project at the commit sent, in a temporary
     directory under the main checkout's name, with the toolkit beside it, where a project's relative paths to
@@ -845,7 +845,7 @@ def ssh(host, script, **options):
     """Run script in host's login shell. When ssh's captured words say the name did not resolve or answered
     with another key, ssh logged in nowhere and nothing ran, so a second Mac that macOS renamed is looked
     for (rediscover) and, once found, script runs there: every connection finds it, not only those after
-    reachable(), such as a foreground lane's and `queuekeeper remote foreground`'s (vocaro-engineering#129)."""
+    reachable(), such as a foreground lane's and `qk remote foreground`'s (vocaro-engineering#129)."""
     run = lambda: subprocess.run([*SSH, *moved(host), host, login(script)], env=environment(), **options)
     done = run()
     if done.returncode == 255 and host not in RENAMED and renamed_failure(done.stderr) and rediscover(host):
@@ -1191,9 +1191,9 @@ def kept_results(kept, lane):
     return kept / f"{lane}.results"
 
 
-# The rule by which queuekeeper disk reclaims kept results (vocaro-engineering#218): a lane's results stay at its newest
+# The rule by which qk disk reclaims kept results (vocaro-engineering#218): a lane's results stay at its newest
 # KEPT_RESULTS_PER_LANE commits, and at every commit whose run is under KEPT_RESULTS_DAYS old. Receipts are never
-# pruned: they are small, and eng release, checkpoints and `queuekeeper remote passed` read them.
+# pruned: they are small, and eng release, checkpoints and `qk remote passed` read them.
 KEPT_RESULTS_PER_LANE = 10
 KEPT_RESULTS_DAYS = 14
 KEPT_RESULTS_RULE = (f"keeps each lane's results at its newest {KEPT_RESULTS_PER_LANE} commits and at every commit "
@@ -1242,7 +1242,7 @@ def prune_results(base, now=None):
 
 
 def prune_results_main(checkout, dry_run=False):
-    """queuekeeper remote prune-results [CHECKOUT]: reclaim the repository's kept results by KEPT_RESULTS_RULE."""
+    """qk remote prune-results [CHECKOUT]: reclaim the repository's kept results by KEPT_RESULTS_RULE."""
     base = store(Path(checkout).resolve())
     if dry_run:
         gone = results_past_rule(base)
@@ -1291,7 +1291,7 @@ def keep(kept, lane, receipt, results=None):
 def keep_here(root, lane, receipt, status, whole=True, results=None):
     """Keep a judged run of the whole lane on this Mac by commit in the repository's Git directory, beside
     the second Mac's, and return its path, or None when it is no commit's run. Every worktree reads it
-    there, as eng release, a checkpoint and `queuekeeper remote passed` do: the merge queue's gate on this Mac ran
+    there, as eng release, a checkpoint and `qk remote passed` do: the merge queue's gate on this Mac ran
     in the queue's own checkout, whose receipt no session's checkout reads and the next round replaces
     (vocaro-engineering#198).
 
@@ -1324,7 +1324,7 @@ def keep_here(root, lane, receipt, status, whole=True, results=None):
 
 
 def ran_where(receipt):
-    """Where a kept receipt's run ran, as eng release and `queuekeeper remote passed` say it."""
+    """Where a kept receipt's run ran, as eng release and `qk remote passed` say it."""
     if receipt.get("ranOn") == HERE:
         return f"on this Mac ({receipt.get('mac') or 'unnamed'}), in {receipt.get('checkout') or 'a worktree'}"
     return f"on the second Mac, {describe(receipt['result']['host'])}"
@@ -1333,7 +1333,7 @@ def ran_where(receipt):
 def uncounted(root, lane):
     """Why a run of the lane from root now would be no commit's pass, naming the working tree's changes that
     make it so, or None when the tree has none (vocaro-engineering#197). A run on such a tree runs a snapshot
-    on the second Mac, or the changes here, and neither eng release, a checkpoint nor `queuekeeper remote passed`
+    on the second Mac, or the changes here, and neither eng release, a checkpoint nor `qk remote passed`
     counts it."""
     try:
         changed = git(root, "diff", "--name-only", "HEAD").splitlines()
@@ -1365,10 +1365,10 @@ def describe(identity):
 # back whole into the results' results/ here, however the run ended. The command finds that directory in
 # parallel.RESULTS_VARIABLE; a group's lanes each find results/LANE/ of the group's, which comes back with it.
 RESULTS = "results/"
-# What `queuekeeper admit`'s command changed on the second Mac in the checkout's files that Git does not ignore, as a binary
+# What `qk admit`'s command changed on the second Mac in the checkout's files that Git does not ignore, as a binary
 # patch against the commit sent, which comes back beside the dispatch's results (offload_host.gather_changes).
 CHANGES = "changes.patch"
-# `queuekeeper admit`'s status when its command ran on the second Mac and the changes it made to the checkout could not be
+# `qk admit`'s status when its command ran on the second Mac and the changes it made to the checkout could not be
 # applied here: the tree here changed after it was sent, the patch does not apply, or it did not come back. The
 # patch is kept under UNAPPLIED_DIRECTORY. sysexits' EX_CANTCREAT, which no other queuekeeper status uses.
 UNAPPLIED = 73
@@ -1376,7 +1376,7 @@ UNAPPLIED_DIRECTORY = ".build/queuekeeper/remote/unapplied"
 
 
 def brought_back(root, sent, status):
-    """`queuekeeper admit`'s status once what its command changed on the second Mac is applied to the checkout here: its own
+    """`qk admit`'s status once what its command changed on the second Mac is applied to the checkout here: its own
     status there, or UNAPPLIED, after saying why and where the patch is kept, when the changes cannot be applied.
 
     The patch applies only while the tree here is still the one sent (changed_since): a session that edited the
@@ -1385,7 +1385,7 @@ def brought_back(root, sent, status):
     ran = sent.get("ran")
     if not ran: return status
     print(f"queuekeeper: the command ran on the second Mac, so its build products and other files Git ignores stayed in "
-          f"{ran.get('checkout') or 'its checkout there'}; `queuekeeper admit --here` runs it on this Mac and keeps them here",
+          f"{ran.get('checkout') or 'its checkout there'}; `qk admit --here` runs it on this Mac and keeps them here",
           file=sys.stderr, flush=True)
     changes = ran.get("changes")
     # The command did not run there, as when the second Mac declined it, or its provision lane failed.
@@ -1433,7 +1433,7 @@ def apply_changes(root, sent_commit, patch, named, where, name, status):
 
 
 def brought_back_here(root, sent_commit, checkout, status):
-    """`queuekeeper admit`'s status once what its command changed in the worktree of what it sent (sent_tree) is applied to
+    """`qk admit`'s status once what its command changed in the worktree of what it sent (sent_tree) is applied to
     the checkout here, as brought_back applies what it changed on the second Mac, or UNAPPLIED. The patch is
     gathered as the second Mac gathers it (offload_host.gather_changes)."""
     name = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + f"-{os.getpid()}-here"
@@ -1551,7 +1551,7 @@ def stop_dead_dispatches():
 
 
 def lost(host, status, said, dispatched, slept, output, journal=None, gone=False):
-    """What `queuekeeper remote` says of a run that returned no result: ssh's own last line, said, when it exits
+    """What `qk remote` says of a run that returned no result: ssh's own last line, said, when it exits
     255 for a failure of its own; when the run was dispatched and lost, in UTC; and how long this Mac
     slept in between, of which slept is asleep()'s reading at the dispatch. journal is where the second Mac
     keeps a run that outlives its connection, and gone says that its process there ended with no result."""
@@ -1571,7 +1571,7 @@ def lost(host, status, said, dispatched, slept, output, journal=None, gone=False
 
 def detached_seconds(config, lane, work):
     """How long a run on the second Mac may last with nobody attending it: its own timeouts, each lane's,
-    N times the lane's for a --repeat series as queuekeeper run limits it there, or the time limit work's `queuekeeper admit`
+    N times the lane's for a --repeat series as qk run limits it there, or the time limit work's `qk admit`
     carries, with UNATTENDED_WAIT for what comes before them. queuekeeper stops each of them at its timeout there, and
     this bounds an queuekeeper that does not."""
     lanes = config.get("lanes", {})
@@ -1695,7 +1695,7 @@ PROGRESS_INTERVAL = 300
 PROGRESS_LINES = 200
 PROGRESS_WIDTH = 300
 # A lane's log line that says what it has reached: a project's iOS script's (BreezEPUB's test-ios.sh, as of 2026-11-09)
-# and the toolkit's own simulator pool's and queuekeeper simulator-tests's.
+# and the toolkit's own simulator pool's and qk simulator-tests's.
 PROGRESS_LINE = re.compile(r"(?:Taking: |TOOK |Testing: |Passed: |Failed: |Unmeasured: |BUILD |BUILT |TEST |SHARD "
                            r"|PASS |FAIL |UNMEASURED )")
 # What evidence.py counts wherever a log holds it, written in lower case in the copy a progress line shows, since a
@@ -1975,7 +1975,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     command = [*SSH, *moved(host), host, login(shlex.join(["python3", "-c", source, json.dumps(plan)]))]
     stopping = None
     record = remember_dispatch(journal, host) if detached is not None else None
-    # A lane's log comes as it grows. An `queuekeeper admit` command's output comes on stdout, live, already.
+    # A lane's log comes as it grows. An `qk admit` command's output comes on stdout, live, already.
     progress = Progress(name, host, bool(members), clock_line(config, lane, arguments)) if lane is not None else None
     lane_wait.sent(host)
     with (staging / "run.log").open("wb") as log, (staging / "output.log").open("wb") as output:
@@ -2141,7 +2141,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
         raise Misconfigured(f"{host} could not provision its checkout: the provision lane exited {status} in "
                             f"{result.get('checkout')}, so {name} did not run there; its log is {own / 'run.log'}",
                             f"give {host} what provisioning needs, which that log names, such as a tool "
-                            "`queuekeeper remote setup` installs or the git-credentials token for private dependencies "
+                            "`qk remote setup` installs or the git-credentials token for private dependencies "
                             "(guides/shared-host.md, Setting up the second Mac)")
     return exit_status(result)
 
@@ -2171,7 +2171,7 @@ def checkout_request(args):
     return int(slot), wait
 
 
-# Seconds exclusive work sent with `queuekeeper remote admit --exclusive` is offered to the second Mac to start at once,
+# Seconds exclusive work sent with `qk remote admit --exclusive` is offered to the second Mac to start at once,
 # before it takes a place in the second Mac's queue (exclusive_offers).
 EXCLUSIVE_PARK_SECONDS = 900
 
@@ -2260,7 +2260,7 @@ def main(root, config, args):
         if args.serial and "parallel" not in lane:
             raise ValueError(f"--serial runs a lane group, and {args.lane} is not one")
         extra = args.passed or []
-        # The second Mac runs a group's lanes in turn under its own admission, as `queuekeeper run --serial` does here.
+        # The second Mac runs a group's lanes in turn under its own admission, as `qk run --serial` does here.
         work = ["run", "--here", *(["--serial"] if args.serial else []),
                 *(["--expect", str(args.expect)] if args.expect else []), args.lane, *(["--", *extra] if extra else [])]
         budget = lane.get("timeout") if "parallel" not in lane else None
@@ -2274,11 +2274,11 @@ def main(root, config, args):
             send = lambda: not_run_if_busy(args.lane, sending)
         with processes.forwarding_signals():
             return extensions.DISPATCH.carrying(held, root, host, work, args.lane, lambda: offering_here(
-                f"queuekeeper run --here {args.lane}", send) if lane.get("foreground") else send())
+                f"qk run --here {args.lane}", send) if lane.get("foreground") else send())
     # Without a leading --, argparse collected the command, and a later -- belongs to it.
     command = args.command + ([] if args.passed is None else ["--", *args.passed]) if args.command else args.passed
     if not command:
-        raise ValueError("Name the command: queuekeeper remote admit [--exclusive | --model] [--foreground] -- COMMAND")
+        raise ValueError("Name the command: qk remote admit [--exclusive | --model] [--foreground] -- COMMAND")
     if args.time_limit is not None and args.time_limit <= 0:
         raise ValueError("--time-limit needs a positive number of seconds")
     if getattr(args, "app", None) and not args.foreground:
@@ -2288,7 +2288,7 @@ def main(root, config, args):
         [word for app in (getattr(args, "app", None) or []) for word in ("--app", app)] + \
         (["--time-limit", f"{args.time_limit:g}"] if args.time_limit is not None else [])
     refused = exclusive_refusal(config, command) if args.exclusive else None
-    if refused: raise ValueError(f"queuekeeper remote admit --exclusive refused: {refused}")
+    if refused: raise ValueError(f"qk remote admit --exclusive refused: {refused}")
     commits = commit_arguments(getattr(args, "git_commit", None) or [])
     held = extensions.DISPATCH.lease(args.device or [], args.device_owner, command, root=root,
                                      budget=args.time_limit, commits=commits)
@@ -2306,26 +2306,26 @@ def main(root, config, args):
         send = lambda: not_run_if_busy("the command", sending)
     with processes.forwarding_signals():
         return extensions.DISPATCH.carrying(held, root, host, work, "admit", lambda: offering_here(
-            "queuekeeper admit --foreground -- COMMAND", send) if args.foreground else send())
+            "qk admit --foreground -- COMMAND", send) if args.foreground else send())
 
 
 def foreground_lane(root, config, lane, arguments, expect):
-    """Run a foreground lane on the second Mac, as `queuekeeper remote run` does, where queuekeeper waits for its foreground and
+    """Run a foreground lane on the second Mac, as `qk remote run` does, where queuekeeper waits for its foreground and
     holds it for the run (foreground.slot). It never falls back to this Mac, the owner's workstation, whose
-    foreground needs the owner's window first and then `queuekeeper run --here`: a second Mac that is not configured or
+    foreground needs the owner's window first and then `qk run --here`: a second Mac that is not configured or
     cannot be reached stops the lane."""
     host = configured()
     if host is None:
         raise ValueError(f"{lane} takes a Mac's screen, and no second Mac is configured ({HOST_VARIABLE}, or the ssh "
                          f"alias {' or '.join(ALIASES)} in ~/.ssh/config) to run it on. This Mac's foreground needs a "
                          "window the owner agrees first (guides/shared-host.md, Attended Mac sessions), then "
-                         f"`queuekeeper run --here {lane}`")
+                         f"`qk run --here {lane}`")
     print(f"queuekeeper: {lane} takes a Mac's screen, so it runs on the second Mac, under its foreground", file=sys.stderr,
           flush=True)
     work = ["run", "--here", *(["--expect", str(expect)] if expect else []), lane,
             *(["--", *arguments] if arguments else [])]
     with processes.forwarding_signals():
-        return offering_here(f"queuekeeper run --here {lane}",
+        return offering_here(f"qk run --here {lane}",
                              lambda: execute(root, config, host, work, lane=lane, arguments=arguments, expect=expect))
 
 
@@ -2366,7 +2366,7 @@ def foreground_report(host):
 
 
 def crash_dialog_report(found, entry):
-    """What `queuekeeper remote foreground` says of the second Mac's crash-report dialogs and system alerts: a DialogType
+    """What `qk remote foreground` says of the second Mac's crash-report dialogs and system alerts: a DialogType
     left off with no run holding the foreground, and every alert over the screen (crash_alerts.py). A second Mac
     whose toolkit predates them says nothing."""
     if not found: return []
@@ -2405,7 +2405,7 @@ for candidate in {candidates}; do
     if [ -z "$brew" ] && [ -x "$candidate" ]; then brew=$candidate; fi
 done
 if [ -z "$brew" ]; then
-    echo "setup: Homebrew is not installed on the second Mac. Its installer asks for the second Mac's password, so install it there yourself (https://brew.sh), then run queuekeeper remote setup again." >&2
+    echo "setup: Homebrew is not installed on the second Mac. Its installer asks for the second Mac's password, so install it there yourself (https://brew.sh), then run qk remote setup again." >&2
     exit {NO_HOMEBREW}
 fi
 # Homebrew's bin must come before /usr/bin, or the system's python3 3.9 shadows Homebrew's, as it
@@ -2429,7 +2429,7 @@ echo "setup: brew install {' '.join(formulae)}"
 
 def verify_script(formulae, modules, developer=None):
     """One `ok` or `MISSING` line for each thing the gates need, read by a fresh login shell, as
-    `queuekeeper remote` reads the second Mac; exit 1 when anything is missing. The last line is the
+    `qk remote` reads the second Mac; exit 1 when anything is missing. The last line is the
     version of the Xcode at developer, the path a run there uses, which the caller compares."""
     lines = ["fail=0",
              "prefix=$(brew --prefix 2>/dev/null) || { echo \"MISSING Homebrew on the login shell's PATH\"; exit 1; }",
@@ -2457,7 +2457,7 @@ def verify_script(formulae, modules, developer=None):
 
 
 def setup(host, formulae, modules, check, runtimes=False):
-    """Install what the gates use on the second Mac, then check it as `queuekeeper remote` will see it.
+    """Install what the gates use on the second Mac, then check it as `qk remote` will see it.
     With check, only check. With runtimes, give both Macs the same simulator runtimes instead
     (match_runtimes)."""
     if runtimes:
@@ -2480,7 +2480,7 @@ def setup(host, formulae, modules, check, runtimes=False):
         if installed:
             print(f"queuekeeper: brew install on {host} exited {installed}", file=sys.stderr)
             return 1
-    # A new login shell, so a PATH line just written to ~/.zprofile is read as queuekeeper remote reads it.
+    # A new login shell, so a PATH line just written to ~/.zprofile is read as qk remote reads it.
     # A run there uses the Xcode at this Mac's developer directory, and must find the same version.
     developer = developer_directory()
     here = " ".join((offload_host.output(["xcrun", "xcodebuild", "-version"], {**os.environ, "DEVELOPER_DIR": developer})
@@ -2497,7 +2497,7 @@ def setup(host, formulae, modules, check, runtimes=False):
         print(line)
     if result.returncode not in (0, 1):
         print(f"queuekeeper: could not check {host} (ssh exited {result.returncode}): {result.stderr.strip()}", file=sys.stderr)
-    print(f"{host} is ready for queuekeeper remote" if status == 0 else f"{host} is not ready: install what is MISSING")
+    print(f"{host} is ready for qk remote" if status == 0 else f"{host} is not ready: install what is MISSING")
     return status
 
 
@@ -2506,7 +2506,7 @@ def gib(size):
 
 
 def runtime_differences(here, there, host):
-    """What only this Mac's and only host's list of runtimes names, as `queuekeeper doctor` says it."""
+    """What only this Mac's and only host's list of runtimes names, as `qk doctor` says it."""
     only = lambda side, other: [runtime for runtime in side if runtime not in other]
     return [f"only {name} has {', '.join(runtimes)}" for name, runtimes in
             [(HERE, only(here, there)), (host, only(there, here))] if runtimes]
@@ -2684,7 +2684,7 @@ def download_runtime(host, step, developer):
 
 def match_runtimes(host, check):
     """Bring this Mac and host to the union of the simulator runtimes that the Xcode at this Mac's
-    developer directory lists, as `queuekeeper doctor` compares them, and return 0 once both list the same.
+    developer directory lists, as `qk doctor` compares them, and return 0 once both list the same.
 
     A runtime only one Mac lists that no simulator but Xcode's defaults uses there is deleted from
     that Mac (the owner's decision, 2026-11-03). Any other goes to the other Mac as its own disk
@@ -2701,7 +2701,7 @@ def match_runtimes(host, check):
     if not check:
         lock = runtime_lock()
         if lock is None:
-            print("runtimes: another `queuekeeper remote setup --runtimes` is running on this Mac; run it again once that "
+            print("runtimes: another `qk remote setup --runtimes` is running on this Mac; run it again once that "
                   "one ends", flush=True)
             return 1
     try:
@@ -2799,7 +2799,7 @@ def bring_runtimes(host, developer, check):
             print(f"runtimes: {runtime}: {'downloaded' if status == 0 else f'xcodebuild exited {status}'} on {target}",
                   flush=True)
     if check:
-        print(f"runtimes: {len(plan)} runtime(s) differ; `queuekeeper remote setup --runtimes` or `queuekeeper doctor` evens them out",
+        print(f"runtimes: {len(plan)} runtime(s) differ; `qk remote setup --runtimes` or `qk doctor` evens them out",
               flush=True)
         return 1
     # What both Macs list now decides the outcome, not what each step reported.
@@ -2823,23 +2823,23 @@ def first(root, config, lane, arguments, expect, fallback=True, queue_gate=False
 
     With fallback, the offer first reads both Macs' capacity for the lane (Offer.choose): a whole-host
     lane needs every guaranteed slot of its Mac, an exclusive one every slot. The second Mac runs the
-    lane only if it can start it now: its queue admits the lane within FREE_WAIT (`queuekeeper run --if-free`
+    lane only if it can start it now: its queue admits the lane within FREE_WAIT (`qk run --if-free`
     there) and one of the project's checkouts there is free. A tree with uncommitted changes goes as a
     snapshot commit (execute), and so does the toolkit's. The second Mac cannot run a lane whose
     arguments name a physical device of this Mac's record, nor any lane when Git cannot name the
-    commits to send. With queue_gate, for a queue worker's own `queuekeeper run` of a gate's lane, a process that lost Local
+    commits to send. With queue_gate, for a queue worker's own `qk run` of a gate's lane, a process that lost Local
     Network access ends with LOST_ACCESS rather than the work running on this Mac (Offer.lost_access).
     A configured gate pool tries the listed aliases in order, excluding the active batch's host when stacking.
     """
     work = ["run", "--here", "--if-free", *(["--expect", str(expect)] if expect else []), lane,
             *(["--", *arguments] if arguments else [])]
-    # A run that names a physical device uses it here, or there only by `queuekeeper remote run --device`.
+    # A run that names a physical device uses it here, or there only by `qk remote run --device`.
     named = extensions.DISPATCH.reserved_devices(arguments)
     refused = (f"its arguments name the physical device of {', '.join(named)}, which the second Mac uses only under "
-               "a reservation `queuekeeper remote run --device` carries from here") if named else None
+               "a reservation `qk remote run --device` carries from here") if named else None
     settings = config.get("lanes", {}).get(lane, {})
     hosts = gate_hosts() if queue_gate else None
-    offered = Offer(lane, f"`queuekeeper run --here {lane}`", lambda host, sent: execute(
+    offered = Offer(lane, f"`qk run --here {lane}`", lambda host, sent: execute(
         root, config, host, work, lane=lane, arguments=arguments, expect=expect, decline=True, sent=sent), refused,
         whole_host=bool(settings.get("wholeHost")), exclusive=settings.get("resource") == "exclusive",
         screen=unlocked_screen(config.get("lanes", {}), lane), queue_gate=queue_gate and (fallback or hosts is not None),
@@ -2960,14 +2960,14 @@ def local_environment(environment=None):
 
 
 def first_command(root, config, command, kind):
-    """Offer `queuekeeper admit`'s command to the second Mac to start now, once, as first() offers a lane,
+    """Offer `qk admit`'s command to the second Mac to start now, once, as first() offers a lane,
     to run in the directory of its checkout that matches the current one here; return the Offer. The
     second Mac cannot run it as it runs here when its directory is outside the checkout or one Git
     ignores, which the commit sent lacks, or when its words name this checkout's path, a simulator by
     its identifier, or a hardware UDID (devices.named), all of which are this Mac's, a path of this Mac's
     alone (local_paths) or a file Git ignores (ignored_inputs), or when this Mac's environment sets TEST_RUNNER_ variables or DEVELOPER_DIR
     (local_environment); a device goes
-    to the second Mac only under a reservation `queuekeeper remote admit --device` carries. kind is
+    to the second Mac only under a reservation `qk remote admit --device` carries. kind is
     --exclusive or --model, if either, and --time-limit when the command has a limit of its own."""
     top, directory, words = Path(root).resolve(), Path.cwd().resolve(), " ".join(command)
     try:
@@ -2986,10 +2986,10 @@ def first_command(root, config, command, kind):
         refused = "it names a simulator by its identifier, a member of this Mac's pool"
     elif named:
         refused = (f"it names the hardware UDID {', '.join(named)}, which the second Mac uses only under a "
-                   "reservation `queuekeeper remote admit --device` carries from here")
+                   "reservation `qk remote admit --device` carries from here")
     else:
         refused = local_paths(command, top) or ignored_inputs(command, top, directory) or local_environment()
-    # The second Mac's admission takes it now or declines it, as `queuekeeper run --if-free` does a lane. There it runs
+    # The second Mac's admission takes it now or declines it, as `qk run --if-free` does a lane. There it runs
     # where it was sent, since it runs for the Mac that sent it (DISPATCHER).
     work = ["admit", *kind, "--if-free", "--", *command]
 
@@ -2998,7 +2998,7 @@ def first_command(root, config, command, kind):
         status = execute(root, config, host, work, decline=True,
                          subdirectory=None if relative in (None, ".") else relative, sent=sent, changes=True)
         return brought_back(root, sent, status)
-    offered = Offer("the command", "`queuekeeper admit --here`", send, refused, exclusive="--exclusive" in kind)
+    offered = Offer("the command", "`qk admit --here`", send, refused, exclusive="--exclusive" in kind)
     offered.make()
     return offered
 
@@ -3128,7 +3128,7 @@ class Offer:
         """Whether reason, why the second Mac did not take the work, ends a queue worker's gate: this process has lost
         Local Network access, as it does once the session that started the worker ends, so the second Mac need not be
         away, and every lane of the gate would run on this Mac (vocaro-engineering#300). Status is then LOST_ACCESS,
-        and nothing runs here. Any other `queuekeeper run` keeps its fallback, and so does a second Mac that is only away."""
+        and nothing runs here. Any other `qk run` keeps its fallback, and so does a second Mac that is only away."""
         if not self.queue_gate or not isinstance(reason, NoLocalNetwork): return False
         print(f"queuekeeper: {self.name} not run, here or there: {reason.problem}\nqueuekeeper: a queue worker's gate gives no verdict "
               f"for this, and the worker exits for a live session to start another (exit {LOST_ACCESS})",
@@ -3176,7 +3176,7 @@ class Offer:
 # Seconds this Mac's admission waits between offers to the second Mac while both Macs are busy: at
 # first, after its FREE_WAIT, and at most. The wait doubles from one offer to the next.
 OVERFLOW_WAIT, OVERFLOW_WAIT_MAX = 15, 120
-# Seconds `queuekeeper run` and `queuekeeper admit` wait in all for one Mac or the other to admit the work.
+# Seconds `qk run` and `qk admit` wait in all for one Mac or the other to admit the work.
 OVERFLOW_TIMEOUT = 5400
 
 
@@ -3226,7 +3226,7 @@ def overflow(offered, admit, timeout=OVERFLOW_TIMEOUT, once=False, refused=()):
 
 def ask(host, request, timeout=SURVEY_TIMEOUT, unsent=False):
     """offload_host.py's answer to request on the second Mac, run by its login shell as a run there is. A second
-    Mac ssh cannot reach raises Misconfigured, which queuekeeper doctor and the merge queue's wait report; with unsent,
+    Mac ssh cannot reach raises Misconfigured, which qk doctor and the merge queue's wait report; with unsent,
     for a question asked before work is sent (capacity_there), it raises as execute's preparing connection does
     (ssh_failure): Unreachable, so that the work runs on this Mac, unless the second Mac refused the login."""
     request = shlex.join(["python3", "-c", Path(offload_host.__file__).read_text(), json.dumps(request)])
@@ -3251,7 +3251,7 @@ def survey(host, developer):
 
 
 def screen_there(host):
-    """The second Mac's console screen, as offload_host.screen reads it there, for `queuekeeper host screen --remote`. A
+    """The second Mac's console screen, as offload_host.screen reads it there, for `qk host screen --remote`. A
     second Mac that cannot be reached raises Misconfigured or Unreachable, as ask does."""
     return ask(host, {"screen": True}, timeout=CENSUS_TIMEOUT)
 
@@ -3279,7 +3279,7 @@ def capacity_there(host, *, diagnostic=False, started=None):
 
 def admission_log_there(host, since):
     """The second Mac's admission log entries written at or after since, a datetime, as resources.read_log reads
-    this Mac's, for `queuekeeper admissions usage`. A second Mac that cannot be reached or does not answer with its lines
+    this Mac's, for `qk admissions usage`. A second Mac that cannot be reached or does not answer with its lines
     raises Unavailable, as capacity_there does."""
     answered = ask(host, {"admissionLog": since.timestamp()}, timeout=CENSUS_TIMEOUT, unsent=True)
     if not isinstance(answered, dict) or not isinstance(answered.get("lines"), list):
@@ -3287,13 +3287,13 @@ def admission_log_there(host, since):
     return [entry for entry in map(resources.read_entry, answered["lines"]) if entry is not None]
 
 
-# Seconds `queuekeeper admissions now` gives the second Mac in all, connection included, and the most bytes it reads back.
+# Seconds `qk admissions now` gives the second Mac in all, connection included, and the most bytes it reads back.
 ADMISSIONS_BUDGET, ADMISSIONS_BYTES = 10, 1 << 20
 
 
 def admissions_there(host, budget=ADMISSIONS_BUDGET):
     """Who holds and who waits for admission on the second Mac now, as offload_host.admissions_now reads it there, for
-    `queuekeeper admissions now` (vocaro-engineering#342). One noninteractive connection, bounded in all by budget seconds: no
+    `qk admissions now` (vocaro-engineering#342). One noninteractive connection, bounded in all by budget seconds: no
     search for a renamed Mac (ssh's rediscover), which could take longer, and nothing changed there. A second Mac that
     cannot be reached in time raises Unreachable, and one whose answer is no reading Unavailable."""
     script = shlex.join(["python3", "-c", Path(offload_host.__file__).read_text(),
@@ -3569,7 +3569,7 @@ def toolkit_line(host, found, what="toolkit checkout"):
 
 
 def update_there(host):
-    """offload_host.update_toolkit's answer from host, for `queuekeeper doctor` (cli.fix_hosts), which fetches whatever
+    """offload_host.update_toolkit's answer from host, for `qk doctor` (cli.fix_hosts), which fetches whatever
     this Mac's origin/main says; one that cannot be had is an answer of state unchecked, saying why."""
     try:
         answered = ask(host, {"toolkitCheckout": update_request(want=False)},
@@ -3627,7 +3627,7 @@ def reap_there(host, request, stop_leftovers=True):
 
 def reap_lines(where, report, listing=True, held=False):
     """What is said of offload_host.reap's report for a Mac: each stop, failure, release and problem, and with
-    listing, what it found and left running, as `queuekeeper simulator-pool reap` prints them. Nothing when it found
+    listing, what it found and left running, as `qk simulator-pool reap` prints them. Nothing when it found
     nothing. A held entry whose process is gone is named with listing or held, and otherwise only when this
     reap stopped its simulator; its recover command runs on where unless where is HERE."""
     if not isinstance(report, dict): return []
@@ -3652,7 +3652,7 @@ def reap_lines(where, report, listing=True, held=False):
               for item in found.get("failed", [])]
     lines += [f"on {where}, did not stop {named(item)}: {item['hold']}" for item in found.get("kept", [])]
     if found.get("problem"): lines.append(f"on {where}, stopped no leftover process: {found['problem']}")
-    # Only a dry run, or `queuekeeper doctor`'s listing, has any: said whatever the listing.
+    # Only a dry run, or `qk doctor`'s listing, has any: said whatever the listing.
     lines += [f"on {where}, would stop {named(item)}: {item['reason']}" for item in found.get("eligible", [])]
     # Before a dispatch, only an entry whose simulator this reap stopped; a listing names every one.
     stopped = {item["udid"] for item in report.get("stopped", [])}
@@ -3685,14 +3685,14 @@ def device_users(host, udid, since):
 
 
 def leftover_lines(host, census, missing):
-    """What `queuekeeper remote` prints of the census before it sends work: nothing when no process is left over."""
+    """What `qk remote` prints of the census before it sends work: nothing when no process is left over."""
     if census is None: return [f"could not list the processes left over from runs on {host}: {missing}"]
     lines = [f"on {host}, {item}" for item in census.get("unchecked", [])]
     rows = census["leftovers"]
     if rows:
         lines.append(f"{host} runs {len(rows)} process{'es' if len(rows) > 1 else ''} left over from runs, which no "
                      f"live run or admission there accounts for. These were not stopped; tell the owner, unless a stale pool "
-                     f"simulator among them is `queuekeeper simulator-pool reap`'s to stop, or a later cleanup proves one an "
+                     f"simulator among them is `qk simulator-pool reap`'s to stop, or a later cleanup proves one an "
                      f"ended run's ({LEFTOVER_GUIDE}):")
     for row in rows:
         written = row.get("written")
@@ -3749,7 +3749,7 @@ def address_name(family, address):
 
 
 def connection(host, timeout=CONNECT_TIMEOUT):
-    """How ssh connects to host, as `queuekeeper doctor` reports it: the name and port `ssh -G` gives, and the
+    """How ssh connects to host, as `qk doctor` reports it: the name and port `ssh -G` gives, and the
     addresses that name resolves to under its AddressFamily, in the order ssh tries them. Each is
     connected to in turn, as ssh does, for at most timeout seconds, until one answers; ssh tries none
     after that one. A host reached through a proxy is not measured, and unchecked says so; a name that
@@ -3783,7 +3783,7 @@ def connection(host, timeout=CONNECT_TIMEOUT):
 
 
 def slow_connection(host, found, timeout=CONNECT_TIMEOUT):
-    """The error `queuekeeper doctor` reports when the first addresses ssh tries for host do not answer and keep
+    """The error `qk doctor` reports when the first addresses ssh tries for host do not answer and keep
     each connection waiting before a later one does, as the build host's link-local IPv6 address did,
     10 s for each connection, until 2026-10-27; or None."""
     tried = [entry for entry in found.get("addresses") or [] if "seconds" in entry]
@@ -3806,7 +3806,7 @@ def slow_connection(host, found, timeout=CONNECT_TIMEOUT):
 
 
 def compare_device_records(report, host, here, there):
-    """Add to `queuekeeper doctor`'s report what the two Macs' device records say of physical devices, which
+    """Add to `qk doctor`'s report what the two Macs' device records say of physical devices, which
     only this Mac's record holds (guides/shared-host.md, Physical devices and the second Mac): this
     Mac's must defer them to no Mac, and the second Mac's must defer them to this Mac and hold none."""
     fix = "which Mac's record holds physical devices is the owner's decision"
@@ -3820,19 +3820,19 @@ def compare_device_records(report, host, here, there):
     if theirs.get("physical"):
         report["errors"].append(
             f"{host}'s device record holds the physical device of {', '.join(theirs['physical'])}, which only this "
-            f"Mac's record may hold, so queuekeeper remote refuses every run there; release or recover it there")
+            f"Mac's record may hold, so qk remote refuses every run there; release or recover it there")
     if theirs.get("deferredTo") not in (None, here.get("name")):
         report["errors"].append(
             f"{host}'s device record defers physical devices to {theirs['deferredTo']}, not this Mac "
-            f"({here.get('name')}), so queuekeeper remote refuses every run there; {fix}, and `devices defer "
+            f"({here.get('name')}), so qk remote refuses every run there; {fix}, and `devices defer "
             f"{here.get('name')} --replace` there makes it this Mac")
     if not theirs.get("error") and theirs.get("deferredTo") is None:
         report["unchecked"].append(f"whether {host}'s device record refuses physical devices: it defers them to no "
-                                   "Mac until the next queuekeeper remote run there")
+                                   "Mac until the next qk remote run there")
 
 
 def compare_hosts():
-    """What `queuekeeper doctor` reports of the second Mac: this Mac's and the second Mac's default Xcodes
+    """What `qk doctor` reports of the second Mac: this Mac's and the second Mac's default Xcodes
     (`xcode-select -p`), the Xcode at this Mac's developer directory, which every run there uses,
     and the simulator runtimes it lists. A difference is an error, and what could not be compared is
     named in unchecked. A second Mac that cannot be reached, as when this Mac is away from its
@@ -3841,7 +3841,7 @@ def compare_hosts():
     processes there that runs left running are listed in leftovers, which are no error: they say
     what to tell the owner. How ssh connects to it is in connection, and first addresses that keep
     each connection waiting are an error too, as are device records that do not keep physical
-    devices in this Mac's alone. Differing runtimes also set runtimesDiffer, which `queuekeeper doctor` evens
+    devices in this Mac's alone. Differing runtimes also set runtimesDiffer, which `qk doctor` evens
     out (match_runtimes) before it compares again."""
     host = configured()
     report = {"host": host, "errors": [], "unchecked": []}
@@ -3906,7 +3906,7 @@ def compare_hosts():
     if here["xcode"] != there.get("xcode"):
         report["errors"].append(
             f"the Xcode at this Mac's developer directory, {developer}, is {version(here['xcode'])} on this Mac and "
-            f"{version(there.get('xcode')) if there.get('xcode') else 'missing'} on {host}, so queuekeeper remote refuses "
+            f"{version(there.get('xcode')) if there.get('xcode') else 'missing'} on {host}, so qk remote refuses "
             f"every run there; to fix it, install this Mac's Xcode at that path on {host} (guides/shared-host.md, "
             "Setting up the second Mac), or select with DEVELOPER_DIR an Xcode both Macs have at the same path")
     if None in (here.get("runtimes"), there.get("runtimes")):
@@ -3916,7 +3916,7 @@ def compare_hosts():
         differences = runtime_differences(here["runtimes"], there["runtimes"], host)
         report["runtimesDiffer"] = True
         report["errors"].append(f"the simulator runtimes of the Xcode at {developer} differ: {'; '.join(differences)}; "
-                                "`queuekeeper doctor` evens them out itself, deleting a runtime that no simulator but Xcode's "
+                                "`qk doctor` evens them out itself, deleting a runtime that no simulator but Xcode's "
                                 "defaults uses and copying any other to the Mac that lacks it, and it could not here: "
                                 "see its `runtimes:` lines, or run `python3 scripts/qk remote setup --runtimes` "
                                 "(guides/shared-host.md, Setting up the second Mac)")

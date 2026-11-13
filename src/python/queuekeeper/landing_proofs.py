@@ -1,7 +1,7 @@
 """Whether a commit's work is in a base branch, and whether a commit message denies a closing claim: the
 proofs the merge queue uses.
 
-The vocaro-engineering toolkit holds the same proofs in its landing.py, for Closeout and `queuekeeper disk`, and the two
+The vocaro-engineering toolkit holds the same proofs in its landing.py, for Closeout and `qk disk`, and the two
 must agree: a commit the queue lands past a conflict, by keeping both sides, reads as landed by the `resolved`
 method in the toolkit's landed.sh (vocaro/vocaro-engineering#403)."""
 import re
