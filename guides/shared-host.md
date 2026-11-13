@@ -993,7 +993,10 @@ status, so the session says so. `qk app keep` builds the kept apps this way.
 
 What a command that ran on the second Mac changed in the checkout's files that Git does not
 ignore comes back and is applied here, so that `swift package resolve`, a formatter or a code
-generator does not lose its edits. Once the command ends there, however it ended, the second Mac
+generator does not lose its edits. This holds for `qk admit`'s command and for one sent with
+`qk remote admit`. Until [#80](https://github.com/vocaro/queuekeeper/issues/80), `qk remote admit`
+brought nothing back and left what its command wrote in the checkout there, and each later claim
+passed that checkout over. Once the command ends there, however it ended, the second Mac
 stages the checkout's tree in a temporary index (tracked edits and deletions, and new untracked
 files no `.gitignore` names, as a snapshot commit stages them), writes `git diff --binary` against
 the commit sent to `changes.patch`, restores its checkout to that commit for the next run, and
@@ -1005,8 +1008,9 @@ meanwhile, or `git apply` refuses the patch (it applies all of it or none), queu
 keeps the patch as `.build/queuekeeper/remote/unapplied/DISPATCH.patch`, says why and where it is,
 and exits 73 (`UNAPPLIED`, sysexits' `EX_CANTCREAT`, which no other queuekeeper status uses); apply it with
 `git apply --binary PATCH` once the tree allows, or run the command again. Files Git ignores, such
-as `.build` and its build products, stay on the second Mac, and one line says so, naming
-`qk admit --here`, which keeps them on this Mac.
+as `.build` and its build products, stay on the second Mac. For `qk admit`, which chose that Mac,
+one line says so, naming `qk admit --here`, which keeps them on this Mac; `qk remote admit` sent
+its command there on purpose and says nothing of them.
 
 A caller that holds or will take its own admission here, such as a push keeper that runs a gate
 under the push's one admission, offers the lane with `qk run --offload-only LANE` instead:

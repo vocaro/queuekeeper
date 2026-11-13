@@ -794,7 +794,9 @@ def perform(argv, report):
         "lane [-- ARGUMENTS ...]",
         help="run a configured lane on the second Mac at HEAD, or at a snapshot commit of uncommitted work")
     remote_admit = operations.add_parser("admit", help="run a heavy command on the second Mac, in its checkout's "
-        "root, at HEAD or at a snapshot commit of uncommitted work")
+        "root, at HEAD or at a snapshot commit of uncommitted work; what it changes there in files Git does not "
+        f"ignore is applied here, as for qk admit, and exit {remote.UNAPPLIED} says it could not be, and names the "
+        "patch kept")
     remote_setup = operations.add_parser("setup", help="install on the second Mac, with Homebrew, the tools "
         f"every project's gates use ({', '.join(remote.SETUP_FORMULAE)}) and the formulae named, then check them as "
         "qk remote sees the second Mac; Homebrew itself the owner installs")

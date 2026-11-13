@@ -1059,6 +1059,37 @@ class RemoteTests(unittest.TestCase):
         self.assertIn(f"ran in {self.checkout(0).resolve()}", output)
         self.assertIn("ran in", (self.project / ".build/queuekeeper/remote/admit/output.log").read_text())
 
+    def test_what_remote_admit_changed_there_comes_back_and_its_checkout_is_restored(self):
+        # vocaro/queuekeeper#80: each run left its evidence untracked in its checkout, and later runs passed it over.
+        writes = [sys.executable, "-c", "import pathlib, sys\n"
+                  "pathlib.Path('evidence').mkdir(exist_ok=True)\n"
+                  "pathlib.Path('evidence/' + sys.argv[1]).write_text('probed\\n')\n"
+                  "pathlib.Path('.build').mkdir(exist_ok=True); pathlib.Path('.build/product').write_text('built')\n"
+                  "raise SystemExit(int(sys.argv[2]))"]
+        # Its exit status stays the command's, a failure's too; with --exclusive too, which is offered --if-free first.
+        for name, options, code in [("first", [], 0), ("second", [], 3), ("third", ["--exclusive"], 0)]:
+            with self.subTest(name=name):
+                status, output, error = self.qk("remote", "admit", *options, "--", *writes, name, str(code))
+                self.assertEqual(status, code, output + error)
+                self.assertEqual((self.project / "evidence" / name).read_text(), "probed\n")
+                self.assertIn(f"queuekeeper: applied here what the command changed on the second Mac: evidence/{name}",
+                              error)
+                result = self.slot_receipt("admit")["result"]
+                self.assertEqual(result["changes"], {"files": [f"evidence/{name}"]})
+                # The checkout there is restored and taken again; its ignored products stay there, unmentioned.
+                self.assertEqual(result["slot"], 0)
+                self.assertEqual(git(self.checkout(0), "status", "--porcelain"), "")
+                self.assertEqual((self.checkout(0) / ".build/product").read_text(), "built")
+                self.assertNotIn("passing over", output + error)
+                self.assertNotIn("`qk admit --here`", error)
+                # Removed here, so that the next run is sent the commit's own tree, as this one was.
+                shutil.rmtree(self.project / "evidence")
+        # The negative control: a command that changes nothing applies nothing.
+        status, output, error = self.qk("remote", "admit", "--", sys.executable, "-c", "pass")
+        self.assertEqual(status, 0, output + error)
+        self.assertNotIn("applied here", error)
+        self.assertEqual(git(self.project, "status", "--porcelain"), "")
+
     def hold(self, key="iPhone", device=PHONE, owner="session-a"):
         record = devices.Record(self.record_here)
         revision = (record.entry(key) or {}).get("revision", 0)

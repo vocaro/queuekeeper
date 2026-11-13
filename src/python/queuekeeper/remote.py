@@ -1396,18 +1396,21 @@ UNAPPLIED = 73
 UNAPPLIED_DIRECTORY = ".build/queuekeeper/remote/unapplied"
 
 
-def brought_back(root, sent, status):
-    """`qk admit`'s status once what its command changed on the second Mac is applied to the checkout here: its own
-    status there, or UNAPPLIED, after saying why and where the patch is kept, when the changes cannot be applied.
+def brought_back(root, sent, status, products=True):
+    """`qk admit`'s or `qk remote admit`'s status once what its command changed on the second Mac is applied to the
+    checkout here: its own status there, or UNAPPLIED, after saying why and where the patch is kept, when the changes
+    cannot be applied.
 
     The patch applies only while the tree here is still the one sent (changed_since): a session that edited the
     checkout meanwhile keeps its edits, and the patch waits for it. git apply applies all of it or none. Files Git
-    ignores, such as the command's build products, stay on the second Mac, which is said in one line."""
+    ignores, such as the command's build products, stay on the second Mac, which is said in one line when products:
+    `qk admit` chose that Mac for the command, while `qk remote admit` was sent there on purpose."""
     ran = sent.get("ran")
     if not ran: return status
-    print(f"queuekeeper: the command ran on the second Mac, so its build products and other files Git ignores stayed in "
-          f"{ran.get('checkout') or 'its checkout there'}; `qk admit --here` runs it on this Mac and keeps them here",
-          file=sys.stderr, flush=True)
+    if products:
+        print(f"queuekeeper: the command ran on the second Mac, so its build products and other files Git ignores "
+              f"stayed in {ran.get('checkout') or 'its checkout there'}; `qk admit --here` runs it on this Mac and "
+              "keeps them here", file=sys.stderr, flush=True)
     changes = ran.get("changes")
     # The command did not run there, as when the second Mac declined it, or its provision lane failed.
     if changes is None: return status
@@ -2315,13 +2318,17 @@ def main(root, config, args):
                                      budget=args.time_limit, commits=commits)
     work = ["admit", *kind, "--", *command]
     sent = {}
-    send = lambda: execute(root, config, host, work, lease=held, sent=sent, slot=slot, slot_wait=slot_wait)
+    # What the command changed in the checkout there comes back and is applied here, and the checkout there is
+    # restored for the next run, as for `qk admit`'s offered command (brought_back; vocaro/queuekeeper#80).
+    send = lambda: brought_back(root, sent, execute(root, config, host, work, lease=held, sent=sent, slot=slot,
+                                                    slot_wait=slot_wait, changes=True), products=False)
     if args.exclusive and not args.foreground:
         # Offered while it can start at once, and only then queued there (exclusive_offers).
         parked = send
         free = ["admit", *kind, "--if-free", "--", *command]
-        send = lambda: exclusive_offers("the command", lambda: execute(
-            root, config, host, free, decline=True, lease=held, sent=sent, slot=slot, slot_wait=slot_wait), parked)
+        send = lambda: exclusive_offers("the command", lambda: brought_back(root, sent, execute(
+            root, config, host, free, decline=True, lease=held, sent=sent, slot=slot, slot_wait=slot_wait,
+            changes=True), products=False), parked)
     if slot is not None:
         sending = send
         send = lambda: not_run_if_busy("the command", sending)
