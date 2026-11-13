@@ -66,6 +66,9 @@ Runs the project's tests in a batch editor (`--platform PlayMode` for Play mode 
 the counts, each test that failed, and compile errors. It never passes `-nographics`: without a
 graphics device Unity does not load compute shaders.
 
+Started outside a lane, it is admitted and placed first, as `queuekeeper admit` would run it.
+`--unadmitted` after `test` runs it with no admission, on this Mac.
+
 ```bash
 python3 scripts/qk unity closed -- ./tools/verification/check.sh --gates
 ```

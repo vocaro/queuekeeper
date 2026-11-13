@@ -364,7 +364,9 @@ def reason_lines(reasons, saved):
 
 def unittest_main(argv):
     parser = argparse.ArgumentParser(prog="qk unittest", description="Discover a unittest suite as `python3 -m "
-        "unittest discover` does, and run its modules in processes of their own, JOBS at a time.")
+        "unittest discover` does, and run its modules in processes of their own, JOBS at a time.",
+        epilog="Started outside an admission, the run is admitted and placed first, as `qk admit -- COMMAND` "
+        "would run it. --unadmitted, after `unittest`, runs it with no admission, on this Mac.")
     parser.add_argument("-s", "--start-directory", default=".")
     # Repeatable: each -p adds the modules it matches. A second -p once replaced the first without a word, so a run
     # meant for three modules ran one and reported its count as the whole (vocaro-engineering, 2026-11-06).

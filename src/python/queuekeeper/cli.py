@@ -12,8 +12,8 @@ import time
 
 from . import __version__, budgets, disk, docs, extensions, git_state, lane_coverage, lane_report, lane_results, lane_wait, merge_queue, offload_host, \
     parallel, processes, remote, resources, shims, spelling
-from .config import TOOLKIT_ROOT, admission as admission_of, exclusive_refusal, extensions_of, lane_to_run, load, source_identity, \
-    lane_devices, self_lane_warnings, stays, unadmitted, unlocked_screen
+from .config import FILE as CONFIG_FILE, TOOLKIT_ROOT, admission as admission_of, exclusive_refusal, extensions_of, lane_to_run, load, \
+    source_identity, lane_devices, self_lane_warnings, stays, unadmitted, unlocked_screen
 from .resources import BUSY, FREE_WAIT
 from . import visibility
 
@@ -575,6 +575,51 @@ def admit(root, args, config=None, *, device_window=None):
             return lane_results.UNMEASURED
 
 
+# What a runner takes to run with no admission, on this Mac, as it is started: the one way around admission and
+# placement, which the caller has to write out.
+UNADMITTED = "--unadmitted"
+# The words that start each of the core's runners (extensions.RUNNERS holds the extensions').
+RUNNERS = {("unittest",)}
+
+
+def bare_runner(argv, first):
+    """(argv, whether it names a runner that no admission holds), for argv whose command starts at first. A runner
+    is a command that runs tests or other heavy work itself, as a lane's command does: `queuekeeper unittest`, and
+    those the extensions name (extensions.RUNNERS). Under `queuekeeper run` or `queuekeeper admit` it inherits their
+    admission. Started by itself it would take no slot and run on this Mac whatever else ran there, so it is admitted
+    first (admitted_runner). --unadmitted, which is taken out of argv, and a request for help run it as it is."""
+    words = argv[first:]
+    own = words[:words.index("--")] if "--" in words else words
+    if not any(tuple(words[:len(runner)]) == runner for runner in RUNNERS | extensions.RUNNERS): return argv, False
+    if UNADMITTED in own:
+        at = first + own.index(UNADMITTED)
+        return argv[:at] + argv[at + 1:], False
+    return argv, not (os.environ.get(resources.TOKEN) or "-h" in own or "--help" in own)
+
+
+def runner_command(root, words):
+    """The command line that runs a runner's words again, in the current directory, written so that the second Mac
+    can run it too: the project's launcher by its path from here, else the toolkit's own command with the project."""
+    launcher = root / "scripts/qk"
+    if launcher.is_file(): return ["python3", os.path.relpath(launcher), *words]
+    return ["python3", str(TOOLKIT_ROOT / "bin/qk"), "--project", os.path.relpath(root), *words]
+
+
+def admitted_runner(root, argv, first):
+    """Run the runner argv names, from first, under a heavy-work admission, and return its status. In a project it
+    runs as `queuekeeper admit -- COMMAND` runs any command: on whichever Mac has spare capacity for it, the second Mac
+    first. A folder with no queuekeeper.json has no second Mac to match, so the runner waits for a slot on this Mac
+    and runs in this process; BUSY says no slot came."""
+    words = argv[first:]
+    if (root / CONFIG_FILE).is_file(): return main([*argv[:first], "admit", "--", *runner_command(root, words)])
+    label = " ".join(["queuekeeper", *words])
+    try:
+        with resources.Admission(label): return main(argv)
+    except TimeoutError as error:
+        print(f"queuekeeper: {words[0]} not run on {this_mac()}: {error}", file=sys.stderr)
+        return BUSY
+
+
 def main(argv=None):
     report = lane_report.Report()
     try:
@@ -650,7 +695,9 @@ def perform(argv, report):
     for name, (described, add_arguments, _, _) in extensions.PARSED_COMMANDS.items():
         add_arguments(commands.add_parser(name, help=described))
     commands.add_parser("unittest", help="run a unittest suite's modules in processes of their own, side by side: "
-        "qk unittest [-s START] [-p PATTERN] [-j JOBS] [-k PATTERN] [-v] [NAME ...]; qk unittest -h for the rest")
+        "qk unittest [-s START] [-p PATTERN] [-j JOBS] [-k PATTERN] [-v] [NAME ...]; qk unittest -h for the rest. "
+        "Started outside an admission it is admitted and placed first, as qk admit would run it; --unadmitted "
+        "runs it with none, on this Mac")
     admission =commands.add_parser("admit", help="run any other heavy command (a build, swift test, xcodebuild "
         "test, a simulator run, a gate suite) through heavy-work admission on whichever Mac has spare capacity for "
         "it, the second Mac first, as qk run places a lane: qk admit -- COMMAND; what it changes in the "
@@ -812,8 +859,11 @@ def perform(argv, report):
     argv = sys.argv[1:] if argv is None else list(argv)
     # unittest's options are its own runner's, which this parser would refuse. It reads no project.
     first = 2 if argv[:1] == ["--project"] else 1 if argv[:1] and argv[0].startswith("--project=") else 0
-    if argv[first:first + 1] == ["unittest"]: return parallel.unittest_main(argv[first + 1:])
     project = argv[1] if first == 2 else argv[0].split("=", 1)[1] if first == 1 else None
+    # A runner started outside an admission is admitted and placed first, as a lane's command is (bare_runner).
+    argv, bare = bare_runner(argv, first)
+    if bare: return admitted_runner(Path(project or ".").resolve(), argv, first)
+    if argv[first:first + 1] == ["unittest"]: return parallel.unittest_main(argv[first + 1:])
     if argv[first:first + 1] and argv[first] in extensions.COMMANDS:
         return extensions.COMMANDS[argv[first]][1](argv[first + 1:], project)
     # The switch is the owner's and this Mac's, and reads no project.

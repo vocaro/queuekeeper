@@ -304,6 +304,8 @@ def main(arguments, project=None):
 
 def register():
     """Add the command to the core."""
+    # The batch run is heavy work, so one started outside an admission is admitted first (cli.bare_runner).
+    extensions.RUNNERS.add(("unity", "test"))
     extensions.COMMANDS["unity"] = (
         "run a Unity project's editor unattended: queuekeeper unity test runs its tests in a batch editor, queuekeeper "
         "unity closed -- COMMAND runs COMMAND with its editor closed and opens it again, and queuekeeper unity open "

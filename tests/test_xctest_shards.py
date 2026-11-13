@@ -153,7 +153,7 @@ class RunnerTests(unittest.TestCase):
     def run_eng(self, *arguments, **environment):
         output = StringIO()
         with patch.dict(os.environ, {**self.environment, **environment}), redirect_stdout(output):
-            status = cli.main(["xctest", "-C", str(self.package), *arguments])
+            status = cli.main(["xctest", "--unadmitted", "-C", str(self.package), *arguments])
         return status, output.getvalue()
 
     def calls(self):
