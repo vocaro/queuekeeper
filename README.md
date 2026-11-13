@@ -8,22 +8,13 @@ them, tests each batch once on whichever machine has room, and pushes to `main` 
 
 What sets it apart is its plugins, which know how to build and test software that needs local tools
 and real hardware. The Apple plugin manages simulators, physical devices and Xcode test runs. The
-Unity plugin, which is new, runs a Unity editor unattended. Without a plugin,
-Queuekeeper is one more merge queue among many.
-
-<p align="center">
-  <img src="assets/overview.svg" alt="You direct several AI agents. They send commits to Queuekeeper and get verdicts back. Queuekeeper, made of the merge queue, admission and placement, and plugins, builds and tests on your build farm of Macs, simulators and devices, and pushes what passed to main." width="100%">
-</p>
+Unity plugin runs a Unity editor unattended.
 
 ## Why another merge queue?
 
 Several good merge queues exist, and for most teams one of them is the right choice. Queuekeeper
 was built for a case they fit poorly:
 
-- **One developer, many agents.** A single developer directing AI agents can produce dozens or even
-  hundreds of commits a day. At that rate `main` moves faster than a test run finishes, so the
-  changes need a queue. They do not need the pull requests and reviews that team tools are built
-  around.
 - **Builds that need local tools.** Cloud queues and build farms suit web services and large teams.
   They suit mobile apps, video games and other front-end work less well, because those need tools
   such as Xcode, Unity or Unreal, along with simulators and real devices, which are difficult or
@@ -38,11 +29,16 @@ was built for a case they fit poorly:
 [Related tools](doc/related_tools.md) compares Queuekeeper feature by feature with other merge
 queues, including other local queues for AI agents, and says where they are the better choice.
 
+<p align="center">
+  <img src="assets/overview.svg" alt="You direct several AI agents. They send commits to Queuekeeper and get verdicts back. Queuekeeper, made of the merge queue, admission and placement, and the Apple, Unity, Mac desktop and Mac hardware plugins, builds and tests on your build farm of Macs, simulators, Unity editors and devices, and pushes what passed to main in each of your projects." width="100%">
+</p>
+
 ## Getting started
 
-This walk-through adds Queuekeeper to an existing project and lands a first change through it. It
-assumes Queuekeeper is installed: [Getting started](doc/getting_started.md) covers the requirements
-and installation.
+This walk-through adds Queuekeeper to an existing project and lands a first change through it. An AI
+agent can do every step for you, so you need not touch the command line: ask one to set the project
+up. The commands are here for when you want to run them yourself. It assumes Queuekeeper is
+installed: [Getting started](doc/getting_started.md) covers the requirements and installation.
 
 **1. Say how the project is tested.** Create `queuekeeper.json` at the root of the repository. It
 needs one lane named `gate`, which is the command every change must pass:
@@ -55,17 +51,13 @@ needs one lane named `gate`, which is the command every change must pass:
 }
 ```
 
-**2. Check the setup.** `qk doctor` reports anything missing, such as a lane with no
-timeout.
+**2. Check the setup.** `qk doctor` reports anything missing, such as a lane with no timeout.
 
 ```sh
 qk doctor
 ```
 
-**3. Land the configuration as your first change.** Commit the file on a branch, then queue it
-instead of pushing it. The queue reads its lanes from `main`, which has none until this commit is
-there, so for this one landing it runs the gate the commit brings
-([A project's first landing](guides/maintenance.md#a-projects-first-landing)):
+**3. Land a change.** Commit on a branch, then queue the commit instead of pushing it:
 
 ```sh
 git switch -c add-queuekeeper
@@ -74,39 +66,75 @@ git commit -m "Add Queuekeeper"
 qk land --wait
 ```
 
-Queuekeeper now does what you would otherwise do by hand. It starts a worker for the repository,
-applies your commit on top of the latest `main` in a checkout of its own, runs the gate there, and
-pushes if the gate passes. Your working tree is not touched. `--wait` follows the commit to its
-result and prints the commit it landed as.
+Queuekeeper applies your commit on top of the latest `main` in a checkout of its own, runs the gate
+there, and pushes if the gate passes. Your working tree is not touched. `--wait` follows the commit
+to its result.
 
-**4. Watch the queue.** From any terminal in the repository, see what is waiting, what is being
-tested and why anything is held:
+The queue reads its lanes from `main`, which has none until this commit is there, so for this one
+landing it runs the gate the commit brings
+([A project's first landing](guides/maintenance.md#a-projects-first-landing)).
 
-```sh
-qk queue status
-```
+**4. Watch the queue.** `qk queue status` shows what is waiting, what is being tested and why
+anything is held. Three features show more, each turned on with `qk visibility enable`:
 
-For a view that updates by itself, a web page of the queue, or a notification when the queue needs
-you, turn on the [visibility features](#visibility).
+- **Watch.** `qk watch` shows the queue in the terminal and redraws it as it changes.
+- **Notify.** A macOS banner, a command of yours or a webhook tells you when the queue needs you: a
+  hold only you can fix, a change that came back, a flaky test, a landing that skipped the gate.
+- **Dashboard.** `qk serve` serves a [web page of the queue](#dashboard) and the build farm.
+
+See [Visibility](doc/visibility.md) for details.
 
 **5. If the change comes back.** When the gate fails or the commit conflicts with `main`,
 `qk land --wait` exits with status 1 and says why, with the path of the log. Nothing was
 pushed. Fix the problem, commit, and run `qk land --wait` again.
 
-**6. Start the next change from `main`.** The queue lands your commits as new commits, so begin
-the next piece of work from `origin/main`, not from the old branch.
-
-**7. Hand it to your agents.** Tell your agents to queue their commits with
-`qk land --wait` instead of pushing. Each one's change waits its turn, changes that arrive
-together are tested as one batch, and a change that breaks the gate goes back to the agent that
-wrote it without blocking the others.
-
 From here, [add a second Mac](doc/getting_started.md#add-a-second-mac) so gates run off your
-desk, and turn on the [Apple plugin](#the-apple-plugin) if you build for Apple platforms.
+desk, and turn on a [plugin](#plugins) for your platform.
 
-## The Apple plugin
+## Dashboard
 
-The Apple plugin lets agents build and test iOS and Mac apps without getting in each other's way:
+The dashboard is a web page of the queue and the build farm, served from your own Mac. It shows
+every project whose queue has run since the dashboard was turned on, and redraws itself as the queue
+changes.
+
+```sh
+qk visibility enable dashboard
+qk serve --open
+```
+
+**Home** says what the queue is doing in one line, counts the day, and puts whatever needs you
+first.
+
+<p align="center">
+  <img src="assets/dashboard-home.png" alt="The dashboard's Home tab: the queue is testing 3 entries, with 5 in the queue, 41 landed today and 3 that came back, and a line each for an entry that came back, the farm and the last landing." width="100%">
+</p>
+
+**Queue** shows the round being tested with each of its gates, the entries waiting, and the last
+ones settled, with why each one that came back did.
+
+<p align="center">
+  <img src="assets/dashboard-queue.png" alt="The dashboard's Queue tab: a round with a gate lane running on a second Mac and a device lane waiting for an iPhone, five entries waiting, and recent entries that landed or failed." width="100%">
+</p>
+
+**Farm** shows each Mac's slots, its load, and the work running and waiting on it, for every
+project.
+
+<p align="center">
+  <img src="assets/dashboard-farm.png" alt="The dashboard's Farm tab: two Macs, each with its slots in use, its CPU and memory, and the lanes running and waiting on it." width="100%">
+</p>
+
+The **Logs** and **History** tabs hold each gate's log and the day's events. See
+[Visibility](doc/visibility.md#the-dashboard-feature) for details.
+
+## Plugins
+
+A plugin teaches Queuekeeper a platform. A project switches one on by listing it in the
+`extensions` of its `queuekeeper.json`.
+
+### Apple plugin
+
+The [Apple plugin](src/python/queuekeeper/apple/README.md) lets agents build and test iOS and Mac
+apps without getting in each other's way:
 
 - **Simulator pool.** Each run gets its own simulator, reset from a warmed template in a fraction of
   a second.
@@ -114,45 +142,25 @@ The Apple plugin lets agents build and test iOS and Mac apps without getting in 
   simulators.
 - **Physical devices.** Agents take an iPhone or iPad in turn, and a run is stopped before its
   reservation ends.
-- **Unattended Macs.** Crash dialogs, notification banners, locked keychains and lapsed permissions
-  are cleared, or the run is reported as unmeasured instead of failed.
 
-See the [Apple plugin's README](src/python/queuekeeper/apple/README.md) for details. The guards for
-unattended Macs are a plugin of their own, the
-[Mac desktop plugin](src/python/queuekeeper/mac_desktop/README.md), which the Apple plugin builds on and
-other plugins can too.
+### Unity plugin
 
-## Visibility
+The [Unity plugin](src/python/queuekeeper/unity/README.md) runs a Unity project's editor
+unattended. It picks the editor the project pins, clears a project lock nothing holds, ends a batch
+run that has gone silent, and runs the project's tests.
 
-Agents read exit codes. You need to see whether the queue is moving and to hear when it needs you.
-Three features do that, each off until you turn it on:
+### Mac desktop plugin
 
-- **Watch.** `qk watch` shows the queue in the terminal and redraws it as it changes.
-- **Notify.** A macOS banner, a command of yours or a webhook tells you of a hold only you can fix,
-  a change that came back, a flaky test and a landing that skipped the gate.
-- **Dashboard.** `qk serve` serves a read-only web page on your Mac: what the queue is
-  doing at a glance, then the queue, the build farm, the logs and the day's history.
+The [Mac desktop plugin](src/python/queuekeeper/mac_desktop/README.md) handles a Mac's logged-in
+session when nobody is at it. Crash dialogs, notification banners, locked keychains and lapsed
+permissions are cleared, or the run is reported as unmeasured instead of failed. The Apple and
+Unity plugins build on it.
 
-```sh
-qk visibility enable dashboard
-qk serve --open
-```
-
-See [Visibility](doc/visibility.md) for details.
-
-## The Unity plugin
-
-The [Unity plugin](src/python/queuekeeper/unity/README.md) is the start of a plugin for game
-engines. It picks the editor a project pins, clears a project lock nothing holds, stops an orphaned
-licensing helper, ends a batch run that has gone silent, and runs a project's tests. A project
-switches it on by listing `queuekeeper.unity` in its `extensions`. Its README lists its limits.
-
-## The Mac hardware plugin
+### Mac hardware plugin
 
 The [Mac hardware plugin](src/python/queuekeeper/mac_hardware/README.md) keeps a lane on the chip
 its results are valid on. A lane whose output differs by GPU lists its chips, such as
-`"chips": ["apple-m5-max"]`, and runs only on a Mac that has one. Every other lane runs on either
-Mac, as before.
+`"chips": ["apple-m5-max"]`, and runs only on a Mac that has one.
 
 ## Documentation
 
@@ -179,25 +187,6 @@ The guides hold the detail, with the measurements and decisions behind each rule
   [kept app builds](guides/app-builds.md), for the Apple plugin
 - [Foreground runs](guides/foreground.md): taking a Mac's screen for a lane
 - [Cloud gate runners](guides/cloud-gate-runners.md): renting a Mac for the queue
-
-## Limitations
-
-- **One user so far.** Queuekeeper was extracted from its author's private tooling. Expect rough
-  edges, and defaults that suit one person's setup.
-- **macOS only**, for the queue and for every build host.
-- **Few platform plugins.** The Apple plugin is the complete one, with the Mac desktop plugin it
-  builds on. The Unity plugin is new and little used, and there is no Android plugin. The core runs any command
-  as a lane, so those builds can be queued, but nothing manages emulators or devices for them.
-- **No pull requests.** Queuekeeper lands directly on `main` and refuses a project set up for pull
-  requests. There is no review step.
-- **Flake detection covers Python test lanes only.** Failures in other lanes are bisected.
-- **Two Macs outside the gate.** The queue's gates can use a list of Macs. A lane an agent runs
-  directly is offered to one other Mac.
-- **A build host can be asleep, locked or busy.** Queuekeeper reports these as no verdict and waits,
-  which is correct but slower than a machine that is always ready.
-- **The dashboard only shows.** It is read-only, has no sign-in and is served to your own Mac.
-  Removing an entry or clearing a hold is still a command. Notifications are macOS banners unless
-  you point them at a command or a webhook.
 
 ## License
 
