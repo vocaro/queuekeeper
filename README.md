@@ -174,7 +174,8 @@ The guides hold the detail, with the measurements and decisions behind each rule
 - [Maintenance](guides/maintenance.md): operating the merge queue, and the spelling check
 - [Shared host](guides/shared-host.md): admission, the second Mac, disk cleanup, device reservations
   and process supervision
-- [Lanes](guides/lanes.md): receipts, how tests are counted, compiling first, tests no lane runs
+- [Lanes](guides/lanes.md): receipts, how tests are counted, compiling first, tests no lane runs,
+  the gate's time budget
 - [Parallel tests](guides/parallel-tests.md): lane groups, `qk unittest`, `qk simulator-tests` and
   `qk xctest`
 - [Simulator pool](guides/simulator-pool.md), [physical devices](guides/devices.md) and

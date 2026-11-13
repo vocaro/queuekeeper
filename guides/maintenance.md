@@ -66,7 +66,7 @@ Closeout finds each branch landed by equal patches. The gate receipt is of the p
 `eng release` accepts, unless the result was carried over. Each landed entry records its gate's wall
 time with the CPU busy share of the Mac the gate ran on, read every minute during the run, so that
 the gate's budget median can leave out runs made on a loaded host
-([keeping the split](https://github.com/vocaro/vocaro-engineering/blob/main/guides/releasing.md#keeping-the-split), [#235](https://github.com/vocaro/vocaro-engineering/issues/235)).
+([the gate's time budget](lanes.md#the-gates-time-budget), [#235](https://github.com/vocaro/vocaro-engineering/issues/235)).
 
 **Lines added to a changelog section need no author.** Branches that each add a line to a section of
 `CHANGELOG.md`, in any directory and any case, conflict in turn, since each line sits where the one

@@ -109,3 +109,28 @@ commands without it: a gate builds what its suites run, and vocaro-engineering#2
 `qk simulator-tests` compile first already, and stop on a failed build. For an `qk admit` run, or
 a project with no lane for the run, chain the two yourself in one admitted job, `qk admit --
 bash -c 'BUILD && TESTS'`, and pass the build the same derived data.
+
+## The gate's time budget
+
+A project sets a budget for `gate` in its lane, `budgetMinutes`, from the gate's measured time.
+Only the gate lane has one.
+
+The merge queue records each landed batch's gate run: its wall time as the queue saw it, wherever
+the lane ran and with any wait for admission, and the parts its log reports with their times
+(`qk unittest` and `qk xctest` processes, a lane group's lanes). Beside the wall time it records
+the CPU busy share of the Mac the gate ran on, `cpuBusy`, the reading admission judges by
+([#200](https://github.com/vocaro/vocaro-engineering/issues/200)). That is the mean of readings taken every minute while the gate runs,
+kept with their highest, the limit that Mac sets (`busyLimit`, `HEAVY_BUSY_LIMIT`), the Mac and
+the count of readings. The worker's log says them too.
+
+When the median of the last 10 passing runs made on an unloaded host, with at least 3 to judge
+by, exceeds the budget, `qk land` warns after its result and `qk doctor` warns, naming the
+slowest parts ([#135](https://github.com/vocaro/vocaro-engineering/issues/135)). A run whose busy share was at or above its Mac's limit
+is left out of that median, and the warning says how many it left out
+([#235](https://github.com/vocaro/vocaro-engineering/issues/235)). A run with no reading, as before this record existed, counts.
+`qk doctor` also warns of a direct-main `gate` with no budget, and of a `gate` that takes a
+physical device.
+
+What a project does when its gate is over budget is its owner's policy; the toolkit's is in
+[keeping the split](https://github.com/vocaro/vocaro-engineering/blob/main/guides/releasing.md#keeping-the-split).
+
