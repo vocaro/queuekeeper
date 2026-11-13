@@ -8079,8 +8079,8 @@ class RoundAccount(Fixture):
     """The worker's account of its round in queuekeeper-queue (ROUND_FILE), which `qk queue status` shows so that nobody has
     to read worker.log to learn why entries wait: a bisect's halves, each gate's lane, Mac and time, and what it waits
     for."""
-    UNREACHABLE = ("queuekeeper: gate waits for this Mac, and asks the second Mac again at the next offer: build-host cannot "
-                   "be reached: ssh: connect to host build-host port 22: No route to host")
+    UNREACHABLE = ("queuekeeper: gate waits for this Mac, and asks the second Mac again within 60s, after 2 offers in a row "
+                   "could not reach it: build-host cannot be reached: ssh: connect to host build-host port 22: No route to host")
     WHOLE_HOST = ("heavy: waiting (0s): it waits behind a whole-host lane holding the host: StudyWright gate")
 
     def setUp(self):
@@ -8118,11 +8118,14 @@ class RoundAccount(Fixture):
 
     def test_a_gate_record_follows_the_lanes_wait_record(self):
         queue, watch = self.watch()
-        mq.lane_wait.waiting(mq.lane_wait.UNREACHABLE, "ssh: connect to host build-host port 22: No route to host")
+        mq.lane_wait.waiting(mq.lane_wait.UNREACHABLE, "ssh: connect to host build-host port 22: No route to host",
+                             probes={"failed": 2, "last": time.time() - 40})
         gate = self.gate_after_look(queue, watch)
         self.assertEqual((gate["lane"], gate["entries"], gate["mac"]), ("gate", ["e1"], None))
-        self.assertEqual(gate["waiting"], "the second Mac cannot be reached, and is asked again at the next offer: "
-                                          "ssh: connect to host build-host port 22: No route to host")
+        # The verdict's count and age, read as the gate is looked at (vocaro/queuekeeper#25).
+        self.assertRegex(gate["waiting"], r"^the second Mac cannot be reached \(2 probes failed, the last 4\d s ago\), "
+                                          r"and is asked again within a minute: ssh: connect to host build-host port 22: "
+                                          r"No route to host$")
         self.assertIsInstance(gate["waitingSince"], float)
         # What it waits for by kind, which qk queue doctor's pointer to `qk admissions now` reads (#342).
         self.assertEqual(gate["waitingKind"], mq.lane_wait.UNREACHABLE)
@@ -8203,7 +8206,7 @@ class RoundAccount(Fixture):
         path = Path(os.environ[mq.lane_wait.VARIABLE])
         record = json.loads(path.read_text())
         self.assertEqual(set(record), {"schemaVersion", "kind", "reason", "mac", "offer", "stranded", "pid", "since",
-                                       "written", "admitted"})
+                                       "written", "admitted", "probes"})
         self.assertIs(record["admitted"], False)
         gate = self.gate_after_look(queue, watch)
         self.assertNotIn("status", gate)

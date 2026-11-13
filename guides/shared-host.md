@@ -804,10 +804,17 @@ whose admission then held it back for as long as the exclusive work waited and r
    the commits after the first. `queuekeeper: LANE waits for whichever Mac admits it first:` says so, with
    why the second Mac has not taken it, and this Mac's admission prints what it waits behind
    ([heavy-work admission](#heavy-work-admission)). A second Mac that cannot be reached at one of
-   these offers is asked again at the next, since one that went offline during the wait may come
-   back before it ends: `queuekeeper: LANE waits for this Mac, and asks the second Mac again at the next
-   offer:` says why, once for each reason. A lane that neither admits within 5,400 s ends with
-   exit 75 (`BUSY`) and runs nowhere.
+   these offers is asked again within 30 s, which costs it nothing since nothing is sent, and
+   within 60 s after each further offer in a row that cannot reach it, since one that went offline
+   during the wait may come back before it ends. One such offer leaves it in rotation: `queuekeeper:
+   LANE asks the second Mac again within 30s, as one offer that could not reach it does not make it
+   unreachable:` says why. Only the second in a row counts it unreachable, and `queuekeeper: LANE
+   waits for this Mac, and asks the second Mac again within 60s, after 2 offers in a row could not
+   reach it:` says why, once for each reason; `qk queue status` then says how many probes failed
+   and how long ago the last did. On 2026-11-12 one `ssh build-host true` that did not finish in
+   30 s, while the second Mac answered a shell on this Mac in 0.2 s, kept it out of rotation and
+   called unreachable for about six minutes, until the next offer (vocaro/queuekeeper#25). A lane
+   that neither admits within 5,400 s ends with exit 75 (`BUSY`) and runs nowhere.
 
 A gate that runs the project's suites side by side is a whole Mac's work: it says
 `"wholeHost": true`, on the lane or on the group, and takes every guaranteed slot of the Mac it
@@ -1549,8 +1556,11 @@ The owner prepares the second Mac once:
    run, says so in one line, `queuekeeper: build-host was renamed: …`, and `qk doctor` reports the rename
    as an error until `~/.ssh/config` names it. None, or more than one, is a second Mac that cannot
    be reached, and the failure says what the search saw: that Bonjour lists no other Mac offering
-   ssh, so the second Mac is away or asleep, or which Macs it lists, none presenting the key. The
-   search costs about 2 s more when this Mac is away from the second Mac's network, after the 5 s
+   ssh, so the second Mac is away or asleep, or which Macs it lists, none presenting the key. A
+   name an address of which answered on its ssh port reaches a Mac, so the check searches for no
+   rename when `ssh build-host true` then fails or does not finish in time: what Bonjour lists says
+   nothing of why, and on 2026-11-12 a timed-out probe's failure listed `none-6.local`, which read
+   as a diagnosis (vocaro/queuekeeper#25). The search costs about 2 s more when this Mac is away from the second Mac's network, after the 5 s
    the name's lookup already waits; finding a renamed Mac took 7.4 s in all (macOS 27.0.1,
    2026-11-01).
 

@@ -319,7 +319,9 @@ def reachable(host, found=None):
 
     A .local name that does not resolve, or that answers with another key, may be a second Mac that
     macOS renamed (rediscover): one found under a new name is checked there, and every connection of
-    this process to host then goes to that name."""
+    this process to host then goes to that name. A name an address of which answered on its ssh port
+    reaches a Mac, so no rename explains a check that then failed, such as an `ssh HOST true` that did
+    not finish in time, and none is searched for: what Bonjour lists says nothing of why (vocaro/queuekeeper#25)."""
     # An earlier search's finding says nothing of this check's failure, which is searched for afresh.
     UNFOUND.pop(host, None)
     try:
@@ -329,6 +331,7 @@ def reachable(host, found=None):
         # A process that macOS denies the local network reaches nothing there, so no rename is searched for.
         lost = local_network_lost() if isinstance(stop, Unreachable) else None
         if lost: raise NoLocalNetwork(f"{stop.problem}; {lost}", LOST_FIX) from None
+        if getattr(stop, "answered", False): raise
         RENAMED.pop(host, None)
         if rediscover(host) is None:
             if not searched(host): raise
@@ -350,13 +353,22 @@ def check(host, found=None):
     try:
         checked = ssh(host, "true", stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=REACH_SECONDS)
     except subprocess.TimeoutExpired:
-        raise ssh_failure(host, f"`ssh {host} true` did not finish in {REACH_SECONDS}s", attempt) from None
-    if checked.returncode == 255: raise ssh_failure(host, checked.stderr, attempt)
+        raise answered(ssh_failure(host, f"`ssh {host} true` did not finish in {REACH_SECONDS}s", attempt),
+                       addresses) from None
+    if checked.returncode == 255: raise answered(ssh_failure(host, checked.stderr, attempt), addresses)
     if checked.returncode:
         raise Misconfigured(f"{host}'s login shell could not run `true` (exit {checked.returncode}): "
                             f"{last_line(checked.stderr) or 'no output'}",
                             f"repair the login shell there, which every run uses, until `ssh {host} true` succeeds "
                             "(guides/shared-host.md, Setting up the second Mac)")
+
+
+def answered(stop, addresses):
+    """stop, marked as a failure after an address of the second Mac answered on its ssh port, when connection()
+    measured one that did (addresses), so that reachable() searches for no rename (vocaro/queuekeeper#25). Another
+    key is a Misconfigured, and is searched for, since the name may now be another machine's."""
+    stop.answered = isinstance(stop, Unreachable) and addresses is not None
+    return stop
 
 
 # What a process that macOS's Local Network privacy denies says ssh does: it connects nowhere on this Mac's network,
@@ -3063,6 +3075,9 @@ class Offer:
         self.whole_host, self.exclusive, self.screen, self.queue_gate = whole_host, exclusive, screen, queue_gate
         self.sent, self.host, self.status, self.busy, self.away = {}, None, None, None, None
         self.hosts = hosts
+        # The offers again() made in a row that could not reach the second Mac, and when the last of them failed
+        # (an epoch time): away is set only once there are UNREACHABLE_AFTER (vocaro/queuekeeper#25).
+        self.failed, self.failed_at = 0, None
         self.remote_macs = "the build Macs" if hosts is not None else "the second Mac"
         # Whether each offer first reads both Macs' capacity (choose): an offer this Mac may take does, and
         # --offload-only's, which never runs the work here, does not. Set by make.
@@ -3188,23 +3203,33 @@ class Offer:
         """Offer the work to the second Mac once more, while it was busy: its status when it ran there,
         MISCONFIGURED when the second Mac's configuration stopped it, or None while the second Mac is
         still busy or cannot be reached, and from then on when it can no longer take the work. A second
-        Mac that cannot be reached is asked again at the next offer, since one that went offline during a
-        long wait may come back before it ends; away says why it could not be reached, while it cannot. LOST_ACCESS
-        when a queue worker's gate lost Local Network access meanwhile (lost_access)."""
+        Mac that cannot be reached is asked again within reprobe() seconds, since one slow answer, or one
+        that went offline during a long wait, may come back before it ends. It counts as unreachable only
+        after UNREACHABLE_AFTER offers in a row could not reach it: one that times out once stays in
+        rotation, as the busy Mac it was (vocaro/queuekeeper#25). away says why it could not be reached,
+        while it counts as unreachable. LOST_ACCESS when a queue worker's gate lost Local Network access
+        meanwhile (lost_access)."""
         if self.busy is None: return None
         try:
             self.status = self.attempt()
             self.busy = self.away = None
+            self.failed, self.failed_at = 0, None
             return self.status
         except Misconfigured as stop:
             return self.stopped(stop)
         except Busy as busy:
             self.busy, self.away = self.declined(busy), None
+            self.failed, self.failed_at = 0, None
         except Unreachable as away:
             if self.lost_access(away): return self.status
+            self.failed, self.failed_at = self.failed + 1, time.time()
+            if self.failed < UNREACHABLE_AFTER:
+                print(f"queuekeeper: {self.name} asks the second Mac again within {self.reprobe()}s, as one offer that "
+                      f"could not reach it does not make it unreachable: {away.problem}", file=sys.stderr, flush=True)
+                return None
             if away.problem != self.away:
-                print(f"queuekeeper: {self.name} waits for this Mac, and asks the second Mac again at the next offer: "
-                      f"{away.problem}", file=sys.stderr, flush=True)
+                print(f"queuekeeper: {self.name} waits for this Mac, and asks the second Mac again within {self.reprobe()}s, "
+                      f"after {self.failed} offers in a row could not reach it: {away.problem}", file=sys.stderr, flush=True)
             self.away = self.status = away.problem
         except Unavailable as reason:
             said = str(reason)
@@ -3213,10 +3238,26 @@ class Offer:
             self.busy, self.status = None, said
         return None
 
+    def reprobe(self):
+        """Seconds at most until the second Mac is asked again after failed offers in a row that could not reach it:
+        REPROBE_WAIT after the first, doubling to REPROBE_WAIT_MAX."""
+        return min(REPROBE_WAIT * 2 ** max(self.failed - 1, 0), REPROBE_WAIT_MAX)
+
+    def probes(self):
+        """The failed offers in a row and when the last failed, for the wait record (lane_wait.waiting)."""
+        return {"failed": self.failed, "last": self.failed_at} if self.failed else None
+
 
 # Seconds this Mac's admission waits between offers to the second Mac while both Macs are busy: at
 # first, after its FREE_WAIT, and at most. The wait doubles from one offer to the next.
 OVERFLOW_WAIT, OVERFLOW_WAIT_MAX = 15, 120
+# Seconds at most until the second Mac is asked again after an offer could not reach it: at first, and after more
+# offers in a row that could not. An offer that cannot reach it costs it nothing, since nothing is sent; one ssh
+# probe that did not finish in 30 s while `ssh build-host true` answered in 0.2 s from a shell on the same Mac kept
+# the second Mac out of rotation for about six minutes (2026-11-12, vocaro/queuekeeper#25).
+REPROBE_WAIT, REPROBE_WAIT_MAX = 30, 60
+# Offers in a row that could not reach the second Mac before it counts as unreachable.
+UNREACHABLE_AFTER = 2
 # Seconds `qk run` and `qk admit` wait in all for one Mac or the other to admit the work.
 OVERFLOW_TIMEOUT = 5400
 
@@ -3234,7 +3275,8 @@ def overflow(offered, admit, timeout=OVERFLOW_TIMEOUT, once=False, refused=()):
     reading allows (Offer.again). The wait in this Mac's queue is the backoff between offers, so the
     work starts on whichever Mac admits it first, and the second Mac is asked again at least every
     OVERFLOW_WAIT_MAX seconds: each offer costs it a checkout claim, the project's provision lane and
-    a policy refresh, so not every few seconds. Each of this Mac's waits that ends unadmitted is logged
+    a policy refresh, so not every few seconds. After an offer that could not reach it, which cost it
+    nothing, it is asked again within Offer.reprobe()'s seconds instead. Each of this Mac's waits that ends unadmitted is logged
     as withdrawn, as a declined offer is there. All kinds keep their arrival across local waits
     (resources.Place) and remote retries (elapsed age in the dispatch plan). A retained place holds
     later work back only for HEAVY_PLACE_SECONDS after its last local attempt (#360). With once, as
@@ -3244,7 +3286,10 @@ def overflow(offered, admit, timeout=OVERFLOW_TIMEOUT, once=False, refused=()):
     while True:
         # Once the second Mac can no longer take it, this Mac's queue alone, for the rest of the time.
         bound = window if offered.busy is not None else deadline - time.monotonic()
-        if offered.away is not None: lane_wait.waiting(lane_wait.UNREACHABLE, offered.away)
+        # An offer that could not reach the second Mac is followed soon by another (Offer.reprobe).
+        if offered.busy is not None and offered.failed: bound = min(bound, offered.reprobe())
+        if offered.away is not None:
+            lane_wait.waiting(lane_wait.UNREACHABLE, offered.away, probes=offered.probes())
         elif offered.busy is not None: lane_wait.waiting(lane_wait.OVERFLOW, offered.busy)
         admission = admit(max(min(bound, deadline - time.monotonic()), 0))
         if admission is not None: return admission

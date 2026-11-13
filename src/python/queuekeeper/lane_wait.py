@@ -30,11 +30,11 @@ OFFERS = (UNREACHABLE, ALONE, OVERFLOW)
 WORDS = {ADMISSION: "admission on {mac}: {reason}",
          SCREEN: "an unlocked screen: {reason}",
          FOREGROUND: "the second Mac's foreground, {reason}",
-         UNREACHABLE: "the second Mac cannot be reached, and is asked again at the next offer: {reason}",
+         UNREACHABLE: "the second Mac cannot be reached{probes}, and is asked again within a minute: {reason}",
          ALONE: "this Mac alone, as the second Mac cannot take it: {reason}",
          OVERFLOW: "whichever Mac admits it first, the second Mac asked again: {reason}"}
 # What identifies a state of the record, apart from when it was written.
-STATE = ("kind", "reason", "mac", "offer", "stranded", "pid", "admitted")
+STATE = ("kind", "reason", "mac", "offer", "stranded", "pid", "admitted", "probes")
 
 _owned = None  # the record this process named, and so removes (begin, finish)
 _offer = None  # why this run waits for this Mac instead of the second Mac, until it is admitted
@@ -102,15 +102,17 @@ def same(found, record):
             and found.get("progressRun") == os.environ.get("QUEUEKEEPER_LANE_PROGRESS_RUN"))
 
 
-def waiting(kind, reason, mac=HERE, stranded=False):
+def waiting(kind, reason, mac=HERE, stranded=False, probes=None):
     """The lane now waits for this, for a reason in plain words, on mac; since when carries over a wait that goes on
     under other words, so that its start is the wait's and not the latest wording's. A wait on this Mac says beside
-    it why the lane is not on the second Mac (OFFERS). stranded says that dead or uncertain guard entries hold it."""
+    it why the lane is not on the second Mac (OFFERS). stranded says that dead or uncertain guard entries hold it.
+    probes, for UNREACHABLE, is how many offers in a row could not reach the second Mac and when the last failed
+    (remote.Offer.probes), whose age words() gives as it reads the record (vocaro/queuekeeper#25)."""
     global _offer
     if not os.environ.get(VARIABLE): return
-    if mac == HERE and kind in OFFERS: _offer = {"kind": kind, "reason": reason}
+    if mac == HERE and kind in OFFERS: _offer = {"kind": kind, "reason": reason, "probes": probes}
     record = {"kind": kind, "reason": reason, "mac": mac, "offer": _offer if mac == HERE and kind not in OFFERS else None,
-              "stranded": stranded, "pid": os.getpid(), "admitted": False}
+              "stranded": stranded, "pid": os.getpid(), "admitted": False, "probes": probes}
     found = read(os.environ[VARIABLE])
     if same(found, record): return
     since = found.get("since") if found and found.get("kind") else None
@@ -123,7 +125,7 @@ def running(mac=HERE, *, admitted=True):
     if not os.environ.get(VARIABLE): return
     _offer = None
     record = {"kind": None, "reason": None, "mac": mac, "offer": None, "stranded": False,
-              "pid": os.getpid(), "admitted": admitted}
+              "pid": os.getpid(), "admitted": admitted, "probes": None}
     if not same(read(os.environ[VARIABLE]), record): write({**record, "since": None})
 
 
@@ -185,11 +187,24 @@ def admission_warnings(root, at=None):
     return found
 
 
-def words(record):
-    """What the lane waits for, in the words `qk queue status` shows, or None when it waits for nothing."""
+def words(record, at=None):
+    """What the lane waits for, in the words `qk queue status` shows, or None when it waits for nothing. A second Mac
+    that cannot be reached is said with how many offers in a row failed to reach it and how long ago, at at (an epoch
+    time; now), the last did (probed)."""
     if not record or not record.get("kind"): return None
-    said = WORDS[record["kind"]].format(mac=record.get("mac") or HERE, reason=record.get("reason"))
+    said = WORDS[record["kind"]].format(mac=record.get("mac") or HERE, reason=record.get("reason"),
+                                        probes=probed(record.get("probes"), at))
     offer = record.get("offer")
     if isinstance(offer, dict) and offer.get("kind") in WORDS:
-        said += "; " + WORDS[offer["kind"]].format(mac=HERE, reason=offer.get("reason"))
+        said += "; " + WORDS[offer["kind"]].format(mac=HERE, reason=offer.get("reason"),
+                                                   probes=probed(offer.get("probes"), at))
     return said
+
+
+def probed(probes, at=None):
+    """The verdict's count and age, as " (2 probes failed, the last 40 s ago)", or nothing when probes says neither."""
+    if not isinstance(probes, dict): return ""
+    failed, last = probes.get("failed"), probes.get("last")
+    if not isinstance(failed, int) or not isinstance(last, (int, float)): return ""
+    age = max(int((time.time() if at is None else at) - last), 0)
+    return f" ({failed} probe{'' if failed == 1 else 's'} failed, the last {age} s ago)"

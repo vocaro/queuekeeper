@@ -7667,6 +7667,37 @@ class RenamedSecondMacTests(unittest.TestCase):
         self.assertEqual(remote.searched("fake"), "")
         self.assertNotIn("Bonjour", remote.unreachable("fake", "ssh: Could not resolve hostname mac-3.local: x").problem)
 
+    def test_a_probe_that_fails_after_an_address_answered_searches_for_no_rename(self):
+        """vocaro/queuekeeper#25: a probe that timed out once said "of the Macs offering ssh over Bonjour, none-6.local,
+        none presents the key", which read as a diagnosis and said nothing of why it failed. A name an address of
+        which answered on its ssh port reaches a Mac, which no rename explains."""
+        answered = {"hostname": "mac-3.local", "port": 22, "addressFamily": "any",
+                    "addresses": [{"address": "10.0.0.112", "seconds": 0.001, "outcome": "connected"}]}
+        timed_out = subprocess.TimeoutExpired(["ssh"], remote.REACH_SECONDS)
+        refused = subprocess.CompletedProcess([], 255, "", "Connection closed by 10.0.0.112 port 22\n")
+        for outcome in (timed_out, refused):
+            with self.subTest(outcome=outcome), patch.object(remote, "connection", return_value=answered), \
+                    patch.object(remote, "ssh", side_effect=[outcome]), \
+                    patch.object(remote, "local_network_lost", return_value=None), \
+                    patch.object(remote, "advertised", return_value=[("none-6.local", "22")]) as browsed:
+                with self.assertRaises(remote.Unreachable) as raised:
+                    remote.reachable("fake")
+                browsed.assert_not_called()
+                self.assertNotIn("Bonjour", raised.exception.problem)
+        # The negative controls: another key from an address that answered, and no address answering, are searched for.
+        other_key = subprocess.CompletedProcess([], 255, "", "Host key verification failed.\n")
+        silent = {**answered, "addresses": [{"address": "10.0.0.112", "seconds": 3.0, "outcome": "timed out"}]}
+        for found, outcomes, kind in ((answered, [other_key], remote.Misconfigured), (silent, [], remote.Unreachable)):
+            with self.subTest(kind=kind.__name__), patch.object(remote, "connection", return_value=found), \
+                    patch.object(remote, "ssh", side_effect=outcomes), \
+                    patch.object(remote, "local_network_lost", return_value=None), \
+                    patch.object(remote, "advertised", return_value=[("none-6.local", "22")]) as browsed, \
+                    patch.object(remote, "presents", return_value=False):
+                with self.assertRaises(kind) as raised:
+                    remote.reachable("fake")
+                browsed.assert_called_once()
+                self.assertIn("none-6.local, none presents the key", raised.exception.problem)
+
     def test_every_connection_finds_a_renamed_second_mac_not_only_the_check_before_a_dispatch(self):
         # A foreground lane's preparing connection and `qk remote foreground` reach the second Mac by ssh(),
         # which on 2026-11-03 said "wake build-host" of a Mac renamed from -4 to -5 (vocaro-engineering#129).
@@ -8195,12 +8226,29 @@ class OfferAgainTests(unittest.TestCase):
         with patch.object(remote, "reachable", side_effect=[away, away, None]), \
                 patch("sys.stderr", new_callable=StringIO) as error:
             self.assertIsNone(offered.again())
+            # One offer that could not reach it does not make it unreachable (vocaro/queuekeeper#25).
+            self.assertEqual((offered.away, offered.failed, offered.reprobe()), (None, 1, remote.REPROBE_WAIT))
             self.assertIsNone(offered.again())
             self.assertEqual((offered.busy, offered.away, offered.status),
                              ("every checkout is in use", away.problem, away.problem))
+            self.assertEqual((offered.probes()["failed"], offered.reprobe()), (2, remote.REPROBE_WAIT_MAX))
             self.assertEqual(offered.again(), 0)
-        self.assertEqual(error.getvalue().count("asks the second Mac again at the next offer"), 1, error.getvalue())
-        self.assertEqual((offered.busy, offered.away), (None, None))
+        self.assertEqual(error.getvalue().count("after 2 offers in a row could not reach it"), 1, error.getvalue())
+        self.assertEqual((offered.busy, offered.away, offered.probes()), (None, None, None))
+
+    def test_one_offer_that_cannot_reach_the_second_mac_is_followed_by_another_and_recovers(self):
+        """vocaro/queuekeeper#25: one probe that timed out kept the second Mac out of rotation, said unreachable, until
+        the next offer about six minutes on. Each failure in a row starts a count that a reached Mac ends."""
+        slow = remote.Unreachable("fake cannot be reached: `ssh fake true` did not finish in 30s", "see")
+        for recovered in (None, remote.Busy("every checkout is in use")):
+            offered = self.offer()
+            with self.subTest(recovered=recovered), patch.object(remote, "reachable", side_effect=[slow, recovered]), \
+                    patch("sys.stderr", new_callable=StringIO):
+                self.assertIsNone(offered.again())
+                self.assertIsNone(offered.away)
+                self.assertEqual(offered.status, None)
+                self.assertEqual(offered.again(), 0 if recovered is None else None)
+            self.assertEqual((offered.away, offered.failed, offered.failed_at), (None, 0, None))
 
     def test_a_queue_gate_that_loses_the_local_network_while_it_waits_stops_there(self):
         """vocaro-engineering#300: a worker whose session ends while its lane waits for either Mac."""
@@ -8218,6 +8266,8 @@ class OfferAgainTests(unittest.TestCase):
             offered.queue_gate = gate
             with self.subTest(reason=type(reason).__name__, gate=gate), patch.object(remote, "reachable", side_effect=reason), \
                     patch("sys.stderr", new_callable=StringIO):
+                # The second offer in a row that cannot reach it is the one that counts it unreachable.
+                self.assertIsNone(offered.again())
                 self.assertIsNone(offered.again())
                 self.assertEqual((offered.busy, offered.away), ("every checkout is in use", reason.problem))
 

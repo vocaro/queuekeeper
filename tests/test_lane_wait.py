@@ -62,7 +62,7 @@ class Recorded(Named):
                 (lane_wait.SCREEN, "this Mac's is locked", "an unlocked screen: this Mac's is locked"),
                 (lane_wait.FOREGROUND, "held by s-1 for gate", "the second Mac's foreground, held by s-1 for gate"),
                 (lane_wait.UNREACHABLE, "No route to host",
-                 "the second Mac cannot be reached, and is asked again at the next offer: No route to host"),
+                 "the second Mac cannot be reached, and is asked again within a minute: No route to host"),
                 (lane_wait.ALONE, "no reading", "this Mac alone, as the second Mac cannot take it: no reading"),
                 (lane_wait.OVERFLOW, "the second Mac is busy",
                  "whichever Mac admits it first, the second Mac asked again: the second Mac is busy")]:
@@ -230,8 +230,45 @@ class Waits(Named):
         offered.away = "fake cannot be reached: it is asleep"
         with contextlib.redirect_stderr(StringIO()):
             remote.overflow(offered, lambda seconds: None, once=True)
-        self.assertEqual(self.said(), "the second Mac cannot be reached, and is asked again at the next offer: fake cannot "
+        self.assertEqual(self.said(), "the second Mac cannot be reached, and is asked again within a minute: fake cannot "
                                       "be reached: it is asleep")
+
+    def test_one_slow_probe_keeps_the_second_mac_in_rotation_and_two_say_how_many_and_how_long_ago(self):
+        """vocaro/queuekeeper#25: one `ssh build-host true` that did not finish in 30 s, while the second Mac answered a
+        shell in 0.2 s, made status say it could not be reached for about six minutes, until the next offer."""
+        slow = remote.Unreachable("fake cannot be reached: `ssh fake true` did not finish in 30s", "see whether fake is "
+                                  "overloaded")
+        for outcomes, expected in (
+                # One slow answer, then the second Mac takes the work: it never counted as unreachable.
+                ([slow, None], [None, None]),
+                # Two in a row: unreachable, said with how many and how long ago, then back.
+                ([slow, slow, None], [None, None, 2])):
+            lane_wait.running()
+            offered, waits, seen = self.offer(), [], []
+            def admit(seconds):
+                waits.append(seconds)
+                found = lane_wait.current(self.path)
+                seen.append((found or {}).get("kind") == lane_wait.UNREACHABLE and found["probes"]["failed"])
+                return None
+            # Waits between offers already backed off to two minutes, as in a long wait.
+            with self.subTest(failures=len(outcomes) - 1), patch.object(remote, "reachable", side_effect=outcomes), \
+                    patch.object(remote, "OVERFLOW_WAIT", remote.OVERFLOW_WAIT_MAX), \
+                    patch("sys.stderr", new_callable=StringIO) as error:
+                self.assertEqual(remote.overflow(offered, admit, timeout=3600), 0)
+            # The first wait is FREE_WAIT; each that follows a failed probe is the re-probe's, 30 s then 60 s.
+            self.assertEqual(waits[1:], [remote.REPROBE_WAIT, remote.REPROBE_WAIT_MAX][:len(outcomes) - 1])
+            self.assertEqual([found or None for found in seen], expected)
+            self.assertEqual((offered.busy, offered.away, offered.failed, offered.failed_at), (None, None, 0, None))
+            self.assertIn("as one offer that could not reach it does not make it unreachable", error.getvalue())
+            self.assertEqual("after 2 offers in a row could not reach it" in error.getvalue(), len(outcomes) == 3)
+        # The record's age is the last failed probe's, read when the record is read.
+        lane_wait.waiting(lane_wait.UNREACHABLE, slow.problem, probes={"failed": 2, "last": 1000.0})
+        lane_wait.waiting(lane_wait.ADMISSION, "all 3 are busy")
+        record = lane_wait.current(self.path)
+        self.assertEqual(lane_wait.words(record, at=1040.0),
+                         "admission on this Mac: all 3 are busy; the second Mac cannot be reached (2 probes failed, the "
+                         f"last 40 s ago), and is asked again within a minute: {slow.problem}")
+        self.assertIn("the last 100 s ago", lane_wait.words(record, at=1100.0))
 
     def test_a_second_mac_that_can_no_longer_take_it_leaves_this_mac_alone(self):
         offered = self.offer()
