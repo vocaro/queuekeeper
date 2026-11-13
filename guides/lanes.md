@@ -119,18 +119,35 @@ A project sets a budget for `gate` in its lane, `budgetMinutes`, from the gate's
 Only the gate lane has one.
 
 The merge queue records each landed batch's gate run: its wall time as the queue saw it, wherever
-the lane ran and with any wait for admission, and the parts its log reports with their times
-(`qk unittest` and `qk xctest` processes, a lane group's lanes). Beside the wall time it records
+the lane ran and with any wait for admission (`seconds`), and the parts its log reports with their times
+(`qk unittest` and `qk xctest` processes, a lane group's lanes). Since 2026-11-13 it also records
+that time in two parts: the gate's own work, from its admission to its end (`workSeconds`), and
+the wait for admission before it (`waitSeconds`). The admission is when the lane's wait record
+first says it was admitted, on this Mac or on the second Mac
+([#112](https://github.com/vocaro/queuekeeper/issues/112)). Beside the times it records
 the CPU busy share of the Mac the gate ran on, `cpuBusy`, the reading admission judges by
-([#200](https://github.com/vocaro/vocaro-engineering/issues/200)). That is the mean of readings taken every minute while the gate runs,
-kept with their highest, the limit that Mac sets (`busyLimit`, `HEAVY_BUSY_LIMIT`), the Mac and
-the count of readings. The worker's log says them too.
+([#200](https://github.com/vocaro/vocaro-engineering/issues/200)). That is the mean of readings taken every minute from the gate's
+admission to its end, kept with their highest, the limit that Mac sets (`busyLimit`, `HEAVY_BUSY_LIMIT`), the Mac and
+the count of readings. A gate that ends before a minute of its own work has one reading, at its end.
+The worker's log says them too.
 
-When the median of the last 10 passing runs made on an unloaded host, with at least 3 to judge
+The budget judges the gate's own work, not its wall time. On 2026-11-12 three of BreezEPUB's
+whole-host gates did 4.7 to 6.7 minutes of their own work against a 15-minute budget, after
+waiting 2.6 to 15.8 minutes for admission. The wait was most of their wall time, and no check
+moved out of the gate shortens it ([#112](https://github.com/vocaro/queuekeeper/issues/112)). For the
+same reason the busy share is read only after admission: a loaded run is one whose own work met a
+busy Mac, not one that waited while the Mac was busy.
+
+When the median own work of the last 10 passing runs made on an unloaded host, with at least 3 to judge
 by, exceeds the budget, `qk land` warns after its result and `qk doctor` warns, naming the
-slowest parts ([#135](https://github.com/vocaro/vocaro-engineering/issues/135)). A run whose busy share was at or above its Mac's limit
+slowest parts ([#135](https://github.com/vocaro/vocaro-engineering/issues/135)) and the median wait for admission of those runs
+beside it. A run whose busy share was at or above its Mac's limit
 is left out of that median, and the warning says how many it left out
-([#235](https://github.com/vocaro/vocaro-engineering/issues/235)). A run with no reading, as before this record existed, counts.
+([#235](https://github.com/vocaro/vocaro-engineering/issues/235)). A run with no reading counts.
+A run recorded without `workSeconds` is left out of the median and not counted: one recorded before
+2026-11-13, whose wall time holds a wait the budget no longer judges, or one whose admission was not
+seen, as for a lane that ends within a second of it. Until a project has 3 passing runs on an
+unloaded host recorded with `workSeconds`, nothing warns.
 `qk doctor` also warns of a direct-main `gate` with no budget, and of a `gate` that takes a
 physical device: one that runs `qk device-pass`, `qk devices take` or `reserve`, or passes
 `--device` to any other command. A `--device` of `qk simulator-tests` or `qk simulator-pool`
@@ -138,7 +155,12 @@ names a simulator type, which the pool supplies, so it gives no warning
 ([#113](https://github.com/vocaro/queuekeeper/issues/113)). A `--device` after such a command's `--`
 belongs to what follows and still counts.
 
-What a project does when its gate is over budget is its owner's policy; the toolkit's is in
+The warning comes after every landing while the median stays over budget, so it does not ask each
+session for a new proposal. Search the project's issue tracker for its open proposal on the gate's
+budget and add to it; open one only if there is none. A reading the proposal already has need not
+be repeated, unless it changes the picture, such as a much higher median or fewer runs left out for
+load ([#96](https://github.com/vocaro/queuekeeper/issues/96), 2026-11-13). What a project does when its
+gate is over budget is otherwise its owner's policy; the toolkit's is in
 [keeping the split](https://github.com/vocaro/vocaro-engineering/blob/main/guides/releasing.md#keeping-the-split).
 
 ## Scroll bars in a receipt

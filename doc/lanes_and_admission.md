@@ -29,8 +29,8 @@ statement of what it needs from the machine:
 - **Test counts.** A lane can require a minimum number of executed tests, so a run that silently
   selects nothing fails. Counts are read from unittest, pytest, XCTest and Swift Testing output.
 - **Groups.** A lane group runs its members side by side under one admission.
-- **Budgets.** `budgetMinutes` warns when the gate's median time drifts past the target, and names
-  the slowest parts.
+- **Budgets.** `budgetMinutes` warns when the median of the gate's own work, from its admission to its
+  end, drifts past the target, and names the slowest parts and the median wait for admission beside it.
 
 ## Admission
 

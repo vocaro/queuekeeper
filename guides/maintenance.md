@@ -70,9 +70,10 @@ each ran and why; one gate serves the whole batch. On a pass it pushes
 exactly the commits it tested, as ordinary commits with their own messages and closing lines, so
 Closeout finds each branch landed by equal patches. The gate receipt is of the pushed commit, which
 `eng release` accepts, unless the result was carried over. Each landed entry records its gate's wall
-time with the CPU busy share of the Mac the gate ran on, read every minute during the run, so that
-the gate's budget median can leave out runs made on a loaded host
-([the gate's time budget](lanes.md#the-gates-time-budget), [#235](https://github.com/vocaro/vocaro-engineering/issues/235)).
+time, and apart from it the gate's own work from its admission to its end and its wait for admission
+([#112](https://github.com/vocaro/queuekeeper/issues/112)), with the CPU busy share of the Mac the gate ran on, read every
+minute after its admission, so that the gate's budget judges its own work and its median can leave out runs made on a
+loaded host ([the gate's time budget](lanes.md#the-gates-time-budget), [#235](https://github.com/vocaro/vocaro-engineering/issues/235)).
 
 **Lines added to a changelog section need no author.** Branches that each add a line to a section of
 `CHANGELOG.md`, in any directory and any case, conflict in turn, since each line sits where the one

@@ -231,7 +231,10 @@ RERUN_DROPPED = {"-j", "--jobs", "-k"}
 GH_TIMEOUT = 60
 # Seconds between readings of the CPU busy share of the Mac a gate lane runs on, which the gate's record keeps
 # beside its wall time, so that the budget's median can leave out runs made on a loaded host (vocaro-engineering#235).
+# Only readings taken once the lane is admitted count (vocaro/queuekeeper#112).
 BUSY_SAMPLE = 60
+# Seconds between readings of a gate lane's wait record until it says the lane was admitted (Admission).
+ADMISSION_POLL = 1
 # How many failed tests, and changed files, a rejection names (Worker.touched_words).
 REJECTION_SHOWN = 5
 GH_ENV = {"GH_PROMPT_DISABLED": "1", "GH_NO_UPDATE_NOTIFIER": "1"}
@@ -1024,17 +1027,57 @@ def busy_of(host):
     return None if busy is None else (busy, limit, "this Mac")
 
 
-class BusySampler:
-    """The CPU busy share of the Mac a gate lane runs on, read every BUSY_SAMPLE seconds while it runs, and once at its
-    end when no reading was taken (vocaro-engineering#235). The Mac is the second Mac once the lane's dispatch names it
-    (remote.dispatched), and this Mac before that. A reading that fails is left out."""
+class Admission:
+    """When a gate lane's run was admitted, so that the gate's budget judges the lane's own work and not its wait for
+    admission (vocaro/queuekeeper#112): the time its wait record (lane_wait) was written saying the run was admitted, on
+    this Mac or, as relayed, on the second Mac, by this Mac's clock. The record is read every ADMISSION_POLL seconds
+    until it says so; the time is the record's own, so the poll does not make it later. None until a reading sees it,
+    as for a lane that ended within a poll of its admission. A measurement only: nothing a reading raises may end the
+    gate."""
     def __init__(self, checkout, lane, began):
-        self.checkout, self.lane, self.began = checkout, lane, began
+        self.path, self.began, self.at = lane_wait.path_of(checkout, lane), began, None
+        self.stopped = threading.Event()
+        self.thread = threading.Thread(target=self.every, name="gate admission", daemon=True)
+
+    def look(self):
+        # The first admission is the lane's: a nested run that waits and is admitted again rewrites the record later.
+        if self.at is not None: return
+        try: record = lane_wait.current(self.path, self.began)
+        except Exception: return  # noqa: BLE001
+        written = (record or {}).get("written")
+        if record and record.get("admitted") is True and budgets.number(written): self.at = max(float(written), self.began)
+
+    def every(self):
+        while self.at is None and not self.stopped.is_set():
+            self.look()
+            self.stopped.wait(ADMISSION_POLL)
+
+    def start(self):
+        self.thread.start()
+        return self
+
+    def finish(self):
+        """The time the lane was admitted, an epoch time, or None when no reading saw it."""
+        self.stopped.set()
+        if self.thread.ident is not None: self.thread.join(timeout=GH_TIMEOUT)
+        return self.at
+
+
+class BusySampler:
+    """The CPU busy share of the Mac a gate lane runs on, read every BUSY_SAMPLE seconds while it runs once admitted,
+    and once at its end when no reading was taken (vocaro-engineering#235). With an Admission, no reading is taken
+    before the lane's admission, so that a loaded run is one whose own work met a busy Mac and not one that waited
+    while the Mac was busy (vocaro/queuekeeper#112). The Mac is the second Mac once the lane's dispatch names it
+    (remote.dispatched), and this Mac before that. A reading that fails is left out."""
+    def __init__(self, checkout, lane, began, admission=None):
+        self.checkout, self.lane, self.began, self.admission = checkout, lane, began, admission
         self.readings = []
         self.stopped = threading.Event()
         self.thread = threading.Thread(target=self.every, name="gate busy share", daemon=True)
 
-    def read(self):
+    def read(self, admitted=True):
+        """One reading, unless admitted asks for the lane's admission first and no reading of it has seen it."""
+        if admitted and self.admission is not None and self.admission.at is None: return
         # A measurement only: nothing a reading raises may end the gate or the round.
         try: found = busy_of(remote.dispatched(self.checkout, self.lane, self.began))
         except Exception: found = None  # noqa: BLE001
@@ -1052,7 +1095,7 @@ class BusySampler:
         the last, and busyReadings; nothing when none was taken."""
         self.stopped.set()
         self.thread.join(timeout=GH_TIMEOUT)
-        if not self.readings: self.read()
+        if not self.readings: self.read(admitted=False)
         if not self.readings: return {}
         shares = [reading[0] for reading in self.readings]
         return {"cpuBusy": round(sum(shares) / len(shares), 1), "cpuBusyHighest": max(shares),
@@ -2857,9 +2900,10 @@ class Worker:
     def gate(self, lanes, round_name, where=(), cancel=None, quick=False):
         """(status of the first of lanes that did not pass or 0, its log). ran_on is the second Mac that ran
         that lane, by its dispatch's record (remote.dispatched), or None when it ran here or nowhere. A pass of
-        the gate lane leaves its wall time and the parts its log reports in self.measured, for the gate's
-        budget (budgets.py). where is qk run's placement option for each lane, HERE or BESIDE while a bisect's
-        halves run at once (Beside), and none otherwise, so that qk run chooses. A set cancel ends the lane as its
+        the gate lane leaves its wall time, its own work and its wait for admission apart (budgets.timed), and the
+        parts its log reports in self.measured, for the gate's budget (budgets.py). where is qk run's placement option
+        for each lane, HERE or BESIDE while a bisect's halves run at once (Beside), and none otherwise, so that qk run
+        chooses. A set cancel ends the lane as its
         limit would (processes.Canceled), for a stacked gate thrown away (Stack). So does an entry it tests that leaves
         the queue, as `qk queue remove` takes it out, and the gate then returns WITHDRAWN, with self.withdrawn naming
         those entries (Removal, vocaro-engineering#247). A lane that still waits to start is stopped in the same way for
@@ -2899,7 +2943,8 @@ class Worker:
             began = time.time()  # wall clock, to match the dispatch records' start times
             started = time.monotonic()  # for the gate's measured duration
             self.lane_now = (lane, began, tuple(where))
-            sampler = BusySampler(self.checkout, lane, began).start() if lane == budgets.GATE else None
+            admission = Admission(self.checkout, lane, began).start() if lane == budgets.GATE else None
+            sampler = BusySampler(self.checkout, lane, began, admission).start() if lane == budgets.GATE else None
             loads = LoadSampler(self.checkout, lane, began).start()
             # A lane a locked screen left without a verdict goes only to a Mac whose screen reads unlocked (#293).
             screen = ["--unlocked-screen"] if lane in self.unlocked else []
@@ -2920,6 +2965,7 @@ class Worker:
             except processes.TimedOut as error:
                 loads.stopped.set()
                 if sampler: sampler.stopped.set()
+                if admission: admission.stopped.set()
                 self.unlocked.discard(lane)
                 self.ran_on = remote.dispatched(self.checkout, lane, began)
                 self.ran_where = self.mac(lane, began)
@@ -2940,6 +2986,7 @@ class Worker:
             except BaseException:
                 loads.stopped.set()
                 if sampler: sampler.stopped.set()
+                if admission: admission.stopped.set()
                 raise
             loads.stopped.set()
             ended = time.monotonic()
@@ -2961,6 +3008,7 @@ class Worker:
                                                            include_swift=remote_failure)
             self.ran_where = self.mac(lane, began)
             busy = sampler.finish() if sampler else {}
+            admitted = admission.finish() if admission else None
             self.say(f"{lane} exited {status_}{self.placed(lane, began)}")
             self.gate_ended(lane, round_name, status_, log, ended - started)
             if status_:
@@ -2977,9 +3025,9 @@ class Worker:
                 return status_, log
             if lane == budgets.GATE:
                 with contextlib.suppress(OSError):
-                    self.measured = {"seconds": round(ended - started, 1),
+                    self.measured = {**budgets.timed(ended - started, admitted, began),
                                      "parts": budgets.parts(log.read_text(errors="replace"))[:budgets.KEPT_PARTS], **busy}
-                if self.measured: self.say(f"{lane} took {budgets.minutes(self.measured['seconds'])}; {budgets.busy_words(busy)}")
+                if self.measured: self.say(f"{lane} took {budgets.time_words(self.measured)}; {budgets.busy_words(busy)}")
                 said = self.results_named(lane, ran, began)
                 if said:
                     with contextlib.suppress(OSError), log.open("a") as kept: kept.write(said + "\n")
