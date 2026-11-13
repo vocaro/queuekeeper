@@ -508,7 +508,13 @@ The `queue.noVerdictRuns` hold's reason says how many
 runs gave no verdict, on which Mac the last ran (`on this Mac (NAME)` or `on the second Mac (HOST)`, when
 its receipt or dispatch says), and why it gave none: the lane that reached its limit, the number of tests
 its log reports unmeasured with the first of them and the last screen reading queuekeeper logged
-(vocaro-engineering#185), no admission, or the host's configuration. A hold stays
+(vocaro-engineering#185), no admission, or the host's configuration. When the last run ended unmeasured
+in a lane that takes one slot of heavy-work admission and is not `"wholeHost": true`, the reason adds
+that other heavy work can join the lane after it starts, since admission looks only at a run's start, and
+points a timed part that needs a quiet Mac at `qk admit --here --exclusive` from a `self` lane
+([heavy-work admission](shared-host.md#heavy-work-admission)). On 2026-11-12 mpm's gate, admitted on a
+quiet Mac, voided its own timing five times as other work started beside it
+([#28](https://github.com/vocaro/queuekeeper/issues/28)). A hold stays
 until whoever its reason names has dealt with its cause, or found it gone, and run `qk queue resume`:
 the owner only when the last run's exit was 78, a shared host's configuration, and otherwise a session,
 as [a hold says whom it is for](#the-merge-queue) below. Nothing fails over to another route.

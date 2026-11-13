@@ -1454,12 +1454,37 @@ class NoVerdict(Fixture):
         self.assertIn(f"the lanes gave no verdict in 3 runs in a row, the last with exit 3 on this Mac "
                       f"({offload_host.mac_name()}), unmeasured, with no test its log names, the most "
                       "queue.noVerdictRuns allows (3); see ", held)
+        # The gate takes one shared slot, so the hold points a timed part at exclusive admission
+        # (vocaro/queuekeeper#28).
+        self.assertIn(". gate takes one shared slot of heavy-work admission, which other heavy work can join after it "
+                      "starts: if a timing in it needs a quiet Mac, run that part alone under `qk admit --here "
+                      "--exclusive` from a `self` lane", held)
         self.assertIn("qk queue resume", held)
         self.status.unlink()
         with patch.object(mq.Queue, "start"), patch("builtins.print"): mq.resume(self.repo)
         self.work()
         self.assertEqual(self.state(identifier)["state"], "landed")
         self.assertEqual(self.gates(), mq.NO_VERDICT_RUNS + 1)
+
+    def test_only_an_unmeasured_heavy_lane_that_shares_its_mac_is_pointed_at_exclusive_admission(self):
+        """vocaro/queuekeeper#28: admission looks only at a run's start, so heavy work admitted beside a heavy lane
+        afterwards can void a timing in it. A lane that holds its Mac, a self lane, which admits its own parts, a run
+        that ran nothing or reached its limit, and no lane at all get no such hint."""
+        worker = mq.Worker(mq.Queue(self.repo))
+        worker.lane_now = ("gate", time.time(), ())
+        lanes = lambda gate: {"lanes": {"gate": gate}}
+        self.assertIn("`qk admit --here --exclusive`", worker.shared_timing(3, lanes({"command": ["true"]})))
+        self.assertIn("gate takes one shared slot", worker.shared_timing(3, lanes({"resource": "heavy"})))
+        self.assertIn("gate takes one shared slot", worker.shared_timing(3, lanes({"resource": "light"})))
+        for gate in ({"resource": "exclusive"}, {"resource": "self"}, {"wholeHost": True}, {"resource": "nonsense"}):
+            with self.subTest(gate=gate): self.assertEqual(worker.shared_timing(3, lanes(gate)), "")
+        self.assertEqual(worker.shared_timing(3, {"lanes": {}}), "")
+        for status in (mq.resources.BUSY, mq.remote.MISCONFIGURED, mq.remote.LOST_ACCESS):
+            with self.subTest(status=status): self.assertEqual(worker.shared_timing(status, lanes({})), "")
+        worker.timed_out = "gate reached its limit: 7200s"
+        self.assertEqual(worker.shared_timing(3, lanes({})), "")
+        worker.timed_out, worker.lane_now = None, None
+        self.assertEqual(worker.shared_timing(3, lanes({})), "")
 
     def test_no_verdict_is_retried_up_to_the_bound_and_lands_when_a_retry_passes(self):
         for status in ("3", "75", "78"):

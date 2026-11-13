@@ -54,7 +54,7 @@ from . import budgets, disk, extensions, lane_results, landing_proofs, lane_prog
     resources
 from . import events, pre_push
 from .config import DOCS, DOCS_FILES, DOCS_FOLDERS, IMPLICIT_DOCS, IMPLICIT_SPELLING, SPELLING, SPELLING_LIMIT, \
-    TOOLKIT_ROOT, lane_to_run, load, parse, stays, unlocked_screen
+    TOOLKIT_ROOT, admission, lane_to_run, load, parse, stays, unlocked_screen
 
 MAIN = "refs/remotes/origin/main"
 FETCH = ["fetch", "--no-tags", "origin", f"refs/heads/main:{MAIN}"]
@@ -3709,7 +3709,8 @@ class Worker:
             # session reads, and resumes once the host has settled or the cause is gone.
             kind = OWNER if result == remote.MISCONFIGURED else SESSION
             if self.no_verdicts >= runs:
-                queue.hold(worded(kind, f"{gave}, the most queue.noVerdictRuns allows ({runs}); see {log}"))
+                queue.hold(worded(kind, f"{gave}, the most queue.noVerdictRuns allows ({runs}); see {log}"
+                                        + runner.shared_timing(result, config)))
                 return NO_VERDICT_OUTCOME
             self.say(f"no verdict (exit {result})" + (f" from {runner.ran_on}" if runner.ran_on else "")
                      + f", run {self.no_verdicts} of at most {runs}")
@@ -4013,6 +4014,24 @@ class Worker:
                     + (f"; the last reading {screens[-1].strip()}" if screens else ""))
         if result == resources.BUSY: return "no admission: the host stayed at capacity"
         return "a shared host's configuration stopped it"
+
+    def shared_timing(self, result, config):
+        """What a hold after runs that gave no verdict adds when the last ended unmeasured (exit 3) in a lane that
+        takes one slot of heavy-work admission and does not hold its Mac: admission looks only at the moment a run
+        starts, so heavy work admitted or started beside it afterwards can void a timing in it, as mpm's gate's was
+        on 2026-11-12 (vocaro/queuekeeper#28). The way to keep it off a timed part is exclusive admission of that
+        part alone (guides/shared-host.md, Heavy-work admission). Empty for any other run, or a lane that reached its
+        limit."""
+        if result != lane_results.UNMEASURED or self.timed_out or not self.lane_now: return ""
+        lane = self.lane_now[0]
+        settings = config.get("lanes", {}).get(lane)
+        try:
+            if not isinstance(settings, dict) or admission(settings) != "heavy" or settings.get("wholeHost"): return ""
+        except ValueError:
+            return ""
+        return (f". {lane} takes one shared slot of heavy-work admission, which other heavy work can join after it "
+                "starts: if a timing in it needs a quiet Mac, run that part alone under `qk admit --here --exclusive` "
+                "from a `self` lane, as guides/shared-host.md, Heavy-work admission, says")
 
     def receipt_error(self):
         """The error this run's receipt records for the lane the last gate stopped at, on one line, or None when no
