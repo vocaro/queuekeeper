@@ -1,4 +1,5 @@
 """Offline state contracts: all state reads/toggles are fakes, with the real lease record."""
+import contextvars
 from datetime import datetime, timedelta, timezone
 import os
 from pathlib import Path
@@ -530,6 +531,177 @@ class StateTests(unittest.TestCase):
         with patch.object(devices, "require_window", side_effect=devices.Refused("expired")):
             scope.__exit__(None, None, None)
         self.assertTrue(self.enabled)
+
+
+class RecoverRestorationTests(unittest.TestCase):
+    """The run's own runner may set VoiceOver back over a session's unverified restoration, and nothing else
+    (owner's decision, 2026-11-12, vocaro/EPUBLib#416)."""
+    def setUp(self):
+        idle(self)
+        settle = patch.object(state, "SETTLE", 0.3)
+        settle.start()
+        self.addCleanup(settle.stop)
+        readiness = patch.object(state, "_ready_to_enable", return_value=True, create=True)
+        readiness.start()
+        self.addCleanup(readiness.stop)
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.record = devices.Record(Path(temporary.name) / "record.json")
+        self.owner = "queuekeeper 4242 on the second Mac"
+        entry = self.record.reserve(devices.FOREGROUND, owner=self.owner, revision=0, purpose="offline test",
+            release_by=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat())
+        # As foreground.slot leaves it: this process is the run, and the original it read is recorded.
+        entry = self.record.update(devices.FOREGROUND, owner=self.owner, revision=entry["revision"], activeRun=True,
+                                   hostProcessIdentifier=os.getpid())
+        self.record.update(devices.FOREGROUND, owner=self.owner, revision=entry["revision"], voiceOverOriginal={
+            "enabled": False, **{name: entry[name] for name in ("reservedAt", "hostProcessIdentifier",
+                                                                "hostProcessStart")}})
+        self.enabled = False
+        self.actions = []
+
+    def read(self):
+        self.actions.append(("read", self.enabled))
+        return self.enabled
+
+    def toggle(self):
+        self.actions.append(("toggle", not self.enabled))
+        self.enabled = not self.enabled
+
+    def session_leaves_voiceover_on(self):
+        """A session's own preserved() scope, in a context of its own as in its own process, whose body turns
+        VoiceOver on and whose restoration cannot send the key: it marks the lease uncertain and exits."""
+        def cannot_toggle(): raise OSError("System Events refused the key")
+        def session():
+            with self.assertRaises(state.TransitionFailed):
+                with state.preserved(self.owner, record=self.record, read_state=self.read, toggle=cannot_toggle):
+                    self.enabled = True
+        contextvars.Context().run(session)
+        self.actions.clear()
+        entry = self.record.entry(devices.FOREGROUND)
+        self.assertEqual(devices.condition(entry), "uncertain")
+        self.assertIs(entry["voiceOverRestoration"]["verified"], False)
+        # What the next session meets today: every read under the lease refuses.
+        with self.assertRaisesRegex(devices.Refused, "uncertain"):
+            state.read(self.owner, record=self.record)
+        return entry
+
+    def recover(self, **options):
+        options.setdefault("read_state", self.read)
+        options.setdefault("toggle", self.toggle)
+        return state.recover_restoration(self.owner, record=self.record, by="the run's session runner", **options)
+
+    def edit(self, **fields):
+        """Change the entry's fields in place, at its revision, as no record operation would: the state a guard
+        must refuse."""
+        with self.record._exclusive():
+            value = self.record.load()
+            value["devices"][devices.FOREGROUND].update(fields)
+            self.record._replace(value)
+
+    def assert_refused_untouched(self, pattern):
+        before = self.record.entry(devices.FOREGROUND)
+        with self.assertRaisesRegex(devices.Refused, pattern):
+            self.recover()
+        self.assertEqual(self.actions, [])
+        self.assertTrue(self.enabled)
+        self.assertEqual(self.record.entry(devices.FOREGROUND), before)
+
+    def test_the_run_restores_its_recorded_original_and_its_next_session_may_start(self):
+        self.session_leaves_voiceover_on()
+        self.assertIs(self.recover(), False)
+        self.assertFalse(self.enabled)
+        self.assertEqual(self.toggles(), [False])
+        entry = self.record.entry(devices.FOREGROUND)
+        self.assertEqual(devices.condition(entry), "active")
+        restoration = entry["voiceOverRestoration"]
+        self.assertEqual((restoration["verified"], restoration["recoveredBy"], restoration["original"]),
+                         (True, "the run's session runner", False))
+        self.assertIsNotNone(devices.moment(restoration["at"]))
+        self.assertIn("not verified", restoration["reason"])
+        # The next session reads and changes VoiceOver under the same lease.
+        self.assertIs(state.read(self.owner, record=self.record), False)
+        # And the run's end releases as usual.
+        entry = self.record.update(devices.FOREGROUND, owner=self.owner, revision=entry["revision"], activeRun=False)
+        self.record.release(devices.FOREGROUND, owner=self.owner, revision=entry["revision"], outcome="ended",
+                            restoration="verified", frontmost="restored")
+
+    def toggles(self):
+        return [value for action, value in self.actions if action == "toggle"]
+
+    def test_a_lease_whose_identity_changed_is_refused(self):
+        self.session_leaves_voiceover_on()
+        # The original was read under another reservation of the same owner name.
+        self.edit(reservedAt=(datetime.now(timezone.utc) - timedelta(hours=2)).isoformat())
+        self.assert_refused_untouched("recorded under another lease")
+
+    def test_a_lease_replaced_during_restoration_stops_before_any_further_key(self):
+        self.session_leaves_voiceover_on()
+        def replaced_then_toggle():
+            self.edit(reservedAt=datetime.now(timezone.utc).isoformat())
+            self.toggle()
+        with self.assertRaisesRegex(devices.Refused, "lease changed"):
+            self.recover(toggle=replaced_then_toggle)
+        # The key already sent stands; nothing is read or sent under the replaced lease.
+        self.assertEqual(self.toggles(), [False])
+        self.assertEqual(devices.condition(self.record.entry(devices.FOREGROUND)), "uncertain")
+
+    def test_a_run_whose_host_process_ended_is_refused(self):
+        entry = self.session_leaves_voiceover_on()
+        # The run's process ended: its PID now has another start, though the lease and its original are the same.
+        with patch.object(devices, "process_start", return_value="a start of another process"):
+            self.assert_refused_untouched("no longer alive")
+        # A run no longer marked active is no run to recover for.
+        self.edit(activeRun=False)
+        self.assert_refused_untouched("no longer alive")
+
+    def test_any_other_uncertainty_is_refused(self):
+        self.session_leaves_voiceover_on()
+        entry = self.record.entry(devices.FOREGROUND)
+        # Written after the marker: a run whose termination is unconfirmed.
+        self.record.update(devices.FOREGROUND, owner=self.owner, revision=entry["revision"], uncertain=True,
+                           run="unconfirmed process termination")
+        self.assert_refused_untouched("changed after")
+        self.edit(uncertainReason="imported records hold this device for different runs")
+        self.assert_refused_untouched("not only a VoiceOver restoration")
+
+    def test_uncertainty_without_a_restoration_marker_or_an_original_is_refused(self):
+        self.enabled = True
+        entry = self.record.entry(devices.FOREGROUND)
+        self.record.update(devices.FOREGROUND, owner=self.owner, revision=entry["revision"], uncertain=True)
+        self.assert_refused_untouched("not an unverified VoiceOver restoration")
+        self.setUp()
+        self.session_leaves_voiceover_on()
+        self.edit(voiceOverOriginal=None)
+        self.assert_refused_untouched("no original")
+
+    def test_another_owner_is_refused(self):
+        self.session_leaves_voiceover_on()
+        with self.assertRaisesRegex(devices.Refused, "not held by"):
+            state.recover_restoration("another run", record=self.record, read_state=self.read, toggle=self.toggle)
+        self.assertEqual(self.actions, [])
+
+    def test_a_restoration_that_fails_stays_uncertain_and_is_not_tried_again(self):
+        self.session_leaves_voiceover_on()
+        def fails(): raise OSError("System Events refused the key")
+        with self.assertRaisesRegex(state.TransitionFailed, "stays uncertain"):
+            self.recover(toggle=fails)
+        self.assertTrue(self.enabled)
+        entry = self.record.entry(devices.FOREGROUND)
+        self.assertEqual(devices.condition(entry), "uncertain")
+        self.assertIn("refused the key", entry["voiceOverRestoration"]["recoveryFailed"]["reason"])
+        self.actions.clear()
+        self.assert_refused_untouched("already failed")
+
+    def test_a_restoration_that_does_not_hold_is_not_verified(self):
+        # A late key turns VoiceOver on again during every settle window.
+        self.session_leaves_voiceover_on()
+        def late():
+            self.actions.append(("read", self.enabled))
+            value, self.enabled = self.enabled, True
+            return value
+        with self.assertRaises(state.TransitionFailed):
+            self.recover(read_state=late)
+        self.assertEqual(devices.condition(self.record.entry(devices.FOREGROUND)), "uncertain")
 
 
 if __name__ == "__main__": unittest.main()
