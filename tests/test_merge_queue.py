@@ -1201,9 +1201,12 @@ class Doctor(UnittestGate):
         (finding,) = found["findings"]
         self.assertEqual(finding["signal"], "held back on a Mac with spare CPU")
         diagnosis = finding["diagnosis"]
-        # What it waits behind, in the waiter's own words, and how idle the Mac is.
-        self.assertIn(f"the main gate's gate has waited 45m00s for admission on this Mac: {self.REFUSAL}, while this "
-                      "Mac is 25% busy, under its 75% limit", diagnosis)
+        # What it waits behind, in the waiter's own words, and how idle the Mac is. The wait is read against the clock
+        # at the doctor's look, so its seconds are whatever the run took to get there: only its minutes are fixed
+        # (vocaro/queuekeeper#124).
+        self.assertIn("the main gate's gate has waited 45m", diagnosis)
+        self.assertIn(f"s for admission on this Mac: {self.REFUSAL}, while this Mac is 25% busy, under its 75% limit",
+                      diagnosis)
         # Each holder: command, PID, hold time, CPU use and where its work comes from.
         self.assertIn("python3 scripts/qk run quicklook-ipad (PID 4242, held 5h00m, CPU 3% of one core, with what it "
                       "started, from repository BreezEPUB, branch quicklook, worktree "
