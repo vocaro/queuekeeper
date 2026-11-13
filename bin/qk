@@ -1,10 +1,25 @@
 #!/usr/bin/env python3
 from pathlib import Path
+import os
 import sys
 
 if sys.version_info < (3, 14):
+    # Bare runners use this command in projects without scripts/qk. Like that launcher,
+    # find a supported interpreter later on PATH before loading the package.
+    import subprocess
+    seen = {os.path.realpath(sys.executable)}
+    for folder in [] if "QUEUEKEEPER_LAUNCHER_PYTHON" in os.environ else os.environ.get("PATH", "").split(os.pathsep):
+        other = os.path.join(folder, "python3")
+        if not folder or os.path.realpath(other) in seen or not os.access(other, os.X_OK): continue
+        seen.add(os.path.realpath(other))
+        try: new = subprocess.call([other, "-c", "import sys; sys.exit(sys.version_info < (3, 14))"], timeout=30) == 0
+        except (OSError, subprocess.SubprocessError): new = False
+        if new:
+            os.environ["QUEUEKEEPER_LAUNCHER_PYTHON"] = other
+            os.execv(other, [other, __file__, *sys.argv[1:]])
     print(f"queuekeeper: needs Python 3.14 or newer, and {sys.executable} is {sys.version.split()[0]}", file=sys.stderr)
     raise SystemExit(2)
+os.environ.pop("QUEUEKEEPER_LAUNCHER_PYTHON", None)
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 from queuekeeper.cli import main

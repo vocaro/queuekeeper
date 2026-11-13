@@ -1,4 +1,4 @@
-"""The project launcher, scripts/qk, started by an interpreter older than Queuekeeper runs under."""
+"""The project launcher and command started by an interpreter older than Queuekeeper runs under."""
 import os
 from pathlib import Path
 import shutil
@@ -23,9 +23,11 @@ def older():
 
 @unittest.skipUnless(older(), f"{OLD} is not older than Python 3.14")
 class OlderInterpreterTests(unittest.TestCase):
+    launcher = "scripts/qk"
+
     def run_launcher(self, path):
         environment = {name: value for name, value in os.environ.items() if name != "QUEUEKEEPER_LAUNCHER_PYTHON"}
-        return subprocess.run([OLD, str(ROOT / "scripts/qk"), "--version"], env={**environment, "PATH": path},
+        return subprocess.run([OLD, str(ROOT / self.launcher), "--version"], env={**environment, "PATH": path},
                               capture_output=True, text=True, timeout=stretched(60))
 
     def test_it_hands_over_to_the_first_python3_on_the_path_that_is_new_enough(self):
@@ -39,6 +41,11 @@ class OlderInterpreterTests(unittest.TestCase):
         result = self.run_launcher("/usr/bin:/bin")
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
         self.assertEqual(result.stderr.count("needs Python 3.14 or newer"), 1, result.stderr)
+
+
+class CommandOlderInterpreterTests(OlderInterpreterTests):
+    """The command used by bare runners in projects without scripts/qk has the same interpreter contract."""
+    launcher = "bin/qk"
 
 
 if __name__ == "__main__":
