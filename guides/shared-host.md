@@ -2380,6 +2380,12 @@ The launcher:
   outcome in the entry's `run` once the command and its observed descendants have ended: `exit N`,
   which is also its status, a timeout (status 124), a stop (the launcher then ends by the same
   signal) or a command that did not start;
+- treats a command that exits 0 as unmeasured, status 3, when its output reports a test count and
+  no test ran, every one counted having skipped or none counted at all. On 2026-11-11 a
+  `test-without-building` run whose `-only-testing:` named a Swift Testing suite printed
+  `Executed 0 tests` and `** TEST EXECUTE SUCCEEDED **`, and exited 0 having measured nothing
+  (vocaro/queuekeeper#100). `--no-tests` keeps status 0 for a run meant to select none. A command
+  that prints no count, such as an install, keeps its status;
 - leaves a run whose end is unconfirmed active and the entry uncertain, for attended recovery;
 - updates only its own entry, naming the revision its previous change returned, so an ownership
   change or a concurrent change is refused;

@@ -1906,6 +1906,60 @@ class NotificationWatchTests(unittest.TestCase):
         self.assertFalse(any(alive(int(pid)) for pid in guards))
 
 
+# A device run of a prepared .xctestrun whose -only-testing: named a Swift Testing suite (2026-11-11).
+NO_TESTS = ("Test Suite 'Selected tests' passed at 2026-11-11 08:33:58.699.\n"
+            "\t Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds\n"
+            "** TEST EXECUTE SUCCEEDED **\n")
+SOME_TESTS = NO_TESTS.replace("Executed 0 tests", "Executed 3 tests")
+
+
+class EmptyRunTests(unittest.TestCase):
+    """A device run that exits 0 having run no test measures nothing (vocaro/queuekeeper#100)."""
+
+    setUp = NotificationWatchTests.setUp
+    cli = NotificationWatchTests.cli
+
+    def run_printing(self, *texts, status=0, options=(), watches=None):
+        """`devices run` of a command that prints the next of texts on each run and exits with status."""
+        script = (f"import os; p = {str(self.runs)!r}; n = len(open(p).read()) if os.path.exists(p) else 0; "
+                  f"open(p, 'a').write('x'); print({list(texts)!r}[n], end=''); raise SystemExit({status})")
+        with patch.object(device_notifications, "watch", watches or Watches()):
+            return self.cli("run", "iPad", "--owner", "session-a", *options, "--", sys.executable, "-c", script)
+
+    def test_a_run_that_counts_no_executed_test_is_unmeasured_and_still_shows_its_output(self):
+        code, output, error = self.run_printing(NO_TESTS)
+        self.assertEqual(code, devices.UNMEASURED)
+        self.assertEqual(output, NO_TESTS)
+        self.assertIn("devices: unmeasured: it reported 0 tests executed, so its selection matched no test", error)
+        self.assertNotEqual(devices.condition(self.record.entry("iPad")), "released")
+
+    def test_a_run_whose_every_test_skipped_is_unmeasured(self):
+        skipped = SOME_TESTS.replace("with 0 failures", "with 3 tests skipped and 0 failures")
+        code, _output, error = self.run_printing(skipped)
+        self.assertEqual(code, devices.UNMEASURED)
+        self.assertIn("it reported 3 tests executed, 3 of them skipped", error)
+
+    def test_a_run_that_ran_tests_or_counts_none_keeps_its_status(self):
+        self.assertEqual(self.run_printing(SOME_TESTS)[0], 0)
+        self.runs.unlink()
+        self.assertEqual(self.run_printing("installed\n")[0], 0)
+        self.runs.unlink()
+        # A failure stays a failure.
+        self.assertEqual(self.run_printing(NO_TESTS, status=1)[0], 1)
+
+    def test_no_tests_lets_a_run_meant_to_select_none_pass(self):
+        code, _output, error = self.run_printing(NO_TESTS, options=("--no-tests",))
+        self.assertEqual(code, 0)
+        self.assertNotIn("unmeasured", error)
+
+    def test_a_rerun_is_judged_by_its_own_output(self):
+        code, _output, _error = self.run_printing(NO_TESTS, SOME_TESTS, watches=Watches(BANNER))
+        self.assertEqual(code, 0)
+        self.runs.unlink()
+        code, _output, _error = self.run_printing(SOME_TESTS, NO_TESTS, watches=Watches(BANNER))
+        self.assertEqual(code, devices.UNMEASURED)
+
+
 class ProcessStartTests(unittest.TestCase):
     """process_start reads a start as ps prints it, and from the kernel where ps cannot be started."""
 

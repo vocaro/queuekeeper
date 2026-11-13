@@ -42,7 +42,9 @@ expected release is its window, and a bounded run stops before it.
 A bounded run (`devices run KEY -- COMMAND`, BoundedRun) runs one command on physical devices the
 session holds, refusing a command that names any other device, and
 stops it before the reservation ends, keeping time for its termination and the session's
-restoration. It records the run in the entry and never releases the device. `qk remote --device`
+restoration. It records the run in the entry and never releases the device. A run that exits 0 but whose
+output counts no test that ran, such as an xcodebuild selection that matched none, is unmeasured unless
+`--no-tests` says it was meant to select none (vocaro/queuekeeper#100). `qk remote --device`
 bounds a run on the second Mac the same way, and there a bounded run takes its reservation from the lease.
 
 `devices take KEY` takes a paired device in turn: it joins the device's queue, waits while another
@@ -60,6 +62,7 @@ The Mac reads no device's Focus, so the silencing is never confirmed, and a run 
 reached as a banner is unmeasured and run once more; so does `qk remote --device`, from the sending Mac (#192).
 """
 import argparse
+import codecs
 from datetime import datetime, timedelta, timezone
 import glob
 import hashlib
@@ -69,6 +72,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import threading
 import time
 
 from . import device_notifications
@@ -77,7 +81,7 @@ from ..mac_desktop import reservations
 from ..mac_desktop.reservations import ABOUT, DEFERRED, FOREGROUND, FRONTMOST, MANAGED, OVERRIDE, OWNER, POLL, QUEUES, SCHEMA, \
     Refused, Stale, _owned, approval_ended, approval_refusal, condition, default_owner, default_path, moment, now, \
     record_path, require_foreground, require_window, restart_emptied, running, waiting, window_ended  # noqa: F401
-from ..lane_results import UNMEASURED
+from ..lane_results import UNMEASURED, counted
 from ..resources import process_start
 
 # Earlier ad hoc records. Status names one whose current bytes were never imported.
@@ -707,18 +711,76 @@ def keyed(key):
     return [key] if isinstance(key, str) else list(dict.fromkeys(key))
 
 
-def watched(run, key, command, extra, cwd=None, env=None):
+class Transcript:
+    """A command's standard output, shown on this process's standard output as it comes and kept, so that the run can read the
+    tests it reports (lane_results.counted). Popen writes to it by its descriptor."""
+
+    def __enter__(self):
+        self.read, self.write = os.pipe()
+        self.chunks = []
+        self.thread = threading.Thread(target=self._copy, daemon=True)
+        self.thread.start()
+        return self
+
+    def fileno(self):
+        return self.write
+
+    def _copy(self):
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        with os.fdopen(self.read, "rb") as source:
+            for chunk in iter(lambda: source.read1(65536), b""):
+                text = decoder.decode(chunk)
+                self.chunks.append(text)
+                sys.stdout.write(text)
+                sys.stdout.flush()
+        text = decoder.decode(b"", final=True)
+        if text:
+            self.chunks.append(text)
+            sys.stdout.write(text)
+
+    def __exit__(self, *_):
+        # The command and its observed descendants have ended, so closing this copy ends the output.
+        os.close(self.write)
+        self.thread.join(timeout=10)
+
+    @property
+    def text(self):
+        return "".join(self.chunks)
+
+
+def watched(run, key, command, extra, cwd=None, env=None, kept=None):
     """Run command under run while watching key's device log, or each of several keys' devices' logs, for a
     notification presented as a banner; its exit status and what the watch saw, which the entry's run records
-    (device_notifications.Watch, Together)."""
+    (device_notifications.Watch, Together). With kept, a list, the command's output is shown through a
+    Transcript and its text appended to kept."""
     keys = keyed(key)
     watches = {each: device_notifications.watch(run.devices[each]) for each in keys}
     watch = watches[keys[0]] if len(keys) == 1 else device_notifications.Together(watches)
-    code = run.execute(command, run=extra, watch=watch, cwd=cwd, env=env)
+    if kept is None:
+        code = run.execute(command, run=extra, watch=watch, cwd=cwd, env=env)
+    else:
+        transcript = Transcript()
+        try:
+            with transcript:
+                code = run.execute(command, run=extra, watch=watch, cwd=cwd, env=env, stdout=transcript)
+        finally:
+            kept.append(transcript.text)
     return code, run.run["notificationWatch"]
 
 
-def watched_run(run, key, command, extra, said, cwd=None, env=None):
+def no_tests(text):
+    """Why a run whose output is text measured nothing though it may exit 0: it reports a test count, and every
+    test it counts skipped or none ran (lane_results.counted, guides/parallel-tests.md). None when it ran a test or
+    reports no count, as a command that runs no tests does."""
+    found = counted(text)
+    if found is None or found[0] > found[1]:
+        return None
+    ran, skipped = found
+    return f"it reported {ran} tests executed, {skipped} of them skipped" if skipped else \
+        f"it reported {ran} tests executed"
+
+
+def watched_run(run, key, command, extra, said, cwd=None, env=None, kept=None):
     """Run command under run, and once more when a notification was presented on key's device during it (#144);
     key may be several keys, whose devices are all watched (remote.Lease).
 
@@ -726,7 +788,7 @@ def watched_run(run, key, command, extra, said, cwd=None, env=None):
     rerun's status is the run's; a rerun that one reaches too, or no time left for one, raises Unmeasured. A run
     whose device log could not be read is said to be unwatched and keeps its status."""
     keys = keyed(key)
-    code, seen = watched(run, keys, command, extra, cwd, env)
+    code, seen = watched(run, keys, command, extra, cwd, env, kept)
     # What the session is told names every device watched.
     who = " and ".join(keys)
     if not seen["presented"]:
@@ -742,7 +804,7 @@ def watched_run(run, key, command, extra, said, cwd=None, env=None):
         said(f"devices: unmeasured, not run again: {error}")
         raise Unmeasured() from None
     first = {name: value for name, value in run.run.items() if name not in ("boundSeconds", "stopsAt")}
-    code, seen = watched(run, keys, command, {**extra, "rerunOf": {**first, "measured": False}}, cwd, env)
+    code, seen = watched(run, keys, command, {**extra, "rerunOf": {**first, "measured": False}}, cwd, env, kept)
     if seen["presented"]:
         said(f"devices: unmeasured again: {device_notifications.presented(seen)}. Not run a third time: ask the "
              f"owner to check Do Not Disturb on {who} ({device_notifications.GUIDE})")
@@ -1020,9 +1082,9 @@ def main(argv=None):
             action.add_argument("--by", required=True, help="who turned it on: the owner")
             action.add_argument("--at", required=True, help="when he said it was on, ISO 8601 with a time zone")
     bounded = commands.add_parser("run", usage="%(prog)s [-h] [--owner SESSION] [--revision N] [--limit SECONDS] "
-                                  "[--restoration SECONDS] key -- COMMAND ...", help="run COMMAND on KEY's physical "
-                                  "device, held by the session, and stop it before the "
-                                  "reservation ends; it records the run in the entry and never releases the device")
+                                  "[--restoration SECONDS] [--no-tests] key -- COMMAND ...",
+                                  help="run COMMAND on KEY's physical device, held by the session, and stop it before "
+                                  "the reservation ends; it records the run in the entry and never releases the device")
     bounded.add_argument("key")
     bounded.add_argument("--owner", default=default_owner(), help=f"the session holding KEY (default: {OWNER}, "
                          "else the agent session)")
@@ -1032,6 +1094,8 @@ def main(argv=None):
     bounded.add_argument("--restoration", type=float, metavar="SECONDS", default=RESTORATION,
                          help=f"time kept before the reservation ends for the session's restoration, after "
                          f"{TERMINATION}s for the run's termination (default {RESTORATION})")
+    bounded.add_argument("--no-tests", action="store_true", help="let COMMAND exit 0 though it reports a test count "
+                         "and ran no test; without it, such a run is unmeasured (exit 3)")
     argv = sys.argv[1:] if argv is None else list(argv)
     # What follows run's -- is the command, whatever its options.
     command = None
@@ -1135,10 +1199,11 @@ def main(argv=None):
                          f"reach this run's transcript and move VoiceOver's cursor; discard a session that picks one "
                          f"up. Run `devices notifications silence {args.key}` first, or "
                          f"{device_notifications.ask(args.key)}")
+            kept = []
             with processes.forwarding_signals():
                 try:
                     code = watched_run(run, args.key, command, {"notifications": notified} if notified else {},
-                                       said)
+                                       said, kept=kept)
                 except processes.TimedOut as error:
                     print(f"devices: {error}; {args.key} stays reserved", file=sys.stderr)
                     return TIMED_OUT
@@ -1146,6 +1211,13 @@ def main(argv=None):
                     print(f"devices: the run is unmeasured; {args.key} stays reserved", file=sys.stderr)
                     return UNMEASURED
             print(f"devices: {command[0]} exited with status {code}; {args.key} stays reserved", file=sys.stderr)
+            # A test run whose selection matched no test passes nothing (vocaro/queuekeeper#100).
+            empty = no_tests(kept[-1]) if code == 0 and kept and not args.no_tests else None
+            if empty:
+                print(f"devices: unmeasured: {empty}, so its selection matched no test and its status 0 measures "
+                      f"nothing; check the selection, such as -only-testing:, or pass --no-tests to a run meant to "
+                      f"select none", file=sys.stderr)
+                return UNMEASURED
             # A command a signal ended has a negative status; a shell reports it as 128 plus the signal.
             return 128 - code if code < 0 else code
         return 0
