@@ -39,7 +39,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 from queuekeeper import cli, offload_host, remote, resources, shims
 from queuekeeper import apple, mac_desktop
 from queuekeeper.apple import app_registrations, device_notifications, devices
-from queuekeeper.mac_desktop import crash_alerts, notification_center
+from queuekeeper.mac_desktop import crash_alerts, keychain, notification_center
 
 # The suite runs with the Apple extension switched on, as the command does for every project, after the desktop
 # extension it requires.
@@ -123,6 +123,9 @@ os.environ.pop("QUEUEKEEPER_LANE_PROGRESS_RUN", None)
 for variable in (cli.parallel.RESULTS_VARIABLE, shims.ROOT_VARIABLE, cli.SELF_LANE, app_registrations.RUN,
                  devices.WINDOW, devices.OWNER, "QUEUEKEEPER_ROOT"):
     os.environ.pop(variable, None)
+# Nor does a dispatch a test sends count the keychain as unlocked because the dispatch that runs the suite on the second
+# Mac unlocked the real one: it would unlock nothing, and a test of a kept password that cannot unlock would pass the run.
+os.environ.pop(keychain.UNLOCKED, None)
 resources.GATE_LOCK = offload_host.GATE_LOCK = GATE
 # Nor does any reach the host's crash-report setting or its screen's alerts (#118): a foreground run a test
 # makes reads DialogType unset and no alert, and changes nothing. A test of either replaces these again.
