@@ -8294,12 +8294,16 @@ class GateResultsNamed(Fixture):
         self.assertTrue(Path(entry["gate"]["log"]).is_file())
         self.assertNotIn(self.DETAIL, waited)
 
-    def test_a_passing_second_mac_gate_with_no_results_says_it_kept_none(self):
-        # The negative control: no files came back, so the line claims none, and the entry still lands.
+    def test_a_passing_second_mac_gate_with_no_results_says_its_command_wrote_none(self):
+        # The negative control: no files came back, so the line claims none, and the entry still lands. A lane whose
+        # command writes none, as Queuekeeper's own `qk unittest` gate, gets no results/ back at all, and the line
+        # says the command wrote none rather than that the second Mac failed to send them (#38), naming no folder
+        # that is not there.
         entry, log, waited, _ = self.landed(self.second_mac())
         line = entry["gate"]["results"]
-        self.assertIn("gate per-test results: none: the second Mac (fake-mac) sent none back to ", line)
-        self.assertNotIn("sent back by", line)
+        self.assertEqual(line, "gate per-test results: none: its command wrote none in its results/ on the second Mac "
+                               "(fake-mac), which sends back all it writes there")
+        self.assertNotIn("sent none back", line)
         self.assertIn(f"{line}\n", log)
         self.assert_waited_ends(waited, entry)
 

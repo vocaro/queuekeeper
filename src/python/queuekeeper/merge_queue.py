@@ -2910,13 +2910,16 @@ class Worker:
     def results_named(self, lane, ran, began):
         """The line that says where a passing lane's per-test results are, for its log and `qk land --wait`, naming
         them and copying none (vocaro-engineering#266); ran is the lane's dispatch, or None when it ran here. Results
-        the second Mac wrote came back with its dispatch, so they are on this Mac; a dispatch that sent none back is
-        said to have, and a lane run here that wrote none says nothing, as before."""
+        the second Mac wrote came back with its dispatch, so they are on this Mac. The second Mac sends back all that
+        the lane's command writes in its results/, so a dispatch with none is a command that wrote none there, such as
+        a `qk unittest` lane's, and is said to be that, not a failure to send them (#38); a lane run here that wrote
+        none says nothing, as before."""
         if ran is not None:
             folder = ran / remote.RESULTS
             kept = result_files(folder)
             if not kept:
-                return f"{lane} per-test results: none: the second Mac ({self.ran_on}) sent none back to {folder}, on this Mac"
+                return (f"{lane} per-test results: none: its command wrote none in its results/ on the second Mac "
+                        f"({self.ran_on}), which sends back all it writes there")
             return (f"{lane} per-test results: {kept} in {folder}, on this Mac, sent back by the second Mac ({self.ran_on}); "
                     f"queuekeeper keeps the newest {remote.DISPATCHES_KEPT} dispatches of a lane")
         folder = self.checkout / ".build/queuekeeper" / lane / "results"

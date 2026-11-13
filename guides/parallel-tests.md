@@ -161,7 +161,10 @@ the outer lane's dispatch. A whole lane's `results/` is kept by commit beside it
 `.git/queuekeeper/remote/COMMIT/LANE.results/`, which the receipt's `keptResults` names,
 for a run on either Mac; a later run of the lane at that commit replaces it, and one that wrote
 more than 64 MiB keeps it only in its dispatch. `qk remote passed LANE` names the folder
-(vocaro-engineering#218). `qk disk` reclaims these folders by their rule, and never the receipts
+(vocaro-engineering#218). A passing landing gate's log and `qk land --wait` name where its results
+are and how many files they hold. A gate on the second Mac whose command writes nothing there, such
+as a `qk unittest` lane, says that its command wrote none, since the second Mac sends back all it
+writes there (#38). `qk disk` reclaims these folders by their rule, and never the receipts
 ([reclaiming disk space](https://github.com/vocaro/vocaro-engineering/blob/main/guides/shared-host.md#reclaiming-disk-space)).
 
 Per-test times come back that way. `qk simulator-tests` keeps, for each test run, a shard or a
