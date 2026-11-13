@@ -116,14 +116,16 @@ class HoldersTests(Namespace):
         self.assertEqual((holder["slots"], holder["model"]), ([0, 1, 2], True))
         self.assertEqual((reading["model"], reading["unattributed"]), ({"holder": "x"}, []))
 
-    def test_dead_uncertain_and_unnamed_entries_are_stranded_not_free(self):
+    def test_dead_entries_are_reclaimable_and_uncertain_ones_whose_owner_runs_stranded_not_free(self):
         self.holders({"dead": self.owner("Gone", start="Thu Jan  1 00:00:00 1970"),
                       "unsure": self.owner("Unsure", uncertain=True), "old": self.owner("Old")},
                      slots=[(0, "dead"), (1, "unsure"), (2, "released")])
         reading = self.read()
         found = {holder["label"]: holder for holder in reading["holders"]}
-        self.assertEqual((found["Gone"]["process"], found["Gone"]["stranded"]), ("ended", True))
-        self.assertTrue(found["Unsure"]["stranded"])
+        # Admission frees a holder whose process has ended at its next attempt (vocaro/queuekeeper#23).
+        self.assertEqual((found["Gone"]["process"], found["Gone"]["stranded"], found["Gone"]["reclaimable"]),
+                         ("ended", False, True))
+        self.assertEqual((found["Unsure"]["stranded"], found["Unsure"]["reclaimable"]), (True, False))
         # An entry no slot file names, as an older toolkit's may be, holds a slot no reading can place.
         self.assertIsNone(found["Old"]["slots"])
         self.assertEqual(reading["unattributed"], [2])
@@ -140,8 +142,8 @@ class HoldersTests(Namespace):
         (self.directory / resources.QUEUE).unlink()
         with patch.object(offload_host, "census", return_value=None):
             reading = self.read()
-        self.assertEqual((reading["state"], reading["holders"][0]["process"], reading["holders"][0]["stranded"]),
-                         ("partial", "unknown", False))
+        self.assertEqual((reading["state"], reading["holders"][0]["process"], reading["holders"][0]["stranded"],
+                          reading["holders"][0]["reclaimable"]), ("partial", "unknown", False, True))
         self.assertIn("neither ps nor the kernel could say", reading["reasons"][0])
 
     def test_reading_changes_nothing(self):
@@ -219,7 +221,8 @@ class HoldersTests(Namespace):
 
 class FailedCensusTests(Namespace):
     """A ps that fails or times out is retried PID by PID with the kernel, so that it hides no holder whose state the
-    kernel can give, and a holder whose start no one can read is unknown, never freed (vocaro/queuekeeper#23)."""
+    kernel can give, and a holder whose start no one can read is unknown; admission frees both an ended and an unknown
+    holder at its next attempt (vocaro/queuekeeper#23)."""
 
     def setUp(self):
         super().setUp()
@@ -245,10 +248,10 @@ class FailedCensusTests(Namespace):
                 reading = self.read()
             found = {holder["label"]: holder for holder in reading["holders"]}
             self.assertEqual((reading["state"], reading["reasons"]), ("observed", []))
-            self.assertEqual((found["Live"]["process"], found["Live"]["stranded"]), ("running", False))
-            # A PID gone and a PID that now runs another process are both ended, so stranded as admission counts them.
-            self.assertEqual((found["Gone"]["process"], found["Gone"]["stranded"]), ("ended", True))
-            self.assertEqual((found["Reused"]["process"], found["Reused"]["stranded"]), ("ended", True))
+            self.assertEqual((found["Live"]["process"], found["Live"]["reclaimable"]), ("running", False))
+            # A PID gone and a PID that now runs another process are both ended, which admission frees.
+            self.assertEqual((found["Gone"]["process"], found["Gone"]["reclaimable"]), ("ended", True))
+            self.assertEqual((found["Reused"]["process"], found["Reused"]["reclaimable"]), ("ended", True))
 
     def test_a_live_pid_whose_start_cannot_be_read_is_unknown_alone(self):
         real = offload_host.kernel_start
@@ -259,10 +262,14 @@ class FailedCensusTests(Namespace):
                 patch.object(offload_host, "kernel_start", side_effect=kernel):
             reading = self.read()
         found = {holder["label"]: holder for holder in reading["holders"]}
-        # Its PID runs, so the holder may be alive and slow to confirm: it is neither ended nor stranded.
-        self.assertEqual((found["Live"]["process"], found["Live"]["stranded"]), ("unknown", False))
-        self.assertEqual((found["Reused"]["process"], found["Reused"]["stranded"]), ("unknown", False))
-        self.assertEqual((found["Gone"]["process"], found["Gone"]["stranded"]), ("ended", True))
+        # Its PID runs, so the holder may be alive and slow to confirm: it is unknown, not ended, and admission frees
+        # it all the same, since uncertainty about a holder never keeps a slot held.
+        self.assertEqual((found["Live"]["process"], found["Live"]["reclaimable"]), ("unknown", True))
+        self.assertEqual((found["Reused"]["process"], found["Reused"]["reclaimable"]), ("unknown", True))
+        self.assertEqual((found["Gone"]["process"], found["Gone"]["reclaimable"]), ("ended", True))
+        lines = resources.now_lines({"hosts": [{"name": "this Mac", **reading}]})
+        self.assertTrue(any(line.startswith("    Live: ") and line.endswith(
+            "its process could not be checked: admission frees its slots at its next attempt") for line in lines), lines)
         self.assertEqual(reading["state"], "partial")
         self.assertIn(f"the kernel could not say whether PID {os.getpid()} still runs", reading["reasons"][0])
         # When no PID can be placed at all, the whole census is unknown, as before.
@@ -282,9 +289,83 @@ class FailedCensusTests(Namespace):
         with patch.object(resources.subprocess, "run", side_effect=run):
             gone = self.owner("Gone", pid=self.gone)
             self.assertEqual((resources.ended(live), resources.ended(reused), resources.ended(gone)), (False, True, True))
-            # Neither ps nor the kernel can say: the owner is left running, so that no live owner's entry is taken.
+            # Neither ps nor the kernel can say: attended recovery leaves the owner running; admission frees it
+            # (liveness reads it unknown, ReclamationTests in test_core).
             with patch.object(resources, "kernel_start", side_effect=OSError("no")):
                 self.assertFalse(resources.ended(reused))
+                self.assertEqual(resources.liveness(reused)[0], "unknown")
+
+
+class ReclaimedTests(Namespace):
+    """`qk admissions now` and `qk queue doctor` show a holder admission reclaimed as reclaimed, with when and why, and
+    its slot as free, never as held (vocaro/queuekeeper#23)."""
+
+    def reclaimed(self, minutes=2, **changes):
+        """A `reclaimed` line in the namespace's admission log, as resources.free_holder writes it, minutes ago."""
+        when = datetime.fromtimestamp(time.time() - minutes * 60, timezone.utc).isoformat(timespec="seconds")
+        line = {"time": when, "event": "reclaimed", "identity": "gone", "pid": 18597, "kind": "heavy",
+                "label": "EPUBLib bash -c TEST_FILE=Tests/EPUBViewingTests", "uncertain": False, "process": "ended",
+                "why": "its PID 18597 is gone", "slots": [1], "model": False, "replaced": [],
+                "signaled": [{"pid": 18610, "start": "Thu Nov 12 15:46:00 2026", "signals": ["SIGTERM", "SIGKILL"]}],
+                "survived": [], **changes}
+        self.directory.mkdir(parents=True, exist_ok=True)
+        with (self.directory / resources.LOG).open("a") as stream: stream.write(json.dumps(line) + "\n")
+
+    def test_a_reclaimed_holder_is_shown_reclaimed_with_when_and_why_and_its_slot_free(self):
+        self.holders({"a": self.owner("Alpha")}, slots=[(0, "a"), (1, "gone")])
+        # Too old to show, and a line of another kind, before and after it in the log: neither is listed.
+        self.reclaimed(minutes=120, identity="older")
+        self.reclaimed()
+        with (self.directory / resources.LOG).open("a") as stream:
+            stream.write(json.dumps({"time": datetime.now(timezone.utc).isoformat(), "event": "admitted",
+                                     "identity": "a"}) + "\n")
+        before = tree(self.temp.name)
+        reading = self.read()
+        self.assertEqual(tree(self.temp.name), before)
+        self.assertEqual(reading["state"], "observed")
+        (item,) = reading["reclaimed"]
+        self.assertEqual((item["identity"], item["pid"], item["slots"], item["process"], item["why"]),
+                         ("gone", 18597, [1], "ended", "its PID 18597 is gone"))
+        self.assertAlmostEqual(item["reclaimedSeconds"], 120, delta=5)
+        self.assertEqual(item["signaled"], [{"pid": 18610, "signals": ["SIGTERM", "SIGKILL"]}])
+        # Its slot is free and says so: neither held nor unattributed.
+        slot = {each["slot"]: each for each in reading["slots"]}[1]
+        self.assertEqual((slot["holder"], slot["reclaimed"]), (None, "gone"))
+        self.assertEqual(reading["unattributed"], [])
+        self.assertEqual([holder["label"] for holder in reading["holders"]], ["Alpha"])
+        lines = resources.now_lines({"hosts": [{"name": "this Mac", **reading}]})
+        self.assertIn("  slots: 1 of 2 guaranteed and 0 of 1 beyond them held; the model free", lines)
+        self.assertIn("  reclaimed:", lines)
+        (said,) = [line for line in lines if line.startswith("    EPUBLib bash")]
+        self.assertRegex(said, r"^    EPUBLib bash -c TEST_FILE=Tests/EPUBViewingTests: heavy, slot 1 freed, PID 18597, "
+                               r"reclaimed 2m0\ds ago, at \d\d:\d\d:\d\d: its process had ended \(its PID 18597 is gone\); "
+                               r"signaled PID 18610 \(SIGTERM then SIGKILL\)$")
+        # The JSON says the same.
+        output = StringIO()
+        with patch.object(resources, "admissions_now", return_value={"schemaVersion": 1, "hosts": [
+                {"name": "this Mac", "role": "here", **reading}]}):
+            resources.now_main(["--json", "--here"], out=output.write)
+        self.assertEqual(json.loads(output.getvalue())["hosts"][0]["reclaimed"][0]["why"], "its PID 18597 is gone")
+
+    def test_an_unknown_holder_reclaimed_says_nothing_was_signaled_and_why(self):
+        self.reclaimed(identity="unsure", process="unknown", why="ps took more than 5s, and the kernel could not say: no",
+                       signaled=[], replaced=["slot1"],
+                       unsignaled="its start could not be read, so its PID is not proven its holder's: neither it nor "
+                                  "anything under it was signaled")
+        lines = resources.now_lines({"hosts": [{"name": "this Mac", **self.read()}]})
+        (said,) = [line for line in lines if line.startswith("    EPUBLib bash")]
+        self.assertIn("its process could not be checked (ps took more than 5s, and the kernel could not say: no); its "
+                      "start could not be read, so its PID is not proven its holder's", said)
+
+    def test_queue_doctor_names_a_reclaimed_holder_apart_from_the_holders(self):
+        from queuekeeper import merge_queue
+        self.holders({"a": self.owner("Alpha")}, slots=[(0, "a"), (1, "gone")])
+        self.reclaimed()
+        holders, why, reclaimed = merge_queue.holders_on(None)
+        self.assertEqual(([holder["label"] for holder in holders], why), (["Alpha"], None))
+        self.assertRegex(merge_queue.reclaimed_words(reclaimed[0]),
+                         r"^EPUBLib bash -c TEST_FILE=Tests/EPUBViewingTests \(PID 18597, slot 1, reclaimed 2m0\ds ago: "
+                         r"its process had ended, its PID 18597 is gone\)$")
 
 
 class WaiterTests(Namespace):

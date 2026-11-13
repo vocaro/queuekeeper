@@ -1546,14 +1546,15 @@ def names(path, identity):
 
 
 def stranded_slots(directory, maximum, owners):
-    """The slots admission counts the dead or uncertain guard entries among owners as holding, as
+    """The slots admission counts the uncertain guard entries among owners whose owners still run as holding, as
     resources.Admission._count_stranded counts them: every slot for exclusive work, else the slots whose files
-    name the entry, else the lowest slot not already counted. Admission first recovers each such entry and counts
-    only those recovery leaves; this reading runs no census, so it counts every one, and an entry the next
-    admission removes may be counted once more here."""
+    name the entry, else the lowest slot not already counted. An entry whose owner has ended, or cannot be confirmed
+    running, holds nothing: admission frees it at its next attempt (vocaro/queuekeeper#23). Admission first recovers
+    each uncertain entry and counts only those recovery leaves; this reading runs no census, so it counts every one,
+    and an entry the next admission removes may be counted once more here."""
     reserved, unnamed = set(), 0
     for owner in owners:
-        if not owner.get("uncertain") and alive(owner): continue
+        if not owner.get("uncertain") or not alive(owner): continue
         if owner.get("exclusive"):
             reserved.update(range(maximum))
             continue
@@ -1670,6 +1671,9 @@ def admission_log(since):
 # observation record, as resources.WAITS has it; the schema both write and read; how many records and how many bytes a
 # snapshot reads and sends at most; and how old a live waiter's sample may be before it is shown as stale.
 WAITS, NOW_SCHEMA, NOW_RECORDS, NOW_BYTES, NOW_STALE = "admission-waits", 1, 512, 512 << 10, 30
+# How far back `qk admissions now` shows the holders admission reclaimed, how many at most, and how much of the end of
+# the admission log it reads for them (vocaro/queuekeeper#23).
+NOW_RECLAIMED_SECONDS, NOW_RECLAIMED, NOW_LOG_TAIL = 3600, 16, 256 << 10
 
 
 def census(pids):
@@ -1814,6 +1818,46 @@ def holder_progress(guard, identity, at):
     return found
 
 
+def reclaimed_lately(at):
+    """The holders admission freed in the NOW_RECLAIMED_SECONDS before at, their owners ended or unknown
+    (resources.free_holder), newest first, at most NOW_RECLAIMED, from the end of this Mac's admission log: each with
+    when, why and what was signaled. FileNotFoundError is no failure: a log not yet written records none."""
+    path = admission_directory() / ADMISSION_LOGS[-1]
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0))
+    with os.fdopen(fd, "rb") as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode): raise ValueError(f"{path} is no regular file")
+        size = os.fstat(stream.fileno()).st_size
+        stream.seek(max(0, size - NOW_LOG_TAIL))
+        lines = stream.read(NOW_LOG_TAIL).splitlines()[1 if size > NOW_LOG_TAIL else 0:]
+    found = []
+    for line in reversed(lines):
+        try: entry = json.loads(line)
+        except ValueError: continue
+        if not isinstance(entry, dict) or entry.get("event") != "reclaimed" or not isinstance(entry.get("identity"), str):
+            continue
+        try: moment = datetime.fromisoformat(entry["time"]).timestamp()
+        except (KeyError, TypeError, ValueError): continue
+        if at - moment > NOW_RECLAIMED_SECONDS: break
+        whole = lambda key: [item for item in entry.get(key) or [] if type(item) is int] \
+            if isinstance(entry.get(key), list) else []
+        found.append({"identity": entry["identity"][:64], "label": str(entry.get("label") or "an unnamed owner")[:160],
+                      "pid": entry.get("pid") if type(entry.get("pid")) is int else None,
+                      "kind": str(entry.get("kind"))[:32], "wholeHost": entry.get("wholeHost") is True,
+                      "slots": whole("slots"), "model": entry.get("model") is True,
+                      "process": entry.get("process") if entry.get("process") in ("ended", "unknown") else None,
+                      "why": str(entry.get("why") or "")[:300] or None,
+                      "reclaimedAt": moment, "reclaimedSeconds": round(max(0.0, at - moment), 1),
+                      "signaled": [{"pid": item["pid"], "signals": [str(name)[:16] for name in item.get("signals") or []][:4]}
+                                    for item in entry.get("signaled") or [] if isinstance(item, dict)
+                                    and type(item.get("pid")) is int][:32],
+                      "survived": whole("survived")[:32],
+                      "unsignaled": str(entry["unsignaled"])[:300] if entry.get("unsignaled") else None,
+                      "replaced": [str(name)[:16] for name in entry.get("replaced") or []][:32]
+                      if isinstance(entry.get("replaced"), list) else []})
+        if len(found) >= NOW_RECLAIMED: break
+    return found
+
+
 def slot_names(directory, count):
     """The identity each of the first count slot files names as its last holder, None for a file that names none,
     and absent for a slot never taken. Read without a lock: a name is who last took it, not that its lock is held."""
@@ -1839,7 +1883,7 @@ def admissions_now(at=None):
     guard = Path(os.environ.get("QUEUEKEEPER_GATE_LOCK_FILE", GATE_LOCK) + ".warm-push-guard")
     reading = {"schemaVersion": NOW_SCHEMA, "mac": mac_name(), "observedAt": at, "state": "observed", "reasons": reasons,
                "namespace": {"shared": not isolated, **isolated, "guard": str(guard)}, "limits": None, "slots": None,
-               "model": None, "holders": None, "unattributed": None, "waiters": None}
+               "model": None, "holders": None, "unattributed": None, "waiters": None, "reclaimed": None}
     try: directory = slot_directory()
     except RuntimeError as error:
         return {**reading, "state": "unknown", "reasons": [str(error)]}
@@ -1915,6 +1959,11 @@ def admissions_now(at=None):
         try: count = 1 + max((int(name[4:]) for name in os.listdir(directory) if re.fullmatch(r"slot\d+", name)), default=-1)
         except OSError: count = 0
     named = slot_names(directory, min(count, NOW_RECORDS))
+    # The holders admission reclaimed lately, which hold nothing now: shown as reclaimed, never as held.
+    try: reading["reclaimed"] = reclaimed_lately(at)
+    except FileNotFoundError: reading["reclaimed"] = []
+    except (OSError, ValueError) as error:
+        reasons.append(f"the admission log cannot be read for the holders admission reclaimed: {error}")
     try: model = (directory / "model").read_text(errors="replace").split(" ", 2)
     except OSError: model = []
     model_name = model[1] if len(model) > 1 else None
@@ -1942,8 +1991,12 @@ def admissions_now(at=None):
                             "guaranteed": [slot for slot in held if slots is None or slot < slots],
                             "extra": [slot for slot in held if slots is not None and slot >= slots],
                             "process": process, "progress": progress,
-                            # A dead or uncertain entry is stranded: admission counts it until recovery removes it.
-                            "stranded": owner.get("uncertain") is True or process == "ended"})
+                            # One whose process has ended or cannot be confirmed running, admission frees at its next
+                            # attempt, stopping what is left of it (vocaro/queuekeeper#23).
+                            "reclaimable": process in ("ended", "unknown"),
+                            # An uncertain entry whose owner still runs is stranded: admission counts it until recovery
+                            # removes it.
+                            "stranded": owner.get("uncertain") is True and process == "running"})
         # What each running holder costs the CPU now, None when that cannot be read or it does not run (#89).
         running = [holder["pid"] for holder in holders if holder["process"] == "running"]
         used = cpu_use(running) if running else {}
@@ -1951,12 +2004,15 @@ def admissions_now(at=None):
         for holder in holders:
             holder["cpuPercent"] = (used or {}).get(holder["pid"]) if holder["process"] == "running" else None
         reading["holders"] = sorted(holders, key=lambda holder: holder["admittedAt"] or 0)
+        # A slot whose file still names a holder admission reclaimed is free, and says so (vocaro/queuekeeper#23).
+        freed = {item["identity"] for item in reading["reclaimed"] or []}
         reading["slots"] = [{"slot": slot, "guaranteed": slots is None or slot < slots,
                              "holder": named.get(slot) if named.get(slot) in owners else None,
-                             "file": slot in named} for slot in range(min(count, NOW_RECORDS))]
+                             "reclaimed": named.get(slot) if named.get(slot) in freed and named.get(slot) not in owners
+                             else None, "file": slot in named} for slot in range(min(count, NOW_RECORDS))]
         # A slot file that names no guard entry: its holder released it, or holds it outside admission's guard (an
         # old slot API caller); its lock was not probed, since a reading takes no lock.
-        reading["unattributed"] = [slot for slot, name in sorted(named.items()) if name not in owners
+        reading["unattributed"] = [slot for slot, name in sorted(named.items()) if name not in owners and name not in freed
                                    and not any(owner.get("exclusive") is True for owner in owners.values())]
         reading["model"] = {"holder": model_name if model_name in owners and (owners[model_name].get("model") is True
                                                                              or owners[model_name].get("exclusive") is True)

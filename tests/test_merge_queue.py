@@ -1215,7 +1215,11 @@ class Doctor(UnittestGate):
                   "heldSeconds": 600, "process": "unknown", "cpuPercent": None, "origin": None}
         before, account = self.snapshot(), queue.round_state()["gates"]
         from queuekeeper import remote
-        with patch.object(offload_host, "admissions_now", return_value=self.reading(self.QUICK_LOOK, unsure)), \
+        # A holder admission reclaimed lately holds nothing, and is named apart from the holders (vocaro/queuekeeper#23).
+        reclaimed = {"identity": "g", "label": "EPUBLib swift-tests", "pid": 14501, "kind": "heavy", "slots": [2],
+                     "process": "ended", "why": "its PID 14501 is gone", "reclaimedSeconds": 65.0}
+        reading = {**self.reading(self.QUICK_LOOK, unsure), "reclaimed": [reclaimed]}
+        with patch.object(offload_host, "admissions_now", return_value=reading), \
                 patch.object(remote, "admissions_there", side_effect=AssertionError("asked the second Mac")):
             status_, said, found = self.doctor()
         self.assertEqual((status_, found["healthy"]), (1, False), said)
@@ -1232,9 +1236,14 @@ class Doctor(UnittestGate):
         self.assertIn("python3 scripts/qk run quicklook-ipad (PID 4242, held 5h00m, CPU 3% of one core, with what it "
                       "started, from repository BreezEPUB, branch quicklook, worktree "
                       "/Users/x/.claude/worktrees/quicklook-ipad, session local_1", diagnosis)
-        # A holder whose process could not be checked (vocaro/queuekeeper#23) is said so, never guessed light.
+        # A holder whose process could not be checked (vocaro/queuekeeper#23) is said so, never guessed light, and
+        # that admission frees it at its next attempt.
         self.assertIn("python3 scripts/qk admit -- xcodebuild test (PID 77, held 10m00s, its process could not be "
-                      "checked, so its CPU use is unknown, where its work comes from was not recorded)", diagnosis)
+                      "checked, so its CPU use is unknown, and admission frees its slots at its next attempt, where its "
+                      "work comes from was not recorded)", diagnosis)
+        self.assertIn(". Reclaimed lately, holding nothing now: EPUBLib swift-tests (PID 14501, slot 2, reclaimed 1m05s "
+                      "ago: its process had ended, its PID 14501 is gone) (vocaro/queuekeeper#89)", diagnosis)
+        self.assertEqual(finding["reclaimed"], [reclaimed])
         self.assertIn("qk admissions now", finding["remedy"])
         self.assertEqual([holder["pid"] for holder in finding["holders"]], [4242, 77])
         self.assertIn("held back on a Mac with spare CPU: the main gate's gate has waited", said)

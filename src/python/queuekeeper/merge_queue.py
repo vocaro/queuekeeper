@@ -2207,13 +2207,19 @@ def idle_waits(root, at=None, busy=None, read=None):
             continue
         share, limit = found[0], found[1]
         if share >= limit: continue
-        holders, why = read(host)
+        found = read(host)
+        holders, why = found[:2]
+        # What admission reclaimed there lately holds nothing now: named apart, never as a holder (vocaro/queuekeeper#23).
+        reclaimed = found[2] if len(found) > 2 else []
         named = ("unknown: " + why if holders is None else "; ".join(map(holder_words, holders))
                  if holders else "none recorded, as admission's guard stood when read")
+        freed = (f". Reclaimed lately, holding nothing now: {'; '.join(map(reclaimed_words, reclaimed))}"
+                 if reclaimed else "")
         findings.append({
             "signal": "held back on a Mac with spare CPU",
             "diagnosis": f"{what}, while {mac} is {share:.0f}% busy, under its {limit:g}% limit: what holds admission "
-                         f"there holds it back, not load. Holders: {named} (vocaro/queuekeeper#89)",
+                         f"there holds it back, not load. Holders: {named}{freed} (vocaro/queuekeeper#89)",
+            **({"reclaimed": reclaimed} if reclaimed else {}),
             "remedy": "ask the session that owns each holder, found by its worktree, whether its run is still needed: "
                       "stopping it is that session's to do; `python3 scripts/qk admissions now` shows the same",
             "gate": role, "mac": mac, "waitingSince": since, "cpuBusy": share, "busyLimit": limit, "holders": holders})
@@ -2222,28 +2228,45 @@ def idle_waits(root, at=None, busy=None, read=None):
 
 def holders_on(host):
     """(the holders of admission on host, the second Mac, or with host None on this Mac, as `qk admissions now` reads
-    them; None when they cannot be read, with why)."""
+    them; None when they cannot be read, with why; and the holders admission reclaimed there lately, which hold
+    nothing now, vocaro/queuekeeper#23)."""
     try: reading = remote.admissions_there(host) if host else offload_host.admissions_now()
-    except Exception as error: return None, str(error)  # noqa: BLE001 - unknown, never idle
+    except Exception as error: return None, str(error), []  # noqa: BLE001 - unknown, never idle
     holders = reading.get("holders") if isinstance(reading, dict) else None
+    reclaimed = reading.get("reclaimed") if isinstance(reading, dict) else None
+    reclaimed = [item for item in reclaimed if isinstance(item, dict)] if isinstance(reclaimed, list) else []
     if not isinstance(holders, list):
         reasons = reading.get("reasons") if isinstance(reading, dict) else None
-        return None, "; ".join(reasons or []) or "the reading named no holders"
-    return holders, None
+        return None, "; ".join(reasons or []) or "the reading named no holders", reclaimed
+    return holders, None, reclaimed
 
 
 def holder_words(holder):
     """A holder of admission as idle_waits names it: its command, PID, hold time, CPU use and origin."""
     held = holder.get("heldSeconds")
     process, cpu = holder.get("process"), holder.get("cpuPercent")
-    if process == "ended": used = "its process has ended, and admission counts it until it is recovered"
-    elif process == "unknown": used = "its process could not be checked, so its CPU use is unknown"
+    # Admission frees such a holder at its next attempt (vocaro/queuekeeper#23).
+    if process == "ended": used = "its process has ended, and admission frees its slots at its next attempt"
+    elif process == "unknown": used = ("its process could not be checked, so its CPU use is unknown, and admission frees "
+                                       "its slots at its next attempt")
     elif isinstance(cpu, (int, float)): used = f"CPU {cpu:g}% of one core, with what it started"
     else: used = "CPU use unknown"
     origin = resources.whence(holder.get("origin"))
     return (f"{holder.get('label') or 'an unnamed owner'} (PID {holder.get('pid')}, held "
             + (resources.duration(held) if isinstance(held, (int, float)) else "for an unknown time")
             + f", {used}, " + (f"from {origin}" if origin else "where its work comes from was not recorded") + ")")
+
+
+def reclaimed_words(item):
+    """A holder admission reclaimed lately, as idle_waits names it: its command, PID, slots, when and why."""
+    seconds = item.get("reclaimedSeconds")
+    where = "every slot" if item.get("kind") == "exclusive" else \
+        ", ".join(f"slot {slot}" for slot in item.get("slots") or []) or "no slot its files named"
+    condition = {"ended": "its process had ended", "unknown": "its process could not be checked"}.get(
+        item.get("process"), "its process could not be confirmed running")
+    return (f"{item.get('label') or 'an unnamed owner'} (PID {item.get('pid')}, {where}, reclaimed "
+            + (f"{resources.duration(seconds)} ago" if isinstance(seconds, (int, float)) else "at an unknown time")
+            + f": {condition}" + (f", {item['why']}" if item.get("why") else "") + ")")
 
 
 def placement(root, name=None, as_json=False):

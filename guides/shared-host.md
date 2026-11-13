@@ -332,7 +332,7 @@ limit, when it was the Mac's, from its limits file, and not the default this gui
 | `model` | `the on-device model, one run at a time, is held by LABEL` |
 | `exclusive` | `it waits behind exclusive work queued ahead of it: LABEL`, or `… holding the host: LABEL` |
 | `wholeHost` | `it waits behind a whole-host lane queued ahead of it: LABEL`, for exclusive and whole-host requests, and `it waits behind a whole-host lane holding the host: LABEL` for other heavy work while one runs; for other heavy work behind a queued one, `a guaranteed slot is free but kept for a whole-host lane queued ahead of it: LABEL; and HEAVY_SLOTS_MAX=3 (…) allows none beyond them`, or `… and every slot beyond them up to HEAVY_SLOTS_MAX=9 (…) is busy`, or the `settle`, `cpu` or `memory` reason. With every guaranteed slot busy anyway, the reason is the `slots` or other kind's, as with nothing queued |
-| `stranded` | another reason above, then `; the guard entry of LABEL, PID 4242, is dead and requires inspection (it has no process record), and is counted as slot 1; …`, `uncertain` for an entry marked so, with why [recovery](#lock-reclamation) left it in parentheses (`its owner still runs`, `it has no process record`, `its process record cannot vouch for every command` or `2 of its processes still run: PID 4250, 4251`) and what it is counted as (`slots 0, 1, 2 and the model` for exclusive work); a model request's reason is `the on-device model, one run at a time, is counted as held` |
+| `stranded` | another reason above, such as `all 3 guaranteed slots are busy and HEAVY_SLOTS_MAX=3 (…) allows none beyond them`, then `; the guard entry of LABEL, PID 4242, is uncertain and requires inspection (its owner still runs), and is counted as slot 1; …`, for an uncertain entry whose owner still runs, with why [recovery](#lock-reclamation) left it in parentheses and what it is counted as (`slots 0, 1, 2 and the model` for exclusive work), while an entry whose owner has ended or cannot be confirmed running is freed instead ([vocaro/queuekeeper#23](https://github.com/vocaro/queuekeeper/issues/23)); a model request's reason is `the on-device model, one run at a time, is counted as held` |
 | `guard` | `the guard PATH is unreadable or not in admission's format and requires inspection; …` |
 
 In both rows `…` names `python3 scripts/qk admissions recover`.
@@ -349,12 +349,14 @@ while its file names no running admission. When neither Mac admits the work, `qk
 ([vocaro-engineering#270](https://github.com/vocaro/vocaro-engineering/issues/270)). A script that runs several jobs at once leaves at least one of the guaranteed
 HEAVY_SLOTS for other sessions.
 
-Admission recovers each dead or uncertain entry it meets, as `qk admissions recover OWNER`
+Admission frees at once each entry it meets whose owner has ended or cannot be confirmed
+running, after stopping what is left of it (the owner's decision, 2026-11-13,
+[vocaro/queuekeeper#23](https://github.com/vocaro/queuekeeper/issues/23); [lock reclamation](#lock-reclamation)).
+It recovers each uncertain entry whose owner still runs, as `qk admissions recover OWNER`
 would: it removes one once its owner has ended and a census against its process record finds
-nothing it ran still running ([lock reclamation](#lock-reclamation)). An entry recovery leaves,
-stranded, is never removed: it counts as the slots it held until it is recovered, so that only
-work beyond those slots waits. A stranded entry of exclusive work counts as every slot up to
-HEAVY_SLOTS_MAX, so all heavy work waits behind it; any other counts as the slots whose files
+nothing it ran still running. An entry recovery leaves, stranded, is never removed: it counts as
+the slots it held until it is recovered, so that only work beyond those slots waits. A stranded
+entry of exclusive work counts as every slot up to HEAVY_SLOTS_MAX, so all heavy work waits behind it; any other counts as the slots whose files
 name its identity, as each admission writes them, or, where none does, as the lowest slot not
 already counted; one that held the model counts as its holder. Exclusive work waits behind any
 stranded entry, since it needs every slot. A queued exclusive request holds back no work while a
@@ -375,9 +377,12 @@ status` says when a gate is stuck behind it ([the merge queue](maintenance.md#th
 An entry it leaves because nothing proves it finished is removed by hand with `qk admissions
 remove`, which no allow rule matches ([lock reclamation](#lock-reclamation)).
 
-The rule: a disappeared owner's children may still be running, and they keep what its entry
-held, its slots and the model if it held it, and nothing more. The rest of the host stays open
-to other sessions' work. Until 2026-11-01 the rule was that those children might still use the
+The rule: an owner whose process has ended, or cannot be confirmed running, holds nothing, and
+what is left of it is stopped (the owner's decision, 2026-11-13,
+[vocaro/queuekeeper#23](https://github.com/vocaro/queuekeeper/issues/23)). Until 2026-11-13 a
+disappeared owner's children were taken to be still running, and kept what its entry held, its
+slots and the model if it held it, and nothing more; the rest of the host stayed open to other
+sessions' work. Until 2026-11-01 the rule was that those children might still use the
 whole host, so a stranded entry refused every session's heavy work on it until it was recovered
 ([vocaro-engineering#89](https://github.com/vocaro/vocaro-engineering/issues/89)).
 
@@ -488,7 +493,7 @@ log: the second Mac logs what is admitted there.
 A line holds:
 
 - `time`: when it was written, in UTC (ISO 8601).
-- `event`: `admitted`, `ended`, `withdrawn` or `recovered`.
+- `event`: `admitted`, `ended`, `withdrawn`, `recovered` or `reclaimed`.
 - `identity`: the request's nonce, which pairs an admission with its end and keys its guard entry;
   `pid`: the admitting process.
 - `kind`: `heavy`, `model` or `exclusive`; `label`: the request's label, as waiting messages name
@@ -525,8 +530,8 @@ A line holds:
   - `wholeHost`: a whole-host request is queued ahead of an exclusive or whole-host one, or keeps a
     free guaranteed slot from other heavy work, which found no slot beyond them
     ([vocaro-engineering#174](https://github.com/vocaro/vocaro-engineering/issues/174));
-  - `stranded`: the request was refused at its slots or the model while a stranded entry, dead or
-    uncertain and left by recovery, was counted as some of them;
+  - `stranded`: the request was refused at its slots or the model while a stranded entry, uncertain
+    with its owner still running and left by recovery, was counted as some of them;
   - `guard`: the guard is unreadable or not in admission's format, and requires inspection.
     Until 2026-11-01 this kind also counted a stranded entry, which refused every request.
 - `stranded`, on the `admitted` or `withdrawn` line of a request whose latest attempt counted a
@@ -545,6 +550,16 @@ A line holds:
   hand ([lock reclamation](#lock-reclamation)), `byHand` true, `unproven`, why recovery left the
   entry (`it has no process record` or `its process record cannot vouch for every command`), and
   `why`, the person's reason as `--why` gave it.
+- On a `reclaimed` line, which admission writes when it frees an entry whose owner has ended or
+  cannot be confirmed running ([lock reclamation](#lock-reclamation)): `identity` and `pid` are
+  the entry's and its owner's; `process`, `ended` or `unknown`; `why`, such as `its PID 18597 is
+  gone`; `uncertain`, whether the entry was marked so; `slots` and `model`, what it held, as its
+  slot files named it; `signaled`, each process signaled, with its `pid`, `start` and
+  `signals`, such as `["SIGTERM", "SIGKILL"]`; `survived`, the PIDs still running after SIGKILL;
+  `unsignaled`, why nothing was signaled, for an owner whose start could not be read;
+  `replaced`, the locks something still held, which were replaced; and `by`, the request whose
+  attempt freed it. That request's `admitted` or `withdrawn` line lists the entries it freed as
+  `reclaimed`, and `qk admissions` counts such an admission's end as `reclaimed`.
 
 An `admitted` line with no `ended` line is still held, or SIGKILL ended its admitting process,
 which leaves its guard entry for recovery as well, and a `recovered` line follows once it is
@@ -602,9 +617,14 @@ isolated `HEAVY_SLOT_DIR` or `QUEUEKEEPER_GATE_LOCK_FILE`. What it reads, and wh
 ([#342](https://github.com/vocaro/vocaro-engineering/issues/342)). It checks the processes named with one
 `ps`; when that fails or takes 5 seconds, it asks the kernel PID by PID, which reads no process's arguments, so
 that one bad PID or one failed `ps` does not leave every holder unchecked. A holder whose PID is gone, or runs
-another process, is ended and shown stranded. One whose PID runs but whose start neither can read is shown as
-could not be checked, not as ended: a holder alive but slow to confirm is not freed on a guess. Recovery reads
-an owner's end the same way ([#23](https://github.com/vocaro/queuekeeper/issues/23)). `--json` gives each running
+another process, is shown as ended; one whose PID runs but whose start neither can read, as could not be checked.
+Admission frees either at its next attempt, as [lock reclamation](#lock-reclamation) says: when the queue cannot
+confirm that a holder's process still runs, it takes the process as ended and frees its slot at once, so a holder
+slow to confirm is freed too (the owner's decision, 2026-11-13, [vocaro/queuekeeper#23](https://github.com/vocaro/queuekeeper/issues/23)).
+A holder admission reclaimed in the last hour is listed under `reclaimed:`, with when and why, what was signaled
+and the slots freed, never as held; `--json` gives each in `reclaimed`, and a slot whose file still names it
+carries its identity as `reclaimed`. Attended recovery reads an owner's end the same way, but leaves one whose
+start cannot be read as running. `--json` gives each running
 holder's `cpuPercent`, the percent of one core it and the processes under it use, by `ps`'s own `%cpu`, null when
 `ps` cannot say. It does not itself flag a wait as too long: the owner deferred that until there is history to
 calibrate it. `qk queue doctor` does flag one narrower case from this reading, a queue's gate that has waited 15
@@ -836,9 +856,11 @@ vocaro-engineering#201 has none of them and withholds nothing by them. A free gu
 needs neither, here as in admission. Until vocaro-engineering#201 the reading judged that slot by
 the load alone, and queuekeeper could send a lane to wait on a Mac whose admission then withheld it. A
 queued request whose process has ended, one that has not asked lately, one behind
-exclusive work queued ahead, and one that waits for a dead or uncertain guard entry counted as a
-guaranteed slot keep nothing, as in admission; the reading runs no recovery census, so it counts
-every such entry, and the next admission may remove one. A lane's own place in this Mac's queue,
+exclusive work queued ahead, and one that waits for an uncertain guard entry whose owner still
+runs, counted as a guaranteed slot, keep nothing, as in admission; the reading runs no recovery
+census, so it counts every such entry, and the next admission may remove one. An entry whose owner
+has ended, or cannot be confirmed running, counts as nothing, since admission frees it at its next
+attempt ([vocaro/queuekeeper#23](https://github.com/vocaro/queuekeeper/issues/23)). A lane's own place in this Mac's queue,
 which it keeps between offers, is not counted against it. Until vocaro-engineering#186 the reading
 counted a guaranteed slot such a request kept as free, and queuekeeper offered work there that admission
 then held back or that competed with the gate.
@@ -847,8 +869,8 @@ The reading applies admission's rule for an exclusive request queued there too: 
 process runs is the first request queued that holds later work back, admission holds every later
 request behind it until it has been admitted and has ended, so no lane of any kind has spare
 capacity there (`exclusive work is queued ahead on the second Mac: LABEL`). One whose process has
-ended holds nothing back, and neither does one queued while a dead or uncertain guard entry is
-counted as any slot, which it would wait for, as in admission (#89); one queued behind a
+ended holds nothing back, and neither does one queued while an uncertain guard entry whose owner
+still runs is counted as any slot, which it would wait for, as in admission (#89); one queued behind a
 whole-host request that asks is that request's turn, read as the slots kept for it. Until
 vocaro-engineering#191 the reading did not report such a request, and queuekeeper offered a lane to a Mac
 whose admission then held it back for as long as the exclusive work waited and ran.
@@ -2959,12 +2981,31 @@ Three kinds of marker coexist, and they are reclaimed differently:
   `QUEUEKEEPER_*` and `HEAVY_*` variable or lists it in `INHERITED` with why it is safe, and
   `test_host_isolation` plants every one the toolkit's code names and fails on one that is
   neither set, cleared nor listed (vocaro/queuekeeper#46). On 2026-11-12 the keychain's
-  `QUEUEKEEPER_KEYCHAIN_UNLOCKED` failed a test on the second Mac every time and passed here. Admission takes no lock at the gate lock's own path, and a file
-  left there holds nothing back. The guard is never reclaimed by PID or by time, because a dead
-  owner's compilers or simulator children can outlive it. A dead or uncertain owner's entry that
-  recovery leaves counts as the slots it held, every slot for exclusive work, and the model if it
-  held it ([heavy-work admission](#heavy-work-admission)). Admission refuses to proceed while the
-  guard is unreadable or not in admission's format, which it never overwrites. Admission's format is JSON with `"vocaroEngineering": 1` and
+  `QUEUEKEEPER_KEYCHAIN_UNLOCKED` failed a test on the second Mac every time and passed here.
+  Admission takes no lock at the gate lock's own path, and a file
+  left there holds nothing back. The guard is never reclaimed by time. It is reclaimed by PID:
+  when the queue cannot confirm that an entry's owner still runs, its PID gone, running another
+  process, or its start unreadable by `ps` and then the kernel, it takes the process as ended and
+  frees its slot at once, killing whatever is left of it if necessary, so that the next waiter is
+  admitted. Uncertainty about a holder never keeps a slot held: jobs can be rerun, and keeping the
+  queue moving comes before keeping any one job alive (the owner's decision, 2026-11-13,
+  [vocaro/queuekeeper#23](https://github.com/vocaro/queuekeeper/issues/23)). This replaces the
+  rule that the guard was never reclaimed by PID because a dead owner's compilers or simulator children can
+  outlive it: what outlives it is stopped instead. Admission does it at its next attempt, on each
+  Mac for its own guard (`resources.free_holder`). It sends SIGTERM, then SIGKILL 3 seconds later,
+  to the owner's PID and each process its process record names, each only while its PID still has
+  the start recorded for it, and to every process found below one of those by parent, each checked
+  again by PID and start just before each signal; it never signals itself or its ancestors. An
+  owner whose start cannot be read is signaled nothing, nor anything under it, since its PID is
+  not proven its own. Then it removes the entry, and the guard with its last one, and its process
+  record, and frees its slots, every slot for exclusive work, and the model if it held it; a lock
+  something still holds, which the signals did not stop, is replaced by a fresh file, so the next
+  admission takes it. The admission log's `reclaimed` line records why, what was signaled and
+  what survived ([admission log](#admission-log)), and admission prints `heavy: reclaimed …`. An
+  uncertain entry whose owner still runs, its stop being carried out, is recovered as before, and
+  one that recovery leaves counts as the slots it held, every slot for exclusive work, and the
+  model if it held it ([heavy-work admission](#heavy-work-admission)). Admission refuses to
+  proceed while the guard is unreadable or not in admission's format, which it never overwrites. Admission's format is JSON with `"vocaroEngineering": 1` and
   `owners`, an object of entries by identity, each with a positive integer `pid`, a `start`
   string, a `label` string and an `exclusive` flag, which every toolkit has written, and any
   `model` or `uncertain` flag or `admitted` string it has; other fields, which a newer toolkit
@@ -3124,8 +3165,12 @@ both probe processes ran on unsignaled (2026-10-31, ChatGPT 26.1027.30824 with c
 terminal result before ending its turn under `codex exec`, and before the thread is archived in
 Codex Desktop.
 
-Admission recovers a dead or uncertain guard entry itself, by the checks below, before it
-counts the entry against a request: it prints `heavy: Recovered LABEL (PID …): …`, logs a `recovered` line
+Admission frees at once a guard entry whose owner has ended or cannot be confirmed running,
+stopping what is left of it, as [lock reclamation](#lock-reclamation) says, and logs a `reclaimed`
+line (the owner's decision, 2026-11-13,
+[vocaro/queuekeeper#23](https://github.com/vocaro/queuekeeper/issues/23)). It recovers an
+uncertain entry whose owner still runs itself, by the checks below, before it counts the entry
+against a request: it prints `heavy: Recovered LABEL (PID …): …`, logs a `recovered` line
 marked `automatic` ([admission log](#admission-log)) and goes on. An entry those checks leave is
 checked again after HEAVY_RECOVER_SECONDS (60), since a census reads every process on the host;
 meanwhile it counts as the slots it held, and a waiting message that counts it says why it

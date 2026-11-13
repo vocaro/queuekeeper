@@ -12,6 +12,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -1299,10 +1300,12 @@ class ResourceTests(unittest.TestCase):
         exclusive = self.waiter("bench")
         guard = resources.guard_path(os.environ)
         def stranded(slot):
-            """A guard entry whose owner has ended, named by that slot's file as its last holder."""
+            """An uncertain guard entry whose owner, this process, still runs, named by that slot's file as its last
+            holder: one whose owner has ended holds nothing, since admission frees it (vocaro/queuekeeper#23)."""
             guard.write_text(json.dumps({"vocaroEngineering": 1, "owners": {"gone": {
-                "pid": ended[0], "start": ended[1], "label": "stranded", "exclusive": False}}}))
-            (resources.slot_directory() / f"slot{slot}").write_text(f"{ended[0]} gone stranded\n")
+                "pid": os.getpid(), "start": resources.process_start(os.getpid()), "label": "stranded",
+                "exclusive": False, "uncertain": True}}}))
+            (resources.slot_directory() / f"slot{slot}").write_text(f"{os.getpid()} gone stranded\n")
         cases = [("one that asks", [fresh], None, "waiting gate"), ("its process ended", [dead], None, None),
                  ("it stopped asking", [stale], None, None), ("it never asked", [unseen], None, None),
                  ("behind one that stopped asking", [stale, fresh], None, "waiting gate"),
@@ -1359,10 +1362,12 @@ class ResourceTests(unittest.TestCase):
         stale = self.waiter("away gate", wholeHost=True, seen=time.time() - resources.PLACE_SECONDS - 1)
         guard = resources.guard_path(os.environ)
         def stranded(slot):
-            """A guard entry whose owner has ended, named by that slot's file as its last holder."""
+            """An uncertain guard entry whose owner, this process, still runs, named by that slot's file as its last
+            holder: one whose owner has ended holds nothing, since admission frees it (vocaro/queuekeeper#23)."""
             guard.write_text(json.dumps({"vocaroEngineering": 1, "owners": {"gone": {
-                "pid": ended[0], "start": ended[1], "label": "stranded", "exclusive": False}}}))
-            (resources.slot_directory() / f"slot{slot}").write_text(f"{ended[0]} gone stranded\n")
+                "pid": os.getpid(), "start": resources.process_start(os.getpid()), "label": "stranded",
+                "exclusive": False, "uncertain": True}}}))
+            (resources.slot_directory() / f"slot{slot}").write_text(f"{os.getpid()} gone stranded\n")
         # (name, queue, stranded slot, queuedExclusive, kept)
         cases = [("one whose process runs", [live], None, "bench", None),
                  ("its process ended", [dead], None, None, None),
@@ -1906,10 +1911,19 @@ class ResourceTests(unittest.TestCase):
                 if failure:
                     self.assertTrue(owners.pop(beside.identity).get("uncertain"))
                 self.assertEqual(owners, recorded)
-                # The killed job's entry, which has no process record, still awaits attended recovery, counted as
-                # the slot it held (#89): exclusive work waits behind it.
-                with self.assertRaises(TimeoutError), contextlib.redirect_stderr(StringIO()):
-                    with resources.Admission("blocked", exclusive=True, timeout=0): pass
+                # The killed job's entry is freed at the next attempt, its owner ended (vocaro/queuekeeper#23); the
+                # uncertain entry of the job beside it, whose owner, this process, still runs, is counted as the slot it
+                # held (#89), so exclusive work waits behind it only then.
+                if failure:
+                    with self.assertRaisesRegex(TimeoutError, "is uncertain and requires inspection"), \
+                            contextlib.redirect_stderr(StringIO()):
+                        with resources.Admission("blocked", exclusive=True, timeout=0): pass
+                    self.assertEqual(set(json.loads(guard.read_text())["owners"]), {beside.identity})
+                else:
+                    with contextlib.redirect_stderr(StringIO()) as said, \
+                            resources.Admission("admitted", exclusive=True, timeout=0) as admitted:
+                        self.assertEqual(set(json.loads(guard.read_text())["owners"]), {admitted.identity})
+                    self.assertIn(f"heavy: reclaimed killed (PID {killed.pid})", said.getvalue())
 
     def test_a_stop_signal_ends_the_command_then_releases_admission(self):
         # An agent's task stop sent qk admit SIGTERM, which ended it without leaving admission
@@ -2687,10 +2701,13 @@ class AdmissionLogTests(unittest.TestCase):
              "label": "stuck", "exclusive": False, "uncertain": True}}}), hold(1, 2)], {}, 10.0, 1, {}, 1,
              busy + f"so is every slot up to {mine('HEAVY_SLOTS_MAX=3')}; the guard entry of stuck, PID {os.getpid()}, is uncertain "
              "and requires inspection (its owner still runs), and is counted as slot 0" + listed),
-            ("stranded", [write(guard, {"vocaroEngineering": 1, "owners": {"ended": {"pid": os.getpid(),
-             "start": "Thu Jan  1 00:00:00 1970", "label": "ended", "exclusive": False}}})], {"exclusive": True}, 10.0, 1, {}, 1,
-             f"exclusive work needs every slot up to {mine('HEAVY_SLOTS_MAX=3')} free, and 1 is busy; the guard entry of ended, PID "
-             f"{os.getpid()}, is dead and requires inspection (it has no process record), and is counted as slot 0" + listed),
+            # One whose owner's PID another process now has, main's dead case, is no longer counted: admission frees it
+            # at once (vocaro/queuekeeper#23; test_a_dead_entry_is_freed_at_once_and_counted_in_no_refusal). An uncertain
+            # one whose owner still runs is.
+            ("stranded", [write(guard, {"vocaroEngineering": 1, "owners": {"stuck": {"pid": os.getpid(), "start": born,
+             "label": "stuck", "exclusive": False, "uncertain": True}}})], {"exclusive": True}, 10.0, 1, {}, 1,
+             f"exclusive work needs every slot up to {mine('HEAVY_SLOTS_MAX=3')} free, and 1 is busy; the guard entry of stuck, PID "
+             f"{os.getpid()}, is uncertain and requires inspection (its owner still runs), and is counted as slot 0" + listed),
             ("guard", [write(guard, {"vocaroEngineering": 2, "owners": {}})], {}, 10.0, 1, {}, None,
              f"the guard {guard} is unreadable or not in admission's format" + recover),
             ("guard", [write(guard, "{")], {}, 10.0, 1, {}, None,
@@ -2740,6 +2757,29 @@ class AdmissionLogTests(unittest.TestCase):
                 self.assertEqual(line["wait"], {"refusals": {kind: 1}, "first": kind, "last": kind,
                                                 "load": {"last": 3.0, "max": 3.0},
                                                 "busy": {"last": busy_read, "max": busy_read}, "memory": level})
+
+    def test_a_dead_entry_is_freed_at_once_and_counted_in_no_refusal(self):
+        # The dead entry the refusal table counted until #23, its owner's PID now another process's (this one's) and
+        # with no process record, is freed by the next attempt instead, which nothing signals, and the exclusive
+        # request it refused is admitted (the owner's decision, 2026-11-13, vocaro/queuekeeper#23).
+        guard = Path(os.environ["QUEUEKEEPER_GATE_LOCK_FILE"] + ".warm-push-guard")
+        guard.parent.mkdir(parents=True, exist_ok=True)
+        guard.write_text(json.dumps({"vocaroEngineering": 1, "owners": {"ended": {
+            "pid": os.getpid(), "start": "Thu Jan  1 00:00:00 1970", "label": "ended", "exclusive": False}}}))
+        directory = resources.slot_directory()
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "slot0").write_text(f"{os.getpid()} ended ended\n")
+        with contextlib.redirect_stderr(StringIO()) as error, \
+                resources.Admission("asked", exclusive=True, timeout=0) as admitted:
+            self.assertEqual(list(json.loads(guard.read_text())["owners"]), [admitted.identity])
+            self.assertEqual(admitted.counted, [])
+        self.assertIn(f"heavy: reclaimed ended (PID {os.getpid()}), slot 0: its process has ended (its PID "
+                      f"{os.getpid()} runs another process, started ", error.getvalue())
+        (reclaimed,) = [line for line in self.lines() if line["event"] == "reclaimed"]
+        self.assertEqual((reclaimed["identity"], reclaimed["process"], reclaimed["slots"], reclaimed["signaled"]),
+                         ("ended", "ended", [0], []))
+        (logged,) = [line for line in self.lines() if line["identity"] == admitted.identity and line["event"] == "admitted"]
+        self.assertEqual((logged["reclaimed"], "stranded" in logged, "wait" in logged), (["ended"], False, False))
 
     def test_a_give_up_says_by_its_cause_which_mac_what_held_the_slots_the_wait_and_that_nothing_ran(self):
         # On 2026-11-07 a command behind running whole-host gates gave up with a message that suggested a broken lock (#270).
@@ -3125,10 +3165,13 @@ class RecoveryTests(unittest.TestCase):
             with contextlib.suppress(ValueError): found.update(map(tuple, json.loads(text).get("processes", [])))
         return found
 
-    def stranded(self, record=None, **entry):
-        """A guard entry whose owner has ended, with this process record: its identity."""
+    def stranded(self, record=None, live=False, **entry):
+        """A guard entry whose owner has ended, with this process record: its identity. With live, an uncertain entry of
+        this process, which still runs, as a stop being carried out leaves it: the only entry admission counts as
+        stranded, since it frees one whose owner has ended at once (vocaro/queuekeeper#23)."""
         identity = uuid.uuid4().hex
-        pid, start = self.ended_process()
+        pid, start = (os.getpid(), resources.process_start(os.getpid())) if live else self.ended_process()
+        if live: entry = {"uncertain": True, **entry}
         owners = self.owners()
         owners[identity] = {"pid": pid, "start": start, "label": "stranded", "exclusive": False, "model": False,
                             "admitted": "2026-10-27T10:00:00+00:00", **entry}
@@ -3274,26 +3317,32 @@ class RecoveryTests(unittest.TestCase):
         (opened,) = [json.loads(text) for text in record.read_text().splitlines()]
         self.assertEqual((opened["admission"], opened["owner"][0], opened["group"], opened["session"], opened["supervised"]),
                          (identity, owner, owner, owner, True))
-        # Negative control: while its child runs, the entry stays, by hand and in admission alike.
+        # While its child runs, attended recovery leaves the entry.
         status, output = self.recover(str(owner))
         self.assertEqual(status, 1, output)
         self.assertIn(f"PID {child} (in its owner's process group {owner}, started since its owner)", output)
         self.assertIn(identity, self.owners())
-        with contextlib.redirect_stderr(StringIO()), self.assertRaisesRegex(
-                TimeoutError, re.escape(f"is dead and requires inspection (1 of its processes still run: PID {child})")):
-            with resources.Admission("refused", exclusive=True, timeout=0): self.fail("admitted")
-        self.assertIn(identity, self.owners())
-        # Once nothing it started runs, admission recovers the entry itself and admits exclusive work.
+        # Once nothing it started runs, attended recovery removes it.
         self.end(child, child_start)
-        with contextlib.redirect_stderr(StringIO()) as error, resources.Admission("next", exclusive=True, timeout=0) as admitted:
-            self.assertEqual(list(self.owners()), [admitted.identity])
-        self.assertIn(f"heavy: Recovered BreezEPUB ways-in (PID {owner}): it ended before its first command, and nothing "
-                      "started since it still runs in its process group or session", error.getvalue())
+        status, output = self.recover(str(owner))
+        self.assertEqual(status, 0, output)
+        self.assertIn(f"Recovered BreezEPUB ways-in (PID {owner}): it ended before its first command, and nothing "
+                      "started since it still runs in its process group or session", output)
         self.assertFalse(record.exists())
         self.assertFalse(self.guard.exists())
         entries, _unreadable = resources.read_log()
         (recovered,) = [entry for entry in entries if entry["event"] == "recovered" and entry["identity"] == identity]
-        self.assertEqual((recovered["automatic"], recovered["commands"]), (True, 0))
+        self.assertEqual((recovered.get("automatic"), recovered["commands"]), (None, 0))
+        # Admission does not wait for it: an owner that has ended is freed at once, its child still running. The child
+        # is in its group, not below a process proven the owner's, so it is not signaled (vocaro/queuekeeper#23).
+        owner, identity, child, child_start = self.killed_before_first_command()
+        with contextlib.redirect_stderr(StringIO()) as error, resources.Admission("next", exclusive=True, timeout=0) as admitted:
+            self.assertEqual(list(self.owners()), [admitted.identity])
+        self.assertIn(f"heavy: reclaimed BreezEPUB ways-in (PID {owner})", error.getvalue())
+        self.assertEqual(resources.process_start(child), child_start)
+        entries, _unreadable = resources.read_log()
+        (reclaimed,) = [entry for entry in entries if entry["event"] == "reclaimed" and entry["identity"] == identity]
+        self.assertEqual((reclaimed["process"], reclaimed["signaled"]), ("ended", []))
 
     def test_an_owner_killed_before_its_first_command_whose_pid_was_reused_counts_as_ended(self):
         # PID 8641's entry read a start of 22:24 while an iOS simulator process started at 00:25 had its PID (#315).
@@ -3317,10 +3366,10 @@ class RecoveryTests(unittest.TestCase):
         self.assertFalse(self.guard.exists())
         self.assertIsNone(reuser.poll())
 
-    def test_admission_recovers_a_stranded_entry_whose_commands_have_ended_and_admits_the_request(self):
+    def test_admission_frees_a_stranded_entry_whose_owner_has_ended_and_admits_the_request(self):
         # A task stop's SIGKILL stranded entries whose commands had all ended, and every session's heavy work on
-        # both Macs waited until the owner removed them by hand (2026-11-01). Admission now recovers such an entry
-        # itself, by the checks an attended recovery makes, and logs it as automatic.
+        # both Macs waited until the owner removed them by hand (2026-11-01). Admission now frees such an entry
+        # itself at once, marked uncertain or not, and logs it as reclaimed (vocaro/queuekeeper#23).
         for uncertain in [False, True]:
             with self.subTest(uncertain=uncertain), contextlib.ExitStack() as stack:
                 error = stack.enter_context(contextlib.redirect_stderr(StringIO()))
@@ -3333,11 +3382,11 @@ class RecoveryTests(unittest.TestCase):
                 with resources.Admission("next", timeout=0) as admitted:
                     self.assertEqual(set(self.owners()), {live.identity, admitted.identity})
                 self.assertFalse(record.exists())
-                self.assertIn("heavy: Recovered stranded (PID ", error.getvalue())
+                self.assertIn("heavy: reclaimed stranded (PID ", error.getvalue())
                 entries, _unreadable = resources.read_log()
-                (recovered,) = [entry for entry in entries if entry["event"] == "recovered" and entry["identity"] == identity]
-                self.assertTrue(recovered["automatic"])
-                self.assertEqual(recovered["uncertain"], uncertain)
+                (reclaimed,) = [entry for entry in entries if entry["event"] == "reclaimed" and entry["identity"] == identity]
+                self.assertEqual((reclaimed["process"], reclaimed["uncertain"], reclaimed["by"]["identity"]),
+                                 ("ended", uncertain, admitted.identity))
         # An attended recovery's line does not say automatic.
         identity = self.stranded([{"command": "a", "argv": ["true"]}, {"command": "a", "settled": True}])
         self.assertEqual(self.recover(identity)[0], 0)
@@ -3345,27 +3394,25 @@ class RecoveryTests(unittest.TestCase):
         (recovered,) = [entry for entry in entries if entry["event"] == "recovered" and entry["identity"] == identity]
         self.assertNotIn("automatic", recovered)
 
-    def test_admission_leaves_an_entry_whose_recorded_process_still_runs_and_checks_it_again_later(self):
-        sleeper = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
-        self.addCleanup(lambda: sleeper.poll() is None and (sleeper.kill(), sleeper.wait()))
-        start = resources.process_start(sleeper.pid)
-        identity = self.stranded([{"command": "a", "argv": ["sleep"]},
-                                  {"command": "a", "root": sleeper.pid, "processes": [[sleeper.pid, start]], "spaces": []}])
+    def test_admission_leaves_an_uncertain_entry_whose_owner_still_runs_and_checks_it_again_later(self):
+        identity = self.stranded([{"command": "a", "argv": ["sleep"]}], live=True)
         with contextlib.redirect_stderr(StringIO()), patch.dict(os.environ, {"HEAVY_RECOVER_SECONDS": "3600"}):
             # Counted as the slot it held, so exclusive work waits behind it (#89).
-            with self.assertRaisesRegex(TimeoutError, re.escape(f"is dead and requires inspection (1 of its processes "
-                                                                f"still run: PID {sleeper.pid}), and is counted as slot 0")):
+            with self.assertRaisesRegex(TimeoutError, re.escape("is uncertain and requires inspection (its owner still "
+                                                                "runs), and is counted as slot 0")):
                 with resources.Admission("refused", exclusive=True, timeout=0): self.fail("admitted")
             self.assertIn(identity, self.owners())
             waiting = resources.Admission("waiting", exclusive=True, timeout=0)
             self.assertFalse(waiting._attempt())
-            # Reaped, so that no zombie keeps its PID and start.
-            sleeper.kill()
-            sleeper.wait()
-            # Within HEAVY_RECOVER_SECONDS the entry is not checked again, so a census runs once a minute at most.
-            self.assertFalse(waiting._attempt())
+            # Its owner settles the entry as ended, as one whose stop has drained but whose process lingers: within
+            # HEAVY_RECOVER_SECONDS it is not recovered again, so a census runs once a minute at most.
+            with patch.object(resources, "reclaim", side_effect=AssertionError("checked again")):
+                self.assertFalse(waiting._attempt())
             self.assertIn(identity, self.owners())
-            waiting.recheck = 0
+            # Once its owner has ended, the next attempt frees it at once (vocaro/queuekeeper#23).
+            owners = self.owners()
+            owners[identity]["pid"], owners[identity]["start"] = self.ended_process()
+            resources.publish_guard(self.guard, {"vocaroEngineering": 1, "owners": owners})
             self.assertTrue(waiting._attempt())
             self.assertEqual(list(self.owners()), [waiting.identity])
             waiting.__exit__(None, None, None)
@@ -3382,21 +3429,15 @@ class RecoveryTests(unittest.TestCase):
         # it held, its own slot here, which its slot file names; work within the free slots is admitted beside it,
         # and work beyond them, exclusive work among it, waits, with the entry and its slots named.
         os.environ["HEAVY_SLOTS_MAX"] = "2"
-        sleeper = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
-        self.addCleanup(lambda: sleeper.poll() is None and (sleeper.kill(), sleeper.wait()))
-        running = [{"command": "a", "argv": ["sleep"]},
-                   {"command": "a", "root": sleeper.pid, "processes": [[sleeper.pid, resources.process_start(sleeper.pid)]],
-                    "spaces": []}]
-        # No process record; a record that cannot vouch for every command; a process still running, which counts alike.
-        for name, record, why in [("no record", None, "it has no process record"),
-                                  ("unvouched", [{"command": "a", "argv": ["true"]}],
-                                   "its process record cannot vouch for every command"),
-                                  ("running", running, f"1 of its processes still run: PID {sleeper.pid}")]:
+        # An uncertain entry whose owner still runs, with no process record or with one: they count alike. One whose
+        # owner has ended is freed instead (vocaro/queuekeeper#23).
+        why = "its owner still runs"
+        for name, record in [("no record", None), ("recorded", [{"command": "a", "argv": ["true"]}])]:
             with self.subTest(name), contextlib.ExitStack() as stack:
                 error = stack.enter_context(contextlib.redirect_stderr(StringIO()))
                 self.guard.unlink(missing_ok=True)
                 resources.log_path().unlink(missing_ok=True)
-                identity = self.stranded(record)
+                identity = self.stranded(record, live=True)
                 self.slot_names(1, identity)
                 entry = self.owners()[identity]
                 beside = stack.enter_context(resources.Admission("beside", timeout=0))
@@ -3404,8 +3445,8 @@ class RecoveryTests(unittest.TestCase):
                 os.environ.pop(resources.TOKEN)
                 # Within the free slots: admitted beside the entry, in the slot it does not hold.
                 self.assertEqual([slot for slot, _fd in beside.descriptors], [0])
-                counted = (f"the guard entry of stranded, PID {entry['pid']}, is dead and requires inspection ({why}), and "
-                           "is counted as slot 1; `python3 scripts/qk admissions recover` lists it")
+                counted = (f"the guard entry of stranded, PID {entry['pid']}, is uncertain and requires inspection ({why}), "
+                           "and is counted as slot 1; `python3 scripts/qk admissions recover` lists it")
                 self.assertIn(f"heavy: admitted beside a stranded entry: {counted}", error.getvalue())
                 # Beyond them, and exclusive work: each waits, naming the entry and its slot.
                 for options, reason in [({}, f"all 2 guaranteed slots are busy and {mine('HEAVY_SLOTS_MAX=2')} allows none "
@@ -3420,10 +3461,10 @@ class RecoveryTests(unittest.TestCase):
                     (line,) = [line for line in self.read() if line["identity"] == refused.identity]
                     self.assertEqual(line["wait"]["refusals"], {"stranded": 1})
                     self.assertEqual(line["stranded"], [{"identity": identity, "pid": entry["pid"], "label": "stranded",
-                                                         "uncertain": False, "why": why, "slots": [1], "model": False}])
+                                                         "uncertain": True, "why": why, "slots": [1], "model": False}])
                 (admitted,) = [line for line in self.read() if line["identity"] == beside.identity]
                 self.assertEqual(admitted["stranded"][0]["slots"], [1])
-                # Never removed, nor its record: nothing proves it finished.
+                # Never removed, nor its record: its owner still runs.
                 self.assertEqual(self.owners()[identity], entry)
                 self.assertEqual(resources.record_path(self.guard, identity).exists(), record is not None)
                 self.assertFalse(any(line["event"] == "recovered" for line in self.read()))
@@ -3448,9 +3489,9 @@ class RecoveryTests(unittest.TestCase):
         for entry, options, held, reason in cases:
             with self.subTest(held), contextlib.redirect_stderr(StringIO()):
                 self.guard.unlink(missing_ok=True)
-                identity = self.stranded(**entry)
-                counted = (f"the guard entry of stranded, PID {self.owners()[identity]['pid']}, is dead and requires "
-                           f"inspection (it has no process record), and is counted as {held}")
+                identity = self.stranded(live=True, **entry)
+                counted = (f"the guard entry of stranded, PID {self.owners()[identity]['pid']}, is uncertain and requires "
+                           f"inspection (its owner still runs), and is counted as {held}")
                 with self.assertRaisesRegex(TimeoutError, re.escape(f"({reason}; {counted}; `python3 scripts/qk")):
                     with resources.Admission("refused", timeout=0, **options): self.fail("admitted")
                 self.assertIn(identity, self.owners())
@@ -3468,7 +3509,7 @@ class RecoveryTests(unittest.TestCase):
         # The negative control: with no stranded entry, the queued request holds the work back.
         with contextlib.redirect_stderr(StringIO()), self.assertRaisesRegex(TimeoutError, "queued ahead of it: bench"):
             with resources.Admission("held back", timeout=0): self.fail("admitted")
-        identity = self.stranded()
+        identity = self.stranded(live=True)
         with contextlib.redirect_stderr(StringIO()), resources.Admission("beside", timeout=0) as beside:
             self.assertEqual([slot for slot, _fd in beside.descriptors], [1])
         self.assertIn(identity, self.owners())
@@ -3487,13 +3528,13 @@ class RecoveryTests(unittest.TestCase):
         with patch.dict(os.environ, {"HEAVY_SLOTS_MAX": "2"}), contextlib.redirect_stderr(StringIO()), \
                 self.assertRaisesRegex(TimeoutError, "kept for a whole-host lane queued ahead of it: gate"):
             with resources.Admission("held back", timeout=0): self.fail("admitted")
-        beyond = self.stranded()
+        beyond = self.stranded(live=True)
         (resources.slot_directory() / "slot2").write_text(f"1 {beyond} stranded\n")
         with contextlib.redirect_stderr(StringIO()), \
                 self.assertRaisesRegex(TimeoutError, "kept for a whole-host lane queued ahead of it: gate; and .*"
                                                      "is counted as slot 2"):
             with resources.Admission("still held back", timeout=0): self.fail("admitted")
-        guaranteed = self.stranded()
+        guaranteed = self.stranded(live=True)
         with contextlib.redirect_stderr(StringIO()), resources.Admission("beside", timeout=0) as beside:
             self.assertEqual([slot for slot, _fd in beside.descriptors], [1])
         self.assertEqual({beyond, guaranteed} - set(self.owners()), set())
@@ -3899,10 +3940,16 @@ class RecoveryTests(unittest.TestCase):
             self.assertEqual(self.guard.read_text(), text)
         self.guard.unlink()
         identity = self.stranded(admitted=(datetime.now().astimezone() - timedelta(hours=2)).isoformat(timespec="seconds"))
+        # An uncertain entry whose owner still runs is counted, and admission names the command; the dead one beside it
+        # admission would free (vocaro/queuekeeper#23), so the refusal is checked with the dead one set aside.
+        dead = self.owners()
+        self.guard.unlink()
+        self.stranded(live=True)
         with contextlib.redirect_stderr(StringIO()) as error, self.assertRaisesRegex(TimeoutError, "qk admissions recover"):
             with resources.Admission("refused", exclusive=True, timeout=0): self.fail("admitted")
-        self.assertIn("requires inspection (it has no process record), and is counted as slot 0; "
+        self.assertIn("requires inspection (its owner still runs), and is counted as slot 0; "
                       "`python3 scripts/qk admissions recover` lists it", error.getvalue())
+        resources.publish_guard(self.guard, {"vocaroEngineering": 1, "owners": dead})
         status, output = self.recover()
         self.assertEqual(status, 0, output)
         self.assertIn(f"1 entry of {self.guard} is dead or uncertain:", output)
@@ -3941,6 +3988,229 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(status, 0, output)
         self.assertIn("Recovered stranded", output)
         self.assertFalse(self.guard.exists())
+
+
+class ReclamationTests(unittest.TestCase):
+    """A holder admission cannot confirm running, its PID gone, reused or its start unreadable, loses its slot at the
+    next attempt: what is left of it is stopped, by PID and start only, its entry and slot freed, and the next waiter
+    admitted (the owner's decision, 2026-11-13, vocaro/queuekeeper#23). On 2026-11-12 a ps census that failed left two
+    holders whose PIDs were gone holding slots 3 and 4 while a gate and two lanes waited. Every signal goes through a
+    recorder that passes on only those the test expects, to processes the test started, in a private namespace."""
+    setUp, tearDown = ResourceTests.setUp, ResourceTests.tearDown
+
+    @property
+    def guard(self):
+        return Path(os.environ["QUEUEKEEPER_GATE_LOCK_FILE"] + ".warm-push-guard")
+
+    def owners(self):
+        return json.loads(self.guard.read_text())["owners"] if self.guard.exists() else {}
+
+    def lines(self, event="reclaimed"):
+        entries, _unreadable = resources.read_log()
+        return [entry for entry in entries if entry["event"] == event]
+
+    def sleeper(self, child=False):
+        """A process this test started, sleeping, reaped as soon as it ends: its PID and start, and, with child, those
+        of a child it started below it."""
+        code = ("import subprocess, sys, time\n"
+                + ("child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
+                   "print(child.pid, flush=True)\n" if child else "print(0, flush=True)\n") + "time.sleep(120)\n")
+        process = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, text=True)
+        below = int(process.stdout.readline())
+        threading.Thread(target=process.wait, daemon=True).start()
+        found = [(process.pid, resources.process_start(process.pid))]
+        if child: found.append((below, resources.process_start(below)))
+        for pid, start in found:
+            self.addCleanup(lambda pid=pid, start=start: resources.process_start(pid) == start
+                            and os.kill(pid, signal.SIGKILL))
+        self.addCleanup(process.stdout.close)
+        return found
+
+    def ended_process(self):
+        process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        start = resources.process_start(process.pid)
+        process.kill()
+        process.wait()
+        return process.pid, start
+
+    def hold(self, pid, start, slot=0, record=None, **fields):
+        """A guard entry for pid and start, its slot file naming it, and its process record: its identity."""
+        identity = uuid.uuid4().hex
+        owners = self.owners()
+        owners[identity] = {"pid": pid, "start": start, "label": f"holder {pid}", "exclusive": False, "model": False,
+                            "admitted": "2026-11-12T17:44:00+00:00", **fields}
+        resources.publish_guard(self.guard, {"vocaroEngineering": 1, "owners": owners})
+        directory = resources.slot_directory()
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / f"slot{slot}").write_text(f"{pid} {identity} holder {pid}\n")
+        if record is not None:
+            resources.record_path(self.guard, identity).write_text("".join(json.dumps(line) + "\n" for line in record))
+        return identity
+
+    @contextlib.contextmanager
+    def signals(self, allowed=()):
+        """Record every signal but the existence check, and pass on only those to the PIDs allowed."""
+        real, sent = os.kill, []
+        def kill(pid, number):
+            if number == 0: return real(pid, number)
+            sent.append((pid, signal.Signals(number).name))
+            if pid in allowed: return real(pid, number)
+        with patch.object(resources.os, "kill", side_effect=kill):
+            yield sent
+
+    def failing(self, pids, error):
+        """subprocess.run, but `ps -p` of one of pids raises error, as a ps that fails or times out does."""
+        real = subprocess.run
+        def run(command, *args, **kwargs):
+            if command[:2] == ["ps", "-p"] and set(command[2].split(",")) & {str(pid) for pid in pids}: raise error
+            return real(command, *args, **kwargs)
+        return patch.object(resources.subprocess, "run", side_effect=run)
+
+    def admitted_next(self, slot=0):
+        """The next waiter's admission, which must take the freed slot."""
+        with contextlib.redirect_stderr(StringIO()) as error, resources.Admission("next", timeout=0) as admitted:
+            self.assertEqual([taken for taken, _fd in admitted.descriptors], [slot])
+            self.assertIn(admitted.identity, self.owners())
+        return admitted, error.getvalue()
+
+    def test_a_holder_whose_pid_is_gone_is_freed_and_what_is_left_of_it_stopped(self):
+        os.environ.update(HEAVY_SLOTS="1", HEAVY_SLOTS_MAX="1")
+        pid, start = self.ended_process()
+        (left, left_start), (below, below_start) = self.sleeper(child=True)
+        mine = resources.process_start(os.getpid())
+        # Its record names a process still running as itself, with a child below it, and this process and its parent,
+        # which are never signaled.
+        identity = self.hold(pid, start, record=[{"command": "a", "argv": ["swift", "test"]},
+                                                 {"command": "a", "root": left, "processes": [[left, left_start]]},
+                                                 {"command": "b", "processes": [[os.getpid(), mine]]}])
+        with self.signals(allowed={left, below}) as sent:
+            admitted, said = self.admitted_next()
+        self.assertEqual(sorted(sent), sorted([(left, "SIGTERM"), (below, "SIGTERM")]))
+        self.assertNotEqual(resources.process_start(left), left_start)
+        self.assertNotEqual(resources.process_start(below), below_start)
+        self.assertNotIn(identity, self.owners())
+        self.assertFalse(resources.record_path(self.guard, identity).exists())
+        (line,) = self.lines()
+        self.assertEqual((line["identity"], line["pid"], line["process"], line["why"], line["slots"], line["model"]),
+                         (identity, pid, "ended", f"its PID {pid} is gone", [0], False))
+        self.assertEqual(sorted((item["pid"], tuple(item["signals"])) for item in line["signaled"]),
+                         sorted([(left, ("SIGTERM",)), (below, ("SIGTERM",))]))
+        self.assertEqual((line["survived"], line["replaced"], line["by"]["identity"]), ([], [], admitted.identity))
+        self.assertIn(f"heavy: reclaimed holder {pid} (PID {pid}), slot 0: its process has ended (its PID {pid} is gone); "
+                      f"signaled PID ", said)
+        (logged,) = [entry for entry in self.lines("admitted") if entry["identity"] == admitted.identity]
+        self.assertEqual(logged["reclaimed"], [identity])
+
+    def test_a_reused_pid_is_freed_and_never_signaled(self):
+        os.environ.update(HEAVY_SLOTS="1", HEAVY_SLOTS_MAX="1")
+        ((other, other_start),) = self.sleeper()
+        # Another process now has the holder's PID, and a process its record names: neither start matches.
+        identity = self.hold(other, "Thu Jan  1 00:00:00 1970",
+                             record=[{"command": "a", "processes": [[other, "Fri Jan  2 00:00:00 1970"]]}])
+        with self.signals() as sent:
+            self.admitted_next()
+        self.assertEqual(sent, [])
+        self.assertEqual(resources.process_start(other), other_start)
+        self.assertNotIn(identity, self.owners())
+        (line,) = self.lines()
+        self.assertEqual((line["process"], line["signaled"]), ("ended", []))
+        self.assertIn(f"its PID {other} runs another process, started {' '.join(other_start.split())}", line["why"])
+
+    def test_a_ps_census_that_fails_or_times_out_frees_what_the_kernel_reads_as_ended_and_keeps_a_live_holder(self):
+        if sys.platform != "darwin": self.skipTest("the kernel's record of a process is read on macOS")
+        os.environ.update(HEAVY_SLOTS="2", HEAVY_SLOTS_MAX="2")
+        for error in [subprocess.TimeoutExpired(["ps"], resources.ENDED_PS_SECONDS), OSError("ps could not start")]:
+            with self.subTest(type(error).__name__):
+                self.guard.unlink(missing_ok=True)
+                resources.log_path().unlink(missing_ok=True)
+                ((live, live_start),), ((other, _other_start),) = self.sleeper(), self.sleeper()
+                kept = self.hold(live, live_start, slot=1)
+                # The live holder's lock, which it holds as long as it runs.
+                _slot, held = resources.take_slot(resources.slot_directory(), 2, start=1)
+                reused = self.hold(other, "Thu Jan  1 00:00:00 1970")
+                try:
+                    with self.failing([live, other], error), self.signals() as sent:
+                        self.admitted_next(slot=0)
+                finally:
+                    os.close(held)
+                self.assertEqual(sent, [])
+                self.assertEqual(set(self.owners()), {kept})
+                (line,) = self.lines()
+                self.assertEqual((line["identity"], line["process"]), (reused, "ended"))
+                self.assertIn("runs another process", line["why"])
+
+    def test_a_holder_whose_start_cannot_be_read_is_freed_and_nothing_of_it_is_signaled(self):
+        os.environ.update(HEAVY_SLOTS="1", HEAVY_SLOTS_MAX="1")
+        (pid, start), (below, below_start) = self.sleeper(child=True)
+        identity = self.hold(pid, start, record=[{"command": "a", "processes": [[pid, start], [below, below_start]]}])
+        # Something still holds its slot's lock, as the holder would if it runs: the lock is replaced.
+        _slot, held = resources.take_slot(resources.slot_directory(), 1)
+        self.addCleanup(os.close, held)
+        real = resources.kernel_start
+        def kernel(asked):
+            if asked == pid: raise OSError("sysctl KERN_PROC_PID: the kernel would not say")
+            return real(asked)
+        with self.failing([pid], subprocess.TimeoutExpired(["ps"], resources.ENDED_PS_SECONDS)), \
+                patch.object(resources, "kernel_start", side_effect=kernel), self.signals() as sent:
+            _admitted, said = self.admitted_next()
+        # Its PID is not proven its own, so neither it nor its child is signaled.
+        self.assertEqual(sent, [])
+        self.assertEqual((resources.process_start(pid), resources.process_start(below)), (start, below_start))
+        self.assertNotIn(identity, self.owners())
+        (line,) = self.lines()
+        self.assertEqual((line["process"], line["signaled"], line["replaced"]), ("unknown", [], ["slot0"]))
+        self.assertIn(f"ps took more than {resources.ENDED_PS_SECONDS}s", line["why"])
+        self.assertIn("neither it nor anything under it was signaled", line["unsignaled"])
+        self.assertIn("its process could not be checked", said)
+
+    def test_a_live_confirmed_holder_keeps_its_slot(self):
+        # The control: a holder whose PID runs with its recorded start is never freed or signaled.
+        os.environ.update(HEAVY_SLOTS="1", HEAVY_SLOTS_MAX="1")
+        ((pid, start),) = self.sleeper()
+        identity = self.hold(pid, start)
+        _slot, held = resources.take_slot(resources.slot_directory(), 1)
+        self.addCleanup(os.close, held)
+        with self.signals() as sent, contextlib.redirect_stderr(StringIO()), self.assertRaises(TimeoutError):
+            with resources.Admission("next", timeout=0): self.fail("admitted")
+        self.assertEqual(sent, [])
+        self.assertEqual(list(self.owners()), [identity])
+        self.assertEqual(resources.process_start(pid), start)
+        self.assertEqual(self.lines(), [])
+
+    def test_stop_holder_signals_only_what_runs_as_itself_and_never_this_process_or_its_ancestors(self):
+        # With a fake process table: the owner runs as itself, a child below it, this process, its parent and a
+        # process whose PID was reused since the record named it.
+        me, parent = os.getpid(), os.getppid()
+        table = {5001: (1, 5001, "Thu Nov 12 17:00:00 2026"), 5002: (5001, 5001, "Thu Nov 12 17:00:01 2026"),
+                 5003: (1, 5003, "Thu Nov 12 18:00:00 2026"), me: (parent, me, "now"), parent: (1, parent, "then")}
+        gone = set()
+        def kill(pid, number):
+            if number == signal.SIGTERM: gone.add(pid)
+        def start_of(pid):
+            return None if pid in gone else table[pid][2] if pid in table else None
+        identity = uuid.uuid4().hex
+        resources.record_path(self.guard, identity).parent.mkdir(parents=True, exist_ok=True)
+        resources.record_path(self.guard, identity).write_text("".join(json.dumps(line) + "\n" for line in [
+            {"command": "a", "processes": [[5003, "Wed Nov 11 09:00:00 2026"], [me, "now"], [parent, "then"]]}]))
+        entry = {"pid": 5001, "start": "Thu Nov 12 17:00:00 2026"}
+        stopped = resources.stop_holder(self.guard, identity, entry, "ended", listing=lambda: table, start_of=start_of,
+                                        kill=kill, clock=time.monotonic, sleep=lambda _seconds: None)
+        self.assertEqual([(item["pid"], item["signals"]) for item in stopped["signaled"]],
+                         [(5001, ["SIGTERM"]), (5002, ["SIGTERM"])])
+        self.assertEqual(stopped["survived"], [])
+        # What survives SIGTERM gets SIGKILL after the bound; one that survives that is named.
+        gone.clear()
+        stubborn = []
+        with patch.object(resources, "RECLAIM_TERM_SECONDS", 0), patch.object(resources, "RECLAIM_KILL_SECONDS", 0):
+            stopped = resources.stop_holder(self.guard, identity, entry, "ended", listing=lambda: table,
+                                            start_of=lambda pid: table[pid][2] if pid in table else None,
+                                            kill=lambda pid, number: stubborn.append((pid, number)), sleep=lambda _s: None)
+        self.assertEqual(stubborn, [(5001, signal.SIGTERM), (5002, signal.SIGTERM),
+                                    (5001, signal.SIGKILL), (5002, signal.SIGKILL)])
+        self.assertEqual(stopped["survived"], [5001, 5002])
+        # An unknown holder is signaled nothing.
+        self.assertEqual(resources.stop_holder(self.guard, identity, entry, "unknown", listing=lambda: table,
+                                               start_of=start_of, kill=lambda *_: self.fail("signaled"))["signaled"], [])
 
 
 class LaneLabelTests(unittest.TestCase):

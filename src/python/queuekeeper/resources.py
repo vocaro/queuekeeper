@@ -4,8 +4,9 @@ Admission records each job it admits in a guard, named by StudyWright's former h
 QUEUEKEEPER_GATE_LOCK_FILE, `/tmp/queuekeeper-gate-suite.lock` by default, with `.warm-push-guard`
 appended. StudyWright's gate checks an inherited admission against that path, and tests isolate
 admission by redirecting it; admission takes no lock there (#25). Exclusive work holds every old
-PDF slot. Crashed owners retain their guard for explicit inspection rather than treating a
-deadline as release.
+PDF slot. A deadline is never a release. An owner whose process has ended, or that admission
+cannot confirm still runs, loses its entry and its slots at the next attempt, which stops what is
+left of it first (vocaro/queuekeeper#23).
 
 HEAVY_SLOTS jobs are always admitted while no exclusive request waits. More, up to
 HEAVY_SLOTS_MAX, are admitted one at a time while the CPU's busy share and memory pressure show
@@ -55,10 +56,13 @@ removes the entry only when nothing of an unsettled command still runs (#61). An
 record is left for a check by hand, and `qk admissions remove`, which no allow rule matches, removes it once nothing
 its owner may have started is found running. Admission writes the record's first line as it adds the entry, so that an
 owner killed before its first command leaves a record too, and recovery then checks the owner's process group for
-what it started (#315). Admission runs the same recovery itself on each dead or uncertain
-entry it meets, so that an entry a task stop's SIGKILL stranded, whose commands have all ended, no
-longer holds every session's heavy work until a person removes it. An entry recovery leaves counts as
-the slots it held, every slot for exclusive work, so that only work beyond them waits (#89).
+what it started (#315). Admission itself frees each entry it meets whose owner has ended or cannot be confirmed
+running, at once: it sends SIGTERM, then SIGKILL, to what is left of the owner, each process checked by PID and start
+first, removes the entry, frees its slots and the model, and logs why. Uncertainty about a holder never keeps a slot
+held: jobs can be rerun, and the queue moving comes first (the owner's decision, 2026-11-13, vocaro/queuekeeper#23).
+An uncertain entry whose owner still runs, its stop being carried out, admission recovers as `qk admissions recover`
+would, and one recovery leaves counts as the slots it held, every slot for exclusive work, so that only work beyond
+them waits (#89).
 """
 import argparse
 from collections import Counter
@@ -883,6 +887,8 @@ class Admission:
         self.refusal = self.waiting = None
         # The dead or uncertain entries recovery left, by identity: when they were checked, and why they stayed.
         self.unrecovered = {}
+        # The identities of the entries this request's attempts freed, their owners ended or unknown (free_holder).
+        self.reclaimed = []
         # The latest attempt's stranded entries, those recovery left: by identity, the entry and why it stayed;
         # then, as counted, each one's identity, entry, why, the slots it is counted as and whether the model.
         self.stranded, self.counted = {}, []
@@ -971,10 +977,12 @@ class Admission:
         """The published guard, or None, with the refusal naming why, when it is unreadable or not in admission's
         format. A guard admission cannot read is never overwritten: whatever wrote it may still run what it records.
 
-        Each dead or uncertain entry is recovered here, as `qk admissions recover` would recover it, so that a
-        stranded entry whose commands have all ended no longer holds every session's heavy work until a person
-        removes it. An entry recovery leaves is checked again after HEAVY_RECOVER_SECONDS. Until then it stays in
-        self.stranded, and the attempt counts it as the slots it held (#89)."""
+        An entry whose owner admission cannot confirm running, its process ended or unknown (liveness), is freed here
+        at once, what is left of it stopped (free_holder): uncertainty about a holder never keeps a slot held (the
+        owner's decision, 2026-11-13, vocaro/queuekeeper#23). An uncertain entry whose owner still runs is recovered
+        here, as `qk admissions recover` would recover it. One recovery leaves is checked again after
+        HEAVY_RECOVER_SECONDS. Until then it stays in self.stranded, and the attempt counts it as the slots it held
+        (#89)."""
         self.stranded = {}
         if not self.guard.exists():
             return {"vocaroEngineering": 1, "owners": {}}
@@ -983,9 +991,16 @@ class Admission:
             self.refusal, self.waiting = "guard", (f"the guard {self.guard} is unreadable or not in admission's format "
                                                    "and requires inspection; `python3 scripts/qk admissions recover` lists it")
             return None
-        # Never reclaim a disappeared owner without a census: its children may still use a different session.
         for identity, owner in list(value["owners"].items()):
-            if not (owner.get("uncertain") or not running(owner)):
+            condition, how = liveness(owner)
+            if condition != "running":
+                line = free_holder(self.guard, self.directory, self.maximum, value, identity, condition, how,
+                                   by={"identity": self.identity, "pid": os.getpid(), "label": self.label[:LABEL_LIMIT]})
+                self.unrecovered.pop(identity, None)
+                self.reclaimed.append(identity)
+                print(f"heavy: {reclaimed_words(line)}", file=sys.stderr, flush=True)
+                continue
+            if not owner.get("uncertain"):
                 continue
             why = self._reclaim(value, identity)
             if why is not None:
@@ -1086,6 +1101,9 @@ class Admission:
             fields["stranded"] = [{"identity": identity, "pid": owner["pid"], "label": str(owner.get("label"))[:LABEL_LIMIT],
                                    "uncertain": bool(owner.get("uncertain")), "why": why, "slots": slots, "model": model}
                                   for identity, owner, why, slots, model in self.counted]
+        if self.reclaimed:
+            # The entries its attempts freed, each with a `reclaimed` line of its own (vocaro/queuekeeper#23).
+            fields["reclaimed"] = list(self.reclaimed)
         if self.refusals:
             last, peak = self.loads[1:] if self.loads else (None, None)
             busy_last, busy_peak = self.busies[1:] if self.busies else (None, None)
@@ -1607,7 +1625,7 @@ def read_entry(line):
         entry = json.loads(line)
         entry["time"] = datetime.fromisoformat(entry["time"])
         # A recovery's line counts no seconds of its own.
-        field = {"admitted": "waited", "withdrawn": "waited", "ended": "held", "recovered": None,
+        field = {"admitted": "waited", "withdrawn": "waited", "ended": "held", "recovered": None, "reclaimed": None,
                  "device-lane-passed": "held"}[entry["event"]]
         seconds = entry[field] if field else 0
         # What the request saw, as the summary reads it: the load, and the refusals of each kind and the
@@ -1723,8 +1741,9 @@ def summarize(entries, since=None, until=None):
                 continue
             group["admitted"] += 1
             # An admission with no end logged is still held, or its process was killed and its entry
-            # either awaits recovery or was recovered since.
-            group["ends"][end["outcome"] if end else "recovered" if "recovered" in lines else "unlogged"] += 1
+            # either awaits recovery or was recovered or reclaimed since (vocaro/queuekeeper#23).
+            group["ends"][end["outcome"] if end else "recovered" if "recovered" in lines
+                          else "reclaimed" if "reclaimed" in lines else "unlogged"] += 1
             if end: group["held"].append(end["held"])
 
     def counts(counter):
@@ -1820,13 +1839,14 @@ LABELS_SHOWN = 3
 def spans(entries, since, until):
     """The admissions of entries that overlap [since, until), each as (start, end, whole host) clipped to it, and how
     many admissions with no end logged are taken as ended. An admission is held from its admitted line to its ended or,
-    without one, its recovered line; one admitted before the log's first line begins its held seconds before its end."""
+    without one, its recovered or reclaimed line; one admitted before the log's first line begins its held seconds
+    before its end."""
     lines = {}
     for entry in entries:
         lines.setdefault(entry["identity"], {})[entry["event"]] = entry
     found, dead = [], 0
     for each in lines.values():
-        admitted, end = each.get("admitted"), each.get("ended") or each.get("recovered")
+        admitted, end = each.get("admitted"), each.get("ended") or each.get("recovered") or each.get("reclaimed")
         if admitted is not None: start = admitted["time"]
         elif each.get("ended") is not None: start = end["time"] - timedelta(seconds=end["held"])
         else: continue
@@ -1895,7 +1915,7 @@ def placement_lines(entries, since, until):
     for each in lines.values():
         admitted = each.get("admitted")
         if admitted is None or not since <= admitted["time"] < until: continue
-        end = each.get("ended") or each.get("recovered")
+        end = each.get("ended") or each.get("recovered") or each.get("reclaimed")
         held = ((end["time"] if end else min(until, datetime.now(timezone.utc))) - admitted["time"]).total_seconds()
         group, reason = placed(admitted)
         counted = groups.setdefault(group, {}).setdefault(reason, [0, 0.0, Counter()])
@@ -2003,7 +2023,7 @@ def usage_main(argv=None, out=print):
 def unknown_host(name, role, why, state="unknown"):
     """A host `qk admissions now` could not read: unknown, never idle; or notConfigured, a second Mac there is not."""
     return {"name": name, "role": role, "state": state, "reasons": [why], "observedAt": None, "limits": None,
-            "slots": None, "model": None, "holders": None, "unattributed": None, "waiters": None}
+            "slots": None, "model": None, "holders": None, "unattributed": None, "waiters": None, "reclaimed": None}
 
 
 def admissions_now(here_only=False, read_here=None, read_there=None, configured=None):
@@ -2057,6 +2077,33 @@ def progress_lines(holder):
     return lines
 
 
+def reclaimed_lines(reclaimed):
+    """The holders admission reclaimed lately (offload_host.reclaimed_lately), a line each, for `qk admissions now`:
+    each slot it held is free, and says so, with when, why and what was signaled (vocaro/queuekeeper#23). Nothing
+    when there are none, or the reading, an older toolkit's, does not say."""
+    if not reclaimed: return []
+    lines = ["  reclaimed:"]
+    for item in reclaimed:
+        kind = ("exclusive" if item.get("kind") == "exclusive" else "whole-host" if item.get("wholeHost") else "heavy") \
+            + (" with the model" if item.get("model") and item.get("kind") != "exclusive" else "")
+        where = "every slot" if item.get("kind") == "exclusive" else \
+            ", ".join(f"slot {slot}" for slot in item.get("slots") or []) or "no slot its files named"
+        moment = item.get("reclaimedAt")
+        when = (f"{duration(item['reclaimedSeconds'])} ago" if isinstance(item.get("reclaimedSeconds"), (int, float))
+                else "at an unknown time") + (f", at {datetime.fromtimestamp(moment).strftime('%H:%M:%S')}"
+                                               if isinstance(moment, (int, float)) else "")
+        condition = {"ended": "its process had ended", "unknown": "its process could not be checked"}.get(
+            item.get("process"), "its process could not be confirmed running")
+        signaled = item.get("signaled") or []
+        stopped = ("; signaled " + ", ".join(f"PID {each['pid']} ({' then '.join(each.get('signals') or [])})"
+                                              for each in signaled) if signaled
+                   else f"; {item['unsignaled']}" if item.get("unsignaled") else "; nothing of it still ran to signal")
+        survived = f"; still running after SIGKILL: PID {', '.join(map(str, item['survived']))}" if item.get("survived") else ""
+        lines.append(f"    {item.get('label')}: {kind}, {where} freed, PID {item.get('pid')}, reclaimed {when}: "
+                     f"{condition}" + (f" ({item['why']})" if item.get("why") else "") + f"{stopped}{survived}")
+    return lines
+
+
 def now_lines(reading, at=None):
     """`qk admissions now` in words, host by host."""
     lines = []
@@ -2097,13 +2144,18 @@ def now_lines(reading, at=None):
                     where = ", ".join([f"slot {slot}" for slot in holder["guaranteed"]]
                                       + [f"slot {slot} (beyond the guaranteed)" for slot in holder["extra"]]) or "no slot"
                 held = f"held {duration(holder['heldSeconds'])}" if holder.get("heldSeconds") is not None else "held for an unknown time"
-                status = ("; stranded: its process has ended, and admission counts it until it is recovered "
-                          "(`python3 scripts/qk admissions recover`)" if holder.get("stranded") and holder["process"] == "ended"
-                          else "; stranded: uncertain, counted until recovered" if holder.get("stranded")
-                          else "; its process could not be checked" if holder["process"] == "unknown" else "")
+                # A holder whose process has ended or cannot be checked is freed at admission's next attempt
+                # (vocaro/queuekeeper#23); an uncertain one whose owner still runs is counted until it is recovered.
+                status = ("; its process has ended: admission frees its slots at its next attempt, stopping what is "
+                          "left of it" if holder["process"] == "ended"
+                          else "; its process could not be checked: admission frees its slots at its next attempt"
+                          if holder["process"] == "unknown"
+                          else "; stranded: uncertain, counted until recovered (`python3 scripts/qk admissions recover`)"
+                          if holder.get("stranded") else "")
                 lines.append(f"    {holder['label']}: {kind}, {where}, PID {holder['pid']}, {held}{status}")
                 if whence(holder.get("origin")): lines.append(f"      from {whence(holder['origin'])}")
                 lines += progress_lines(holder)
+        lines += reclaimed_lines(host.get("reclaimed"))
         waiters = host.get("waiters")
         if waiters is None: lines.append("  waiting: unknown")
         elif not waiters: lines.append("  waiting: none")
@@ -2175,27 +2227,215 @@ def entry_age(owner):
 ENDED_PS_SECONDS = 5
 
 
-def ended(owner):
-    """Whether an entry's owner has certainly ended: its PID is gone, or ps reads another start there. A ps that
-    fails or takes ENDED_PS_SECONDS hands the question to the kernel (kernel_start), which reads no process's
-    arguments, so that a ps that cannot say does not keep a dead owner's entry when its PID was reused
-    (vocaro/queuekeeper#23). When neither can say the owner is left running, so that recovery never takes a live owner's
-    entry: its PID still runs, and a holder slow to confirm is not a holder gone."""
-    try: os.kill(owner["pid"], 0)
-    except ProcessLookupError: return True
+def liveness(owner):
+    """Whether a guard entry's owner still runs as itself, as (state, why): running, why None; ended, its PID gone or
+    running another process; or unknown, its PID runs but neither ps, within ENDED_PS_SECONDS, nor the kernel, which
+    reads no process's arguments (kernel_start), gives its start (vocaro/queuekeeper#23)."""
+    pid = owner["pid"]
+    try: os.kill(pid, 0)
+    except ProcessLookupError: return "ended", f"its PID {pid} is gone"
     except PermissionError: pass
     try:
-        listed = subprocess.run(["ps", "-p", str(owner["pid"]), "-o", "lstart="], capture_output=True, text=True,
+        listed = subprocess.run(["ps", "-p", str(pid), "-o", "lstart="], capture_output=True, text=True,
                                 timeout=ENDED_PS_SECONDS, stdin=subprocess.DEVNULL)
-    except (OSError, subprocess.SubprocessError): listed = None
-    start = " ".join(listed.stdout.split()) if listed is not None and listed.returncode == 0 else ""
+        start = " ".join(listed.stdout.split()) if listed.returncode == 0 else ""
+        failed = f"ps exited {listed.returncode}"
+    except subprocess.TimeoutExpired: start, failed = "", f"ps took more than {ENDED_PS_SECONDS}s"
+    except (OSError, subprocess.SubprocessError) as error: start, failed = "", f"ps failed: {error}"
     if not start:
-        if sys.platform != "darwin": return False
-        try: start = kernel_start(owner["pid"])
-        except OSError: return False
-        if start is None: return True
+        if sys.platform != "darwin":
+            return "unknown", f"{failed}, and the kernel's record of a process is read only on macOS"
+        try: start = kernel_start(pid)
+        except OSError as error: return "unknown", f"{failed}, and the kernel could not say: {error}"
+        if start is None: return "ended", f"its PID {pid} is gone"
         start = " ".join(start.split())
-    return start != " ".join(owner["start"].split())
+    if start != " ".join(str(owner["start"]).split()):
+        return "ended", f"its PID {pid} runs another process, started {start}"
+    return "running", None
+
+
+def ended(owner):
+    """Whether an entry's owner has certainly ended: its PID is gone, or another start is read there (liveness). When
+    neither ps nor the kernel can say, the owner is left running, so that attended recovery, which `qk admissions
+    recover` runs, never takes a live owner's entry. Admission frees such an entry itself (free_holder)."""
+    return liveness(owner)[0] == "ended"
+
+
+# Seconds a freed holder's processes have after SIGTERM before SIGKILL, and after SIGKILL before admission names those
+# still running and goes on without them (vocaro/queuekeeper#23). Admission waits them out under its coordination
+# lock, so they are short. Chosen, not measured.
+RECLAIM_TERM_SECONDS, RECLAIM_KILL_SECONDS = 3.0, 2.0
+
+
+def collapsed(start):
+    """A process start with its spacing collapsed, as ps and the kernel give it, or None."""
+    return " ".join(start.split()) if isinstance(start, str) else None
+
+
+def start_now(pid):
+    """The start the process at pid has now, spacing collapsed: None when no process runs there, "" when it cannot be
+    read. The kernel first on macOS, which starts no process and works when ps fails; ps otherwise."""
+    if sys.platform == "darwin":
+        try: return collapsed(kernel_start(pid))
+        except OSError: pass
+    try: return collapsed(process_start(pid))
+    except (OSError, subprocess.SubprocessError): return ""
+
+
+def held_processes(guard, identity, entry):
+    """{PID: start} of an entry's owner and of every process its process record names, each as recorded: what is
+    left of a holder, if anything, is among them and below them. A line that cannot be read is passed over."""
+    found = {entry["pid"]: collapsed(entry["start"])}
+    path = record_path(guard, identity) if re.fullmatch(r"[0-9a-f]{32}", identity) else None
+    try: lines = path.read_bytes().splitlines() if path is not None else []
+    except OSError: lines = []
+    for text in lines:
+        try: line = json.loads(text)
+        except ValueError: continue
+        listed = line.get("processes") if isinstance(line, dict) else None
+        for item in listed if isinstance(listed, list) else []:
+            if isinstance(item, list) and len(item) == 2 and type(item[0]) is int and item[0] > 1 \
+                    and isinstance(item[1], str):
+                found.setdefault(item[0], collapsed(item[1]))
+    return found
+
+
+def lineage(current):
+    """This process and its ancestors, which reclamation never signals, from a snapshot when there is one."""
+    mine, pid = {os.getpid(), os.getppid()}, os.getpid()
+    while current and pid in current and pid > 1 and len(mine) < 512:
+        pid = current[pid][0]
+        mine.add(pid)
+    return mine
+
+
+def stop_holder(guard, identity, entry, condition, *, listing=None, start_of=None, kill=None, clock=time.monotonic,
+                sleep=time.sleep):
+    """Stop what is left of a holder admission frees (free_holder): SIGTERM, then SIGKILL after RECLAIM_TERM_SECONDS,
+    to each process held_processes names whose PID still has the start recorded for it, and to every process found
+    below one of those by parent; each is checked again by PID and start just before each signal, so that a PID
+    another process now has is never signaled. This process and its ancestors never are. A holder whose state is
+    unknown, its start unreadable, is signaled nothing, nor anything under it: its PID is not proven its own. Returns
+    what was signaled, [{pid, start, signals}], the PIDs still running RECLAIM_KILL_SECONDS after SIGKILL, and why
+    nothing was signaled when that is so (vocaro/queuekeeper#23)."""
+    import signal
+    from queuekeeper.processes import descendants, snapshot
+    listing, start_of, kill = listing or snapshot, start_of or start_now, kill or os.kill
+    if condition != "ended":
+        return {"signaled": [], "survived": [],
+                "unsignaled": "its start could not be read, so its PID is not proven its holder's: neither it nor "
+                               "anything under it was signaled"}
+
+    def listed():
+        try: return listing()
+        except (OSError, subprocess.SubprocessError, ValueError): return None
+
+    mine = lineage(listed())
+    known = {pid: start for pid, start in held_processes(guard, identity, entry).items()
+             if pid > 1 and pid not in mine and start and start_of(pid) == start}
+    signals = {}
+
+    def sweep(number):
+        """Find what runs below the known processes, and send number to each one still running as itself that has not
+        had it (SIGKILL again each time); those still running, by PID."""
+        current = listed()
+        alive = {pid: start for pid, start in known.items() if start_of(pid) == start}
+        if current is not None:
+            for pid, (_parent, _group, began) in descendants(current, set(alive)).items():
+                start = collapsed(began)
+                if pid > 1 and pid not in mine and pid not in known and start:
+                    known[pid] = alive[pid] = start
+        for pid, start in alive.items():
+            sent = signals.setdefault((pid, start), [])
+            if number == signal.SIGTERM and sent: continue
+            if start_of(pid) != start: continue  # it ended, or its PID went to another process, since it was found
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                kill(pid, number)
+                sent.append(signal.Signals(number).name)
+        return {pid for pid, start in alive.items() if start_of(pid) == start}
+
+    alive = sweep(signal.SIGTERM) if known else set()
+    deadline = clock() + RECLAIM_TERM_SECONDS
+    while alive and clock() < deadline:
+        sleep(0.05)
+        alive = sweep(signal.SIGTERM)
+    if alive:
+        alive = sweep(signal.SIGKILL)
+        deadline = clock() + RECLAIM_KILL_SECONDS
+        while alive and clock() < deadline:
+            sleep(0.05)
+            alive = {pid for pid in alive if start_of(pid) == known[pid]}
+    return {"signaled": [{"pid": pid, "start": start, "signals": sent} for (pid, start), sent in sorted(signals.items())
+                          if sent],
+            "survived": sorted(alive)}
+
+
+def free_locks(directory, maximum, identity):
+    """Free the slots and the model whose files name identity as their holder, which the caller has just removed from
+    the guard: the lock names of each, and of those whose lock something still held, which are replaced by a fresh
+    file, so that the next admission takes it. What still holds the old one, which reclamation could not stop, keeps
+    a lock that no longer guards anything (vocaro/queuekeeper#23). The caller holds the coordination lock."""
+    named, replaced = [], []
+    for name in [f"slot{slot}" for slot in range(maximum)] + ["model"]:
+        path = Path(directory) / name
+        try: written = path.read_text(errors="replace").split(" ", 2)
+        except OSError: continue
+        if len(written) < 2 or written[1] != identity: continue
+        named.append(name)
+        try: fd = os.open(path, os.O_RDWR)
+        except OSError: continue
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            with contextlib.suppress(OSError):
+                path.unlink()
+                replaced.append(name)
+        finally:
+            os.close(fd)
+    return named, replaced
+
+
+def free_holder(guard, directory, maximum, state, identity, condition, why, by=None):
+    """Free a guard entry whose owner admission cannot confirm running, its state ended or unknown (liveness), at
+    once: stop what is left of it (stop_holder), remove the entry, and the guard with its last one, and its process
+    record, free its slots, every slot for exclusive work, and the model if it held it (free_locks), and log a
+    `reclaimed` line with why and what was signaled. Uncertainty about a holder never keeps a slot held: when the
+    queue cannot confirm that a holder's process still runs, it takes the process as ended (the owner's decision,
+    2026-11-13, vocaro/queuekeeper#23). Returns that line. The caller holds the coordination lock."""
+    owners = state["owners"]
+    entry = owners[identity]
+    try: stopped = stop_holder(guard, identity, entry, condition)
+    except Exception as error:  # noqa: BLE001 - a failure to stop it never keeps its slots held
+        stopped = {"signaled": [], "survived": [], "unsignaled": f"stopping what is left of it failed: {error}"}
+    del owners[identity]
+    if owners: publish_guard(guard, state)
+    else: guard.unlink(missing_ok=True)
+    if re.fullmatch(r"[0-9a-f]{32}", identity):
+        with contextlib.suppress(OSError): record_path(guard, identity).unlink(missing_ok=True)
+    named, replaced = free_locks(directory, maximum, identity)
+    line = {"event": "reclaimed", "identity": identity, "pid": entry["pid"],
+            "kind": "exclusive" if entry.get("exclusive") else "model" if entry.get("model") else "heavy",
+            "label": str(entry.get("label"))[:LABEL_LIMIT], "uncertain": bool(entry.get("uncertain")),
+            **({"wholeHost": True} if entry.get("wholeHost") else {}), "process": condition, "why": why,
+            "slots": [int(name[4:]) for name in named if name.startswith("slot")],
+            "model": bool(entry.get("model") or entry.get("exclusive")), "replaced": replaced, **stopped,
+            **({"by": by} if by else {})}
+    append_log(line)
+    return line
+
+
+def reclaimed_words(line):
+    """What a `reclaimed` line says, for admission's own message: the holder, why and what was signaled."""
+    signaled = line.get("signaled") or []
+    stopped = ("; signaled " + ", ".join(f"PID {item['pid']} ({' then '.join(item['signals'])})" for item in signaled)
+               if signaled else f"; {line['unsignaled']}" if line.get("unsignaled") else
+               "; nothing of it still ran to signal")
+    survived = f"; still running after SIGKILL: PID {', '.join(map(str, line['survived']))}" if line.get("survived") else ""
+    replaced = f"; replaced, as something still held them: {', '.join(line['replaced'])}" if line.get("replaced") else ""
+    held = ", ".join([f"slot {slot}" for slot in line.get("slots") or []] + (["the model"] if line.get("model") else []))
+    return (f"reclaimed {' '.join(line['label'].split())} (PID {line['pid']}), {held or 'no slot its files name'}: "
+            f"{'its process has ended' if line['process'] == 'ended' else 'its process could not be checked'} "
+            f"({line['why']}){stopped}{survived}{replaced}")
 
 
 class Unrecorded(ValueError):
