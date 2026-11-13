@@ -3204,7 +3204,9 @@ def answer(request):
         if request.get("siblingCheckouts"):
             found["siblingCheckouts"] = [guarded_update(each) for each in request["siblingCheckouts"]]
         return found
-    if "toolkitCheckout" in request: return {"toolkitCheckout": guarded_update(request["toolkitCheckout"])}
+    if "toolkitCheckout" in request:
+        return {"toolkitCheckout": guarded_update(request["toolkitCheckout"]),
+                **({"missingSiblings": missing_siblings(request["siblingFolders"])} if "siblingFolders" in request else {})}
     if "deleteRuntime" in request:
         deleted = request["deleteRuntime"]
         return {"problem": delete_runtime(deleted["developer"], deleted["build"], deleted.get("pinned") or ())}
@@ -3424,6 +3426,14 @@ def link_siblings(slot, names):
         elif link.exists(): shutil.rmtree(link)
         link.symlink_to(source, target_is_directory=True)
         say(f"{link} is this Mac's {source}")
+
+
+def missing_siblings(names, home=None):
+    """Those of names, the folders a project's extensions load from (config.sibling_folders), that this Mac has no
+    ~/Development/NAME of for link_siblings to link, which `qk doctor` asks before any dispatch finds it
+    (vocaro/queuekeeper#117). It only looks: nothing is fetched or created."""
+    home = Path.home() if home is None else Path(home)
+    return [name for name in names if not (home / "Development" / name).is_dir()]
 
 
 def place(repository, checkout, commit, ref, origin=None):

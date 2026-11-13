@@ -2287,7 +2287,8 @@ def main(root, config, args):
             print(f"Its results are kept in {store(root) / receipt['commit'] / receipt['keptResults']}")
         return 0
     host = args.host or named_host() or alias() or DEFAULT_HOST
-    if args.operation == "setup": return setup(host, args.formulae, args.imports or [], args.check, args.runtimes)
+    if args.operation == "setup":
+        return setup(host, args.formulae, args.imports or [], args.check, args.runtimes, root=root)
     if args.operation == "foreground": return foreground_report(host)
     slot, slot_wait = checkout_request(args)
     if args.operation == "run":
@@ -2480,10 +2481,12 @@ echo "setup: brew install {' '.join(formulae)}"
 """
 
 
-def verify_script(formulae, modules, developer=None):
+def verify_script(formulae, modules, developer=None, siblings=()):
     """One `ok` or `MISSING` line for each thing the gates need, read by a fresh login shell, as
     `qk remote` reads the second Mac; exit 1 when anything is missing. The last line is the
-    version of the Xcode at developer, the path a run there uses, which the caller compares."""
+    version of the Xcode at developer, the path a run there uses, which the caller compares. siblings are
+    (name, clone) for each folder beside the project that its extensions load from, whose checkout there
+    setup only checks: making it is the owner's step, clone the command that does (vocaro/queuekeeper#117)."""
     lines = ["fail=0",
              "prefix=$(brew --prefix 2>/dev/null) || { echo \"MISSING Homebrew on the login shell's PATH\"; exit 1; }",
              'echo "ok      Homebrew at $prefix"',
@@ -2504,15 +2507,24 @@ def verify_script(formulae, modules, developer=None):
     for module in modules:
         lines.append(f'if python3 -c "import {module}" >/dev/null 2>&1; then echo "ok      import {module}"; '
                      f'else echo "MISSING import {module} in python3"; fail=1; fi')
+    for name, clone in siblings:
+        missing = (f"MISSING ~/Development/{name}, the checkout the project's extension loads from there, which "
+                   f"queuekeeper does not create: make it there with {clone} "
+                   "(guides/shared-host.md, Extension folders beside a project)")
+        lines.append(f'if [ -d "$HOME/Development/"{shlex.quote(name)} ]; then '
+                     f'echo {shlex.quote(f"ok      ~/Development/{name}")}; '
+                     f'else echo {shlex.quote(missing)}; fail=1; fi')
     selected = f"DEVELOPER_DIR={shlex.quote(developer)} " if developer else ""
     lines += [f'echo "xcode   $({selected}xcrun xcodebuild -version 2>/dev/null | tr \'\\n\' \' \')"', 'exit $fail']
     return "\n".join(lines) + "\n"
 
 
-def setup(host, formulae, modules, check, runtimes=False):
+def setup(host, formulae, modules, check, runtimes=False, root=None):
     """Install what the gates use on the second Mac, then check it as `qk remote` will see it.
     With check, only check. With runtimes, give both Macs the same simulator runtimes instead
-    (match_runtimes)."""
+    (match_runtimes). With root, it also checks that the second Mac has its own checkout of each folder
+    beside the project that its extensions load from, and names the clone that makes one it lacks, which it
+    leaves to the owner (vocaro/queuekeeper#117)."""
     if runtimes:
         if formulae or modules:
             raise ValueError("--runtimes evens out only the simulator runtimes; name formulae and "
@@ -2538,7 +2550,8 @@ def setup(host, formulae, modules, check, runtimes=False):
     developer = developer_directory()
     here = " ".join((offload_host.output(["xcrun", "xcodebuild", "-version"], {**os.environ, "DEVELOPER_DIR": developer})
                      or "").split()) if developer else None
-    result = ssh(host, verify_script(wanted, modules, developer), capture_output=True, text=True)
+    siblings = [(name, sibling_clone(root, name)) for name in sibling_folders(root)] if root else []
+    result = ssh(host, verify_script(wanted, modules, developer, siblings), capture_output=True, text=True)
     status = 0 if result.returncode == 0 else 1
     for line in result.stdout.splitlines():
         if line.startswith("xcode   "):
@@ -3660,16 +3673,33 @@ def toolkit_line(host, found, what="toolkit checkout"):
             "decides what becomes of it (guides/shared-host.md, The second Mac's own toolkit checkout)"), True
 
 
-def update_there(host):
+def update_there(host, siblings=()):
     """offload_host.update_toolkit's answer from host, for `qk doctor` (cli.fix_hosts), which fetches whatever
-    this Mac's origin/main says; one that cannot be had is an answer of state unchecked, saying why."""
+    this Mac's origin/main says; one that cannot be had is an answer of state unchecked, saying why. With it,
+    which of siblings, the folders a project's extensions load from (config.sibling_folders), host has no checkout
+    of (offload_host.missing_siblings), asked on the same connection (vocaro/queuekeeper#117): a list, or None when
+    none were asked of or host did not say."""
+    request = {"toolkitCheckout": update_request(want=False), **({"siblingFolders": list(siblings)} if siblings else {})}
     try:
-        answered = ask(host, {"toolkitCheckout": update_request(want=False)},
-                       timeout=CENSUS_TIMEOUT + offload_host.UPDATE_SECONDS)
+        answered = ask(host, request, timeout=CENSUS_TIMEOUT + offload_host.UPDATE_SECONDS)
     except Unavailable as error:
-        return {"state": "unchecked", "reason": str(error)}
+        return {"state": "unchecked", "reason": str(error)}, None
     found = answered.get("toolkitCheckout") if isinstance(answered, dict) else None
-    return found if isinstance(found, dict) else {"state": "unchecked", "reason": f"it answered {answered!r}"}
+    missing = answered.get("missingSiblings") if isinstance(answered, dict) and siblings else None
+    return (found if isinstance(found, dict) else {"state": "unchecked", "reason": f"it answered {answered!r}"},
+            missing if isinstance(missing, list) else None)
+
+
+def sibling_clone(root, name):
+    """How the second Mac's own checkout of name, a folder beside the project at root that its extensions load
+    from, is made: a `git clone` of the origin this Mac's checkout of it names, run there. queuekeeper does not run
+    it; making that checkout is the owner's step (vocaro/queuekeeper#117)."""
+    here = (git_state.main_checkout(root) or Path(root)).resolve().parent / name
+    target = f"~/Development/{shlex.quote(name)}"
+    try: origin = git(here, "remote", "get-url", "origin")
+    except (RuntimeError, OSError, subprocess.SubprocessError): origin = ""
+    if origin and not offload_host.local_url(origin): return f"git clone {shlex.quote(origin)} {target}"
+    return f"git clone of the repository this Mac's {here} comes from, into {target}"
 
 
 def read_census(found):

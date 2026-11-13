@@ -1459,6 +1459,21 @@ and holds no commit of its own; one that is dirty, on a branch or diverged is le
 dispatch says so, and runs there use it as it stands. A change to the extension is therefore tested on
 the second Mac only after it has landed.
 
+The second Mac needs its own checkout of each such folder before the extension is listed: make it there,
+with a `git clone` of the origin this Mac's checkout of the folder names, into `~/Development/FOLDER`.
+A dispatch to a second Mac without one says so and goes on, and the extension then fails to load in
+every lane sent there, the gate included. On 2026-11-13 two projects listed an extension from
+`../apple-engineering`, which the second Mac had no checkout of, and that was first found when a
+dispatch failed (vocaro/queuekeeper#117). `qk doctor` now asks the second Mac, on the connection that
+updates its toolkit checkout, and reports each folder it has no checkout of as an error that names the
+clone; when the second Mac is not reached or none is configured, that is unchecked. `qk remote setup`,
+run from the project, checks the same and names the same clone, but making the checkout stays the
+owner's step: queuekeeper clones nothing there.
+
+A project's test fixtures should map each extension to its own checkout. Two projects' fixtures
+rewrote every extension's `path` to the toolkit's checkout, and both broke when a second extension
+folder was listed (vocaro/queuekeeper#117).
+
 ### The second Mac's own toolkit checkout
 
 The second Mac has a toolkit checkout of its own at `~/Development/queuekeeper`. No dispatched
@@ -1596,7 +1611,10 @@ The owner prepares the second Mac once:
    `zstd` and each formula a project names. A new login shell then checks every one, each
    `--import` module in that Python, and the Xcode at this Mac's developer directory, one line
    each, and the command fails while anything is missing. A second Mac without Homebrew stops it
-   with nothing changed. `--check` only checks. A project's runbook names its own formulae.
+   with nothing changed. `--check` only checks. Run from a project whose extensions load from a
+   folder beside it, it also checks that the second Mac has its own checkout of each such folder
+   and names the `git clone` that makes one it lacks, but does not clone it ([Extension folders
+   beside a project](#extension-folders-beside-a-project)). A project's runbook names its own formulae.
    Without Homebrew, the system's Python 3.9 runs the toolkit, and lanes that need a newer
    Python fail.
 5. Give both Macs the same simulator runtimes, and again whenever either gains one:

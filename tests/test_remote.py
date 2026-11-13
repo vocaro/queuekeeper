@@ -6038,6 +6038,34 @@ class RemoteSetupTests(unittest.TestCase):
         self.assertIn("MISSING Xcode 99.0 Build version 99A1 at /Applications/Xcode.app/Contents/Developer, "
                       "as on this Mac (found ", output)
 
+    def test_an_extension_folder_the_second_mac_lacks_is_named_with_its_clone_and_left_to_the_owner(self):
+        # #117: setup checks the second Mac's own checkout of each folder an extension loads from, and clones nothing.
+        self.install_homebrew()
+        (self.home / ".zprofile").write_text(f'eval "$({self.brew} shellenv)"\n')
+        (self.project / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example", "extensions": [
+            {"module": "kit.extension", "path": "../kit/src"}, {"module": "tools.extension", "path": "../tools"}]}))
+        url = "https://github.com/example/kit.git"
+        kit = self.project.parent / "kit"
+        kit.mkdir()
+        git(kit, "init", "--quiet")
+        git(kit, "remote", "add", "origin", url)
+        (self.home / "Development/tools").mkdir(parents=True)
+        # The extensions themselves are not loaded here: only where they load from is read.
+        self.patches.append(patch.object(cli, "load_extensions"))
+        self.patches[-1].start()
+        status, output, error = self.qk()
+        self.assertEqual(status, 1, output + error)
+        self.assertIn("ok      ~/Development/tools", output)
+        self.assertIn("MISSING ~/Development/kit, the checkout the project's extension loads from there, which "
+                      f"queuekeeper does not create: make it there with git clone {url} ~/Development/kit", output)
+        self.assertIn("fake is not ready", output)
+        self.assertFalse((self.home / "Development/kit").exists())
+        # Once the owner has made it, the second Mac is ready.
+        (self.home / "Development/kit").mkdir()
+        status, output, error = self.qk("--check")
+        self.assertEqual(status, 0, output + error)
+        self.assertIn("ok      ~/Development/kit", output)
+
     def test_names_that_are_not_formulae_or_modules_are_refused_before_anything_runs(self):
         self.install_homebrew()
         for arguments in [["numpy; rm -rf ~"], ["--import", "os; import shutil"]]:
@@ -6175,14 +6203,20 @@ class SecondMacDoctorTests(unittest.TestCase):
     def test_doctors_update_of_the_second_macs_toolkit_checkout_reaches_it_and_fetches(self):
         _origin, seed, checkout = toolkit_clone(Path(self.temp.name) / "kit-origin", self.home)
         start, tip = git(checkout, "rev-parse", "HEAD"), land(seed)
-        found = remote.update_there("fake")
+        found, missing = remote.update_there("fake")
         self.assertEqual((found["state"], found["head"], found["to"], found["fetched"]), ("updated", start, tip, True),
                          found)
         self.assertEqual(git(checkout, "rev-parse", "HEAD"), tip)
+        self.assertIsNone(missing)
+        # On the same connection, which folder an extension loads from it has no checkout of (#117).
+        (self.home / "Development/kit").mkdir(parents=True)
+        found, missing = remote.update_there("fake", ["kit", "absent"])
+        self.assertEqual((found["state"], missing), ("current", ["absent"]), found)
+        self.assertFalse((self.home / "Development/absent").exists())
         # A second Mac that cannot be reached is unchecked, and nothing is searched for or changed.
         with patch.dict(os.environ, {"FAKE_UNREACHABLE": "1"}), patch.object(remote, "rediscover", return_value=None):
-            found = remote.update_there("fake")
-        self.assertEqual(found["state"], "unchecked", found)
+            found, missing = remote.update_there("fake", ["absent"])
+        self.assertEqual((found["state"], missing), ("unchecked", None), found)
         self.assertIn("Could not resolve hostname", found["reason"])
 
     def test_matching_macs_pass(self):
@@ -6949,10 +6983,11 @@ class DoctorFixTests(unittest.TestCase):
     REPORT = {"stopped": [{"name": "Example iPhone 1", "udid": "U", "pid": 7, "reason": "stale"}], "failed": [],
               "skipped": [], "eligible": [], "kept": [], "problem": None}
 
-    def fix(self, first, again=None, update=None):
+    def fix(self, first, again=None, update=None, root=Path("/project"), missing=None):
         calls = []
-        self.updates = []
-        updating = lambda host: self.updates.append(host) or dict(update or {"state": "current", "path": "kit"})
+        self.updates, self.siblings = [], []
+        updating = lambda host, siblings: self.updates.append(host) or self.siblings.append(siblings) or (
+            dict(update or {"state": "current", "path": "kit"}), missing)
         with patch.object(remote, "compare_hosts", return_value=again) as compare, \
                 patch.object(remote, "update_there", side_effect=updating), \
                 patch.object(remote, "match_runtimes", side_effect=lambda host, check: calls.append((host, check)) or
@@ -6960,7 +6995,7 @@ class DoctorFixTests(unittest.TestCase):
                 patch.object(apple_doctor.simulator_pool, "reap_reports", return_value=[("this Mac", self.REPORT)]) as reap, \
                 patch.object(apple_doctor, "delete_defaults", return_value=["removed: U iPhone 17"]), \
                 contextlib.redirect_stdout(StringIO()) as output, contextlib.redirect_stderr(StringIO()) as error:
-            fixed = host_isolation.FIX_HOSTS(Path("/project"), first)
+            fixed = host_isolation.FIX_HOSTS(root, first)
         return fixed, calls, compare, reap, output.getvalue(), error.getvalue()
 
     def test_differing_runtimes_are_evened_out_and_compared_again(self):
@@ -7006,6 +7041,47 @@ class DoctorFixTests(unittest.TestCase):
         fixed, _, _, _, _, _ = self.fix(first(), update={"state": "unchecked", "reason": "fake did not answer"})
         self.assertEqual(fixed["errors"], [])
         self.assertEqual(fixed["unchecked"], ["fake's own toolkit checkout, which it did not report: fake did not answer"])
+        # A project that lists no extension folder asks after none.
+        self.assertEqual(self.siblings, [[]])
+
+    def test_an_extension_folder_the_second_mac_has_no_checkout_of_is_an_error_naming_the_clone(self):
+        # As on 2026-11-13 (#117): extensions load from ../apple-engineering, which the second Mac lacked.
+        base = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, base, True)
+        project, kit, other = base / "Example", base / "apple-engineering", base / "local-only"
+        project.mkdir()
+        (project / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example", "extensions": [
+            {"module": "apple_engineering.queuekeeper_extension", "path": "../apple-engineering/src/python"},
+            {"module": "local_only.extension", "path": "../local-only/src"}]}))
+        url = "https://github.com/example/apple-engineering.git"
+        for checkout, origin in [(kit, url), (other, str(base / "elsewhere"))]:
+            checkout.mkdir()
+            git(checkout, "init", "--quiet")
+            git(checkout, "remote", "add", "origin", origin)
+        first = lambda: {"host": "fake", "remote": {}, "errors": [], "unchecked": []}
+        fixed, _, _, _, _, _ = self.fix(first(), root=project, missing=["apple-engineering", "local-only"])
+        self.assertEqual(self.siblings, [["apple-engineering", "local-only"]])
+        self.assertEqual(len(fixed["errors"]), 2, fixed)
+        self.assertIn("fake has no ~/Development/apple-engineering", fixed["errors"][0])
+        self.assertIn(f"git clone {url} ~/Development/apple-engineering", fixed["errors"][0])
+        self.assertIn("Extension folders beside a project", fixed["errors"][0])
+        # An origin that is a path on this Mac names nothing there, so the clone is described, not given.
+        self.assertIn(f"git clone of the repository this Mac's {other} comes from, into ~/Development/local-only",
+                      fixed["errors"][1])
+        # Every checkout there: nothing is said.
+        fixed, _, _, _, _, _ = self.fix(first(), root=project, missing=[])
+        self.assertEqual((fixed["errors"], fixed["unchecked"]), ([], []))
+        # A second Mac that did not say is unchecked, as is one not reached or not configured: never an error.
+        fixed, _, _, _, _, _ = self.fix(first(), root=project, update={"state": "unchecked", "reason": "no answer"})
+        self.assertEqual(fixed["errors"], [])
+        self.assertIn("whether fake has its own checkout of apple-engineering, local-only", fixed["unchecked"][0])
+        for host, why in [("fake", "fake did not answer the comparison"), (None, "none is configured")]:
+            with self.subTest(host=host):
+                fixed, _, _, _, _, _ = self.fix({"host": host, "errors": [], "unchecked": []}, root=project)
+                self.assertEqual((fixed["errors"], self.updates), ([], []))
+                self.assertEqual(fixed["unchecked"], [
+                    "whether the second Mac has its own checkout of apple-engineering, local-only, beside the "
+                    f"project's checkout for its extensions to load from, which was not asked since {why}"])
 
     def test_every_test_gets_a_doctor_that_changes_neither_mac(self):
         self.assertIsNot(cli.fix_hosts, host_isolation.FIX_HOSTS)

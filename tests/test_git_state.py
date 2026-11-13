@@ -103,6 +103,9 @@ class SiblingLinkTests(unittest.TestCase):
             self.assertFalse((slot / "absent").exists())
             self.assertEqual(sum("has no" in line and "absent" in line for line in said), 2)
             self.assertEqual(sum("is this Mac's" in line for line in said), 1)
+            # What `qk doctor` asks before any dispatch (#117): which it has no checkout of, creating none.
+            self.assertEqual(offload_host.missing_siblings(["kit", "absent"], home=home), ["absent"])
+            self.assertFalse((home / "Development/absent").exists())
 
 
 class BehindTests(Fixture):

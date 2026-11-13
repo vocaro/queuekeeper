@@ -13,7 +13,7 @@ import time
 from . import __version__, budgets, disk, docs, extensions, git_hooks, git_state, lane_coverage, lane_report, lane_results, lane_wait, merge_queue, offload_host, \
     parallel, pre_push, processes, remote, resources, shims, spelling
 from .config import FILE as CONFIG_FILE, TOOLKIT_ROOT, admission as admission_of, exclusive_refusal, extensions_of, lane_to_run, load, \
-    source_identity, lane_devices, self_lane_warnings, stays, unadmitted, unlocked_screen
+    source_identity, lane_devices, self_lane_warnings, sibling_folders, stays, unadmitted, unlocked_screen
 from .resources import BUSY, FREE_WAIT
 from . import visibility
 
@@ -25,13 +25,28 @@ def fix_hosts(root, hosts):
     """What `doctor` fixes of remote.compare_hosts' report itself, the owner's no longer (the owner's decision,
     2026-11-03): what each extension fixes (extensions.HOST_FIXES), and the second Mac's own toolkit checkout,
     which it fast-forwards to origin/main when it can and reports in toolkitCheckout, an error when it cannot
-    (remote.update_there, vocaro-engineering#203). tests/host_isolation.py replaces it, so that no test changes
-    either Mac."""
+    (remote.update_there, vocaro-engineering#203). On the same connection it asks which folder beside the project
+    that its extensions load from the second Mac has no checkout of, each an error naming the clone that makes it,
+    which it leaves to the owner; unchecked when the second Mac is not reached (vocaro/queuekeeper#117).
+    tests/host_isolation.py replaces it, so that no test changes either Mac."""
     for fix in extensions.HOST_FIXES: hosts = fix(root, hosts)
+    siblings = sibling_folders(root)
     # The second Mac's own toolkit checkout, which it fast-forwards to origin/main when it can; one it must
     # leave as it is is an error, the owner's to decide (vocaro-engineering#203).
     if "remote" in hosts:
-        found = hosts["toolkitCheckout"] = remote.update_there(hosts["host"])
+        found, missing = remote.update_there(hosts["host"], siblings)
+        hosts["toolkitCheckout"] = found
+        # Each folder the project's extensions load from that the second Mac has no checkout of, which every lane
+        # sent there would fail to load; making it is the owner's step (vocaro/queuekeeper#117).
+        if siblings and missing is None:
+            hosts.setdefault("unchecked", []).append(
+                f"whether {hosts['host']} has its own checkout of {', '.join(siblings)}, beside the project's checkout "
+                "for its extensions to load from, which it did not report")
+        for name in missing or []:
+            hosts.setdefault("errors", []).append(
+                f"{hosts['host']} has no ~/Development/{name}, which the project's extension loads from there, so "
+                f"every lane sent there fails to load it; make it there with {remote.sibling_clone(root, name)} "
+                "(guides/shared-host.md, Extension folders beside a project)")
         if found.get("state") == "unchecked":
             hosts.setdefault("unchecked", []).append(f"{hosts['host']}'s own toolkit checkout, which it did not "
                                                      f"report: {found.get('reason')}")
@@ -40,6 +55,11 @@ def fix_hosts(root, hosts):
             if line: found["said"] = line
             if owner: hosts.setdefault("errors", []).append(line)
             elif line: print(f"remote: {line}", file=sys.stderr, flush=True)
+    elif siblings:
+        why = "none is configured" if hosts.get("host") is None else f"{hosts['host']} did not answer the comparison"
+        hosts.setdefault("unchecked", []).append(
+            f"whether the second Mac has its own checkout of {', '.join(siblings)}, beside the project's checkout for "
+            f"its extensions to load from, which was not asked since {why}")
     return hosts
 
 
