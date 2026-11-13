@@ -199,7 +199,7 @@ class Wrapper(Fixture):
 
 
 class Lane(Fixture):
-    """queuekeeper run's lane, whose script sends the build's output to a log of its own, as BreezEPUB's test-ios.sh does."""
+    """qk run's lane, whose script sends the build's output to a log of its own, as BreezEPUB's test-ios.sh does."""
 
     def setUp(self):
         super().setUp()

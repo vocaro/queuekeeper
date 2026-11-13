@@ -31,7 +31,7 @@ from queuekeeper import waiting
 import host_isolation
 from host_isolation import stretched
 
-# Each test in a process of its own under `queuekeeper unittest`'s default module split: most are in RemoteTests, and
+# Each test in a process of its own under `qk unittest`'s default module split: most are in RemoteTests, and
 # whole, the module's real queuekeeper runs against a fake second Mac took 450 s on a quiet host, bounding the toolkit's
 # suite alone (guides/parallel-tests.md).
 shard_by = "test"
@@ -416,7 +416,7 @@ class RemoteTests(unittest.TestCase):
                                   "if 'DEVELOPER_DIR' in os.environ else 'no developer dir')"],
                       "resource": "heavy", "minimumTests": 2},
             "fail": {"command": [python, "-c", "print('Ran 1 tests'); raise SystemExit(3)"]},
-            # A lane whose script admits each of its parts itself, which queuekeeper run runs where it starts, unadmitted.
+            # A lane whose script admits each of its parts itself, which qk run runs where it starts, unadmitted.
             "own": {"resource": "self", "command": [python, "-c", "print('Ran 1 tests')"]},
             # Outlives the test that stops it, however slowly the host runs it.
             "slow": {"command": [python, "-c", "import os, pathlib, time; "
@@ -442,19 +442,19 @@ class RemoteTests(unittest.TestCase):
                                         "    folder.mkdir(parents=True, exist_ok=True)\n"
                                         "    (folder / 'transcript.txt').write_text('VO: Next Page')\n"
                                         "print('Ran 1 tests')"], "resource": "heavy", "minimumTests": 1},
-            # Writes where queuekeeper run says its results/ is, and says where that is.
+            # Writes where qk run says its results/ is, and says where that is.
             "noted": {"command": [python, "-c", "import os, pathlib; folder = pathlib.Path(os.environ['QUEUEKEEPER_RESULTS_DIR']); "
                                   "print('results in', folder); (folder / 'note.txt').write_text('noted'); "
                                   "print('Ran 1 tests')"], "resource": "heavy", "minimumTests": 1},
-            # Leaves a record as `queuekeeper results keep` writes one, by a lane that runs xcodebuild itself (#260).
+            # Leaves a record as `qk results keep` writes one, by a lane that runs xcodebuild itself (#260).
             "kept-tests": {"command": [python, "-c", "import json, os, pathlib; "
                                        "folder = pathlib.Path(os.environ['QUEUEKEEPER_RESULTS_DIR']) / 'simulator-tests'; folder.mkdir(); "
-                                       "(folder / 'iPhone.json').write_text(json.dumps({'run': 'iPhone', 'keptBy': 'queuekeeper results keep', "
+                                       "(folder / 'iPhone.json').write_text(json.dumps({'run': 'iPhone', 'keptBy': 'qk results keep', "
                                        "'status': 0, 'bundleUnread': None, 'tests': [{'test': 'T/a()', 'outcome': 'passed', "
                                        "'seconds': 0.5, 'activities': [{'title': 'Files Recents loaded after 0 s', 'seconds': 0}]}]}))"],
                            "resource": "heavy"},
             "notes": {"parallel": ["noted", "left"], "resource": "heavy"},
-            # Runs noted inside itself, as a gate's script runs its suites with `queuekeeper run --here suites` (#218).
+            # Runs noted inside itself, as a gate's script runs its suites with `qk run --here suites` (#218).
             # A shell, as the gate's script is, keeps the admission's descriptor open for the nested run.
             "nesting": {"command": ["sh", "-c", '"$0" "$QUEUEKEEPER_ROOT/bin/qk" --project . run --here noted',
                                     python], "resource": "heavy"},
@@ -816,7 +816,7 @@ class RemoteTests(unittest.TestCase):
         self.assertNotIn("grew", group)
 
     def test_a_series_may_run_unattended_for_its_scaled_limit(self):
-        # queuekeeper run limits a --repeat series to N times its lane's timeout, on either Mac, so a dropped connection must
+        # qk run limits a --repeat series to N times its lane's timeout, on either Mac, so a dropped connection must
         # not end it sooner. The control: a run with no series keeps the lane's own bound.
         config = {"lanes": {"tests": {"command": ["x"], "timeout": 100}}}
         seconds = lambda *arguments: remote.detached_seconds(config, "tests", ["run", "tests", *arguments])
@@ -1036,7 +1036,7 @@ class RemoteTests(unittest.TestCase):
         # A run here reads the checkout, so what it must still hold is the checkout's HEAD, not origin/main's tree.
         upstream, head = self.landed_ahead()
         kit = {"commit": upstream, "head": upstream, "checkoutHead": head, "behind": 1}
-        offered = remote.Offer("check", "`queuekeeper run --here check`", lambda host, sent: 0)
+        offered = remote.Offer("check", "`qk run --here check`", lambda host, sent: 0)
         offered.sent = {"commit": self.commit, "kit": kit}
         with patch.object(remote, "TOOLKIT_ROOT", self.toolkit):
             self.assertIsNone(remote.changed_since(self.project, offered))
@@ -1132,7 +1132,7 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual((devices.condition(entry), entry["run"]["outcome"]), ("held", "exit 3"))
 
     def leased(self, watches, status=0, *words):
-        """`queuekeeper remote admit --device iPhone` of a command that counts its runs and exits with status, its devices'
+        """`qk remote admit --device iPhone` of a command that counts its runs and exits with status, its devices'
         logs watched by watches; with words, those instead of admit's."""
         runs = Path(self.temp.name) / "runs"
         counting = [sys.executable, "-c", f"open({str(runs)!r}, 'a').write('x'); raise SystemExit({status})"]
@@ -1290,7 +1290,7 @@ class RemoteTests(unittest.TestCase):
         status, output, _error = self.qk("remote", "admit", "--device", "iPhone", "--device-owner", "session-a", *name)
         self.assertEqual(status, 0)
         self.assertIn(f"named id={PHONE.lower()}", output)
-        # queuekeeper run keeps a lane that would go to the second Mac on this Mac when it names a physical device.
+        # qk run keeps a lane that would go to the second Mac on this Mac when it names a physical device.
         status, output, error = self.run_here("gate", "--", PHONE)
         self.assertEqual(status, 0, error)
         self.assertIn("the second Mac uses only under a reservation", error)
@@ -1552,7 +1552,7 @@ class RemoteTests(unittest.TestCase):
 
     @contextlib.contextmanager
     def exclusive_dispatch(self):
-        """`queuekeeper remote admit --exclusive` from a dispatcher of its own: yields its log, and waits for its end."""
+        """`qk remote admit --exclusive` from a dispatcher of its own: yields its log, and waits for its end."""
         log = Path(self.temp.name) / "exclusive.log"
         with log.open("w") as output:
             dispatcher = subprocess.Popen([sys.executable, str(self.toolkit / "bin/qk"), "--project", str(self.project),
@@ -1742,7 +1742,7 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual(named["waitSeconds"], receipt["result"]["phases"]["claim"])
         self.assertIn(f"checkout slot 2, as requested, at {self.checkout(2)}", error)
         self.assertIn("slot 2: no checkout yet", output)
-        # queuekeeper remote admit takes the option too, and runs its command there.
+        # qk remote admit takes the option too, and runs its command there.
         command = [sys.executable, "-c", "import os; print('in', os.getcwd())"]
         status, output, error = self.qk("remote", "admit", "--checkout-slot", "3", "--", *command)
         self.assertEqual(status, 0, output + error)
@@ -2729,7 +2729,7 @@ class RemoteTests(unittest.TestCase):
         self.assertNotIn("the work ran", output)
 
     def run_here(self, *arguments):
-        """queuekeeper run, with this Mac's policy refresh, which would fetch GitHub, left out."""
+        """qk run, with this Mac's policy refresh, which would fetch GitHub, left out."""
         with patch.object(cli, "refresh_policy", return_value="policy"):
             return self.qk("run", *arguments)
 
@@ -2964,14 +2964,14 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual(status, 0, output + error)
         lines = error.splitlines()
         receipt = lines[-1].removeprefix("  receipt: ")
-        self.assertEqual(lines[-3:-1], ["queuekeeper run check: passed, on fake", "  tests: 2 passed, 0 failed, 0 skipped, 0 unmeasured"])
+        self.assertEqual(lines[-3:-1], ["qk run check: passed, on fake", "  tests: 2 passed, 0 failed, 0 skipped, 0 unmeasured"])
         self.assertEqual(json.loads(Path(receipt).read_text())["lane"], "check")
         # The second Mac's own run prints none, which would repeat it with that Mac's paths.
-        self.assertEqual((output + error).count("queuekeeper run check:"), 1, output + error)
+        self.assertEqual((output + error).count("qk run check:"), 1, output + error)
         # A lane that returned the unmeasured status there is not passed here.
         status, output, error = self.qk("run", "fail")
         self.assertEqual(status, 3, output + error)
-        self.assertEqual(error.splitlines()[-3], "queuekeeper run fail: unmeasured (exit 3), on fake")
+        self.assertEqual(error.splitlines()[-3], "qk run fail: unmeasured (exit 3), on fake")
 
     def test_keep_keeps_a_runs_results_beside_its_receipt_in_place_of_an_earlier_runs(self):
         base = Path(self.temp.name) / "keeping"
@@ -3108,7 +3108,7 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual(self.lane_files("mixed", "broken", there)[1]["outcome"], "failed")
 
     def stop_group(self):
-        """Run `queuekeeper run stalled` from a dispatcher of its own, stop it once both of the group's lanes
+        """Run `qk run stalled` from a dispatcher of its own, stop it once both of the group's lanes
         run on the second Mac, and return its output once it has ended."""
         markers = [self.checkout(0) / f".build/{lane}.pid" for lane in ("napper", "dozer")]
         for marker in markers: marker.unlink(missing_ok=True)
@@ -3230,7 +3230,7 @@ class RemoteTests(unittest.TestCase):
         return self.busy_mac("HEAVY_SLOT_DIR", "QUEUEKEEPER_GATE_LOCK_FILE")
 
     def waits_there(self, lane, phrase, release, hold=0):
-        """Run `queuekeeper run LANE` from a dispatcher of its own, call release once its output has said phrase
+        """Run `qk run LANE` from a dispatcher of its own, call release once its output has said phrase
         and the dispatcher has gone on waiting for hold seconds more, and return its status and output
         once it has ended."""
         log = Path(self.temp.name) / "dispatch.log"
@@ -3483,7 +3483,7 @@ class RemoteTests(unittest.TestCase):
 
     def test_unlocked_screen_places_an_undeclared_lane_as_the_declaration_does(self):
         """vocaro-engineering#293: the merge queue runs a lane a locked screen left without a verdict as
-        `queuekeeper run --unlocked-screen LANE`, which places it as "unlockedScreen": true does, though the lane does not
+        `qk run --unlocked-screen LANE`, which places it as "unlockedScreen": true does, though the lane does not
         say so: away from a locked second Mac, and nowhere while both Macs are locked. Without it the lane goes to
         the locked second Mac, as the declaration's own test's negative control shows."""
         with patch.dict(os.environ, {"FAKE_SCREEN_IOREG": str(SCREENS / "second-mac-locked-idle.plist")}):
@@ -3725,7 +3725,7 @@ class RemoteTests(unittest.TestCase):
 
     def test_a_lost_local_network_or_an_away_second_mac_otherwise_keeps_the_fallback(self):
         """The negative controls of vocaro-engineering#300: a queue gate whose second Mac is only away, and a session's
-        own queuekeeper run, which has its session's access and so is not stopped by what its reach check says."""
+        own qk run, which has its session's access and so is not stopped by what its reach check says."""
         local = self.project / ".build/queuekeeper/gate"
         for name, environment, reason in (("away in a gate", {remote.QUEUE_GATE: "1"}, self.AWAY),
                                           ("lost, in no gate", {}, self.LOST), ("away, in no gate", {}, self.AWAY)):
@@ -3739,7 +3739,7 @@ class RemoteTests(unittest.TestCase):
                 self.assertEqual(json.loads((local / "source.json").read_text())["hereBecause"], reason.problem)
 
     def test_a_lane_that_stays_here_in_a_queue_gate_does_not_pass_the_gate_on(self):
-        """What a lane run here starts is no queue worker's own queuekeeper run, and keeps its fallback (vocaro-engineering#300)."""
+        """What a lane run here starts is no queue worker's own qk run, and keeps its fallback (vocaro-engineering#300)."""
         with patch.dict(os.environ, {remote.QUEUE_GATE: "1"}):
             status, output, error = self.run_here("own")
             self.assertEqual(status, 0, output + error)
@@ -3909,7 +3909,7 @@ class RemoteTests(unittest.TestCase):
                 ("xcode", xcode,["fake refused it: the Xcode at", "not the dispatcher's Xcode 99.0 Build version 99A1",
                                   "install this Mac's Xcode at that path on the second Mac"]),
                 ("toolkit", toolkit, ["fake could not run the toolkit", "command not found: python3",
-                                      "queuekeeper remote setup"]),
+                                      "qk remote setup"]),
                 ("provisioning", provisioning, ["fake could not provision its checkout: the provision lane exited 4",
                                                 "what provisioning needs"])]
 
@@ -3924,7 +3924,7 @@ class RemoteTests(unittest.TestCase):
                 self.assertFalse(local.exists(), f"{name} ran the lane here:\n{error}")
                 self.assertEqual(status, remote.MISCONFIGURED, output + error)
                 for text in ["queuekeeper: gate not run: ", *said, "queuekeeper: to fix it, ", "the owner's decision",
-                             "`queuekeeper run --here gate`"]:
+                             "`qk run --here gate`"]:
                     self.assertIn(text, error)
                 self.assertNotIn("running gate on this Mac", error)
                 status, output, error = self.run_here("--here", "gate")
@@ -3968,7 +3968,7 @@ exec {shlex.quote(real)} "$@"
         host_isolation.executable(wrapper)
 
     def raced(self, mode, *, races=1, only="", pushes=None):
-        """queuekeeper run gate with racing_git's mode, from a new commit, so that each race starts afresh."""
+        """qk run gate with racing_git's mode, from a new commit, so that each race starts afresh."""
         for count in (self.home / remote.ROOT / "repositories").glob("*.races"): count.unlink()
         (self.project / "README.md").write_text(f"{mode} {races} {only} {pushes}\n")
         commit = commit_all(self.project)
@@ -4110,7 +4110,7 @@ exec {shlex.quote(real)} "$@"
                           ["--offload-only", "gate"], ["--if-free", "gate"], ["--serial", "pair"], ["missing"]):
             with self.subTest(arguments):
                 status, output, error = self.run_here("--build-host-only", *arguments)
-                self.assertEqual((status, error), (2, f"{refused}queuekeeper run {arguments[-1]}: not run (exit 2); no tests ran\n"),
+                self.assertEqual((status, error), (2, f"{refused}qk run {arguments[-1]}: not run (exit 2); no tests ran\n"),
                                  output + error)
         for place in ["gate", "failing", "build", "fail", "pair", "remote/gate", "remote/failing", "remote/pair"]:
             self.assertFalse((self.project / ".build/queuekeeper" / place).exists(), place)
@@ -4140,8 +4140,8 @@ exec {shlex.quote(real)} "$@"
             self.assertEqual(said.getvalue(), "")
         probe = self.probe()
         # Set at all, alone or beside the new name, either way they point, the old name is refused wherever
-        # queuekeeper would read the new one: before it chooses a Mac for a lane or a command, in queuekeeper remote without
-        # --host, and in queuekeeper doctor. Nothing runs on either Mac.
+        # queuekeeper would read the new one: before it chooses a Mac for a lane or a command, in qk remote without
+        # --host, and in qk doctor. Nothing runs on either Mac.
         for new, old in [(None, "fake"), (None, "none"), (None, ""), ("fake", "none"), ("none", "fake"), ("fake", "fake")]:
             with self.subTest(new=new, old=old), patch.dict(os.environ, {"VOCARO_BUILD_HOST": old}):
                 if new is None: os.environ.pop("QUEUEKEEPER_OFFLOAD_HOST")
@@ -4150,9 +4150,9 @@ exec {shlex.quote(real)} "$@"
                 self.assertEqual(str(raised.exception), refused)
                 for arguments in (["gate"], ["--offload-only", "gate"], ["--if-free", "gate"], ["pair"]):
                     status, output, error = self.run_here(*arguments)
-                    self.assertEqual((status, error), (2, f"queuekeeper: {refused}\nqueuekeeper run {arguments[-1]}: not run (exit 2); no "
+                    self.assertEqual((status, error), (2, f"queuekeeper: {refused}\nqk run {arguments[-1]}: not run (exit 2); no "
                                                           "tests ran\n"), output + error)
-                # Plain queuekeeper admit chooses a Mac now too (the owner's decision, 2026-11-07), and --verify with it.
+                # Plain qk admit chooses a Mac now too (the owner's decision, 2026-11-07), and --verify with it.
                 for options in (["--verify"], []):
                     status, output, error = self.admit_in(self.project, *options, "--", *probe)
                     self.assertEqual((status, error), (2, f"queuekeeper: {refused}\n"), output + error)
@@ -4165,7 +4165,7 @@ exec {shlex.quote(real)} "$@"
                 self.assertFalse(self.ran.exists())
                 self.assertFalse((self.home / remote.ROOT).exists())
         # A command that neither chooses a Mac nor reaches the second Mac never read it, and runs as before:
-        # a self lane, a lane that says here, --here, and queuekeeper admit --here, all here; and queuekeeper remote
+        # a self lane, a lane that says here, --here, and qk admit --here, all here; and qk remote
         # given --host, there.
         with patch.dict(os.environ, {"VOCARO_BUILD_HOST": "none"}):
             for arguments, status, place in [(["own"], 0, "own"), (["build"], 0, "build"), (["--here", "gate"], 0, "gate")]:
@@ -4192,11 +4192,11 @@ exec {shlex.quote(real)} "$@"
             self.assertEqual(status, 0, output + error)
             receipt = json.loads((self.project / ".build/queuekeeper/remote/gate/source.json").read_text())
             self.assertEqual((receipt["ranOn"], receipt["host"]), ("second Mac", "second-mac"))
-            # queuekeeper remote names it too when no --host is given.
+            # qk remote names it too when no --host is given.
             self.assertEqual(self.qk("remote", "run", "check")[0], 0)
             self.assertEqual(json.loads((self.project / ".build/queuekeeper/remote/check/source.json").read_text())
                              ["host"], "second-mac")
-        # With neither alias defined, queuekeeper remote tries the default.
+        # With neither alias defined, qk remote tries the default.
         self.assertEqual(self.qk("remote", "run", "check")[0], 0)
         self.assertEqual(json.loads((self.project / ".build/queuekeeper/remote/check/source.json").read_text())["host"],
                          "build-host")
@@ -4490,14 +4490,14 @@ exec {shlex.quote(real)} "$@"
                          ["the lane says: its goldens come from this Mac's GPU", None,
                           "its lane goldens says: its goldens come from this Mac's GPU",
                           "the lane says: a measurement tied to this Mac"])
-        # queuekeeper run runs it here, though every heavy lane that says nothing goes to the second Mac.
+        # qk run runs it here, though every heavy lane that says nothing goes to the second Mac.
         status, output, error = self.run_here("goldens")
         self.assertEqual(status, 0, output + error)
         self.assertTrue((self.project / ".build/queuekeeper/goldens/run.log").exists())
         self.assertFalse((self.home / remote.ROOT).exists())
 
     def admit_in(self, directory, *arguments):
-        """queuekeeper admit run from directory, with this Mac's policy refresh left out."""
+        """qk admit run from directory, with this Mac's policy refresh left out."""
         previous = os.getcwd()
         os.chdir(directory)
         try:
@@ -4558,7 +4558,7 @@ exec {shlex.quote(real)} "$@"
         self.assertEqual(status, 0, output + error)
         self.assertEqual(self.ran_in(), (self.project / "pkg").resolve())
         receipt = json.loads((self.project / ".build/queuekeeper/admit/source.json").read_text())
-        self.assertEqual((receipt["ranOn"], receipt["hereBecause"]), ("this Mac", "queuekeeper admit --here"))
+        self.assertEqual((receipt["ranOn"], receipt["hereBecause"]), ("this Mac", "qk admit --here"))
         self.assertNotIn("remote: sending", error)
 
     def test_admit_verify_sends_a_command_whose_paths_hold_a_uuid_to_the_second_mac(self):
@@ -4594,7 +4594,7 @@ exec {shlex.quote(real)} "$@"
                  # A hardware UDID that no entry of this Mac's record holds, as #57 refuses it without --device.
                  (self.project, [f"platform=iOS,id={PHONE}"], f"it names the hardware UDID {PHONE}"),
                  (self.project, [], "fake cannot be reached")]
-        # Plain queuekeeper admit, which offers the command to the second Mac first, and --verify, its synonym, alike.
+        # Plain qk admit, which offers the command to the second Mac first, and --verify, its synonym, alike.
         for (directory, words, said), options in zip(cases, [["--verify"], *[[]] * (len(cases) - 1)]):
             with self.subTest(said), patch.dict(os.environ, {"FAKE_UNREACHABLE": "1"} if "reached" in said else {}):
                 status, output, error = self.admit_in(directory, *options, "--", *probe, *words)
@@ -4621,11 +4621,11 @@ exec {shlex.quote(real)} "$@"
             status, output, error = self.admit_in(self.project, "--verify", "--", *probe)
         self.assertEqual(status, remote.MISCONFIGURED, output + error)
         self.assertFalse(self.ran.exists())
-        self.assertIn("then `queuekeeper admit --here`", error)
+        self.assertIn("then `qk admit --here`", error)
         self.assertFalse((self.project / ".build/queuekeeper/admit").exists())
 
     def test_plain_admit_goes_to_the_second_mac_first_and_here_keeps_it_on_this_mac(self):
-        # The owner's decision, 2026-11-07: queuekeeper admit without --verify is offered as a lane is, the second Mac first.
+        # The owner's decision, 2026-11-07: qk admit without --verify is offered as a lane is, the second Mac first.
         probe = self.probe()
         status, output, error = self.admit_in(self.project, "--", *probe)
         self.assertEqual(status, 0, output + error)
@@ -4635,16 +4635,16 @@ exec {shlex.quote(real)} "$@"
         self.assertFalse((self.project / ".build/queuekeeper/admit").exists())
         # Its build products stayed there, which one line says, naming --here.
         self.assertIn(f"build products and other files Git ignores stayed in {self.checkout(0)}", error)
-        self.assertIn("`queuekeeper admit --here` runs it on this Mac", error)
+        self.assertIn("`qk admit --here` runs it on this Mac", error)
         # --here keeps it on this Mac, and says nothing of the second Mac.
         status, output, error = self.admit_in(self.project, "--here", "--", *probe)
         self.assertEqual(status, 0, output + error)
         self.assertEqual(self.ran_in(), self.project.resolve())
         receipt = json.loads((self.project / ".build/queuekeeper/admit/source.json").read_text())
-        self.assertEqual((receipt["ranOn"], receipt["hereBecause"]), ("this Mac", "queuekeeper admit --here"))
+        self.assertEqual((receipt["ranOn"], receipt["hereBecause"]), ("this Mac", "qk admit --here"))
         self.assertNotIn("remote: ", error)
         self.assertNotIn("build products", error)
-        # The second Mac busy, plain queuekeeper admit runs here, and the receipt says why.
+        # The second Mac busy, plain qk admit runs here, and the receipt says why.
         shutil.rmtree(self.project / ".build/queuekeeper/admit")
         with self.busy_second_mac():
             status, output, error = self.admit_in(self.project, "--", *probe)
@@ -4716,7 +4716,7 @@ exec {shlex.quote(real)} "$@"
         status, output, error = self.admit_in(self.project, "--here", "--", *probe, path)
         self.assertEqual((status, self.ran_in()), (0, self.project.resolve()), output + error)
         self.assertEqual(json.loads((self.project / ".build/queuekeeper/admit/source.json").read_text())["hereBecause"],
-                         "queuekeeper admit --here")
+                         "qk admit --here")
         self.assertNotIn("  offered to the second Mac and declined:", output)
         status, output, error = self.admit_in(self.project, "--", *probe, "/usr/bin/true", "pkg/README.md")
         self.assertEqual((status, self.ran_in()), (0, self.checkout(0).resolve()), output + error)
@@ -4796,7 +4796,7 @@ exec {shlex.quote(real)} "$@"
         self.assertEqual((status, self.ran_in()), (0, self.checkout(0).resolve()), output + error)
 
     def self_lane(self, name, inner):
-        """Add a self lane whose script runs `queuekeeper admit` with inner's words twice, as a build and a run of it."""
+        """Add a self lane whose script runs `qk admit` with inner's words twice, as a build and a run of it."""
         settings = json.loads((self.project / "queuekeeper.json").read_text())
         admit = shlex.join([sys.executable, str(self.toolkit / "bin/qk"), "admit", *inner])
         settings["lanes"][name] = {"resource": "self", "command": ["/bin/sh", "-c", f"{admit} && {admit}"]}
@@ -4820,7 +4820,7 @@ exec {shlex.quote(real)} "$@"
         status, output, error = self.admit_in(self.project, "--", *probe)
         self.assertEqual(status, 0, output + error)
         self.assertEqual(self.ran_in(), self.checkout(0).resolve())
-        # The category queuekeeper admissions usage counts each under.
+        # The category qk admissions usage counts each under.
         self.assertEqual(resources.placed(resources.read_entry(json.dumps({
             "time": "2026-11-07T00:00:00+00:00", "event": "admitted", "waited": 0, "identity": "a", "kind": "heavy",
             "label": "x",
@@ -4912,7 +4912,7 @@ exec {shlex.quote(real)} "$@"
         self.assertIn(f"queuekeeper: the patch is {kept[0]}", error)
 
     def admits_after_waiting(self, words, release, directory=None):
-        """`queuekeeper admit -- WORDS` from directory, the checkout's pkg by default, in a process of its own: call release
+        """`qk admit -- WORDS` from directory, the checkout's pkg by default, in a process of its own: call release
         once it waits for whichever Mac admits it first, and return its status and output once it has ended."""
         # One second is enough for the held local probe to decline and the overflow marker to appear.
         # Patch the dispatcher process so the fake second Mac uses the original toolkit.
@@ -5118,7 +5118,7 @@ exec {shlex.quote(real)} "$@"
         return self.home / remote.ROOT / f"repositories/{name}.git"
 
     def dispatched(self, lane="check"):
-        """Run `queuekeeper remote run LANE`; return the bytes that reached the project's receive-pack and the
+        """Run `qk remote run LANE`; return the bytes that reached the project's receive-pack and the
         receipt."""
         status, output, error = self.qk("remote", "run", lane)
         self.assertEqual(status, 0, output + error)
@@ -5328,7 +5328,7 @@ exec {shlex.quote(real)} "$@"
         self.assertFalse((self.project / ".build/queuekeeper/remote/check").exists())
 
     def test_concurrent_dispatches_of_one_commit_each_keep_their_own_results(self):
-        # Two `queuekeeper remote admit` dispatches at once send one commit and file their results under one name,
+        # Two `qk remote admit` dispatches at once send one commit and file their results under one name,
         # the second held as the code before vocaro-engineering#67 could be (BARRIER_DRIVER): first to a
         # second Mac that has no repository yet, then with a new commit to one that has.
         base, barrier = self.project / ".build/queuekeeper/remote", Path(self.temp.name) / "barrier"
@@ -5496,7 +5496,7 @@ class KeptSlotsTests(unittest.TestCase):
 
 
 class KeptResultsPruneTests(unittest.TestCase):
-    """The rule by which queuekeeper disk reclaims the lane results kept by commit beside the receipts (#218)."""
+    """The rule by which qk disk reclaims the lane results kept by commit beside the receipts (#218)."""
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -5545,7 +5545,7 @@ class KeptResultsPruneTests(unittest.TestCase):
 
 
 class AdmissionLogThereTests(unittest.TestCase):
-    """The second Mac's admission log, which `queuekeeper admissions usage` fetches over ssh as capacity_there asks."""
+    """The second Mac's admission log, which `qk admissions usage` fetches over ssh as capacity_there asks."""
 
     def test_the_second_mac_sends_its_lines_from_a_time_and_this_mac_reads_them(self):
         line = lambda moment, identity: json.dumps({"time": moment, "event": "admitted", "identity": identity, "pid": 1,
@@ -5572,7 +5572,7 @@ class AdmissionLogThereTests(unittest.TestCase):
 
 
 class AdmissionsThereTests(unittest.TestCase):
-    """The second Mac's `queuekeeper admissions now` reading: one bounded ssh request, and unknown when it fails (#342)."""
+    """The second Mac's `qk admissions now` reading: one bounded ssh request, and unknown when it fails (#342)."""
 
     def run_with(self, outcome):
         calls = []
@@ -5853,7 +5853,7 @@ class RemoteSetupTests(unittest.TestCase):
         profile = (self.home / ".zprofile").read_text()
         self.assertEqual(profile.count(f'eval "$({self.brew} shellenv)"'), 1)
         for line in ["ok      Homebrew at", f"ok      python3 is {self.prefix}/bin/python3", "ok      numpy",
-                     "ok      epubcheck", "ok      import json", "fake is ready for queuekeeper remote"]:
+                     "ok      epubcheck", "ok      import json", "fake is ready for qk remote"]:
             self.assertIn(line, output)
         # Again: the PATH line is not written twice, and what is installed stays installed.
         status, output, error = self.qk("numpy", "epubcheck")
@@ -5930,7 +5930,7 @@ OFFLOAD_HOST = Path(offload_host.__file__)
 
 def stretched_host(path, stretch=stretched):
     """Write offload_host.py to path, and return path's name, with stretch applied to the limits that only catch a
-    hang in what the fake second Mac runs of it for `queuekeeper doctor`: its commands' 60 s, ps and lsof among them, and the
+    hang in what the fake second Mac runs of it for `qk doctor`: its commands' 60 s, ps and lsof among them, and the
     toolkit update's deadline and fetch. The real file's are the second Mac's own, for work on a Mac the gate does not
     load; the fake does that work here, and it gets the text, so nothing patched in this process reaches it. A limit
     no longer found fails the test here, rather than leaving it fixed unnoticed."""
@@ -6072,7 +6072,7 @@ class SecondMacDoctorTests(unittest.TestCase):
             self.assertEqual(len(found["errors"]), 1, found)
             self.assertIn(f"the Xcode at this Mac's developer directory, {self.release}, is Xcode 27.1, Build version "
                           "27A9275 on this Mac and Xcode 27.2, Build version 27B5028f on fake", found["errors"][0])
-            self.assertIn("queuekeeper remote refuses", found["errors"][0])
+            self.assertIn("qk remote refuses", found["errors"][0])
             self.xcode("Xcode.app", there=(RELEASE, RUNTIMES))
         with self.subTest("runtimes"):
             self.xcode("Xcode.app", here=(RELEASE, [*RUNTIMES, ("iOS 27.2", "24C5028f")]))
@@ -6082,7 +6082,7 @@ class SecondMacDoctorTests(unittest.TestCase):
             self.assertIn("only this Mac has iOS 27.2 (24C5028f)", found["errors"][0])
             # Doctor evens them out itself (cli.fix_hosts, which host_isolation leaves out); the error remains
             # only when that fails.
-            self.assertIn("`queuekeeper doctor` evens them out itself, deleting a runtime that no simulator but Xcode's "
+            self.assertIn("`qk doctor` evens them out itself, deleting a runtime that no simulator but Xcode's "
                           "defaults uses and copying any other to the Mac that lacks it", found["errors"][0])
             self.assertNotIn("runtimesDiffer", found)
 
@@ -6095,7 +6095,7 @@ class SecondMacDoctorTests(unittest.TestCase):
             status, found = self.doctor()
             self.assertEqual((status, found["errors"]), (0, []), found)
             self.assertEqual(found["unchecked"], ["whether fake's device record refuses physical devices: it defers "
-                                                  "them to no Mac until the next queuekeeper remote run there"])
+                                                  "them to no Mac until the next qk remote run there"])
         with self.subTest("held there"):
             self.record_there.reserve("iPhone", owner="there", revision=0, purpose="p", release_by=release_by,
                                       device=PHONE)
@@ -6457,10 +6457,10 @@ class LeftoverCensusTests(unittest.TestCase):
         """A device record whose pool member udid is reserved, as simulators/pool.py reserves it."""
         self.record.write_text(json.dumps({"vocaroDeviceHandoff": 1, "revision": 1, "devices": {"Example iPhone 17 Pro 1": {
             "revision": 1, "device": udid, "ownerChatID": "simulator-tests-1", "state": "reserved", "activeRun": False,
-            "purpose": "queuekeeper simulator-tests Example", **entry}}}))
+            "purpose": "qk simulator-tests Example", **entry}}}))
 
     def ios_tests(self):
-        """An ios-tests lane's run in the checkout, admitted at LATER, as the second Mac runs one: queuekeeper
+        """An ios-tests lane's run in the checkout, admitted at LATER, as the second Mac runs one: qk
         simulator-tests names its devices by their kind, and CoreSimulator starts the reserved member's
         launchd_sim under launchd, with the simulator's processes below it."""
         self.process(5000, 900, f"/usr/bin/python3 {self.checkout.parent}/vocaro-engineering/bin/qk --project "
@@ -6562,7 +6562,7 @@ class LeftoverCensusTests(unittest.TestCase):
         self.assertEqual((rows[7000]["place"], rows[7000]["simulator"]), ("simulator", DEVICE))
         self.assertEqual([descendant["pid"] for descendant in rows[7000]["descendants"]], [7002, 7001])
         # Negative control: a live admitted run that names the device by its identifier accounts for it.
-        self.process(5000, 1, "/usr/bin/python3 queuekeeper admit -- xcodebuild test", start=LATER)
+        self.process(5000, 1, "/usr/bin/python3 qk admit -- xcodebuild test", start=LATER)
         self.process(5001, 5000, f"xcodebuild test -destination id={DEVICE.lower()}", start=LATER)
         self.owner(5000, LATER)
         self.assertEqual(self.census(), {})
@@ -6696,7 +6696,7 @@ class LeftoverCensusTests(unittest.TestCase):
         self.assertIsNone(offload_host.disk_writes(1))
 
 
-# Two Macs' simulator runtimes on one file system, for queuekeeper remote setup --runtimes. FAKE_MAC names
+# Two Macs' simulator runtimes on one file system, for qk remote setup --runtimes. FAKE_MAC names
 # the Mac a command runs on, and FAKE_RUNTIMES/MAC holds its runtime images as simctl's storage
 # holds cryptexes: NAME.asset/AssetData/Restore/BUILD.dmg, a file whose first line is the runtime
 # it holds and whose size is its image's, with its lastUsedAt when it names one. An image whose record
@@ -7209,7 +7209,7 @@ class RemoteRuntimeTests(unittest.TestCase):
             self.assertIsNone(offload_host.recorded_builds())
 
     def test_a_superseded_build_only_one_mac_lists_is_deleted_there_unless_the_toolkit_pins_it(self):
-        # vocaro-engineering#190: the second Mac's copy of a superseded build goes, as queuekeeper disk's does here, and
+        # vocaro-engineering#190: the second Mac's copy of a superseded build goes, as qk disk's does here, and
         # the pins this Mac's toolkit names reach the second Mac in the request.
         for pinned in (False, True):
             with self.subTest(pinned=pinned):
@@ -7244,7 +7244,7 @@ class RemoteRuntimeTests(unittest.TestCase):
         for runtime in ["iOS 26.5 (23F73)", "iOS 27.1 (24A94401)", "iOS 27.2 (24B5110a)", "iOS 27.2 (24B91011)"]:
             self.assertIn(f"runtimes: {runtime}, 0.0 GiB: would be copied from this Mac to fake, which has ", output)
         self.assertIn("runtimes: iOS 27.0 (24A5423a), 0.0 GiB: would be copied from fake to this Mac, which has ", output)
-        self.assertIn("runtimes: 5 runtime(s) differ; `queuekeeper remote setup --runtimes` or `queuekeeper doctor` evens them out",
+        self.assertIn("runtimes: 5 runtime(s) differ; `qk remote setup --runtimes` or `qk doctor` evens them out",
                       output)
         self.assertNotIn("copying", output)
         self.assertEqual((self.held("here"), self.held("there")),
@@ -7357,7 +7357,7 @@ class RemoteRuntimeTests(unittest.TestCase):
             finally:
                 os.close(lock)
             self.assertEqual(status, 1, output + error)
-            self.assertIn("runtimes: another `queuekeeper remote setup --runtimes` is running on this Mac", output)
+            self.assertIn("runtimes: another `qk remote setup --runtimes` is running on this Mac", output)
         with self.subTest("formulae"):
             status, output, error = self.qk("numpy")
             self.assertEqual(status, 2, output + error)
@@ -7526,7 +7526,7 @@ class RenamedSecondMacTests(unittest.TestCase):
         self.assertNotIn("Bonjour", remote.unreachable("fake", "ssh: Could not resolve hostname mac-3.local: x").problem)
 
     def test_every_connection_finds_a_renamed_second_mac_not_only_the_check_before_a_dispatch(self):
-        # A foreground lane's preparing connection and `queuekeeper remote foreground` reach the second Mac by ssh(),
+        # A foreground lane's preparing connection and `qk remote foreground` reach the second Mac by ssh(),
         # which on 2026-11-03 said "wake build-host" of a Mac renamed from -4 to -5 (vocaro-engineering#129).
         unresolved = subprocess.CompletedProcess([], 255, "", "ssh: Could not resolve hostname mac-3.local: "
                                                               "nodename nor servname provided, or not known\n")
@@ -8043,7 +8043,7 @@ class OfferAgainTests(unittest.TestCase):
     """While both Macs are busy, a second Mac that cannot be reached at one offer is asked at the next."""
 
     def offer(self):
-        offered = remote.Offer("gate", "`queuekeeper run --here gate`", lambda host, sent: 0)
+        offered = remote.Offer("gate", "`qk run --here gate`", lambda host, sent: 0)
         offered.host, offered.busy = "fake", "every checkout is in use"
         return offered
 
@@ -8069,7 +8069,7 @@ class OfferAgainTests(unittest.TestCase):
             self.assertEqual(remote.overflow(offered, lambda seconds: None, timeout=60), remote.LOST_ACCESS)
         self.assertEqual((offered.busy, offered.status), (None, remote.LOST_ACCESS))
         self.assertIn("queuekeeper: gate not run, here or there: fake cannot be reached", error.getvalue())
-        # The negative controls: the wait goes on for a session's own queuekeeper run, and for a second Mac that is only away.
+        # The negative controls: the wait goes on for a session's own qk run, and for a second Mac that is only away.
         away = remote.Unreachable("fake cannot be reached: it is asleep", "wake it")
         for reason, gate in ((lost, False), (away, True)):
             offered = self.offer()
@@ -8149,7 +8149,7 @@ class EarlierNameTests(unittest.TestCase):
 
 
 class ToolkitGapTests(unittest.TestCase):
-    """queuekeeper remote says when the toolkit it sends lacks origin/main's commits (#209)."""
+    """qk remote says when the toolkit it sends lacks origin/main's commits (#209)."""
 
     def test_a_toolkit_behind_its_origin_main_is_named_and_a_current_one_is_not(self):
         with tempfile.TemporaryDirectory() as directory:

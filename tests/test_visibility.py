@@ -111,7 +111,7 @@ class Switch(unittest.TestCase):
         status, printed, errors = self.command("status")
         self.assertEqual(status, 0)
         self.assertIn("the visibility feature broken did not load, and is left out: broken on purpose", errors)
-        self.assertIn("`queuekeeper visibility disable broken`", errors)
+        self.assertIn("`qk visibility disable broken`", errors)
         self.assertIn("hello", extensions.COMMANDS)
 
     def test_settings_that_cannot_be_read_turn_nothing_on(self):

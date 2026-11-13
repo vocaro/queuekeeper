@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# queuekeeper run puts this folder first on a lane's PATH: a build that fails on a stale module cache runs once more
+# qk run puts this folder first on a lane's PATH: a build that fails on a stale module cache runs once more
 # without it (src/python/queuekeeper/apple/stale_modules.py, vocaro-engineering#267).
 from pathlib import Path
 import sys

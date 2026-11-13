@@ -1,4 +1,4 @@
-"""A live view of the queue in the terminal: `queuekeeper watch`.
+"""A live view of the queue in the terminal: `qk watch`.
 
 It shows what the queue is doing in one line, then each running gate, the entries waiting, the last few settled
 and the journal's last events, and draws it again every few seconds until interrupted. Where its output is not a
@@ -44,7 +44,7 @@ def headline(state):
         behind = waiting - testing
         return f"Testing {count(testing, 'entry', 'entries')}" + (f", {behind} more waiting" if behind > 0 else "")
     if state.get("worker"): return f"Worker running, {waiting} waiting"
-    if waiting: return f"{waiting} waiting with no worker: `queuekeeper queue resume` starts one"
+    if waiting: return f"{waiting} waiting with no worker: `qk queue resume` starts one"
     return "Idle: nothing is waiting"
 
 
@@ -102,7 +102,7 @@ class Journal:
 
 
 def main(argv, project=None):
-    parser = argparse.ArgumentParser(prog="queuekeeper watch", description=HELP)
+    parser = argparse.ArgumentParser(prog="qk watch", description=HELP)
     parser.add_argument("--once", action="store_true", help="print the view once and exit, as it does by itself "
                         "where its output is not a terminal")
     parser.add_argument("--interval", type=float, default=2.0, metavar="SECONDS", help="how often it is drawn again "

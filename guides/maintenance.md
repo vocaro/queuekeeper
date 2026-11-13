@@ -18,27 +18,27 @@ python3 scripts/qk land --repo EPUBLib BRANCH  # from any project: land a fix in
 python3 scripts/qk queue status
 ```
 
-The budget and release-limit checks after `queuekeeper land` are advisory. They read the fields they
+The budget and release-limit checks after `qk land` are advisory. They read the fields they
 need even when main uses newer lane settings. If the advisory inputs cannot be read, the caller
 prints a warning and preserves the queue outcome and exit status (vocaro-engineering#355).
 
 **A gated push keeps the app.** For a project whose queuekeeper.json has `app`, the worker starts
-`queuekeeper app keep --after-landing` for the pushed commit in the background once the push lands, and the
-round goes on without waiting. That build is what `queuekeeper app run` opens ([kept app builds](https://github.com/vocaro/vocaro-engineering/blob/main/guides/app-builds.md)).
+`qk app keep --after-landing` for the pushed commit in the background once the push lands, and the
+round goes on without waiting. That build is what `qk app run` opens ([kept app builds](https://github.com/vocaro/vocaro-engineering/blob/main/guides/app-builds.md)).
 
 **A session does not run the full gate.** It runs the smallest relevant checks, commits and adds
 the commit. Adding is the decision to land: the owner approves that once, and no later step asks.
 What is added is the range the ref has and `origin/main` lacks, held by a ref of its own, so the
 session may end and its branch may move or go. Refreshing a branch by merging `main`, by the
 app's sync or `git merge origin/main`, is fine: when each merge in the range brings in only commits
-`origin/main` holds, with the tree a clean merge makes, `queuekeeper land` replays the branch's own commits
+`origin/main` holds, with the tree a clean merge makes, `qk land` replays the branch's own commits
 onto `origin/main` in a scratch worktree, queues that, says which merge it dropped, and leaves the
 branch as it is, whose work the landing check then finds as equal patches. Any other merge, or a
 replay that conflicts, is refused (vocaro-engineering#217). Adding a branch again replaces what it
 added before.
 
 **A fix in another repository lands there the same way.** Commit it in a worktree of that
-repository, then `queuekeeper land --repo NAME BRANCH --wait`, from wherever the session is. It joins that
+repository, then `qk land --repo NAME BRANCH --wait`, from wherever the session is. It joins that
 repository's queue beside its own sessions' commits and so stops none of their work. A commit must
 be named, because HEAD there is another session's. `--wait` prints `landed: COMMIT` in full: the
 entry's own last commit on `main`, not another entry's at the batch's tip, and its status line
@@ -48,10 +48,10 @@ commit of its own, and land that in the dependent's queue.
 
 **A round.** The worker fetches, takes everything waiting, oldest first, cherry-picks each entry
 onto `origin/main` in its own checkout, `~/Development/queuekeeper-workers/NAME/NAME`, and runs the project's queue lanes through
-`queuekeeper run`: its `spelling` and `provision` lanes when it has them, and then its `gate` lane, or
+`qk run`: its `spelling` and `provision` lanes when it has them, and then its `gate` lane, or
 `queue.lanes` in queuekeeper.json for a project that needs others, read from `main`, or from the
 batch until `main` has any, so that the commit naming them can land. A project with no `spelling`
-lane gets the toolkit's: `queuekeeper run spelling` runs `python3 scripts/qk spelling` as a lane like any
+lane gets the toolkit's: `qk run spelling` runs `python3 scripts/qk spelling` as a lane like any
 other, admitted and placed as every lane is, before anything else, so that a British spelling fails in
 about a minute instead of after a full gate and a bisect, in every project without each declaring the
 same lane. A run that gets no admission or ends unmeasured is a no verdict, as any lane's is, and a
@@ -81,8 +81,8 @@ of several commits the worker merges the entry's whole change to the changelog, 
 commit's parent, onto what is ahead of it, so a later commit that rewords the line an earlier one
 added is still that line added. Anything else comes back, naming each file in conflict: a change to a
 line ahead of it, lines below a paragraph or inside a wrapped entry, or a conflict in another file
-above all. Each settled commit is listed under `kept` in the entry's record, which `queuekeeper queue status`
-and `queuekeeper queue wait` show. The commit keeps its message and author. Its patch is then not the
+above all. Each settled commit is listed under `kept` in the entry's record, which `qk queue status`
+and `qk queue wait` show. The commit keeps its message and author. Its patch is then not the
 branch's, so `landed.sh` proves the branch landed another way, `resolved`: each branch commit has a
 commit on main with its subject and author that adds and removes exactly its lines, file for file
 and hunk by hunk, and differs only in the lines around them. It compares each commit with the one
@@ -129,9 +129,9 @@ by hand only once that checkout has it.
 **A worker whose session ended exits.** macOS denies a worker the local network once the Claude session that
 started it ends, so it could no longer reach the second Mac. Before each round, while a second Mac is configured, the
 worker checks for this and, if so, exits, holding nothing, with its entries back in the queue. A gate that finds it
-during a round, by the exit 69 of a lane's `queuekeeper run`, which then ran nothing on this Mac, does the same. Its log then
-says `exits, holding nothing, since this worker cannot reach the second Mac`. The next `queuekeeper land`, `queuekeeper queue wait` or
-`queuekeeper queue resume` starts another worker (guides/shared-host.md, Local Network access;
+during a round, by the exit 69 of a lane's `qk run`, which then ran nothing on this Mac, does the same. Its log then
+says `exits, holding nothing, since this worker cannot reach the second Mac`. The next `qk land`, `qk queue wait` or
+`qk queue resume` starts another worker (guides/shared-host.md, Local Network access;
 vocaro-engineering#282, #300).
 
 **The shared checkout follows each toolkit landing.** After each push, the toolkit's own worker
@@ -165,7 +165,7 @@ the queue, and the next landing tries again. A checkout left only for such a run
 failed, the worker also tries again once nothing waits, every 30 seconds until it moves, so it moves as
 soon as the last such run ends (owner's decision, 2026-11-11, vocaro-engineering#384); an entry that
 arrives or a hold ends the tries, and the next landing's follow starts them again. While it tries,
-`queuekeeper queue status` shows the worker running and waiting for the shared checkout, and its log names what
+`qk queue status` shows the worker running and waiting for the shared checkout, and its log names what
 holds it when that begins or changes; one left for any other reason is a person's to settle. A worker whose code came from that checkout, the
 toolkit's own among them, is such a process until its first round after a toolkit landing, when it
 starts itself again from its copy, above. A process that loaded the toolkit from it without keeping a path there,
@@ -200,9 +200,9 @@ the packages again; build products stay ([#114](https://github.com/vocaro/vocaro
 That worker holds the queue, so no gate of its own runs there. A process that still works in one, as a lane an earlier worker left running may, keeps
 it where it is, as does a process census that fails or a move Git refuses: the worker then makes the
 checkout afresh at the new place, locks the old one as `retired by the merge queue: replaced by PATH`,
-and says so in its log, and `queuekeeper disk` lists it for the owner's removal once nothing uses it.
+and says so in its log, and `qk disk` lists it for the owner's removal once nothing uses it.
 
-**A conflict is found when the entry is queued.** `queuekeeper land` and `queuekeeper queue add` make the
+**A conflict is found when the entry is queued.** `qk land` and `qk queue add` make the
 integration a round would make, before they queue anything: onto `origin/main`, after every entry
 ahead of it that is waiting, in its gate or passed, in the order rounds land them (a batch that
 passed, one in its gate, those `--front` put first, then the rest, each oldest first), with the
@@ -217,32 +217,32 @@ conflict, and the check says the round would settle it. Before
 entry queued behind a running gate learned of it 15 to 40 minutes later, more on EPUBLib. The check
 is only a hint: `main` and the entries ahead can change before the round, as an entry ahead comes back
 or a hand push lands, so the round integrates again and still sends back what the check could not
-see, below, and an entry ahead that comes back may let a refused entry apply, which `queuekeeper land` again
+see, below, and an entry ahead that comes back may let a refused entry apply, which `qk land` again
 checks. The refusal also names the commit's own lines in conflict, as `PATH:FIRST-LAST` of its
 version of each file, from the trial's conflict blocks, so that its author can resolve them before
 the entries ahead land without replaying the queue by hand, and, when entries ahead change the files
-in conflict, the command that waits for them, `queuekeeper queue wait ID ID ...`, to run as a background
+in conflict, the command that waits for them, `qk queue wait ID ID ...`, to run as a background
 command. That wait ends once none of them is queued, in its gate or passed, so an entry a `--front`
 entry sends back to queued keeps it going, and says what is worth doing: exit 0 when each landed, so
-rebase onto `origin/main` and `queuekeeper land` again; 1 when one came back, so the commit may apply as it
-is and `queuekeeper land` again checks; 75 while the queue is held or at its `--limit`
-([#304](https://github.com/vocaro/vocaro-engineering/issues/304)). `queuekeeper land --wait` does this
+rebase onto `origin/main` and `qk land` again; 1 when one came back, so the commit may apply as it
+is and `qk land` again checks; 75 while the queue is held or at its `--limit`
+([#304](https://github.com/vocaro/vocaro-engineering/issues/304)). `qk land --wait` does this
 itself when the conflict is with entries ahead alone, not with `origin/main`: it says it waits for
 them, waits, and checks again against the whole queue, so an entry ahead that comes back lets the
 commit be queued and land with no second command, an entry queued meanwhile that touches the same
 lines is waited for in turn, and once they have landed a commit that still conflicts, now with
 `origin/main`, is refused, saying to rebase, exit 1. A conflict with `origin/main`, alone or beside
 entries ahead, is refused at once, as before, since no wait ends it. On 2026-11-07 two sessions
-hand-wrote loops over `queuekeeper queue status` instead, one of which a `--front` preemption ended early, and
+hand-wrote loops over `qk queue status` instead, one of which a `--front` preemption ended early, and
 one landing took 4.5 hours of rounds of refusal, replay and wait
 ([#302](https://github.com/vocaro/vocaro-engineering/issues/302)). A check that cannot be made, such as a
 worktree Git cannot add, queues the entry, says so, and leaves any conflict to the round. It costs a worktree checkout and the cherry-picks, measured on
 2026-11-04 on this Mac at a one-minute load of 28 to 45 with six one-commit entries ahead: about
 0.6 s with none ahead and 1.6 s with six on the toolkit's tree of 203 files, and 4.5 s and 6 s on a
-tree of 10,000 files, where each cherry-pick adds about 0.3 s. Whole `queuekeeper land` runs, fetch included,
+tree of 10,000 files, where each cherry-pick adds about 0.3 s. Whole `qk land` runs, fetch included,
 took 1.5 to 2.7 s and 3 to 9 s.
 
-**Checked before it is queued.** Before any other check, `queuekeeper land` and `queuekeeper queue add` read the
+**Checked before it is queued.** Before any other check, `qk land` and `qk queue add` read the
 messages of the entry's commits and refuse one that denies a closing claim, with nothing queued and
 exit 1, naming the commit and line and what to write instead. On 2026-11-07 "This does not fix #43."
 closed vocaro/BreezEPUB#43 when it reached main, two hours before the real fix
@@ -254,9 +254,9 @@ a capital, so "did not start, and fixes #N", a `Refs #N` and "not only fixes #N"
 reads text alone: a comma inside the negated clause ("does not, in fact, fix #N") ends the clause and
 passes it. `--no-gate` and `--front` do not skip it.
 
-Next, `queuekeeper land` and `queuekeeper queue add` run `queuekeeper unittest`'s own checks
+Next, `qk land` and `qk queue add` run `qk unittest`'s own checks
 before a run, the ones whose refusal ends `nothing ran`, on the entry's tree, for each queue lane on
-`origin/main` whose command is `queuekeeper unittest`, or a group's one such lane, with that lane's `-s` and `-p`. In a suite that keeps
+`origin/main` whose command is `qk unittest`, or a group's one such lane, with that lane's `-s` and `-p`. In a suite that keeps
 its tests off the real hosts in `host_isolation.py`, a test module that does not import
 `host_isolation` at its top level, or does not parse, refuses every gate that holds it, in seconds,
 with no summary and no failed test to rerun or blame, so a batch holding it bisected blind. On
@@ -267,7 +267,7 @@ then of 6, and held six good entries for hours
 with nothing queued and exit 1, and the refusal quotes the line the gate would print. A refusal
 `origin/main` already gives, made past the queue, is not the entry's, so it does not refuse an entry
 that adds nothing to it. `--no-gate` does not skip the check, since the next gate on `main` would run
-nothing. A syntax error in a test module once ended `queuekeeper unittest` with a traceback; it is now a
+nothing. A syntax error in a test module once ended `qk unittest` with a traceback; it is now a
 refusal line too. The check reads the suite's files from the entry's commit, not a working tree; on
 the toolkit's 45 test modules it took 0.7 to 1.2 s on this Mac at a one-minute load of about 200
 (2026-11-08).
@@ -284,10 +284,10 @@ hint, as the trial is: the worker still runs the lane on the batch, since `main`
 between. It queues the entry, saying why, when it cannot be made: commits that do not apply onto
 `origin/main` alone, a lane that is not one plain command (foreground, display, unlocked screen,
 whole host, model or a parallel group), a run past 300 s, or an exit other than 0 or 1, such as
-`queuekeeper spelling`'s 2 for nothing checked. A finding `origin/main` gives too is not the entry's, so it
+`qk spelling`'s 2 for nothing checked. A finding `origin/main` gives too is not the entry's, so it
 queues the entry as well; the round's lane then fails on `main`'s own spelling.
 
-**What comes back to the author.** `queuekeeper queue status` and `queuekeeper queue wait` name each entry's state,
+**What comes back to the author.** `qk queue status` and `qk queue wait` name each entry's state,
 reason and log. An entry that conflicts with what is ahead of it, which the check could not see
 when it was queued, comes back at once and costs the others nothing. Its reason names the files in
 conflict and what it conflicts with: `origin/main` when no entry ahead changes those files; only the
@@ -295,9 +295,9 @@ entries ahead that change them, by ID, when `origin/main` still holds those file
 did; and otherwise `origin/main` and every entry ahead
 ([#247](https://github.com/vocaro/vocaro-engineering/issues/247)). Those entries may still be in their
 gate: once they land, rebase onto `origin/main` and add it again. A session therefore
-lands with `queuekeeper land --wait` run as a background command, whose end wakes it within seconds of a
-send-back; on 2026-11-03 a session that had run plain `queuekeeper land` learned of a conflict only half an
-hour later, from `queuekeeper queue status`
+lands with `qk land --wait` run as a background command, whose end wakes it within seconds of a
+send-back; on 2026-11-03 a session that had run plain `qk land` learned of a conflict only half an
+hour later, from `qk queue status`
 ([#130](https://github.com/vocaro/vocaro-engineering/issues/130)). When a batch fails, the oldest half runs next, and so on until one entry fails
 alone; every entry that passes along the way lands.
 
@@ -306,14 +306,14 @@ commits one at a time, in order, and stop at the first that conflicts (`Worker.p
 `merge_queue.py`), so a branch whose final tree would apply is still refused when one of its earlier
 commits does not. On 2026-11-10 a narration paragraph's branch held a commit inserting it at the
 paragraph boundary a queued Quick Look entry also changed, and a later commit moving it elsewhere;
-`queuekeeper land` refused the range at the first commit until the two were made one, which then passed the
+`qk land` refused the range at the first commit until the two were made one, which then passed the
 gate and landed (vocaro/BreezEPUB#6). Diagnose the commit the refusal names, in `COMMIT conflicts
 with` and its lines in conflict, not the branch's whole diff. Then:
 
 - When the commits from that one on are yours alone, clean and pushed nowhere, amend or consolidate
   them so that each commit the queue replays applies in order, as with `git reset --soft COMMIT^` and
   one new commit. Rewrite no other session's commits or working changes.
-- Otherwise wait for the entry ahead to land (`queuekeeper land --wait`, or the `queuekeeper queue wait` the refusal
+- Otherwise wait for the entry ahead to land (`qk land --wait`, or the `qk queue wait` the refusal
   names) and rebase onto `origin/main`, resolving the conflict at that commit.
 
 Either way, check that the new tip's tree is the one you meant (`git diff OLD-TIP NEW-TIP` empty when
@@ -323,7 +323,7 @@ confined to changelog lines is the worker's to settle, as above, and needs none 
 
 **A branch that goes on after a landing.** The queue lands a branch's commits under new IDs, so a
 branch that gets more work after one of its landings still holds the landed commits under their old
-IDs. `queuekeeper land` replays them onto `origin/main`, and one whose lines a later landed commit changed
+IDs. `qk land` replays them onto `origin/main`, and one whose lines a later landed commit changed
 conflicts there, so the branch is refused as a merge it cannot replay (2026-11-07, #204). Start the
 next change from `origin/main`, or `git rebase origin/main`: git drops a commit whose patch is already
 on main, and `git rebase --skip` passes one it stops at whose change main holds in a later form.
@@ -331,8 +331,8 @@ on main, and `git rebase --skip` passes one it stops at whose change main holds 
 **A bisect's two halves gate at once.** While a bisect goes on, the newer half of its suspects gates
 beside the older half, in a second checkout, `~/Development/queuekeeper-workers/NAME/NAME-beside`, on the same
 `origin/main` (owner's decision, 2026-11-07, [#241](https://github.com/vocaro/vocaro-engineering/issues/241)).
-The older half runs on this Mac (`queuekeeper run --here`) and the newer on the second Mac
-(`queuekeeper run --offload-only`), which runs it only if it can start it now. Whichever half passes lands,
+The older half runs on this Mac (`qk run --here`) and the newer on the second Mac
+(`qk run --offload-only`), which runs it only if it can start it now. Whichever half passes lands,
 so a newer half that passes can land before the older one. When both pass, the older half lands first,
 and the newer one lands on top of it only if its result carries over; otherwise it gates again. When
 both halves fail, the older one is bisected first. The newer half instead waits behind the older one,
@@ -384,21 +384,21 @@ Only one stacked gate runs at a time, so entries that arrive after it starts wai
 they stack on it in turn. A stacked gate settles nothing itself: an entry that conflicts with the batch below
 waits for its own round, and the worker's log names the entries below that it conflicts with. A bisect
 already runs two halves and does not start a stack. An entry that comes back keeps its ref until
-`queuekeeper queue remove ID`. Fix it, rebase and land it again.
+`qk queue remove ID`. Fix it, rebase and land it again.
 
-**Removing an entry that is testing stops its gate.** `queuekeeper queue remove ID`, or `queuekeeper land` of the branch
+**Removing an entry that is testing stops its gate.** `qk queue remove ID`, or `qk land` of the branch
 again, takes the entry out of the queue at once. The worker looks every `REMOVAL_POLL` (5 s) for an entry
 of the gate it runs that has left the queue, and then stops that gate's lanes as it does a stacked gate's
 it throws away, on this Mac or the second, which ends the run there and frees its admission. It gates what
 is left of the batch again, with no verdict counted and no hold, and stacks nothing on a batch an entry of
 which has left, since that tip will not land (owner's request,
 [#247](https://github.com/vocaro/vocaro-engineering/issues/247)). On 2026-11-07 a removed entry's gate on the
-second Mac held PDFReflowLib's queue for about 15 more minutes. `queuekeeper queue remove` says so of an entry that was
+second Mac held PDFReflowLib's queue for about 15 more minutes. `qk queue remove` says so of an entry that was
 testing; under a worker started from a toolkit older than this, it says instead that the gate runs on until
 its lanes end, at most `LANE_LIMIT` a lane, holding the queue until then.
 
 **A failed test that passes alone is a flake.** Before it bisects a batch whose failing lane is
-`queuekeeper unittest`, or a lane group holding one `queuekeeper unittest` lane whose other lanes all passed, as the
+`qk unittest`, or a lane group holding one `qk unittest` lane whose other lanes all passed, as the
 toolkit's `gate` does, the worker reruns the failed tests alone on the same batch commit (owner's decision,
 2026-11-07, [#231](https://github.com/vocaro/vocaro-engineering/issues/231)). It reads their IDs from the
 lane's log: unittest's `FAIL:` and `ERROR:` lines under each failed process. It first waits for this
@@ -412,12 +412,12 @@ imports. Only its own import statements count, at any depth of the module, looke
 top-level directory, `src/python`, `src` and the checkout, with each package's `__init__.py`. The files
 those imports import in turn do not count. A batch that changes one of them bisects. Either way the
 flake is recorded in four places: in each entry's `flakes` (the test ID, the gate's log and the reruns'
-logs, which `queuekeeper queue status` shows); in the worker's log; in a `Flaky-test:` trailer on a landed tip,
+logs, which `qk queue status` shows); in the worker's log; in a `Flaky-test:` trailer on a landed tip,
 one per test, which survives a carry-over; and on the tracker. For the tracker the worker searches the
 project's open issues for the test's name just before it writes, then comments on the first match, or
 files a hardening issue. A tracker gh cannot reach is noted in the entry and stops nothing.
 
-When adding an option to an `queuekeeper unittest` gate, check the actual lane command with the runner, the
+When adding an option to an `qk unittest` gate, check the actual lane command with the runner, the
 [test coverage checker](https://github.com/vocaro/vocaro-engineering/blob/main/guides/app-testing.md#every-test-has-a-lane) and the merge queue's single-test
 rerun. The first toolkit gate with `--batch-size` ran the suite and failed its coverage check because
 the checker treated the option as unknown. A focused check of the configured command catches that
@@ -427,7 +427,7 @@ failure before the full gate. [Batching gate results](https://github.com/vocaro/
 confirms the failure of a batch of several entries, the worker reruns the other failed tests too, and
 then looks for the one entry that explains them all (owner's decision, 2026-11-07). A failed test
 points at an entry when that entry's commits change a path the failing rerun's output names, as
-`queuekeeper spelling`'s `PATH:LINE:` lines do, or the test's module or a file it imports, as above. A path
+`qk spelling`'s `PATH:LINE:` lines do, or the test's module or a file it imports, as above. A path
 counts only whole and only with a directory or an extension, so a bare word is not taken for a
 file. When every failed test points at the same single entry, the worker sends that entry back, says
 in its log which entry it blamed and why, and queues the rest to gate again at once, without the
@@ -437,12 +437,12 @@ module the worker cannot find, a failed test that passed alone beside the real f
 that ended with no verdict. On 2026-11-07 a 6-entry batch bisected for about 2 hours over one spelling
 test whose output named a file only one commit changed.
 
-**A gate `queuekeeper unittest` refused sends back the one entry that brings the refusal.** When the failed
-lane is `queuekeeper unittest`, its log has no summary, and it printed a refusal ending `nothing ran`, nothing
+**A gate `qk unittest` refused sends back the one entry that brings the refusal.** When the failed
+lane is `qk unittest`, its log has no summary, and it printed a refusal ending `nothing ran`, nothing
 was tested, and the same tree would be refused again, so the worker reruns nothing (owner's decision,
 2026-11-08, [#290](https://github.com/vocaro/vocaro-engineering/issues/290)). It looks instead for the
 entries that bring the refusal: an entry whose tree alone gives a refusal naming one of the modules the
-line names (the check `queuekeeper land` runs, above), or whose commits change one of those modules in the
+line names (the check `qk land` runs, above), or whose commits change one of those modules in the
 lane's `-s` directory ([#280](https://github.com/vocaro/vocaro-engineering/issues/280)). When exactly
 one entry does, the worker sends it back with the refusal line as its reason, says in its log which
 entry it blamed and the line, and gates the rest at once, as for a real failure above. When none or
@@ -450,13 +450,13 @@ several do, or the line names no module, it bisects as before. When the same ref
 the checkout's directories, comes again in the next gate, or in both halves of a bisect, and no one
 entry brings it, the cause is not an entry, as with a module that reached `origin/main` past the queue:
 a bisect would only send back, one at a time, entries the refusal does not name. The worker then holds
-the queue for a session, the entries queued again, a half of one entry among them, and the hold's reason, which `queuekeeper queue status` and
-the worker's log show, quotes the line and `queuekeeper queue doctor`'s diagnosis (below). A session fixes the
-cause and runs `queuekeeper queue resume`. On 2026-11-07 one entry missing the `host_isolation` import cost
+the queue for a session, the entries queued again, a half of one entry among them, and the hold's reason, which `qk queue status` and
+the worker's log show, quotes the line and `qk queue doctor`'s diagnosis (below). A session fixes the
+cause and runs `qk queue resume`. On 2026-11-07 one entry missing the `host_isolation` import cost
 bisects of 11 and then 6 entries, with every round's log naming it.
 
-The worker bisects at once, as before, when the failing lane is not `queuekeeper unittest` (a project's own
-lane or a lane group), when its log names no test it can rerun (no `queuekeeper unittest` summary and no
+The worker bisects at once, as before, when the failing lane is not `qk unittest` (a project's own
+lane or a lane group), when its log names no test it can rerun (no `qk unittest` summary and no
 refusal, tests also
 left unmeasured, a process with no failed test named or that ran other than it was given, or a module
 that did not load), when more than `RERUN_MOST` (5) tests failed, and when this Mac does not settle
@@ -470,7 +470,7 @@ would still have bisected.
 another patch. Rebasing the branch onto `origin/main` then replays the landed commit and
 conflicts on that file, and merging `main` in makes a merge the queue refuses. Begin the next
 change on that branch from `origin/main`, as with `git reset --hard origin/main` on a clean
-branch of your own once `queuekeeper land` says `landed`. In a rebase already under way, `git rebase
+branch of your own once `qk land` says `landed`. In a rebase already under way, `git rebase
 --skip` drops a landed commit. On 2026-11-05 one EPUBLib session's rebases stopped on
 `CHANGELOG.md` three times this way.
 
@@ -483,12 +483,12 @@ gave none, as the simulators' voices were not ready in time
 ([EPUBLib#946](https://github.com/vocaro/EPUBLib/issues/946)), and with a single retry each pair held
 the queue until a person resumed it. A project sets another bound on `main`, as
 `"queue": {"noVerdictRuns": N}`, a positive integer; 1 holds at the first. A run with a verdict, a pass
-or a failure, starts the count again, and so does `queuekeeper queue resume`. A run that a locked screen left
+or a failure, starts the count again, and so does `qk queue resume`. A run that a locked screen left
 without a verdict does not count (the owner's decision, 2026-11-08,
 [vocaro-engineering#293](https://github.com/vocaro/vocaro-engineering/issues/293)): exit 3, or a lane
 that reached its limit, whose last screen reading shows a lock, from its receipt's `screenAfter` or
 else its log's last `screen:` line. The worker logs that reading, and runs that lane next as
-`queuekeeper run --unlocked-screen LANE`, which places it as `"unlockedScreen": true` does: only on a Mac
+`qk run --unlocked-screen LANE`, which places it as `"unlockedScreen": true` does: only on a Mac
 whose screen reads unlocked, waiting while neither does. A run that waits out the overflow that way
 exits 75, which counts, as does any run that gives no verdict without a lock.
 
@@ -497,7 +497,7 @@ retry without end (the owner's decision, 2026-11-09, the same issue). `LOCKED_SC
 is his judgment and not a measurement, is how many runs in a row may read unlocked at their start, by
 their placement or their log's first `screen:` line, and locked by their end before the queue holds. A run
 that began behind the lock is not counted, since the next run goes only to an unlocked Mac. A run with a
-verdict or a no-verdict run of another cause starts this count again, and so does `queuekeeper queue resume`. A run
+verdict or a no-verdict run of another cause starts this count again, and so does `qk queue resume`. A run
 that waited for an unlocked Mac and exited 75 ran nothing, so it counts toward `queue.noVerdictRuns` as above
 but neither adds to this count nor ends it. The hold is for a session: its reason names the lane and the last
 screen reading, with the Mac that reading is from, and a session can read why the screen locks during the
@@ -508,7 +508,7 @@ runs gave no verdict, on which Mac the last ran (`on this Mac (NAME)` or `on the
 its receipt or dispatch says), and why it gave none: the lane that reached its limit, the number of tests
 its log reports unmeasured with the first of them and the last screen reading queuekeeper logged
 (vocaro-engineering#185), no admission, or the host's configuration. A hold stays
-until whoever its reason names has dealt with its cause, or found it gone, and run `queuekeeper queue resume`:
+until whoever its reason names has dealt with its cause, or found it gone, and run `qk queue resume`:
 the owner only when the last run's exit was 78, a shared host's configuration, and otherwise a session,
 as [a hold says whom it is for](#the-merge-queue) below. Nothing fails over to another route.
 
@@ -528,7 +528,7 @@ ends the wait at its next look, with the entries still waiting. With a second Ma
 reads the Mac the retry could use, not only the one that voided the last run: on 2026-11-07 a wait settled
 build-host for 2304 s, and the retry went to this Mac by first-come admission
 ([#253](https://github.com/vocaro/vocaro-engineering/issues/253)). The Mac is chosen as the run starts, so
-each look reads both Macs' capacity for the lane as `queuekeeper run`'s offer does (`remote.retry_macs`, the
+each look reads both Macs' capacity for the lane as `qk run`'s offer does (`remote.retry_macs`, the
 log saying which it reads and why): the second Mac when it has spare capacity for the lane, this Mac when
 only it has, and both, each of which must settle, when neither has and the lane will go to whichever
 admits it first. A lane that stays on this Mac reads this Mac. The choice is only as good as that reading:
@@ -536,9 +536,9 @@ the second Mac can still decline an offer its capacity allowed, as it did that d
 goes to this Mac unsettled. Without a second Mac to choose, the test reads the Mac the lane ran
 on, since a lane that the second Mac ran left its load there
 ([#140](https://github.com/vocaro/vocaro-engineering/issues/140)). The worker knows it from the
-lane's dispatch, which `queuekeeper run` files under `.build/queuekeeper/remote/.dispatches/LANE/` in the
+lane's dispatch, which `qk run` files under `.build/queuekeeper/remote/.dispatches/LANE/` in the
 queue's checkout: one that started during the run and reached the second Mac, rather than only
-preparing, names it. Each look asks the second Mac over SSH, as `queuekeeper doctor` does, for its
+preparing, names it. Each look asks the second Mac over SSH, as `qk doctor` does, for its
 CPU busy share, the `HEAVY_BUSY_LIMIT` it sets there (75% by default), its one-minute load, which the log
 records, and its memory pressure, and judges them as admission does; the log and the hold name that Mac. A second
 Mac that cannot be reached, or does not answer with its reading, gives this Mac's reading for that look
@@ -554,11 +554,11 @@ a session, not the owner` is every other: a host that stayed busy or tests left 
 bound, a screen that locked during `LOCKED_SCREEN_RUNS` runs in a row, the pre-push hook's refusal or its no verdict, a path where the worker's checkout goes, a `main`
 whose `queuekeeper.json` the toolkit at `origin/main` refuses (the reason names the toolkit commit that
 judged it), a remote out of reach past the tries below, and anything unexpected. The reason ends with
-who runs `queuekeeper queue resume`: the session that has dealt with the cause, or any session that finds it
+who runs `qk queue resume`: the session that has dealt with the cause, or any session that finds it
 gone, runs it itself and says so, in its report, and never asks the owner for it. The owner is asked
 only for a hold that says it is his, and once he has fixed its cause any session that finds the cause
 gone resumes (owner's decision, 2026-11-04, [#173](https://github.com/vocaro/vocaro-engineering/issues/173): "why do you need my approval to resume the queue?
-this should never need my approval"). `queuekeeper queue status`, `queuekeeper land --wait` and `queuekeeper land` print the
+this should never need my approval"). `qk queue status`, `qk land --wait` and `qk land` print the
 reason with its kind. A hold whose cause a session cannot find is still a session's: say what was
 looked at, and what remains, rather than asking the owner to resume.
 
@@ -570,7 +570,7 @@ after 10, 30, 90 and 270 seconds (`BACKOFF`); when the fifth try fails too, it r
 batch's pass kept, and holds for a session only when the last round's fifth try fails too, about an hour
 after the first ([#173](https://github.com/vocaro/vocaro-engineering/issues/173)). A round that went through starts the tries again. So a gate
 that passed is not discarded because GitHub could not be reached for a moment
-([#113](https://github.com/vocaro/vocaro-engineering/issues/113)). `queuekeeper land`'s own fetch retries the
+([#113](https://github.com/vocaro/vocaro-engineering/issues/113)). `qk land`'s own fetch retries the
 backoff the same way. Git's message decides: one that says the remote answered and refused, an authentication
 failure, a 4xx status, an SSH key or host key refused, a missing repository or a rejected push, holds
 at once, for the owner, though SSH ends a refused key with the same `Could not read from remote repository` as a
@@ -610,7 +610,7 @@ The lanes must be ones the queue runs, so their passing is what the worker just 
 admission there is a lane's no verdict. The worker then does not run the hook, and its log says so.
 Keep the opt-in only while it is true: a hook that checks something no lane does stays a hook. A person's own `git push` still runs the hook.
 
-**A gate that fails on a test the change cannot reach.** On an `queuekeeper unittest` gate the queue does this
+**A gate that fails on a test the change cannot reach.** On an `qk unittest` gate the queue does this
 itself when the test passes alone ([a failed test that passes alone is a flake](#the-merge-queue)).
 Otherwise, record the failure on that test's issue,
 or file one by the project's labels, before adding the entry again: an entry added again with no
@@ -622,7 +622,7 @@ second Mac beside another project's gate
 [EPUBLib#896](https://github.com/vocaro/EPUBLib/issues/896)), each recorded on its issue, while
 the iOS lane passed every time. The options below are for a fix that cannot wait, not for a flake.
 
-**Landing ahead of the queue.** Two options of `queuekeeper land`, and of `queuekeeper queue add`, are for
+**Landing ahead of the queue.** Two options of `qk land`, and of `qk queue add`, are for
 emergencies only, never routine. They work in every repository, with no setting (owner's decision,
 2026-11-04, [#163](https://github.com/vocaro/vocaro-engineering/issues/163)), and do what a hand push
 past the queue did, with the tool keeping the record:
@@ -634,8 +634,8 @@ python3 scripts/qk land --no-gate --why "an unrelated flaky test fails the gate"
 
 - `--front` tests the entry next, ahead of everything waiting, as a batch of its own. A gate already
   running finishes first, as does a batch that passed and waits for its push; a bisect in progress
-  goes on where it was. `queuekeeper land --front` again with a commit already queued moves that entry.
-  `--why` is optional here, and the entry and `queuekeeper queue status` show it. Example: an important
+  goes on where it was. `qk land --front` again with a commit already queued moves that entry.
+  `--why` is optional here, and the entry and `qk queue status` show it. Example: an important
   toolkit fix stuck behind several queued changes jumps the queue. The entries already queued are
   then tested with the fix without being queued again: they rebase onto the new `main`, and other
   projects' workers move to the toolkit at `origin/main` each round.
@@ -644,9 +644,9 @@ python3 scripts/qk land --no-gate --why "an unrelated flaky test fails the gate"
   lane, or the toolkit's where it has none and has not turned it off, and the pre-push hook, unless `main`'s `queue.hookCoveredBy` says the gate
   covers the hook, and pushes. The reason is recorded everywhere the skip is: the entry's `ungated`,
   with the lanes; the worker's log; the landed tip's `Landed-without-gate:` trailer, its author,
-  message and patch otherwise its own; and `queuekeeper queue status`. Example: an important fix is held up by
+  message and patch otherwise its own; and `qk queue status`. Example: an important fix is held up by
   an unrelated flaky test failing the gate. It is no gate of the pushed commit, so `eng release`
-  will not take it. The next gate on `main` covers it: `queuekeeper queue status` lists it as `ungated on
+  will not take it. The next gate on `main` covers it: `qk queue status` lists it as `ungated on
   main` until a landing whose gate ran on a base that holds it has passed, and a docs-only landing
   does not count. A session that uses it tells the owner it did and why, as for a hand push.
 
@@ -654,16 +654,16 @@ With both, the entry lands at once, once a gate already running finishes, which 
 2026-11-04: a one-line change that made a late voice listing a skip on simulators, so that
 EPUBLib's gates gave a verdict again ([EPUBLib#946](https://github.com/vocaro/EPUBLib/issues/946)).
 
-**Pushing by hand is the exception.** A session pushes to `main` by hand only when `queuekeeper land` cannot
+**Pushing by hand is the exception.** A session pushes to `main` by hand only when `qk land` cannot
 be used, when it must be bypassed, each for a reason it can state, such as a broken queue or a fix
 that cannot wait for it, or with the owner's approval. A fix that cannot wait for the gate lands
-with `queuekeeper land --front --no-gate --why TEXT` instead, as above. A record or a document lands
+with `qk land --front --no-gate --why TEXT` instead, as above. A record or a document lands
 by the queue like anything else. A hand push follows [push only onto the `main` you tested](https://github.com/vocaro/vocaro-engineering/blob/main/guides/maintenance.md#concurrent-git-integration)
 and is reported to the owner with its reason. No check enforces this.
 
 **Main moving under a passed batch.** The queue takes a hand push as it comes. If `main` moved only by Markdown documents the batch
 does not touch, or by paths in `queue.carryOver`, each with why no queue lane reads it, the worker
-checks that the batch's patch is unchanged on the new `main`, runs `queuekeeper docs check` when a document
+checks that the batch's patch is unchanged on the new `main`, runs `qk docs check` when a document
 moved, then the project's `queue.carryOverChecks`, and pushes. A carried-over result is no gate of the pushed commit: `eng release` will not
 take it. A path in `queue.docsOnly.exclude` always gates again: it is a known code input.
 `queue.docsOnly: false` disables automatic Markdown carry-over too, while explicit
@@ -676,12 +676,12 @@ repositories use this path for root `README.md`, `CONTRIBUTING.md`, and `CHANGEL
 Markdown files (`.md` or `.markdown`) under `doc/`, `docs/`, `guides/`, and `knowledge/`.
 The worker runs spelling, unless disabled, followed by the project's `docs` lane or the toolkit's
 implicit `docs` lane (`python3 scripts/qk docs check`). This includes this toolkit's guides and
-knowledge articles. The toolkit's two checks, `queuekeeper spelling` and `queuekeeper docs check`, run in the
+knowledge articles. The toolkit's two checks, `qk spelling` and `qk docs check`, run in the
 worker's checkout without admission, so that seconds of checks never wait behind a whole-host
 gate or busy slots (vocaro-engineering#394): implicit, or a project lane of that name whose
 command is exactly the toolkit's. Each has `DOCS_CHECK_LIMIT`, 60 s, about 45 times the slowest
 measured run (0.2–1.3 s on this Mac at a load of 15–44, 2026-11-11). One that reaches it runs
-again through `queuekeeper run`, admitted, so a slow check is never a failure and never runs long
+again through `qk run`, admitted, so a slow check is never a failure and never runs long
 outside admission. Any other docs lane, such as a project script, runs through ordinary lane
 admission, since queuekeeper cannot know its cost. Either way the lanes leave their logs.
 Code, configuration, agent instructions, non-Markdown data, and documents under source or test
@@ -703,7 +703,7 @@ change, by `main`'s settings as above, and keeps docs-only entries out of code b
 - A docs-only entry goes ahead of an older entry only when the two change no path in common, and
   a docs entry left in line holds back every later entry that changes one of its paths, so no two
   entries that change a path in common change order, and integration and conflict detection are
-  what they were. An entry put first by `queuekeeper land --front`, or landing with `--no-gate`, still
+  what they were. An entry put first by `qk land --front`, or landing with `--no-gate`, still
   goes first; a docs entry does not go beside the gate while one waits.
 - A docs entry that fails its docs lanes ahead of older entries may need one of them, as a link
   needs the file an older entry adds. It is not sent back: it records them as `waitsFor` and goes
@@ -712,8 +712,8 @@ change, by `main`'s settings as above, and keeps docs-only entries out of code b
 A project may replace the defaults on `main` with exact paths and validators:
 
 ```json
-"docsOnly": {"paths": {"doc/guide/": "read by no code lane; queuekeeper docs check reads it",
-                       "README.md": "read by no code lane; queuekeeper docs check reads it"},
+"docsOnly": {"paths": {"doc/guide/": "read by no code lane; qk docs check reads it",
+                       "README.md": "read by no code lane; qk docs check reads it"},
              "exclude": {"doc/guide/input.md": "a code test reads this fixture"},
              "lanes": ["docs"]}
 ```
@@ -734,7 +734,7 @@ landings keep their ordinary hook policy. No emergency option is needed for docu
 A docs-only landing is no full gate of the pushed commit: `gate` may not be a docs lane, no
 gate receipt names that commit, and `eng release` will not take it as a release qualification.
 A release commit gets its gate from the release procedure. The worker's log and
-`queuekeeper queue status` record the docs lanes actually run and say this was a documentation landing.
+`qk queue status` record the docs lanes actually run and say this was a documentation landing.
 
 **Checks before a carry-over.** A project whose rule asks for more than the docs lane names the
 commands in `queue.carryOverChecks`, in order, on the batch rebased onto the new `main`:
@@ -749,7 +749,7 @@ commands in `queue.carryOverChecks`, in order, on the batch rebased onto the new
 `command` is an argv list. `paths`, optional, limits a check to moves of those paths, each a file or
 a directory ending in `/`, for a check too costly to run on every carry-over. Each runs through
 queuekeeper's supervision, with `LANE_LIMIT` as its limit and a log of its own under `queuekeeper-queue/logs`, so
-heavy work inside one goes through `queuekeeper admit` or `queuekeeper run` as anywhere else. A check that fails,
+heavy work inside one goes through `qk admit` or `qk run` as anywhere else. A check that fails,
 times out, cannot start, or finds no admission ends the carry-over: the batch gates again, with no
 blame and no hold. A check is judged only by its exit status, so it must read what main's move
 changed. Git diffs against `origin/main` read nothing of it, since by then the batch sits on that
@@ -757,31 +757,31 @@ changed. Git diffs against `origin/main` read nothing of it, since by then the b
 as its base. Prove each check fails on a bad move before relying on it.
 
 **State and recovery.** Each repository's state is under `queuekeeper-queue` in its common Git directory,
-so every worktree sees one queue. A worker starts with `queuekeeper land`, apart from the session,
+so every worktree sees one queue. A worker starts with `qk land`, apart from the session,
 and exits when nothing waits. A queue set up with the [signed launcher](#signed-queue-launcher)
-also checks for waiting work at login and every two minutes. After a reboot, `queuekeeper queue wait`
-can start a worker, and `queuekeeper queue resume` can clear a hold and start one. After taking
+also checks for waiting work at login and every two minutes. After a reboot, `qk queue wait`
+can start a worker, and `qk queue resume` can clear a hold and start one. After taking
 the queue lock, a worker checks for dispatchers proven gone and requests a stop for each run
 their records identify, including a crashed worker's gate (guides/shared-host.md, How a run
 reaches the second Mac).
 Whatever a dead worker left testing was never pushed, so the next worker tests it again. A batch
 whose lanes passed is recorded `passed`, with the commit that passed and its base, before its push;
 a hold the push meets, a refusal or a remote out of reach, keeps it so, and the hold's reason says so.
-The next worker, after `queuekeeper queue resume`, pushes that commit without gating it again, while the
+The next worker, after `qk queue resume`, pushes that commit without gating it again, while the
 batch is still the one that passed: an entry removed or added again since gates what is left. Main
 having moved meanwhile is the carry-over's decision, as for any push. A lane may
 take `LANE_LIMIT` (6 h, three times queuekeeper's default limit: the default for the lane and two more for
 its wait for admission). The worker's checkout is locked, so that no sweep removes it, and keeps
 ignored inputs a provisioning lane made between rounds. A project with `"integration": "pull-request"`
 on `origin/main`, or with no gate lane on `origin/main` or in the commit added, is refused, and the
-command says what to add. Neither `queuekeeper land` nor the worker reads any checkout's working tree for
+command says what to add. Neither `qk land` nor the worker reads any checkout's working tree for
 this, so a main checkout that lags behind `origin/main` changes nothing: the worker reads its settings
-from `origin/main` in its own checkout, and `queuekeeper run` there reads each lane from the batch.
+from `origin/main` in its own checkout, and `qk run` there reads each lane from the batch.
 
-**A deep queue.** `queuekeeper queue status` says why entries wait, from `queuekeeper-queue/round.json`, the
+**A deep queue.** `qk queue status` says why entries wait, from `queuekeeper-queue/round.json`, the
 worker's account of its round: whether it bisects, with how many suspects and the size of each
 half; each running gate's lane, the Mac it runs on and how long it has run; what a gate waits for
-and for how long, from the record `queuekeeper run` keeps in `.build/queuekeeper/.waits/LANE.json` on either
+and for how long, from the record `qk run` keeps in `.build/queuekeeper/.waits/LANE.json` on either
 Mac (a run on the second Mac sends it back as it changes, and it is cleared on admission), such as
 admission on either Mac behind another project's whole-host gate, an unlocked screen, the second
 Mac's foreground or a second Mac that cannot be reached; a gate stacked on the batch; and a wait for
@@ -798,23 +798,23 @@ with 3 entries testing and 6 queued, that took a dozen commands: a bisect of a s
 its older half waiting more than 25 minutes for this Mac behind StudyWright's and BreezEPUB's
 whole-host gates, and the second Mac answering "No route to host". For more, the answers live in
 `queuekeeper-queue/worker.log`, the worker's own log; in each gate's log in `queuekeeper-queue/logs/`, named
-`ROUND-LANE.log`, which `queuekeeper queue status` names; and, for a gate the second Mac ran, its full
+`ROUND-LANE.log`, which `qk queue status` names; and, for a gate the second Mac ran, its full
 output in the queue checkout's `.build/queuekeeper/remote/.dispatches/LANE/*/run.log`, which the
 gate's log also copies once the lane ends.
 
-**A queue that is stuck: `queuekeeper queue doctor`.** `queuekeeper queue status` says what the queue is doing; `queuekeeper
+**A queue that is stuck: `qk queue doctor`.** `qk queue status` says what the queue is doing; `qk
 queue doctor` says whether that is testing or being stuck, from signals the queue already keeps, and
 for each what it means and what heals it ([#290](https://github.com/vocaro/vocaro-engineering/issues/290)).
 It reads the entries, the hold, whether a worker runs, and the logs of the newest twelve gates of the
-`queuekeeper unittest` lanes back to the last that gave a verdict, a pass or a failure. It skips running
+`qk unittest` lanes back to the last that gave a verdict, a pass or a failure. It skips running
 gates and speculative stacks whose last lane no Mac admitted. Its signals:
 
-- **refused gates**: gates that `queuekeeper unittest` refused before running anything (a line ending
+- **refused gates**: gates that `qk unittest` refused before running anything (a line ending
   `nothing ran`), how many in a row with the same refusal, their logs, and the waiting entry whose
   tree alone gives that refusal. Only when exactly one entry does is it named as the cause.
-- **refused before running**: a waiting entry whose tree `queuekeeper unittest` refuses, as `queuekeeper land` now
+- **refused before running**: a waiting entry whose tree `qk unittest` refuses, as `qk land` now
   refuses before queuing, for an entry queued before that check or by an older toolkit.
-- **no verdict**: two or more gates in a row since the last verdict that printed no `queuekeeper unittest`
+- **no verdict**: two or more gates in a row since the last verdict that printed no `qk unittest`
   summary or left tests unmeasured, such as a lane at its limit or a second Mac out of reach
   ([#253](https://github.com/vocaro/vocaro-engineering/issues/253),
   [#268](https://github.com/vocaro/vocaro-engineering/issues/268),
@@ -825,17 +825,17 @@ gates and speculative stacks whose last lane no Mac admitted. Its signals:
   ([#287](https://github.com/vocaro/vocaro-engineering/issues/287)); **held**: the hold's reason.
 
 It exits 0 and says `healthy` when it finds none of these, and 1 otherwise; `--json` gives the same.
-A running gate that waits for admission is no finding; doctor adds a `note:` pointing to `queuekeeper admissions
+A running gate that waits for admission is no finding; doctor adds a `note:` pointing to `qk admissions
 now` ([shared-host.md, Who holds and who waits](shared-host.md#who-holds-and-who-waits)), and so does
-`queuekeeper doctor` for a lane of its checkout.
+`qk doctor` for a lane of its checkout.
 It changes nothing: no entry, no hold, no worker. The worker acts on a refused gate itself: it sends
 back the one entry that brings the refusal, and runs the doctor for the reason of the hold it makes
-when the same refusal comes again with no entry to blame (A gate `queuekeeper unittest` refused, above; owner's
+when the same refusal comes again with no entry to blame (A gate `qk unittest` refused, above; owner's
 decision, 2026-11-08, #290). For the other findings a session acts itself, as each `next:` line says.
 Restarting a worker that died (#287) and moving a no-verdict run to the other Mac are not the doctor's
 yet.
 
-Use [`queuekeeper queue placement`](shared-host.md#check-gate-placement-without-running-a-gate) to see
+Use [`qk queue placement`](shared-host.md#check-gate-placement-without-running-a-gate) to see
 whether each configured build Mac could admit a gate lane now, even when the queue is empty.
 
 ### A project's first landing
@@ -918,13 +918,13 @@ python3 scripts/qk queue launcher-plist "$app" > "$draft" &&
 rm -f "$draft"
 ```
 
-`queuekeeper land`, `queuekeeper queue wait` and `queuekeeper queue resume` ask launchd to start the installed agent.
+`qk land`, `qk queue wait` and `qk queue resume` ask launchd to start the installed agent.
 At login and on its interval the agent runs the same worker entry point. Empty and held queues
 return before recovering dispatches or running gates. The queue lock excludes duplicate workers.
 If launchd rejects a start request, `worker.log` records the error and queuekeeper starts the session
 worker. To remove the setup, wait for the queue to be idle, run
 `/bin/launchctl bootout "gui/$(id -u)/$label"`, and remove that queue's plist. Read what
-`queuekeeper queue status` prints before the bootout, not its exit status, which is 0 for a queue in the
+`qk queue status` prints before the bootout, not its exit status, which is 0 for a queue in the
 middle of a gate too ([#21](https://github.com/vocaro/queuekeeper/issues/21)): the bootout ends a
 running worker and its gate, as it did to another session's on 2026-11-12.
 

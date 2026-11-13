@@ -1,4 +1,4 @@
-"""`queuekeeper admissions now`: who holds and who waits for admission on each Mac, read without changing anything (#342)."""
+"""`qk admissions now`: who holds and who waits for admission on each Mac, read without changing anything (#342)."""
 import contextlib
 from datetime import datetime, timezone
 import fcntl
@@ -275,7 +275,7 @@ class WaiterTests(Namespace):
                 with resources.Admission("Theta", timeout=0): pass
             for fd in held: os.close(fd)
             with resources.Admission("Theta", timeout=0): pass
-        self.assertEqual(said.getvalue().count("was not recorded for `queuekeeper admissions now`"), 1)
+        self.assertEqual(said.getvalue().count("was not recorded for `qk admissions now`"), 1)
 
 
 class OriginTests(Namespace):

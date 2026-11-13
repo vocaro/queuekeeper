@@ -25,7 +25,7 @@ import time
 
 from .. import lane_results, parallel, processes
 
-# Processes at a time unless --jobs says otherwise, as queuekeeper unittest's.
+# Processes at a time unless --jobs says otherwise, as qk unittest's.
 DEFAULT_JOBS = parallel.DEFAULT_JOBS
 # Shards per process: enough that a shard's misjudged length evens out, few enough that the
 # bundle's load in each shard costs little.
@@ -38,7 +38,7 @@ CASE = re.compile(r"^Test Case '-\[(\S+) (\S+)\]' (?:passed|failed|skipped) \((\
 SUITE = re.compile(r"Suite (\S+|\"[^\"]*\") (?:passed|failed) after (\d+(?:\.\d+)?) seconds", re.M)
 # Each Swift Testing test's wall-clock start and finish, from its process's event stream, which records an
 # event as it happens whatever order the processes' output is printed in (vocaro-engineering#367). In the
-# lane's results/ when queuekeeper run gives it one, so it comes back and is kept by commit with them (#218);
+# lane's results/ when qk run gives it one, so it comes back and is kept by commit with them (#218);
 # otherwise in the first package's .build/queuekeeper/xctest/.
 TEST_TIMES = "xctest/swift-testing-times.json"
 LOCAL_TEST_TIMES = ".build/queuekeeper/xctest/swift-testing-times-{configuration}.json"
@@ -162,7 +162,7 @@ def test_times(events, shard, timed_out=False):
 
 def keep_test_times(found, directory, configuration):
     """Write found, every process's test_times, where TEST_TIMES says, and return its path or None. A second
-    queuekeeper xctest in one lane writes beside the first, never over it."""
+    qk xctest in one lane writes beside the first, never over it."""
     results = os.environ.get(parallel.RESULTS_VARIABLE)
     path = Path(results) / TEST_TIMES if results else directory / LOCAL_TEST_TIMES.format(configuration=configuration)
     candidate, number = path, 1
@@ -282,7 +282,7 @@ def planned(directory, options, filters, jobs, timings, label, split=False):
 
 
 def main(argv):
-    parser = argparse.ArgumentParser(prog="queuekeeper xctest", description="Build Swift packages' tests once and run their "
+    parser = argparse.ArgumentParser(prog="qk xctest", description="Build Swift packages' tests once and run their "
         "XCTest classes in xctest processes of their own, JOBS at a time, and their Swift Testing tests beside them.")
     parser.add_argument("-C", "--package-path", action="append", default=[],
                         help="a package to test (default: this directory); repeat for several, which build in turn "

@@ -3,7 +3,7 @@
 `qk disk` measures what Queuekeeper leaves: each repository's lane results kept by commit, and what an extension
 adds (the Apple extension: simulators and runtimes, Xcode's DerivedData, the SwiftPM cache and kept app builds).
 What sessions and the owner's workflow leave (worktrees, scratch folders, failure records, evidence archives) is
-the toolkit's `queuekeeper disk` (decision E of vocaro/vocaro-engineering#403). It classifies each item:
+the toolkit's `qk disk` (decision E of vocaro/vocaro-engineering#403). It classifies each item:
 
 - candidate: the rules prove that no session's live work is in it. `--delete` removes it, checking
   it again first, without asking and on a terminal or not: any session runs it when the volume
@@ -339,7 +339,7 @@ def project_workspace(host, workspace):
 def kept_results(host, usage, sizes):
     """Each repository's lane results kept by commit beside its receipts, .git/queuekeeper/remote/COMMIT/
     LANE.results/ (remote.keep), counted, with those past their rule (remote.KEPT_RESULTS_RULE) as one candidate,
-    which `queuekeeper remote prune-results` removes, leaving every receipt (vocaro-engineering#218)."""
+    which `qk remote prune-results` removes, leaving every receipt (vocaro-engineering#218)."""
     from . import remote  # remote imports this module
     items = []
     for main in main_checkouts(host):
@@ -540,7 +540,7 @@ def execute(args, run=subprocess.run, out=print):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(prog="queuekeeper disk", description=__doc__.split("\n")[0])
+    parser = argparse.ArgumentParser(prog="qk disk", description=__doc__.split("\n")[0])
     add_arguments(parser)
     try:
         return execute(parser.parse_args(argv))

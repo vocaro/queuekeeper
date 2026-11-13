@@ -82,7 +82,7 @@ while how == "ends":
 if how == "stays": time.sleep(120)
 raise SystemExit(5)
 """
-# An admission owner that never settles: it records itself in the guard, as queuekeeper admit does, and
+# An admission owner that never settles: it records itself in the guard, as qk admit does, and
 # ignores SIGTERM.
 STUCK_OWNER = READY + """import json, subprocess
 signal.signal(signal.SIGTERM, signal.SIG_IGN)
@@ -867,8 +867,8 @@ class ProcessTests(unittest.TestCase):
 
 
 class NestedAdmissionTests(unittest.TestCase):
-    """A light lane that runs queuekeeper admit itself, stopped as queuekeeper run stops it. BreezEPUB's book-opening
-    lane admits its own preparation (#46): a stop's SIGKILL ended its queuekeeper admit while the admitted
+    """A light lane that runs qk admit itself, stopped as qk run stops it. BreezEPUB's book-opening
+    lane admits its own preparation (#46): a stop's SIGKILL ended its qk admit while the admitted
     command was still ending, and the entry it left refused every session's heavy work until
     attended recovery (#53)."""
 
@@ -982,7 +982,7 @@ def is_open(fd):
 
 class InheritedDescriptorTests(unittest.TestCase):
     """A command inherits the admission lock descriptors that the token names only while this process
-    holds them. queuekeeper unittest under queuekeeper admit started each module's process with the token and without
+    holds them. qk unittest under qk admit started each module's process with the token and without
     its descriptor, and a lane group's lane in one failed to start with EBADF (#70)."""
 
     def setUp(self):
@@ -1020,7 +1020,7 @@ class InheritedDescriptorTests(unittest.TestCase):
         unrelated.write_text("not a lock\n")
         token = lambda nonce="forged": json.dumps({"schemaVersion": 1, "exclusive": False, "model": False,
             "guard": str(self.here / "gate.warm-push-guard"), "locks": [{"fd": number, "path": str(lock), "nonce": nonce}]})
-        # Closed here, as the token's descriptor was in each module's process queuekeeper unittest started:
+        # Closed here, as the token's descriptor was in each module's process qk unittest started:
         # passing it stopped the command from starting with EBADF. A token that is not JSON names
         # nothing to pass.
         for case, value in {"closed": token(), "not JSON": "{"}.items():

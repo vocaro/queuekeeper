@@ -9,7 +9,7 @@ LIMIT = 30
 def ready(config):
     argv = config.get("argv")
     if not (isinstance(argv, list) and argv and all(isinstance(word, str) for word in argv)):
-        return "no argv is set: `queuekeeper notify set command argv '[\"PROGRAM\", \"ARGUMENT\"]'`"
+        return "no argv is set: `qk notify set command argv '[\"PROGRAM\", \"ARGUMENT\"]'`"
     return None
 
 

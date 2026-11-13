@@ -1,13 +1,13 @@
 """Kept run results: each test's outcome and seconds, for a lane whose script runs xcodebuild itself.
 
-    queuekeeper results keep --log LOG --bundle BUNDLE --name NAME --status STATUS [--results DIRECTORY]
+    qk results keep --log LOG --bundle BUNDLE --name NAME --status STATUS [--results DIRECTORY]
 
-A script calls `keep` once per run, on a pass as on a failure. It writes what `queuekeeper simulator-tests` keeps of
+A script calls `keep` once per run, on a pass as on a failure. It writes what `qk simulator-tests` keeps of
 a run (matrix.kept), simulator-tests/NAME.log and NAME.json, in DIRECTORY, or else the lane's results/ that
-`queuekeeper run` names in QUEUEKEEPER_RESULTS_DIR and brings back from the second Mac, and prints one line per test case.
-STATUS is the exit status of the script's xcodebuild. A lane's output goes to its log, so `queuekeeper run` prints
+`qk run` names in QUEUEKEEPER_RESULTS_DIR and brings back from the second Mac, and prints one line per test case.
+STATUS is the exit status of the script's xcodebuild. A lane's output goes to its log, so `qk run` prints
 these lines again from results/ when the lane ends, here or, for a run on the second Mac, once its results
-have come back (report); it leaves out what `queuekeeper simulator-tests` kept, whose lanes print their own.
+have come back (report); it leaves out what `qk simulator-tests` kept, whose lanes print their own.
 Use --activity-timing-prefix PREFIX to keep activities titled "PREFIX N s" under each test. The number
 in the title measures the wait. An unreadable activity tree is reported separately from the test outcome.
 
@@ -34,7 +34,7 @@ OUTCOMES = ("passed", "failed", "skipped", "expected failure", "unmeasured")
 
 
 # The value of a kept record's keptBy that report prints.
-KEPT_BY = "queuekeeper results keep"
+KEPT_BY = "qk results keep"
 
 
 def case_line(name, case):
@@ -121,7 +121,7 @@ def keep(log, bundle, name, status, results=None, out=print, *, activity_prefixe
 
 
 def main(argv):
-    parser = argparse.ArgumentParser(prog="queuekeeper results", description=__doc__.split("\n")[0],
+    parser = argparse.ArgumentParser(prog="qk results", description=__doc__.split("\n")[0],
                                      epilog=__doc__.split("\n\n", 2)[2], formatter_class=argparse.RawDescriptionHelpFormatter)
     actions = parser.add_subparsers(dest="action", required=True)
     keeping = actions.add_parser("keep", help="keep and print a test run's per-test outcomes and seconds")

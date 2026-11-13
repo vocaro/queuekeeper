@@ -368,7 +368,7 @@ class Checking(Settings, test_merge_queue.Fixture):
         return check.check(self.repo, now=at, diagnose=lambda root: (list(self.found), [], False))
 
     def finding(self, signal="no worker", diagnosis="2 entries wait and no worker runs"):
-        return {"signal": signal, "diagnosis": diagnosis, "remedy": "run `queuekeeper queue resume`"}
+        return {"signal": signal, "diagnosis": diagnosis, "remedy": "run `qk queue resume`"}
 
     def test_a_finding_is_told_once_it_has_lasted_and_only_once(self):
         self.found = [self.finding()]
@@ -379,7 +379,7 @@ class Checking(Settings, test_merge_queue.Fixture):
         notice_, = self.sent
         self.assertEqual((notice_["title"], notice_["level"], notice_["rule"], notice_["repository"]),
                          ("Queue looks stuck", rules.URGENT, "stuck", "project"))
-        self.assertEqual(notice_["body"], "2 entries wait and no worker runs. Next: run `queuekeeper queue resume`")
+        self.assertEqual(notice_["body"], "2 entries wait and no worker runs. Next: run `qk queue resume`")
 
     def test_a_finding_that_goes_before_it_has_lasted_is_never_told(self):
         self.found = [self.finding()]

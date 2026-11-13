@@ -41,7 +41,7 @@ class View(unittest.TestCase):
                 ({"worker": True, "round": {"round": "r", "entries": ["a", "b", "c"]}, "waiting": waiting},
                  "Testing 3 entries"),
                 ({"worker": True, "waiting": waiting}, "Worker running, 3 waiting"),
-                ({"waiting": waiting}, "3 waiting with no worker: `queuekeeper queue resume` starts one")):
+                ({"waiting": waiting}, "3 waiting with no worker: `qk queue resume` starts one")):
             with self.subTest(said=said):
                 self.assertEqual(watch.headline({**IDLE, **state}), said)
 
@@ -87,7 +87,7 @@ class View(unittest.TestCase):
 
 
 class Command(test_merge_queue.Fixture):
-    """`queuekeeper watch`, which is a command only while the feature is on."""
+    """`qk watch`, which is a command only while the feature is on."""
 
     def setUp(self):
         super().setUp()
@@ -126,7 +126,7 @@ class Command(test_merge_queue.Fixture):
         self.assertEqual(status, 0)
         lines = printed.splitlines()
         self.assertTrue(lines[0].startswith("project  "))
-        self.assertEqual(lines[1], "1 waiting with no worker: `queuekeeper queue resume` starts one")
+        self.assertEqual(lines[1], "1 waiting with no worker: `qk queue resume` starts one")
         self.assertIn(f"  queued   {identifier}  Add a.txt", printed)
         self.assertIn(f"{identifier} queued: Add a.txt", lines[-1])
         self.assertNotIn(watch.CLEAR, printed)
@@ -150,7 +150,7 @@ class Command(test_merge_queue.Fixture):
 
 
 class Following(test_merge_queue.Fixture):
-    """`queuekeeper queue events --follow` shows the journal once, however its reading and its following overlap."""
+    """`qk queue events --follow` shows the journal once, however its reading and its following overlap."""
 
     def test_what_is_read_is_not_shown_again_and_what_was_written_meanwhile_is_not_missed(self):
         directory = mq.Queue(self.repo).directory

@@ -445,8 +445,8 @@ class RoutingTests(unittest.TestCase):
             ran = {"lane": self.qk("run", "voiceover-mac"), "remote lane": self.qk("remote", "run", "voiceover-mac"),
                    "admit": self.qk("remote", "admit", "--foreground", "--", "true")}
             plain = {"lane": self.qk("remote", "run", "plain"), "admit": self.qk("remote", "admit", "--", "true")}
-        for name, here in (("lane", "queuekeeper run --here voiceover-mac"), ("remote lane", "queuekeeper run --here voiceover-mac"),
-                           ("admit", "queuekeeper admit --foreground -- COMMAND")):
+        for name, here in (("lane", "qk run --here voiceover-mac"), ("remote lane", "qk run --here voiceover-mac"),
+                           ("admit", "qk admit --foreground -- COMMAND")):
             with self.subTest(name):
                 status, error = ran[name]
                 self.assertEqual(status, 2)
@@ -511,7 +511,7 @@ class RoutingTests(unittest.TestCase):
         self.assertNotIn("approval", during["entry"])
         self.assertTrue(during["entry"]["activeRun"])
         self.assertEqual(self.record.entry(devices.FOREGROUND)["state"], "released")
-        # queuekeeper admit --foreground holds it the same way; --verify never sends foreground work.
+        # qk admit --foreground holds it the same way; --verify never sends foreground work.
         self.during.unlink()
         with patch.object(foreground, "problems", return_value=[]):
             status, error = self.qk("admit", "--foreground", "--", *self.lanes["voiceover-mac"]["command"])

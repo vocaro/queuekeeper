@@ -96,7 +96,7 @@ class UnittestRunnerTests(unittest.TestCase):
 
     def test_a_test_process_has_sigint_and_sigquit_at_their_defaults_though_its_runner_ignores_them(self):
         # A background job's shell ignores both, and a test that stops its child by SIGINT inherited that through
-        # queuekeeper unittest (vocaro/BreezEPUB#47); the owner chose to reset them in the test processes alone (#385).
+        # qk unittest (vocaro/BreezEPUB#47); the owner chose to reset them in the test processes alone (#385).
         root = self.suite(module("test_dispositions", """
             import signal, subprocess
             NAMES = {signal.SIG_IGN: "ignored", signal.SIG_DFL: "default", signal.default_int_handler: "python"}
@@ -123,7 +123,7 @@ class UnittestRunnerTests(unittest.TestCase):
         self.assertEqual((root / "dispositions").read_text().split(), ["ignored", "ignored", "ignored", "ignored"])
 
     def test_a_suite_with_host_isolation_runs_no_module_that_skips_it(self):
-        # The merge queue's full suite found a new module without the import (#209's capture_approvals); queuekeeper unittest,
+        # The merge queue's full suite found a new module without the import (#209's capture_approvals); qk unittest,
         # which a change's own modules run under, now refuses it before discovery imports anything.
         passing = "import unittest\nclass P(unittest.TestCase):\n    def test_p(self): pass\n"
         root = self.suite(("host_isolation", ""), ("test_isolated", "import host_isolation\n" + passing),
@@ -220,7 +220,7 @@ class UnittestRunnerTests(unittest.TestCase):
         self.assertEqual(len(lane_results.unmeasured_tests(output)), 1, output)
 
     def after_summary(self, output):
-        """The lines queuekeeper unittest prints after its summary, which comes once."""
+        """The lines qk unittest prints after its summary, which comes once."""
         lines = output.splitlines()
         summaries = [number for number, line in enumerate(lines) if line.startswith("queuekeeper unittest: ")]
         self.assertEqual(len(summaries), 1, output)
@@ -645,7 +645,7 @@ PROBE = textwrap.dedent("""
 
 
 class ShardAdmissionTests(unittest.TestCase):
-    """queuekeeper unittest passes each module's process the admission lock descriptors that it holds itself
+    """qk unittest passes each module's process the admission lock descriptors that it holds itself
     and no other descriptor, so a nested admission in a test reuses the admission, as it does under
     `python3 -m unittest discover`. Each module's process used to have the token without its
     descriptor, and a nested admission there was refused (#70)."""
@@ -676,7 +676,7 @@ class ShardAdmissionTests(unittest.TestCase):
         return number
 
     def run_suite(self, token, held, probed):
-        """Run queuekeeper unittest holding these descriptors, as queuekeeper admit starts a command, under this token
+        """Run qk unittest holding these descriptors, as qk admit starts a command, under this token
         or none. Returns its status, its output and what its module's process found."""
         environment = {"PATH": "/usr/bin:/bin", "PYTHONPATH": str(SOURCE), **self.isolated,
                        "PROBE_FDS": ",".join(str(fd) for fd in probed), **({resources.TOKEN: token} if token else {})}
@@ -695,17 +695,17 @@ class ShardAdmissionTests(unittest.TestCase):
             (item,) = json.loads(token)["locks"]
             fd, lock = item["fd"], os.stat(item["path"]).st_ino
             # The lock reaches the module's process as the lock file itself, and a nested admission
-            # there reuses it; another descriptor queuekeeper unittest holds does not.
+            # there reuses it; another descriptor qk unittest holds does not.
             status, output, found = self.run_suite(token, (fd, self.unrelated), (fd, self.unrelated))
             self.assertEqual(status, 0, output)
             self.assertEqual(found, {"held": {str(fd): lock, str(self.unrelated): None}, "inherited": True})
-            # Started without the descriptor, as a plain subprocess call starts its child, queuekeeper unittest
+            # Started without the descriptor, as a plain subprocess call starts its child, qk unittest
             # has the token alone and passes on nothing: a nested admission is refused, not given a slot.
             status, output, found = self.run_suite(token, (), (fd,))
             self.assertEqual(status, 0, output)
             self.assertNotEqual(found["held"][str(fd)], lock)
             self.assertRegex(found["inherited"], "^Invalid inherited resource admission: ")
-            # With no token, queuekeeper unittest holds the lock and passes on nothing.
+            # With no token, qk unittest holds the lock and passes on nothing.
             status, output, found = self.run_suite(None, (fd, self.unrelated), (fd, self.unrelated))
             self.assertEqual(status, 0, output)
             self.assertNotEqual(found["held"][str(fd)], lock)
@@ -718,7 +718,7 @@ class ShardAdmissionTests(unittest.TestCase):
         token = lambda fd, nonce: json.dumps({"schemaVersion": 1, "exclusive": False, "model": False,
             "guard": str(self.here / "gate.warm-push-guard"), "locks": [{"fd": fd, "path": str(lock), "nonce": nonce}]})
         closed = next(fd for fd in range(200, 1000) if not is_open(fd))
-        # Closed in queuekeeper unittest's process, open there on another file, or open on the lock without
+        # Closed in qk unittest's process, open there on another file, or open on the lock without
         # the token's owner in it, the token's number is not passed on: passed, a closed one stops
         # the module's process from starting with EBADF. The positive control: open on the lock that
         # names the owner, it is passed.
@@ -812,7 +812,7 @@ class LaneGroupTests(unittest.TestCase):
 
     def test_lanes_start_under_an_admission_token_whose_descriptor_this_process_does_not_hold(self):
         # A process can hold the admission's token without its descriptor, as each module's process
-        # queuekeeper unittest started under queuekeeper admit did. Passed on, that closed descriptor stopped a lane
+        # qk unittest started under qk admit did. Passed on, that closed descriptor stopped a lane
         # from starting.
         closed = next(fd for fd in range(200, 1000) if not is_open(fd))
         token = json.dumps({"schemaVersion": 1, "locks": [{"fd": closed, "path": str(self.root / "slot0"), "nonce": "outer"}]})

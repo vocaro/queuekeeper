@@ -1,4 +1,4 @@
-"""A look for a queue that is stuck without having written an event: what `queuekeeper queue doctor` finds.
+"""A look for a queue that is stuck without having written an event: what `qk queue doctor` finds.
 
 Entries that wait with no worker, gates in a row with no verdict and the like change nothing in the journal, so no
 delivery tells of them. Each command that reaches the hosts therefore starts a look, apart from itself and at most

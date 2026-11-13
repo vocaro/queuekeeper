@@ -227,7 +227,7 @@ class PlacementTests(unittest.TestCase):
                 self.assertIsNone(remote.spare(self.capacity(state), "the second Mac", whole_host=True))
 
     def offer(self, screen):
-        offered = remote.Offer("gate", "`queuekeeper run --here gate`", lambda host, sent: 0, whole_host=True, screen=screen)
+        offered = remote.Offer("gate", "`qk run --here gate`", lambda host, sent: 0, whole_host=True, screen=screen)
         offered.host = "fake"
         return offered
 
@@ -391,7 +391,7 @@ class MessageTests(unittest.TestCase):
         self.addCleanup(names.stop)
 
     def test_a_fallback_says_in_one_line_that_the_run_is_on_this_mac_and_why(self):
-        offered = remote.Offer("gate", "`queuekeeper run --here gate`", lambda host, sent: 0)
+        offered = remote.Offer("gate", "`qk run --here gate`", lambda host, sent: 0)
         offered.status = "the second Mac is busy: build-host did not take it: its heavy-work queue cannot take the lane now"
         offered.sent = {"commit": "0b1d0b3b9329"}
         with patch.dict(os.environ), patch("sys.stderr", new_callable=StringIO) as error:
@@ -432,7 +432,7 @@ class MessageTests(unittest.TestCase):
 
 
 class CommandTests(unittest.TestCase):
-    """`queuekeeper host screen [--remote]`."""
+    """`qk host screen [--remote]`."""
 
     def run_command(self, *arguments):
         with patch("sys.stdout", new_callable=StringIO) as out, patch.object(offload_host, "mac_name",

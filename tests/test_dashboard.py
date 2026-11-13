@@ -100,7 +100,7 @@ class Panels(Fixture):
                 ({"worker": True, "round": {"round": "r", "entries": ["a", "b"]}, "waiting": waiting[:2]},
                  ("active", "Testing 2 entries", "Its round is starting.")),
                 ({"worker": True, "waiting": waiting}, ("active", "Worker running", "3 waiting.")),
-                ({"waiting": waiting}, ("warning", "3 waiting with no worker", "`queuekeeper queue resume` starts one."))):
+                ({"waiting": waiting}, ("warning", "3 waiting with no worker", "`qk queue resume` starts one."))):
             with self.subTest(expected=expected[1]):
                 self.assertEqual(home.headline(state, None), expected)
 

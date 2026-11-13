@@ -1,8 +1,8 @@
-"""The second Mac's side of `queuekeeper remote`, sent over SSH and run there by that Mac's own Python.
+"""The second Mac's side of `qk remote`, sent over SSH and run there by that Mac's own Python.
 
 It imports nothing from the toolkit, because it runs before the toolkit is checked out there,
 and Python 3.9, a Mac's system Python, runs it. It claims a persistent checkout of the project,
-places the dispatched commits, and runs `queuekeeper run` or `queuekeeper admit` there under the second Mac's
+places the dispatched commits, and runs `qk run` or `qk admit` there under the second Mac's
 own heavy-work admission, with its device record deferring physical devices to the sending Mac's
 and the run given the reservations it carries. Standard output carries framed lines: `O` for
 output, `L` for the lane's log as it grows, then, once the work has ended, an `F` naming each file the plan asks back,
@@ -18,26 +18,26 @@ the dispatcher's death or a dropped connection sent it (vocaro-engineering#321),
 seconds with no heartbeat, which is all that a Mac that crashed sends (vocaro-engineering#287). A journaled run the
 dispatcher has heard start is never stopped by silence: a sleeping Mac is silent too. Given `{"toolchain": DEVELOPER_DIR}`
 instead of a plan, it prints the Mac's Xcodes, simulator runtimes and device record for
-`queuekeeper doctor`; given `{"images": ...}`, `{"receive": ...}` or `{"deleteRuntime": ...}`, it lists the Mac's
+`qk doctor`; given `{"images": ...}`, `{"receive": ...}` or `{"deleteRuntime": ...}`, it lists the Mac's
 runtime images, adds one read from standard input or deletes one that no simulator but Xcode's
-defaults uses, for `queuekeeper doctor` and `queuekeeper remote setup --runtimes`; given `{"leftovers": ROOT}`,
-it lists the processes left over from runs there, which `queuekeeper remote` prints before it sends work,
+defaults uses, for `qk doctor` and `qk remote setup --runtimes`; given `{"leftovers": ROOT}`,
+it lists the processes left over from runs there, which `qk remote` prints before it sends work,
 and with `"advertise"` names as refs the commits the named repositories' checkouts hold, so that
 the push that follows sends only what they lack, and with `"reap"` first shuts down the stale pool
 simulators that census finds (reap), and with `"toolkitCheckout"`, alone too, fast-forwards this Mac's
 own toolkit checkout to origin/main when it can, and says why not when it cannot (update_toolkit);
 given `{"device": ...}`, what there may still use a physical device a run was given, for
 `devices recover`; given `{"keychain": PATH}`, the Mac's name and whether that keychain file is
-there, for `queuekeeper keychain recover`; given `{"keepUnlocked": ...}`, at the owner's terminal, it asks for
-the login keychain's password and keeps it for runs to unlock that keychain with, for `queuekeeper keychain
+there, for `qk keychain recover`; given `{"keepUnlocked": ...}`, at the owner's terminal, it asks for
+the login keychain's password and keeps it for runs to unlock that keychain with, for `qk keychain
 keep-unlocked`; given `{"foreground": true}`, what the Mac lacks for foreground work started over
-SSH and who holds its mac-foreground, for `queuekeeper remote foreground`; given `{"pressure": true}`, its
+SSH and who holds its mac-foreground, for `qk remote foreground`; given `{"pressure": true}`, its
 CPU's busy share, the limit admission sets on it and its memory pressure, for the merge queue's settle wait;
-given `{"capacity": true}`, its spare capacity for heavy work, which `queuekeeper run` reads on both Macs
+given `{"capacity": true}`, its spare capacity for heavy work, which `qk run` reads on both Macs
 before it chooses one (remote.spare); given `{"admissionLog": SINCE}`, its admission log's lines from
-SINCE, an epoch time, for `queuekeeper admissions usage`; given `{"admissionsNow": 1}`, who holds and who waits for its
-admission now, for `queuekeeper admissions now` (admissions_now); given `{"screen": true}`, whether its console screen is locked, for
-`queuekeeper host screen --remote` (screen).
+SINCE, an epoch time, for `qk admissions usage`; given `{"admissionsNow": 1}`, who holds and who waits for its
+admission now, for `qk admissions now` (admissions_now); given `{"screen": true}`, whether its console screen is locked, for
+`qk host screen --remote` (screen).
 """
 import base64
 import contextlib
@@ -122,8 +122,8 @@ PHYSICAL = re.compile(r"[0-9A-F]{8}-[0-9A-F]{16}|[0-9A-F]{40}")
 # Where a Mac keeps its users' keychain files, relative to the home, and its login keychain's file there.
 KEYCHAINS = "Library/Keychains"
 LOGIN_KEYCHAIN = "login.keychain-db"
-# The file in queuekeeper remote's root that holds the login keychain's password, once the owner has run
-# `queuekeeper keychain keep-unlocked`, from which each run unlocks that keychain in its own session.
+# The file in qk remote's root that holds the login keychain's password, once the owner has run
+# `qk keychain keep-unlocked`, from which each run unlocks that keychain in its own session.
 KEYCHAIN_PASSWORD = "keychain-password"
 # What SecKeychainGetStatus sets for an unlocked keychain (kSecUnlockStateStatus), and the OSStatus of
 # a wrong password (errSecAuthFailed) and of a missing keychain file (errSecNoSuchKeychain).
@@ -134,7 +134,7 @@ PASSWORD_TRIES = 3
 # simulators/pool.py records it when it reserves the member.
 HOLDER = "holderProcess"
 # Set on a reservation that holds its member only while its holderProcess runs, as a run's own pool does
-# (simulators/pool.py, Pool(alone=True)), and never on `queuekeeper simulator-pool take`'s, whose session holds the
+# (simulators/pool.py, Pool(alone=True)), and never on `qk simulator-pool take`'s, whose session holds the
 # member by its word once that command has ended. Only such a reservation may be released before its expected
 # release (release_dead; vocaro-engineering#156).
 ALONE = "heldOnlyWhileHolderRuns"
@@ -175,7 +175,7 @@ REAP_LOG = "simulator-reaps.jsonl"
 # waits for a process to end after SIGTERM, and that all of one cleanup's stops may take.
 LAUNCHED, LAUNCHED_KEPT, LAUNCH_SAMPLE_SECONDS = "launched.jsonl", 1000, 5
 STOP_LOG, STOP_WAIT_SECONDS, STOP_SECONDS = "leftover-stops.jsonl", 5, 30
-# The log of how long sessions hold the members `queuekeeper simulator-pool take` hands them, beside the reap log: a
+# The log of how long sessions hold the members `qk simulator-pool take` hands them, beside the reap log: a
 # line for each take, extend, release and reap release of one, so that TAKE_HOLD (simulators/pool.py) is sized
 # from measurement (vocaro-engineering#179). A line that would take it past HOLD_LOG_LIMIT bytes first makes it
 # the previous generation, as the admission log does, so the two stay within twice it.
@@ -187,7 +187,7 @@ HOLD_LOG, PREVIOUS_HOLD_LOG, HOLD_LOG_LIMIT = "simulator-holds.jsonl", "simulato
 # (vocaro-engineering#386).
 SLOW_LISTING_SECONDS, SLOW_LISTING_KEPT = 5, 40
 SLOW_LISTING_LOG, PREVIOUS_SLOW_LISTING_LOG, SLOW_LISTING_LIMIT = "slow-listings.jsonl", "slow-listings.1.jsonl", 1 << 20
-# Set on the reservation `queuekeeper simulator-pool take` makes, never a run's own (ALONE), naming the pool, so that
+# Set on the reservation `qk simulator-pool take` makes, never a run's own (ALONE), naming the pool, so that
 # reap logs its release in HOLD_LOG.
 TAKEN = "takenFromPool"
 # A simulator's own launchd_sim, as ps prints it.
@@ -211,7 +211,7 @@ UPDATE_SECONDS, UPDATE_FETCH_SECONDS = 40, 25
 UPDATE_LISTING_SECONDS = 10
 UPDATE_LOCK = "toolkit-update.lock"
 
-# The journals of dispatches a connection's end does not stop, under queuekeeper remote's root, each in a directory named
+# The journals of dispatches a connection's end does not stop, under qk remote's root, each in a directory named
 # for its dispatch; the frames in one, and the file a later connection's stop leaves there for the run.
 JOURNALS, FRAMES, STOP_FILE = "dispatches", "frames", "stop"
 # Seconds an uncollected journal stays: past any run's bound, for a dispatcher that never came back.
@@ -326,7 +326,7 @@ class Journal:
                     self.more.clear()
 
     def warden(self):
-        """A stop that a later connection left, and the bound on a run nobody is attending. queuekeeper run and queuekeeper admit
+        """A stop that a later connection left, and the bound on a run nobody is attending. qk run and qk admit
         each stop their own work at its timeout; this is for an queuekeeper that does not."""
         announced = False
         while not self.closed.wait(0.5):
@@ -637,7 +637,7 @@ def record_path():
 
 def device_record():
     """The Mac its device record defers physical devices to, and the entries that hold a physical
-    device, which `queuekeeper doctor` compares. It reads without the record's lock: every change replaces
+    device, which `qk doctor` compares. It reads without the record's lock: every change replaces
     the record whole."""
     path = record_path()
     try:
@@ -656,7 +656,7 @@ def device_record():
 
 def keychain(path):
     """The Mac's name, its home, the keychain file path names and whether it is there, and the keychain
-    files in ~/Library/Keychains, for `queuekeeper keychain recover`. path is absolute, starts with ~, or is a
+    files in ~/Library/Keychains, for `qk keychain recover`. path is absolute, starts with ~, or is a
     file name in ~/Library/Keychains; it is never completed, so a misspelled name is reported missing.
     It reads names and file types only: nothing opens a keychain."""
     home = Path.home()
@@ -744,9 +744,9 @@ def keep(path, password):
 
 
 def keep_unlocked(request, ask=None, unlock=security_unlock, run=subprocess.run, out=print, terminal=None):
-    """`queuekeeper keychain keep-unlocked` on the second Mac, in the owner's Terminal there or through the
+    """`qk keychain keep-unlocked` on the second Mac, in the owner's Terminal there or through the
     `ssh -t` the sending Mac runs: ask for this Mac's login password, and once it has unlocked the login
-    keychain, keep it in request["root"], under the home, readable only by this account, for each queuekeeper
+    keychain, keep it in request["root"], under the home, readable only by this account, for each qk
     remote run to unlock that keychain in its own session (unlock_for_run). Then set the keychain to
     lock neither after a time nor on sleep, so that the owner's own session keeps it unlocked too. The
     password goes only to Security and that file. Exit 0 when both are done, 1 when no password given
@@ -762,7 +762,7 @@ def keep_unlocked(request, ask=None, unlock=security_unlock, run=subprocess.run,
     elif not path.is_file():
         refusal = f"{path} is not on {here}"
     elif not root.is_dir():
-        refusal = (f"{root} is not on {here}: set up the second Mac first, and run queuekeeper remote there once "
+        refusal = (f"{root} is not on {here}: set up the second Mac first, and run qk remote there once "
                    "(guides/shared-host.md, Setting up the second Mac)")
     elif not terminal:
         refusal = "it asks for the password at a terminal, and this has none: run it in your own Terminal"
@@ -784,7 +784,7 @@ def keep_unlocked(request, ask=None, unlock=security_unlock, run=subprocess.run,
     except OSError as error:
         out(f"It unlocked the keychain, but {kept} could not be written: {error}. Nothing was kept or changed.")
         return 1
-    out(f"Kept it in {kept}, readable only by {pwd.getpwuid(os.getuid()).pw_name}: each queuekeeper remote run here now "
+    out(f"Kept it in {kept}, readable only by {pwd.getpwuid(os.getuid()).pw_name}: each qk remote run here now "
         "unlocks the login keychain in its own session.")
     # The keychain is unlocked in this session, so neither command needs a dialog; without -l, -u and -t,
     # set-keychain-settings sets no timeout and no lock on sleep.
@@ -982,7 +982,7 @@ def system_alerts(run=output):
 
 def crash_dialogs():
     """DialogType, the record a run that has it off keeps, and the system alerts on the screen, for
-    `queuekeeper remote foreground`."""
+    `qk remote foreground`."""
     path = crash_dialog_record()
     try: kept = json.loads(path.read_text())
     except FileNotFoundError: kept = None
@@ -991,7 +991,7 @@ def crash_dialogs():
 
 
 def foreground():
-    """The Mac's name, foreground readiness and mac-foreground entry, for `queuekeeper remote foreground`.
+    """The Mac's name, foreground readiness and mac-foreground entry, for `qk remote foreground`.
     VoiceOver is read under the lease only."""
     path = record_path()
     try: entry = json.loads(path.read_text()).get("devices", {}).get("mac-foreground")
@@ -1005,7 +1005,7 @@ def foreground():
 
 def toolchain(developer_dir):
     """The Mac's identity with the Xcode at developer_dir, its default Xcode (`xcode-select -p`), the
-    simulator runtimes the Xcode at developer_dir lists and its device record, which `queuekeeper doctor`
+    simulator runtimes the Xcode at developer_dir lists and its device record, which `qk doctor`
     compares."""
     found = identity(developer_dir)
     default = output(["xcode-select", "-p"])
@@ -1605,7 +1605,7 @@ def queued_ahead(directory, slots, maximum, owners, own=None, before=None):
 
 
 def capacity(own=None, *, diagnostic=False, before=None):
-    """This Mac's spare capacity for heavy work, which `queuekeeper run` reads on both Macs before it chooses one
+    """This Mac's spare capacity for heavy work, which `qk run` reads on both Macs before it chooses one
     (remote.spare; vocaro-engineering#168): its guaranteed slots and their maximum; the slots busy among those
     up to the maximum; its CPU's busy share in percent, None when unavailable (cpuBusy), and the limit at or above
     which its admission finds no spare capacity (busyLimit), with its one-minute load beside them, which no longer
@@ -1652,7 +1652,7 @@ def capacity(own=None, *, diagnostic=False, before=None):
 
 def admission_log(since):
     """The lines of this Mac's admission log, both generations, oldest first, written at or after since, an epoch
-    time, for `queuekeeper admissions usage` on the sending Mac (resources.read_entry reads them there). A line whose time
+    time, for `qk admissions usage` on the sending Mac (resources.read_entry reads them there). A line whose time
     cannot be read is passed on for that Mac to count as unreadable."""
     directory, found = admission_directory(), []
     for name in ADMISSION_LOGS:
@@ -1665,7 +1665,7 @@ def admission_log(since):
     return {"lines": found}
 
 
-# `queuekeeper admissions now` (vocaro-engineering#342): the folder beside the slot files where each waiting request keeps its
+# `qk admissions now` (vocaro-engineering#342): the folder beside the slot files where each waiting request keeps its
 # observation record, as resources.WAITS has it; the schema both write and read; how many records and how many bytes a
 # snapshot reads and sends at most; and how old a live waiter's sample may be before it is shown as stale.
 WAITS, NOW_SCHEMA, NOW_RECORDS, NOW_BYTES, NOW_STALE = "admission-waits", 1, 512, 512 << 10, 30
@@ -1719,7 +1719,7 @@ def slot_names(directory, count):
 
 
 def admissions_now(at=None):
-    """Who holds and who waits for heavy-work admission on this Mac now, for `queuekeeper admissions now` here and on the second
+    """Who holds and who waits for heavy-work admission on this Mac now, for `qk admissions now` here and on the second
     Mac (vocaro-engineering#342). It changes nothing: it reads the guard, the queue, the slot files' names and the
     waiters' observation records as they stand, without any of admission's locks, and checks the processes they name
     with one ps. What it cannot read is null with a reason and makes the reading partial, never empty: a host that
@@ -2000,8 +2000,8 @@ def lineage(table, pid):
 
 def leftovers(root, listed=listing, written=disk_writes):
     """The account's processes that run from a checkout under root, the temporary directory or a
-    simulator's device, and that no live run accounts for: what `queuekeeper remote` prints before it sends
-    work, and `queuekeeper doctor` reports. It reads and reports, and stops nothing.
+    simulator's device, and that no live run accounts for: what `qk remote` prints before it sends
+    work, and `qk doctor` reports. It reads and reports, and stops nothing.
 
     A process runs from a place when its working directory lies in it or its command line names a
     path in it; a program under /System is macOS's own. It is a live run's when it or an ancestor
@@ -2062,7 +2062,7 @@ def leftovers(root, listed=listing, written=disk_writes):
     own = set(ancestry(os.getpid()))
     runs = {pid for pid in table if roots.intersection(ancestry(pid))}
     # The devices the device record holds for one of a live run's processes, by UDID, and those a
-    # live run names: a run can name a device by its kind alone, as queuekeeper simulator-tests does.
+    # live run names: a run can name a device by its kind alone, as qk simulator-tests does.
     reserved, problem = reservations()
     if problem: unchecked.append(problem)
     held = {udid for udid, pid, start in reserved if pid in runs and table[pid]["start"] == start}
@@ -2324,7 +2324,7 @@ def log_stop(event, item, **more):
 
 def stop_leftovers(root, dry_run=False, listed=None, kill=os.kill, clock=time.monotonic, sleep=time.sleep):
     """Stop each leftover that proofs proves an ended run's, in the routine cleanup before a dispatch to the second
-    Mac and in `queuekeeper simulator-pool reap` there (vocaro-engineering#353). Immediately before the signal it runs the
+    Mac and in `qk simulator-pool reap` there (vocaro-engineering#353). Immediately before the signal it runs the
     census and every check again from fresh listings, and signals only a process with the same PID, start, command
     line and run; it logs the stop before SIGTERM and how it ended after, and sends nothing more: one still running
     STOP_WAIT_SECONDS later is reported. Whatever is uncertain it keeps running and reports with the evidence that is
@@ -2638,7 +2638,7 @@ def release_hold(item, entries, table, simulators, pools, stopping=(), *, discov
         return "the process listing does not show this reap's own process, so it cannot show another is gone"
     if item.get("early") and entry.get(ALONE) is not True:
         return (f"its release is not due until {item['due']}, and it does not record that only its holder held it, "
-                "as `queuekeeper simulator-pool take`'s does not: that command's session holds the member by its word, and a "
+                "as `qk simulator-pool take`'s does not: that command's session holds the member by its word, and a "
                 "session between commands leaves no process that names it")
     return None
 
@@ -3000,7 +3000,7 @@ def reap(root, pools, dry_run=False, scan=True, listed=None, begin=None, clock=t
 
 
 def stop_stale(root, pools, dry_run=False, scan=True, listed=None, begin=None, clock=time.monotonic):
-    """Shut down the simulators that are stale: `queuekeeper simulator-pool reap`, and before work is sent to the
+    """Shut down the simulators that are stale: `qk simulator-pool reap`, and before work is sent to the
     second Mac. One goes only when it is a member of a pool or the pool's warmed template, among pools or,
     with scan, those the checkouts name; the census lists it left over; nothing naming its UDID runs outside its own processes;
     the device record holds no live reservation of it; and its launchd_sim has run REAP_AFTER; all
@@ -3092,8 +3092,8 @@ def guarded_update(request):
 
 
 def answer(request):
-    """offload_host.py's answer to a request other than a plan, for `queuekeeper doctor`, `queuekeeper remote`,
-    `queuekeeper remote setup`, `queuekeeper remote foreground`, `devices recover` and `queuekeeper keychain recover`. A census before a dispatch can
+    """offload_host.py's answer to a request other than a plan, for `qk doctor`, `qk remote`,
+    `qk remote setup`, `qk remote foreground`, `devices recover` and `qk keychain recover`. A census before a dispatch can
     also name repositories to advertise, and then says what each advertises and which Git does so."""
     if "toolchain" in request: return toolchain(request["toolchain"])
     if "keychain" in request: return keychain(request["keychain"])
@@ -3111,7 +3111,7 @@ def answer(request):
     if "leftovers" in request or "device" in request:
         reaped = reap(request["leftovers"], **request["reap"]) if "reap" in request else None
         # The routine cleanup there also stops what it proves an ended run left (stop_leftovers), before the census;
-        # `queuekeeper doctor`, a diagnostic, asks only what it would stop (leftoverStops "list").
+        # `qk doctor`, a diagnostic, asks only what it would stop (leftoverStops "list").
         if reaped is not None and "leftovers" in request:
             reaped["processes"] = stop_leftovers(request["leftovers"], dry_run=bool(
                 request["reap"].get("dry_run") or request.get("leftoverStops") == "list"))
@@ -3160,7 +3160,7 @@ def gather_changes(checkout, path):
     staged in a temporary index as remote.snapshot stages a tree. Then restore the checkout to that commit, so that
     the next run can claim it (claim passes over a checkout with changes), and return the paths changed. Ignored
     files, such as the command's build products, stay as they are. The sending Mac applies the patch to its own
-    tree (`queuekeeper admit`; the owner's decision, 2026-11-07). A failure raises before the checkout
+    tree (`qk admit`; the owner's decision, 2026-11-07). A failure raises before the checkout
     is touched, and leaves the changes there."""
     environment = {key: value for key, value in os.environ.items() if key not in GIT_LOCATION}
 
@@ -3842,7 +3842,7 @@ def main(plan):
         provision = [*qk, "run", "--here", *(["--if-free"] if plan.get("decline") else []), "provision"]
         steps = [("provision", provision, checkout / ".build/queuekeeper/provision/run.log",
                   checkout)] if plan.get("provision") else []
-        # `queuekeeper admit --verify` runs its command in the checkout's directory that matches the sender's.
+        # `qk admit --verify` runs its command in the checkout's directory that matches the sender's.
         steps.append(("work", [*qk, *plan["work"]], checkout / plan["log"] if plan.get("log") else None,
                       checkout / plan["subdirectory"] if plan.get("subdirectory") else checkout))
         # The lane's wait record (lane_wait) is shared by provision and work.
@@ -3871,7 +3871,7 @@ def main(plan):
             timed(stage, began)
             if result["exitStatus"] != 0: break
         result["stopped"] = _stop.is_set()
-        # What `queuekeeper admit`'s command changed in the checkout goes back as a patch, however it ended, and the
+        # What `qk admit`'s command changed in the checkout goes back as a patch, however it ended, and the
         # checkout is restored for the next run (gather_changes).
         if plan.get("changes") and result.get("stage") == "work":
             try:
@@ -3883,7 +3883,7 @@ def main(plan):
         fresh = receipt.is_file() and receipt.stat().st_mtime >= result["started"]
         if fresh:
             result["receipt"] = json.loads(receipt.read_text())
-        # `queuekeeper run --if-free` declined the lane, or its provision lane, before running it, and wrote no receipt.
+        # `qk run --if-free` declined the lane, or its provision lane, before running it, and wrote no receipt.
         if plan.get("decline") and result.get("stage") in ("provision", "work") and result["exitStatus"] == plan["busy"] \
                 and not fresh:
             result.update(refused="its heavy-work queue cannot take the lane now", busy=True)

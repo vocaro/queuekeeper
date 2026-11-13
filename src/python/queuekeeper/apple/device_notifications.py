@@ -23,7 +23,7 @@ be how the device is reached, into a temporary directory only this account can r
 lines are scanned for SpringBoard presenting a banner and deleted unread otherwise; nothing from them is printed
 or recorded except how many presentations there were and the device's clock at the first, because what they
 say is the owner's. A run that saw one is unmeasured, and devices.py runs it once more. A run sent to the second
-Mac with `queuekeeper remote --device` is watched the same way from the Mac that sends it, which holds its reservation
+Mac with `qk remote --device` is watched the same way from the Mac that sends it, which holds its reservation
 (remote.Lease, vocaro-engineering#192), every leased device at once (Together).
 """
 import os

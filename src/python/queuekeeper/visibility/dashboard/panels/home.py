@@ -25,7 +25,7 @@ def headline(state, now):
         if waiting > testing: detail += f" {waiting - testing} more waiting."
         return "active", f"Testing {testing} {'entry' if testing == 1 else 'entries'}", detail
     if state.get("worker"): return "active", "Worker running", f"{waiting} waiting."
-    if waiting: return "warning", f"{waiting} waiting with no worker", "`queuekeeper queue resume` starts one."
+    if waiting: return "warning", f"{waiting} waiting with no worker", "`qk queue resume` starts one."
     return "idle", "Idle", "Nothing is waiting."
 
 

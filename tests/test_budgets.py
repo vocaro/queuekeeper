@@ -1,5 +1,5 @@
 """The warnings that keep the split between the landing and the release gate (vocaro-engineering#135): the gate
-over its time budget, main past its release commit limit, and queuekeeper doctor's gate without a budget or with a device."""
+over its time budget, main past its release commit limit, and qk doctor's gate without a budget or with a device."""
 import argparse
 import contextlib
 import io
@@ -199,7 +199,7 @@ class DoctorChecks(unittest.TestCase):
 
 
 class Landing(Fixture):
-    """The worker records each landed entry's gate run, and queuekeeper land warns after its result."""
+    """The worker records each landed entry's gate run, and qk land warns after its result."""
 
     def setUp(self):
         super().setUp()

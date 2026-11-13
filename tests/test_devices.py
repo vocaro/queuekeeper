@@ -770,7 +770,7 @@ class DeviceRecordTests(unittest.TestCase):
                 return cli.main(["--project", str(project), "run", "--here", "ui"]), error.getvalue()
         self.assertEqual(run("session-a"), (2, f"queuekeeper: nobody holds {devices.FOREGROUND}; before foreground work, "
                                                "agree a window with the owner and reserve it until the window ends\n"
-                                               "queuekeeper run ui: not run (exit 2); no tests ran\n"))
+                                               "qk run ui: not run (exit 2); no tests ran\n"))
         self.foreground()
         for owner in ["session-b", None]:
             with self.subTest(owner=owner):

@@ -111,7 +111,7 @@ class SimulatorTests(Fixture):
         self.assertIn("its runtime gone; the next new member of the kind warms another", items[gone["udid"]].reason)
         # Its deletion goes through the pool's prune, which reserves it, checks it again and records it.
         self.assertEqual(items[gone["udid"]].command[-6:],
-                         ["simulator-pool", "--pool", "Project", "--owner", "queuekeeper disk", "prune", gone["udid"]][-6:])
+                         ["simulator-pool", "--pool", "Project", "--owner", "qk disk", "prune", gone["udid"]][-6:])
         for other in (stranger, mislabeled):
             self.assertNotIn("warmed template", items[other["udid"]].reason)
 
@@ -128,7 +128,7 @@ class SimulatorTests(Fixture):
                                 records={"/record.json": record})
         self.assertEqual(items[stale["udid"]].status, disk.CANDIDATE, items[stale["udid"]].reason)
         self.assertEqual(items[stale["udid"]].command[-6:],
-                         ["simulator-pool", "--pool", "Project", "--owner", "queuekeeper disk", "prune", stale["udid"]][-6:])
+                         ["simulator-pool", "--pool", "Project", "--owner", "qk disk", "prune", stale["udid"]][-6:])
         self.assertIn("eligible for pruning", items[stale["udid"]].reason)
         for member, reason in ((lowest, "lowest-numbered"), (recent, "within 1 hour"), (released, "was released"),
                                (booted, "Booted")):
@@ -267,7 +267,7 @@ class SimulatorTests(Fixture):
 
 
     def test_a_runtime_candidate_names_the_second_macs_copy_and_stays_while_that_copy_would_come_back(self):
-        # vocaro-engineering#188 and #123: `queuekeeper remote setup --runtimes` keeps both Macs' runtimes alike.
+        # vocaro-engineering#188 and #123: `qk remote setup --runtimes` keeps both Macs' runtimes alike.
         stamp = lambda days: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(LATER - days * 86400))
         ios = lambda version: f"com.apple.CoreSimulator.SimRuntime.iOS-{version}"
         listing = {"devices": {ios("27-0"): [device("iPhone 17")]}}
@@ -290,7 +290,7 @@ class SimulatorTests(Fixture):
         items = found({"images": [copy("24A5423a", ["A", "B"]), copy("24A100", None)]})
         self.assertEqual(items["beta"].status, disk.KEPT)
         self.assertIn("superseded by 24A434", items["beta"].reason)
-        self.assertIn("the 2 simulators on its identifier there count as used, so `queuekeeper remote setup --runtimes` "
+        self.assertIn("the 2 simulators on its identifier there count as used, so `qk remote setup --runtimes` "
                       "would copy it back here", items["beta"].reason)
         self.assertEqual(items["unused"].status, disk.KEPT)
         self.assertIn("could not be listed", items["unused"].reason)

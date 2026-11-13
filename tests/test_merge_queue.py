@@ -25,18 +25,18 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src/python"))
 from queuekeeper import cli, config as configuration, landing_proofs, merge_queue as mq, offload_host
-# What queuekeeper land runs before it queues, which Fixture leaves out but SpelledBeforeQueued puts back.
+# What qk land runs before it queues, which Fixture leaves out but SpelledBeforeQueued puts back.
 SPELLED_BEFORE_QUEUED = mq.spelled_before_queued
 import host_isolation
 from host_isolation import stretched
 
-# Each class in a process of its own under `queuekeeper unittest`'s default module split: whole, with a real Git
+# Each class in a process of its own under `qk unittest`'s default module split: whole, with a real Git
 # fixture built for every test, this module alone bounded the toolkit's suite (guides/parallel-tests.md).
 shard_by = "class"
 
 
 # Fails when any tracked file is named bad*, passes otherwise; touches a counter so a test can count gates.
-# A British spelling, built so this file holds none, that queuekeeper spelling fails on.
+# A British spelling, built so this file holds none, that qk spelling fails on.
 BRITISH = "a label" + "led point\n"
 LANE = """import os, pathlib, shutil, sys, time
 # Appended, so that two gates at once, a bisect's halves (mq.Beside), count as two.
@@ -148,7 +148,7 @@ class Fixture(unittest.TestCase):
         load = patch.object(mq, "load_of", return_value=(3.0, 25.0, 75.0))
         self.load_of = load.start()
         self.addCleanup(load.stop)
-        # queuekeeper land runs no spelling lane before it queues unless a test says so (SpelledBeforeQueued, #283).
+        # qk land runs no spelling lane before it queues unless a test says so (SpelledBeforeQueued, #283).
         unspelled = patch.object(mq, "spelled_before_queued")
         unspelled.start()
         self.addCleanup(unspelled.stop)
@@ -160,7 +160,7 @@ class Fixture(unittest.TestCase):
         (self.repo / "scripts").mkdir()
         shutil.copy(ROOT / "scripts/qk", self.repo / "scripts/qk")
         (self.repo / "lane.py").write_text(LANE)
-        # The agent entry a direct-main project keeps, which `queuekeeper docs check` reads.
+        # The agent entry a direct-main project keeps, which `qk docs check` reads.
         (self.repo / "AGENTS.md").write_text("# Fixture\n")
         (self.repo / "CLAUDE.md").write_text("@AGENTS.md\n")
         (self.repo / "queuekeeper.json").write_text(json.dumps({
@@ -195,7 +195,7 @@ class Fixture(unittest.TestCase):
         return run(self.repo, "git", "rev-parse", "HEAD")
 
     def add(self, *branches, checked=True):
-        """Queue branches with no worker started, so a test holds every order fixed. Unchecked, queuekeeper land's trial
+        """Queue branches with no worker started, so a test holds every order fixed. Unchecked, qk land's trial
         integration (mq.check) is skipped, as when main or the entries ahead change after it, so that a conflict
         reaches the round, whose send-back such a test exercises."""
         ids = []
@@ -269,7 +269,7 @@ class Landing(Fixture):
                               said.getvalue())
 
     def test_the_log_says_where_each_lane_ran_as_eng_run_chose(self):
-        """The queue's lanes go where queuekeeper run sends every lane, by both Macs' capacity (vocaro-engineering#168), and
+        """The queue's lanes go where qk run sends every lane, by both Macs' capacity (vocaro-engineering#168), and
         its log says where each ran and why: here, by the receipt's reason; on the second Mac, by its dispatch."""
         self.commit("a", "a")
         [identifier] = self.add("a")
@@ -297,7 +297,7 @@ class Landing(Fixture):
         self.assertEqual(worker.placed("gate", 0), "")
 
     def test_a_gate_sees_sigint_at_its_default_from_a_worker_started_as_a_background_job(self):
-        """A non-interactive shell starts `queuekeeper land &` with SIGINT and SIGQUIT ignored, and its worker passed that to
+        """A non-interactive shell starts `qk land &` with SIGINT and SIGQUIT ignored, and its worker passed that to
         every gate lane until the worker put back the defaults (vocaro/BreezEPUB#47). Without that reset, the
         negative control, the gate's command sees them ignored."""
         record = self.base / "signals"
@@ -427,7 +427,7 @@ class Landing(Fixture):
     REFUSED = "is a merge, which a queue would have to put on main: rebase the branch's own commits onto origin/main"
 
     def refused(self, branch):
-        """What queuekeeper land refuses branch with, having queued nothing."""
+        """What qk land refuses branch with, having queued nothing."""
         with self.assertRaises(ValueError) as caught, patch("builtins.print"):
             mq.add(self.repo, branch)
         self.assertEqual(mq.Queue(self.repo).all(), [])
@@ -502,7 +502,7 @@ class Landing(Fixture):
         return run(self.repo, "git", "rev-parse", "HEAD"), merge
 
     def test_a_branch_refreshed_by_merging_main_lands_linear(self):
-        """The app's sync merges origin/main into a session's branch: queuekeeper land replays the branch's own commits
+        """The app's sync merges origin/main into a session's branch: qk land replays the branch's own commits
         onto origin/main, lands them with no merge, and leaves the branch alone, whose work the landing check
         then finds on main (#217)."""
         tip, merge = self.synced("b", "b")
@@ -519,7 +519,7 @@ class Landing(Fixture):
         self.assertEqual(run(self.repo, "git", "rev-list", "--merges", "origin/main"), "")
         self.assertEqual(run(self.repo, "git", "log", "--format=%s", "-3", "origin/main").splitlines(),
                          ["Add after", "Add b", "Add elsewhere"])
-        # Closeout and queuekeeper disk's proof: the branch, merge and all, is on main as equal patches.
+        # Closeout and qk disk's proof: the branch, merge and all, is on main as equal patches.
         self.assertEqual(mq.landing_proofs.contained(lambda *words: mq.git(self.repo, *words), "origin/main", tip),
                          mq.landing_proofs.PATCH_EQUIVALENT)
 
@@ -562,10 +562,10 @@ class Landing(Fixture):
 
 
 class CheckedWhenQueued(Fixture):
-    """queuekeeper land's trial integration finds a conflict with the entries ahead when the entry is queued, not when its
+    """qk land's trial integration finds a conflict with the entries ahead when the entry is queued, not when its
     round starts (vocaro-engineering#178)."""
     def land(self, branch, **options):
-        """(the new entry's ID or None, what queuekeeper land said, the error it refused with or None), no worker started."""
+        """(the new entry's ID or None, what qk land said, the error it refused with or None), no worker started."""
         said, error = io.StringIO(), None
         with patch.object(mq.Queue, "start"), contextlib.redirect_stdout(said), contextlib.redirect_stderr(said):
             try: mq.add(self.repo, branch, **options)
@@ -752,7 +752,7 @@ class CheckedWhenQueued(Fixture):
             self.assertEqual(len(mq.Queue(self.repo).all()), 1)
 
     def test_a_refusal_names_the_command_that_waits_for_the_entries_and_the_lines_in_conflict(self):
-        """#304: the entries that change the files in conflict, in an `queuekeeper queue wait` ready to run; #302: the commit's
+        """#304: the entries that change the files in conflict, in an `qk queue wait` ready to run; #302: the commit's
         own lines that conflict, from the trial. A conflict with origin/main alone, the negative control, names no
         wait, since nothing ahead is worth waiting for."""
         self.commit("same", "one", "a\nb\nc\nd\n"); self.commit("other", "o", "o\n")
@@ -763,7 +763,7 @@ class CheckedWhenQueued(Fixture):
         self.assertIn(f"/scripts/qk queue wait {ahead[0]}, which says whether it landed, so rebase, or came back",
                       error)
         self.assertNotIn(f"queue wait {ahead[0]} {ahead[1]}", error)
-        self.assertIn("`queuekeeper land --wait` waits for it itself and checks again", error)
+        self.assertIn("`qk land --wait` waits for it itself and checks again", error)
         # Of the file both add, only the lines that differ: its second and third.
         self.assertIn("its lines in conflict: same:2-3. ", error)
         start = run(self.repo, "git", "rev-parse", "origin/main")
@@ -787,7 +787,7 @@ class CheckedWhenQueued(Fixture):
 
 
     def test_eng_land_from_another_repository_refuses_and_from_a_worktree_or_none_lands(self):
-        """Each project's launcher lands its own repository: another project's queuekeeper land, run here, would
+        """Each project's launcher lands its own repository: another project's qk land, run here, would
         queue that project's HEAD or report it landed, exit 0 (vocaro-engineering#210)."""
         import argparse
         parser = argparse.ArgumentParser()
@@ -812,11 +812,11 @@ class CheckedWhenQueued(Fixture):
 
 
 class LandWaitsForAhead(Fixture):
-    """`queuekeeper land --wait` refused for entries ahead alone waits for them and checks again against the whole queue
-    (vocaro-engineering#302), and `queuekeeper queue wait` takes several entries (#304). No worker starts by itself: each
+    """`qk land --wait` refused for entries ahead alone waits for them and checks again against the whole queue
+    (vocaro-engineering#302), and `qk queue wait` takes several entries (#304). No worker starts by itself: each
     wait runs the round a worker would."""
     def land(self, branch, waits=None):
-        """(exit status, what queuekeeper land --wait said, the IDs each wait for entries ahead was given). waits, by the call's
+        """(exit status, what qk land --wait said, the IDs each wait for entries ahead was given). waits, by the call's
         number from 1, is what to do before that wait looks; by default a worker's round."""
         import argparse
         parser = argparse.ArgumentParser()
@@ -876,7 +876,7 @@ class LandWaitsForAhead(Fixture):
         self.assertEqual(status, 0, said)
         self.assertEqual(given, [[ahead]])
         self.assertIn(f"conflicts with {ahead}, ahead of it, not with origin/main", said)
-        self.assertIn(f"queuekeeper land --wait: waits for {ahead}, then checks again against the whole queue", said)
+        self.assertIn(f"qk land --wait: waits for {ahead}, then checks again against the whole queue", said)
         self.assertIn(f"{ahead} came back", said)
         self.assertEqual(self.state(ahead)["state"], "failed")
         mine = next(e for e in mq.Queue(self.repo).all() if e["branch"] == "two")
@@ -902,7 +902,7 @@ class LandWaitsForAhead(Fixture):
         self.commit("same", "two", "two", start)
         status, said, given = self.land("two")
         self.assertEqual((status, given), (1, []), said)
-        self.assertNotIn("queuekeeper land --wait: waits", said)
+        self.assertNotIn("qk land --wait: waits", said)
 
     def test_each_wake_checks_against_the_whole_queue_and_waits_for_an_entry_queued_meanwhile(self):
         """#302's second case: while it waited, another entry touching the same lines was queued; the check after the
@@ -967,8 +967,8 @@ REFUSED_LINE = ("queuekeeper unittest: test_forgot.py must import host_isolation
 
 
 class UnittestGate(Fixture):
-    """A project whose gate is queuekeeper unittest over tests/, which keeps its tests off the real hosts in host_isolation.py,
-    as the toolkit's does. No test here runs a gate: queuekeeper land's checks and `queuekeeper queue doctor` read trees and logs."""
+    """A project whose gate is qk unittest over tests/, which keeps its tests off the real hosts in host_isolation.py,
+    as the toolkit's does. No test here runs a gate: qk land's checks and `qk queue doctor` read trees and logs."""
     def setUp(self):
         super().setUp()
         config = self.config()
@@ -978,10 +978,10 @@ class UnittestGate(Fixture):
         (self.repo / "tests/host_isolation.py").write_text("")
         (self.repo / "tests/test_ok.py").write_text(ISOLATED)
         run(self.repo, "git", "add", "tests")
-        self.publish(config, "Gate on queuekeeper unittest")
+        self.publish(config, "Gate on qk unittest")
 
     def land(self, branch, **options):
-        """(the new entry's ID or None, what queuekeeper land said, the error it refused with or None), no worker started."""
+        """(the new entry's ID or None, what qk land said, the error it refused with or None), no worker started."""
         said, error = io.StringIO(), None
         with patch.object(mq.Queue, "start"), contextlib.redirect_stdout(said), contextlib.redirect_stderr(said):
             try: mq.add(self.repo, branch, **options)
@@ -992,7 +992,7 @@ class UnittestGate(Fixture):
 
 
 class CheckedBeforeRunning(UnittestGate):
-    """queuekeeper land and `queuekeeper queue add` run queuekeeper unittest's checks before a run on the entry's tree, and refuse an entry
+    """qk land and `qk queue add` run qk unittest's checks before a run on the entry's tree, and refuse an entry
     that a gate would refuse in seconds having run nothing (vocaro-engineering#290)."""
     def test_a_module_without_host_isolation_is_refused_with_the_refusal_line_and_nothing_is_queued(self):
         self.commit("tests/test_forgot.py", "forgot", UNISOLATED)
@@ -1000,7 +1000,7 @@ class CheckedBeforeRunning(UnittestGate):
         self.assertIsNone(identifier)
         self.assertEqual(mq.Queue(self.repo).all(), [])
         self.assertEqual(run(self.repo, "git", "for-each-ref", "refs/queuekeeper/queue"), "")
-        self.assertIn("is not queued: queuekeeper unittest would refuse every gate holding it before running anything", error)
+        self.assertIn("is not queued: qk unittest would refuse every gate holding it before running anything", error)
         self.assertIn(f"queuekeeper unittest: test_forgot.py must import host_isolation at its top level, as every test module "
                       f"beside {self.repo}/tests/host_isolation.py does; nothing ran", error)
 
@@ -1107,7 +1107,7 @@ class Placement(Fixture):
 
 
 class Doctor(UnittestGate):
-    """`queuekeeper queue doctor` reads the queue for the signs that it is stuck rather than testing, says what each means and
+    """`qk queue doctor` reads the queue for the signs that it is stuck rather than testing, says what each means and
     what heals it, and changes nothing (vocaro-engineering#290)."""
     def doctor(self, working=True):
         said = io.StringIO()
@@ -1137,7 +1137,7 @@ class Doctor(UnittestGate):
                       "1.0s: FAILED: test_x.T.test_t (FAILED (failures=1), status 1)\n", 2000)
         status_, said, found = self.doctor()
         self.assertEqual(status_, 0, said)
-        self.assertIn("queuekeeper queue doctor: healthy: 1 entry waiting, worker running", said)
+        self.assertIn("qk queue doctor: healthy: 1 entry waiting, worker running", said)
         self.assertEqual(found["findings"], [])
         self.assertTrue(found["healthy"])
 
@@ -1154,7 +1154,7 @@ class Doctor(UnittestGate):
                 patch.object(remote, "admissions_there", side_effect=AssertionError("asked")):
             status_, said, found = self.doctor()
         self.assertEqual((status_, found["healthy"], found["findings"]), (0, True, []))
-        self.assertIn("queuekeeper queue doctor: healthy", said)
+        self.assertIn("qk queue doctor: healthy", said)
         self.assertIn("note: the main gate's gate has waited 2m", said)
         self.assertIn("`python3 scripts/qk admissions now`", found["hints"][0])
         # The negative control: a gate waiting for something else, or with no worker, has no pointer.
@@ -1167,7 +1167,7 @@ class Doctor(UnittestGate):
         self.commit("tests/test_new.py", "new", ISOLATED)
         self.commit("tests/test_forgot.py", "forgot", UNISOLATED)
         self.commit("c", "c")
-        # Queued as before queuekeeper land checked: by an older toolkit, or as the entry of 2026-11-07 was.
+        # Queued as before qk land checked: by an older toolkit, or as the entry of 2026-11-07 was.
         with patch.object(mq, "checked_before_running"): ids = self.add("new", "forgot", "c")
         self.gate_log("20261107-165720-19efdd1d", REFUSED_LINE + "\n", 1000)
         self.gate_log("20261107-165854-a956c211", "heavy: slot 1\n" + REFUSED_LINE + "\n", 2000)
@@ -1181,10 +1181,10 @@ class Doctor(UnittestGate):
         self.assertIn(REFUSED_LINE, refused["diagnosis"])
         self.assertIn("20261107-165854-a956c211-gate.log, 20261107-165720-19efdd1d-gate.log", refused["diagnosis"])
         self.assertIn(f"{ids[1]} brings it", refused["remedy"])
-        self.assertIn(f"`queuekeeper queue remove {ids[1]}`", refused["remedy"])
+        self.assertIn(f"`qk queue remove {ids[1]}`", refused["remedy"])
         self.assertNotIn(ids[0], said)
         self.assertNotIn(ids[2], said)
-        self.assertIn(f"queuekeeper unittest refuses {ids[1]}'s tree before running anything", said)
+        self.assertIn(f"qk unittest refuses {ids[1]}'s tree before running anything", said)
         self.assertIn("and it changed nothing", said)
         self.assertEqual(self.snapshot(), before)
 
@@ -1261,12 +1261,12 @@ class Doctor(UnittestGate):
 
 
 class RefusedGates(UnittestGate):
-    """The worker blames a gate queuekeeper unittest refused before running anything on the one entry that brings the refusal,
+    """The worker blames a gate qk unittest refused before running anything on the one entry that brings the refusal,
     with no rerun and no bisect; with none or several it bisects, and when the same refusal comes again with no entry
-    to blame it holds for a session with `queuekeeper queue doctor`'s diagnosis (owner's decision, 2026-11-08,
-    vocaro-engineering#290). These tests run real gates of queuekeeper unittest."""
+    to blame it holds for a session with `qk queue doctor`'s diagnosis (owner's decision, 2026-11-08,
+    vocaro-engineering#290). These tests run real gates of qk unittest."""
     def queued(self, *branches):
-        """Queue branches as an older toolkit did, or the entry of 2026-11-07, before queuekeeper land checked them."""
+        """Queue branches as an older toolkit did, or the entry of 2026-11-07, before qk land checked them."""
         with patch.object(mq, "checked_before_running"): return self.add(*branches)
 
     def work_said(self):
@@ -1289,9 +1289,9 @@ class RefusedGates(UnittestGate):
         ids = self.queued("c", "forgot", "new")
         log = self.work_said()
         self.assertEqual([self.state(i)["state"] for i in ids], ["landed", "failed", "landed"], log)
-        self.assertIn("gate ran nothing, as queuekeeper unittest refused it before running anything, which no rerun would "
+        self.assertIn("gate ran nothing, as qk unittest refused it before running anything, which no rerun would "
                       "change: queuekeeper unittest: test_forgot.py must import host_isolation", log)
-        self.assertIn(f"blaming {ids[1]} (Add tests/test_forgot.py): queuekeeper unittest refused gate before running "
+        self.assertIn(f"blaming {ids[1]} (Add tests/test_forgot.py): qk unittest refused gate before running "
                       f"anything, which no rerun would change, and only {ids[1]} brings the refusal, as its tree alone "
                       "is refused so and it changes tests/test_forgot.py: queuekeeper unittest: test_forgot.py must import "
                       "host_isolation", log)
@@ -1312,7 +1312,7 @@ class RefusedGates(UnittestGate):
         self.commit("c", "c")
         ids = self.queued("one", "two", "c")
         log = self.work_said()
-        self.assertIn("queuekeeper unittest refused gate before running anything, and 2 entries of the batch's 3 bring it "
+        self.assertIn("qk unittest refused gate before running anything, and 2 entries of the batch's 3 bring it "
                       f"({ids[0]}: its tree alone is refused so and it changes tests/test_one.py; {ids[1]}: its tree "
                       "alone is refused so and it changes tests/test_two.py), so no commit is blamed", log)
         self.assertIn("3 commits fail together", log)
@@ -1354,7 +1354,7 @@ class RefusedGates(UnittestGate):
                 halves.enter_context(patch.object(mq.Worker, "__init__", taken_over))
             log = self.work_said()
         if not bisecting:
-            self.assertIn("queuekeeper unittest refused gate before running anything, and no entry of the batch's 2 brings it, "
+            self.assertIn("qk unittest refused gate before running anything, and no entry of the batch's 2 brings it, "
                           "so no commit is blamed", log)
             self.assertIn("2 commits fail together", log)
         # Nobody was sent back on a refusal no entry brings.
@@ -1365,38 +1365,38 @@ class RefusedGates(UnittestGate):
 
     def test_a_refusal_no_entry_brings_in_both_halves_of_a_bisect_holds_for_a_session_with_the_diagnosis(self):
         ids, log, held = self.refused_by_main()
-        self.assertIn("queuekeeper unittest refused this gate and the bisect's newer half beside it before running anything", held)
+        self.assertIn("qk unittest refused this gate and the bisect's newer half beside it before running anything", held)
         self.assertEqual(log.count("testing "), 3, log)  # the batch, then its two halves at once
         self.check_hold(ids, log, held)
 
     def test_the_same_refusal_in_both_halves_with_no_gate_before_holds_and_sends_back_no_lone_half(self):
         # Each half is one entry, which a refusal no entry brings would otherwise send back as a lone failure.
         ids, log, held = self.refused_by_main(bisecting=True)
-        self.assertIn("queuekeeper unittest refused this gate and the bisect's newer half beside it before running anything", held)
-        self.assertIn("newer half: queuekeeper unittest refused gate before running anything, and no entry of the batch's 1 "
+        self.assertIn("qk unittest refused this gate and the bisect's newer half beside it before running anything", held)
+        self.assertIn("newer half: qk unittest refused gate before running anything, and no entry of the batch's 1 "
                       "brings it", log)
-        self.assertIn("queue: held: for a session, not the owner: queuekeeper unittest refused this gate and the bisect's older "
+        self.assertIn("queue: held: for a session, not the owner: qk unittest refused this gate and the bisect's older "
                       "half beside it", log)
         self.assertEqual(log.count("testing "), 2, log)  # the two halves at once, and nothing after
         self.check_hold(ids, log, held)
 
     def test_a_refusal_no_entry_brings_in_two_gates_in_a_row_holds_for_a_session(self):
         ids, log, held = self.refused_by_main(beside=False)
-        self.assertIn("queuekeeper unittest refused this gate and the gate before it before running anything", held)
+        self.assertIn("qk unittest refused this gate and the gate before it before running anything", held)
         self.assertEqual(log.count("testing "), 2, log)
         self.check_hold(ids, log, held)
 
     def check_hold(self, ids, log, held):
-        self.assertTrue(held.startswith("for a session, not the owner: queuekeeper unittest refused this gate and "), held)
+        self.assertTrue(held.startswith("for a session, not the owner: qk unittest refused this gate and "), held)
         self.assertIn("the same way, and no one entry of the batch brings the refusal", held)
         self.assertIn("test_old.py must import host_isolation", held)
-        self.assertIn("queuekeeper queue doctor: refused gates: ", held)
+        self.assertIn("qk queue doctor: refused gates: ", held)
         self.assertIn("no waiting entry's tree alone is refused so", held)
         self.assertIn(f"queue: held: {held}", log)
         self.assertEqual([self.state(i)["state"] for i in ids], ["queued", "queued"], log)
         with contextlib.redirect_stdout(io.StringIO()) as status_:
             mq.status(self.repo)
-        self.assertIn("queuekeeper queue doctor: refused gates: ", status_.getvalue())
+        self.assertIn("qk queue doctor: refused gates: ", status_.getvalue())
 
     def test_a_refusal_that_names_no_module_blames_nobody(self):
         worker = mq.Worker(mq.Queue(self.repo))
@@ -1429,7 +1429,7 @@ class NoVerdict(Fixture):
 
     def test_a_lane_that_merely_exits_as_a_lost_local_network_does_counts_and_ends_no_worker(self):
         """The negative control of vocaro-engineering#300: only the worker's own answer ends it, or a lane exiting 69
-        would end worker after worker with nothing to bound them. The lane exits so under a real queuekeeper run."""
+        would end worker after worker with nothing to bound them. The lane exits so under a real qk run."""
         self.commit("a", "a")
         [identifier] = self.add("a")
         with self.no_verdict_for(1, str(mq.remote.LOST_ACCESS)), \
@@ -1454,7 +1454,7 @@ class NoVerdict(Fixture):
         self.assertIn(f"the lanes gave no verdict in 3 runs in a row, the last with exit 3 on this Mac "
                       f"({offload_host.mac_name()}), unmeasured, with no test its log names, the most "
                       "queue.noVerdictRuns allows (3); see ", held)
-        self.assertIn("queuekeeper queue resume", held)
+        self.assertIn("qk queue resume", held)
         self.status.unlink()
         with patch.object(mq.Queue, "start"), patch("builtins.print"): mq.resume(self.repo)
         self.work()
@@ -1484,7 +1484,7 @@ class NoVerdict(Fixture):
 
     @contextlib.contextmanager
     def commands(self):
-        """The commands the worker runs, each lane's queuekeeper run among them."""
+        """The commands the worker runs, each lane's qk run among them."""
         real, ran = mq.processes.run, []
         def recorded(command, *arguments, **options):
             ran.append(list(command))
@@ -1492,12 +1492,12 @@ class NoVerdict(Fixture):
         with patch.object(mq.processes, "run", recorded): yield ran
 
     def lane_runs(self, ran):
-        """The queuekeeper run commands of ran but the spelling lane's, which comes before the lane these tests judge."""
+        """The qk run commands of ran but the spelling lane's, which comes before the lane these tests judge."""
         return [command for command in ran if command[:3] == ["python3", "scripts/qk", "run"] and command[-1] != mq.SPELLING]
 
     def test_a_run_a_locked_screen_voided_does_not_count_and_the_next_goes_only_to_an_unlocked_mac(self):
         """vocaro-engineering#293, the owner's decision of 2026-11-08: more runs than the bound, each unmeasured behind
-        a locked screen, hold nothing; each run after one goes to queuekeeper run --unlocked-screen. The first, undeclared,
+        a locked screen, hold nothing; each run after one goes to qk run --unlocked-screen. The first, undeclared,
         is judged by its log's last screen reading; each later one, which queuekeeper reads the screen for, by its receipt's
         screenAfter, from a recording that reads unlocked as the run starts and locked once the lane has run."""
         screen = Path(f"{self.status}.screen")
@@ -1668,7 +1668,7 @@ class NoVerdict(Fixture):
     @contextlib.contextmanager
     def gated_on_second_mac(self, reading):
         """Every gate reports a dispatch to the second Mac whose receipt, written once the lane has run, reads reading,
-        and whose run.log holds what the lane printed, while this Mac's own screen reads unlocked for queuekeeper run
+        and whose run.log holds what the lane printed, while this Mac's own screen reads unlocked for qk run
         --unlocked-screen."""
         screens = Path(__file__).resolve().parent / "fixtures/ScreenState"
         recording = self.base / "screen.plist"
@@ -1686,7 +1686,7 @@ class NoVerdict(Fixture):
 
     def test_a_second_mac_run_its_receipt_reads_locked_does_not_count_and_the_next_needs_an_unlocked_mac(self):
         """With no `screen:` line in the log, only the reading under the dispatch's result can say the screen was
-        locked: more runs than the bound hold nothing, and each after the first goes to queuekeeper run --unlocked-screen."""
+        locked: more runs than the bound hold nothing, and each after the first goes to qk run --unlocked-screen."""
         self.commit("a", "a")
         [identifier] = self.add("a")
         with self.gated_on_second_mac(self.FAR_LOCKED), self.no_verdict_for(mq.NO_VERDICT_RUNS + 1), \
@@ -1771,7 +1771,7 @@ class NoVerdict(Fixture):
         self.assertRegex(held, r"the last reading screen: locked \(console user trevorharmon, CGSSessionScreenIsLocked "
                          r"yes, IOConsoleLocked no\) on this Mac \(\S+\) at \S+, the most LOCKED_SCREEN_RUNS allows "
                          r"\(5\); see ")
-        self.assertIn("runs `queuekeeper queue resume` itself", held)
+        self.assertIn("runs `qk queue resume` itself", held)
         self.assertIn("4 such runs in a row, and 5 hold the queue", said.getvalue())
         self.assertNotIn("the most queue.noVerdictRuns allows", held)
 
@@ -1996,7 +1996,7 @@ class NoVerdict(Fixture):
         return run
 
     def test_a_no_verdict_hold_quotes_the_error_its_own_receipt_records(self):
-        """A lane that reached its own limit: the real queuekeeper run, its real receipt, and a log that just stops (#288)."""
+        """A lane that reached its own limit: the real qk run, its real receipt, and a log that just stops (#288)."""
         config = self.config()
         config["lanes"]["gate"] = {"command": ["python3", "-c", "import time; time.sleep(120)"], "timeout": 2}
         config["queue"]["noVerdictRuns"] = 1
@@ -2105,7 +2105,7 @@ class NoVerdict(Fixture):
         held = mq.Queue(self.repo).held()
         self.assertIn(f"the lanes gave no verdict in 1 run in a row, the last with exit 3 on this Mac "
                       f"({offload_host.mac_name()}), unmeasured, with no test its log names, and the host did not settle in {mq.SETTLE_LIMIT}s (the CPU is 95% busy, at or above", held)
-        self.assertIn("queuekeeper queue resume", held)
+        self.assertIn("qk queue resume", held)
         self.assertIn(f"the host did not settle in {mq.SETTLE_LIMIT}s and {len(slept) + 1} looks", said.getvalue())
         # A line every SETTLE_REPORT while it waited, not one per look.
         self.assertEqual(said.getvalue().count("still waiting"), mq.SETTLE_LIMIT // mq.SETTLE_REPORT)
@@ -2182,9 +2182,9 @@ class HoldKinds(Fixture):
     vocaro-engineering#173)."""
     FOR_OWNER = "for the owner, since nobody else can fix it: "
     FOR_SESSION = "for a session, not the owner: "
-    SESSION_RESUMES = ("; the session that fixes it, or any session that finds it gone, runs `queuekeeper queue resume` itself "
+    SESSION_RESUMES = ("; the session that fixes it, or any session that finds it gone, runs `qk queue resume` itself "
                        "and says so")
-    OWNER_FIXES = "; once it is fixed, any session that finds the cause gone runs `queuekeeper queue resume` and says so"
+    OWNER_FIXES = "; once it is fixed, any session that finds the cause gone runs `qk queue resume` and says so"
 
     def test_a_remote_out_of_reach_past_its_backoff_is_tried_again_and_lands(self):
         self.commit("a", "a")
@@ -2331,7 +2331,7 @@ class HoldKinds(Fixture):
         self.assertEqual((hold.kind, str(hold)), (mq.CLEARS, "why"))
 
 
-# Files, as `queuekeeper run` does for a lane the second Mac ran, a dispatch record in the checkout's
+# Files, as `qk run` does for a lane the second Mac ran, a dispatch record in the checkout's
 # .build/queuekeeper/remote/.dispatches/LANE/, named for the second it started unless the receipt names
 # one, and holding the receipt that sys.argv[1] holds, if any; then runs lane.py with the rest.
 DISPATCHING_LANE = """import json, os, pathlib, runpy, sys, time
@@ -2643,7 +2643,7 @@ class SecondMacReading(unittest.TestCase):
                 ask.assert_called_once_with("fake-mac", {"pressure": True}, timeout=mq.remote.CENSUS_TIMEOUT)
 
     def test_a_macs_capacity_is_judged_by_its_slots_its_cpu_and_what_runs_there(self):
-        """remote.spare, which queuekeeper run judges both Macs by before it chooses one (vocaro-engineering#168)."""
+        """remote.spare, which qk run judges both Macs by before it chooses one (vocaro-engineering#168)."""
         idle = {"slots": 3, "slotsMax": 5, "busy": [], "load": 2.0, "cpuBusy": 20.0, "busyLimit": 75.0, "wholeHost": [],
                 "exclusive": []}
         cases = [
@@ -3528,7 +3528,7 @@ class DefaultDocsOnly(Fixture):
     def test_a_docs_only_batch_does_not_wait_behind_a_whole_host_lane(self):
         """vocaro-engineering#394: a docs-only batch's spelling and docs checks, the toolkit's, run unadmitted under
         DOCS_CHECK_LIMIT, so a whole-host lane holding this Mac does not hold them back. The old worker ran them through
-        queuekeeper run's admission, which waited until the holder let go: here, after PATIENCE, which fails the test."""
+        qk run's admission, which waited until the holder let go: here, after PATIENCE, which fails the test."""
         from queuekeeper import resources
         slots = self.base / "slots"
         environment = {"HEAVY_SLOT_DIR": str(slots), "HEAVY_SLOTS": "2", "HEAVY_SLOTS_MAX": "3",
@@ -3559,7 +3559,7 @@ class DefaultDocsOnly(Fixture):
                           said.getvalue())
 
     def test_a_docs_check_that_reaches_its_limit_runs_admitted(self):
-        """The control: a check that does not end within DOCS_CHECK_LIMIT runs again through queuekeeper run, admitted."""
+        """The control: a check that does not end within DOCS_CHECK_LIMIT runs again through qk run, admitted."""
         self.commit("guides/guide.md", "guide", "# Guide\n")
         [identifier] = self.add("guide")
         real = mq.processes.run
@@ -3655,7 +3655,7 @@ class DefaultDocsOnly(Fixture):
 
 class ImplicitSpelling(Fixture):
     """The toolkit's spelling check, which the queue runs before the gate in a project with no spelling lane, through
-    queuekeeper run, as any lane, unless main's queue.spelling is false; a project's own spelling lane runs in its place."""
+    qk run, as any lane, unless main's queue.spelling is false; a project's own spelling lane runs in its place."""
     RUN = ["python3", "scripts/qk", "run", "spelling"]
 
     def rounds(self):
@@ -3680,7 +3680,7 @@ class ImplicitSpelling(Fixture):
         self.assertEqual(self.state(identifier)["state"], "landed")
         self.assertEqual(started[:2], [self.RUN, ["python3", "scripts/qk", "run", "gate"]])
         self.assertNotIn(mq.IMPLICIT_SPELLING, started)
-        # The round says where it ran, as it does of a lane, from the receipt queuekeeper run wrote once it was admitted.
+        # The round says where it ran, as it does of a lane, from the receipt qk run wrote once it was admitted.
         self.assertTrue(any(words.startswith("spelling exited 0 on this Mac (") for words in said), said)
 
     def test_an_ungated_landing_runs_it_as_a_lane_and_not_the_gate(self):
@@ -3701,7 +3701,7 @@ class ImplicitSpelling(Fixture):
         [identifier] = self.add("fix")
         with self.lanes_run() as started: self.rounds()
         self.assertEqual(self.state(identifier)["state"], "landed")
-        # The toolkit's check runs unadmitted in a docs-only batch, and the project's own docs lane through queuekeeper run
+        # The toolkit's check runs unadmitted in a docs-only batch, and the project's own docs lane through qk run
         # (vocaro-engineering#394).
         self.assertEqual(started[:2], [mq.IMPLICIT_SPELLING, ["python3", "scripts/qk", "run", "docs"]])
         self.assertEqual(self.gates(), 0)
@@ -3777,7 +3777,7 @@ class ImplicitSpelling(Fixture):
         self.assertFalse(any("toolkit's" in words for words in said), said)
 
     def test_a_branch_that_drops_the_spelling_lane_gets_the_toolkits(self):
-        # Main's lane names spelling; the batch's checkout, which queuekeeper run reads, no longer has it.
+        # Main's lane names spelling; the batch's checkout, which qk run reads, no longer has it.
         own, own_status = self.base / "own-spelling", self.base / "own-status"
         config = json.loads((self.repo / "queuekeeper.json").read_text())
         config["lanes"]["spelling"] = {"command": ["python3", "lane.py", str(own), str(own_status)]}
@@ -3874,7 +3874,7 @@ class NegatedClaims(unittest.TestCase):
 
 
 class ClaimsBeforeQueued(Fixture):
-    """queuekeeper land and `queuekeeper queue add` refuse a commit message that denies a closing claim before anything is queued
+    """qk land and `qk queue add` refuse a commit message that denies a closing claim before anything is queued
     (vocaro-engineering#286)."""
     def worded(self, branch, *messages):
         """A branch of one commit for each message, on origin/main."""
@@ -3884,7 +3884,7 @@ class ClaimsBeforeQueued(Fixture):
         return run(self.repo, "git", "rev-parse", branch)
 
     def land(self, branch, **options):
-        """(the new entry's ID or None, what queuekeeper land said, the error it refused with or None), no worker started."""
+        """(the new entry's ID or None, what qk land said, the error it refused with or None), no worker started."""
         said, error, identifier = io.StringIO(), None, None
         with patch.object(mq.Queue, "start"), contextlib.redirect_stdout(said), contextlib.redirect_stderr(said):
             try: identifier = mq.add(self.repo, branch, **options)
@@ -3958,7 +3958,7 @@ class ClaimsBeforeQueued(Fixture):
 
 
 class ImplicitSpellingLane(Fixture):
-    """`queuekeeper run spelling` in a project with no spelling lane runs the toolkit's check as a lane: offered to the second
+    """`qk run spelling` in a project with no spelling lane runs the toolkit's check as a lane: offered to the second
     Mac and admitted like any other (owner's decision, 2026-11-09, vocaro-engineering#305)."""
     OFFERED = SimpleNamespace(status=0)
 
@@ -3990,7 +3990,7 @@ class ImplicitSpellingLane(Fixture):
         self.assertEqual(admitted.call_args.args[1:3], ("spelling", "fixture spelling"))
 
     def test_queue_spelling_says_only_whether_the_queue_asks(self):
-        # A batch's queuekeeper.json that turns it off must not leave the round's `queuekeeper run spelling` with no lane.
+        # A batch's queuekeeper.json that turns it off must not leave the round's `qk run spelling` with no lane.
         config = self.config()
         config["queue"]["spelling"] = False
         self.publish(config, "Turn the toolkit's spelling off")
@@ -4102,7 +4102,7 @@ else:
 
 
 class SpelledBeforeQueued(Fixture):
-    """queuekeeper land and `queuekeeper queue add` run the spelling lane the worker would run before the gate, the project's own or
+    """qk land and `qk queue add` run the spelling lane the worker would run before the gate, the project's own or
     the toolkit's, on the entry's commits replayed onto origin/main, and refuse an entry it finds a British spelling in
     (vocaro-engineering#283)."""
     def setUp(self):
@@ -4112,7 +4112,7 @@ class SpelledBeforeQueued(Fixture):
         self.addCleanup(real.stop)
 
     def land(self, branch):
-        """(the new entry's ID or None, what queuekeeper land said, the error it refused with or None), no worker started."""
+        """(the new entry's ID or None, what qk land said, the error it refused with or None), no worker started."""
         said, error = io.StringIO(), None
         with patch.object(mq.Queue, "start"), contextlib.redirect_stdout(said), contextlib.redirect_stderr(said):
             try: mq.add(self.repo, branch)
@@ -4188,7 +4188,7 @@ class SpelledBeforeQueued(Fixture):
         self.assertIn("own lane said it", error)
 
     def test_a_branch_that_drops_the_spelling_lane_gets_the_toolkits(self):
-        # Main's lane passes everything; the entry's commit, which the worker's queuekeeper run reads, has no lane.
+        # Main's lane passes everything; the entry's commit, which the worker's qk run reads, has no lane.
         config = self.own_lane(0)
         run(self.repo, "git", "checkout", "-q", "-B", "drop", "origin/main")
         del config["lanes"]["spelling"]
@@ -4231,7 +4231,7 @@ class SpelledBeforeQueued(Fixture):
 
 
 class AheadOfTheQueue(Fixture):
-    """queuekeeper land's emergency options --front and --no-gate, in every repository with no setting (owner's decision,
+    """qk land's emergency options --front and --no-gate, in every repository with no setting (owner's decision,
     2026-11-04, vocaro-engineering#163); --no-gate needs a written reason."""
     WHY = "a flaky voice test unrelated to the fix fails the gate"
 
@@ -4356,7 +4356,7 @@ class AheadOfTheQueue(Fixture):
         # Main's history says so, with the reason, and the commit keeps its message, author and tree.
         message = self.tip_message()
         self.assertTrue(message.startswith("Add fix"), message)
-        self.assertIn(f"{mq.UNGATED}: queuekeeper land --no-gate ran spelling", message)
+        self.assertIn(f"{mq.UNGATED}: qk land --no-gate ran spelling", message)
         self.assertIn(f"because {self.WHY}", message)
         self.assertEqual(run(self.repo, "git", "log", "-1", "--format=%an %T", "origin/main"),
                          run(self.repo, "git", "log", "-1", "--format=%an %T", tip))
@@ -4586,7 +4586,7 @@ class Changelogs(Fixture):
 
     def outcome(self, *contents, name="CHANGELOG.md"):
         """Land each content of name, on a branch of its own from the same commit, oldest first. Each is queued
-        unchecked, so that the round decides, and queuekeeper land's trial of each against those ahead of it must agree
+        unchecked, so that the round decides, and qk land's trial of each against those ahead of it must agree
         with the round: refused just where the round sends it back (vocaro-engineering#178)."""
         for number, content in enumerate(contents): self.commit(name, f"b{number}", content)
         ids = self.add(*(f"b{number}" for number in range(len(contents))), checked=False)
@@ -4970,7 +4970,7 @@ class ToolkitCopy(Fixture):
         base = run(self.repo, "git", "rev-parse", "origin/main")
         self.assertEqual(held, f"for a session, not the owner: Invalid lane gate, judging main at {base[:12]} with the "
                                f"toolkit at {code[:12]}; the session that fixes it, or any session that finds it gone, "
-                               "runs `queuekeeper queue resume` itself and says so")
+                               "runs `qk queue resume` itself and says so")
 
     def test_a_bisect_goes_on_from_where_the_worker_that_moved_left_it(self):
         """Two entries that fail together, the toolkit landing between the rounds: the worker that takes over
@@ -5020,7 +5020,7 @@ class ToolkitCopy(Fixture):
         identifier, status = self.gate_once("a")
         self.assertEqual(status, 1)
         self.assertEqual(self.state(identifier)["state"], "queued")
-        self.assertIn("queuekeeper queue resume", mq.Queue(self.repo).held())
+        self.assertIn("qk queue resume", mq.Queue(self.repo).held())
         self.assertFalse(self.seen.exists())
 
     def test_something_at_the_copys_path_holds_and_is_left_alone(self):
@@ -5261,7 +5261,7 @@ class ToolkitsOwnWorker(Fixture):
 
     def landed(self, name, follow=True, adder=None):
         """Queue the branch name, work, and return (exit, its entry's state, what the worker said). With adder, a
-        config module, `queuekeeper land` reads main with it, as a session's queuekeeper at origin/main does."""
+        config module, `qk land` reads main with it, as a session's queuekeeper at origin/main does."""
         with patch.object(mq, "parse", adder.parse if adder else mq.parse): [identifier] = self.add(name)
         self.follow = follow
         with contextlib.redirect_stdout(io.StringIO()) as said: status = self.work()
@@ -5319,7 +5319,7 @@ class ToolkitsOwnWorker(Fixture):
 
     def test_a_toolkit_a_moved_worker_stopped_in_is_not_moved_to_again(self):
         """A worker that moved and then died, or held, before it finished a round: the next worker, which the next
-        `queuekeeper land` starts from older code, stays on that code and lands, rather than moving into the same stop.
+        `qk land` starts from older code, stays on that code and lands, rather than moving into the same stop.
         Only that commit is refused: the next one on main is moved to."""
         code = run(self.started, "git", "rev-parse", "HEAD")
         later = self.toolkit_branch("later", lambda source: source + "\n# A later toolkit.\n")
@@ -5960,7 +5960,7 @@ class LostLocalNetwork(Fixture):
 
     @contextlib.contextmanager
     def losing_access_at_the_gate(self, status):
-        """Access is there at the round's check and gone once the gate's lane ran: the lane's queuekeeper run, whose
+        """Access is there at the round's check and gone once the gate's lane ran: the lane's qk run, whose
         environment is kept, exits status without running anything, as a real one that found NoLocalNetwork does
         (cli's run; test_remote's RemoteTests). Yields the environments of those runs."""
         real, ran = mq.processes.run, []
@@ -6095,7 +6095,7 @@ class PassedThroughAHold(Fixture):
         return ids
 
     def resume(self):
-        """`queuekeeper queue resume` with its worker run here, in the foreground."""
+        """`qk queue resume` with its worker run here, in the foreground."""
         mq.Queue(self.repo).hold_file.unlink()
         with patch("builtins.print"): return self.work()
 
@@ -6384,7 +6384,7 @@ class Refusals(Fixture):
         named = {**declared, "lanes": ["docs", "spelling"]}
         self.assertEqual(mq.docs_lanes({"lanes": {**lanes, "spelling": {}}, "queue": {"docsOnly": named}}, ["doc/a.md"]),
                          ["docs", "spelling"])
-        # queuekeeper run places the toolkit's check as any lane, so it holds no bisect half on this Mac; an unknown lane does.
+        # qk run places the toolkit's check as any lane, so it holds no bisect half on this Mac; an unknown lane does.
         self.assertIsNone(mq.offerable({"lanes": {"gate": {}}}, ["spelling", "gate"]))
         self.assertIn("no configured lane", mq.offerable({"lanes": {"gate": {}}, "queue": off}, ["spelling", "gate"]))
 
@@ -6552,7 +6552,7 @@ class Refusals(Fixture):
         self.assertEqual(left, {})
 
 
-# A fixture suite for an queuekeeper unittest gate: test_sometimes fails on each run whose letter in PLAN is F, counting its
+# A fixture suite for an qk unittest gate: test_sometimes fails on each run whose letter in PLAN is F, counting its
 # runs in RUNS, and imports fixturelib.helper, which imports fixturelib.deeper.
 FLAKY_MODULE = """import pathlib, sys, unittest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src/python"))
@@ -6572,7 +6572,7 @@ class Flaky(unittest.TestCase):
         self.assertEqual(helper.VALUE, 1)
 """
 
-# A word check of docs/, whose failure names each PATH:LINE, as queuekeeper spelling's does.
+# A word check of docs/, whose failure names each PATH:LINE, as qk spelling's does.
 WORDS_MODULE = """import pathlib, unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -6600,7 +6600,7 @@ class RejectionFacts(Fixture):
         entry = self.state(identifier)
         self.assertEqual(entry["state"], "failed")
         self.assertIn("the one-minute load was highest 3", entry["why"])
-        self.assertIn("Which tests failed could not be determined (its log has no queuekeeper unittest summary), so whether this "
+        self.assertIn("Which tests failed could not be determined (its log has no qk unittest summary), so whether this "
                       "entry changes their files is unknown", entry["why"])
         self.assertNotIn("changes no file", entry["why"])
         self.assertIn("could not be determined", mq.describe(entry))
@@ -6688,7 +6688,7 @@ class LoadReadings(unittest.TestCase):
 
 
 class FlakyReruns(Fixture):
-    """A failed queuekeeper unittest gate's failed tests rerun alone before a bisect, and a batch whose failed tests all pass
+    """A failed qk unittest gate's failed tests rerun alone before a bisect, and a batch whose failed tests all pass
     alone and that reaches none of their files lands, with the flake recorded (owner's decision of 2026-11-07, #231)."""
     # Every rerun scenario exercises an opaque root that would otherwise fail spelling first.
     ROOT_PREFIX = "fixture_" + "oei" + "tre_"
@@ -6712,7 +6712,7 @@ class FlakyReruns(Fixture):
         config["lanes"]["gate"] = {"command": ["python3", "scripts/qk", "unittest", "-s", "tests", "-v"], "timeout": 600}
         (self.repo / "queuekeeper.json").write_text(json.dumps(config))
         run(self.repo, "git", "add", ".")
-        run(self.repo, "git", "commit", "-qm", "Gate on an queuekeeper unittest suite")
+        run(self.repo, "git", "commit", "-qm", "Gate on an qk unittest suite")
         run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
 
     def assert_gate_failure(self, path):
@@ -6787,7 +6787,7 @@ class FlakyReruns(Fixture):
             yield
 
     def test_a_failed_test_of_a_gate_the_second_mac_ran_is_rerun_alone_from_its_dispatchs_log(self):
-        # The queue's log held only what queuekeeper run printed here, with no queuekeeper unittest summary, so a second Mac's
+        # The queue's log held only what qk run printed here, with no qk unittest summary, so a second Mac's
         # failed test was never rerun and every batch bisected.
         self.plan.write_text("F")
         self.commit("a", "a"); self.commit("b", "b")
@@ -6805,14 +6805,14 @@ class FlakyReruns(Fixture):
         log = said.getvalue()
         self.assertIn("gate exited 1 on fake-mac", log)
         self.assertIn(f": {self.TEST}; rerunning each alone up to {mq.RERUNS} times on that commit before a bisect", log)
-        self.assertNotIn("no queuekeeper unittest summary", log)
+        self.assertNotIn("no qk unittest summary", log)
         self.assertNotIn("fail together", log)
         entries = [self.state(identifier) for identifier in ids]
         self.assertEqual([entry["state"] for entry in entries], ["landed", "landed"])
         self.assert_gate_failure(entries[0]["flakes"][0]["gateLog"])
 
     def make_gate_a_group(self, other_status):
-        """Make the gate a group of the queuekeeper unittest suite and a lane that exits other_status, as the toolkit's is (#289)."""
+        """Make the gate a group of the qk unittest suite and a lane that exits other_status, as the toolkit's is (#289)."""
         declared = json.loads((self.repo / "queuekeeper.json").read_text())
         declared["lanes"]["suite"] = declared["lanes"]["gate"]
         declared["lanes"]["other"] = {"command": ["python3", "-c", f"raise SystemExit({other_status})"], "timeout": 600}
@@ -6830,7 +6830,7 @@ class FlakyReruns(Fixture):
         with contextlib.redirect_stdout(io.StringIO()) as said: self.assertEqual(self.work(), 0)
         log = said.getvalue()
         self.assertIn(f": {self.TEST}; rerunning each alone up to {mq.RERUNS} times on that commit before a bisect", log)
-        self.assertNotIn("no queuekeeper unittest summary", log)
+        self.assertNotIn("no qk unittest summary", log)
         self.assertEqual(self.runs_of_the_test(), 1 + mq.RERUNS)
         entries = [self.state(identifier) for identifier in ids]
         self.assertEqual([entry["state"] for entry in entries], ["landed", "landed"])
@@ -6852,7 +6852,7 @@ class FlakyReruns(Fixture):
         return patch.object(mq.remote, "dispatch", side_effect=dispatch)
 
     def test_a_flake_in_a_group_gate_the_second_mac_ran_reruns_from_its_dispatchs_lane_log(self):
-        # A dispatched group's run.log is empty and its output holds queuekeeper unittest's summary only indented, in a
+        # A dispatched group's run.log is empty and its output holds qk unittest's summary only indented, in a
         # failed lane's tail; the lane's own log came back to the dispatch, not to the worker's checkout.
         self.make_gate_a_group(0)
         self.plan.write_text("F")
@@ -6863,7 +6863,7 @@ class FlakyReruns(Fixture):
         log = said.getvalue()
         self.assertIn("gate exited 1 on fake-mac", log)
         self.assertIn(f": {self.TEST}; rerunning each alone up to {mq.RERUNS} times on that commit before a bisect", log)
-        self.assertNotIn("no queuekeeper unittest summary", log)
+        self.assertNotIn("no qk unittest summary", log)
         entries = [self.state(identifier) for identifier in ids]
         self.assertEqual([entry["state"] for entry in entries], ["landed", "landed"])
         self.assert_gate_failure(entries[0]["flakes"][0]["gateLog"])
@@ -6923,7 +6923,7 @@ class FlakyReruns(Fixture):
                 contextlib.redirect_stdout(io.StringIO()) as said:
             self.assertEqual(self.work(), 0)
         log = said.getvalue()
-        self.assertIn("gate failed with no failed test to rerun alone (its log has no queuekeeper unittest summary): bisecting",
+        self.assertIn("gate failed with no failed test to rerun alone (its log has no qk unittest summary): bisecting",
                       log)
         self.assertEqual([self.state(identifier)["state"] for identifier in ids], ["landed", "landed"])
 
@@ -7222,9 +7222,9 @@ class FlakyParts(unittest.TestCase):
     def test_a_log_whose_failure_cannot_be_rerun_alone_names_why(self):
         summary = UNITTEST_LOG.splitlines()[-1]
         cases = {
-            "its log has no queuekeeper unittest summary": UNITTEST_LOG.replace(summary, "FAILED"),
-            "queuekeeper unittest's verdict is OK": UNITTEST_LOG.replace(summary.split("s: ", 1)[1], "OK"),
-            "queuekeeper unittest also left tests unmeasured": UNITTEST_LOG.replace(summary, summary + "; UNMEASURED: test_d (timed out after 1800s)"),
+            "its log has no qk unittest summary": UNITTEST_LOG.replace(summary, "FAILED"),
+            "qk unittest's verdict is OK": UNITTEST_LOG.replace(summary.split("s: ", 1)[1], "OK"),
+            "qk unittest also left tests unmeasured": UNITTEST_LOG.replace(summary, summary + "; UNMEASURED: test_d (timed out after 1800s)"),
             "test_c ran 0 of 1 tests": UNITTEST_LOG.replace("test_c (FAILED (failures=1), status 1)", "test_c (ran 0 of 1 tests)"),
             "the output of test_c names no failed test": UNITTEST_LOG.replace("FAIL: test_old (test_c.C)", "Segmentation fault"),
             "test_c did not load": UNITTEST_LOG.replace("FAIL: test_old (test_c.C)", "ERROR: test_c (unittest.loader._FailedTest.test_c)"),
@@ -7251,7 +7251,7 @@ class FlakyParts(unittest.TestCase):
                          ["qk", "unittest", "-p", "test_x*.py", "--timeout=60", "-t", ".", "-j", "1", "-v"])
         batched = ["qk", "unittest", "--split", "class", "--batch-size", "4"]
         self.assertEqual(mq.rerun_command(batched + ["-j", "8"]), batched + ["-j", "1", "-v"])
-        # Negative controls: a lane that is not queuekeeper unittest, an option the rerun cannot carry, a value left out.
+        # Negative controls: a lane that is not qk unittest, an option the rerun cannot carry, a value left out.
         for command in (["python3", "lane.py"], ["python3", "scripts/qk", "xctest"], ["python3", "-m", "unittest"],
                         ["python3", "scripts/qk", "unittest", "--failfast"], ["python3", "scripts/qk", "unittest", "-s"],
                         None, "python3 scripts/qk unittest"):
@@ -7389,7 +7389,7 @@ class BothHalves(Fixture):
         self.worked()
         why = self.state(ids[1])["why"]
         self.assertIn("fix it and add it again. During gate on this Mac, the one-minute load was highest 3", why)
-        self.assertIn("Which tests failed could not be determined (its log has no queuekeeper unittest summary), so whether this "
+        self.assertIn("Which tests failed could not be determined (its log has no qk unittest summary), so whether this "
                       "entry changes their files is unknown", why)
 
     def test_two_that_pass_alone_land_the_older_and_the_newer_gates_again(self):
@@ -7435,7 +7435,7 @@ class BothHalves(Fixture):
         self.assertNotIn("newer half", log)
 
     def test_the_lanes_each_half_runs_say_where(self):
-        """The older half runs with queuekeeper run's --here, the newer with --offload-only, which never runs it here."""
+        """The older half runs with qk run's --here, the newer with --offload-only, which never runs it here."""
         self.assertEqual(OFFERED, (("--here",), ("--offload-only",)))
         self.assertEqual(OFFERABLE({"lanes": {"gate": {"command": ["x"], "resource": "heavy"}}}, ["gate"]), None)
         # A light gate, such as the toolkit's was, or one with no resource, is admitted and offered as every lane is
@@ -7515,7 +7515,7 @@ class Stacked(Fixture):
         for number in runs: Path(f"{self.counter}.release.{number}").touch()
 
     def worked(self, branch, then, *more, checked=True, ends=EVERY_RUN):
-        """The log of a worker whose first gate's lane holds until branch has arrived, as a session's queuekeeper land adds
+        """The log of a worker whose first gate's lane holds until branch has arrived, as a session's qk land adds
         it, unchecked with no trial integration, as when the batch ahead changes after it (Fixture.add), and then(log)
         is true: only then may the gates numbered in ends finish. No wall-clock wait decides what the round sees, so
         a stalled host only makes it slower (vocaro-engineering#250); PATIENCE ends what a regression would hold."""
@@ -7633,7 +7633,7 @@ class Stacked(Fixture):
         self.assertLessEqual({"hold", "doc"}, self.main_files())
 
     def test_a_docs_entry_lands_beside_the_gate_of_an_entry_put_first(self):
-        """An entry queuekeeper land --front put on its own stacks nothing behind it, but a docs entry that arrives during its
+        """An entry qk land --front put on its own stacks nothing behind it, but a docs entry that arrives during its
         gate still lands beside it: the old worker gated such an entry with no watch, so the docs entry waited it out."""
         self.commit("hold", "a"); self.commit("doc/guide.md", "guide", "# Guide\n")
         with patch.object(mq.Queue, "start"), patch("builtins.print"): mq.add(self.repo, "a", front=True)
@@ -7801,7 +7801,7 @@ class Stacked(Fixture):
 
 
 class RemovedWhileTesting(Fixture):
-    """`queuekeeper queue remove` of an entry whose gate runs stops that gate, by the cancel a thrown-away stacked gate's lanes
+    """`qk queue remove` of an entry whose gate runs stops that gate, by the cancel a thrown-away stacked gate's lanes
     end with, and what is left gates again; nothing stacks on a batch an entry of which has left (#247)."""
     SLOW = "60"  # seconds the gate of the removed entry would take, far past what the test waits
 
@@ -7821,12 +7821,12 @@ class RemovedWhileTesting(Fixture):
         self.publish({**config, "queue": {**config["queue"], "spelling": False}}, "Turn the toolkit's spelling off")
 
     def remove(self, identifier):
-        """Remove identifier as `queuekeeper queue remove` does from another process while the worker runs, whose lines
+        """Remove identifier as `qk queue remove` does from another process while the worker runs, whose lines
         go to the worker's log here, as stdout is one for both."""
         mq.remove(mq.Queue(self.repo), identifier)
 
     def arrive(self, branch):
-        """Add branch as a session's queuekeeper land does, without its trial, as when the batch ahead changes after it."""
+        """Add branch as a session's qk land does, without its trial, as when the batch ahead changes after it."""
         with patch.object(mq, "check"): mq.add(self.repo, branch)
         return self.added(branch)["id"]
 
@@ -7890,7 +7890,7 @@ class RemovedWhileTesting(Fixture):
         self.assertIsNone(mq.Queue(self.repo).held())
         self.assertNotIn("slow", self.main_files())
         self.assertIn("b", self.main_files())
-        # What `queuekeeper queue remove` said: the worker stops the gate, rather than letting it hold the queue.
+        # What `qk queue remove` said: the worker stops the gate, rather than letting it hold the queue.
         self.assertIn(f"removed {a}\n", log)
         self.assertIn(f"{a} was testing: the worker stops its gate within about 0.1s", log)
 
@@ -7972,7 +7972,7 @@ class RemovedWhileTesting(Fixture):
 
 
 class RoundAccount(Fixture):
-    """The worker's account of its round in queuekeeper-queue (ROUND_FILE), which `queuekeeper queue status` shows so that nobody has
+    """The worker's account of its round in queuekeeper-queue (ROUND_FILE), which `qk queue status` shows so that nobody has
     to read worker.log to learn why entries wait: a bisect's halves, each gate's lane, Mac and time, and what it waits
     for."""
     UNREACHABLE = ("queuekeeper: gate waits for this Mac, and asks the second Mac again at the next offer: build-host cannot "
@@ -8020,7 +8020,7 @@ class RoundAccount(Fixture):
         self.assertEqual(gate["waiting"], "the second Mac cannot be reached, and is asked again at the next offer: "
                                           "ssh: connect to host build-host port 22: No route to host")
         self.assertIsInstance(gate["waitingSince"], float)
-        # What it waits for by kind, which queuekeeper queue doctor's pointer to `queuekeeper admissions now` reads (#342).
+        # What it waits for by kind, which qk queue doctor's pointer to `qk admissions now` reads (#342).
         self.assertEqual(gate["waitingKind"], mq.lane_wait.UNREACHABLE)
         mq.lane_wait.waiting(mq.lane_wait.ADMISSION, "all 3 guaranteed slots are busy")
         self.assertEqual(self.gate_after_look(queue, watch)["waitingKind"], mq.lane_wait.ADMISSION)
@@ -8057,7 +8057,7 @@ class RoundAccount(Fixture):
         self.assertNotIn("waiting:", self.shown())
 
     def test_status_reads_the_record_and_no_printed_line(self):
-        """The issue's second acceptance: what queuekeeper run prints may be reworded, or not printed at all."""
+        """The issue's second acceptance: what qk run prints may be reworded, or not printed at all."""
         queue, watch = self.watch()
         watch.log.write_text("\n".join((self.WHOLE_HOST, self.UNREACHABLE, "queuekeeper: trying gate on this Mac: busy",
                                         "remote: sending 0123456789ab to build-host")) + "\n")
@@ -8227,14 +8227,14 @@ class RoundAccount(Fixture):
 
 
 class GateResultsNamed(Fixture):
-    """A passing gate says where its per-test results are, in its log and `queuekeeper land --wait`'s output, and copies
+    """A passing gate says where its per-test results are, in its log and `qk land --wait`'s output, and copies
     none of them there (#266): a session once searched the queue's checkout to confirm its new tests had run."""
     SUITE = "suites/ios-tests/simulator-tests"
     DETAIL = "test_new_case passed on the iPhone"
 
     @contextlib.contextmanager
     def second_mac(self, *results):
-        """The gate ran on fake-mac, by a dispatch's folder as queuekeeper run files it once the lane has ended, read by the
+        """The gate ran on fake-mac, by a dispatch's folder as qk run files it once the lane has ended, read by the
         real remote.dispatch, with the files results names sent back under its results/."""
         real = mq.remote.dispatch
         def dispatch(root, name, since):
@@ -8253,7 +8253,7 @@ class GateResultsNamed(Fixture):
             yield
 
     def landed(self, context=None):
-        """(the landed entry, its gate log's text, what `queuekeeper land --wait` prints for it, what the worker said)."""
+        """(the landed entry, its gate log's text, what `qk land --wait` prints for it, what the worker said)."""
         self.commit("a", "a")
         [identifier] = self.add("a")
         with context or contextlib.nullcontext(), contextlib.redirect_stdout(io.StringIO()) as worker:
@@ -8268,7 +8268,7 @@ class GateResultsNamed(Fixture):
         return entry, logs[0].read_text(), waited.getvalue(), worker.getvalue()
 
     def assert_waited_ends(self, waited, entry):
-        """`queuekeeper land --wait` ends with the line naming the results, the gate's log, and the landed commit, last."""
+        """`qk land --wait` ends with the line naming the results, the gate's log, and the landed commit, last."""
         self.assertEqual(waited.splitlines()[-3:], [entry["gate"]["results"], f"gate log: {entry['gate']['log']}",
                                                     f"landed: {entry['landedAs']}"])
 
@@ -8426,7 +8426,7 @@ class FailedGateEvidence(Fixture):
         dispatch = self.base / ".dispatches/gate/swift"
         dispatch.mkdir(parents=True)
         run_log, output = dispatch / "run.log", dispatch / "output.log"
-        report = "queuekeeper run gate: failed (exit 1), on fake-mac\n  tests: 1 passed, 2 failed, 0 skipped, 0 unmeasured\n"
+        report = "qk run gate: failed (exit 1), on fake-mac\n  tests: 1 passed, 2 failed, 0 skipped, 0 unmeasured\n"
         first = '✘ Test "Keeps the heading" recorded an issue at LayoutTests.swift:42:9: Expectation failed: width > 0'
         second = "✘ Test wraps() recorded an issue at LayoutTests.swift:64:5: Expectation failed: height > 0"
         failure = ("✘ Test fixture() recorded an issue at LayoutTests.swift:10:5: Expectation failed: fixture only\n"
@@ -8482,7 +8482,7 @@ class FailedGateEvidence(Fixture):
 
     def test_an_outer_report_does_not_repeat_a_nested_fixture_failure(self):
         lane_log = "    FAIL: test_turn (nested.Sample.test_turn)\n    AssertionError: nested mismatch\n"
-        report = "queuekeeper run gate: failed (exit 1), on fake-mac\n  tests: 2 passed\n  failed: Pages/testTurn\n"
+        report = "qk run gate: failed (exit 1), on fake-mac\n  tests: 2 passed\n  failed: Pages/testTurn\n"
         self.assertEqual(mq.failed_lane_excerpt(lane_log, report, "gate"), report.splitlines()[:2])
         self.assertEqual(mq.failed_lane_excerpt(lane_log, "", "gate"), [])
 

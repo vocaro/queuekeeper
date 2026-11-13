@@ -662,7 +662,7 @@ class SimulatorMatrixTests(unittest.TestCase):
         self.assert_every_device_returned()
 
     def test_a_stale_module_the_lane_wrapper_already_rebuilt_is_not_rebuilt_again(self):
-        # Under queuekeeper run, xcodebuild's wrapper has rebuilt once and says so in the build's output (#267).
+        # Under qk run, xcodebuild's wrapper has rebuilt once and says so in the build's output (#267).
         modules, _ = self.planted_modules()
         (self.root / "bin/xcodebuild").write_text((self.root / "bin/xcodebuild").read_text().replace(
             "print(\"error: file 'include/resvg.h'",
@@ -1011,7 +1011,7 @@ class SimulatorMatrixTests(unittest.TestCase):
         second = start()
         # The second run asks for the folders before the first lets go of them, however slowly it starts.
         followed = Followed(second)
-        followed.wait_for("WAIT: another queuekeeper simulator-tests run holds", self)
+        followed.wait_for("WAIT: another qk simulator-tests run holds", self)
         # A run with folders of its own goes ahead while the first holds the defaults.
         status, output = self.run_matrix("--derived-data", "elsewhere/derived", "--logs", "elsewhere/logs")
         self.assertEqual(status, 0, output)
@@ -1027,7 +1027,7 @@ class SimulatorMatrixTests(unittest.TestCase):
         self.assertEqual([first.returncode, second.returncode], [0, 0], outputs)
         self.assertNotIn("WAIT:", outputs[0])
         derived = self.root / ".build/simulator-tests/derived"
-        self.assertRegex(outputs[1], rf"WAIT: another queuekeeper simulator-tests run holds {derived} \(PID {first.pid} since ")
+        self.assertRegex(outputs[1], rf"WAIT: another qk simulator-tests run holds {derived} \(PID {first.pid} since ")
         self.assertIn(f"HELD {derived} after waiting", outputs[1])
         # The second run built only once the first run's tests had ended.
         self.assertEqual([where(call) for call in self.calls()][4:],
@@ -1047,7 +1047,7 @@ class SimulatorMatrixTests(unittest.TestCase):
                                    env=self.environment)
         self.addCleanup(lambda: process.poll() is None and process.kill())
         followed = Followed(process)
-        followed.wait_for(f"WAIT: another queuekeeper simulator-tests run holds {logs} (it has not said which)", self)
+        followed.wait_for(f"WAIT: another qk simulator-tests run holds {logs} (it has not said which)", self)
         self.assertIsNone(process.poll())
         self.assertFalse((self.state / "xcodebuild.log").exists(), "nothing builds while another run holds the logs")
         self.assertFalse((self.state / "simctl.log").exists() and "boot" in (self.state / "simctl.log").read_text(),
@@ -1055,7 +1055,7 @@ class SimulatorMatrixTests(unittest.TestCase):
         fcntl.flock(lock, fcntl.LOCK_UN)
         output = followed.communicate(timeout=stretched(60))
         self.assertEqual(process.returncode, 0, output)
-        self.assertIn(f"WAIT: another queuekeeper simulator-tests run holds {logs} (it has not said which)", output)
+        self.assertIn(f"WAIT: another qk simulator-tests run holds {logs} (it has not said which)", output)
         self.assertIn(f"HELD {logs} after waiting", output)
         self.assert_every_device_returned()
 
@@ -1232,7 +1232,7 @@ class SimulatorMatrixTests(unittest.TestCase):
                 self.assertEqual((record["run"], record["log"], record["resultLines"]), (run, f"{run}.log", 4))
                 self.assertEqual(record["summary"]["totalTestCount"], 3)
                 self.assertIsInstance(record["suiteSeconds"], dict)
-                # Each test case's outcome, as `queuekeeper results keep` records it (#260).
+                # Each test case's outcome, as `qk results keep` records it (#260).
                 self.assertEqual(record["tests"], [{"test": "T/testA()", "outcome": "skipped", "seconds": None}])
                 self.assertIsNone(record["bundleUnread"])
                 self.assertIsInstance(record["seconds"], int)
@@ -1249,7 +1249,7 @@ class SimulatorMatrixTests(unittest.TestCase):
                          results / "simulator-tests")
         self.assertEqual(sorted(p.name for p in (results / "simulator-tests").iterdir()), ["iPad-Air-13-inch-M4-2.json"])
         record = json.loads((results / "simulator-tests/iPad-Air-13-inch-M4-2.json").read_text())
-        self.assertEqual(record, {"run": "iPad-Air-13-inch-M4-2", "keptBy": "queuekeeper simulator-tests", "status": None, "seconds": None, "log": None,
+        self.assertEqual(record, {"run": "iPad-Air-13-inch-M4-2", "keptBy": "qk simulator-tests", "status": None, "seconds": None, "log": None,
                                   "resultLines": None, "summary": None, "suiteSeconds": None, "tests": None,
                                   "bundleUnread": matrix.UNREAD})
 

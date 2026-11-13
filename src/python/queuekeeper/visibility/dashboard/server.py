@@ -1,4 +1,4 @@
-"""The dashboard's server: `queuekeeper serve`.
+"""The dashboard's server: `qk serve`.
 
     /                                  the page, which is also every path below /r/
     /static/NAME                       the page's own script and styles
@@ -168,7 +168,7 @@ def make(given=(), port=PORT, bind=BIND):
 
 
 def main(argv, project=None):
-    parser = argparse.ArgumentParser(prog="queuekeeper serve", description=HELP)
+    parser = argparse.ArgumentParser(prog="qk serve", description=HELP)
     parser.add_argument("repositories", nargs="*", type=Path, metavar="REPOSITORY", help="a repository to show, by a "
                         "path to a checkout of it, beside this project's and those whose queues have run while the "
                         "feature was on")

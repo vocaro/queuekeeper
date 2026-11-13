@@ -1,6 +1,6 @@
 """The merge queue's event journal: one JSON line for each change of the queue's state.
 
-The queue writes it and reads nothing back. Everything that shows the queue to its owner, `queuekeeper queue
+The queue writes it and reads nothing back. Everything that shows the queue to its owner, `qk queue
 events` and the visibility features (doc/visibility.md), reads it, so that none of them is called by the worker
 and none can slow or stop a round. The journal is beside the queue's other records:
 
@@ -142,7 +142,7 @@ def follow(directory, kinds=None, poll=0.5, stop=lambda: False, whole=False):
 
 
 def words(event):
-    """One line for an event, as `queuekeeper queue events` prints it: its local time, then what happened."""
+    """One line for an event, as `qk queue events` prints it: its local time, then what happened."""
     shown = {}
     for key, value in event.items():
         if key in SHORT and isinstance(value, str): value = value[:12]

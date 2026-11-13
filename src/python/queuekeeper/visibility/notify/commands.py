@@ -1,4 +1,4 @@
-"""`queuekeeper notify`: what is on, a notice to try the channels with, and the switches for one rule or channel."""
+"""`qk notify`: what is on, a notice to try the channels with, and the switches for one rule or channel."""
 import argparse
 import json
 from pathlib import Path
@@ -53,7 +53,7 @@ def assign(channel, key, value=None):
     argument list or a number can be given; any other is text."""
     if channel not in channels.available():
         raise ValueError(f"notify has no channel named {channel}: {', '.join(channels.available())}")
-    if key == "enabled": raise ValueError(f"`queuekeeper notify enable {channel}` and `disable` turn a channel on and off")
+    if key == "enabled": raise ValueError(f"`qk notify enable {channel}` and `disable` turn a channel on and off")
     def change(found):
         config = visibility.section(visibility.section(visibility.section(found, "notify"), "channels"), channel)
         if value is None: config.pop(key, None)
@@ -92,7 +92,7 @@ def test(repository, only=None, out=print):
 
 
 def main(argv, project=None):
-    parser = argparse.ArgumentParser(prog="queuekeeper notify", description=HELP)
+    parser = argparse.ArgumentParser(prog="qk notify", description=HELP)
     operations = parser.add_subparsers(dest="operation", required=True)
     operations.add_parser("status", help="list each rule and channel, and whether it is on").add_argument(
         "--json", action="store_true")
@@ -105,7 +105,7 @@ def main(argv, project=None):
     for name in ("channel", "key"): removing.add_argument(name)
     trying = operations.add_parser("test", help="send a test notice through each channel that is on")
     trying.add_argument("--channel", help="through this channel alone")
-    operations.add_parser("check", help="look now for a queue that is stuck, as `queuekeeper queue doctor` does, and "
+    operations.add_parser("check", help="look now for a queue that is stuck, as `qk queue doctor` does, and "
                           "tell of what has lasted, as the commands that reach the hosts do by themselves every two "
                           "minutes: 0 when nothing is found, 1 when something is")
     operations.add_parser("deliver", help="tell now of what this project's queue has journaled since the last "

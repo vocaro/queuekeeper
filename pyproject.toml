@@ -11,7 +11,6 @@ requires-python = ">=3.14"
 dependencies = []
 
 [project.scripts]
-queuekeeper = "queuekeeper.cli:main"
 qk = "queuekeeper.cli:main"
 
 [tool.setuptools.packages.find]
