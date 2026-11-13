@@ -145,7 +145,7 @@ class ConfigTests(Macs):
 
 
 class RunTests(Macs):
-    """`queuekeeper run` of a lane that runs only on the second Mac."""
+    """`qk run` of a lane that runs only on the second Mac."""
 
     def setUp(self):
         super().setUp()

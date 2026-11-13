@@ -16,7 +16,7 @@ Switch it on in `queuekeeper.json`, and say where the Unity project is:
 | Key | Meaning |
 |---|---|
 | `project` | The folder that holds `ProjectSettings`, relative to the checkout. The checkout itself when left out |
-| `layout` | A window layout (`.dwlt`) that `queuekeeper unity open` gives a worktree with none of its own |
+| `layout` | A window layout (`.dwlt`) that `qk unity open` gives a worktree with none of its own |
 
 ## What it handles
 
@@ -26,7 +26,7 @@ Switch it on in `queuekeeper.json`, and say where the Unity project is:
 | A closed editor leaves `Temp/UnityLockfile` behind | Removes it only when `lsof` shows no process holds it open |
 | The last editor leaves its licensing helper alive but unanswering, so the next editor waits 60 seconds and fails | Stops that helper when no editor is running. It is never force-killed |
 | A batch run stalls and keeps the project's lock | Ends a run whose log has been silent for ten minutes, with its import workers |
-| A batch run cannot start while the editor has the project open | `queuekeeper unity closed` closes the editor, runs the command, and opens the editor again |
+| A batch run cannot start while the editor has the project open | `qk unity closed` closes the editor, runs the command, and opens the editor again |
 
 Editors are matched by the absolute project path they were started with, so a sibling worktree's
 editor is never closed or counted as this project's.
@@ -39,7 +39,7 @@ A lane whose command runs the editor says so:
 "gate": {"command": ["./tools/verification/check.sh", "--gates"], "resource": "exclusive", "unity": true}
 ```
 
-Queuekeeper then runs the command under `queuekeeper unity ready --` on whichever Mac runs the lane.
+Queuekeeper then runs the command under `qk unity ready --` on whichever Mac runs the lane.
 The lane ends unmeasured, with nothing run, when that Mac has no editor, an editor has the project
 open, the lock is held, or an orphaned licensing helper will not stop. A lane without the key, such
 as a docs check, is not stopped by an open editor.
@@ -49,11 +49,11 @@ with the [Mac hardware plugin](../mac_hardware/README.md), which keeps it on a M
 
 ## Doctor, disk and host
 
-- `queuekeeper doctor` warns when the pinned editor is missing on this Mac or the second Mac, when
+- `qk doctor` warns when the pinned editor is missing on this Mac or the second Mac, when
   a lane passes `-nographics`, and when there is no Unity project where the project says.
-- `queuekeeper disk` lists `Library/`, `Temp/` and `Logs/` in every checkout of the project. They
+- `qk disk` lists `Library/`, `Temp/` and `Logs/` in every checkout of the project. They
   are kept while an editor has the project open or while they changed lately.
-- `queuekeeper host editors` lists the editors and batch runs on this Mac, each with its project
+- `qk host editors` lists the editors and batch runs on this Mac, each with its project
   and version, and the versions installed.
 
 ## Commands
@@ -66,7 +66,7 @@ Runs the project's tests in a batch editor (`--platform PlayMode` for Play mode 
 the counts, each test that failed, and compile errors. It never passes `-nographics`: without a
 graphics device Unity does not load compute shaders.
 
-Started outside a lane, it is admitted and placed first, as `queuekeeper admit` would run it.
+Started outside a lane, it is admitted and placed first, as `qk admit` would run it.
 `--unadmitted` after `test` runs it with no admission, on this Mac.
 
 ```bash
@@ -110,16 +110,16 @@ failed. `closed` otherwise exits with its command's own status.
 |---|---|
 | `UNITY` | An editor's binary, used instead of the hub's |
 | `QUEUEKEEPER_UNITY_QUIET` | The seconds a batch run's log may stay unwritten before the run is ended (default 600) |
-| `QUEUEKEEPER_UNITY_OPEN` | `0` stops `queuekeeper unity open` from opening an editor by itself |
+| `QUEUEKEEPER_UNITY_OPEN` | `0` stops `qk unity open` from opening an editor by itself |
 
 ## Not here yet
 
 These parts of [issue 6](https://github.com/vocaro/queuekeeper/issues/6) are not built:
 
 - **Play mode.** An editor left in Play mode does not make a lane unmeasured, and
-  `queuekeeper host editors` does not show it. Only the editor knows its Play state.
+  `qk host editors` does not show it. Only the editor knows its Play state.
 - **The Hub sign-in** in `doctor`. Nothing on disk was found that says whether the Hub is signed in.
   A run on a Mac that is not signed in ends unmeasured, by its log.
 - **Per-test results in Queuekeeper's own form.** `unity test` keeps Unity's `results.xml` and
-  `tests.log` in the lane's results folder, but `queuekeeper run` does not print them per test as
+  `tests.log` in the lane's results folder, but `qk run` does not print them per test as
   it does for the Apple plugin's `xctest`.

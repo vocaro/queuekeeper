@@ -4,7 +4,7 @@
 
 The lane runs only on a Mac whose chip it lists. When both Macs have one it is placed as any lane is. When one
 has, it runs there and waits for that Mac while it is busy; it never runs on the other. When neither has, it is
-refused, and `queuekeeper doctor` says so beforehand. `queuekeeper host chip` prints a Mac's chip as a lane names
+refused, and `qk doctor` says so beforehand. `qk host chip` prints a Mac's chip as a lane names
 it."""
 from .. import extensions
 from ..config import unadmitted
@@ -32,7 +32,7 @@ class Chips(extensions.LaneKey):
         if not isinstance(chips, list) or not chips or any(
                 not isinstance(entry, str) or not chip.NAME.fullmatch(entry) for entry in chips):
             raise ValueError(f"{name}.{KEY} must be a non-empty list of chips, such as [\"apple-m5-max\"], as "
-                             "`queuekeeper host chip` prints them")
+                             "`qk host chip` prints them")
         if unadmitted(lane):
             raise ValueError(f"{name}.{KEY} needs an admitted lane: queuekeeper places only an admitted lane on a Mac, "
                              "and a self lane runs where it starts")
@@ -48,7 +48,7 @@ class Chips(extensions.LaneKey):
 
 
 def warnings(root, config):
-    """`queuekeeper doctor`'s warning for each lane no Mac can run."""
+    """`qk doctor`'s warning for each lane no Mac can run."""
     key, found = Chips(), []
     for name, lane in sorted(config.get("lanes", {}).items()):
         if not isinstance(lane, dict) or KEY not in lane: continue

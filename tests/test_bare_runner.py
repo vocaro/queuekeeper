@@ -1,5 +1,5 @@
-"""A runner started outside an admission, such as a bare `queuekeeper unittest`: it is admitted and placed first, as
-`queuekeeper admit -- COMMAND` admits any command, unless the caller writes --unadmitted. Every admission here is taken
+"""A runner started outside an admission, such as a bare `qk unittest`: it is admitted and placed first, as
+`qk admit -- COMMAND` admits any command, unless the caller writes --unadmitted. Every admission here is taken
 on the tests' own host (host_isolation), never on this Mac's."""
 import contextlib
 import io

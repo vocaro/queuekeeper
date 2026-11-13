@@ -1,4 +1,4 @@
-"""The Unity extension's disk items for `queuekeeper disk`: the folders the editor generates in each checkout of a
+"""The Unity extension's disk items for `qk disk`: the folders the editor generates in each checkout of a
 Unity project. Library/ is the import cache, several GB a worktree, which the editor rebuilds on its next open,
 taking minutes; Temp/ and Logs/ are small. The core lists and removes them with its own (queuekeeper.disk)."""
 import json
@@ -58,5 +58,5 @@ def items(host, usage, sizes, wanted):
 
 
 def register():
-    """Add these items to `queuekeeper disk`."""
+    """Add these items to `qk disk`."""
     disk.extend(CATEGORIES, items)

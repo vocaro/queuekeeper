@@ -2330,7 +2330,7 @@ def foreground_lane(root, config, lane, arguments, expect):
 
 
 def there_lane(root, config, lane, arguments, expect, why):
-    """Run a lane that must run on the second Mac there, as `queuekeeper remote run` does, where it waits for its
+    """Run a lane that must run on the second Mac there, as `qk remote run` does, where it waits for its
     admission. It never falls back to this Mac: a second Mac that cannot be reached stops the lane."""
     host = configured()
     if host is None: raise ValueError(f"{lane} runs only on the second Mac ({why}), and none is configured")

@@ -31,11 +31,11 @@ python3 scripts/qk admit -- \
   xcodebuild test -scheme SCHEME -destination "platform=iOS Simulator,id=UDID"
 ```
 
-Queuekeeper's own test runners are admitted the same way when nothing admitted them. `queuekeeper unittest`,
-`queuekeeper xctest`, `queuekeeper simulator-tests` and `queuekeeper unity test` are what a lane's command
-names, and inside a lane or `queuekeeper admit` they run in its admission. Started by themselves they once
+Queuekeeper's own test runners are admitted the same way when nothing admitted them. `qk unittest`,
+`qk xctest`, `qk simulator-tests` and `qk unity test` are what a lane's command
+names, and inside a lane or `qk admit` they run in its admission. Started by themselves they once
 took no slot and ran on this Mac beside whatever else ran there. Now such a runner is admitted and placed
-first, as `queuekeeper admit -- COMMAND` would run it: `python3 scripts/qk unittest -s tests` waits for a
+first, as `qk admit -- COMMAND` would run it: `python3 scripts/qk unittest -s tests` waits for a
 slot, on the second Mac first. In a folder with no `queuekeeper.json` it waits for a slot on this Mac.
 `--unadmitted`, written after the runner's name, runs it with no admission on this Mac, which a test of
 the runner itself needs:
@@ -45,7 +45,7 @@ python3 scripts/qk unittest --unadmitted -s tests test_core.ConfigurationTests
 ```
 
 A command that is not Queuekeeper's, such as a bare `python3 -m unittest` or `swift test`, still takes
-no slot unless it is run with `queuekeeper admit`.
+no slot unless it is run with `qk admit`.
 
 Add `--model` for a generative-model run: on-device generation on this Mac or in a simulator,
 which uses the host Mac's model, and other local generative models such as MLX on the GPU. Core

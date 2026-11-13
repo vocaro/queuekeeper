@@ -1,4 +1,4 @@
-"""`queuekeeper host editors`: the Unity editors open on this Mac and the versions installed on it.
+"""`qk host editors`: the Unity editors open on this Mac and the versions installed on it.
 
 Whether an editor is in Play mode is not read: only the editor itself knows, and it says so through a project's own
 tooling, not to another process."""
@@ -47,7 +47,7 @@ def read(args, out=print):
 
 
 def register():
-    """Add the reading to `queuekeeper host`."""
+    """Add the reading to `qk host`."""
     extensions.HOST_READS["editors"] = (
         "list the Unity editors and batch runs on this Mac, each with its project and version, and the editor "
         "versions installed", arguments, read)

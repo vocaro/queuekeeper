@@ -584,8 +584,8 @@ RUNNERS = {("unittest",)}
 
 def bare_runner(argv, first):
     """(argv, whether it names a runner that no admission holds), for argv whose command starts at first. A runner
-    is a command that runs tests or other heavy work itself, as a lane's command does: `queuekeeper unittest`, and
-    those the extensions name (extensions.RUNNERS). Under `queuekeeper run` or `queuekeeper admit` it inherits their
+    is a command that runs tests or other heavy work itself, as a lane's command does: `qk unittest`, and
+    those the extensions name (extensions.RUNNERS). Under `qk run` or `qk admit` it inherits their
     admission. Started by itself it would take no slot and run on this Mac whatever else ran there, so it is admitted
     first (admitted_runner). --unadmitted, which is taken out of argv, and a request for help run it as it is."""
     words = argv[first:]
@@ -607,12 +607,12 @@ def runner_command(root, words):
 
 def admitted_runner(root, argv, first):
     """Run the runner argv names, from first, under a heavy-work admission, and return its status. In a project it
-    runs as `queuekeeper admit -- COMMAND` runs any command: on whichever Mac has spare capacity for it, the second Mac
+    runs as `qk admit -- COMMAND` runs any command: on whichever Mac has spare capacity for it, the second Mac
     first. A folder with no queuekeeper.json has no second Mac to match, so the runner waits for a slot on this Mac
     and runs in this process; BUSY says no slot came."""
     words = argv[first:]
     if (root / CONFIG_FILE).is_file(): return main([*argv[:first], "admit", "--", *runner_command(root, words)])
-    label = " ".join(["queuekeeper", *words])
+    label = " ".join(["qk", *words])
     try:
         with resources.Admission(label): return main(argv)
     except TimeoutError as error:

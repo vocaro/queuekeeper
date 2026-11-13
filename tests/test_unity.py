@@ -1,5 +1,5 @@
 """The Unity extension: the editor a project pins, its lock, the licensing helper, a batch run that goes silent, and
-the `queuekeeper unity` commands (vocaro/queuekeeper#6). No test starts, closes or signals a Unity process: the
+the `qk unity` commands (vocaro/queuekeeper#6). No test starts, closes or signals a Unity process: the
 process list and the launch are stand-ins."""
 import contextlib
 import io
@@ -298,7 +298,7 @@ class CommandTests(Folder):
         return (pid, f"{self.binary} -projectPath {self.project}")
 
     def unity(self, *arguments):
-        """(status, what it printed, what it warned of) for `queuekeeper unity ARGUMENTS` in the project."""
+        """(status, what it printed, what it warned of) for `qk unity ARGUMENTS` in the project."""
         output, error = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(output), contextlib.redirect_stderr(error):
             status = commands.main(list(arguments), str(self.root))
@@ -355,7 +355,7 @@ class CommandTests(Folder):
         self.editors = [self.window()]
         status, _, error = self.unity("test")
         self.assertEqual(status, UNMEASURED)
-        self.assertIn("queuekeeper unity closed --", error)
+        self.assertIn("qk unity closed --", error)
         self.editors = [(32, f"{self.binary} -projectPath {self.folder}/other/lab")]
         with patch.object(editor, "HUB", self.folder / "no-hub"):
             status, _, error = self.unity("test")
