@@ -3870,7 +3870,7 @@ def main(plan):
             environment["QUEUEKEEPER_LANE_WAIT"] = str(wait)
             environment["QUEUEKEEPER_LANE_PROGRESS_RUN"] = os.urandom(16).hex()
             wait.unlink(missing_ok=True)
-        # Where `queuekeeper run --if-free` or `queuekeeper admit --if-free` writes why its admission declined (cli.admitted_here),
+        # Where `qk run --if-free` or `qk admit --if-free` writes why its admission declined (cli.admitted_here),
         # which the decline below says instead of naming only the queue.
         declined = checkout / DECLINED_NOTE if plan.get("decline") else None
         if declined is not None:
