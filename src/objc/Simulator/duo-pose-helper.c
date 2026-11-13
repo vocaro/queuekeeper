@@ -1,6 +1,6 @@
 // Development tooling only: never linked into an app, a package or a gate. scripts/duo-pose
 // builds it against the iOS Simulator SDK, signs it ad hoc and runs it inside a booted iPhone Duo
-// simulator with `xcrun simctl spawn` (the toolkit's guides/simulator-testing.md#setting-a-pose).
+// simulator with `xcrun simctl spawn` (apple-engineering's guides/simulator-testing.md#setting-a-pose).
 //
 // Posts the simulated device-state event that Device Hub's fold and orientation controls post: a
 // vendor-defined HID event (usage page 0xFF61, usage 0x5B) whose data is a binary-serialized

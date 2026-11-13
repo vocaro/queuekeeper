@@ -750,7 +750,7 @@ def perform(argv, report):
         "run a locked screen left without a verdict (guides/maintenance.md, A run with no verdict)")
     run.add_argument("--repeat", type=int, metavar="N", help="run a lane of qk simulator-tests N times, on one build, "
         "each run on a member taken from the pool afresh, and report each run's outcome, test counts and one-minute "
-        "load (the toolkit's guides/simulator-testing.md, Repeating a test to show a fix works). Its receipt is not a pass of the "
+        "load (apple-engineering's guides/simulator-testing.md, Repeating a test to show a fix works). Its receipt is not a pass of the "
         "whole lane")
     reset = run.add_mutually_exclusive_group()
     reset.add_argument("--erase", action="store_true", help="with --repeat: erase the member before each run")

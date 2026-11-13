@@ -469,7 +469,7 @@ def mac_name():
     return output(["scutil", "--get", "LocalHostName"]) or os.uname().nodename
 
 
-SCREEN_GUIDE = "the toolkit's guides/background-mac-testing.md, Checking a Mac's screen"
+SCREEN_GUIDE = "apple-engineering's guides/background-mac-testing.md, Checking a Mac's screen"
 SCREEN_KEYS = ("CGSSessionScreenIsLocked", "IOConsoleLocked")
 # A recorded `ioreg -n Root -d1 -a` to read in place of the IORegistry, for tests, which never lock a real screen.
 SCREEN_RECORDING = "QUEUEKEEPER_SCREEN_IOREG"

@@ -149,7 +149,7 @@ step that needs another's output stays a separate step before the group.
 `QUEUEKEEPER_RESULTS_DIR`, empty at the start of each run: `.build/queuekeeper/LANE/results/` for a lane
 run alone, and `.build/queuekeeper/GROUP/results/LANE/` for a lane of a group, so that lanes side
 by side never share one. What a command writes there, such as transcripts or a
-[kept failure record](https://github.com/vocaro/vocaro-engineering/blob/main/guides/app-testing.md#kept-failure-records), comes back from the second Mac into
+[kept failure record](https://github.com/vocaro/apple-engineering/blob/main/guides/app-testing.md#kept-failure-records), comes back from the second Mac into
 `.build/queuekeeper/remote/LANE/results/` (or `.../GROUP/results/LANE/`) however the run ends,
 and the dispatch names the group's lanes whose files came back. Read the variable rather than
 naming the path in `engineering.json`: a fixed path is wrong inside a group, whose lanes' own
@@ -199,7 +199,7 @@ exits 3, the status Queuekeeper reads as unmeasured; a passing `xcodebuild` is t
 tests ran. It exits 1 when nothing could be written, or when NAME is already in this run's results,
 such as a run `qk simulator-tests` kept, so one record never replaces another: give each run a name of
 its own. It copies no result bundle: a failure's goes in its
-[failure record](https://github.com/vocaro/vocaro-engineering/blob/main/guides/app-testing.md#kept-failure-records). What it writes follows the lane's
+[failure record](https://github.com/vocaro/apple-engineering/blob/main/guides/app-testing.md#kept-failure-records). What it writes follows the lane's
 `results/`, emptied at each run's start and kept by commit under the rule above, so it needs no
 pruning of its own (vocaro-engineering#260).
 
@@ -300,7 +300,7 @@ python3 scripts/qk simulator-tests --scheme SCHEME --runtime iOS-27-0 \
   no `Unmeasured:` reason, and the bundle held both, so the run counted 5 tests and 1 skip as it
   did one test at a time, exited 3 with the planted unmeasured skip and 1 with the planted
   failure. It stays off by default, as in the
-  [simulator method](https://github.com/vocaro/vocaro-engineering/blob/main/guides/simulator-testing.md#xctest-execution-discipline), until a suite has been
+  [simulator method](https://github.com/vocaro/apple-engineering/blob/main/guides/simulator-testing.md#xctest-execution-discipline), until a suite has been
   shown to pass with it.
 - `--shards N` takes N members of each device's kind, and each runs a share of its tests in a test
   process of its own, one test at a time. The parallel workers do not share Swift Testing suites:
@@ -381,7 +381,7 @@ the second Mac's reason as its `why`.
 
 Keep tests that share state out of each other's way rather than turning parallelism off: a
 group, an `xdist_group` or a serialized suite for the few that must share; per-test fixtures
-for the rest ([tests own their files and defaults](https://github.com/vocaro/vocaro-engineering/blob/main/guides/app-testing.md#tests-own-their-files-and-defaults)).
+for the rest ([tests own their files and defaults](https://github.com/vocaro/apple-engineering/blob/main/guides/app-testing.md#tests-own-their-files-and-defaults)).
 
 ### A pytest lane
 
@@ -493,7 +493,7 @@ had a time limit. Two limits now apply to every run Queuekeeper starts.
   `executionTimeAllowance`; test arguments after `--` that set `-test-timeouts-enabled` replace
   Queuekeeper's. A script that runs `xcodebuild test` itself passes the same options, and a Swift Testing
   suite gives its tests a `.timeLimit`. Inside a test, every wait has a bound of its own
-  ([waits bound stalls](https://github.com/vocaro/vocaro-engineering/blob/main/guides/app-testing.md#waits-bound-stalls)).
+  ([waits bound stalls](https://github.com/vocaro/apple-engineering/blob/main/guides/app-testing.md#waits-bound-stalls)).
 - Each command has one, a backstop for a hang the first limit cannot see, such as a build or a
   runner that stops answering. A lane's `timeout`, `qk admit --time-limit`,
   `qk simulator-tests --test-timeout`, and `--timeout` for each process of `qk unittest` and

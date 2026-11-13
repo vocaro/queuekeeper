@@ -40,7 +40,7 @@ APP = "com.apple.shortcuts"
 SILENCE = "Vocaro Silence Notifications"
 RESTORE = "Vocaro Restore Notifications"
 # Seconds devicectl has to open Shortcuts, and the wait for devicectl itself beyond that. A Wi-Fi launch
-# can take a minute on a busy host (the toolkit's guides/device-testing.md, devicectl states and timeouts).
+# can take a minute on a busy host (apple-engineering's guides/device-testing.md, devicectl states and timeouts).
 TIMEOUT = 120
 GUIDE = "guides/devices.md, Notifications during a run"
 
@@ -88,7 +88,7 @@ def ask(key):
             f"{SILENCE!r} and {RESTORE!r} shortcuts on the {key} once lets queuekeeper do it ({GUIDE})")
 
 
-# The relay of a device's log, from libimobiledevice, which the toolkit's guides/device-testing.md already uses to read the
+# The relay of a device's log, from libimobiledevice, which apple-engineering's guides/device-testing.md already uses to read the
 # test daemons; "off" in WATCH starts none, as tests set it for every process they start (host_isolation).
 RELAY = "idevicesyslog"
 WATCH = "QUEUEKEEPER_DEVICE_LOG_WATCH"

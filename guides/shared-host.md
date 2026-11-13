@@ -663,7 +663,7 @@ The host checks admission again when the lane actually starts.
 
 No guide, policy or log line assumes either Mac's screen state. queuekeeper reads it on the Mac that runs
 a lane, with the check `qk host screen [--remote]` runs
-([checking a Mac's screen](https://github.com/vocaro/vocaro-engineering/blob/main/guides/background-mac-testing.md#checking-a-macs-screen)), and writes what it
+([checking a Mac's screen](https://github.com/vocaro/apple-engineering/blob/main/guides/background-mac-testing.md#checking-a-macs-screen)), and writes what it
 read, or `unknown` and why, never a guess (vocaro-engineering#185). The owner keeps the second Mac
 unlocked; both Macs can lock, by hand or by idle time under their settings.
 
@@ -672,7 +672,7 @@ trusted for accessibility (on the 27.2 beta 26B5091g as on 27.2 26B123), yet the
 gives it the console user's session: it opens offscreen windows and reads its own accessibility.
 What a locked screen or a sleeping display has been seen to stop, on which Mac and build, what
 wakes a locked screen's display and keeps it on, and what is unmeasured, is dated history in
-[lock screen and display sleep](https://github.com/vocaro/vocaro-engineering/blob/main/guides/background-mac-testing.md#lock-screen-and-display-sleep): on macOS
+[lock screen and display sleep](https://github.com/vocaro/apple-engineering/blob/main/guides/background-mac-testing.md#lock-screen-and-display-sleep): on macOS
 27.2 (26B123), locked for those measurements, EPUBLib's Mac suite and whole gate passed on the
 second Mac (2026-10-28 and 10-29), while the accessibility API (`AXUIElement`) vended no offscreen
 window behind the lock, as on this Mac on 27.0. A run whose mechanism a lock or a sleeping display
@@ -1752,7 +1752,7 @@ SSH login. It prints a JSON record with four separate results:
 
 - `session`: the kind of session, `ssh`, `gui` or `background`, from the process's audit session
   flags, with a note on what a result there establishes. An SSH login is flagged remote and has no
-  graphic access ([probing a session](https://github.com/vocaro/vocaro-engineering/blob/main/guides/background-mac-testing.md#probing-a-session)).
+  graphic access ([probing a session](https://github.com/vocaro/apple-engineering/blob/main/guides/background-mac-testing.md#probing-a-session)).
 - `keychain`: `security show-keychain-info` on the file. `unlocked` when it read the settings,
   `locked` when Security refused it the interaction an unlock needs (errSecInteractionNotAllowed),
   `missing` for no such keychain.
@@ -1922,7 +1922,7 @@ the candidates, with their commands: exactly what `--delete` removes.
   queuekeeper.json names in `simulatorPool` is a candidate only under the
   [pruning rule](simulator-pool.md#pruning), and its command is `qk simulator-pool prune`,
   which reserves it, checks it again and records the deletion. A device left by the retired
-  [disposable lifecycle](https://github.com/vocaro/vocaro-engineering/blob/main/guides/simulator-testing.md#disposable-simulators), whose unique name carries a
+  [disposable lifecycle](https://github.com/vocaro/apple-engineering/blob/main/guides/simulator-testing.md#disposable-simulators), whose unique name carries a
   UUID, is a candidate when it is shut down, unused for the idle time, absent from every
   process's arguments and files, and unnamed, by UDID or name, in every device record: the one
   the devices module reads, the account's record when `QUEUEKEEPER_DEVICE_RECORD` names another, and
@@ -1939,7 +1939,7 @@ the candidates, with their commands: exactly what `--delete` removes.
   the build whose image CoreSimulator used last. Any other build of the identifier is superseded
   and a candidate once its own `lastUsedAt` is over 14 days old or absent, unless the toolkit
   pins it (the builds qualified for
-  [guarded VoiceOver activation](https://github.com/vocaro/vocaro-engineering/blob/main/guides/voiceover-simulator.md), `voiceover/activation.py`'s
+  [guarded VoiceOver activation](https://github.com/vocaro/apple-engineering/blob/main/guides/voiceover-simulator.md), `voiceover/activation.py`'s
   `QUALIFIED`) or a device record names it, for instance as a pool template's `runtimeBuild`. A
   template's `installedBuilds`, the builds installed when it was warmed, pins none: removing one
   only makes the pool warm that template again. An
@@ -2348,11 +2348,11 @@ a run sent to the second Mac, while anything there may still use the device
 ([physical devices and the second Mac](#physical-devices-and-the-second-mac)).
 
 Give every command the device's explicit identifier: the canonical uppercase UDID of a device
-you own or have reserved, never a name or `booted`. [Simulator testing](https://github.com/vocaro/vocaro-engineering/blob/main/guides/simulator-testing.md)
+you own or have reserved, never a name or `booted`. [Simulator testing](https://github.com/vocaro/apple-engineering/blob/main/guides/simulator-testing.md)
 covers the pool's take, use and release steps.
 
 A physical device's reservation records the owner's approval, and approval of a run covers
-installing and launching there, not operating the device by hand. [Device testing](https://github.com/vocaro/vocaro-engineering/blob/main/guides/device-testing.md)
+installing and launching there, not operating the device by hand. [Device testing](https://github.com/vocaro/apple-engineering/blob/main/guides/device-testing.md)
 has the preflight, UI-automation authorization and restoration steps for physical devices.
 
 ### Taking the iPad or iPhone in turn
@@ -2707,7 +2707,7 @@ build admitted as heavy work as usual.
   or when a helper expires.
 - Restore the original settings before returning control.
 
-[Background Mac testing](https://github.com/vocaro/vocaro-engineering/blob/main/guides/background-mac-testing.md) and [Mac VoiceOver](https://github.com/vocaro/vocaro-engineering/blob/main/guides/voiceover-mac.md)
+[Background Mac testing](https://github.com/vocaro/apple-engineering/blob/main/guides/background-mac-testing.md) and [Mac VoiceOver](https://github.com/vocaro/apple-engineering/blob/main/guides/voiceover-mac.md)
 describe the drivers, key guards and VoiceOver restoration.
 
 ## Process supervision
@@ -2850,7 +2850,7 @@ supervisor's outcome is uncertain, keep the reservation for recovery and launch 
 run against it.
 
 Tests of supervision code bound stalls rather than durations and start a timeout under test
-only once the real descendant has published its identity ([app testing](https://github.com/vocaro/vocaro-engineering/blob/main/guides/app-testing.md)).
+only once the real descendant has published its identity ([app testing](https://github.com/vocaro/apple-engineering/blob/main/guides/app-testing.md)).
 A bound the supervisor enforces, such as SIGKILL's wait for an admission owner, is checked at
 each sample: once a sample comes after the bound, the supervisor must act before the next one.
 A wall-clock limit on the whole run failed on the second Mac when the run stalled for a minute

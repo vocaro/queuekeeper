@@ -3,7 +3,7 @@
 What the Apple plugin does around a run on a paired iPhone or iPad: silencing the owner's notifications,
 and the device pass that runs a project's device checks under one reservation. Reservations themselves are
 in [shared host](shared-host.md#device-reservations); how devices behave under test is in the toolkit's
-[device testing](https://github.com/vocaro/vocaro-engineering/blob/main/guides/device-testing.md) guide.
+[device testing](https://github.com/vocaro/apple-engineering/blob/main/guides/device-testing.md) guide.
 
 ## Notifications during a run
 
@@ -259,6 +259,6 @@ its receipt, so `eng release` counts a pass of it at the commit as it counts any
   reservation and watched for its own notifications. Name the iPhone first when its window is
   shorter than the iPad's wait.
 - What the command does on the device is the project's, as are its own restoration steps, such as
-  switching VoiceOver off after a session stopped part way ([VoiceOver](https://github.com/vocaro/vocaro-engineering/blob/main/guides/voiceover.md#physical-iphone-and-ipad)).
+  switching VoiceOver off after a session stopped part way ([VoiceOver](https://github.com/vocaro/apple-engineering/blob/main/guides/voiceover.md#physical-iphone-and-ipad)).
   A check that needs a listener or the owner's hand stays a manual step of the release, recorded
   on its tracking issue.

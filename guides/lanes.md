@@ -11,7 +11,7 @@ in [lanes and admission](../doc/lanes_and_admission.md).
 (tracked diff and untracked files), the policy commit for a heavy or exclusive lane, the argv
 with any arguments given after `--` appended, those `arguments` on their own, and the exit
 status or `failed-or-interrupted`. A lane's `compileFirst` step that fails records the outcome
-`build-failed`, apart from `failed` and `unmeasured`, and no test ran (guides/app-testing.md,
+`build-failed`, apart from `failed` and `unmeasured`, and no test ran (apple-engineering's guides/app-testing.md,
 Compile before the tests). After a zero exit, a lane with `minimumTests` fails unless
 the log reports at least that many executed XCTest, Swift Testing, unittest or pytest tests; a run with
 arguments needs at least one. `--expect N` requires exactly N. The count is the sum of each

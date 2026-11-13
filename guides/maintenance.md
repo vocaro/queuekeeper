@@ -431,7 +431,7 @@ project's open issues for the test's name just before it writes, then comments o
 files a hardening issue. A tracker gh cannot reach is noted in the entry and stops nothing.
 
 When adding an option to an `qk unittest` gate, check the actual lane command with the runner, the
-[test coverage checker](https://github.com/vocaro/vocaro-engineering/blob/main/guides/app-testing.md#every-test-has-a-lane) and the merge queue's single-test
+[test coverage checker](https://github.com/vocaro/apple-engineering/blob/main/guides/app-testing.md#every-test-has-a-lane) and the merge queue's single-test
 rerun. The first toolkit gate with `--batch-size` ran the suite and failed its coverage check because
 the checker treated the option as unknown. A focused check of the configured command catches that
 failure before the full gate. [Batching gate results](https://github.com/vocaro/vocaro-engineering/issues/145#issuecomment-6774878492).

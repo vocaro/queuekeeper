@@ -28,13 +28,13 @@ python3 scripts/qk remote foreground    # 0 ready; 78 with what the owner change
    window in front, which a key or VoiceOver's cursor then reaches instead of the app. On
    2026-10-30 the second Mac had the login window in front at one look and Safari at another.
    Waking the display is a run's own: an admitted test run may hold `caffeinate -u` and then
-   `caffeinate -d` ([background Mac testing](https://github.com/vocaro/vocaro-engineering/blob/main/guides/background-mac-testing.md)), but nothing unlocks
+   `caffeinate -d` ([background Mac testing](https://github.com/vocaro/apple-engineering/blob/main/guides/background-mac-testing.md)), but nothing unlocks
    a screen.
 3. **Accessibility for commands started over SSH.** Remote Login runs them under
    `/usr/libexec/sshd-keygen-wrapper`: add it in Privacy & Security, Device Control and Data
    Access, and turn it on. macOS 27.2 gives Accessibility that name (its `ACCESSIBILITY` string in
    `SecurityPrivacyExtension.appex`); the list's link anchor is still `Privacy_Accessibility`. Without it `AXIsProcessTrusted()` is false for such a command (macOS 27.2 26B123,
-   2026-10-30), so the [accessibility observer](https://github.com/vocaro/vocaro-engineering/blob/main/guides/voiceover-mac.md#accessibility-observer) exits 2
+   2026-10-30), so the [accessibility observer](https://github.com/vocaro/apple-engineering/blob/main/guides/voiceover-mac.md#accessibility-observer) exits 2
    and System Events sends no key.
 
    **System Events needs Accessibility of its own.** In the same list, turn on System Events
@@ -66,7 +66,7 @@ python3 scripts/qk remote foreground    # 0 ready; 78 with what the owner change
    `CGPreflightScreenCaptureAccess()` was false for such a command on the second Mac
    (2026-10-30). Whether a capture without it fails, captures only the desktop or raises a prompt
    that takes the focus mid-session is unmeasured; a preflight is not a captured bitmap either
-   ([capturing a background window](https://github.com/vocaro/vocaro-engineering/blob/main/guides/background-mac-testing.md#capturing-a-background-window)).
+   ([capturing a background window](https://github.com/vocaro/apple-engineering/blob/main/guides/background-mac-testing.md#capturing-a-background-window)).
    With `sshd-keygen-wrapper` allowed and the preflight true, a session there on 2026-10-30 still
    met a system dialog in the middle: "“com.apple.sshd-session” is requesting to bypass the system
    private window picker and directly access your screen and audio", which took the focus and
@@ -135,7 +135,7 @@ The hosted runner was prepared in other ways too, which the second Mac is not:
   Integrity Protection disabled. The second Mac has it enabled (2026-10-30), where bootout fails
   ("Operation not permitted while System Integrity Protection is engaged") and changes nothing.
   The banner stays: stop a session as soon as VoiceOver names it
-  ([speech capture](https://github.com/vocaro/vocaro-engineering/blob/main/guides/voiceover-mac.md#speech-capture-and-the-key-driver)). It restarts on the
+  ([speech capture](https://github.com/vocaro/apple-engineering/blob/main/guides/voiceover-mac.md#speech-capture-and-the-key-driver)). It restarts on the
   second Mac as it did on the image: in EPUBLib's runs there on 2026-10-30 (macOS 27.2 26B123) the
   kernel killed it for its per-process memory limit, 15 MB (`memorystatus: killing_specific_process
   ... per-process-limit`, with over 3 million pages free), about every 10 s, 20 starts in one
@@ -157,8 +157,8 @@ The hosted runner was prepared in other ways too, which the second Mac is not:
   session, which an SSH command does not reach
   ([keychains on the right Mac](shared-host.md#keychains-on-the-right-mac)).
 - Read actual on/off state with the canonical public AppKit getter under the foreground lease
-  ([state and restoration](https://github.com/vocaro/vocaro-engineering/blob/main/guides/voiceover-mac.md#voiceover-state-and-restoration)). Read and, if a run asks, choose VoiceOver's link verbosity
-  with `voiceover-link-verbosity.swift` ([link verbosity](https://github.com/vocaro/vocaro-engineering/blob/main/guides/voiceover-mac.md#link-verbosity)),
+  ([state and restoration](https://github.com/vocaro/apple-engineering/blob/main/guides/voiceover-mac.md#voiceover-state-and-restoration)). Read and, if a run asks, choose VoiceOver's link verbosity
+  with `voiceover-link-verbosity.swift` ([link verbosity](https://github.com/vocaro/apple-engineering/blob/main/guides/voiceover-mac.md#link-verbosity)),
   never with `defaults`; a run that chooses one chooses the setting it read again before it ends.
 
 ## Running foreground work
@@ -496,4 +496,4 @@ Checked live on the second Mac (macOS 27.2) on 2026-11-07, under admitted foregr
   `settle=True`, so it watches its own restoration hold even when the child died without a report.
 
 How a driver ends a session, and what it writes when VoiceOver will not return to its state, is in the
-toolkit's [Mac VoiceOver](https://github.com/vocaro/vocaro-engineering/blob/main/guides/voiceover-mac.md#voiceover-state-and-restoration) guide.
+toolkit's [Mac VoiceOver](https://github.com/vocaro/apple-engineering/blob/main/guides/voiceover-mac.md#voiceover-state-and-restoration) guide.

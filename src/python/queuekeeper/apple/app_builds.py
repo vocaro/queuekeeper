@@ -75,7 +75,7 @@ BUILD_LIMIT = 3600
 PREPARE_LIMIT = 900
 GIT_TIMEOUT = 300
 # Seconds a device install and a launch may take: an install over Wi-Fi took more than two minutes under load,
-# and the first launch of a run can fail inside devicectl before the app starts (the toolkit's guides/device-testing.md,
+# and the first launch of a run can fail inside devicectl before the app starts (apple-engineering's guides/device-testing.md,
 # devicectl states and timeouts), so a launch is tried twice.
 INSTALL_LIMIT = 600
 LAUNCH_LIMIT = 120
