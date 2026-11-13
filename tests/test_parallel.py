@@ -9,11 +9,12 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 from unittest.mock import patch
 SOURCE = Path(__file__).resolve().parents[1] / "src/python"
 sys.path.insert(0, str(SOURCE))
-from queuekeeper import cli, lane_results, merge_queue, parallel, resources
+from queuekeeper import cli, lane_results, merge_queue, parallel, processes, resources
 from queuekeeper.parallel import SPLITS
 import host_isolation
 from host_isolation import stretched
@@ -274,12 +275,112 @@ class UnittestRunnerTests(unittest.TestCase):
         self.assertEqual(self.after_summary(output), [])
         self.assertFalse((root / ".build").exists())
 
-    def test_a_run_left_unmeasured_adds_nothing_after_its_summary(self):
-        root = self.suite(module("test_hung", "class H(unittest.TestCase):\n    def test_hung(self): time.sleep(600)\n"))
+    def test_a_process_that_timed_out_is_named_after_the_summary_with_the_command_that_runs_it_alone(self):
+        # No failure, so no reasons and no kept output: only what did not finish (vocaro/queuekeeper#37).
+        root = self.suite(module("test_hung", "class H(unittest.TestCase):\n    def test_hung(self): time.sleep(600)\n"),
+                          module("test_quick", "class Q(unittest.TestCase):\n    def test_quick(self): pass\n"))
         status, output = self.run_suite(root, "--timeout", "1")
         self.assertEqual(status, lane_results.UNMEASURED, output)
-        self.assertEqual(self.after_summary(output), [])
-        self.assertFalse((root / ".build").exists())
+        after = self.after_summary(output)
+        self.assertRegex(after[0], r"^Not reached or not finished, 1 of 2 tests in 1 modules \(timed out\); "
+                                   r"the whole list is in .*/unreached\.txt:$")
+        self.assertEqual(after[1:], ["    test_hung: all 1 tests",
+                                     f"Run only these: python3 {os.path.relpath(ENG, root.resolve())} unittest -s {root} test_hung"])
+        listing = Path(after[0].split("the whole list is in ", 1)[1][:-1])
+        self.assertTrue(listing.is_relative_to((root / parallel.UNREACHED_RUNS).resolve()), listing)
+        self.assertIn("    test_hung.H.test_hung", listing.read_text())
+        self.assertFalse((root / parallel.FAILED_RUNS).exists())
+
+    def stopped_run(self, root, *arguments, also_the_process=False):
+        """qk unittest on root, with its results in root/results as a lane's are, stopped by SIGTERM once the test that
+        writes hung.pid has started, as supervise stops a lane's command at its timeout: (status, output, the hung
+        test's PID). also_the_process sends the hung test's process SIGTERM too, as supervise does each process it
+        observed."""
+        environment = {"PATH": "/usr/bin:/bin", "HANG": "1", parallel.RESULTS_VARIABLE: str(root / "results")}
+        with tempfile.TemporaryFile("w+") as output:
+            runner = subprocess.Popen([sys.executable, str(ENG), "unittest", "--unadmitted", "-s", str(root), *arguments],
+                                      cwd=root, stdout=output, stderr=subprocess.STDOUT, env=environment,
+                                      start_new_session=True)
+            self.addCleanup(lambda: runner.poll() is None and runner.kill())
+            deadline = time.monotonic() + stretched(60)
+            while not (root / "hung.pid").exists() or not (root / "hung.pid").read_text():
+                self.assertLess(time.monotonic(), deadline, "the hung test never started")
+                self.assertIsNone(runner.poll(), "qk unittest ended before the hung test started")
+                time.sleep(0.05)
+            hung = int((root / "hung.pid").read_text())
+            os.killpg(runner.pid, signal.SIGTERM)
+            if also_the_process:
+                with contextlib.suppress(ProcessLookupError): os.kill(hung, signal.SIGTERM)
+            # supervise's KILL_AFTER bounds the stop: SIGKILL would follow it.
+            status = runner.wait(timeout=processes.KILL_AFTER)
+            output.seek(0)
+            return status, output.read(), hung
+
+    def test_a_run_stopped_by_sigterm_names_what_it_did_not_reach_and_how_to_run_only_that(self):
+        """A gate stopped at its timeout said only its counts, and its log stopped mid-run as if it had crashed
+        (vocaro/queuekeeper#37). The stop now ends each process, and then the run with its summary, what it did not
+        finish by module and the command that runs those tests alone, before it ends by the signal."""
+        hangs = """
+            class A2(unittest.TestCase):
+                def test_hang(self):
+                    if os.environ.get("HANG"):
+                        (HERE / "hung.pid").write_text(str(os.getpid()))
+                        time.sleep(600)
+        """
+        for also_the_process in (False, True):
+            with self.subTest(also_the_process=also_the_process):
+                root = self.suite(
+                    module("test_a", "class A1(unittest.TestCase):\n    def test_quick(self): pass\n" + textwrap.dedent(hangs)),
+                    module("test_b", "class B1(unittest.TestCase):\n    def test_one(self): pass\n"
+                                     "class B2(unittest.TestCase):\n    def test_two(self): pass\n    def test_three(self): pass\n"))
+                status, output, hung = self.stopped_run(root, "-j", "1", "--split", "class",
+                                                        also_the_process=also_the_process)
+                self.assertEqual(status, -signal.SIGTERM, output)
+                # The test's process ended with the run, which waited for it.
+                with self.assertRaises(ProcessLookupError): os.kill(hung, 0)
+                self.assertIn("== test_a.A1: OK (1 tests", output)
+                self.assertIn("== test_a.A2: stopped by SIGTERM (0 tests", output)
+                # A process the pool started in the moment before this process saw the stop is stopped too.
+                self.assertNotRegex(output, r"== test_b\S*: (?!stopped by SIGTERM)")
+                self.assertRegex(output, r"queuekeeper unittest: 1 tests \(0 skipped\) in [23] processes, 1 at a time, ")
+                self.assertTrue(output.splitlines()[[number for number, line in enumerate(output.splitlines())
+                                                     if line.startswith("queuekeeper unittest: ")][0]].endswith(
+                    ": UNMEASURED: 3 of 4 processes not run or not finished (stopped by SIGTERM)"), output)
+                results = root / "results/unittest"
+                self.assertEqual(self.after_summary(output), [
+                    f"Not reached or not finished, 4 of 5 tests in 2 modules (stopped by SIGTERM); "
+                    f"the whole list is in {results / parallel.UNREACHED_FILE}:",
+                    "    test_a: 1 of 2 tests, in A2",
+                    "    test_b: all 3 tests",
+                    f"Run only these: python3 {os.path.relpath(ENG, root.resolve())} unittest -s {root} test_a.A2 test_b"])
+                record = json.loads((results / parallel.UNREACHED_RECORD).read_text())
+                self.assertEqual(record["names"], ["test_a.A2", "test_b"])
+                self.assertEqual(record["tests"], ["test_a.A2.test_hang", "test_b.B1.test_one", "test_b.B2.test_three",
+                                                   "test_b.B2.test_two"])
+                self.assertIn("test_b: 3 of 3 tests\n    test_b.B1.test_one\n", (results / parallel.UNREACHED_FILE).read_text())
+                # The names run exactly what was not finished, and nothing that was.
+                status, output = self.run_suite(root, *record["names"])
+                self.assertEqual(status, 0, output)
+                self.assertIn("queuekeeper unittest: 4 tests (0 skipped) in 2 processes", output)
+                self.assertNotIn("test_a.A1", output)
+
+    def test_a_selection_carries_into_the_command_that_runs_what_was_not_reached(self):
+        root = self.suite(module("test_hung", """
+            class H(unittest.TestCase):
+                def test_hang(self):
+                    (HERE / "hung.pid").write_text(str(os.getpid()))
+                    time.sleep(600)
+                def test_left_out(self): pass
+            class Later(unittest.TestCase):
+                def test_hang_later(self): pass
+        """))
+        status, output, _hung = self.stopped_run(root, "-j", "1", "--split", "test", "-k", "hang")
+        self.assertEqual(status, -signal.SIGTERM, output)
+        # Every selected test was unreached, so the module names them, and -k keeps test_left_out out.
+        self.assertEqual(self.after_summary(output)[-1],
+                         f"Run only these: python3 {os.path.relpath(ENG, root.resolve())} unittest -s {root} -k hang test_hung")
+        status, output = self.run_suite(root, "-k", "hang", "test_hung.Later")
+        self.assertEqual(status, 0, output)
 
     def test_the_reasons_after_the_summary_are_bounded_and_say_what_was_cut(self):
         count, width = parallel.REASONS_SHOWN + 5, parallel.REASON_WIDTH

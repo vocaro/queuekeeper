@@ -360,6 +360,25 @@ test runs when it is under a name and matches a pattern, under every `--split`, 
 whole included. A name that matches no discovered test, or a selection that leaves none, fails
 with status 5 and runs nothing (#219).
 
+A run that does not finish says what it did not finish. A process past `--timeout` is stopped and
+left unmeasured. A stop signal, such as the SIGTERM that supervision sends a lane's command at the
+lane's `timeout`, stops every process: those not started never start, and those running end. The
+run still prints its summary, with `N of M processes not run or not finished (stopped by SIGTERM)`
+among what is unmeasured, and then ends by that signal. After the summary come the tests of every
+process that did not finish, grouped by module, at most twenty modules, and the command that runs
+only them, `python3 scripts/qk unittest -s DIR NAME...` with the run's `-p` and `-k`. Each NAME is
+the module when all of its tests are unfinished, else a class when all of that class's are, else
+the test. The whole list goes to `unittest/unreached.txt` in a lane's
+[results](#a-lanes-results), with `unreached.json` beside it, or outside a lane to a folder of its
+own under `.build/queuekeeper/unittest-unreached/`, which keeps the newest five. `qk run`'s summary
+then gives the list's path and, for a lane whose command is `qk unittest` and that ran with no
+arguments of its own, `qk run LANE -- NAME...`. The toolkit's gate timed out at 2,400 s on
+2026-11-13 on a second Mac loaded by other work, with 75 classes unreached that nothing named,
+and its log stopped mid-run as if it had crashed (vocaro/queuekeeper#37). Supervision now writes its
+`supervise: timed out after Ns` line, and its line for a stall, into the lane's log as well as on stderr, which for a run on
+the second Mac reached only the dispatch's `output.log`, and the summary of a dispatched run gives
+the second Mac's reason as its `why`.
+
 Keep tests that share state out of each other's way rather than turning parallelism off: a
 group, an `xdist_group` or a serialized suite for the few that must share; per-test fixtures
 for the rest ([tests own their files and defaults](https://github.com/vocaro/vocaro-engineering/blob/main/guides/app-testing.md#tests-own-their-files-and-defaults)).

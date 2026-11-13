@@ -7,6 +7,7 @@ group fails when any lane failed, and is otherwise unmeasured when any lane was.
 """
 import argparse
 import ast
+import concurrent.futures
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 import fnmatch
@@ -15,7 +16,9 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
+import signal
 import sys
 import threading
 import time
@@ -292,18 +295,33 @@ def run_shard(name, tests, top, verbose, descriptors=(), timeout=PROCESS_LIMIT, 
     in this process's directory, with top and then that directory on its sys.path, as `python3 -m
     unittest discover` does. A name listed more than once runs once. With chosen, the ids of the
     shard's selected tests, a module the shard names whole runs only those. One still running after
-    timeout seconds is stopped, and its status is None."""
+    timeout seconds, or when a stop signal reaches this process (processes.forwarding_signals), is stopped,
+    and its status is None. None when the stop came before it started."""
     patterns = None if chosen is None else [glob.escape(identity) for identity in dict.fromkeys(chosen)]
     command = [sys.executable, "-c", SHARD, str(top), json.dumps(patterns), *(["-v"] if verbose else []),
                *dict.fromkeys(tests)]
     began = time.monotonic()
-    status, output = processes.bounded(command, timeout=timeout, pass_fds=descriptors)
+    # A stop can come between the pool taking this shard and this process seeing it: then it never starts.
+    if stop_requested(): return None
+    status, output = processes.bounded(command, timeout=timeout, pass_fds=descriptors, stop=stop_requested)
     summary = RESULT.search(output)
     return {"name": name, "tests": list(tests), "status": status, "output": output,
             "ran": sum(int(count) for count in RAN.findall(output)),
-            "result": f"timed out after {timeout:g}s" if status is None
+            "result": stopped_result() if status is None and stop_requested()
+                      else f"timed out after {timeout:g}s" if status is None
                       else summary.group(0) if summary else "no result",
             "seconds": time.monotonic() - began}
+
+
+def stop_requested():
+    """Whether a stop signal has reached this process, such as the SIGTERM supervise sends a lane's command at its
+    timeout."""
+    return processes.requested() is not None
+
+
+def stopped_result():
+    """A process's result, or the run's, when a stop signal ended it."""
+    return f"stopped by {signal.Signals(processes.requested()).name}"
 
 
 def last_exception(lines):
@@ -433,30 +451,71 @@ def unittest_main(argv):
                   + " and ".join(([f"-k {' or '.join(args.selectors)}"] if args.selectors else [])
                                  + ([" or ".join(args.names)] if args.names else [])), file=sys.stderr)
             return NO_TESTS
-        # Each shard's selected ids, which a module it names whole passes to its process.
-        chosen = {}
-    found = shards(unittest.TestSuite(tests), args.split, loader.origins, chosen, batch_size=args.batch_size)
+    # Each shard's test ids, by which unreached_lines names what a run left unfinished. With a selection, a module
+    # a shard names whole passes its own to its process.
+    members = {}
+    found = shards(unittest.TestSuite(tests), args.split, loader.origins, members, batch_size=args.batch_size)
+    chosen = members if selectors or args.names else None
     if not found:
         print(f"queuekeeper unittest: no tests found in {start} matching {' or '.join(patterns)}", file=sys.stderr)
         return NO_TESTS
+    # A stop signal, such as the SIGTERM supervise sends a lane's command at its timeout, stops the processes; the run
+    # still ends with its summary and what it did not reach, and then by that signal (vocaro/queuekeeper#37).
+    with processes.forwarding_signals():
+        return run_shards(args, top, tests, found, members, chosen)
+
+
+# Seconds a stopped run waits for its running processes to end before its summary, each stopped at its next look
+# at the stop (processes.STOP_POLL) or by the stop's own signal. supervise gives it KILL_AFTER after its SIGTERM.
+STOP_WAIT = 4
+
+
+def run_shards(args, top, tests, found, members, chosen):
+    """Run found, {shard: tests}, args.jobs at a time, print each one's output and then the run's summary, and return
+    its status. tests are the discovered tests the run selected, members is {shard: test ids}, and chosen is
+    members for a run that selects tests, else None."""
     expected = {name: len(tests) for name, tests in found.items()}
     # Each shard holds the admission lock descriptors this process holds and no others, as a test in
     # `python3 -m unittest discover` does, so a nested admission in it reuses the admission; given
     # the token alone, one was refused (#70).
     descriptors = processes.held_locks(os.environ)
     began = time.monotonic()
-    with ThreadPoolExecutor(max_workers=args.jobs) as pool:
+    results, report = [], []
+
+    def show(result):
+        if result is None: return
+        # supervise sends its SIGTERM to each process as well as to this one, after it, so a process can end by it
+        # before it looks at the stop: one that gave no result then was cut off by the stop, not failed.
+        if stop_requested() and result["status"] is not None and result["status"] < 0 and not RESULT.search(result["output"]):
+            result.update(status=None, result=stopped_result())
+        results.append(result)
+        # Each shard's own output, whole and in discovery order, under one line that names it.
+        report.extend([f"== {result['name']}: {result['result']} ({result['ran']} tests, {result['seconds']:.1f}s)",
+                       result["output"].rstrip("\n")])
+        print(*report[-2:], sep="\n", flush=True)
+
+    pool = ThreadPoolExecutor(max_workers=args.jobs)
+    try:
         futures = [pool.submit(run_shard, name, tests, top, args.verbose, descriptors, args.timeout,
                                None if chosen is None else chosen[name])
                    for name, tests in found.items()]
-        results, report = [], []
-        for future in futures:
-            result = future.result()
-            results.append(result)
-            # Each shard's own output, whole and in discovery order, under one line that names it.
-            report += [f"== {result['name']}: {result['result']} ({result['ran']} tests, {result['seconds']:.1f}s)",
-                       result["output"].rstrip("\n")]
-            print(*report[-2:], sep="\n", flush=True)
+        waiting = len(futures)
+        for index, future in enumerate(futures):
+            while not future.done() and not stop_requested():
+                concurrent.futures.wait([future], timeout=processes.STOP_POLL)
+            if not future.done():
+                waiting = index
+                break
+            show(future.result())
+        if stop_requested():
+            # What has not started never starts (run_shard), and what runs ends at its next look at the stop.
+            concurrent.futures.wait(futures, timeout=STOP_WAIT)
+            for future in futures[waiting:]:
+                if future.done() and future.exception() is None: show(future.result())
+    finally:
+        # A stopped run waits on no process that has not ended: its summary comes first.
+        pool.shutdown(wait=not stop_requested(), cancel_futures=True)
+    stopped = stopped_result() if stop_requested() else None
     failed, unmeasured, reasons = [], [], []
 
     def fail(result, detail):
@@ -466,11 +525,19 @@ def unittest_main(argv):
                        or [(result["name"], f"its output ends: {ended}" if ended else "it printed nothing")])
 
     for result in results:
-        if result["status"] is None: unmeasured.append(f"{result['name']} ({result['result']})")
+        if result["status"] is None:
+            if result["result"] != stopped: unmeasured.append(f"{result['name']} ({result['result']})")
         elif result["status"] != 0: fail(result, f"{result['result']}, status {result['status']}")
         elif result["ran"] != expected[result["name"]]:
             # A shard that ran other than the tests discovery found for it did not run what it was given.
             fail(result, f"ran {result['ran']} of {expected[result['name']]} tests")
+    finished = {result["name"] for result in results if result["status"] is not None}
+    unfinished = [name for name in found if name not in finished]
+    # One item for what the stop left, not each process: a stop at a gate's timeout leaves hundreds, which
+    # unreached_lines groups. A process that timed out by itself keeps its own.
+    timed_out = {result["name"] for result in results if result["status"] is None and result["result"] != stopped}
+    cut = [name for name in unfinished if name not in timed_out]
+    if cut: unmeasured.append(f"{len(cut)} of {len(found)} processes not run or not finished ({stopped})")
     total = sum(result["ran"] for result in results)
     skipped = sum(lane_results.skipped_tests(result["output"]) for result in results)
     # Not "Ran N tests": the shards' own lines already count every test once.
@@ -479,7 +546,114 @@ def unittest_main(argv):
     print(summary, flush=True)
     if failed:
         for line in reason_lines(reasons, saved_output(report + [summary], reasons)): print(line, flush=True)
+    if unfinished:
+        unreached = list(dict.fromkeys(identity for name in unfinished for identity in members[name]))
+        for line in unreached_lines(args, tests, unreached, stopped): print(line, flush=True)
     return 1 if failed else lane_results.UNMEASURED if unmeasured else 0
+
+
+def test_places(tests):
+    """{test id: (its module, its class)} for tests, each the name a run selects it by, as `qk unittest NAME` takes
+    it: a test whose id is under no module or class, as a module that failed to load is, stands for both itself."""
+    places = {}
+    for test in tests:
+        identity, cls = test.id(), type(test)
+        module, owner = cls.__module__, f"{cls.__module__}.{cls.__qualname__}"
+        if module == "unittest.loader" or not identity.startswith(f"{module}."): module = owner = identity
+        elif not identity.startswith(f"{owner}."): owner = identity
+        places[identity] = (module, owner)
+    return places
+
+
+def rerun_names(unreached, places):
+    """{module: [names]}, the fewest names under each module of unreached, test ids, that select them and no other of
+    places (test_places), in discovery order: the module when all of its tests are unreached, else each class all of
+    whose tests are, else each test."""
+    left, modules, classes = set(unreached), {}, {}
+    for identity, (module, owner) in places.items():
+        modules.setdefault(module, []).append(identity)
+        classes.setdefault(owner, []).append(identity)
+    whole = {name for name, ids in {**modules, **classes}.items() if left.issuperset(ids)}
+    found = {}
+    for identity in unreached:
+        module, owner = places.get(identity, (identity, identity))
+        name = module if module in whole else owner if owner in whole else identity
+        found.setdefault(module, {})[name] = None
+    return {module: list(names) for module, names in found.items()}
+
+
+def own_launcher():
+    """The words that start this qk again from the directory it runs in: `python3 PATH` for a launcher named qk, as
+    scripts/qk and bin/qk are, else `qk`."""
+    path = Path(sys.argv[0])
+    return ["python3", os.path.relpath(path)] if path.name == "qk" and path.is_file() else ["qk"]
+
+
+def rerun(args, names):
+    """The command that runs names alone, with args's suite and selection."""
+    return [*own_launcher(), "unittest", "-s", args.start_directory,
+            *(["-t", args.top_level_directory] if args.top_level_directory else []),
+            *(word for pattern in args.pattern or () for word in ("-p", pattern)),
+            *(word for selector in args.selectors for word in ("-k", selector)), *names]
+
+
+def unreached_lines(args, tests, unreached, stopped):
+    """What qk unittest prints after its summary for unreached, the ids of the tests in its processes that did not
+    finish: those a stop left not started or cut off, and those in a process that timed out (vocaro/queuekeeper#37).
+    tests are the run's selected tests and stopped the stop's result, or None. Grouped by module, at most
+    REASONS_SHOWN of them, then the command that runs only those tests. The whole list and that command go to
+    UNREACHED_FILE in the lane's results/unittest/ (RESULTS_VARIABLE), or outside a lane below the directory the run
+    started in (keep_unreached)."""
+    places = test_places(tests)
+    grouped = rerun_names(unreached, places)
+    command = rerun(args, [name for names in grouped.values() for name in names])
+    counts = {module: sum(1 for identity in unreached if places.get(identity, (identity,))[0] == module)
+              for module in grouped}
+    totals = {module: sum(1 for place in places.values() if place[0] == module) for module in grouped}
+    why = stopped or "timed out"
+    record = {"result": why, "tests": unreached, "names": [name for names in grouped.values() for name in names],
+              "command": command}
+    listing = [f"# qk unittest did not finish these {len(unreached)} of {len(places)} tests ({why}). Run only them with:",
+               f"# {shlex.join(command)}"]
+    for module, names in grouped.items():
+        listing.append(f"{module}: {counts[module]} of {totals[module]} tests")
+        listing += [f"    {identity}" for identity in unreached if places.get(identity, (identity,))[0] == module]
+    try: saved = f"the whole list is in {keep_unreached(listing, record)}"
+    except (OSError, ValueError) as error: saved = f"the list was not saved: {error}"
+    lines = [f"Not reached or not finished, {len(unreached)} of {len(places)} tests in {len(grouped)} modules ({why}); "
+             f"{saved}:"]
+    for module, names in list(grouped.items())[:REASONS_SHOWN]:
+        within = f"all {totals[module]} tests" if names == [module] else \
+            f"{counts[module]} of {totals[module]} tests, in " + ", ".join(name.removeprefix(f"{module}.") for name in names)
+        lines.append(f"    {clipped(f'{module}: {within}', REASON_WIDTH)}")
+    if len(grouped) > REASONS_SHOWN:
+        lines.append(f"    [cut: {len(grouped) - REASONS_SHOWN} more modules of {len(grouped)}; the whole list has them]")
+    lines.append(f"Run only these: {shlex.join(command)}")
+    return lines
+
+
+# The file in a lane's results/unittest/, or a kept folder outside a lane, that lists what a run did not finish, and
+# its record beside it, which `qk run`'s summary reads (lane_report).
+UNREACHED_FILE = "unreached.txt"
+UNREACHED_RECORD = "unreached.json"
+UNREACHED_RUNS = ".build/queuekeeper/unittest-unreached"
+
+
+def keep_unreached(listing, record):
+    """Write listing, the lines of UNREACHED_FILE, and record, its UNREACHED_RECORD, into the lane's results/unittest/,
+    or outside a lane into a folder of their own under UNREACHED_RUNS below the directory the run started in, as a
+    failed run's output is kept (kept_folder); return the path of the list. Raises OSError when they could not be
+    written."""
+    results = os.environ.get(RESULTS_VARIABLE)
+    if results:
+        directory = Path(results) / "unittest"
+        directory.mkdir(parents=True, exist_ok=True)
+    else:
+        directory = kept_folder(Path.cwd() / UNREACHED_RUNS)
+    (directory / UNREACHED_RECORD).write_text(json.dumps(record, indent=2) + "\n")
+    path = directory / UNREACHED_FILE
+    path.write_text("\n".join(listing) + "\n")
+    return path
 
 
 # Where a failed run's whole output is kept, below the directory it ran in, and how many runs' stay.
@@ -487,20 +661,25 @@ FAILED_RUNS = ".build/queuekeeper/unittest-failed"
 KEPT_FAILED_RUNS = 5
 
 
-def keep_output(root, lines, reasons, now=None):
-    """Keep lines, the whole output of a failed run, in a folder of its own under root's FAILED_RUNS, with its
-    failed tests and why in failures.txt, and remove all but the newest KEPT_FAILED_RUNS; return the path of its
-    log. A run in the same second has its own process's folder. reasons is [(failed test, why)]. Raises OSError
-    when it could not be written."""
+def kept_folder(kept, now=None):
+    """A new folder of its own under kept, named for now and this process, so that a run in the same second has its
+    own, once all but the newest KEPT_FAILED_RUNS before it are removed."""
     now = now or datetime.now(timezone.utc)
-    kept = Path(root) / FAILED_RUNS
     directory = kept / f"{now.strftime('%Y%m%dT%H%M%SZ')}-{os.getpid()}"
     directory.mkdir(parents=True, exist_ok=False)
+    for old in sorted(path for path in kept.iterdir() if path.is_dir())[:-KEPT_FAILED_RUNS]:
+        shutil.rmtree(old, ignore_errors=True)
+    return directory
+
+
+def keep_output(root, lines, reasons, now=None):
+    """Keep lines, the whole output of a failed run, in a folder of its own under root's FAILED_RUNS (kept_folder),
+    with its failed tests and why in failures.txt; return the path of its log. reasons is [(failed test, why)].
+    Raises OSError when it could not be written."""
+    directory = kept_folder(Path(root) / FAILED_RUNS, now)
     log = directory / "test.log"
     log.write_text("\n".join(lines) + "\n")
     (directory / "failures.txt").write_text("".join(f"Failed: {test}\n    {why}\n" for test, why in reasons))
-    for old in sorted(path for path in kept.iterdir() if path.is_dir())[:-KEPT_FAILED_RUNS]:
-        shutil.rmtree(old, ignore_errors=True)
     return log
 
 

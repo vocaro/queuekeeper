@@ -18,6 +18,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import sys
 import time
 
@@ -239,6 +240,66 @@ def summary(text, lane):
     return found
 
 
+def lane_receipt(directory):
+    """The lane's own receipt in directory, a run's: its source.json, or for a dispatch the one the second Mac wrote,
+    which it holds under result; {} when there is none."""
+    try: receipt = json.loads((Path(directory) / "source.json").read_text())
+    except (OSError, ValueError): return {}
+    if not isinstance(receipt, dict): return {}
+    there = receipt.get("result")
+    return there["receipt"] if isinstance(there, dict) and isinstance(there.get("receipt"), dict) else receipt
+
+
+def stopped_there(directory):
+    """Why the second Mac's run of a dispatch in directory ended unmeasured when its timeout stopped it, as its receipt
+    says, such as `Owned command timed out after 2400s: python3; ...`, or None. The second Mac's own summary is not
+    printed, and its supervise line goes to the dispatch's output.log, so without it a log that stops mid-run read as a
+    crash (vocaro/queuekeeper#37)."""
+    receipt = lane_receipt(directory)
+    error = receipt.get("error")
+    return " ".join(error.split()) if receipt.get("outcome") == "unmeasured" and isinstance(error, str) and error.strip() \
+        else None
+
+
+def unittest_launcher(command):
+    """The words of a lane's command that start qk, when what follows them is `unittest`, or None: a lane whose
+    command is qk unittest, which `qk run LANE -- NAME...` runs for those names alone."""
+    if not isinstance(command, list) or not all(isinstance(word, str) for word in command): return None
+    return next((command[:index + 1] for index, word in enumerate(command[:-1])
+                 if Path(word).name == "qk" and command[index + 1] == "unittest"), None)
+
+
+def unreached_lines(directory, lane, group=None):
+    """The lines that name what a run's qk unittest did not finish, from the record it left in the run's results
+    (parallel.keep_unreached): how many tests, where they are listed, and the command that runs them alone. For a lane,
+    or a group's lane, whose command is qk unittest and that ran with no arguments of its own, that command is
+    `qk run LANE -- NAME...`; otherwise it is the qk unittest command the record gives. Nothing without a record."""
+    from .parallel import UNREACHED_FILE, UNREACHED_RECORD
+    results, lines = Path(directory) / "results", []
+    for path in sorted(results.rglob(f"unittest/{UNREACHED_RECORD}")) if results.is_dir() else ():
+        try: record = json.loads(path.read_text())
+        except (OSError, ValueError): continue
+        if not isinstance(record, dict) or not isinstance(record.get("tests"), list): continue
+        # results/unittest/ is the lane's own; results/MEMBER/unittest/ a group's lane's.
+        within = path.parent.parent.relative_to(results).parts
+        member = lane if not within else within[0] if group and within[0] in group else None
+        if member == lane and not group:
+            receipt = lane_receipt(directory)
+            launcher = None if receipt.get("arguments") else unittest_launcher(receipt.get("command"))
+        elif member is not None:
+            try: launcher = unittest_launcher(json.loads((Path(directory) / "lanes" / f"{member}.json").read_text()).get("command"))
+            except (OSError, ValueError, AttributeError): launcher = None
+        else:
+            launcher = None
+        names = [name for name in record.get("names") or [] if isinstance(name, str)]
+        command = [*launcher, "run", member, "--", *names] if launcher and names else record.get("command")
+        lines.append(f"  unreached: {len(record['tests'])} tests did not finish ({record.get('result') or 'unmeasured'}); "
+                     f"the list is in {path.with_name(UNREACHED_FILE)}")
+        if isinstance(command, list) and all(isinstance(word, str) for word in command):
+            lines.append(f"  run them: {shlex.join(command)}")
+    return lines
+
+
 class Report:
     """One `qk run`'s summary, inert until a lane run begins."""
 
@@ -293,7 +354,8 @@ class Report:
                 return [f"qk run {self.lane}: could not start{ending}, {where}",
                         f"  tests: none ran, as its command never started: {unstarted}",
                         f"  receipt: {directory / 'source.json'}"]
-        why = self.why or (str(error) if error is not None else None)
+        why = self.why or (str(error) if error is not None else None) or \
+            (stopped_there(directory) if self.here is None and verdict == "unmeasured" else None)
         if self.group is None: logs = {self.lane: directory / "run.log"}
         else: logs = {name: directory / "lanes" / f"{name}.log" for name in self.group}
         texts = {name: path.read_text(errors="replace") if path.is_file() else "" for name, path in logs.items()}
@@ -323,6 +385,7 @@ class Report:
         elif verdict == "failed" and not names:
             log = directory / "run.log" if self.group is None else directory / "lanes"
             lines.append(f"  no failing test is named; the log is {log}")
+        if verdict != "passed": lines += unreached_lines(directory, self.lane, self.group)
         if kept:
             more = f" (and {len(kept) - 1} more under {directory / 'results'})" if len(kept) > 1 else ""
             lines.append(f"{SUMMARY_ENDS[0]}{kept[0][0].with_name('failures.txt')}{more}")

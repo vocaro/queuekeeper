@@ -5,6 +5,7 @@ from io import StringIO
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -276,6 +277,68 @@ class Summary(unittest.TestCase):
         self.assertEqual(lines[-4], "qk run lane: unmeasured (exit 3), on this Mac")
         self.assertEqual(lines[-3], "  tests: no counts, as the run did not finish and its log is incomplete")
         self.assertIn("  why: ", lines[-2])
+
+    def test_a_qk_unittest_lane_past_its_limit_names_what_it_did_not_finish_and_how_to_run_it_alone(self):
+        """A gate stopped at its timeout gave its counts and a log that stopped mid-run, which read as a crash, and
+        named no test it had not reached (vocaro/queuekeeper#37)."""
+        suite = self.root / "suite"
+        suite.mkdir()
+        (suite / "test_a.py").write_text("import unittest\nclass Quick(unittest.TestCase):\n    def test_quick(self): pass\n")
+        (suite / "test_b.py").write_text("import time, unittest\nclass Hung(unittest.TestCase):\n"
+                                         "    def test_hung(self): time.sleep(600)\n")
+        launcher = [sys.executable, str(SOURCE.parents[1] / "scripts/qk")]
+        # Room for discovery and the quick module on a loaded Mac; the hung test sleeps far past it.
+        limit = round(stretched(10))
+        self.configure(lane={"command": [*launcher, "unittest", "-s", str(suite), "-j", "1"], "timeout": limit})
+        status, lines = self.qk("lane")
+        self.assertEqual(status, lane_results.UNMEASURED, lines)
+        log = (self.lane_dir / "run.log").read_text()
+        # The log says why it stops where it stops, and qk unittest still gave its summary.
+        self.assertIn(f"supervise: timed out after {limit}s; sending SIGTERM to the command", log)
+        self.assertIn("UNMEASURED: 1 of 2 processes not run or not finished (stopped by SIGTERM)", log)
+        listing = self.lane_dir / "results/unittest/unreached.txt"
+        self.assertIn("    test_b.Hung.test_hung", listing.read_text())
+        end = lines.index("qk run lane: unmeasured (exit 3), on this Mac")
+        self.assertEqual(lines[end + 1:], [
+            "  tests: no counts, as the run did not finish and its log is incomplete",
+            f"  why: Owned command timed out after {limit}s: {sys.executable}; it and its observed descendants ended",
+            f"  unreached: 1 tests did not finish (stopped by SIGTERM); the list is in {listing}",
+            f"  run them: {shlex.join([*launcher, 'run', 'lane', '--', 'test_b'])}",
+            f"  receipt: {self.lane_dir / 'source.json'}"])
+
+    def test_a_dispatched_run_that_timed_out_says_so_and_names_what_it_did_not_finish(self):
+        """The second Mac's supervise line went to the dispatch's output.log alone, and the summary here gave counts
+        that read as a whole run's (vocaro/queuekeeper#37)."""
+        runs = self.root / ".build/queuekeeper/remote" / lane_report.remote.DISPATCHES / "gate"
+        ran = runs / f"20270115T080000Z-{os.getpid()}"
+        (ran / "results/unittest").mkdir(parents=True)
+        (ran / "run.log").write_text("== test_a.A: OK (1 tests, 0.1s)\nRan 1 test in 0.1s\n\nOK\n")
+        (ran / "results/unittest/unreached.json").write_text(json.dumps(
+            {"result": "stopped by SIGTERM", "tests": ["test_b.B.test_one", "test_c.C.test_two"], "names": ["test_b", "test_c.C"],
+             "command": ["python3", "scripts/qk", "unittest", "-s", "tests", "test_b", "test_c.C"]}))
+        timed_out = "Owned command timed out after 2400s: python3; it and its observed descendants ended"
+        command = ["python3", "scripts/qk", "unittest", "-s", "tests", "--split", "class"]
+        def receipt(arguments):
+            (ran / "source.json").write_text(json.dumps({"host": "build-host", "arguments": arguments, "result": {
+                "exitStatus": 3, "receipt": {"outcome": "unmeasured", "error": timed_out, "command": [*command, *arguments],
+                                             "arguments": arguments}}}))
+        report = lane_report.Report()
+        report.root, report.lane, report.began = self.root, "gate", 1_800_000_000  # 2027-01-15T08:00:00Z
+        receipt([])
+        lines = report.lines(lane_results.UNMEASURED, None)
+        self.assertEqual(lines[0], "qk run gate: unmeasured (exit 3), on build-host")
+        self.assertIn(f"  why: {timed_out}", lines)
+        listing = ran / "results/unittest/unreached.txt"
+        self.assertEqual(lines[-3:-1], [f"  unreached: 2 tests did not finish (stopped by SIGTERM); the list is in {listing}",
+                                        "  run them: python3 scripts/qk run gate -- test_b test_c.C"])
+        # A run that had arguments of its own cannot be rerun as the lane by names alone: qk unittest's command stands.
+        receipt(["-k", "slow"])
+        self.assertEqual(report.lines(lane_results.UNMEASURED, None)[-2],
+                         "  run them: python3 scripts/qk unittest -s tests test_b test_c.C")
+        # The control: a dispatch that ended otherwise has no why of its own, and a passed one names nothing unreached.
+        (ran / "source.json").write_text(json.dumps({"host": "build-host", "result": {"exitStatus": 3, "receipt": {}}}))
+        self.assertFalse(any(line.startswith("  why: ") for line in report.lines(lane_results.UNMEASURED, None)))
+        self.assertFalse(any(line.startswith("  unreached: ") for line in report.lines(0, None)))
 
     def test_a_failure_record_gives_the_failing_tests_their_places_and_the_path(self):
         script = textwrap.dedent(f"""\

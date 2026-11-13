@@ -289,6 +289,16 @@ def released(on_start, pid, environment, go, told):
         os.close(told)
 
 
+def logged(log, line):
+    """Print line, a stop supervise makes for time, on stderr, and in log too when it is a file of the command's own
+    output, such as a lane's run.log: a log a timeout cut off then says why where it stops, on the second Mac as on
+    this one, where stderr goes only to the dispatch's output.log (vocaro/queuekeeper#37)."""
+    print(line, file=sys.stderr, flush=True)
+    if log is None or log in (sys.stdout, sys.stderr, sys.__stdout__, sys.__stderr__) or not hasattr(log, "fileno"): return
+    # Through the descriptor the command shares, at the end of what it has written, past any buffer of this process.
+    with contextlib.suppress(OSError, ValueError): os.write(log.fileno(), f"{line}\n".encode())
+
+
 def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None, on_start=None,
               kill_after=KILL_AFTER, cancel=None, progress=None):
     """Wait for the owned root and observed descendants, including separate process groups.
@@ -474,13 +484,12 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
                     detail = progress.observe(identities, progress_controls(identities), force=True)
                     if detail and child.poll() is None:
                         expired, stalled = time.monotonic(), detail
-                        print(f"supervise: stalled: {detail}; sending SIGTERM to the command (PID {child.pid}) "
-                              f"and its observed descendants, then SIGKILL after {kill_after:g}s",
-                              file=sys.stderr, flush=True)
+                        logged(stdout, f"supervise: stalled: {detail}; sending SIGTERM to the command (PID {child.pid}) "
+                               f"and its observed descendants, then SIGKILL after {kill_after:g}s")
             if timeout is not None and exited is None and expired is None and time.monotonic() - started >= timeout:
                 expired = time.monotonic()
-                print(f"supervise: timed out after {timeout:g}s; sending SIGTERM to the command (PID {child.pid}) "
-                      f"and its observed descendants, then SIGKILL after {kill_after:g}s", file=sys.stderr, flush=True)
+                logged(stdout, f"supervise: timed out after {timeout:g}s; sending SIGTERM to the command (PID {child.pid}) "
+                       f"and its observed descendants, then SIGKILL after {kill_after:g}s")
             if cancel is not None and exited is None and expired is None and cancel.is_set():
                 # Carried out as a timeout is, and reported as the caller's cancel.
                 expired, canceled = time.monotonic(), True
@@ -598,20 +607,39 @@ def stop(process):
     raise RuntimeError(f"Owned process {process.pid} has no confirmed terminal result")
 
 
-def bounded(command, *, cwd=None, timeout, pass_fds=(), kill_after=KILL_AFTER):
+def waited(child, timeout, stop=None):
+    """child's status once it ends, as child.wait(timeout) gives it; with stop, a callable, the wait also ends with
+    TimeoutExpired as soon as stop() is true, checked every STOP_POLL seconds."""
+    if stop is None: return child.wait(timeout=timeout)
+    deadline = time.monotonic() + timeout
+    while not stop():
+        try: return child.wait(timeout=max(min(STOP_POLL, deadline - time.monotonic()), 0))
+        except subprocess.TimeoutExpired:
+            if time.monotonic() >= deadline: raise
+    raise subprocess.TimeoutExpired(child.args, timeout)
+
+
+# Seconds between two looks at bounded's stop, and the kill_after a stopped command has instead of its own when that
+# is longer: whoever stopped the run that started it gives that run KILL_AFTER to end, and it reports what it left
+# undone after its commands have ended (parallel.unittest_main). Not measured.
+STOP_POLL = 0.2
+STOPPED_KILL_AFTER = 2
+
+
+def bounded(command, *, cwd=None, timeout, pass_fds=(), kill_after=KILL_AFTER, stop=None):
     """Run command in a session of its own, its output in a file, and return (status, output): status
-    is None once it ran past timeout seconds, after which it was stopped (end_tree). For many short
-    commands side by side, such as test processes, where supervise's sampling would cost too much: the
-    processes are listed only once the timeout has expired, so a descendant that left the root's tree
-    before then, as a daemon does, is not followed."""
+    is None once it ran past timeout seconds, or once stop(), when given, became true, after which it was
+    stopped (end_tree). For many short commands side by side, such as test processes, where supervise's
+    sampling would cost too much: the processes are listed only once the timeout has expired, so a
+    descendant that left the root's tree before then, as a daemon does, is not followed."""
     with tempfile.TemporaryFile("w+", errors="replace") as output:
         child = subprocess.Popen(command, cwd=cwd, stdout=output, stderr=subprocess.STDOUT,
                                  start_new_session=True, pass_fds=pass_fds)
         try:
-            status = child.wait(timeout=timeout)
+            status = waited(child, timeout, stop)
         except subprocess.TimeoutExpired:
             status = None
-            try: end_tree(child, kill_after)
+            try: end_tree(child, min(kill_after, STOPPED_KILL_AFTER) if stop is not None and stop() else kill_after)
             except BaseException:
                 stop(child)
                 raise
