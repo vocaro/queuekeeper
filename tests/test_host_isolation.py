@@ -220,7 +220,18 @@ class HostIsolationTests(unittest.TestCase):
 
 
 class SignalDispositionTests(unittest.TestCase):
-    """default_signals, from a runner that ignores every stop signal, as a background job's shell or nohup can."""
+    """default_signals, from a runner that ignores every stop signal, as a background job's shell or nohup can.
+
+    Each stop signal but SIGQUIT is sent, and stops the child only with default_signals. SIGQUIT is not sent: its
+    default ends a process with a core, so macOS writes a crash report and raises a "Python quit unexpectedly" alert
+    over the screen each time, six times over foreground runs on the second Mac by 2026-11-12
+    (vocaro/queuekeeper#42). Its disposition is read instead, which is what default_signals changes: the default
+    with it, ignored without it."""
+
+    # The stop signals sent: each one's default ends a process without a core or a crash report.
+    SENT = tuple(number for number in host_isolation.STOP_SIGNALS if number != signal.SIGQUIT)
+    # Prints SIGQUIT's disposition.
+    QUIT = "import signal; print('default' if signal.getsignal(signal.SIGQUIT) == signal.SIG_DFL else 'ignored')"
 
     # Says it is ready, then waits for the test's go, which only an ignored stop reaches.
     CHILD = ("import os, sys, time\nfrom pathlib import Path\nhere = Path(sys.argv[1])\n(here / 'ready').touch()\n"
@@ -246,11 +257,17 @@ class SignalDispositionTests(unittest.TestCase):
     def test_a_child_started_with_default_signals_is_stopped_though_its_runner_ignores_them(self):
         for number in host_isolation.STOP_SIGNALS:
             self.addCleanup(signal.signal, number, signal.signal(number, signal.SIG_IGN))
-        for number in host_isolation.STOP_SIGNALS:
+        self.assertEqual(set(self.SENT) | {signal.SIGQUIT}, set(host_isolation.STOP_SIGNALS))
+        for number in self.SENT:
             with self.subTest(signal=number.name):
                 self.assertEqual(self.stopped(number, preexec_fn=host_isolation.default_signals), -number)
                 # The negative control: without it the child inherits the ignore and ends at the go.
                 self.assertEqual(self.stopped(number), 0)
+        with self.subTest(signal="SIGQUIT"):
+            disposition = lambda **options: subprocess.run([sys.executable, "-I", "-c", self.QUIT], capture_output=True,
+                                                           text=True, timeout=stretched(30), **options).stdout.strip()
+            self.assertEqual(disposition(preexec_fn=host_isolation.default_signals), "default")
+            self.assertEqual(disposition(), "ignored")
 
 
 class StretchedTests(unittest.TestCase):

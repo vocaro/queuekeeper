@@ -181,7 +181,12 @@ if child.poll() is None:
     open(os.environ["FAKE_DROP"] + ".dropped", "w").close()
     os._exit(255)
 relay.join()
-sys.exit(child.returncode)
+# Not sys.exit: send() is still blocked in sys.stdin's readline, holding its buffer's lock, and the interpreter's
+# shutdown, closing sys.stdin, would find it held and abort, a crash report and a "Python quit unexpectedly" alert
+# each time on the second Mac (vocaro/queuekeeper#42).
+sys.stdout.flush()
+sys.stderr.flush()
+os._exit(child.returncode)
 """
 # A lane that says it has started, puts its PID in .build/outlast.pid, and goes on only once its connection has
 # been lost (DROPPER): what it says after that, its exit status and the file it writes then are the second Mac's
