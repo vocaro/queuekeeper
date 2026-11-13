@@ -1294,7 +1294,11 @@ accepts it in place of running the gate again prints both Macs' macOS versions f
 Each dispatch also keeps its own copy of its results, in
 `.build/queuekeeper/remote/.dispatches/LANE/TIME-PID/` (`admit` for a command), which the line
 that gives the run's status names. `LANE/` holds the copy of the dispatch that ended last, so two
-dispatches of one lane, or two commands, at once each keep their own. Each name keeps its newest
+dispatches of one lane, or two commands, at once each keep their own. The summary that ends `qk run`,
+and the results an extension reports, are read from the run's own dispatch, the one its process
+(`PID`) sent, never `LANE/` or another run's: two runs of one lane side by side from one checkout
+each printed the one that ended first
+([vocaro/queuekeeper#9](https://github.com/vocaro/queuekeeper/issues/9)). Each name keeps its newest
 eight, two for each checkout there, and queuekeeper names each one it removes. Dispatches of one name file
 their results in turn. Replacing `remote/admit/` by removing it and renaming another into its
 place fails with `Directory not empty` (Errno 66) when two dispatches interleave, and left one

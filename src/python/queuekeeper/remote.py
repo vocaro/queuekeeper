@@ -2147,7 +2147,8 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
         wrote = sorted({Path(path).parts[1] for path in files if len(Path(path).parts) > 2} & set(group))
         print(f"remote: {len(files)} file{'s' if len(files) != 1 else ''} the run wrote in its {RESULTS} came back in "
               f"{results / RESULTS}" + (f", from {', '.join(wrote)}" if wrote else ""), file=sys.stderr, flush=True)
-        extensions.report_results(results / RESULTS)
+        # This dispatch's own: another run of the lane from this checkout may since have filed its own as the latest.
+        extensions.report_results(own / RESULTS)
     if members and result.get("stage") == "work":
         members = config["lanes"][lane]["parallel"]
         came = [member for member in members if f"lanes/{member}.log" in returned]
@@ -3520,15 +3521,19 @@ def dispatched(root, name, since):
     return dispatch(root, name, since)[1]
 
 
-def dispatch(root, name, since):
+def dispatch(root, name, since, pid=None):
     """(the directory of the newest dispatch of name from root that started at or after since and ran on the second
-    Mac, that Mac), or (None, None): dispatched, with the directory whose run.log holds what the lane printed there."""
+    Mac, that Mac), or (None, None): dispatched, with the directory whose run.log holds what the lane printed there.
+    With pid, only a dispatch that process sent, whose directory execute names for it: two runs of one lane from one
+    checkout side by side each send their own, and the newest since one began may be the other's
+    (vocaro/queuekeeper#9)."""
     try: runs = sorted((Path(root) / ".build/queuekeeper/remote" / DISPATCHES / name).iterdir(), reverse=True)
     except OSError: return None, None
     for run in runs:
         try: started = calendar.timegm(time.strptime(run.name[:16], "%Y%m%dT%H%M%SZ"))
         except ValueError: continue
         if started < int(since): return None, None
+        if pid is not None and run.name[16:].split(".")[0] != f"-{pid}": continue
         try: receipt = json.loads((run / "source.json").read_text())
         except FileNotFoundError:
             try: host = (run / DISPATCH_HOST).read_text().strip()

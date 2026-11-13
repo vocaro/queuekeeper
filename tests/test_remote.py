@@ -2953,8 +2953,14 @@ class RemoteTests(unittest.TestCase):
 
     def test_what_a_lane_writes_in_its_results_comes_back_from_the_second_mac(self):
         results = self.project / ".build/queuekeeper/remote/transcripts"
-        status, output, error = self.qk("remote", "run", "transcripts")
+        with patch.object(remote.extensions, "report_results") as reported:
+            status, output, error = self.qk("remote", "run", "transcripts")
         self.assertEqual(status, 0, output + error)
+        # An extension reports this dispatch's own results, not the latest, which a run beside it may have replaced
+        # (vocaro/queuekeeper#9).
+        [(reading,)] = [call.args for call in reported.call_args_list]
+        self.assertEqual(reading.parent.parent.parent.resolve(), (results.parent / remote.DISPATCHES).resolve())
+        self.assertEqual((reading / "session-1/transcript.txt").read_text(), "VO: Next Page")
         self.assertEqual((results / "results/session-1/transcript.txt").read_text(), "VO: Next Page")
         self.assertEqual(json.loads((results / "source.json").read_text())["returned"],
                          ["results/session-1/transcript.txt"])

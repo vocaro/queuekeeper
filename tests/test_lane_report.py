@@ -3,6 +3,7 @@ that passed, failed, skipped and unmeasured stay apart, and that it is the last 
 import contextlib
 from io import StringIO
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -394,6 +395,27 @@ class Summary(unittest.TestCase):
         with contextlib.redirect_stdout(stream), contextlib.redirect_stderr(stream):
             self.assertIn(cli.main(["--project", str(self.root), "docs", "check"]), (0, 1))
         self.assertNotIn("qk run", stream.getvalue())
+
+    def test_a_dispatched_run_reports_its_own_dispatch_and_not_one_sent_beside_it(self):
+        """Two runs of one lane from one checkout side by side: the one that started second and ended first filed the
+        newer dispatch, which the first run's summary printed as its own (vocaro/queuekeeper#9)."""
+        runs = self.root / ".build/queuekeeper/remote" / lane_report.remote.DISPATCHES / "lane"
+        def dispatched(name, log, receipt):
+            (runs / name).mkdir(parents=True)
+            (runs / name / "run.log").write_text(log)
+            (runs / name / "source.json").write_text(json.dumps(receipt))
+        own = os.getpid()
+        dispatched(f"20270115T080000Z-{own}", UNITTEST_FAILED, {"host": "fake-mac"})
+        dispatched(f"20270115T080011Z-{own + 1}", "Ran 2 tests in 0.1s\n\nOK", {"host": "fake-mac"})
+        report = lane_report.Report()
+        report.root, report.lane, report.began = self.root, "lane", 1_800_000_000  # 2027-01-15T08:00:00Z
+        lines = report.lines(1, None)
+        self.assertEqual(lines[:2], ["qk run lane: failed (exit 1), on fake-mac",
+                                     "  tests: 3 passed, 2 failed, 1 skipped, 0 unmeasured"])
+        self.assertEqual(lines[-1], f"  receipt: {runs / f'20270115T080000Z-{own}' / 'source.json'}")
+        # A dispatch this process sent again in the same second, which file_results names NAME.2, is still its own.
+        dispatched(f"20270115T080000Z-{own}.2", "Ran 1 test in 0.1s\n\nOK", {"host": "other-mac"})
+        self.assertEqual(report.source(), ("on other-mac", runs / f"20270115T080000Z-{own}.2"))
 
     def test_a_summary_that_cannot_be_made_never_changes_the_status(self):
         self.configure(lane=self.printing(""))
