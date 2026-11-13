@@ -4067,7 +4067,12 @@ exec {shlex.quote(real)} "$@"
             status, output, error = self.run_here("--offload-only", "gate")
         self.assertEqual(status, resources.BUSY, output + error)
         self.assertIn("queuekeeper: gate not run: the second Mac is busy: fake did not take it: its heavy-work queue cannot "
-                      "take the lane now", error)
+                      "take the lane now: ", error)
+        # Why its queue declined, as the second Mac's admission said it there: the dispatcher's log and admission line
+        # name the cause, with no look at the second Mac's own log (2026-11-12).
+        self.assertIn("it waits behind exclusive work holding the host", error)
+        self.assertFalse((self.checkout(0) / offload_host.DECLINED_NOTE).exists() and
+                         git(self.checkout(0), "status", "--porcelain", "--", offload_host.DECLINED_NOTE))
         with patch.dict(os.environ, {"QUEUEKEEPER_OFFLOAD_HOST": "none"}):
             status, output, error = self.run_here("--offload-only", "gate")
         self.assertEqual(status, resources.BUSY, output + error)

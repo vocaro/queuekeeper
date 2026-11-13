@@ -244,6 +244,25 @@ class Refusal(RuntimeError):
         self.fix, self.busy = fix, busy
 
 
+# The variable naming the file into which a declining admission writes why (cli.admitted_here), and that file's
+# place in the checkout. remote.DECLINED names the same variable.
+DECLINED, DECLINED_NOTE = "QUEUEKEEPER_DECLINED_FILE", ".build/queuekeeper/declined.txt"
+# Characters of a declining admission's reason kept: it names the request ahead and the holders of every slot.
+DECLINED_LIMIT = 600
+
+
+def declined_reason(path):
+    """Why the second Mac's queue declined offered work, for the dispatcher's Busy: what its admission wrote in path,
+    such as the exclusive request queued ahead that holds every later one back, or only that its queue could not
+    take the work, from a toolkit that writes nothing (2026-11-12: the dispatcher saw only that, and the cause, an
+    exclusive request queued there, took a look at the second Mac's own admission log)."""
+    try:
+        said = " ".join(path.read_text().split())[:DECLINED_LIMIT] if path is not None else ""
+    except OSError:
+        said = ""
+    return f"its heavy-work queue cannot take the lane now: {said}" if said else "its heavy-work queue cannot take the lane now"
+
+
 def emit(kind, data):
     """Write one framed line, unless the dispatcher has gone silent. A connection nobody reads can take a write
     and never finish it, and a result saying the run stopped would read, to a dispatcher that wakes, as the
@@ -3851,6 +3870,11 @@ def main(plan):
             environment["QUEUEKEEPER_LANE_WAIT"] = str(wait)
             environment["QUEUEKEEPER_LANE_PROGRESS_RUN"] = os.urandom(16).hex()
             wait.unlink(missing_ok=True)
+        # Where `queuekeeper run --if-free` or `queuekeeper admit --if-free` writes why its admission declined (cli.admitted_here),
+        # which the decline below says instead of naming only the queue.
+        declined = checkout / DECLINED_NOTE if plan.get("decline") else None
+        if declined is not None:
+            environment[DECLINED] = str(declined)
         returns = plan.get("returns")
         if returns:
             back = checkout / returns["directory"], returns["paths"]
@@ -3862,6 +3886,7 @@ def main(plan):
             if _stop.is_set(): break
             # Neither an earlier dispatch nor provision can establish this step's admission.
             if wait is not None: wait.unlink(missing_ok=True)
+            if declined is not None: declined.unlink(missing_ok=True)
             begun, began = True, time.monotonic()
             work_environment = environment
             if stage == "work" and "cleanupSeconds" in (plan.get("lease") or {}):
@@ -3886,7 +3911,7 @@ def main(plan):
         # `qk run --if-free` declined the lane, or its provision lane, before running it, and wrote no receipt.
         if plan.get("decline") and result.get("stage") in ("provision", "work") and result["exitStatus"] == plan["busy"] \
                 and not fresh:
-            result.update(refused="its heavy-work queue cannot take the lane now", busy=True)
+            result.update(refused=declined_reason(declined), busy=True)
     except Refusal as refusal:
         result.update(refused=str(refusal), busy=refusal.busy, fix=refusal.fix)
     except (OSError, RuntimeError, ValueError) as error:

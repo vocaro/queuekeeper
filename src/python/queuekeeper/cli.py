@@ -295,6 +295,7 @@ def admitted_here(stack, name, label, timeout, offered=None, once=False, exclusi
         admission = admit(min(FREE_WAIT, timeout) if once else timeout)
         if admission is None:
             print(f"queuekeeper: {name} not run on {this_mac()}: {refused[-1]}", file=sys.stderr)
+            declined(refused[-1])
             return BUSY
         return admission
     except resources.AdmissionRecordError as error:
@@ -303,6 +304,16 @@ def admitted_here(stack, name, label, timeout, offered=None, once=False, exclusi
     finally:
         # Admitted, admission took the place out of the queue; otherwise the work no longer waits here.
         if place is not None: place.leave()
+
+
+def declined(reason):
+    """Write why admission declined the work where the Mac that sent it reads it back, when it was sent here
+    (offload_host.declined_reason); otherwise nothing. Nothing written stops the decline."""
+    path = os.environ.get(offload_host.DECLINED)
+    if not path: return
+    with contextlib.suppress(OSError):
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        Path(path).write_text(f"{reason}\n")
 
 
 def fell_back(name, offered):
