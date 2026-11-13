@@ -84,6 +84,8 @@ def register():
     for hooks, hook in ((extensions.AROUND_RUN, app_registrations.around_run), (extensions.REPORT_RESULTS, run_results.report),
                         (extensions.TEST_ALLOWANCE, matrix.default_test_allowance)):
         if hook not in hooks: hooks.append(hook)
+    # Each runs tests itself, so one started outside an admission is admitted first (cli.bare_runner).
+    extensions.RUNNERS.update({("simulator-tests",), ("xctest",)})
     extensions.COMMANDS.update({
         "simulator-tests": ("build a scheme's tests once and run them on several members of the project's simulator "
                             "pool side by side: qk simulator-tests --scheme S --runtime R --device T --device T; "

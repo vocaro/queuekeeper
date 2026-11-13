@@ -291,7 +291,7 @@ class SimulatorMatrixTests(unittest.TestCase):
                             "FAKE_MEET_LIMIT": str(stretched(60))}
 
     def run_matrix(self, *arguments, wait_for_fake_boot=False, **environment):
-        command = [sys.executable, str(ENG), "simulator-tests", "--scheme", "Package-Tests", "--runtime", "iOS-27-0",
+        command = [sys.executable, str(ENG), "simulator-tests", "--unadmitted", "--scheme", "Package-Tests", "--runtime", "iOS-27-0",
                    "--device", "iPhone-17-Pro", "--device", "iPad-Air-13-inch-M4", "--pool", "Project", *arguments]
         if wait_for_fake_boot:
             # In the outcome test, wait for the stand-in itself. The enclosing unittest run
@@ -328,7 +328,7 @@ class SimulatorMatrixTests(unittest.TestCase):
 
     def run_series(self, *arguments, **environment):
         """A run of one device, the iPhone, so that its runs come in a known order."""
-        command = [sys.executable, str(ENG), "simulator-tests", "--scheme", "Package-Tests", "--runtime", "iOS-27-0",
+        command = [sys.executable, str(ENG), "simulator-tests", "--unadmitted", "--scheme", "Package-Tests", "--runtime", "iOS-27-0",
                    "--device", "iPhone-17-Pro", "--pool", "Project", *arguments]
         finished = subprocess.run(command, cwd=self.root, capture_output=True, text=True,
                                   env={**self.environment, **environment})
@@ -978,7 +978,7 @@ class SimulatorMatrixTests(unittest.TestCase):
                 self.assert_every_device_returned()
 
     def test_a_stop_ends_every_device_run_and_returns_every_device_to_the_pool(self):
-        command = [sys.executable, str(ENG), "simulator-tests", "--scheme", "Package-Tests", "--runtime", "iOS-27-0",
+        command = [sys.executable, str(ENG), "simulator-tests", "--unadmitted", "--scheme", "Package-Tests", "--runtime", "iOS-27-0",
                    "--device", "iPhone-17-Pro", "--device", "iPad-Air-13-inch-M4", "--pool", "Project"]
         # Three devices never meet, so both runs wait until the stop.
         process = subprocess.Popen(command, cwd=self.root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
@@ -996,7 +996,7 @@ class SimulatorMatrixTests(unittest.TestCase):
 
     def test_a_run_waits_for_another_that_holds_its_derived_data_and_logs_but_not_for_one_elsewhere(self):
         # A build beside another run's tests copied the resources they read again (vocaro/EPUBLib#872).
-        command = [sys.executable, str(ENG), "simulator-tests", "--scheme", "Package-Tests", "--runtime", "iOS-27-0",
+        command = [sys.executable, str(ENG), "simulator-tests", "--unadmitted", "--scheme", "Package-Tests", "--runtime", "iOS-27-0",
                    "--device", "iPhone-17-Pro", "--device", "iPad-Air-13-inch-M4", "--pool", "Project"]
         def start(**environment):
             process = subprocess.Popen(command, cwd=self.root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -1041,7 +1041,7 @@ class SimulatorMatrixTests(unittest.TestCase):
         lock = (logs / ".eng-simulator-tests.lock").open("w")
         self.addCleanup(lock.close)
         fcntl.flock(lock, fcntl.LOCK_EX)
-        command = [sys.executable, str(ENG), "simulator-tests", "--scheme", "Package-Tests", "--runtime", "iOS-27-0",
+        command = [sys.executable, str(ENG), "simulator-tests", "--unadmitted", "--scheme", "Package-Tests", "--runtime", "iOS-27-0",
                    "--device", "iPhone-17-Pro", "--device", "iPad-Air-13-inch-M4", "--pool", "Project", "--logs", "logs"]
         process = subprocess.Popen(command, cwd=self.root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                                    env=self.environment)
@@ -1258,7 +1258,7 @@ class SimulatorMatrixTests(unittest.TestCase):
         self.assertEqual(status, 2, output)
 
     def test_a_lane_that_ends_with_its_separator_takes_a_filter_from_eng_run(self):
-        matrix = [sys.executable, str(ENG), "simulator-tests", "--scheme", "Package-Tests", "--runtime", "iOS-27-0",
+        matrix = [sys.executable, str(ENG), "simulator-tests", "--unadmitted", "--scheme", "Package-Tests", "--runtime", "iOS-27-0",
                   "--device", "iPhone-17-Pro", "--device", "iPad-Air-13-inch-M4"]
         # The pool's name comes from the project's configuration.
         (self.root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Project",
@@ -1284,7 +1284,7 @@ class SimulatorMatrixTests(unittest.TestCase):
         self.assertIn("Project unseparated", {json.loads(line)["label"] for line in records})
 
     def test_a_run_without_a_pool_name_refuses_before_taking_a_device(self):
-        command = [sys.executable, str(ENG), "simulator-tests", "--scheme", "Package-Tests", "--runtime", "iOS-27-0",
+        command = [sys.executable, str(ENG), "simulator-tests", "--unadmitted", "--scheme", "Package-Tests", "--runtime", "iOS-27-0",
                    "--device", "iPhone-17-Pro"]
         # A project that names no pool, run by a launcher whose own checkout (the toolkit) names one: the
         # run's project decides, so it refuses rather than taking the toolkit's members.
@@ -1297,7 +1297,7 @@ class SimulatorMatrixTests(unittest.TestCase):
     def test_a_run_outside_a_project_root_takes_the_launchers_pool(self):
         # A directory with no queuekeeper.json, such as a project's subdirectory, has the launcher's project
         # name the pool: here Queuekeeper's own, which names Queuekeeper.
-        command = [sys.executable, str(ENG), "simulator-tests", "--scheme", "Package-Tests", "--runtime", "iOS-27-0",
+        command = [sys.executable, str(ENG), "simulator-tests", "--unadmitted", "--scheme", "Package-Tests", "--runtime", "iOS-27-0",
                    "--device", "iPhone-17-Pro"]
         finished = subprocess.run(command, cwd=self.root, capture_output=True, text=True, env=self.environment)
         self.assertEqual(finished.returncode, 0, finished.stdout + finished.stderr)

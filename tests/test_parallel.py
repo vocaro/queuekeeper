@@ -76,7 +76,7 @@ class UnittestRunnerTests(unittest.TestCase):
         # fixed, since load only makes a module that cannot meet the other fail surer.
         limit = stretched(60) if limit is None else limit
         # In the suite's own directory by default, where a failing run's kept output goes with the suite.
-        finished = subprocess.run([sys.executable, str(ENG), "unittest", "-s", str(root), *arguments],
+        finished = subprocess.run([sys.executable, str(ENG), "unittest", "--unadmitted", "-s", str(root), *arguments],
                                   capture_output=True, text=True, cwd=root if cwd is None else cwd,
                                   env={"MEET_LIMIT": str(limit), "PATH": "/usr/bin:/bin"})
         # Standard error first: queuekeeper's line about a toolkit copy behind origin/main is not what a run prints last.
@@ -111,7 +111,7 @@ class UnittestRunnerTests(unittest.TestCase):
         def ignoring():
             for number in (signal.SIGINT, signal.SIGQUIT): signal.signal(number, signal.SIG_IGN)
         environment = {"PATH": "/usr/bin:/bin"}
-        finished = subprocess.run([sys.executable, str(ENG), "unittest", "-s", str(root)], capture_output=True,
+        finished = subprocess.run([sys.executable, str(ENG), "unittest", "--unadmitted", "-s", str(root)], capture_output=True,
                                   text=True, cwd=root, env=environment, preexec_fn=ignoring)
         self.assertEqual(finished.returncode, 0, finished.stderr + finished.stdout)
         # The test process has Python's own SIGINT handler and the default SIGQUIT, and its children both defaults.
@@ -680,7 +680,7 @@ class ShardAdmissionTests(unittest.TestCase):
         or none. Returns its status, its output and what its module's process found."""
         environment = {"PATH": "/usr/bin:/bin", "PYTHONPATH": str(SOURCE), **self.isolated,
                        "PROBE_FDS": ",".join(str(fd) for fd in probed), **({resources.TOKEN: token} if token else {})}
-        finished = subprocess.run([sys.executable, str(ENG), "unittest", "-s", str(self.here / "suite")],
+        finished = subprocess.run([sys.executable, str(ENG), "unittest", "--unadmitted", "-s", str(self.here / "suite")],
                                   capture_output=True, text=True, env=environment, pass_fds=held)
         output, probe = finished.stdout + finished.stderr, self.here / "suite/probe.json"
         found = json.loads(probe.read_text()) if probe.exists() else None
