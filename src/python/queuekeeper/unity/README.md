@@ -114,6 +114,17 @@ Opens a linked worktree's editor once, for a `post-checkout` hook. It does nothi
 checkout or after the first time. `--ensure` opens it now, and `--status` only says whether one is
 open. A session that needs no editor sets `QUEUEKEEPER_UNITY_OPEN=0`.
 
+```bash
+UNITY_BIN="$(python3 scripts/qk unity editor)"
+python3 scripts/qk unity run --log gate.log -- "$UNITY_BIN" -batchmode -quit -projectPath "$PWD/lab" -executeMethod Gates.Run -logFile gate.log
+```
+
+For a script that starts Unity itself, as one that runs a project's own gates. `editor` prints the
+binary of the editor the project pins, alone on standard output. `run` runs a batch run and ends it,
+with its import workers, when its log has been silent for ten minutes. It exits with the run's own
+status, or 124 for a run it ended. Such a script checks first that a run may start, with
+`python3 scripts/qk unity ready -- true`.
+
 ## Exit statuses
 
 | Status | Meaning |
@@ -121,10 +132,11 @@ open. A session that needs no editor sets `QUEUEKEEPER_UNITY_OPEN=0`.
 | 0 | The tests passed, or the wrapped command did |
 | 1 | A test failed, the project did not compile, or the run wrote no results |
 | 2 | The command was misused, or the project has no Unity project where it says |
+| 124 | `run` ended a batch run whose log went silent |
 | 3 | Unmeasured: nothing ran. No editor on this Mac, an editor holding the project, a held lock, a licensing helper that would not stop, an editor in Play mode during exclusive work, or a run that hung |
 
 The merge queue tries an unmeasured run again and then holds it. It does not send the commit back as
-failed. `closed` otherwise exits with its command's own status.
+failed. `closed` and `run` otherwise exit with their command's own status.
 
 ## Settings
 

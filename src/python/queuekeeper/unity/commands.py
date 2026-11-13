@@ -4,6 +4,8 @@
     qk unity closed -- COMMAND
     qk unity ready [--exclusive] -- COMMAND
     qk unity open [--ensure | --status]
+    qk unity editor
+    qk unity run --log LOG -- COMMAND
 
 Each exits 3, unmeasured, when nothing ran for a reason that says nothing of the work: no editor on this Mac, an
 editor holding the project, a licensing helper that would not stop, a run that hung. The merge queue tries such a
@@ -172,6 +174,28 @@ def closed(project, command):
     return status
 
 
+def which_editor(project):
+    """Print the binary of the project's editor, alone on standard output, for a script that starts Unity itself.
+    Which editor it is, and whether it is the pinned one, goes to standard error."""
+    binary, source, want = editor.find(project)
+    if binary is None:
+        return unmeasured(f"this Mac has no Unity editor for {project} (it pins {want or 'no version'}); install it "
+                          f"with Unity Hub, or set ${editor.VARIABLE} to an editor's binary")
+    warn(editor.described(binary, source, want))
+    print(binary, flush=True)
+    return 0
+
+
+def bounded(project, command, log):
+    """Run command, a Unity batch run on project that writes log (-logFile), and end it when the log goes silent
+    (batch.run). The status is the command's own, or batch.HUNG, 124, for a run that was ended: a script that
+    runs many units in one editor knows, and this does not, whether such a run had given its verdict."""
+    try: return batch.run(command, log, project, quiet=batch.quiet(), say=warn)
+    except OSError as error:
+        warn(f"could not run {command[0]}: {error}")
+        return USAGE
+
+
 def replace(command):
     """Become command, which keeps this process's PID and gives its own status."""
     sys.stdout.flush()
@@ -299,9 +323,14 @@ def main(arguments, project=None):
     how = opened.add_mutually_exclusive_group()
     how.add_argument("--ensure", action="store_true", help="open it now, whether or not it was opened before")
     how.add_argument("--status", action="store_true", help="only say whether one is open: exit 0 when it is, 1 when not")
+    actions.add_parser("editor", help="print the binary of the editor the project pins, for a script that starts "
+                       "Unity itself; exit 3 when this Mac has none")
+    running = actions.add_parser("run", help="run COMMAND, a Unity batch run that writes LOG, and end it when LOG "
+                                 "has been silent for ten minutes, exiting 124: qk unity run --log LOG -- COMMAND")
+    running.add_argument("--log", required=True, type=Path, help="the file the run's -logFile names")
     args = parser.parse_args(arguments)
-    if (command is not None) != (args.action in ("closed", "ready")) or command == []:
-        parser.error("closed and ready take the command after --, and only they do")
+    if (command is not None) != (args.action in ("closed", "ready", "run")) or command == []:
+        parser.error("closed, ready and run take the command after --, and only they do")
     root = Path(project or ".").resolve()
     try: config = configuration.load(root)
     except (OSError, ValueError) as error:
@@ -312,6 +341,8 @@ def main(arguments, project=None):
         warn(f"no Unity project at {found}: name its folder in {configuration.FILE}, as \"unity\": {{\"project\": \"lab\"}}")
         return USAGE
     if args.action == "test": return test(found, args)
+    if args.action == "editor": return which_editor(found)
+    if args.action == "run": return bounded(found, command, args.log)
     if args.action == "closed": return closed(found, command)
     if args.action == "ready": return ready_then(found, command, args.exclusive)
     return open_editor(root, found, "ensure" if args.ensure else "status" if args.status else "once",

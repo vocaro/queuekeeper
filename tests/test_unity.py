@@ -438,6 +438,27 @@ class CommandTests(Folder):
         self.assertIsNone(self.unity("ready", "--exclusive", "--", "check.sh")[0])
         self.assertEqual(became, [["check.sh"]] * 3)
 
+    def test_editor_prints_the_pinned_binary_alone_and_is_unmeasured_without_one(self):
+        status, output, error = self.unity("editor")
+        self.assertEqual((status, output), (0, f"{self.binary}\n"))
+        self.assertIn("matches the pinned 6000.6.0f1", error)
+        with patch.object(editor, "HUB", self.folder / "none"):
+            status, output, _ = self.unity("editor")
+        self.assertEqual((status, output), (UNMEASURED, ""))
+
+    def test_run_bounds_a_batch_run_by_its_log_and_gives_its_status_or_124(self):
+        ran = []
+        def run(command, log, found, **options):
+            ran.append((command, Path(log), found, options["quiet"]))
+            return self.ended
+        self.enterContext(patch.object(batch, "run", run))
+        os.environ[batch.VARIABLE] = "45"
+        for self.ended in (0, 7, batch.HUNG):
+            self.assertEqual(self.unity("run", "--log", str(self.folder / "gate.log"), "--", "Unity", "-batchmode")[0],
+                             self.ended)
+        self.assertEqual(ran[0], (["Unity", "-batchmode"], self.folder / "gate.log", self.project, 45))
+        with self.assertRaises(SystemExit): self.unity("run", "--log", "gate.log")
+
     def worktree(self, linked=True):
         own = self.folder / ("git/worktrees/w" if linked else "git")
         own.mkdir(parents=True, exist_ok=True)
