@@ -4420,9 +4420,7 @@ class AheadOfTheQueue(Fixture):
         self.assertEqual(self.state(identifier)["state"], "landed")
         self.assertEqual((self.gates(), self.light()), (0, 0))
         self.assertEqual(self.state(identifier)["ungated"]["lanes"], ["spelling"])
-        # The toolkit's check runs unadmitted, as a docs-only batch's does, so that it never waits behind a gate
-        # (vocaro/queuekeeper#26).
-        self.assertIn("spelling exited 0 in the queue's checkout, unadmitted, as an ungated landing's check", said)
+        self.assertTrue(any("runs the toolkit's: python3 scripts/qk spelling" in words for words in said), said)
 
     def test_a_project_without_a_spelling_lane_that_turned_the_toolkits_off_runs_no_lane(self):
         config = json.loads(json.dumps(self.configured))

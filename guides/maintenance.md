@@ -687,8 +687,7 @@ python3 scripts/qk land --no-gate --why "an unrelated flaky test fails the gate"
 - `--no-gate` needs a written reason, `--why TEXT`, and is refused without one. It lands the entry
   alone, in its turn: the worker rebases it onto `origin/main`, runs only the project's `spelling`
   lane, or the toolkit's where it has none and has not turned it off, and the pre-push hook, unless `main`'s `queue.hookCoveredBy` says the gate
-  covers the hook, and pushes. The toolkit's spelling check runs in the worker's checkout without
-  admission, as a docs-only batch's does (below). The reason is recorded everywhere the skip is: the entry's `ungated`,
+  covers the hook, and pushes. The reason is recorded everywhere the skip is: the entry's `ungated`,
   with the lanes; the worker's log; the landed tip's `Landed-without-gate:` trailer, its author,
   message and patch otherwise its own; and `qk queue status`. Example: an important fix is held up by
   an unrelated flaky test failing the gate. It is no gate of the pushed commit, so `eng release`

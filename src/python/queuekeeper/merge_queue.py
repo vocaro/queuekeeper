@@ -2761,9 +2761,8 @@ class Worker:
         those entries (Removal, vocaro-engineering#247). A lane that still waits to start is stopped in the same way for
         an entry qk land --front --no-gate put first (first_ungated), and the gate returns WITHDRAWN with self.ahead
         naming it (vocaro/queuekeeper#26). lane_now is (the lane running, when it began, where), by which a gate
-        stacked on this one goes to another Mac (Worker.admitted_mac). quick, for a docs-only or ungated batch's lanes,
-        runs the toolkit's two docs checks unadmitted first (Worker.quick), and as a string says which of the two it
-        is."""
+        stacked on this one goes to another Mac (Worker.admitted_mac). quick, for a docs-only batch's lanes, runs the
+        toolkit's two docs checks unadmitted first (Worker.quick)."""
         log, self.ran_on, self.measured, self.timed_out, self.ran_where = None, None, None, None, ""
         self.failed_lane, self.failed_load, self.withdrawn, self.ahead = None, None, [], None
         self.failed_dispatch = None
@@ -2787,7 +2786,7 @@ class Worker:
             self.queue.emit("gate.began", lane=lane, round=round_name, role=self.role, head=self.head(),
                             entries=list(self.gating))
             if quick:
-                status_ = self.quick(lane, log, *([quick] if isinstance(quick, str) else []))
+                status_ = self.quick(lane, log)
                 if status_ is not None:
                     self.gate_ended(lane, round_name, status_, log)
                     if not status_: continue
@@ -2886,9 +2885,9 @@ class Worker:
                     if self.measured: self.measured.update(results=said, log=str(log))
         return 0, log
 
-    def quick(self, lane, log, what="a docs-only batch's check"):
-        """The status of lane, one of a docs-only or ungated batch's lanes (what says which), run in this checkout
-        without admission, when it is the toolkit's spelling check or `qk docs check` (QUICK_CHECKS), the project's own lane of that name or none, so
+    def quick(self, lane, log):
+        """The status of lane, one of a docs-only batch's lanes, run in this checkout without admission, when it is the
+        toolkit's spelling check or `qk docs check` (QUICK_CHECKS), the project's own lane of that name or none, so
         that seconds of checks never wait behind heavy or whole-host work (vocaro-engineering#394); None for any other
         lane, or one that did not end within DOCS_CHECK_LIMIT, which qk run then runs admitted as before."""
         command = QUICK_CHECKS.get(lane)
@@ -2905,7 +2904,7 @@ class Worker:
         except OSError as error:
             self.say(f"{lane}: could not run unadmitted ({error}): running it admitted")
             return None
-        self.say(f"{lane} exited {status_} in the queue's checkout, unadmitted, as {what}")
+        self.say(f"{lane} exited {status_} in the queue's checkout, unadmitted, as a docs-only batch's check")
         return status_
 
     def read_group(self, lane, folder, log, *, include_swift=False):
@@ -3554,7 +3553,7 @@ class Worker:
                                        lambda: self.gate(lanes_of(config), round_name), stacks=False)
         elif self.alone or docs or ungated:
             result, log = self.gate(ungated["lanes"] if ungated else docs or lanes_of(config), round_name,
-                                    quick="an ungated landing's check" if ungated else bool(docs))
+                                    quick=bool(docs))
         else:
             lanes = lanes_of(config)
             self.lane_now = None
