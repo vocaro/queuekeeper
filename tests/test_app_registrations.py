@@ -78,6 +78,22 @@ exec /bin/ps "$@"
                         patch.object(registrations, "PLUGINKIT", str(self.pluginkit))):
             patcher.start()
             self.addCleanup(patcher.stop)
+        # A sweep's or a cleanup's listing of the processes, asked again when it fails. In a gate on 2026-11-11, at
+        # load about 50, one returned None, as when ps cannot start or outlasts its bound, so the run took the
+        # could-not-list path instead of the one under test (vocaro/queuekeeper#86, #87). That path has a test of
+        # its own, which patches the listing to fail every time. A sample's 10 s listing is left alone: one asked
+        # again could outlast the 15 s a run's end waits for its sampling thread.
+        real = registrations.offload_host.listing
+        def listing(command, timeout=60, **options):
+            if command != registrations.PROCESSES or timeout != registrations.LISTING_SECONDS:
+                return real(command, timeout, **options)
+            for _attempt in range(3):
+                found = real(command, stretched(timeout), **options)
+                if found is not None: break
+            return found
+        patcher = patch.object(registrations.offload_host, "listing", listing)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         os.environ.pop(registrations.RUN, None)
         self.derived = self.base / "derived"
         self.app = self.make_app(self.derived, "Reader")
