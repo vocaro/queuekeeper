@@ -1374,6 +1374,12 @@ this Mac's checkout of it names as `origin/main`, under the conditions below for
 toolkit checkout. On this Mac, a project whose `main` sets `"queue": {"followLandings": true}` has its
 main checkout fast-forwarded after each landing in the same way, for a checkout other projects read.
 
+So a run on the second Mac reads the extension as that Mac's checkout holds it, not as the commit under
+test or this Mac's checkout has it. The fast-forward happens only when that checkout is on `main`, clean
+and holds no commit of its own; one that is dirty, on a branch or diverged is left as it is, the
+dispatch says so, and runs there use it as it stands. A change to the extension is therefore tested on
+the second Mac only after it has landed.
+
 ### The second Mac's own toolkit checkout
 
 The second Mac has a toolkit checkout of its own at `~/Development/queuekeeper`. No dispatched

@@ -838,6 +838,46 @@ yet.
 Use [`queuekeeper queue placement`](shared-host.md#check-gate-placement-without-running-a-gate) to see
 whether each configured build Mac could admit a gate lane now, even when the queue is empty.
 
+### A project's first landing
+
+The queue reads a project's lanes from `origin/main`, so it refuses the commit that adds
+`queuekeeper.json`: "refs/remotes/origin/main has no queuekeeper.json"
+([#10](https://github.com/vocaro/queuekeeper/issues/10)). Until that is fixed, the first landing goes
+in by hand, with the owner's approval for the push. All eight of the owner's projects went in this way
+on 2026-11-12:
+
+```sh
+git worktree add --detach ../first-landing BRANCH && cd ../first-landing
+python3 scripts/qk run --here provision   # only if the project has a provision lane
+python3 scripts/qk run gate
+git push origin HEAD:refs/heads/main      # only on a pass, and only as a fast-forward
+```
+
+- Run `provision` first and with `--here`. A bare `qk run gate` on this Mac does not run it, and
+  without `--here` it may provision the second Mac instead of this checkout
+  ([#19](https://github.com/vocaro/queuekeeper/issues/19)).
+- Push from a checkout of the commit that passed. A project's pre-push hook runs from the main
+  checkout's hooks path, which still holds the hook from before the change; where it calls a command
+  the change renames, run the push with `git -c core.hooksPath="$PWD/.githooks"` so the new hook runs.
+- If `main` moved meanwhile, merge it into the branch and gate again; never force the push.
+
+### Changing Queuekeeper while work runs
+
+Do not edit, commit in or move the main checkout of Queuekeeper while a lane is being dispatched
+from it. A dispatch sends a snapshot of that checkout's tree, and a run that finds the tree changed
+between the send and its start does not run: "restore the tree that was sent, or run it again to
+send the tree as it is now". A project's gate was lost this way on 2026-11-12. Make changes in a
+linked worktree and land them through Queuekeeper's own queue, which moves the main checkout only
+when nothing runs from it.
+
+### Copies in each project
+
+Two files in every project are copies: `scripts/qk`, from this repository, and, in the owner's
+projects, the toolkit's `scripts/_engineering.py`. A fix to either reaches a project only by a
+landing there. On 2026-11-12 two fixes to them took two rounds of landings across seven projects,
+each a full gate. Before changing either file, collect the changes into one, and expect one landing
+per project ([#20](https://github.com/vocaro/queuekeeper/issues/20)).
+
 ### Signed queue launcher
 
 Set this up once on the Mac that owns the queues. From the Queuekeeper checkout, build the app in its
@@ -883,7 +923,10 @@ At login and on its interval the agent runs the same worker entry point. Empty a
 return before recovering dispatches or running gates. The queue lock excludes duplicate workers.
 If launchd rejects a start request, `worker.log` records the error and queuekeeper starts the session
 worker. To remove the setup, wait for the queue to be idle, run
-`/bin/launchctl bootout "gui/$(id -u)/$label"`, and remove that queue's plist.
+`/bin/launchctl bootout "gui/$(id -u)/$label"`, and remove that queue's plist. Read what
+`queuekeeper queue status` prints before the bootout, not its exit status, which is 0 for a queue in the
+middle of a gate too ([#21](https://github.com/vocaro/queuekeeper/issues/21)): the bootout ends a
+running worker and its gate, as it did to another session's on 2026-11-12.
 
 ## Spelling check
 
