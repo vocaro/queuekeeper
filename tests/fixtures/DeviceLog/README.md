@@ -13,4 +13,4 @@ they hold identifiers only: no app, person or message of the owner's.
   too, then dropped: `suppressed: 1 … do not disturb: 1`. None of these is a banner shown.
 
 Replace or extend them only with lines recorded the same way, from a test notification that says
-nothing of the owner's (guides/device-testing.md, Verifying on a device).
+nothing of the owner's (guides/devices.md, Verifying on a device).

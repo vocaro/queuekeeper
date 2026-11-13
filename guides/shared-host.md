@@ -84,13 +84,13 @@ worktree ([locating the toolkit](https://github.com/vocaro/vocaro-engineering/bl
 clone older than `admit` reaches the same queue through the resource CLI:
 
 ```sh
-PYTHONPATH="$QUEUEKEEPER_ROOT/src/python" python3 -m vocaro_engineering.resources -- COMMAND
+PYTHONPATH="$QUEUEKEEPER_ROOT/src/python" python3 -m queuekeeper.resources -- COMMAND
 ```
 
 Public project documentation may show plain commands for outside contributors on their own
 machines; the admission rule is about this host. Project adapters (a `heavy_slot.py` shim,
-scripts that import `vocaro_engineering.resources`) all call
-`src/python/vocaro_engineering/resources.py`; there is no second queue to keep in step. A
+scripts that import `queuekeeper.resources`) all call
+`src/python/queuekeeper/resources.py`; there is no second queue to keep in step. A
 private slot pool, such as `mkdir` locks in a scratch directory, is a second queue that the host
 queue cannot see: it ignores load and memory pressure, and exclusive work cannot exclude it.
 One such pool ran ten agents' builds beside another session's full gate, and the load average
@@ -385,7 +385,7 @@ holds the model already, a lane is one or the other. A lane group runs its lanes
 admission, so a group that runs a model lane needs `"model": true` or an exclusive resource
 itself, and a group that runs two or more needs `"jobs": 1`: its one model lock cannot keep its
 own lanes from driving the model at once
-([lane groups](https://github.com/vocaro/vocaro-engineering/blob/main/guides/parallel-tests.md#suites-side-by-side)).
+([lane groups](parallel-tests.md#suites-side-by-side)).
 
 Core ML whose compute units include the GPU (`.all`, `.cpuAndGPU`) takes the model lock too; only
 Core ML pinned off the GPU (`.cpuAndNeuralEngine`, `.cpuOnly`) does not need it. A Core ML
@@ -637,7 +637,7 @@ Use `qk queue status` for a gate already waiting and `qk admissions usage` for c
 utilization history on this Mac and the ordinary offload host. A placement reading is a snapshot.
 The host checks admission again when the lane actually starts.
 
-[Cloud gate runners](https://github.com/vocaro/vocaro-engineering/blob/main/guides/cloud-gate-runners.md) compares overflow hosts and the cost of a pilot.
+[Cloud gate runners](cloud-gate-runners.md) compares overflow hosts and the cost of a pilot.
 
 #### Screen state
 
@@ -1030,7 +1030,7 @@ place of the earlier rule that a simulator lane went there only once a run there
 this Mac's test counts): counts that differ are a defect to fix there. One that also needs a
 physical device stays here for that.
 
-Each Mac keeps its own [pool](https://github.com/vocaro/vocaro-engineering/blob/main/guides/simulator-testing.md#reserved-simulator-pool) and its own
+Each Mac keeps its own [pool](simulator-pool.md#reserved-simulator-pool) and its own
 [device record](#device-reservations). A lane on the second Mac takes or creates members in the
 second Mac's simulators and reserves them in the second Mac's record, so a member of the same
 name on each Mac is two simulators, and a reservation on one Mac says nothing about the other's.
@@ -1039,7 +1039,7 @@ Physical devices, which both Macs reach, are reserved only in this Mac's record
 A project's first run there creates its first members and lets their first boot finish. A
 session's `QUEUEKEEPER_DEVICE_OWNER` and agent session do not cross SSH, so a reservation there names
 an owner the run generates: `simulator-tests-UUID` for `qk simulator-tests`, and `POOL-UUID` for
-a gate that takes its member with `vocaro_engineering.simulators.pool.member()`.
+a gate that takes its member with `queuekeeper.apple.simulators.pool.member()`.
 `qk simulator-pool list` and `qk disk` show the pool of the Mac they run on; a run on the second
 Mac prunes that Mac's members of the kind it takes.
 
@@ -1247,7 +1247,7 @@ that a gate the merge queue ran here counts from a session's checkout
 ([vocaro-engineering#198](https://github.com/vocaro/vocaro-engineering/issues/198)). A later run
 of the lane at that commit, on either Mac, replaces it. What the run wrote in its `results/` is
 kept beside the receipt, in `LANE.results/`
-([a lane's results](https://github.com/vocaro/vocaro-engineering/blob/main/guides/parallel-tests.md#a-lanes-results)). A push path that
+([a lane's results](parallel-tests.md#a-lanes-results)). A push path that
 accepts it in place of running the gate again prints both Macs' macOS versions from the receipt.
 
 Each dispatch also keeps its own copy of its results, in
@@ -1819,13 +1819,14 @@ nothing:
 python3 scripts/qk disk
 ```
 
-It covers every project in `~/Development`, whichever project runs it, and reads only what those
-projects leave on the host: their worktrees, the simulators and runtimes their tests use, the
-DerivedData and SwiftPM caches their builds fill, the failure records their test runs keep, the
-lane results queuekeeper keeps by commit in their Git directories, and the scratch builds and results their sessions leave in `/private/tmp` and the user temporary
-directory. It never surveys the home
-directory or the rest of the volume. It prints each item's size, the reason for its status and
-the exact command that would remove it.
+It covers every project in `~/Development`, whichever project runs it, and reads only what Queuekeeper
+and its plugins create on the host: the simulators and runtimes their tests use, the DerivedData and SwiftPM
+caches their builds fill, the lane results Queuekeeper keeps by commit in their Git directories, and kept app
+builds. It never surveys the home directory or the rest of the volume. It prints each item's size, the reason
+for its status and the exact command that would remove it. What agent sessions leave is the toolkit's
+`eng disk` to list and remove, by the same rules of proof: linked worktrees, scratch builds and results under
+`/private/tmp`, kept failure records and evidence archives ([reclaiming disk space](https://github.com/vocaro/vocaro-engineering/blob/main/guides/shared-host.md#reclaiming-disk-space)).
+Run both when the volume runs short.
 A **candidate** is proven unowned by the rules below, and `--delete` removes it without asking
 (the owner's decision, 2026-11-05). An **owner** item shows no sign of a session using it, but
 only the owner can say whether it is still wanted: test results, a directory no repository has
@@ -1837,49 +1838,10 @@ the candidates, with their commands: exactly what `--delete` removes.
 
 - **In use.** One `lsof` and `ps` census of the account's processes is taken first. A path is in
   use when a process's working directory, an open file or a path in its arguments lies inside
-  it, and a path in use is kept. A worktree without proof of retirement must also have been unchanged
-  for 24 hours by default. One created at origin/main can look clean and landed before its session's
-  first process starts. An explicit `--min-idle-hours` applies the requested wait even to archived
-  sessions.
-- **Linked worktrees** of every main checkout in `~/Development`, from `git worktree list`. A
-  candidate lies in its project's `.claude/worktrees` or `.codex/worktrees` or in
-  `~/.codex/worktrees`, is unlocked (Claude Code locks an agent's worktree while the agent
-  runs), has no process, is clean (no modified or untracked path) and has landed: its HEAD is
-  contained in origin/main, every one of its commits has an equal patch there and none is a
-  merge, or merging it into origin/main would change nothing (a squash). That is the proof
-  Closeout's `landed.sh` makes, by the same code ([agent skills](https://github.com/vocaro/vocaro-engineering/blob/main/guides/skills.md)), less what needs
-  the network: its merged pull request lookup, and its search of the project's open issues for
-  citations. So a detached worktree that origin/main reaches only by equal patches or a squash is
-  kept: it is the last ref to those commits, and removing it would leave them to `git gc`. One on
-  a branch is not, since the branch remains. Ignored files under a `measurements` or `evidence`
-  directory keep it, as any ignored file `ignored.py` cannot name a cache does. The rest of
-  `.build` is SwiftPM's, SwiftPM 6's `.buildSystem_debug`, `.buildSystem_release` and
-  `CACHEDIR.TAG` among it. queuekeeper's results under `.build/queuekeeper` (lane logs, receipts, remote
-  results) keep an unlanded worktree, but go with a landed one, since its work is on origin/main
-  where a lane runs it again; the reason says so. Closeout still keeps a worktree for them. 44
-  landed subagent worktrees (`.claude/worktrees/agent-*`), 90 GiB, had to be removed by hand on
-  2026-11-05 before this
-  ([#187](https://github.com/vocaro/vocaro-engineering/issues/187)). A worktree that is the
-  folder (`cwd`) of a Claude desktop session not yet archived, by the app's session records in
-  `~/Library/Application Support/Claude/claude-code-sessions`, is kept; an unreadable record
-  keeps every landed worktree. A session's last activity there, and its transcript in
-  `~/.claude/projects`, count toward the idle time. The worktree also uses the timestamps recorded
-  inside its Git reflog, so rewriting an unchanged log does not restart the wait. An archived
-  desktop session can satisfy the default rule immediately for its Claude worktree when the record
-  belongs to the current checkout and no activity postdates the session. The inventory reads
-  origin/main once per repository and does not fetch, so work that landed after the last fetch
-  stays kept. Its `git status` runs with `GIT_OPTIONAL_LOCKS=0`, so it never refreshes another
-  session's index. The command is `git worktree remove` without `--force`, which itself refuses
-  a dirty tree and leaves the branch. A session left open in a removed worktree cannot run
-  commands there again; its work is on main and its branch remains. A merge queue's checkout is
-  locked and kept, except one of the layout beside the main checkout (`NAME-queue`,
-  `NAME-queue-toolkit`) that its worker locked as `retired by the merge queue` when it made the
-  checkout afresh under `~/Development/queuekeeper-workers` because a process still used the old one:
-  once no process does, that is an owner decision, `git worktree remove --force --force PATH`
-  ([where the queue's checkouts are](maintenance.md#the-merge-queue)).
+  it, and a path in use is kept.
 - **Simulators**, from `simctl list -j`. A member of a pool that a main checkout's
   queuekeeper.json names in `simulatorPool` is a candidate only under the
-  [pruning rule](https://github.com/vocaro/vocaro-engineering/blob/main/guides/simulator-testing.md#pruning), and its command is `qk simulator-pool prune`,
+  [pruning rule](simulator-pool.md#pruning), and its command is `qk simulator-pool prune`,
   which reserves it, checks it again and records the deletion. A device left by the retired
   [disposable lifecycle](https://github.com/vocaro/vocaro-engineering/blob/main/guides/simulator-testing.md#disposable-simulators), whose unique name carries a
   UUID, is a candidate when it is shut down, unused for the idle time, absent from every
@@ -1923,27 +1885,11 @@ the candidates, with their commands: exactly what `--delete` removes.
   such folders, 15 GiB, on 2026-11-04, before `qk simulator-tests` gave each test step a folder of
   its own ([#158](https://github.com/vocaro/vocaro-engineering/issues/158)). One holding other
   `Build` contents or anything else is an owner item. The folders every build shares (`ModuleCache.noindex`, `SDKExplicitPrecompiledModules`)
-  are kept. A SwiftPM scratch (a
-  directory holding `workspace-state.json`) or an Xcode `-derivedDataPath` directory under
-  `/private/tmp` or the user temporary directory is a candidate when it lies outside every
-  checkout. Claude Code keeps each session's scratchpad in
-  `/private/tmp/claude-UID/<checkout path, each other character a hyphen>/<session>/`; while
-  that checkout exists, or a process still works inside its path (a session whose worktree was
-  removed can still be running there), the session may return, so its scratch builds are kept.
-  Hyphens in names make that match loose, which only keeps more. A clone or artifact in SwiftPM's
+  are kept. A clone or artifact in SwiftPM's
   cache, `~/Library/Caches/org.swift.swiftpm`, is a candidate too: SwiftPM fetches it again.
-- **Results.** Result bundles, and run directories whose `owner` file records a finished run's
-  PID and start time, are owner items; a run whose recorded process still has that start time is
-  kept.
-- **Kept failure records**, in each main checkout's and worktree's `.build/failures/`, counted by
-  name. Their rule prunes a record once it is 14 days old or once five newer records of its name
-  exist ([kept failure records](https://github.com/vocaro/vocaro-engineering/blob/main/guides/app-testing.md#kept-failure-records)). A checkout with records past
-  it is a candidate, sized by those records, whose command is `eng failures prune CHECKOUT`; one
-  with none past it, or whose records a process uses, is kept. `eng failures keep` applies the
-  same rule as it keeps a record, on either Mac. Records alone never keep a landed worktree.
 - **Kept lane results**, beside the receipts in each main checkout's
   `.git/queuekeeper/remote/COMMIT/LANE.results/`
-  ([a lane's results](https://github.com/vocaro/vocaro-engineering/blob/main/guides/parallel-tests.md#a-lanes-results)), counted by lane. Their rule keeps a
+  ([a lane's results](parallel-tests.md#a-lanes-results)), counted by lane. Their rule keeps a
   lane's results at its newest 10 commits, by the time its receipt was kept, and at every commit
   kept in the last 14 days, and removes the rest; it never removes a receipt, which is small and
   which eng release, a checkpoint and `qk remote passed` read, so a receipt's `keptResults` can
@@ -1954,22 +1900,13 @@ the candidates, with their commands: exactly what `--delete` removes.
   ([evidence](https://github.com/vocaro/vocaro-engineering/blob/main/guides/evidence.md)). A repository with results past the rule is a candidate, sized by
   them, whose command is `qk remote prune-results CHECKOUT` (`--dry-run` lists them); one with
   none past it, or whose store a process uses, is kept.
-- **Evidence archives**, on a Mac that offloads to a second one. A folder in `~/Development` named
-  `*-evidence`, `*-measurements` or `session-evidence` that is not a Git checkout, and a main
-  checkout's `.build/session-evidence`, are owner items. Their command is
-  `eng evidence offload`, which deletes a folder here only once every file verified there
-  ([evidence](https://github.com/vocaro/vocaro-engineering/blob/main/guides/evidence.md#public-and-private-destinations)). A main checkout's archive goes to
-  `Development/session-evidence/<project>` there. queuekeeper's background offload retry runs that command
-  by itself once nothing in the folder has changed for 24 hours and no process uses it, so an
-  archive listed here moves without a person unless it is in use, still changing, or its offload
-  failed for a reason other than the second Mac being away.
 
 `qk disk --delete` removes every candidate category at once, on a terminal or not, without
 asking: any session runs it when the volume runs short (the owner's decision, 2026-11-05; until
 then it asked him on a terminal for every category but simulators and runtimes, and
 `--yes 'owner, 2026-11-04 chat'` carried an approval he gave in chat into a run without one).
 `--yes 'WHO ASKED'` now only names, in each ledger entry, who asked for the run, and without
-`--delete` it is refused. Owner items, evidence archives among them, are never removed, and
+`--delete` it is refused. Owner items are never removed, and
 their commands are only printed. Immediately before each
 removal it takes a fresh census and checks that candidate again, refuses an `rm` inside any
 working tree or reached through a link, and appends every decision to
@@ -1980,60 +1917,8 @@ measure free space on the same volume immediately before and after the run, for 
 `df -k /System/Volumes/Data`. Report the difference as the net change in free space and label
 the dry-run footprint as allocated size. If you also measure each removal, label those changes
 separately because other activity on the volume can affect the net change across the run.
-Run the inventory again after removing worktrees because DerivedData whose workspace went with
-them becomes a candidate.
-
-Use `qk disk --dry-run --archive-worktrees` to see which additional worktrees can go after
-archiving. `qk disk --delete --archive-worktrees` also stages the ignored evidence, lane results
-and unclassified files from those worktrees and verifies them on the second Mac before removing the
-checkout. This applies to clean, landed, idle worktrees under a project's `.claude/worktrees`.
-Persistent checkouts, Codex worktrees, and detached commits that main cannot reach stay under
-their existing rules. Recognizable Xcode build output can be rebuilt, while logs, result bundles
-and unidentified output are preserved.
-
-The archive pass also recognizes SwiftPM dependency checkouts inside `.build`, including Xcode's
-`SourcePackages/checkouts`. The checkout must match its workspace pin and local fetch mirror.
-Tracked edits, untracked or unexpected ignored files, and refs the mirror cannot reproduce keep
-the worktree. The command checks the dependency again after verifying the archive.
-
-For an ignored uv `.venv` beside a tracked `pyproject.toml` and `uv.lock`, the archive pass
-can omit the standard interpreter symlinks. It checks them against the CPython version and home
-recorded in `pyvenv.cfg`. Other environment files follow the regular archive rules, and unexpected
-external links still block removal.
-
-The archive goes under `~/Development/session-evidence/<project>/disk-<worktree>-<digest>`
-on the second Mac, with the original relative paths under `files/` and the worktree's commit and
-file hashes in `worktree.json`. The command stages one archive locally at a time. A failed or
-unavailable transfer, an unverified external link, or a change to the checkout during the transfer keeps the
-worktree. After verification, the command checks ownership and the file inventory again and uses
-`git worktree remove` without force. The cleanup ledger records the archive and removal outcome.
-
-On 2026-10-21 the 1.8 TiB data volume had 21 GiB free. Of about 1.74 TiB used, a measurement
-archive held 314 GiB, linked worktrees 150 GiB (nearly all in use or unlanded), `/private/tmp`
-116 GiB (76 GiB of it agent session scratch, mostly Xcode derived data built in scratchpads),
-simulators 79 GiB (one default iPhone 23 GiB), simulator runtimes 38 GiB, and applications,
-another account and a virtual machine about 300 GiB together. About 600 GiB lay in folders the
-shell cannot read, which macOS privacy protection hides (`~/.Trash`, Mail, Messages, app
-containers), and in system data. The inventory found 37 GiB of candidates, almost all derived
-data in finished sessions' scratchpads, and 76 GiB of owner items, 48 GiB of them Xcode's
-default simulators.
-
-A free-space reading taken after a write failed with `ENOSPC` says nothing about the moment it
-failed. From 2026-10-24 to 2026-10-26 the build host's data volume filled completely ten times,
-for 3 to 11 minutes each, while something used its free space at 25 to 90 MB/s. Each time about
-1.7 TB came back at once, and readings a few minutes later found about 1.6 TB free. CacheDelete's
-purge requests marked every fill and nothing else in two weeks of the unified log, which kept
-them long after most other messages, the kernel's included, were gone (about nine hours). To
-date a fill, search them in the host's local time:
-
-```sh
-log show --start '2026-10-26 11:00:00' --end '2026-10-26 12:00:00' \
-    --predicate 'process == "appstoreagent" AND eventMessage CONTAINS "Purge request with desired bytes"'
-```
-
-While the volume is falling, symptomsd's log names each process that has dirtied 2 GB
-(`log show --last 1h --predicate 'eventMessage CONTAINS "local storage writes trigger"'`), and
-`lsof +L1` lists files deleted while still open, whose space `du` cannot see.
+Run the inventory again after `eng disk` removes worktrees, because DerivedData whose workspace went
+with them becomes a candidate.
 
 ### Processes left over from runs
 
@@ -2141,7 +2026,7 @@ it inherits, nor a `self` lane, whose `qk admit` commands reap each as it is adm
 1. It is a member of a project's pool: named `POOL LABEL N`, for a pool named by the project, or by a
    project's main checkout here or its checkout on the second Mac. Or it is that pool's warmed template,
    `POOL LABEL template (RUNTIME)` on the runtime its name gives, as `qk simulator-pool list` shows one
-   ([warmed templates](https://github.com/vocaro/vocaro-engineering/blob/main/guides/simulator-testing.md#warmed-templates)). Asked on 2026-11-04 "May the pool's reap
+   ([warmed templates](simulator-pool.md#warmed-templates)). Asked on 2026-11-04 "May the pool's reap
    shut down a warmed template a killed warm-up left booted?", the owner answered "Yes, reap them"
    ([vocaro-engineering#153](https://github.com/vocaro/vocaro-engineering/issues/153)). The stop is
    logged and printed as a warmed template's, not a member's. Before booting a newly created template,
@@ -2169,7 +2054,7 @@ it inherits, nor a `self` lane, whose `qk admit` commands reap each as it is adm
 
 **A pool member with no live reservation goes after 2 hours, whoever booted it.** That includes one the
 owner booted by hand. To keep one running, boot a simulator outside the pool, or reserve it with
-`python3 -m vocaro_engineering.devices reserve`, which records no process and so counts as live. A
+`python3 -m queuekeeper.apple.devices reserve`, which records no process and so counts as live. A
 session that took a member with `qk simulator-pool take`, whose process ends when it prints the
 UDID, holds a reservation whose process is gone, which counts as live until its expected release,
 an hour after the take unless `take --hold MINUTES` asked for longer. To work past that, it runs
@@ -2259,7 +2144,7 @@ An entry whose processes are gone and whose release has passed, but which reap c
 rest, stays held and is named with why (`reap did not release it: simctl shows it Booted, not Shutdown`,
 for one; its simulator is still under 2 hours old) and its exact `devices recover` command; for an entry
 in the second Mac's record that command runs there, as `ssh HOST 'cd
-~/Development/queuekeeper/src/python && python3 -m vocaro_engineering.devices recover …'`, since
+~/Development/queuekeeper/src/python && python3 -m queuekeeper.apple.devices recover …'`, since
 run here it would read this Mac's record. `qk simulator-pool reap`, with or without `--dry-run`, and
 `qk doctor`'s `reaped` name every such entry; the reap before a dispatch or a run here names only those of
 simulators it just stopped. `devices status` names them too, and releases nothing. One not yet due that
@@ -2313,7 +2198,7 @@ goes. A problem here is printed on stderr and never changes the run's result.
 Physical devices, and the members of a project's simulator pool, are
 used only under a real reservation in the host's one device record, a human-readable JSON file
 outside every repository: `~/Library/Application Support/queuekeeper/device-handoff.json`
-of the account the sessions run as. `src/python/vocaro_engineering/devices.py` is its only
+of the account the sessions run as. `src/python/queuekeeper/apple/devices.py` is its only
 writer. It finds the record from the account's home directory, not `HOME` or `TMPDIR`, so a
 session with a private environment joins the same record; `QUEUEKEEPER_DEVICE_RECORD` names an
 isolated record for tests only. Committed documentation keeps no device identifiers or live
@@ -2331,13 +2216,13 @@ Read and change the record through the helper's CLI, or from a script through
 
 ```sh
 export PYTHONPATH="$QUEUEKEEPER_ROOT/src/python"
-python3 -m vocaro_engineering.devices status
-python3 -m vocaro_engineering.devices show iPhone    # the entry and its revision; 0 if new
-python3 -m vocaro_engineering.devices reserve iPhone --owner SESSION --revision N \
+python3 -m queuekeeper.apple.devices status
+python3 -m queuekeeper.apple.devices show iPhone    # the entry and its revision; 0 if new
+python3 -m queuekeeper.apple.devices reserve iPhone --owner SESSION --revision N \
   --device UDID --purpose "…" --release-by 2026-10-21T18:00:00Z \
   --set 'originalSettings={"voiceoverEnabled": false}' --set 'preservation=…'
-python3 -m vocaro_engineering.devices update iPhone --owner SESSION --revision N --set 'run=…'
-python3 -m vocaro_engineering.devices release iPhone --owner SESSION --revision N \
+python3 -m queuekeeper.apple.devices update iPhone --owner SESSION --revision N --set 'run=…'
+python3 -m queuekeeper.apple.devices release iPhone --owner SESSION --revision N \
   --outcome "…" --restoration "…"
 ```
 
@@ -2401,7 +2286,7 @@ session takes it whenever it is free, without asking; the iPhone is his personal
 `--release-by` at the end of the time he gave. Both are taken the same way:
 
 ```sh
-python3 -m vocaro_engineering.devices take iPad --purpose "…" --release-by 2026-10-31T09:00:00Z \
+python3 -m queuekeeper.apple.devices take iPad --purpose "…" --release-by 2026-10-31T09:00:00Z \
   --set 'originalSettings={"voiceoverEnabled": false}' --set 'preservation=…'
 ```
 
@@ -2423,7 +2308,7 @@ run, with the shortcuts he made there once, and releasing or recovering it puts 
 entry's `notifications` records each step. Without those shortcuts the command says what to ask
 the owner when asking for the device. `devices run` watches the device's log for a
 banner while its command runs, and runs a command that one reached once more
-([notifications during a run](https://github.com/vocaro/vocaro-engineering/blob/main/guides/device-testing.md#notifications-during-a-run)).
+([notifications during a run](devices.md#notifications-during-a-run)).
 
 Record each app the session launches on the device with `devices update KEY --launched BUNDLE`.
 Releasing an entry that records any requires `--apps-quit "…"`, saying how they were quit (for
@@ -2449,7 +2334,7 @@ releases nothing; the session restores the device and releases it.
 Run a command on a physical device through the toolkit's one launcher for a bounded run:
 
 ```sh
-python3 -m vocaro_engineering.devices run iPhone --owner SESSION --revision N --limit 180 \
+python3 -m queuekeeper.apple.devices run iPhone --owner SESSION --revision N --limit 180 \
   --restoration 60 -- xcodebuild test-without-building … -destination "platform=iOS,id=UDID"
 ```
 
@@ -2561,7 +2446,7 @@ python3 scripts/qk remote run --device iPhone LANE -- ARGUMENTS
   defers physical devices: it checks the devices the command names against the lease, bounds the
   command by END as here, and leaves the recording to the dispatch.
 - The dispatch watches each leased device's log from this Mac while it lasts, and sends a run a
-  notification banner reached once more (guides/device-testing.md, Notifications during a run).
+  notification banner reached once more (guides/devices.md, Notifications during a run).
   A `devices run` in the work watches from the second Mac as well, and reruns on its own.
 - The device stays reserved after the run. Preflight, restoration and the release are the
   session's, from this Mac, which reaches the device too.
@@ -2611,13 +2496,13 @@ A new window from the owner is a new reservation, after a release. Another sessi
 holder in `devices status`, and its reservation is refused while the entry is held.
 
 ```sh
-python3 -m vocaro_engineering.devices reserve mac-foreground --owner SESSION --revision N \
+python3 -m queuekeeper.apple.devices reserve mac-foreground --owner SESSION --revision N \
   --purpose "Mac XCUITest of …" --release-by 2026-10-23T18:00:00Z
 export QUEUEKEEPER_DEVICE_OWNER=SESSION
-python3 -m vocaro_engineering.devices check      # at the start and before each action
-python3 -m vocaro_engineering.devices update mac-foreground --owner SESSION --revision N \
+python3 -m queuekeeper.apple.devices check      # at the start and before each action
+python3 -m queuekeeper.apple.devices update mac-foreground --owner SESSION --revision N \
   --own PID
-python3 -m vocaro_engineering.devices release mac-foreground --owner SESSION --revision N \
+python3 -m queuekeeper.apple.devices release mac-foreground --owner SESSION --revision N \
   --outcome "…" --restoration "…" --frontmost restored
 ```
 
@@ -2634,7 +2519,7 @@ run's own runner may set VoiceOver back to the original queuekeeper recorded in 
 (`voiceOverOriginal`) with `voiceover.state.recover_restoration(owner)`, once, while the run lives;
 verified, the entry is no longer uncertain and the run's next session starts (owner's decision,
 2026-11-12, [EPUBLib#416](https://github.com/vocaro/EPUBLib/issues/416);
-[recovering the foreground](https://github.com/vocaro/vocaro-engineering/blob/main/guides/second-mac-foreground.md#recovering-the-foreground)).
+[recovering the foreground](foreground.md#recovering-the-foreground)).
 On this Mac a passed expected release releases nothing: `status`
 reports it, the check refuses further foreground work, and the session stops, restores and
 releases. A reservation made before 2026-11-06 that recorded an approval also stops once that
@@ -2727,7 +2612,7 @@ Supervise the process group you own. The toolkit's `processes.supervise`, which 
   running on stderr, as `ps -o pid,ppid,pgid,lstart,args` rows with the parent and group each
   had when first seen, and stops them: SIGTERM, then SIGKILL 10 s later, or 120 s for a foreground
   run, which restores what it changed on the Mac first
-  ([second Mac foreground](https://github.com/vocaro/vocaro-engineering/blob/main/guides/second-mac-foreground.md#waiting-for-the-foreground)). The root's status counts
+  ([second Mac foreground](foreground.md#waiting-for-the-foreground)). The root's status counts
   once they are gone; a process that survives SIGKILL is still awaited. A lane's `timeout` bounds
   only the root, so a root that exits in time keeps its status through the grace. Agents
   reported Xcode's `DTServiceHub` outliving an ad hoc `xcodebuild … test` on a fresh iOS
@@ -3112,7 +2997,7 @@ entry was removed by hand.
 ### Probing stop signals
 
 The stops above were measured with `siglog.py` and `watch.py`, kept with the scripts that start
-and read them in [`src/python/StopSignals`](https://github.com/vocaro/vocaro-engineering/blob/main/src/python/StopSignals), standard library only.
+and read them in [`src/python/StopSignals`](../src/python/StopSignals), standard library only.
 
 - `siglog.py LOG child SECONDS` logs each SIGTERM, SIGINT and SIGHUP it receives and runs on, and
   starts a child that leads a session of its own and does the same. Each writes `exiting` after

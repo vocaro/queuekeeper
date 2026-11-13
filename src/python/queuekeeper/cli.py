@@ -718,7 +718,7 @@ def perform(argv, report):
     admission.add_argument("--app", action="append", metavar="NAME", help="with --foreground, the app under test, "
         "as a crash-report alert names its process; repeat for each. A failed run during which queuekeeper cleared such an "
         "alert for another process, one that stood longer than one look, is unmeasured; one for NAME stays failed "
-        "(guides/second-mac-foreground.md, Crash-report alerts)")
+        "(guides/foreground.md, Crash-report alerts)")
     placed = admission.add_mutually_exclusive_group()
     placed.add_argument("--here", action="store_true", help="run the command on this Mac, never offering it to the "
         "second Mac: for a command whose products this session uses here afterwards, such as build output, derived "
@@ -973,7 +973,7 @@ def perform(argv, report):
                                                      *[word for test in args.only for word in ("--only", test)]]
             # Lane arguments, so that qk simulator-tests finds them on whichever Mac runs the lane.
             extra = [*series, *(args.passed or [])]
-            # A series' lane runs N times inside its one admission, within N times its limit (guides/simulator-testing.md).
+            # A series' lane runs N times inside its one admission, within N times its limit (guides/simulator-pool.md).
             limit = parallel.lane_timeout(lane, extra)
             lane_wait.begin(root, args.lane)
             # A foreground lane takes a Mac's screen. The second Mac's is queuekeeper's to take for the run, below; this

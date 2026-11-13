@@ -14,7 +14,7 @@ again until the window has left the screen. It never presses a notification, whi
 Clear All on a stack, and never touches a notification that asks for a password, permission or access: those
 are the owner's (crash_alerts.OWNERS). A window it cannot identify, read, close, or see gone stops the run as
 unmeasured, naming the window. Nothing a notification says is printed or recorded: only the window's number,
-process, layer and frame, and each closed notification's kind and frame (guides/second-mac-foreground.md,
+process, layer and frame, and each closed notification's kind and frame (guides/foreground.md,
 Notification Center windows).
 """
 import json
@@ -39,7 +39,7 @@ CLOSE = "Close"
 GONE = 5
 STEP = 0.5
 ROUNDS = 3
-GUIDE = "guides/second-mac-foreground.md"
+GUIDE = "guides/foreground.md"
 SECTION = "Notification Center windows"
 # What the toolkit reads and changes on the Mac, through this alone, so that tests replace it (host_isolation).
 run = offload_host.output

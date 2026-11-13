@@ -67,7 +67,7 @@ def default_simulators(config):
     shown = ", ".join(found[:5]) + (f" and {len(found) - 5} more" if len(found) > 5 else "")
     return [f"{len(found)} of Xcode's default simulators exist on this Mac: {shown}. A script or Xcode run that "
             "picks a device by name or `booted` installs on one instead of a pool member; `qk doctor` deletes each "
-            "one that is shut down and unused, and `qk disk` says why it kept these (guides/simulator-testing.md, "
+            "one that is shut down and unused, and `qk disk` says why it kept these (guides/simulator-pool.md, "
             "Reserved simulator pool)"]
 
 

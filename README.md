@@ -169,6 +169,19 @@ Mac, as before.
   event journal under them
 - [Related tools](doc/related_tools.md)
 
+The guides hold the detail, with the measurements and decisions behind each rule:
+
+- [Maintenance](guides/maintenance.md): operating the merge queue, and the spelling check
+- [Shared host](guides/shared-host.md): admission, the second Mac, disk cleanup, device reservations
+  and process supervision
+- [Lanes](guides/lanes.md): receipts, how tests are counted, compiling first, tests no lane runs
+- [Parallel tests](guides/parallel-tests.md): lane groups, `qk unittest`, `qk simulator-tests` and
+  `qk xctest`
+- [Simulator pool](guides/simulator-pool.md), [physical devices](guides/devices.md) and
+  [kept app builds](guides/app-builds.md), for the Apple plugin
+- [Foreground runs](guides/foreground.md): taking a Mac's screen for a lane
+- [Cloud gate runners](guides/cloud-gate-runners.md): renting a Mac for the queue
+
 ## Limitations
 
 - **One user so far.** Queuekeeper was extracted from its author's private tooling. Expect rough

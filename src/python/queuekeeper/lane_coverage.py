@@ -1,6 +1,6 @@
 """Whether every test of a project has a lane: qk doctor's reading of what each lane selects (#289).
 
-A test no lane selects goes stale unseen (guides/app-testing.md, Every test has a lane). This reads the tests from
+A test no lane selects goes stale unseen (guides/lanes.md, Every test has a lane). This reads the tests from
 the tracked source, without building or running anything, and each lane's selection from its command:
 
 - swift test and qk xctest select their package's test targets, narrowed by --filter and --skip;
@@ -27,7 +27,7 @@ EVERY_TEST_HAS_A_LANE = "every-test-has-a-lane"
 TESTS_WITHOUT_A_LANE = "tests-without-a-lane"
 COULD_NOT_TELL = "could-not-tell"
 NO_TESTS_FOUND = "no-tests-found"
-RULE = "guides/app-testing.md, Every test has a lane"
+RULE = "guides/lanes.md, Every test has a lane"
 # Frozen records at the top of a project, and code a project keeps but did not write, anywhere in it.
 RECORDS = ("measurements/", "evidence/")
 VENDORED = {"licenses", "ThirdParty", "Vendor"}

@@ -1,5 +1,5 @@
 """What every project's Mac VoiceOver session runner shares on a Mac that keeps its state, the second Mac
-(guides/second-mac-foreground.md): a session run again when VoiceOver moved to XCTest's Automation Running
+(guides/foreground.md): a session run again when VoiceOver moved to XCTest's Automation Running
 banner, which that Mac cannot unload, and a stop that restores VoiceOver before anything else.
 
     from queuekeeper.apple.voiceover.guard import (BANNER_STOP, BannerNamed, Stopped, check_banner,

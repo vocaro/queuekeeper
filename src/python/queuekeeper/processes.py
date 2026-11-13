@@ -25,7 +25,7 @@ LINGER, KILL_AFTER = 60, 10
 # lane and heavy slot about 70 s after the work ended (vocaro-engineering#154).
 XCODE_PROGRAM = re.compile(r"[^\s'\"]*/Xcode[^/\s'\"]*\.app/Contents/(?!Developer/usr/bin/xcodebuild(?:\s|$))\S")
 # Seconds a foreground run has between SIGTERM and SIGKILL instead: it restores what it changed on a Mac
-# that keeps its state, VoiceOver first, then collects what it heard (guides/second-mac-foreground.md).
+# that keeps its state, VoiceOver first, then collects what it heard (guides/foreground.md).
 # On 2026-10-30 a stop at KILL_AFTER left VoiceOver on there. Chosen to cover a session's restoration and
 # a lane's bounded collection of its end state; not measured.
 FOREGROUND_KILL_AFTER = 120

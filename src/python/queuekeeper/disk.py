@@ -3,7 +3,7 @@
 `qk disk` measures what Queuekeeper leaves: each repository's lane results kept by commit, and what an extension
 adds (the Apple extension: simulators and runtimes, Xcode's DerivedData, the SwiftPM cache and kept app builds).
 What sessions and the owner's workflow leave (worktrees, scratch folders, failure records, evidence archives) is
-the toolkit's `qk disk` (decision E of vocaro/vocaro-engineering#403). It classifies each item:
+the toolkit's `eng disk` (decision E of vocaro/vocaro-engineering#403). It classifies each item:
 
 - candidate: the rules prove that no session's live work is in it. `--delete` removes it, checking
   it again first, without asking and on a terminal or not: any session runs it when the volume

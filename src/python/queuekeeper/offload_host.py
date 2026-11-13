@@ -820,7 +820,7 @@ def screen_capture_allowed():
 def foreground_problems():
     """What this Mac lacks for foreground work, a Mac VoiceOver session among it, run by a command started
     over SSH, as [problem, the owner's fix] pairs; none when it is ready. Each is a setting of the owner's
-    Mac, which the owner changes, never a run (guides/second-mac-foreground.md).
+    Mac, which the owner changes, never a run (guides/foreground.md).
     It reads and changes nothing else: nothing here prompts, activates or sends a key."""
     found = []
     user, console = pwd.getpwuid(os.getuid()).pw_name, console_user()

@@ -211,7 +211,7 @@ def test_lanes(declared):
 def compile_first(name, lane):
     """A lane's "compileFirst", the argv that compiles its test target before its command, in its one admission and
     on the derived data the command uses, so that a compile error stops the run before its tests take a simulator
-    (guides/app-testing.md, Compile before the tests). A self lane has no admission of its own to run it in."""
+    (guides/lanes.md, Compile before the tests). A self lane has no admission of its own to run it in."""
     if "compileFirst" not in lane: return
     command = lane["compileFirst"]
     if not isinstance(command, list) or not command or any(not isinstance(x, str) or not x for x in command):

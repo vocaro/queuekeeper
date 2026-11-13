@@ -35,7 +35,7 @@ NAMED_PARTS = 5
 SHARD = re.compile(r"^== (.+?): .*\((?:[^()]*, )?(\d+(?:\.\d+)?)s\)$")
 LANE_TIME = re.compile(r"^  (\S+)\s+(\d+(?:\.\d+)?)s\s+(?:PASS|FAIL|UNMEASURED)$")
 SPLIT = "guides/releasing.md, Keeping the split"
-PASS = "guides/releasing.md, The device pass"
+PASS = "guides/devices.md, The device pass"
 
 
 def parts(log):

@@ -28,7 +28,7 @@ POLL = 10
 # Seconds a run is expected to hold the foreground when its lane names no timeout. A deadline releases
 # nothing: the run releases the entry when its work ends, however long that takes.
 EXPECTED = 3 * 3600
-GUIDE = "guides/second-mac-foreground.md"
+GUIDE = "guides/foreground.md"
 # Each (owner, record=, said=, **options) -> a context held for the run while it holds the foreground: what an
 # extension that builds on this one saves before the run and puts back after it, as the Apple extension does
 # VoiceOver's state. options are slot's own, passed on. A guard that could not put back what it changed raises

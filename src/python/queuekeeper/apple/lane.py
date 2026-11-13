@@ -93,7 +93,7 @@ def register():
         "device-pass": ("a release's physical-device pass, as a release lane's command: run COMMAND once on each paired "
                         "device named, in turn, under its reservation, taking the iPad in turn and using an iPhone the "
                         "session reserved within the owner's window: qk device-pass --device iPad --device "
-                        "iPhone -- COMMAND; -h for the rest (guides/releasing.md, The device pass)", device_pass.main),
+                        "iPhone -- COMMAND; -h for the rest (guides/devices.md, The device pass)", device_pass.main),
         "simulator-pool": ("list, take, release, prune, reap or check members of the project's simulator pool under "
                            "device-record reservations: qk simulator-pool list|take|release|prune|reap|check; "
                            "-h for the rest", simulator_pool.main),

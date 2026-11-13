@@ -13,7 +13,7 @@ change or `qk simulator-pool template --refresh` asks, under its own reservation
 with erase erases the member as before, and one with keep_state reserves and boots it without resetting
 or erasing it. Pruning deletes a member
 unused and released for an hour, never the lowest-numbered of its kind, and a template whose runtime
-is no longer installed, and records each deletion (guides/simulator-testing.md, Reserved simulator pool). Nothing
+is no longer installed, and records each deletion (guides/simulator-pool.md, Reserved simulator pool). Nothing
 else here deletes or renames a simulator, except a template whose runtime moved, which is replaced.
 Reaping shuts down a member, or a template, left booted past its time, such as by a killed warm-up
 (offload_host.reap; guides/shared-host.md, Stale pool simulators).
@@ -92,7 +92,7 @@ BOOT_ERROR_SHOWN = 2000
 # process with no assistive technology running, so that an in-process test hosted in an app reads their
 # views (AccessibilitySnapshot.readsSystemViews). Apple documents no such key: verified on the iOS 27.2
 # simulator, runtime build 24B8117, and checked again by the OS-drift procedure (vocaro-engineering#181;
-# guides/simulator-testing.md, App accessibility).
+# guides/simulator-pool.md, App accessibility).
 APP_ACCESSIBILITY_DOMAIN, APP_ACCESSIBILITY_KEY = "com.apple.Accessibility", "ApplicationAccessibilityEnabled"
 
 
@@ -483,7 +483,7 @@ class Pool:
             if any(template.udid == udid for template in templates(self.name, listing)) else "a device"
         raise RuntimeError(f"{entry.get('name')} ({udid}) is {kind} outside the {self.name} simulator pool: take a "
                            "member with `qk simulator-pool take --device TYPE --runtime RUNTIME` and pass its UDID "
-                           "(guides/simulator-testing.md, Reserved simulator pool)")
+                           "(guides/simulator-pool.md, Reserved simulator pool)")
 
     def check_held(self, udid, listing=None, defaults=None):
         """The member this UDID names, when this owner holds a live reservation of it: its record entry,
@@ -511,7 +511,7 @@ class Pool:
         raise device_record.Refused(f"{member.name} ({member.udid}) is a {self.name} pool member that {self.owner} "
                                     f"holds no reservation of; {why}. Take one with `qk simulator-pool take "
                                     "--device TYPE --runtime RUNTIME` and pass the UDID it prints "
-                                    "(guides/simulator-testing.md, Reserved simulator pool)")
+                                    "(guides/simulator-pool.md, Reserved simulator pool)")
 
     def state(self, udid):
         """A fresh observation of this exact device, or None when simctl no longer lists it."""
@@ -1281,7 +1281,7 @@ def main(argv, project=None):
                        "template, for a lane that wants pristine data")
     take.add_argument("--app-accessibility", action="store_true", help="switch UIKit's and SwiftUI's own "
                       "accessibility on in the member's app processes, for tests hosted in an app that read system "
-                      "views (guides/simulator-testing.md, App accessibility); a setting that does not read on fails "
+                      "views (guides/simulator-pool.md, App accessibility); a setting that does not read on fails "
                       "the take")
     take.add_argument("--boot-timeout", type=int, default=600, help="seconds the boot may take (default 600); "
                       f"past it the member is released and the command exits {lane_results.UNMEASURED}")

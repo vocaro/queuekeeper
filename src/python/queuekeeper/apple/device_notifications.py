@@ -42,7 +42,7 @@ RESTORE = "Vocaro Restore Notifications"
 # Seconds devicectl has to open Shortcuts, and the wait for devicectl itself beyond that. A Wi-Fi launch
 # can take a minute on a busy host (guides/device-testing.md, devicectl states and timeouts).
 TIMEOUT = 120
-GUIDE = "guides/device-testing.md, Notifications during a run"
+GUIDE = "guides/devices.md, Notifications during a run"
 
 
 def url(name):

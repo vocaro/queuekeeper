@@ -2370,7 +2370,7 @@ def foreground_report(host):
     for problem, fix in found.get("problems", []):
         print(f"- {problem}: {fix}")
     if found.get("problems"):
-        print("These are the owner's settings to change, on the second Mac (guides/second-mac-foreground.md); "
+        print("These are the owner's settings to change, on the second Mac (guides/foreground.md); "
               "foreground work there stops until they are.")
         return MISCONFIGURED
     print("Ready for foreground work started over SSH.")

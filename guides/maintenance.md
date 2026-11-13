@@ -24,7 +24,7 @@ prints a warning and preserves the queue outcome and exit status (vocaro-enginee
 
 **A gated push keeps the app.** For a project whose queuekeeper.json has `app`, the worker starts
 `qk app keep --after-landing` for the pushed commit in the background once the push lands, and the
-round goes on without waiting. That build is what `qk app run` opens ([kept app builds](https://github.com/vocaro/vocaro-engineering/blob/main/guides/app-builds.md)).
+round goes on without waiting. That build is what `qk app run` opens ([kept app builds](app-builds.md)).
 
 **A session does not run the full gate.** It runs the smallest relevant checks, commits and adds
 the commit. Adding is the decision to land: the owner approves that once, and no later step asks.
@@ -948,7 +948,7 @@ reads `PATH: British spelling in file name 'WORD' -> AMERICAN`, and a directory 
 as `DIR/`. Its positive controls, for words and for file names, run before any file is read, so
 a detector that stopped detecting fails instead of passing as a clean tree. Exit 2 means nothing
 was checked. The rules and what each exemption was learned from are in
-`src/python/vocaro_engineering/spelling.py`.
+`src/python/queuekeeper/spelling.py`.
 
 It already exempts other projects' British-spelled API names, such as Apple's `isCanceled` and
 Unity's `MonoBehaviour`, URLs, a list item's first `<em>` (a cited title) and a line marked
