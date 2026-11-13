@@ -1694,6 +1694,42 @@ def read_json(path, limit=NOW_BYTES):
     return json.loads(data)
 
 
+# The fields of a holder's live progress observation (progress.Monitor) that `qk admissions now` passes on, and how
+# many of a holder's observations, at most, it reads: one a leaf, and a holder runs few leaves at once.
+PROGRESS_FIELDS, HOLDER_OBSERVATIONS = ("lane", "host", "state", "action", "quietSeconds", "thresholdSeconds",
+                                        "maximumQuietSeconds", "samples", "unobservableSamples", "observedSeconds",
+                                        "maximumObservationGapSeconds"), 16
+
+
+def holder_progress(guard, identity, at):
+    """The live progress observations a holder's leaves publish under its admission (lane_progress.destinations):
+    each fresh, running record in the holder's folder beside the guard, with its reporter's PID and start for the
+    caller to check against its one ps, cut to PROGRESS_FIELDS, and how long ago it last saw progress. Only a lane
+    that declares `stall` publishes one (vocaro/queuekeeper#70). Nothing that cannot be read counts: its holder
+    is shown with no observation, never as quiet."""
+    found = []
+    if not re.fullmatch(r"[0-9A-Za-z]+", identity): return found
+    try: names = sorted(os.listdir(str(guard) + ".progress/" + identity))
+    except OSError: return found
+    for name in names[:2 * HOLDER_OBSERVATIONS]:
+        if not name.endswith(".json") or len(found) >= HOLDER_OBSERVATIONS: continue
+        try: record = read_json(Path(str(guard) + ".progress") / identity / name, 64 << 10)
+        except (OSError, ValueError): continue
+        when = record.get("observedAt") if isinstance(record, dict) else None
+        if not (isinstance(record, dict) and record.get("phase") == "running" and type(when) in (int, float)
+                and 0 <= at - when <= 15 and type(record.get("reporter")) is int and record["reporter"] > 0
+                and isinstance(record.get("reporterStart"), str)):
+            continue
+        kept = {field: record.get(field) for field in PROGRESS_FIELDS
+                if type(record.get(field)) in (int, float, str) and not isinstance(record.get(field), bool)}
+        for field in ("lane", "host", "state", "action"):
+            if field in kept: kept[field] = str(kept[field])[:160]
+        last = record.get("lastProgressAt")
+        kept["lastProgressSeconds"] = round(max(0.0, at - last), 1) if type(last) in (int, float) else None
+        found.append({**kept, "pid": record["reporter"], "start": record["reporterStart"]})
+    return found
+
+
 def slot_names(directory, count):
     """The identity each of the first count slot files names as its last holder, None for a file that names none,
     and absent for a slot never taken. Read without a lock: a name is who last took it, not that its lock is held."""
@@ -1773,8 +1809,12 @@ def admissions_now(at=None):
             continue
         if observed is not None: observed[record["identity"]] = record
     if unread: reasons.append(f"{unread} waiters' record{'' if unread == 1 else 's'} could not be read")
+    # Each holder's live progress observations, whose reporters the same ps checks.
+    observations = {identity: holder_progress(guard, identity, at) for identity, owner in (owners or {}).items()
+                    if owner.get("uncertain") is not True}
     # One ps for every process named.
     pids = [owner["pid"] for owner in (owners or {}).values()]
+    pids += [record["pid"] for records in observations.values() for record in records]
     pids += [waiter.get("pid") for waiter in queued or []] + [record["pid"] for record in (observed or {}).values()]
     listed = census(pids)
     if listed is None and pids: reasons.append("ps could not say which of the processes named still run")
@@ -1796,6 +1836,10 @@ def admissions_now(at=None):
             try: since = datetime.fromisoformat(owner["admitted"]).timestamp()
             except (KeyError, TypeError, ValueError): since = None
             process = process_state(owner, listed)
+            # None when it cannot be told: a holder that does not run, or a ps that could not say.
+            progress = None if process != "running" or identity not in observations else [
+                {key: value for key, value in record.items() if key not in ("pid", "start")}
+                for record in observations[identity] if process_state(record, listed) == "running"]
             holders.append({"identity": identity, "label": str(owner.get("label") or "an unnamed owner")[:160],
                             "pid": owner["pid"], "start": owner["start"], "admittedAt": since,
                             "heldSeconds": None if since is None else round(max(0.0, at - since), 1),
@@ -1807,7 +1851,7 @@ def admissions_now(at=None):
                             "slots": held if held or exclusive else None,
                             "guaranteed": [slot for slot in held if slots is None or slot < slots],
                             "extra": [slot for slot in held if slots is not None and slot >= slots],
-                            "process": process,
+                            "process": process, "progress": progress,
                             # A dead or uncertain entry is stranded: admission counts it until recovery removes it.
                             "stranded": owner.get("uncertain") is True or process == "ended"})
         reading["holders"] = sorted(holders, key=lambda holder: holder["admittedAt"] or 0)

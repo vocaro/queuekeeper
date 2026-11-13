@@ -1909,6 +1909,31 @@ def admissions_now(here_only=False, read_here=None, read_there=None, configured=
     return {"schemaVersion": 1, "hosts": hosts}
 
 
+def progress_lines(holder):
+    """A running holder's progress as its leaves observe it (offload_host.holder_progress), a line each; that
+    nothing is observed for one whose leaves publish none; nothing for a holder that does not run, or whose
+    reading has no progress, such as an older toolkit's. A quiet interval is evidence, never a verdict
+    (vocaro/queuekeeper#70)."""
+    if holder.get("process") != "running" or "progress" not in holder: return []
+    observations = holder["progress"]
+    if observations is None: return ["      progress: unknown"]
+    if not observations: return ["      progress: not observed (only a lane that declares `stall` publishes it)"]
+    def seconds(value): return f"{value:.0f}s" if type(value) in (int, float) else "an unknown time"
+    lines = []
+    for record in observations:
+        quiet, bound = record.get("quietSeconds"), record.get("thresholdSeconds")
+        if record.get("state") == "quiet":
+            now = f"quiet {seconds(quiet)}, past its {seconds(bound)} bound ({record.get('action') or 'report'})"
+        elif type(quiet) in (int, float): now = f"quiet {seconds(quiet)} of its {seconds(bound)} bound"
+        else: now = "unobservable now"
+        last = record.get("lastProgressSeconds")
+        lines.append(f"      progress: {record.get('lane') or 'a lane'} on {record.get('host') or 'an unnamed host'}: "
+                     f"{now}; last progress {'at an unknown time' if last is None else seconds(last) + ' ago'}; "
+                     f"longest quiet {seconds(record.get('maximumQuietSeconds'))}; {record.get('samples')} samples, "
+                     f"{record.get('unobservableSamples')} unobservable")
+    return lines
+
+
 def now_lines(reading, at=None):
     """`qk admissions now` in words, host by host."""
     lines = []
@@ -1955,6 +1980,7 @@ def now_lines(reading, at=None):
                           else "; its process could not be checked" if holder["process"] == "unknown" else "")
                 lines.append(f"    {holder['label']}: {kind}, {where}, PID {holder['pid']}, {held}{status}")
                 if whence(holder.get("origin")): lines.append(f"      from {whence(holder['origin'])}")
+                lines += progress_lines(holder)
         waiters = host.get("waiters")
         if waiters is None: lines.append("  waiting: unknown")
         elif not waiters: lines.append("  waiting: none")

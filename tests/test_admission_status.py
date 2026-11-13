@@ -142,6 +142,54 @@ class HoldersTests(Namespace):
         self.assertEqual((found["Waiter"]["away"], found["Waiter"]["holdsBack"]), (True, False))
         self.assertEqual((found["Asking"]["reason"], found["Asking"]["queued"]), ("all 2 guaranteed slots are busy", False))
 
+    def observation(self, identity, name, **changes):
+        """A live progress observation a holder's leaf publishes under its admission (lane_progress.destinations)."""
+        folder = Path(str(self.guard) + ".progress") / identity
+        folder.mkdir(parents=True, exist_ok=True)
+        now = time.time()
+        (folder / f"{name}.json").write_text(json.dumps({
+            "run": name, "phase": "running", "observedAt": now, "startedAt": now - 900, "reporter": os.getpid(),
+            "reporterStart": self.start, "lane": name, "host": "build-host", "state": "observing", "action": "report",
+            "quietSeconds": 120.0, "thresholdSeconds": 600, "maximumQuietSeconds": 150.0, "lastProgressAt": now - 120,
+            "samples": 900, "unobservableSamples": 3, "processes": [{"pid": 1, "start": "x" * 200}] * 50, **changes}))
+
+    def test_each_holder_says_what_its_leaves_observe_of_its_progress(self):
+        """vocaro/queuekeeper#70: a holder that has stopped making progress is reported by `qk admissions now`, and one
+        whose leaves observe nothing says so rather than looking idle or busy."""
+        self.holders({"a": self.owner("Alpha gate"), "b": self.owner("Beta unittest"),
+                      "c": self.owner("Gone", start="Thu Jan  1 00:00:00 1970")},
+                     slots=[(0, "a"), (1, "b"), (2, "c")])
+        self.observation("a", "pytest", state="quiet", quietSeconds=700.0, thresholdSeconds=600, lastProgressAt=time.time() - 700)
+        self.observation("a", "swift")
+        # Neither an ended observation, nor a stale one, nor one whose reporter's PID now runs another process counts.
+        self.observation("a", "ended", phase="ended")
+        self.observation("a", "stale", observedAt=time.time() - 60)
+        self.observation("a", "reused", reporterStart="Thu Jan  1 00:00:00 1970")
+        self.observation("c", "orphan")
+        before = tree(self.temp.name)
+        reading = self.read()
+        self.assertEqual(tree(self.temp.name), before)
+        found = {holder["label"]: holder for holder in reading["holders"]}
+        self.assertEqual([record["lane"] for record in found["Alpha gate"]["progress"]], ["pytest", "swift"])
+        quiet = found["Alpha gate"]["progress"][0]
+        self.assertEqual((quiet["state"], quiet["quietSeconds"], quiet["thresholdSeconds"]), ("quiet", 700.0, 600))
+        self.assertAlmostEqual(quiet["lastProgressSeconds"], 700, delta=5)
+        # Only the observation's summary travels: not the processes it names, nor its reporter.
+        self.assertFalse({"processes", "reporter", "reporterStart"} & set(quiet))
+        self.assertEqual(found["Beta unittest"]["progress"], [])
+        self.assertIsNone(found["Gone"]["progress"])
+        lines = resources.now_lines({"hosts": [{"name": "this Mac", **reading}]})
+        self.assertIn("      progress: pytest on build-host: quiet 700s, past its 600s bound (report); last progress 700s "
+                      "ago; longest quiet 150s; 900 samples, 3 unobservable", lines)
+        self.assertIn("      progress: swift on build-host: quiet 120s of its 600s bound; last progress 120s ago; "
+                      "longest quiet 150s; 900 samples, 3 unobservable", lines)
+        self.assertIn("      progress: not observed (only a lane that declares `stall` publishes it)", lines)
+        self.assertEqual(sum("progress:" in line for line in lines), 3)
+        # A ps that cannot say leaves every holder's progress unknown, never quiet.
+        with patch.object(offload_host, "census", return_value=None):
+            unknown = self.read()
+        self.assertTrue(all(holder["progress"] is None for holder in unknown["holders"]))
+
     def test_a_reading_too_large_is_cut_and_partial(self):
         reading = {"state": "observed", "reasons": [], "waiters": [{"label": "x" * 1000}] * 2000, "holders": [], "slots": []}
         cut = offload_host.bounded(reading)

@@ -529,6 +529,15 @@ isolated `HEAVY_SLOT_DIR` or `QUEUEKEEPER_GATE_LOCK_FILE`. What it reads, and wh
 ([#342](https://github.com/vocaro/vocaro-engineering/issues/342)). It does not yet flag a wait as
 too long: the owner deferred that until there is history to calibrate it.
 
+Under each running holder, a `progress:` line gives each of its leaves' live quiet-interval
+observations: the lane and Mac, how long it has been quiet against the bound it declares, and
+whether that bound is passed, when it last made progress, its longest quiet and its samples
+([observe a quiet lane](parallel-tests.md#observe-a-quiet-lane)). Only a lane that declares
+`stall` publishes one, so a holder whose leaves publish none says it is not observed, and one
+whose processes cannot be checked says its progress is unknown; neither is read as idle or as
+busy. A passed bound is evidence, not a verdict: it ends nothing that has not declared
+`"action": "stop"` ([vocaro/queuekeeper#70](https://github.com/vocaro/queuekeeper/issues/70)).
+
 ### Load the queue cannot see
 
 Admission reads the load before it admits and cannot account for work that never asks:

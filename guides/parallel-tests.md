@@ -47,7 +47,8 @@ run evidence, not a live lease or permission to stop a process. Admission proces
 retain samples. `qk queue status` shows separate per-leaf progress observations, alongside
 its admission wait, including the host, phase, quiet interval, threshold and sampling coverage.
 Requests blocked on admission print the running holders' observations on a state transition
-and at most every 30 seconds while that state continues. The second Mac relays member
+and at most every 30 seconds while that state continues, and `qk admissions now` lists them
+under each holder on both Macs. The second Mac relays member
 snapshots alongside its wait record; completed members disappear independently.
 
 Each outer lane run creates a fresh namespace in its wait record; nested groups inherit it.
