@@ -73,7 +73,7 @@ import time
 from types import SimpleNamespace
 import uuid
 
-from ... import lane_results, processes, resources
+from ... import lane_report, lane_results, processes, resources
 from ...parallel import RESULTS_VARIABLE, TAIL, combined, outcome
 from .. import stale_modules
 from . import pool as simulator_pool, speech
@@ -598,11 +598,15 @@ class Run:
         recorded = bundle_results(bundle, kind, record)
         if recorded is not None: executed, skipped, from_bundle = recorded
         else: executed, skipped, from_bundle = lane_results.executed_tests(text) or 0, lane_results.skipped_tests(text), []
-        counted = f"Executed {executed} tests" + (f", {skipped} skipped" if skipped else "")
+        failed = failed_tests(record, text)
+        # The failed tests are counted in this line, which is all a lane reads of the device's run: the device's own
+        # lines that name them are in its log alone (vocaro/queuekeeper#81).
+        counted = f"Executed {executed} tests" + (f", {skipped} skipped" if skipped else "") + \
+            (f", {failed} failed" if failed else "")
         console = lane_results.unmeasured_tests(text)
         # The bundle names each skipped XCTest test once, so the console's lines for them would repeat it.
         if recorded is not None: console = [line for line in console if "Test skipped - Unmeasured:" not in line]
-        self.tallies[kind] = tally(status, executed, skipped, len(console) + len(from_bundle), failed_tests(record, text))
+        self.tallies[kind] = tally(status, executed, skipped, len(console) + len(from_bundle), failed)
         if selection is not None:
             with self.lock: self.seconds.update(suite_seconds(bundle, record))
             # Not "Executed N tests", which a lane would count beside the device's own total.
@@ -685,10 +689,11 @@ class Run:
     def shards_finished(self, kind):
         results = [self.shards.get(kind, {}).get(number, (1, 0, 0, [], "no result")) for number in range(self.args.shards)]
         executed, skipped = sum(r[1] for r in results), sum(r[2] for r in results)
+        failed = sum((self.tallies.get(f"{kind}-{number + 1}") or {}).get("failed", 0) for number in range(self.args.shards))
         unmeasured = [line for r in results for line in r[3]]
         problems = [r[4] for r in results if r[4]]
         counted = f"Executed {executed} tests" + (f", {skipped} skipped" if skipped else "") + \
-            f" in {self.args.shards} shards"
+            (f", {failed} failed" if failed else "") + f" in {self.args.shards} shards"
         status = combined([r[0] for r in results])
         if status == 0 and unmeasured: status = lane_results.UNMEASURED
         self.finish(kind, status, counted + (f"; {'; '.join(problems)}" if problems else ""))
@@ -805,11 +810,14 @@ SERIES_OUTCOMES = ("passed", "failed", "skipped", "unmeasured")
 
 
 def failed_tests(record, text):
-    """The tests a run failed, by its result bundle (bundle_record) or else the largest count its console prints."""
+    """The tests a run failed, by its result bundle (bundle_record) or else its console: the largest XCTest count it
+    prints and each Swift Testing test it names failed, which no XCTest total counts. A run of Swift Testing tests
+    alone still prints an XCTest total, of 0 tests with 0 failures, for its bundle (vocaro/queuekeeper#81)."""
     if record is not None:
         try: return int(record[0]["failedTests"])
         except (KeyError, TypeError, ValueError): pass
-    return max((int(found) for found in FAILURES.findall(text)), default=0)
+    return max((int(found) for found in FAILURES.findall(text)), default=0) + \
+        len(set(lane_report.SWIFT_TESTING_FAILED.findall(text)))
 
 
 def tally(status, executed, skipped, unmeasured, failed):

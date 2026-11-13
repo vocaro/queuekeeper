@@ -34,6 +34,9 @@ XCTEST_ISSUE = re.compile(r"^([^\s:][^:\n]*):(\d+): error: -\[([^\]\n]+)\] : ", 
 SWIFT_TESTING_FAILED_RUN = re.compile(r"Test run with \d+ tests?(?: in \d+ suites?)? failed")
 SWIFT_TESTING_FAILED = re.compile(r"^\S+ Test (?!run with \d)(.+?) failed after ", re.M)
 SWIFT_TESTING_ISSUE = re.compile(r"^\S+ Test (?!run with \d)(.+?) recorded an issue at ([^:\n]+):(\d+)", re.M)
+# qk simulator-tests' line for a device, which counts the tests that failed on it apart, as the device's result bundle or
+# its console does: `Executed 5 tests, 1 skipped, 2 failed`. The lines that name them are in the device's log alone.
+DEVICE_FAILED = re.compile(r"Executed \d+ tests(?:, \d+ skipped)?, (\d+) failed\b")
 # unittest's heading for a failure or error, what ends its traceback, and a traceback's frame.
 UNITTEST_FAILED = re.compile(r"^(?:FAIL|ERROR): (\S+) \(([^()\n]*)\)", re.M)
 UNITTEST_END = re.compile(r"^={70}$|^-{70}\nRan \d", re.M)
@@ -70,6 +73,7 @@ def failed_tests(text):
         items = {word: int(n) for n, word in re.findall(r"(\d+) (\w+)", match.group(1))}
         total += items.get("failed", 0) + items.get("error", 0) + items.get("errors", 0)
         errors += items.get("error", 0) + items.get("errors", 0)
+    total += sum(int(n) for n in DEVICE_FAILED.findall(text))
     cases, tests = set(XCTEST_FAILED.findall(text)), set(SWIFT_TESTING_FAILED.findall(text))
     if not cases and any(int(n) for n in XCTEST_TOTAL.findall(text)): return None, errors
     if not tests and SWIFT_TESTING_FAILED_RUN.search(text): return None, errors

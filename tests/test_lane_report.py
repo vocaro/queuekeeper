@@ -74,6 +74,15 @@ def record(results, name, **fields):
     (directory / "failures.txt").write_text("what failed\n")
     return directory / "failures.txt"
 
+SWIFT_TESTING_BESIDE_EMPTY_XCTEST = """Test Suite 'EPUBViewingTests.xctest' started at 2026-11-11 20:14:18.000.
+Test Suite 'EPUBViewingTests.xctest' passed at 2026-11-11 20:14:18.001.
+\t Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+\u25c7 Test "testACellKeepsItsWeight()" started.
+\u2718 Test "testACellKeepsItsWeight()" recorded an issue at InkTests.swift:12:5: Expectation failed: weight == 700
+\u2718 Test "testACellKeepsItsWeight()" failed after 65.382 seconds with 1 issue.
+\u2718 Test run with 1 test in 1 suite failed after 65.400 seconds with 1 issue.
+"""
+
 
 class Parsing(unittest.TestCase):
     def assert_counts(self, text, passed, failed, skipped, unmeasured=0):
@@ -107,6 +116,18 @@ class Parsing(unittest.TestCase):
     def test_swift_testing_failure_and_not_its_runs_own_line(self):
         self.assert_counts(SWIFT_TESTING_FAILED, 2, 1, 0)
         self.assertEqual(lane_report.failing(SWIFT_TESTING_FAILED), [("page()", "PageTests.swift:9")])
+
+    def test_a_failing_swift_testing_test_beside_its_bundles_empty_xctest_run_is_failed(self):
+        # The lines of a device's log for one filtered Swift Testing test that failed (vocaro/queuekeeper#81).
+        self.assert_counts(SWIFT_TESTING_BESIDE_EMPTY_XCTEST, 0, 1, 0)
+
+    def test_a_simulator_runs_device_lines_count_the_tests_that_failed_on_each_device(self):
+        # What a sharded `qk simulator-tests` run of that test leaves in its lane's log; the lines that name the
+        # failure are in each device's log alone (vocaro/queuekeeper#81).
+        text = ("FAIL iPhone-17-Pro: Executed 1 tests, 1 failed in 2 shards; iPhone-17-Pro-1 failed with status 65\n"
+                "FAIL iPad-Air-13-inch-M4: Executed 1 tests, 1 failed in 2 shards; iPad-Air-13-inch-M4-1 failed with status 65\n"
+                "PASS iPhone-17-Pro: Executed 3 tests, 1 skipped in 40s\n")
+        self.assert_counts(text, 3, 2, 0)
 
     def test_a_total_that_says_tests_failed_and_names_none_leaves_passed_and_failed_unknown(self):
         found = lane_report.counts("Executed 4 tests, with 1 failure (1 unexpected) in 0.1 (0.2) seconds\n")

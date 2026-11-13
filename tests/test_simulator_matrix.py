@@ -13,7 +13,7 @@ import unittest
 from unittest import mock
 import uuid
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
-from queuekeeper import lane_results
+from queuekeeper import lane_report, lane_results
 from queuekeeper.apple import devices
 from queuekeeper.apple.simulators import matrix
 import host_isolation
@@ -253,6 +253,16 @@ XCODEBUILD = textwrap.dedent("""\
         print("Test Case '-[T.C testC]' started.")
         print("Test Case '-[T.C testC]' passed (0.020 seconds).")
         print("2026-11-06 16:16:45.147 xctest[1:2] noise that names no outcome")
+    if kind in os.environ.get("FAKE_SWIFT_TESTING_FAIL", ""):
+        # One Swift Testing test that failed, beside its bundle's empty XCTest run (vocaro/queuekeeper#81).
+        print("Test Suite 'T.xctest' started at 2026-11-11 20:14:18.000.")
+        print("Test Suite 'T.xctest' passed at 2026-11-11 20:14:18.001.")
+        print("\\t Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds")
+        print('\\u25c7 Test "testA()" started.')
+        print('\\u2718 Test "testA()" recorded an issue at T.swift:5:3: Expectation failed: weight == 700')
+        print('\\u2718 Test "testA()" failed after 65.382 seconds with 1 issue.')
+        print("\\u2718 Test run with 1 test in 1 suite failed after 65.400 seconds with 1 issue.")
+        sys.exit(65)
     if unmeasured:
         print("/p/T.swift:5: -[P.T testA] : Test skipped - Unmeasured: the host was busy")
     print("Test Suite 'All tests' passed at 2026-10-24 01:00:00.000.")
@@ -1189,6 +1199,20 @@ class SimulatorMatrixTests(unittest.TestCase):
         self.assertEqual(status, 1, output)
         self.assertIn("FAIL iPad-Air-13-inch-M4: Executed 5 tests in 2 shards", output)
         self.assertIn("PASS iPhone-17-Pro", output)
+
+    def test_a_failed_swift_testing_test_is_counted_failed_in_its_devices_line(self):
+        # Its bundle's XCTest run is empty and passes; the lane reads only the devices' lines (vocaro/queuekeeper#81).
+        status, output = self.run_matrix("--shards", "2", FAKE_TESTS=json.dumps(self.SHARDED),
+                                         FAKE_SWIFT_TESTING_FAIL="iPad-Air-13-inch-M4")
+        self.assertEqual(status, 1, output)
+        self.assertIn("FAIL iPad-Air-13-inch-M4: Executed 2 tests, 2 failed in 2 shards", output)
+        self.assertIn("PASS iPhone-17-Pro: Executed 5 tests in 2 shards", output)
+        found = lane_report.counts(output)
+        self.assertEqual((found["passed"], found["failed"]), (5, 2), output)
+        for path in self.state.glob("testing-*"): path.unlink()
+        status, output = self.run_matrix(FAKE_SWIFT_TESTING_FAIL="iPad-Air-13-inch-M4")
+        self.assertEqual(status, 1, output)
+        self.assertIn("FAIL iPad-Air-13-inch-M4: the tests failed with status 65, Executed 1 tests, 1 failed", output)
 
     def test_a_listing_that_fails_runs_nothing_and_fails(self):
         status, output = self.run_matrix("--shards", "2", FAKE_TESTS=json.dumps(self.SHARDED), FAKE_ENUMERATE_FAIL="1")
