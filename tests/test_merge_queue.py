@@ -6952,20 +6952,33 @@ class FlakyReruns(Fixture):
         self.assertEqual([entry["state"] for entry in entries], ["landed", "landed"])
         self.assert_gate_failure(entries[0]["flakes"][0]["gateLog"])
 
+    @contextlib.contextmanager
     def group_on_the_second_mac(self, keep_lanes=True):
-        """remote.dispatch as for a group gate the second Mac ran: its lanes' logs and receipts are only in the
-        dispatch's lanes/, as queuekeeper files them, and none is left in the worker's checkout."""
-        dispatches = self.base / "dispatches"
+        """A group gate the second Mac ran: once each qk run of a group has ended, as remote.execute returns it, its
+        lanes' logs and receipts are only in a dispatch's lanes/, as queuekeeper files them, and none is left in the
+        worker's checkout. remote.dispatch only looks dispatches up, as the real one does. The gate's watch and
+        samplers look them up while the lane runs, which a busy host makes them do once a lane outlasts WATCH_POLL:
+        here they look all through every lane, so the verdict cannot depend on when they do. A lookup that moved the
+        lanes/ mid-run left qk run exit 2 on this Mac (vocaro/queuekeeper#110, vocaro/queuekeeper#111)."""
+        dispatches, made = self.base / "dispatches", {}
+        real = mq.processes.run
+        def returned(command, *arguments, cwd=None, **options):
+            try: return real(command, *arguments, cwd=cwd, **options)
+            finally:
+                own = Path(cwd or ".") / ".build/queuekeeper" / str(command[-1]) / "lanes"
+                if list(command[:3]) == ["python3", "scripts/qk", "run"] and cwd is not None and own.is_dir():
+                    ran = dispatches / f"{len(list(dispatches.glob('*'))) if dispatches.exists() else 0}"
+                    ran.mkdir(parents=True)
+                    (ran / "run.log").write_text("")
+                    if keep_lanes: own.rename(ran / "lanes")
+                    else: shutil.rmtree(own)
+                    made.setdefault((Path(cwd).resolve(), command[-1]), []).append((time.time(), ran))
         def dispatch(root, name, since):
-            own = Path(root) / ".build/queuekeeper" / name / "lanes"
-            if not own.is_dir(): return None, None
-            ran = dispatches / f"{len(list(dispatches.glob('*'))) if dispatches.exists() else 0}"
-            ran.mkdir(parents=True)
-            (ran / "run.log").write_text("")
-            if keep_lanes: own.rename(ran / "lanes")
-            else: shutil.rmtree(own)
-            return ran, "fake-mac"
-        return patch.object(mq.remote, "dispatch", side_effect=dispatch)
+            found = [ran for started, ran in made.get((Path(root).resolve(), name), []) if started >= since]
+            return (found[-1], "fake-mac") if found else (None, None)
+        with patch.object(mq.processes, "run", returned), patch.object(mq.remote, "dispatch", side_effect=dispatch), \
+                patch.object(mq, "WATCH_POLL", 0.01), patch.object(mq, "BUSY_SAMPLE", 0.01):
+            yield
 
     def test_a_flake_in_a_group_gate_the_second_mac_ran_reruns_from_its_dispatchs_lane_log(self):
         # A dispatched group's run.log is empty and its output holds qk unittest's summary only indented, in a
